@@ -1,0 +1,1 @@
+Launched the hosted service at <https://fledge.hugoxk.online/> with the GitHub token login fallback, and the documentation site at <https://fledge-docs.hugoxk.online/docs/> with a mirror at <https://hugoxk.online/fledge/docs/>.

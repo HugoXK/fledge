@@ -18,7 +18,7 @@
   <a href="https://github.com/HugoXK/fledge/pkgs/container/fledge"><img alt="GHCR" src="https://img.shields.io/badge/ghcr.io-hugoxk%2Ffledge-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-<p align="center">English | <a href="README.zh.md">中文</a></p>
+<p align="center">English | <a href="README.zh.md">中文</a> · <a href="https://fledge-docs.hugoxk.online/docs/">Docs</a></p>
 
 ---
 
@@ -29,10 +29,10 @@ through a signed bridge; the agent writes a failing test, makes the smallest
 correct fix, opens one pull request, and reports back. Fledge never pushes to the
 default branch, never merges, and never runs a user repository itself.
 
-> **Status:** `v0.1.0` is the first working vertical slice. The code, tests and
-> CI are public; the hosted service at `fledge.hugoxk.online` is staged and will
-> open after the OAuth app, DNS/TLS and FlyBot bridge are connected. The project
-> homepage and guide live at <https://hugoxk.online/fledge/>.
+> **Status:** `v0.1.0` is live at <https://fledge.hugoxk.online/> with the GitHub
+> token login fallback (the OAuth App is not configured yet). Documentation is at
+> <https://fledge-docs.hugoxk.online/docs/>; the project homepage and guide are at
+> <https://hugoxk.online/fledge/>.
 
 ## Table of contents
 
@@ -40,6 +40,7 @@ default branch, never merges, and never runs a user repository itself.
 - [Features](#features)
 - [How it works](#how-it-works)
 - [Architecture](#architecture)
+- [Documentation](#documentation)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Quota](#quota)
@@ -157,6 +158,13 @@ Browser ──cookie session──► Fastify (src/app.ts)
 
 Detailed design: [docs/architecture.md](docs/architecture.md) · trust boundaries:
 [docs/security.md](docs/security.md) · quota semantics: [docs/quota.md](docs/quota.md).
+
+## Documentation
+
+The user guide and reference live at
+<https://fledge-docs.hugoxk.online/docs/> (mirrored at
+<https://hugoxk.online/fledge/docs/>). They are built from this repository's
+`README.md` and `docs/` by [HugoXK/fledge-docs](https://github.com/HugoXK/fledge-docs).
 
 ## Quick start
 

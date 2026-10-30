@@ -1,6 +1,6 @@
 # Handoff — Fledge v0.1.0
 
-Status: **working v0.1.0, CI green (`ci-ok`), homepage/guide live, server staged, not publicly deployed.**
+Status: **v0.1.0 is live at `fledge.hugoxk.online` (GitHub token login; OAuth App pending); docs are live; CI green.**
 Last updated: 2026-10-30.
 
 This page is the public handoff for a new development session. The operator's
@@ -27,8 +27,11 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
   aggregate check is `ci-ok`.
 - **Stack:** Node 22.9+, TypeScript, Fastify, `node:sqlite`, nodemailer,
   server-rendered HTML.
-- **Domain plan:** the service will run at `https://fledge.hugoxk.online/`; the
-  project homepage and guide live at `https://hugoxk.online/fledge/`.
+- **Service:** <https://fledge.hugoxk.online/> (live; token login until an OAuth
+  App is connected).
+- **Docs:** <https://fledge-docs.hugoxk.online/docs/> (mirror:
+  <https://hugoxk.online/fledge/docs/>).
+- **Project page / guide:** <https://hugoxk.online/fledge/>.
 
 ### Implemented
 
@@ -62,14 +65,16 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 
 ### Not yet verified / not done
 
-- Real GitHub OAuth login (needs an OAuth App client id/secret).
-- Real SMTP delivery (needs the `flybot@yeah.net` password on the deployment
-  host; the server staging env is pre-wired).
-- A real FlyBot bridge job (needs a dedicated FlyBot session and bridge token).
-- Docker image build on a host with Docker (the local host has none; CI builds
-  the image in the `docker` job).
+- Real GitHub OAuth login (the service currently uses the token login fallback;
+  create an OAuth App, set `ALLOW_TOKEN_LOGIN_ONLY=false`, and add the client
+  id/secret).
+- Real SMTP delivery (the server env is wired to `flybot@yeah.net`; no test mail
+  has been sent).
+- A real FlyBot bridge job (needs a dedicated FlyBot session and bridge token;
+  the service runs `RUNNER_MODE=mock`).
+- Docker image build on a host with Docker (CI builds the image in the `docker`
+  job).
 - Branch protection, required checks and a merge queue on GitHub.
-- Public deployment at `fledge.hugoxk.online`, DNS/tunnel route and TLS.
 
 ## Architecture in one screen
 
@@ -89,10 +94,10 @@ back. See [architecture.md](architecture.md) and [api.md](api.md).
 ## Open work (ordered)
 
 1. **GitHub OAuth App** for `https://fledge.hugoxk.online/auth/github/callback`;
-   put the client id/secret in the deployment env.
-2. **DNS + tunnel + nginx** for `fledge.hugoxk.online`; the app listens on
-   loopback, nginx terminates TLS, the tunnel routes the host.
-3. **FlyBot bridge**: run `bridge/flybot-bridge.mjs` on the FlyBot host with a
+   put the client id/secret in the deployment env and set
+   `ALLOW_TOKEN_LOGIN_ONLY=false`. The service is already live on the token
+   fallback.
+2. **FlyBot bridge**: run `bridge/flybot-bridge.mjs` on the FlyBot host with a
    dedicated “Fledge Runner” chat session and a strong `BRIDGE_TOKEN`; set
    `RUNNER_MODE=flybot` in Fledge.
 4. **First real job**: add a small test repo, run one job, verify the PR, the

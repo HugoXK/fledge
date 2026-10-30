@@ -18,7 +18,7 @@
   <a href="https://github.com/HugoXK/fledge/pkgs/container/fledge"><img alt="GHCR" src="https://img.shields.io/badge/ghcr.io-hugoxk%2Ffledge-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-<p align="center"><a href="README.md">English</a> | 中文</p>
+<p align="center"><a href="README.md">English</a> | 中文 · <a href="https://fledge-docs.hugoxk.online/docs/">文档</a></p>
 
 ---
 
@@ -27,9 +27,10 @@ Fledge 是一个自托管的小平台，做的是**可审查的仓库成长**。
 bridge 把任务交给 FlyBot 代理；代理先写失败测试，做最小修复，开一个 PR，再回调
 平台。Fledge 不会推默认分支、不会自动合并、也不会在本地执行用户仓库。
 
-> **状态：** `v0.1.0` 是第一条可用的竖切。代码、测试和 CI 已公开；
-> `fledge.hugoxk.online` 的托管服务已 staging，等 OAuth App、DNS/TLS 和 FlyBot
-> bridge 接通后开放。项目主页和 Guide 在 <https://hugoxk.online/fledge/>。
+> **状态：** `v0.1.0` 已上线：<https://fledge.hugoxk.online/>，当前使用 GitHub
+> token 登录（OAuth App 尚未配置）。文档在
+> <https://fledge-docs.hugoxk.online/docs/>；项目主页和 Guide 在
+> <https://hugoxk.online/fledge/>。
 
 ## 目录
 
@@ -37,6 +38,7 @@ bridge 把任务交给 FlyBot 代理；代理先写失败测试，做最小修�
 - [功能](#功能)
 - [工作方式](#工作方式)
 - [架构](#架构)
+- [文档](#文档)
 - [快速开始](#快速开始)
 - [配置](#配置)
 - [额度](#额度)
@@ -146,6 +148,13 @@ flowchart LR
 
 细节见 [docs/architecture.md](docs/architecture.md)、信任边界见
 [docs/security.md](docs/security.md)、额度口径见 [docs/quota.md](docs/quota.md)。
+
+## 文档
+
+用户 Guide 和参考在 <https://fledge-docs.hugoxk.online/docs/>（镜像：
+<https://hugoxk.online/fledge/docs/>）。它们由
+[HugoXK/fledge-docs](https://github.com/HugoXK/fledge-docs) 从本仓库的
+`README.md` 和 `docs/` 自动构建。
 
 ## 快速开始
 
