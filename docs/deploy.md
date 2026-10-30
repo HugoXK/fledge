@@ -59,9 +59,9 @@ Scopes requested: `read:user user:email repo`. Users still supply a
 fine-grained token per repository.
 
 If the OAuth App is not ready, leave `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`
-empty: the landing page offers a **GitHub token login** that uses `GET /user`
-only to confirm identity and never stores the token. Configure OAuth before a
-public launch.
+empty and set `ALLOW_TOKEN_LOGIN_ONLY=true`. The landing page then offers a
+**GitHub token login** that uses `GET /user` only to confirm identity and never
+stores the token. Configure OAuth before a public launch.
 
 ## 3. SMTP
 

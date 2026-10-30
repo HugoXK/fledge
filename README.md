@@ -240,8 +240,8 @@ full list and comments.
 | `RUNNER_MODE` | `mock` | `mock` or `flybot` |
 | `ALLOW_PRIVATE_MODEL_URLS` | `false` | Allow loopback model URLs in development |
 
-Production startup fails closed when the session/encryption keys, OAuth app or
-SMTP password are missing.
+Production startup fails closed when the session/encryption keys, OAuth app (or
+`ALLOW_TOKEN_LOGIN_ONLY=true`) or SMTP password are missing.
 
 ## Quota
 

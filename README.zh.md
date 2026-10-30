@@ -223,7 +223,8 @@ node bridge/flybot-bridge.mjs
 | `RUNNER_MODE` | `mock` | `mock` 或 `flybot` |
 | `ALLOW_PRIVATE_MODEL_URLS` | `false` | 开发时允许 loopback 模型 URL |
 
-生产模式缺 session/加密 key、OAuth App 或 SMTP 密码会拒绝启动。
+生产模式缺 session/加密 key、OAuth App（或显式 `ALLOW_TOKEN_LOGIN_ONLY=true`）或
+SMTP 密码会拒绝启动。
 
 ## 额度
 
