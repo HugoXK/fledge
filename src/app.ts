@@ -305,9 +305,13 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const position = store.queuePosition(updated.id)
     try {
       await approvals.request(updated)
-      await approvals.acknowledge(updated, position)
     } catch (error) {
       log.error('approval request mail failed', { user: updated.login, error: String(error) })
+    }
+    try {
+      await approvals.acknowledge(updated, position)
+    } catch (error) {
+      log.warn('application acknowledgement failed', { user: updated.login, error: String(error) })
     }
     return reply.redirect(`/apply/status?notice=${encodeURIComponent('申请已提交，正在排队。')}`)
   })
