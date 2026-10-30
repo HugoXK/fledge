@@ -40,6 +40,12 @@ secrets and do not use CSRF.
 - The OAuth token is used only to read the GitHub profile; repository access uses
   the user's fine-grained token.
 
+### Development login
+
+`DEV_LOGIN_LOGIN` enables `/auth/dev`, which creates an approved local admin
+without GitHub. It is refused when `NODE_ENV=production` (startup fails if the
+variable is set). Never set it on a public instance.
+
 ### Approval
 
 - Two 32-byte random tokens per application (approve, reject), stored as hashes.

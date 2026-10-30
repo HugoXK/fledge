@@ -200,6 +200,7 @@ before a major upgrade.
 - [ ] `SESSION_SECRET` and `TOKEN_ENCRYPTION_KEY` set and backed up.
 - [ ] SMTP test email received at `hugo2001xk@gmail.com`.
 - [ ] Admin login is the intended GitHub account.
+- [ ] `DEV_LOGIN_LOGIN` is empty (the app refuses to start otherwise).
 - [ ] Platform model key works; a 1-token request succeeds.
 - [ ] `RUNNER_MODE=mock` smoke test (add repo, run, see a succeeded job).
 - [ ] Switch to `flybot`, run one real job, confirm the PR and callback.

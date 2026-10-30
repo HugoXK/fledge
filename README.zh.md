@@ -70,8 +70,10 @@ npm run dev
 把 `ADMIN_GITHUB_LOGIN` 设成你的 GitHub 登录名（默认 `HugoXK`）。管理员首次
 登录自动通过；其他人是 pending，需要批准。
 
-本地没有 SMTP 时用 console 邮件：待审批登录后执行 `npm run mail:outbox`，
-会打印最新邮件和批准/拒绝链接。
+本地没有 GitHub OAuth 时，保留 `.env` 里的 `DEV_LOGIN_LOGIN=dev`，直接打开
+<http://localhost:8080/auth/dev>。它会创建一个已批准的本地管理员；`NODE_ENV=production`
+时该入口会被拒绝。配置了 OAuth 后正常登录即可；待审批申请可以用
+`npm run mail:outbox` 查看最新邮件和批准/拒绝链接。
 
 ### GitHub OAuth App
 

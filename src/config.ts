@@ -50,6 +50,10 @@ export interface Config {
   dataDir: string
   dbPath: string
   allowPrivateModelUrls: boolean
+  devLogin: {
+    login: string
+    admin: boolean
+  }
 }
 
 function loadDotEnv(file = '.env'): void {
@@ -141,6 +145,10 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     dataDir,
     dbPath: resolve(text('DB_PATH', `${dataDir}/fledge.db`)),
     allowPrivateModelUrls: bool('ALLOW_PRIVATE_MODEL_URLS', false),
+    devLogin: {
+      login: text('DEV_LOGIN_LOGIN'),
+      admin: bool('DEV_LOGIN_ADMIN', true),
+    },
   }
   return { ...config, ...overrides }
 }
@@ -157,5 +165,6 @@ export function assertProductionConfig(config: Config): void {
   if (config.github.clientId === '' || config.github.clientSecret === '') missing.push('GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET')
   if (config.mail.transport === 'smtp' && config.mail.smtp.pass === '') missing.push('SMTP_PASS')
   if (config.llm.key === '' && config.runner.mode === 'flybot') missing.push('PLATFORM_LLM_KEY (needed by the FlyBot runner)')
+  if (config.devLogin.login !== '') missing.push('DEV_LOGIN_LOGIN must be empty in production')
   if (missing.length > 0) throw new Error(`Fledge cannot start in production. Missing: ${missing.join(', ')}`)
 }

@@ -23,13 +23,17 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     response.writeHead(404)
     response.end()
   })
-  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url }, devLogin: { login: 'dev', admin: true } })
   const store = new Store(':memory:')
   const mailer = new MemoryMailer()
   const built = await buildApp({ config, store, mailer, runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'octo-user', status: 'approved' })
     const { csrf, cookie } = sessionFor(built, user)
+
+    const devLogin = await built.app.inject({ method: 'GET', url: '/auth/dev' })
+    assert.equal(devLogin.statusCode, 302)
+    assert.match(String(devLogin.headers['set-cookie'] ?? ''), /fledge_session=/)
 
     const dashboard = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
     assert.equal(dashboard.statusCode, 200)

@@ -40,11 +40,11 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
   return {
     ...base,
     ...overrides,
-    github: { ...base.github, ...(overrides.github ?? {}) },
-    mail: { ...base.mail, ...(overrides.mail ?? {}) },
-    llm: { ...base.llm, ...(overrides.llm ?? {}) },
-    quota: { ...base.quota, ...(overrides.quota ?? {}) },
-    runner: { ...base.runner, ...(overrides.runner ?? {}) },
+    github: { ...base.github, ...overrides.github },
+    mail: { ...base.mail, ...overrides.mail },
+    llm: { ...base.llm, ...overrides.llm },
+    quota: { ...base.quota, ...overrides.quota },
+    runner: { ...base.runner, ...overrides.runner },
   }
 }
 

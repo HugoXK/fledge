@@ -38,13 +38,14 @@ function noticeBlock(viewer: Viewer, notifications: NotificationRow[]): string {
     .join('')}<form method="post" action="/notifications/read">${csrf(viewer)}<button class="link" type="submit">全部标为已读</button></form></div>`
 }
 
-export function landingPage(config: Config, viewer?: Viewer | null): string {
+export function landingPage(config: Config, viewer?: Viewer | null, devLogin = false): string {
   const body = `<section class="hero">
     <div class="eyebrow">HOSTED · SELF-ITERATING · REVIEWABLE</div>
     <h1>让仓库自己长大。</h1>
     <p class="lede">把多个 GitHub 仓库交给 Fledge。FlyBot 会持续阅读代码、写失败的测试、修最小的根因，并开一个你可以审查的 PR。你只需要决定合不合。</p>
     <div class="actions">
       <a class="btn" href="/auth/github">使用 GitHub 登录</a>
+      ${devLogin ? '<a class="btn btn-ghost" href="/auth/dev">Dev 登录（本地）</a>' : ''}
       <a class="btn btn-ghost" href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">看源码</a>
     </div>
     <p class="fine">首次登录需要管理员批准。平台初始额度 1 元；用完后配置你自己的模型 API 即可继续。</p>

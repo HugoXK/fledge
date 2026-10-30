@@ -81,9 +81,10 @@ npm run dev
 Set `ADMIN_GITHUB_LOGIN=HugoXK` (or your login). The administrator is approved
 automatically on first login; everyone else is pending until approved.
 
-For a local demo without GitHub OAuth, the approval flow can be tested with the
-console mailer: after a pending login, `npm run mail:outbox` prints the latest
-email and its approve/reject links.
+For a local demo without GitHub OAuth, leave `DEV_LOGIN_LOGIN=dev` in `.env`
+and open <http://localhost:8080/auth/dev>. This creates an approved local admin
+and is refused when `NODE_ENV=production`. With GitHub OAuth configured, sign in
+normally; a pending application can be inspected with `npm run mail:outbox`.
 
 ### GitHub OAuth app
 

@@ -150,7 +150,29 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (viewer.user.status === 'approved') return reply.redirect('/dashboard')
       return reply.redirect('/pending')
     }
-    return reply.type('text/html').send(landingPage(config))
+    return reply.type('text/html').send(landingPage(config, null, config.env !== 'production' && config.devLogin.login !== ''))
+  })
+
+  app.get('/auth/dev', async (request, reply) => {
+    if (config.env === 'production' || config.devLogin.login === '') {
+      return reply.code(404).send(errorPage(config, request.viewer ?? null, '页面不存在', 'Dev 登录没有开启。'))
+    }
+    const user = store.upsertGithubUser({
+      id: randomId('usr'),
+      githubId: -1,
+      login: config.devLogin.login,
+      name: 'Dev Login',
+      email: 'dev@example.com',
+      avatarUrl: null,
+      isAdmin: config.devLogin.admin,
+      initialQuotaCny: config.quota.initialCny,
+    })
+    if (user.status !== 'approved') store.setUserStatus(user.id, 'approved', 'dev-login')
+    const raw = sessions.start(user.id, request)
+    const sessionHash = sha256Hex(raw)
+    sessions.setCookies(reply, raw, { sessionHash, user: store.userById(user.id)!, csrfToken: sessions.csrfFor(sessionHash) })
+    store.audit(user.id, 'login.dev', 'DEV_LOGIN_LOGIN')
+    return reply.redirect('/dashboard')
   })
 
   app.get('/auth/github', async (request, reply) => {
