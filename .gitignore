@@ -10,3 +10,5 @@ data/
 .DS_Store
 coverage/
 npm-debug.log*
+SESSION_HANDOFF.md
+SESSION_HANDOFF*.md

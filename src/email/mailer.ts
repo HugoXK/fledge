@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import nodemailer from 'nodemailer'
+import nodemailer, { type Transporter } from 'nodemailer'
 import type { Config } from '../config.js'
 import { log } from '../lib/log.js'
 import { redact } from '../lib/secrets.js'
@@ -43,7 +43,7 @@ export class ConsoleMailer implements Mailer {
 }
 
 export class SmtpMailer implements Mailer {
-  private readonly transporter: nodemailer.Transporter
+  private readonly transporter: Transporter
 
   constructor(private readonly config: Config) {
     this.transporter = nodemailer.createTransport({

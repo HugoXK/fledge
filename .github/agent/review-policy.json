@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "note": "Who may post a conclusion that counts. A review is a fresh run of the gates at the exact tip, not the author's narrative. Self-review by the owner's reviewer agent counts; it never replaces green CI. Editing this file is T3.",
+  "reviewers": ["HugoXK"],
+  "selfReview": ["HugoXK"],
+  "writers": ["HugoXK", "Reviewer", "Maintainer", "Release", "SelfTest", "Dev", "Dev2", "Chief"]
+}
