@@ -29,6 +29,7 @@ import {
   applyPage,
   applicationStatusPage,
   repoPage,
+  servicesPage,
   settingsPage,
   errorPage,
 } from './views/pages.js'
@@ -301,8 +302,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!submitted) return reply.redirect('/apply/status')
     const updated = store.userById(viewer.user.id)!
     store.audit(viewer.user.id, 'application.submitted', `queue #${store.queuePosition(viewer.user.id) ?? '?'}`)
+    const position = store.queuePosition(updated.id)
     try {
       await approvals.request(updated)
+      await approvals.acknowledge(updated, position)
     } catch (error) {
       log.error('approval request mail failed', { user: updated.login, error: String(error) })
     }
@@ -351,6 +354,13 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
       }),
+    )
+  })
+
+  app.get('/console', async (request, reply) => {
+    const viewer = requireApproved(request)
+    return reply.type('text/html').send(
+      servicesPage({ config, viewer: viewOf(viewer), notice: queryText(request, 'notice'), error: queryText(request, 'error') }),
     )
   })
 
@@ -509,11 +519,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/admin', async (request, reply) => {
     const viewer = requireAdmin(request)
+    const users = store.listUsers()
+    const activity = new Map(users.map((user) => [user.id, store.userActivity(user.id)]))
     return reply.type('text/html').send(
       adminPage({
         config,
         viewer: viewOf(viewer),
-        users: store.listUsers(),
+        users,
+        activity,
         jobs: store.all<JobRow>('SELECT * FROM jobs ORDER BY created_at DESC LIMIT 30'),
         audit: store.listAudit(50),
         notice: queryText(request, 'notice'),
@@ -531,7 +544,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.setUserStatus(user.id, status, `admin:${viewer.user.login}`)
     store.audit(user.id, `admin.${status}`, `by @${viewer.user.login}`)
     try {
-      await mailer.send({ to: user.email ?? config.mail.adminEmail, ...(status === 'approved' ? approvedEmail(user, config.baseUrl) : rejectedEmail(user, '')) })
+      if (user.email !== null && user.email !== '') {
+        await mailer.send({ to: user.email, ...(status === 'approved' ? approvedEmail(user, config.baseUrl) : rejectedEmail(user, '')) })
+      }
     } catch (error) {
       log.warn('admin status mail failed', { user: user.login, error: String(error) })
     }

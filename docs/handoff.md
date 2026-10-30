@@ -38,7 +38,7 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 - GitHub login with an application gate: a new user signs the disclaimer and the
   information-security agreement once, submits, and sees a live queue/status
   page. The administrator receives a single-use approve/reject email from
-  `flybot@yeah.net` to `hugo2001xk@gmail.com` (7 days). The login is OAuth when
+  the configured administrator address (7 days). The login is OAuth when
   `GITHUB_CLIENT_ID` is configured; the token login is a bootstrap fallback.
 - Admin panel, roles, audit log, in-app notifications.
 - Multiple repositories per user; per-repo fine-grained GitHub tokens, validated
@@ -70,7 +70,7 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 - Real GitHub OAuth login (the service currently uses the token login fallback;
   create an OAuth App, set `ALLOW_TOKEN_LOGIN_ONLY=false`, and add the client
   id/secret).
-- Real SMTP delivery (the server env is wired to `flybot@yeah.net`; no test mail
+- Real SMTP delivery (the server env is wired to the operator SMTP account; no test mail
   has been sent).
 - A real FlyBot bridge job (needs a dedicated FlyBot session and bridge token;
   the service runs `RUNNER_MODE=mock`).
@@ -84,7 +84,7 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 Browser ──cookie──► Fastify (src/app.ts)
                        ├─ SQLite (src/db.ts)        users/repos/jobs/quota/audit
                        ├─ GitHub API (src/repos/)   validate tokens, PRs
-                       ├─ SMTP (src/email/)         flybot@yeah.net
+                       ├─ SMTP (src/email/)         operator SMTP
                        ├─ /v1/* (src/gateway/)      per-user quota + own model
                        └─ jobs (src/jobs/) ──► FlyBot bridge ──► FlyBot agent
 ```

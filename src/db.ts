@@ -477,6 +477,18 @@ export class Store {
     return Number(row?.n ?? 0) + 1
   }
 
+  userActivity(id: string): { repos: number; jobs: number; lastJobAt: string | null } {
+    const row = this.get<{ repos: number; jobs: number; last_job_at: string | null }>(
+      `SELECT (SELECT COUNT(*) FROM repos WHERE user_id = ?) AS repos,
+              (SELECT COUNT(*) FROM jobs WHERE user_id = ?) AS jobs,
+              (SELECT MAX(created_at) FROM jobs WHERE user_id = ?) AS last_job_at`,
+      id,
+      id,
+      id,
+    )
+    return { repos: Number(row?.repos ?? 0), jobs: Number(row?.jobs ?? 0), lastJobAt: row?.last_job_at ?? null }
+  }
+
   pendingTotal(): number {
     const row = this.get<{ n: number }>("SELECT COUNT(*) AS n FROM users WHERE status = 'pending'")
     return Number(row?.n ?? 0)

@@ -5,8 +5,7 @@
 - Node 22.9+ (the app uses the built-in `node:sqlite`).
 - A public HTTPS URL (GitHub OAuth callback, cookies, email links).
 - A GitHub OAuth App.
-- An SMTP account for `flybot@yeah.net` (or set `MAIL_TRANSPORT=console` for a
-  private demo).
+- An operator SMTP account (or set `MAIL_TRANSPORT=console` for a private demo).
 - A model endpoint (OpenAI-compatible) and a platform key.
 - Optional: the FlyBot bridge on a machine that runs FlyBot.
 
@@ -35,7 +34,7 @@ Key settings:
 | `ADMIN_GITHUB_LOGIN` | Auto-approved bootstrap admin (default `HugoXK`) |
 | `MAIL_TRANSPORT` | `smtp` in production, `console` for a local demo |
 | `SMTP_HOST/PORT/SECURE/USER/PASS` | For yeah.net: `smtp.yeah.net`, 465, secure |
-| `MAIL_FROM` / `ADMIN_EMAIL` | `flybot@yeah.net` / `hugo2001xk@gmail.com` |
+| `MAIL_FROM` / `ADMIN_EMAIL` | `no-reply@example.com` / `admin@example.com` |
 | `PLATFORM_LLM_BASE_URL` | OpenAI-compatible `/v1` endpoint |
 | `PLATFORM_LLM_KEY` | Platform key; never commit it |
 | `INITIAL_QUOTA_CNY` | Default 1 |
@@ -65,7 +64,8 @@ stores the token. Configure OAuth before a public launch.
 
 ## 3. SMTP
 
-`flybot@yeah.net` uses `smtp.yeah.net` with SSL on port 465 (or STARTTLS on 587).
+Configure your operator SMTP account (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`,
+`SMTP_PASS`) and set `MAIL_FROM` / `ADMIN_EMAIL` to the addresses you control.
 Use an app password if the provider requires one. The application sends:
 
 - the application email to `ADMIN_EMAIL` with approve/reject links;
@@ -204,7 +204,7 @@ before a major upgrade.
 
 - [ ] HTTPS `BASE_URL`; OAuth callback matches exactly.
 - [ ] `SESSION_SECRET` and `TOKEN_ENCRYPTION_KEY` set and backed up.
-- [ ] SMTP test email received at `hugo2001xk@gmail.com`.
+- [ ] SMTP test email received at the configured `ADMIN_EMAIL`.
 - [ ] Admin login is the intended GitHub account.
 - [ ] `DEV_LOGIN_LOGIN` is empty (the app refuses to start otherwise).
 - [ ] Platform model key works; a 1-token request succeeds.

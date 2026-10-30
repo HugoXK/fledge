@@ -36,6 +36,10 @@ Core paths:
 
 ## Hard rules
 
+0. **Scope the permission.** A Fledge approval grants Fledge only. Do not wire
+   it to FlyBot, Bot Social, ScienceDiscovery or the shared Portal, and keep the
+   console explicit about what is not available.
+
 1. **No secrets in git.** Never commit `.env`, API keys, GitHub tokens, SMTP
    passwords, cookies, the `data/` directory, or the development mail outbox.
    Never print a secret in a comment, log, PR body or test fixture.

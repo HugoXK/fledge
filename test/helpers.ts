@@ -25,7 +25,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     runner: { mode: 'mock', bridgeUrl: '', bridgeToken: '', timeoutMinutes: 45 },
     mail: {
       transport: 'console',
-      from: 'flybot@yeah.net',
+      from: 'no-reply@example.com',
       adminEmail: 'admin@example.com',
       smtp: { host: '', port: 465, secure: true, user: '', pass: '' },
     },

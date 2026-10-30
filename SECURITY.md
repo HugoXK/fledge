@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Email **hugo2001xk@gmail.com** with:
+Use GitHub's private vulnerability reporting (**Security → Report a vulnerability**) with:
 
 - a description and impact;
 - a minimal reproduction (request, payload, steps);

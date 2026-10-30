@@ -82,8 +82,12 @@ Fledge 是幼鸟长齐飞羽、离巢试飞的那一刻——不是因为被推�
 
 - **GitHub 登录 + 申请审批**：新用户先签署《免责声明》和《信息安全承诺》，
   提交一次后可在状态页看实时排队位置；管理员收到一次性批准邮件
-  （`flybot@yeah.net` → `hugo2001xk@gmail.com`）。
-- **Admin 面板**：批准/拒绝、改额度、审计、最近任务。
+  （由运营方配置的管理员地址接收）。
+- **Admin 面板**：批准/拒绝、改额度、用户活跃情况（最近登录、仓库、任务）、
+  审计、最近任务。仅管理员可见，普通用户看不到。
+- **服务控制台** `/console`：已批准的 Fledge 用户看到 Fledge 可用，FlyBot、
+  Bot Social、ScienceDiscovery 显示暂未开放/未授权。Fledge 审批不会自动开通
+  这些服务。
 - **fine-grained GitHub token**：添加时验证写权限，AES-256-GCM 加密保存，
   只在任务运行时解密。
 - **Session + CSRF**：所有表单都有 CSRF；审批链接一次性、7 天过期。
@@ -142,7 +146,7 @@ flowchart LR
 浏览器 ──cookie session──► Fastify (src/app.ts)
                             ├─ SQLite (src/db.ts)        users/repos/jobs/quota/audit
                             ├─ GitHub API (src/repos/)   验证 token、开 PR
-                            ├─ SMTP (src/email/)         flybot@yeah.net
+                            ├─ SMTP (src/email/)         运营方 SMTP
                             ├─ /v1 (src/gateway/)        按用户额度 / 自带模型
                             └─ jobs (src/jobs/) ──► FlyBot bridge ──► FlyBot 代理
 ```
@@ -225,7 +229,7 @@ node bridge/flybot-bridge.mjs
 | `ADMIN_GITHUB_LOGIN` | `HugoXK` | 自动批准的 bootstrap 管理员 |
 | `DEV_LOGIN_LOGIN` | 空 | 本地演示登录；生产必须为空 |
 | `MAIL_TRANSPORT` | `console` | `console` 写 `.eml`；`smtp` 真发 |
-| `MAIL_FROM` / `ADMIN_EMAIL` | `flybot@yeah.net` / `hugo2001xk@gmail.com` | 审批邮件 |
+| `MAIL_FROM` / `ADMIN_EMAIL` | `no-reply@example.com` / `admin@example.com` | 运营方 SMTP 与审批邮件 |
 | `PLATFORM_LLM_BASE_URL` | `http://127.0.0.1:8081/v1` | OpenAI 兼容端点 |
 | `PLATFORM_LLM_KEY` | — | 平台代付 key |
 | `INITIAL_QUOTA_CNY` | `1` | 每用户初始额度 |

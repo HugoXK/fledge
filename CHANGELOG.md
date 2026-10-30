@@ -10,7 +10,7 @@ All notable changes to Fledge are documented here. The format follows
 ### Added
 
 - GitHub OAuth login with a pending-application approval gate.
-- Administrator email (`flybot@yeah.net` → `hugo2001xk@gmail.com`) with
+- Administrator approval email to the configured operator address, with
   single-use approve/reject links valid for 7 days.
 - Multi-repository onboarding with per-repo fine-grained GitHub tokens.
 - AES-256-GCM encryption for GitHub tokens and user model keys.

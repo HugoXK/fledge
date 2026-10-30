@@ -36,6 +36,7 @@ export function layout(options: LayoutOptions): string {
   const nav = viewer === undefined || viewer === null
     ? ''
     : `<nav class="nav">
+        <a class="${active === 'console' ? 'on' : ''}" href="/console">服务</a>
         <a class="${active === 'dashboard' ? 'on' : ''}" href="/dashboard">仓库</a>
         <a class="${active === 'settings' ? 'on' : ''}" href="/settings">设置</a>
         ${viewer.user.role === 'admin' ? `<a class="${active === 'admin' ? 'on' : ''}" href="/admin">Admin</a>` : ''}

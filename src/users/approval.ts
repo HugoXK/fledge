@@ -1,7 +1,7 @@
 import type { Config } from '../config.js'
 import type { ApprovalRow, Store, UserRow } from '../db.js'
 import type { Mailer } from '../email/mailer.js'
-import { applicationEmail, approvedEmail, rejectedEmail } from '../email/templates.js'
+import { applicationEmail, applicationReceivedEmail, approvedEmail, rejectedEmail } from '../email/templates.js'
 import { log } from '../lib/log.js'
 import { randomToken, sha256Hex } from '../lib/secrets.js'
 import { addDays } from '../lib/time.js'
@@ -48,6 +48,15 @@ export class Approvals {
     return { sent: true, approveUrl, rejectUrl }
   }
 
+  async acknowledge(user: UserRow, position: number | null): Promise<void> {
+    if (user.email === null || user.email === '') return
+    try {
+      await this.mailer.send({ to: user.email, ...applicationReceivedEmail(user, position) })
+    } catch (error) {
+      log.warn('application acknowledgement failed', { user: user.login, error: String(error) })
+    }
+  }
+
   resolve(token: string): ResolvedApproval | undefined {
     const row = this.store.findApprovalToken(sha256Hex(token))
     if (row === undefined) return undefined
@@ -66,7 +75,7 @@ export class Approvals {
       this.store.audit(resolved.user.id, 'approval.approved', `by ${actor}`)
       const updated = this.store.userById(resolved.user.id)!
       try {
-        await this.mailer.send({ to: updated.email ?? this.config.mail.adminEmail, ...approvedEmail(updated, this.config.baseUrl) })
+        if (updated.email !== null && updated.email !== '') await this.mailer.send({ to: updated.email, ...approvedEmail(updated, this.config.baseUrl) })
       } catch (error) {
         log.warn('approval notice failed', { error: String(error) })
       }

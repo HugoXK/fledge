@@ -11,5 +11,5 @@ Be direct, be kind, assume good faith.
 - Maintainers may edit or remove content that breaks these rules and may block
   accounts that repeat the behaviour.
 
-If you see a problem, email `hugo2001xk@gmail.com`. Reports are handled
-confidentially.
+If you see a problem, contact the maintainers privately through GitHub.
+Reports are handled confidentially.

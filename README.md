@@ -85,9 +85,12 @@ own improvements. See [docs/decisions/0001-name.md](docs/decisions/0001-name.md)
 ### Access and safety
 
 - **GitHub OAuth login** with a pending-application gate. The first login sends a
-  single-use approval email to the administrator (`flybot@yeah.net` →
-  `hugo2001xk@gmail.com`).
-- **Admin panel** for approve/reject, quota, audit and recent jobs.
+  single-use approval email to the configured administrator.
+- **Admin panel** for approve/reject, quota, user activity (last login, repos,
+  jobs), audit and recent jobs. Admin-only; normal users never see it.
+- **Service console** at `/console`: an approved Fledge user sees Fledge as
+  available and FlyBot, Bot Social and ScienceDiscovery as not open/unauthorized.
+  Fledge approval never grants those services.
 - **Fine-grained GitHub tokens**, validated for write access on add, encrypted
   with AES-256-GCM, and only decrypted for a running job.
 - **Sessions and CSRF** on every browser form; approval links are single-use and
@@ -151,7 +154,7 @@ flowchart LR
 Browser ──cookie session──► Fastify (src/app.ts)
                               ├─ SQLite (src/db.ts)          users, repos, jobs, quota, audit
                               ├─ GitHub API (src/repos/)     validate tokens, PRs
-                              ├─ SMTP (src/email/)           flybot@yeah.net
+                              ├─ SMTP (src/email/)           operator SMTP
                               ├─ /v1 (src/gateway/)          per-user quota / own model
                               └─ jobs (src/jobs/) ──► FlyBot bridge ──► FlyBot agent
 ```
@@ -240,7 +243,7 @@ full list and comments.
 | `ADMIN_GITHUB_LOGIN` | `HugoXK` | Auto-approved bootstrap admin |
 | `DEV_LOGIN_LOGIN` | empty | Local demo login; must be empty in production |
 | `MAIL_TRANSPORT` | `console` | `console` writes `.eml` files; `smtp` sends |
-| `MAIL_FROM` / `ADMIN_EMAIL` | `flybot@yeah.net` / `hugo2001xk@gmail.com` | Approval mail |
+| `MAIL_FROM` / `ADMIN_EMAIL` | `no-reply@example.com` / `admin@example.com` | Operator SMTP and approval mail |
 | `PLATFORM_LLM_BASE_URL` | `http://127.0.0.1:8081/v1` | OpenAI-compatible endpoint |
 | `PLATFORM_LLM_KEY` | — | Platform-funded key |
 | `INITIAL_QUOTA_CNY` | `1` | Initial platform budget per user |

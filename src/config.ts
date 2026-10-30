@@ -117,13 +117,13 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     mail: {
       transport: (text('MAIL_TRANSPORT', 'console') as MailTransport) || 'console',
-      from: text('MAIL_FROM', 'flybot@yeah.net'),
-      adminEmail: text('ADMIN_EMAIL', 'hugo2001xk@gmail.com'),
+      from: text('MAIL_FROM', 'no-reply@example.com'),
+      adminEmail: text('ADMIN_EMAIL', 'admin@example.com'),
       smtp: {
         host: text('SMTP_HOST', 'smtp.yeah.net'),
         port: number('SMTP_PORT', 465),
         secure: bool('SMTP_SECURE', true),
-        user: text('SMTP_USER', 'flybot@yeah.net'),
+        user: text('SMTP_USER', ''),
         pass: text('SMTP_PASS'),
       },
     },

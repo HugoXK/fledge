@@ -257,10 +257,11 @@ export function adminPage(input: {
   users: UserRow[]
   jobs: JobRow[]
   audit: AuditRow[]
+  activity?: Map<string, { repos: number; jobs: number; lastJobAt: string | null }>
   notice?: string
   error?: string
 }): string {
-  const { config, viewer, users, jobs, audit, notice, error } = input
+  const { config, viewer, users, jobs, audit, activity, notice, error } = input
   const pending = users
     .filter((user) => user.status === 'pending')
     .sort((a, b) => String(a.application_submitted_at ?? a.created_at).localeCompare(String(b.application_submitted_at ?? b.created_at)))
@@ -282,11 +283,12 @@ export function adminPage(input: {
   const userRows = users
     .map(
       (user) => `<tr>
-        <td>@${escapeHtml(user.login)}</td>
+        <td>@${escapeHtml(user.login)}<br /><small class="muted">${escapeHtml(user.email ?? '')}</small></td>
         <td>${badge(user.status)}</td>
         <td>${escapeHtml(user.role)}</td>
         <td>${money(user.quota_cny)}</td>
         <td>${money(quotaView(user, config).usedCny)}</td>
+        <td><small class="muted">最近登录 ${escapeHtml(humanTime(user.last_login_at))}<br />仓库 ${activity?.get(user.id)?.repos ?? 0} · 任务 ${activity?.get(user.id)?.jobs ?? 0}<br />最近任务 ${escapeHtml(humanTime(activity?.get(user.id)?.lastJobAt))}</small></td>
         <td><form method="post" action="/admin/users/${escapeHtml(user.id)}/quota" class="row"><input name="quota" type="number" step="0.1" min="0" value="${user.quota_cny}" /><button class="link" type="submit">改额度</button></form></td>
       </tr>`,
     )
@@ -302,7 +304,7 @@ export function adminPage(input: {
   </section>
   <section class="card">
     <h2>用户</h2>
-    <table><thead><tr><th>登录名</th><th>状态</th><th>角色</th><th>额度</th><th>已用</th><th>调整</th></tr></thead><tbody>${userRows}</tbody></table>
+    <table><thead><tr><th>登录名</th><th>状态</th><th>角色</th><th>额度</th><th>已用</th><th>活动</th><th>调整</th></tr></thead><tbody>${userRows}</tbody></table>
   </section>
   <section class="cols">
     <div class="card"><h2>最近任务</h2><table><thead><tr><th>任务</th><th>状态</th><th>触发</th><th>PR</th><th>摘要</th><th>时间</th></tr></thead><tbody>${jobRows(jobs)}</tbody></table></div>
@@ -343,7 +345,7 @@ export function applyPage(input: { config: Config; viewer: Viewer; notice?: stri
   const body = `<section class="card narrow">
     <div class="eyebrow">ACCESS REQUEST</div>
     <h1>申请访问</h1>
-    <p>@${escapeHtml(viewer.user.login)}，你的 GitHub 身份已确认。提交前请阅读并签署下面的两份文件；提交后不能重复提交，可以在状态页查看排队位置和审批结果。</p>
+    <p>@${escapeHtml(viewer.user.login)}，你的 GitHub 身份已确认。提交前请阅读并签署下面的两份文件；提交后不能重复提交，可以在状态页查看排队位置和审批结果。</p><p class="fine">此申请只覆盖 Fledge；FlyBot、Bot Social 和 ScienceDiscovery 需要各自授权。</p>
     <div class="flow">
       <div class="flow-step"><span>01 / GitHub</span><b>登录</b><small>已完成</small></div>
       <div class="flow-step"><span>02 / Agreements</span><b>签署</b><small>免责声明 + 信息安全</small></div>
@@ -385,7 +387,7 @@ export function applicationStatusPage(input: {
   const body = `<section class="card narrow">
     <div class="eyebrow">${rejected ? 'APPLICATION CLOSED' : 'WAITING FOR APPROVAL'}</div>
     <h1>${rejected ? '申请未通过' : '申请已提交，正在排队'}</h1>
-    <p>@${escapeHtml(viewer.user.login)}，${rejected ? '这次申请没有通过。如果情况有变化，请联系管理员；不要重复提交。' : '管理员审批后会发邮件通知，本页每 10 秒自动刷新。不要重复提交申请。'}</p>
+    <p>@${escapeHtml(viewer.user.login)}，${rejected ? '这次申请没有通过。如果情况有变化，请联系管理员；不要重复提交。' : '管理员审批后会发邮件通知，本页每 10 秒自动刷新。不要重复提交申请。'}</p><p class="fine">Fledge 的审批只覆盖 Fledge；FlyBot、Bot Social 和 ScienceDiscovery 需要各自的授权。</p>
     <div class="flow">
       <div class="flow-step"><span>01 / GitHub</span><b>登录</b><small>已完成</small></div>
       <div class="flow-step"><span>02 / Agreements</span><b>签署</b><small>${escapeHtml(viewer.user.disclaimer_name ?? '已签署')}</small></div>
@@ -404,6 +406,23 @@ export function applicationStatusPage(input: {
   </section>
   <script src="/assets/application.js" defer></script>`
   return layout({ title: rejected ? '申请未通过' : '申请状态', viewer, body, config, notice, error })
+}
+
+export function servicesPage(input: { config: Config; viewer: Viewer; notice?: string; error?: string }): string {
+  const { config, viewer, notice, error } = input
+  const body = `<section class="card">
+    <div class="eyebrow">CONSOLE</div>
+    <h1>服务</h1>
+    <p>@${escapeHtml(viewer.user.login)}，你当前可以访问的服务如下。Fledge 的审批只覆盖 Fledge；其他服务需要各自的授权。</p>
+  </section>
+  <div class="grid3">
+    <article class="card"><span class="badge good">已开通</span><h3>Fledge</h3><p>接入仓库、查看任务和额度。</p><a class="btn" href="/dashboard">进入 Fledge</a></article>
+    <article class="card"><span class="badge">暂未开放</span><h3>FlyBot</h3><p>独立服务。Fledge 的审批不会自动开通 FlyBot。</p></article>
+    <article class="card"><span class="badge">暂未开放</span><h3>Bot Social</h3><p>独立服务。需要单独的访问授权。</p></article>
+    <article class="card"><span class="badge">暂未开放</span><h3>ScienceDiscovery</h3><p>独立服务。需要单独的访问授权。</p></article>
+  </div>
+  <section class="card"><h2>权限边界</h2><p class="muted">这里只管理 Fledge 的访问和任务。FlyBot、Bot Social、ScienceDiscovery 的权限由各自平台或统一入口管理；在 Fledge 获得批准不会改变那些服务的权限。</p>${viewer.user.role === 'admin' ? '<p class="fine">管理员可以在 <a href="/admin">Admin</a> 查看 Fledge 用户、活动和额度。</p>' : ''}</section>`
+  return layout({ title: '服务', viewer, body, config, active: 'console', notice, error })
 }
 
 export function messagePage(config: Config, title: string, message: string, viewer?: Viewer | null): string {

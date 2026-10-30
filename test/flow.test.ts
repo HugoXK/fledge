@@ -139,7 +139,9 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     assert.equal(submitted.status, 'pending')
     assert.equal(submitted.disclaimer_name, 'token-user')
     assert.notEqual(submitted.application_submitted_at, null)
-    assert.equal(mailer.messages.length, mailsBefore + 1)
+    assert.equal(mailer.messages.length, mailsBefore + 2)
+    assert.equal(mailer.messages.some((message) => message.to === 'token@example.com' && /申请已收到/.test(message.subject)), true)
+    assert.equal(mailer.messages.some((message) => message.to === config.mail.adminEmail && /权限申请/.test(message.subject)), true)
 
     const statusPage = await built.app.inject({ method: 'GET', url: '/apply/status', headers: { cookie: tokenCookie } })
     assert.equal(statusPage.statusCode, 200)
@@ -160,7 +162,14 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     })
     assert.equal(duplicate.statusCode, 302)
     assert.equal(duplicate.headers.location, '/apply/status')
-    assert.equal(mailer.messages.length, mailsBefore + 1)
+    assert.equal(mailer.messages.length, mailsBefore + 2)
+    assert.equal(mailer.messages.some((message) => message.to === 'token@example.com' && /申请已收到/.test(message.subject)), true)
+    assert.equal(mailer.messages.some((message) => message.to === config.mail.adminEmail && /权限申请/.test(message.subject)), true)
+
+    const beforeApprovalConsole = await built.app.inject({ method: 'GET', url: '/console', headers: { cookie: tokenCookie } })
+    assert.equal(beforeApprovalConsole.statusCode, 403)
+    const beforeApprovalAdmin = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: tokenCookie } })
+    assert.equal(beforeApprovalAdmin.statusCode, 403)
 
     const admin = makeUser(store, { login: 'boss', admin: true })
     const adminSession = sessionFor(built, admin)
@@ -182,6 +191,10 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     assert.equal(statusAfter.headers.location, '/dashboard')
     const userDashboard = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: tokenCookie } })
     assert.equal(userDashboard.statusCode, 200)
+    const consolePage = await built.app.inject({ method: 'GET', url: '/console', headers: { cookie: tokenCookie } })
+    assert.equal(consolePage.statusCode, 200)
+    assert.match(consolePage.body, /FlyBot/)
+    assert.match(consolePage.body, /暂未开放/)
   } finally {
     await built.close()
     await github.close()

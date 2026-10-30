@@ -38,6 +38,21 @@ export function applicationEmail(user: UserRow, approveUrl: string, rejectUrl: s
   return { subject, text, html }
 }
 
+export function applicationReceivedEmail(user: UserRow, position: number | null): { subject: string; text: string } {
+  return {
+    subject: '[Fledge] 申请已收到',
+    text: [
+      `@${user.login}，你好：`,
+      '',
+      '你的 Fledge 访问申请已经收到。',
+      `排队位置：第 ${position ?? '—'} 位。`,
+      '管理员审批后会再发一封通知；请不要重复提交，排队状态可以在申请页查看。',
+      '',
+      '注意：Fledge 的审批只覆盖 Fledge，不代表获得 FlyBot、Bot Social 或 ScienceDiscovery 的权限。',
+    ].join('\n'),
+  }
+}
+
 export function approvedEmail(user: UserRow, baseUrl: string): { subject: string; text: string } {
   return {
     subject: '[Fledge] 你的访问申请已通过',
@@ -48,6 +63,8 @@ export function approvedEmail(user: UserRow, baseUrl: string): { subject: string
       '· 绑定一个或多个 GitHub 仓库（提供 fine-grained token）；',
       '· 让 FlyBot 持续分析、提交变更并开 PR；',
       '· 平台初始额度 1 元，用完后在设置里配置你自己的模型 API。',
+      '',
+      'Fledge 的批准只覆盖 Fledge；FlyBot、Bot Social 和 ScienceDiscovery 需要分别授权。',
       '',
       `登录：${baseUrl}`,
     ].join('\n'),

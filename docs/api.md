@@ -20,6 +20,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/apply/status` | session | Live queue position and status |
 | GET | `/api/application` | session | JSON status/queue for the status page |
 | GET | `/dashboard` | approved + session | Repos, quota, jobs |
+| GET | `/console` | approved + session | Service permissions (Fledge only by default) |
 | POST | `/repos` | approved + CSRF | Add a repository |
 | GET | `/repos/:id` | owner | Repo detail |
 | POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual job |

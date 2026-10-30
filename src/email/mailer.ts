@@ -19,7 +19,7 @@ export interface Mailer {
 export class ConsoleMailer implements Mailer {
   constructor(
     private readonly outbox: string,
-    private readonly from = 'flybot@yeah.net',
+    private readonly from = 'no-reply@example.com',
   ) {}
 
   async send(message: MailMessage): Promise<void> {

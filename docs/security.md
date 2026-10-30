@@ -56,6 +56,14 @@ OAuth the primary path.
 without GitHub. It is refused when `NODE_ENV=production` (startup fails if the
 variable is set). Never set it on a public instance.
 
+### Authorization scope
+
+An approved Fledge account grants Fledge only. It does not grant access to
+FlyBot, Bot Social, ScienceDiscovery or the shared Portal. The `/console` page
+shows the other services as not open/unauthorized, and Fledge never creates a
+session or permission for them. Admin users see the Fledge Admin panel; their
+rights in other products are managed by those products.
+
 ### Application and approval
 
 - A new user starts as `onboarding`; nothing is emailed until they sign the
@@ -149,5 +157,7 @@ treat it as a secret.
 
 ## Reporting
 
-Email `hugo2001xk@gmail.com` with a minimal reproduction. Do not open a public
-issue for a vulnerability. Please allow 72 hours for a first response.
+Use GitHub's private vulnerability reporting on this repository
+(**Security → Report a vulnerability**) with a minimal reproduction. Do not
+open a public issue for a vulnerability. Please allow 72 hours for a first
+response.

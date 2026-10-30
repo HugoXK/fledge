@@ -2,6 +2,10 @@
 
 ## Principles
 
+0. **Approval is scoped.** A Fledge approval grants Fledge only; the console
+   lists the other services as unavailable and Fledge never issues permissions
+   for them.
+
 1. **A human merges.** Fledge opens one focused pull request per job. It never
    pushes the default branch, force-pushes, or merges.
 2. **The platform is not a code runner.** It orchestrates a FlyBot agent; the
@@ -25,7 +29,7 @@
                             │               │
                  SQLite (WAL)│               │ HTTPS
                             │               ├──► api.github.com
-                            │               ├──► SMTP (flybot@yeah.net)
+                            │               ├──► SMTP (operator-configured)
                             │               └──► model provider / router
                             │
                             └── job queue ──► FlyBot bridge ──► FlyBot agent
