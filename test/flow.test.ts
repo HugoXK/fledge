@@ -8,6 +8,10 @@ import { formBody, json, makeUser, sessionFor, startFakeServer, testConfig, Memo
 
 test('browser flow: session, repo add, manual run, approval link', async () => {
   const github = await startFakeServer((request, response) => {
+    if (request.url === '/user') {
+      json(response, 200, { id: 4242, login: 'token-user', name: 'Token User', email: 'token@example.com', avatar_url: null })
+      return
+    }
     if (request.url === '/repos/octo/demo') {
       json(response, 200, {
         name: 'demo',
@@ -95,6 +99,19 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     assert.equal(store.userById(pending.id)?.status, 'approved')
     const reused = await built.app.inject({ method: 'GET', url: `/approve/${token}` })
     assert.equal(reused.statusCode, 404)
+
+    const tokenLogin = await built.app.inject({
+      method: 'POST',
+      url: '/auth/token',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ token: 'test-token' }),
+    })
+    assert.equal(tokenLogin.statusCode, 302)
+    assert.equal(tokenLogin.headers.location, '/pending')
+    const tokenUser = store.userByLogin('token-user')
+    assert.ok(tokenUser)
+    assert.equal(tokenUser.status, 'pending')
+    assert.equal(mailer.messages.some((message) => message.to === config.mail.adminEmail && /权限申请/.test(message.subject)), true)
 
     const admin = makeUser(store, { login: 'boss', admin: true })
     const adminSession = sessionFor(built, admin)

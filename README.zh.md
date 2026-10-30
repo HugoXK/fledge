@@ -166,7 +166,8 @@ npm run dev
 ```
 
 本地没有 GitHub OAuth 时，保留 `.env` 里的 `DEV_LOGIN_LOGIN=dev`，直接打开
-<http://localhost:8080/auth/dev>。`NODE_ENV=production` 时该入口被拒绝，且设置了
+<http://localhost:8080/auth/dev>。已部署但暂时没有 OAuth App 的实例，可以用首页的
+**GitHub token 登录**；token 只用于确认身份，不会保存。`NODE_ENV=production` 时该入口被拒绝，且设置了
 这个变量会拒绝启动。
 
 ### Docker

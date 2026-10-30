@@ -177,7 +177,9 @@ npm run dev
 ```
 
 For a local demo without GitHub OAuth, keep `DEV_LOGIN_LOGIN=dev` in `.env` and
-open <http://localhost:8080/auth/dev>. That route is refused when
+open <http://localhost:8080/auth/dev>. A deployed instance without an OAuth App
+can use the landing page's **GitHub token login**; the token only confirms
+identity and is never stored. That route is refused when
 `NODE_ENV=production`; the app will not start in production if the variable is
 set.
 

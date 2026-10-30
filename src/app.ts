@@ -150,7 +150,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (viewer.user.status === 'approved') return reply.redirect('/dashboard')
       return reply.redirect('/pending')
     }
-    return reply.type('text/html').send(landingPage(config, null, config.env !== 'production' && config.devLogin.login !== ''))
+    return reply.type('text/html').send(landingPage(config, null, config.env !== 'production' && config.devLogin.login !== '', config.github.clientId !== '' && config.github.clientSecret !== ''))
   })
 
   app.get('/auth/dev', async (request, reply) => {
@@ -173,6 +173,45 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     sessions.setCookies(reply, raw, { sessionHash, user: store.userById(user.id)!, csrfToken: sessions.csrfFor(sessionHash) })
     store.audit(user.id, 'login.dev', 'DEV_LOGIN_LOGIN')
     return reply.redirect('/dashboard')
+  })
+
+  app.post('/auth/token', async (request, reply) => {
+    if (!loginLimiter.take(`token:${request.ip}`)) return reply.code(429).send(errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。'))
+    const token = (form(request).token ?? '').trim()
+    if (token === '') return reply.code(400).send(messagePage(config, '缺少 token', '请填写一个 GitHub token。'))
+    let profile
+    try {
+      profile = await oauth.profile(token)
+    } catch (error) {
+      log.warn('github token login failed', { error: String(error) })
+      return reply.code(401).send(messagePage(config, 'GitHub token 无效', '无法用这个 token 读取 GitHub 身份，请检查权限或重新生成。'))
+    }
+    const isAdmin = profile.login.toLowerCase() === config.github.adminLogin.toLowerCase()
+    const user = store.upsertGithubUser({
+      id: randomId('usr'),
+      githubId: profile.id,
+      login: profile.login,
+      name: profile.name,
+      email: profile.email,
+      avatarUrl: profile.avatarUrl,
+      isAdmin,
+      initialQuotaCny: config.quota.initialCny,
+    })
+    store.audit(user.id, 'login.github-token', `@${profile.login}`)
+    if (user.status === 'approved') {
+      const raw = sessions.start(user.id, request)
+      const sessionHash = sha256Hex(raw)
+      sessions.setCookies(reply, raw, { sessionHash, user, csrfToken: sessions.csrfFor(sessionHash) })
+      return reply.redirect('/dashboard')
+    }
+    if (user.status === 'pending') {
+      try {
+        await approvals.request(user)
+      } catch (error) {
+        log.error('approval request mail failed', { user: user.login, error: String(error) })
+      }
+    }
+    return reply.redirect('/pending')
   })
 
   app.get('/auth/github', async (request, reply) => {

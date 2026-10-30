@@ -40,6 +40,14 @@ secrets and do not use CSRF.
 - The OAuth token is used only to read the GitHub profile; repository access uses
   the user's fine-grained token.
 
+### Token login
+
+When `GITHUB_CLIENT_ID` is empty, the landing page offers a GitHub token login.
+The token is used only for `GET /user` (identity) and is **not stored**; the
+repository token is supplied later, per repository. The route is rate-limited
+and writes `login.github-token` to the audit log. Configure an OAuth App to make
+OAuth the primary path.
+
 ### Development login
 
 `DEV_LOGIN_LOGIN` enables `/auth/dev`, which creates an approved local admin

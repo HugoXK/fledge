@@ -75,13 +75,14 @@ export class GithubOAuth {
   }
 
   async profile(token: string): Promise<GithubProfile> {
-    const user = await httpJson<GithubUser>('https://api.github.com/user', {
+    const base = this.config.github.apiBase.replace(/\/$/, '')
+    const user = await httpJson<GithubUser>(`${base}/user`, {
       headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'fledge' },
     })
     let email = user.email
     if (email === null || email === '') {
       try {
-        const emails = await httpJson<GithubEmail[]>('https://api.github.com/user/emails', {
+        const emails = await httpJson<GithubEmail[]>(`${base}/user/emails`, {
           headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'fledge' },
         })
         const primary = emails.find((entry) => entry.primary && entry.verified) ?? emails.find((entry) => entry.verified)

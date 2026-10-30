@@ -13,6 +13,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/` | public | Landing or redirect to dashboard |
 | GET | `/auth/github` | public | Start OAuth |
 | GET | `/auth/github/callback` | public | OAuth callback |
+| POST | `/auth/token` | public, rate-limited | Sign in with a GitHub token when OAuth is not configured |
 | POST | `/auth/logout` | session + CSRF | Sign out |
 | GET | `/pending` | session | Application status |
 | GET | `/dashboard` | approved + session | Repos, quota, jobs |
