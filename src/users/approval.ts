@@ -36,7 +36,7 @@ export class Approvals {
     this.store.markApprovalSent(user.id)
     const approveUrl = `${this.config.baseUrl}/approve/${approve}`
     const rejectUrl = `${this.config.baseUrl}/approve/${reject}`
-    const mail = applicationEmail(user, approveUrl, rejectUrl)
+    const mail = applicationEmail(user, approveUrl, rejectUrl, this.config.baseUrl)
     try {
       await this.mailer.send({ to: this.config.mail.adminEmail, ...mail })
     } catch (error) {
@@ -66,7 +66,7 @@ export class Approvals {
       this.store.audit(resolved.user.id, 'approval.approved', `by ${actor}`)
       const updated = this.store.userById(resolved.user.id)!
       try {
-        await this.mailer.send({ to: updated.email ?? this.config.mail.adminEmail, ...approvedEmail(updated) })
+        await this.mailer.send({ to: updated.email ?? this.config.mail.adminEmail, ...approvedEmail(updated, this.config.baseUrl) })
       } catch (error) {
         log.warn('approval notice failed', { error: String(error) })
       }

@@ -439,7 +439,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.setUserStatus(user.id, status, `admin:${viewer.user.login}`)
     store.audit(user.id, `admin.${status}`, `by @${viewer.user.login}`)
     try {
-      await mailer.send({ to: user.email ?? config.mail.adminEmail, ...(status === 'approved' ? approvedEmail(user) : rejectedEmail(user, '')) })
+      await mailer.send({ to: user.email ?? config.mail.adminEmail, ...(status === 'approved' ? approvedEmail(user, config.baseUrl) : rejectedEmail(user, '')) })
     } catch (error) {
       log.warn('admin status mail failed', { user: user.login, error: String(error) })
     }

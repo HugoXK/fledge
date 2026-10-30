@@ -17,7 +17,10 @@ export interface Mailer {
 }
 
 export class ConsoleMailer implements Mailer {
-  constructor(private readonly outbox: string) {}
+  constructor(
+    private readonly outbox: string,
+    private readonly from = 'flybot@yeah.net',
+  ) {}
 
   async send(message: MailMessage): Promise<void> {
     mkdirSync(this.outbox, { recursive: true })
@@ -25,7 +28,7 @@ export class ConsoleMailer implements Mailer {
     const file = join(this.outbox, `${stamp}-${message.to.replace(/[^a-z0-9@._-]/gi, '_')}.eml`)
     const body = [
       `Date: ${new Date().toUTCString()}`,
-      `From: Fledge <${message.to}>`,
+      `From: Fledge <${this.from}>`,
       `To: ${message.to}`,
       `Subject: ${message.subject}`,
       'MIME-Version: 1.0',
@@ -76,5 +79,5 @@ export class SmtpMailer implements Mailer {
 
 export function createMailer(config: Config): Mailer {
   if (config.mail.transport === 'smtp') return new SmtpMailer(config)
-  return new ConsoleMailer(join(config.dataDir, 'mail-outbox'))
+  return new ConsoleMailer(join(config.dataDir, 'mail-outbox'), config.mail.from)
 }

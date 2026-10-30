@@ -4,7 +4,7 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch)
 }
 
-export function applicationEmail(user: UserRow, approveUrl: string, rejectUrl: string): { subject: string; text: string; html: string } {
+export function applicationEmail(user: UserRow, approveUrl: string, rejectUrl: string, baseUrl: string): { subject: string; text: string; html: string } {
   const who = user.name === null || user.name === '' ? user.login : `${user.name} (@${user.login})`
   const subject = `[Fledge] 权限申请：${user.login}`
   const text = [
@@ -18,7 +18,7 @@ export function applicationEmail(user: UserRow, approveUrl: string, rejectUrl: s
     `批准：${approveUrl}`,
     `拒绝：${rejectUrl}`,
     '',
-    '两个链接均为一次性，7 天内有效。也可以登录 https://fledge.dev 在 Admin 面板处理。',
+    `两个链接均为一次性，7 天内有效。也可以登录 ${baseUrl} 在 Admin 面板处理。`,
   ].join('\n')
   const html = `<p>有人在 <strong>Fledge</strong> 申请接入仓库自迭代。</p>
 <ul>
@@ -32,7 +32,7 @@ export function applicationEmail(user: UserRow, approveUrl: string, rejectUrl: s
   return { subject, text, html }
 }
 
-export function approvedEmail(user: UserRow): { subject: string; text: string } {
+export function approvedEmail(user: UserRow, baseUrl: string): { subject: string; text: string } {
   return {
     subject: '[Fledge] 你的访问申请已通过',
     text: [
@@ -43,7 +43,7 @@ export function approvedEmail(user: UserRow): { subject: string; text: string } 
       '· 让 FlyBot 持续分析、提交变更并开 PR；',
       '· 平台初始额度 1 元，用完后在设置里配置你自己的模型 API。',
       '',
-      '登录：https://fledge.dev',
+      `登录：${baseUrl}`,
     ].join('\n'),
   }
 }
@@ -55,7 +55,7 @@ export function rejectedEmail(user: UserRow, reason: string): { subject: string;
   }
 }
 
-export function quotaExhaustedEmail(user: UserRow): { subject: string; text: string } {
+export function quotaExhaustedEmail(user: UserRow, baseUrl: string): { subject: string; text: string } {
   return {
     subject: '[Fledge] 平台额度已用完，请配置自己的模型 API',
     text: [
@@ -64,7 +64,7 @@ export function quotaExhaustedEmail(user: UserRow): { subject: string; text: str
       '你的 1 元平台初始额度已经用完，平台不会再替你调用模型。',
       '请到 Settings → Model 填入你自己的 OpenAI 兼容服务（Base URL / Key / Model），然后重新运行仓库任务。',
       '',
-      '登录：https://fledge.dev/settings',
+      `登录：${baseUrl}/settings`,
     ].join('\n'),
   }
 }

@@ -123,7 +123,8 @@ not a multi-writer cluster.
 
 ## 6. Reverse proxy
 
-nginx example:
+Ready-to-copy samples live in [`deploy/`](../deploy/): a systemd unit and an nginx
+server block. The nginx example:
 
 ```nginx
 server {

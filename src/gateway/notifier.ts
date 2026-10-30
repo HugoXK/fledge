@@ -19,7 +19,7 @@ export class QuotaNotifier {
     this.store.notify(user.id, 'quota', '平台额度已用完，请到 Settings → Model 配置你自己的模型 API。')
     if (user.email === null || user.email === '') return
     try {
-      await this.mailer.send({ to: user.email, ...quotaExhaustedEmail(user) })
+      await this.mailer.send({ to: user.email, ...quotaExhaustedEmail(user, this.config.baseUrl) })
     } catch (error) {
       log.warn('quota notice failed', { user: user.login, error: String(error) })
     }
