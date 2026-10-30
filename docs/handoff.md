@@ -35,9 +35,11 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 
 ### Implemented
 
-- GitHub OAuth login; first login creates a pending application and emails
-  `flybot@yeah.net` → `hugo2001xk@gmail.com` with single-use approve/reject links
-  (7 days).
+- GitHub login with an application gate: a new user signs the disclaimer and the
+  information-security agreement once, submits, and sees a live queue/status
+  page. The administrator receives a single-use approve/reject email from
+  `flybot@yeah.net` to `hugo2001xk@gmail.com` (7 days). The login is OAuth when
+  `GITHUB_CLIENT_ID` is configured; the token login is a bootstrap fallback.
 - Admin panel, roles, audit log, in-app notifications.
 - Multiple repositories per user; per-repo fine-grained GitHub tokens, validated
   on add and encrypted with AES-256-GCM.

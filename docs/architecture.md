@@ -42,8 +42,11 @@
 - **Sessions** are random 32-byte tokens, stored as SHA-256 hashes; the cookie is
   HttpOnly/SameSite=Lax.
 - **OAuth**: GitHub OAuth App with `state` stored server-side for 10 minutes.
-- **Approvals** create two single-use random tokens (approve/reject), stored as
-  hashes, valid for 7 days, and email links to the administrator.
+- **Applications**: a new user starts as `onboarding`. Submitting the signed
+  disclaimer and information-security agreement moves them to `pending` and
+  emails the administrator. The status page shows the live queue position and
+  rejects a second submission. Approvals create two single-use random tokens
+  (approve/reject), stored as hashes, valid for 7 days.
 - **No worker process**: a 60-second tick schedules due repos with a global
   concurrency cap of 2. Jobs that exceed the timeout are failed.
 
@@ -83,7 +86,7 @@ generated per job, stored as a hash, and never appears in the UI.
 
 | Table | Purpose |
 |---|---|
-| `users` | GitHub identity, approval status, role, quota, own model (encrypted key) |
+| `users` | GitHub identity, application status, signed agreement fields (name/version/time/IP/UA), role, quota, own model (encrypted key) |
 | `sessions` | hashed session id, expiry, IP/UA |
 | `oauth_states` | short-lived OAuth `state` values |
 | `approval_tokens` | single-use approve/reject links |

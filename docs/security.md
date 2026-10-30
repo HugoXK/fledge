@@ -56,12 +56,19 @@ OAuth the primary path.
 without GitHub. It is refused when `NODE_ENV=production` (startup fails if the
 variable is set). Never set it on a public instance.
 
-### Approval
+### Application and approval
 
+- A new user starts as `onboarding`; nothing is emailed until they sign the
+  disclaimer and information-security agreement and submit once.
+- The signature must match the GitHub login; both agreement checkboxes are
+  required. The platform stores the signer, versions, timestamps, IP and
+  User-Agent.
+- A second submission is refused and only opens the status page; the status page
+  shows the live queue position.
 - Two 32-byte random tokens per application (approve, reject), stored as hashes.
-- Single-use; 7-day expiry; status must still be `pending`.
-- The email is sent to `ADMIN_EMAIL` only. The Admin panel is the fallback if
-  SMTP fails.
+  Single-use; 7-day expiry; status must still be `pending`.
+- The email is sent to `ADMIN_EMAIL` only. The Admin panel shows the signature,
+  timestamps, IP and queue number, and is the fallback if SMTP fails.
 - The administrator login (`ADMIN_GITHUB_LOGIN`) is auto-approved. Keep it
   correct; it is the bootstrap identity.
 
