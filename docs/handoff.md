@@ -1,6 +1,6 @@
 # Handoff — Fledge v0.1.0
 
-Status: **working v0.1.0, CI green, server staged, not publicly deployed.**
+Status: **working v0.1.0, CI green (`ci-ok`), homepage/guide live, server staged, not publicly deployed.**
 Last updated: 2026-10-30.
 
 This page is the public handoff for a new development session. The operator's
@@ -22,8 +22,9 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 
 - **Repository:** <https://github.com/HugoXK/fledge>
 - **Release:** <https://github.com/HugoXK/fledge/releases/tag/v0.1.0>
-- **CI:** `ci.yml` (Node 22 + 24), `codeql.yml`, `dependency-review.yml`,
-  `release.yml`; the required aggregate is `ci-ok`.
+- **CI:** `ci.yml` (Node 22 + 24, lint, typecheck, tests, build, Docker, audit,
+  changelog, risk), `codeql.yml`, `dependency-review.yml`, `release.yml`; the
+  aggregate check is `ci-ok`.
 - **Stack:** Node 22.9+, TypeScript, Fastify, `node:sqlite`, nodemailer,
   server-rendered HTML.
 - **Domain plan:** the service will run at `https://fledge.hugoxk.online/`; the
@@ -100,8 +101,9 @@ back. See [architecture.md](architecture.md) and [api.md](api.md).
    pull request and conversation resolution, enable a merge queue on `main`.
 6. **Review gate as a required check**: finish `scripts/review-gate.mjs` for the
    `merge_group` event and enable it on `main`.
-7. **Homepage + guide**: keep `hugoxk.online/fledge/` and
-   `hugoxk.online/fledge/guide/` in step with the product.
+7. **Homepage + guide**: live at `hugoxk.online/fledge/` and
+   `hugoxk.online/fledge/guide/` (English under `/en/`); keep them in step with
+   the product.
 8. **Operational hardening**: log rotation, alert on repeated job failures,
    backup restore drill, quota notice dedupe, admin token rotation.
 9. **Next product slice**: GitHub App installation (instead of a personal
