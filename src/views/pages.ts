@@ -1,11 +1,19 @@
 import type { Config } from '../config.js'
 import type { AuditRow, JobRow, NotificationRow, RepoRow, UserRow, ApiTokenRow } from '../db.js'
+import { DISCLAIMER_TEXT, DISCLAIMER_TITLE, SECURITY_TEXT, SECURITY_TITLE } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTime } from '../lib/time.js'
 import { escapeHtml, layout, money, type Viewer } from './layout.js'
 
 function csrf(viewer: Viewer): string {
   return `<input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />`
+}
+
+function agreementHtml(text: string): string {
+  return text
+    .split(/\n\n/)
+    .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, '<br>')}</p>`)
+    .join('')
 }
 
 function badge(status: string): string {
@@ -48,7 +56,7 @@ export function landingPage(config: Config, viewer?: Viewer | null, devLogin = f
       ${devLogin ? '<a class="btn btn-ghost" href="/auth/dev">Dev 登录（本地）</a>' : ''}
       <a class="btn btn-ghost" href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">看源码</a>
     </div>
-    <p class="fine">首次登录需要管理员批准。平台初始额度 1 元；用完后配置你自己的模型 API 即可继续。</p>
+    <p class="fine">首次登录需要 GitHub 授权；没有权限时先签署《免责声明》和《信息安全承诺》，提交后可在状态页查看排队位置，不要重复提交。平台初始额度 1 元；用完后配置自己的模型 API 即可继续。</p>
     ${oauthConfigured ? '' : '<p class="fine">OAuth App 尚未配置；先用 GitHub token 登录（只用于确认身份，不会保存），部署后可在 .env 补 OAuth。</p>'}
     <details class="card narrow" id="token-login" ${oauthConfigured ? '' : 'open'} style="margin:24px 0 0">
       <summary>使用 GitHub token 登录（备用）</summary>
@@ -253,15 +261,17 @@ export function adminPage(input: {
   error?: string
 }): string {
   const { config, viewer, users, jobs, audit, notice, error } = input
-  const pending = users.filter((user) => user.status === 'pending')
+  const pending = users
+    .filter((user) => user.status === 'pending')
+    .sort((a, b) => String(a.application_submitted_at ?? a.created_at).localeCompare(String(b.application_submitted_at ?? b.created_at)))
   const pendingRows = pending.length === 0
     ? '<tr><td colspan="4" class="muted">没有待审批申请。</td></tr>'
     : pending
         .map(
-          (user) => `<tr>
+          (user, index) => `<tr>
             <td>@${escapeHtml(user.login)}<br /><small class="muted">${escapeHtml(user.email ?? '')}</small></td>
-            <td>${escapeHtml(humanTime(user.created_at))}</td>
-            <td>${badge(user.status)}</td>
+            <td><b>#${index + 1}</b><br /><small class="muted">${escapeHtml(humanTime(user.application_submitted_at ?? user.created_at))}</small></td>
+            <td>${badge(user.status)}<br /><small class="muted">签署：${escapeHtml(user.disclaimer_name ?? '—')}<br />免责 ${escapeHtml(humanTime(user.disclaimer_accepted_at))}<br />信息安全 ${escapeHtml(humanTime(user.security_accepted_at))}<br />IP ${escapeHtml(user.application_ip ?? '—')}</small></td>
             <td class="row">
               <form method="post" action="/admin/users/${escapeHtml(user.id)}/approve">${csrf(viewer)}<button class="link good" type="submit">批准</button></form>
               <form method="post" action="/admin/users/${escapeHtml(user.id)}/reject">${csrf(viewer)}<button class="link bad" type="submit">拒绝</button></form>
@@ -326,6 +336,74 @@ export function errorPage(config: Config, viewer: Viewer | null, title: string, 
     config,
     body: `<section class="card narrow"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p><a class="btn btn-ghost" href="/">回首页</a></section>`,
   })
+}
+
+export function applyPage(input: { config: Config; viewer: Viewer; notice?: string; error?: string }): string {
+  const { config, viewer, notice, error } = input
+  const body = `<section class="card narrow">
+    <div class="eyebrow">ACCESS REQUEST</div>
+    <h1>申请访问</h1>
+    <p>@${escapeHtml(viewer.user.login)}，你的 GitHub 身份已确认。提交前请阅读并签署下面的两份文件；提交后不能重复提交，可以在状态页查看排队位置和审批结果。</p>
+    <div class="flow">
+      <div class="flow-step"><span>01 / GitHub</span><b>登录</b><small>已完成</small></div>
+      <div class="flow-step"><span>02 / Agreements</span><b>签署</b><small>免责声明 + 信息安全</small></div>
+      <div class="flow-step"><span>03 / Queue</span><b>排队</b><small>管理员审批</small></div>
+      <div class="flow-step"><span>04 / Service</span><b>进入</b><small>获得访问</small></div>
+    </div>
+    <div class="agreement">
+      <h2>${escapeHtml(DISCLAIMER_TITLE)}</h2>
+      ${agreementHtml(DISCLAIMER_TEXT)}
+      <h2>${escapeHtml(SECURITY_TITLE)}</h2>
+      ${agreementHtml(SECURITY_TEXT)}
+    </div>
+    <form method="post" action="/apply" class="form">
+      ${csrf(viewer)}
+      <label>签署：输入你的 GitHub 登录名 <code>${escapeHtml(viewer.user.login)}</code>
+        <input name="signature" placeholder="${escapeHtml(viewer.user.login)}" required autocomplete="off" />
+      </label>
+      <label class="check"><input type="checkbox" name="disclaimer" value="1" required /> 我已阅读并同意《${escapeHtml(DISCLAIMER_TITLE)}》</label>
+      <label class="check"><input type="checkbox" name="security" value="1" required /> 我已阅读并同意《${escapeHtml(SECURITY_TITLE)}》</label>
+      <button class="btn" type="submit">签署并提交申请</button>
+      <p class="fine">提交即表示以上签名与勾选对应当前 GitHub 身份；平台会记录签署时间、IP 和 User-Agent。</p>
+    </form>
+  </section>`
+  return layout({ title: '申请访问', viewer, body, config, notice, error })
+}
+
+export function applicationStatusPage(input: {
+  config: Config
+  viewer: Viewer
+  position: number | null
+  total: number
+  notice?: string
+  error?: string
+}): string {
+  const { config, viewer, position, total, notice, error } = input
+  const rejected = viewer.user.status === 'rejected'
+  const submitted = viewer.user.application_submitted_at
+  const queue = position === null ? '—' : `#${position}`
+  const body = `<section class="card narrow">
+    <div class="eyebrow">${rejected ? 'APPLICATION CLOSED' : 'WAITING FOR APPROVAL'}</div>
+    <h1>${rejected ? '申请未通过' : '申请已提交，正在排队'}</h1>
+    <p>@${escapeHtml(viewer.user.login)}，${rejected ? '这次申请没有通过。如果情况有变化，请联系管理员；不要重复提交。' : '管理员审批后会发邮件通知，本页每 10 秒自动刷新。不要重复提交申请。'}</p>
+    <div class="flow">
+      <div class="flow-step"><span>01 / GitHub</span><b>登录</b><small>已完成</small></div>
+      <div class="flow-step"><span>02 / Agreements</span><b>签署</b><small>${escapeHtml(viewer.user.disclaimer_name ?? '已签署')}</small></div>
+      <div class="flow-step"><span>03 / Queue</span><b>${rejected ? '已结束' : '排队中'}</b><small>${rejected ? '未通过' : `位置 ${queue} / ${total}`}</small></div>
+      <div class="flow-step"><span>04 / Service</span><b>进入</b><small>${rejected ? '需要管理员重新开启' : '审批通过后'}</small></div>
+    </div>
+    <div class="quota-card card">
+      <div>
+        <div class="eyebrow">QUEUE POSITION</div>
+        <div class="quota-big" data-queue-position>${queue}<small> / ${total} pending</small></div>
+        <p class="muted">提交时间 ${escapeHtml(humanTime(submitted))} · 签署 ${escapeHtml(viewer.user.disclaimer_name ?? '—')}</p>
+      </div>
+    </div>
+    ${rejected ? '' : '<p class="fine">管理员通常在一个工作日内处理。邮件可能进入垃圾箱；也可以回到本页查看状态。</p>'}
+    <form method="post" action="/auth/logout">${csrf(viewer)}<button class="btn btn-ghost" type="submit">退出登录</button></form>
+  </section>
+  <script src="/assets/application.js" defer></script>`
+  return layout({ title: rejected ? '申请未通过' : '申请状态', viewer, body, config, notice, error })
 }
 
 export function messagePage(config: Config, title: string, message: string, viewer?: Viewer | null): string {

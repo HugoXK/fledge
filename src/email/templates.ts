@@ -4,7 +4,7 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch)
 }
 
-export function applicationEmail(user: UserRow, approveUrl: string, rejectUrl: string, baseUrl: string): { subject: string; text: string; html: string } {
+export function applicationEmail(user: UserRow, approveUrl: string, rejectUrl: string, baseUrl: string, position: number | null): { subject: string; text: string; html: string } {
   const who = user.name === null || user.name === '' ? user.login : `${user.name} (@${user.login})`
   const subject = `[Fledge] 权限申请：${user.login}`
   const text = [
@@ -13,7 +13,10 @@ export function applicationEmail(user: UserRow, approveUrl: string, rejectUrl: s
     `GitHub：${who}`,
     `邮箱：${user.email ?? '（未公开）'}`,
     `主页：https://github.com/${user.login}`,
-    `申请时间：${user.created_at}`,
+    `签署：${user.disclaimer_name ?? user.login}`,
+    `提交时间：${user.application_submitted_at ?? user.created_at}`,
+    `排队：第 ${position ?? '?'} 位`,
+    `IP：${user.application_ip ?? '—'}`,
     '',
     `批准：${approveUrl}`,
     `拒绝：${rejectUrl}`,
@@ -25,7 +28,10 @@ export function applicationEmail(user: UserRow, approveUrl: string, rejectUrl: s
   <li>GitHub：<strong>${escapeHtml(who)}</strong></li>
   <li>邮箱：${escapeHtml(user.email ?? '（未公开）')}</li>
   <li>主页：<a href="https://github.com/${escapeHtml(user.login)}">github.com/${escapeHtml(user.login)}</a></li>
-  <li>申请时间：${escapeHtml(user.created_at)}</li>
+  <li>签署：${escapeHtml(user.disclaimer_name ?? user.login)}</li>
+  <li>提交时间：${escapeHtml(user.application_submitted_at ?? user.created_at)}</li>
+  <li>排队：第 ${position ?? '?'} 位</li>
+  <li>IP：${escapeHtml(user.application_ip ?? '—')}</li>
 </ul>
 <p><a href="${escapeHtml(approveUrl)}">批准</a> · <a href="${escapeHtml(rejectUrl)}">拒绝</a></p>
 <p>两个链接均为一次性，7 天内有效。</p>`

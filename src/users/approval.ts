@@ -36,7 +36,7 @@ export class Approvals {
     this.store.markApprovalSent(user.id)
     const approveUrl = `${this.config.baseUrl}/approve/${approve}`
     const rejectUrl = `${this.config.baseUrl}/approve/${reject}`
-    const mail = applicationEmail(user, approveUrl, rejectUrl, this.config.baseUrl)
+    const mail = applicationEmail(user, approveUrl, rejectUrl, this.config.baseUrl, this.store.queuePosition(user.id))
     try {
       await this.mailer.send({ to: this.config.mail.adminEmail, ...mail })
     } catch (error) {

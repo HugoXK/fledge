@@ -100,6 +100,7 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     const reused = await built.app.inject({ method: 'GET', url: `/approve/${token}` })
     assert.equal(reused.statusCode, 404)
 
+    const mailsBeforeLogin = mailer.messages.length
     const tokenLogin = await built.app.inject({
       method: 'POST',
       url: '/auth/token',
@@ -107,17 +108,80 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
       payload: formBody({ token: 'test-token' }),
     })
     assert.equal(tokenLogin.statusCode, 302)
-    assert.equal(tokenLogin.headers.location, '/pending')
+    assert.equal(tokenLogin.headers.location, '/apply')
+    const setCookies = tokenLogin.headers['set-cookie']
+    const tokenCookie = (Array.isArray(setCookies) ? setCookies : [setCookies])
+      .map((line) => String(line).split(';')[0])
+      .join('; ')
+    const tokenCsrf = /(?:^|; )fledge_csrf=([^;]+)/.exec(tokenCookie)?.[1]
+    assert.ok(tokenCsrf)
     const tokenUser = store.userByLogin('token-user')
     assert.ok(tokenUser)
-    assert.equal(tokenUser.status, 'pending')
-    assert.equal(mailer.messages.some((message) => message.to === config.mail.adminEmail && /权限申请/.test(message.subject)), true)
+    assert.equal(tokenUser.status, 'onboarding')
+    assert.equal(mailer.messages.length, mailsBeforeLogin)
+
+    const applyPage = await built.app.inject({ method: 'GET', url: '/apply', headers: { cookie: tokenCookie } })
+    assert.equal(applyPage.statusCode, 200)
+    assert.match(applyPage.body, /免责声明/)
+    assert.match(applyPage.body, /信息安全承诺/)
+
+    const mailsBefore = mailer.messages.length
+    const applicationSubmitted = await built.app.inject({
+      method: 'POST',
+      url: '/apply',
+      headers: { cookie: tokenCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf: tokenCsrf, signature: 'token-user', disclaimer: '1', security: '1' }),
+    })
+    assert.equal(applicationSubmitted.statusCode, 302)
+    assert.equal(applicationSubmitted.headers.location, '/apply/status?notice=%E7%94%B3%E8%AF%B7%E5%B7%B2%E6%8F%90%E4%BA%A4%EF%BC%8C%E6%AD%A3%E5%9C%A8%E6%8E%92%E9%98%9F%E3%80%82')
+    const submitted = store.userById(tokenUser.id)
+    assert.ok(submitted)
+    assert.equal(submitted.status, 'pending')
+    assert.equal(submitted.disclaimer_name, 'token-user')
+    assert.notEqual(submitted.application_submitted_at, null)
+    assert.equal(mailer.messages.length, mailsBefore + 1)
+
+    const statusPage = await built.app.inject({ method: 'GET', url: '/apply/status', headers: { cookie: tokenCookie } })
+    assert.equal(statusPage.statusCode, 200)
+    assert.match(statusPage.body, /排队/)
+
+    const application = await built.app.inject({ method: 'GET', url: '/api/application', headers: { cookie: tokenCookie } })
+    assert.equal(application.statusCode, 200)
+    const applicationBody = application.json() as { status: string; position: number; pending: number }
+    assert.equal(applicationBody.status, 'pending')
+    assert.equal(applicationBody.position, 1)
+    assert.equal(applicationBody.pending, 1)
+
+    const duplicate = await built.app.inject({
+      method: 'POST',
+      url: '/apply',
+      headers: { cookie: tokenCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf: tokenCsrf, signature: 'token-user', disclaimer: '1', security: '1' }),
+    })
+    assert.equal(duplicate.statusCode, 302)
+    assert.equal(duplicate.headers.location, '/apply/status')
+    assert.equal(mailer.messages.length, mailsBefore + 1)
 
     const admin = makeUser(store, { login: 'boss', admin: true })
     const adminSession = sessionFor(built, admin)
     const adminPage = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: adminSession.cookie } })
     assert.equal(adminPage.statusCode, 200)
     assert.match(adminPage.body, /审批与额度/)
+    assert.match(adminPage.body, /#1/)
+
+    const approved = await built.app.inject({
+      method: 'POST',
+      url: `/admin/users/${tokenUser.id}/approve`,
+      headers: { cookie: adminSession.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf: adminSession.csrf }),
+    })
+    assert.equal(approved.statusCode, 302)
+    assert.equal(store.userById(tokenUser.id)?.status, 'approved')
+    const statusAfter = await built.app.inject({ method: 'GET', url: '/apply/status', headers: { cookie: tokenCookie } })
+    assert.equal(statusAfter.statusCode, 302)
+    assert.equal(statusAfter.headers.location, '/dashboard')
+    const userDashboard = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: tokenCookie } })
+    assert.equal(userDashboard.statusCode, 200)
   } finally {
     await built.close()
     await github.close()

@@ -131,3 +131,14 @@ textarea { resize: vertical; min-height: 70px; }
   .quota-card { flex-direction: column; align-items: flex-start; gap: 14px; }
   .meter { width: 100%; max-width: none; }
 }
+
+.flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 18px 0; }
+.flow-step { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: #0b0f14; }
+.flow-step span { display: block; color: var(--accent); font: 10px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.flow-step b { display: block; margin: 4px 0; font-size: 14px; }
+.flow-step small { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.agreement { border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: #0b0f14; margin: 16px 0; max-height: 380px; overflow: auto; }
+.agreement h2 { margin: 18px 0 8px; font-size: 16px; }
+.agreement h2:first-child { margin-top: 0; }
+.agreement p { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
+@media (max-width: 860px) { .flow { grid-template-columns: 1fr 1fr; } }

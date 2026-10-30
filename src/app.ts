@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify'
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import fastifyCookie from '@fastify/cookie'
 import fastifyFormbody from '@fastify/formbody'
 import fastifyStatic from '@fastify/static'
@@ -17,6 +17,7 @@ import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
 import { RateLimiter } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, sha256Hex } from './lib/secrets.js'
+import { AGREEMENT_VERSION, agreementHash } from './users/agreements.js'
 import { addMinutes } from './lib/time.js'
 import { Approvals } from './users/approval.js'
 import {
@@ -25,8 +26,8 @@ import {
   dashboardPage,
   landingPage,
   messagePage,
-  pendingPage,
-  rejectedPage,
+  applyPage,
+  applicationStatusPage,
   repoPage,
   settingsPage,
   errorPage,
@@ -142,13 +143,20 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return { viewer, repo }
   }
 
+  const startSession = (user: UserRow, request: FastifyRequest, reply: FastifyReply): void => {
+    const raw = sessions.start(user.id, request)
+    const sessionHash = sha256Hex(raw)
+    sessions.setCookies(reply, raw, { sessionHash, user, csrfToken: sessions.csrfFor(sessionHash) })
+  }
+
   app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: '0.1.0', time: new Date().toISOString() }))
 
   app.get('/', async (request, reply) => {
     const viewer = request.viewer
     if (viewer !== undefined) {
       if (viewer.user.status === 'approved') return reply.redirect('/dashboard')
-      return reply.redirect('/pending')
+      if (viewer.user.status === 'onboarding') return reply.redirect('/apply')
+      return reply.redirect('/apply/status')
     }
     return reply.type('text/html').send(landingPage(config, null, config.env !== 'production' && config.devLogin.login !== '', config.github.clientId !== '' && config.github.clientSecret !== ''))
   })
@@ -168,9 +176,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       initialQuotaCny: config.quota.initialCny,
     })
     if (user.status !== 'approved') store.setUserStatus(user.id, 'approved', 'dev-login')
-    const raw = sessions.start(user.id, request)
-    const sessionHash = sha256Hex(raw)
-    sessions.setCookies(reply, raw, { sessionHash, user: store.userById(user.id)!, csrfToken: sessions.csrfFor(sessionHash) })
+    startSession(store.userById(user.id)!, request, reply)
     store.audit(user.id, 'login.dev', 'DEV_LOGIN_LOGIN')
     return reply.redirect('/dashboard')
   })
@@ -198,20 +204,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       initialQuotaCny: config.quota.initialCny,
     })
     store.audit(user.id, 'login.github-token', `@${profile.login}`)
-    if (user.status === 'approved') {
-      const raw = sessions.start(user.id, request)
-      const sessionHash = sha256Hex(raw)
-      sessions.setCookies(reply, raw, { sessionHash, user, csrfToken: sessions.csrfFor(sessionHash) })
-      return reply.redirect('/dashboard')
-    }
-    if (user.status === 'pending') {
-      try {
-        await approvals.request(user)
-      } catch (error) {
-        log.error('approval request mail failed', { user: user.login, error: String(error) })
-      }
-    }
-    return reply.redirect('/pending')
+    startSession(user, request, reply)
+    if (user.status === 'approved') return reply.redirect('/dashboard')
+    if (user.status === 'onboarding') return reply.redirect('/apply')
+    return reply.redirect('/apply/status')
   })
 
   app.get('/auth/github', async (request, reply) => {
@@ -253,20 +249,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     })
     store.setUserGithubToken(user.id, encryptSecret(token, config.tokenEncryptionKey))
     store.audit(user.id, 'login.github', `@${profile.login}`)
-    if (user.status === 'approved') {
-      const raw = sessions.start(user.id, request)
-      const sessionHash = sha256Hex(raw)
-      sessions.setCookies(reply, raw, { sessionHash, user, csrfToken: sessions.csrfFor(sessionHash) })
-      return reply.redirect('/dashboard')
-    }
-    if (user.status === 'pending') {
-      try {
-        await approvals.request(user)
-      } catch (error) {
-        log.error('approval request mail failed', { user: user.login, error: String(error) })
-      }
-    }
-    return reply.redirect('/pending')
+    startSession(user, request, reply)
+    if (user.status === 'approved') return reply.redirect('/dashboard')
+    if (user.status === 'onboarding') return reply.redirect('/apply')
+    return reply.redirect('/apply/status')
   })
 
   app.post('/auth/logout', async (request, reply) => {
@@ -280,9 +266,76 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.get('/pending', async (request, reply) => {
     const viewer = requireViewer(request)
     if (viewer.user.status === 'approved') return reply.redirect('/dashboard')
-    const view = viewOf(viewer)
-    if (viewer.user.status === 'rejected') return reply.type('text/html').send(rejectedPage(config, view))
-    return reply.type('text/html').send(pendingPage(config, view))
+    if (viewer.user.status === 'onboarding') return reply.redirect('/apply')
+    return reply.redirect('/apply/status')
+  })
+
+  app.get('/apply', async (request, reply) => {
+    const viewer = requireViewer(request)
+    if (viewer.user.status === 'approved') return reply.redirect('/dashboard')
+    if (viewer.user.status !== 'onboarding') return reply.redirect('/apply/status')
+    return reply.type('text/html').send(
+      applyPage({ config, viewer: viewOf(viewer), notice: queryText(request, 'notice'), error: queryText(request, 'error') }),
+    )
+  })
+
+  app.post('/apply', async (request, reply) => {
+    const viewer = csrfGuard(request)
+    if (viewer.user.status !== 'onboarding') return reply.redirect('/apply/status')
+    const body = form(request)
+    const signature = (body.signature ?? '').trim()
+    if (signature.toLowerCase() !== viewer.user.login.toLowerCase()) {
+      throw httpError(400, '签名必须与你的 GitHub 登录名一致。', 'BAD_SIGNATURE')
+    }
+    if (body.disclaimer !== '1' || body.security !== '1') {
+      throw httpError(400, '请逐项勾选免责声明和信息安全承诺。', 'AGREEMENT_REQUIRED')
+    }
+    const submitted = store.submitApplication(viewer.user.id, {
+      name: signature,
+      disclaimerVersion: AGREEMENT_VERSION,
+      securityVersion: AGREEMENT_VERSION,
+      agreementHash: agreementHash(),
+      ip: request.ip,
+      userAgent: String(request.headers['user-agent'] ?? '').slice(0, 300),
+    })
+    if (!submitted) return reply.redirect('/apply/status')
+    const updated = store.userById(viewer.user.id)!
+    store.audit(viewer.user.id, 'application.submitted', `queue #${store.queuePosition(viewer.user.id) ?? '?'}`)
+    try {
+      await approvals.request(updated)
+    } catch (error) {
+      log.error('approval request mail failed', { user: updated.login, error: String(error) })
+    }
+    return reply.redirect(`/apply/status?notice=${encodeURIComponent('申请已提交，正在排队。')}`)
+  })
+
+  app.get('/apply/status', async (request, reply) => {
+    const viewer = requireViewer(request)
+    if (viewer.user.status === 'approved') return reply.redirect('/dashboard')
+    if (viewer.user.status === 'onboarding') return reply.redirect('/apply')
+    return reply.type('text/html').send(
+      applicationStatusPage({
+        config,
+        viewer: viewOf(viewer),
+        position: store.queuePosition(viewer.user.id),
+        total: store.pendingTotal(),
+        notice: queryText(request, 'notice'),
+        error: queryText(request, 'error'),
+      }),
+    )
+  })
+
+  app.get('/api/application', async (request, reply) => {
+    const viewer = requireViewer(request)
+    reply.header('cache-control', 'no-store')
+    return {
+      status: viewer.user.status,
+      login: viewer.user.login,
+      position: store.queuePosition(viewer.user.id),
+      pending: store.pendingTotal(),
+      submittedAt: viewer.user.application_submitted_at,
+      reviewedAt: viewer.user.reviewed_at,
+    }
   })
 
   app.get('/dashboard', async (request, reply) => {

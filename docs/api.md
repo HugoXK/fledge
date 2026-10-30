@@ -15,7 +15,10 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/auth/github/callback` | public | OAuth callback |
 | POST | `/auth/token` | public, rate-limited | Sign in with a GitHub token when OAuth is not configured |
 | POST | `/auth/logout` | session + CSRF | Sign out |
-| GET | `/pending` | session | Application status |
+| GET | `/apply` | session | Disclaimer and information-security signature |
+| POST | `/apply` | session + CSRF | Submit the signed application once |
+| GET | `/apply/status` | session | Live queue position and status |
+| GET | `/api/application` | session | JSON status/queue for the status page |
 | GET | `/dashboard` | approved + session | Repos, quota, jobs |
 | POST | `/repos` | approved + CSRF | Add a repository |
 | GET | `/repos/:id` | owner | Repo detail |

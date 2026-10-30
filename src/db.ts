@@ -20,7 +20,7 @@ interface Database {
 
 const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: string) => Database }
 
-export type UserStatus = 'pending' | 'approved' | 'rejected'
+export type UserStatus = 'onboarding' | 'pending' | 'approved' | 'rejected'
 export type UserRole = 'user' | 'admin'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'quota_exhausted'
 
@@ -43,6 +43,16 @@ export interface UserRow {
   approved_at: string | null
   approved_by: string | null
   approval_sent_at: string | null
+  disclaimer_version: string | null
+  disclaimer_name: string | null
+  disclaimer_accepted_at: string | null
+  security_version: string | null
+  security_accepted_at: string | null
+  agreement_hash: string | null
+  application_submitted_at: string | null
+  application_ip: string | null
+  application_ua: string | null
+  reviewed_at: string | null
   last_login_at: string | null
 }
 
@@ -156,6 +166,16 @@ CREATE TABLE IF NOT EXISTS users (
   approved_at TEXT,
   approved_by TEXT,
   approval_sent_at TEXT,
+  disclaimer_version TEXT,
+  disclaimer_name TEXT,
+  disclaimer_accepted_at TEXT,
+  security_version TEXT,
+  security_accepted_at TEXT,
+  agreement_hash TEXT,
+  application_submitted_at TEXT,
+  application_ip TEXT,
+  application_ua TEXT,
+  reviewed_at TEXT,
   last_login_at TEXT
 );
 CREATE INDEX IF NOT EXISTS users_status_idx ON users(status);
@@ -289,7 +309,27 @@ export class Store {
     this.db.exec('PRAGMA journal_mode = WAL;')
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec(SCHEMA)
-    this.db.exec('PRAGMA user_version = 1;')
+    this.migrateColumns()
+    this.db.exec('PRAGMA user_version = 2;')
+  }
+
+  private migrateColumns(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(users)').map((row) => row.name))
+    const additions: Array<[string, string]> = [
+      ['disclaimer_version', 'TEXT'],
+      ['disclaimer_name', 'TEXT'],
+      ['disclaimer_accepted_at', 'TEXT'],
+      ['security_version', 'TEXT'],
+      ['security_accepted_at', 'TEXT'],
+      ['agreement_hash', 'TEXT'],
+      ['application_submitted_at', 'TEXT'],
+      ['application_ip', 'TEXT'],
+      ['application_ua', 'TEXT'],
+      ['reviewed_at', 'TEXT'],
+    ]
+    for (const [name, type] of additions) {
+      if (!columns.has(name)) this.run(`ALTER TABLE users ADD COLUMN ${name} ${type}`)
+    }
   }
 
   close(): void {
@@ -354,7 +394,7 @@ export class Store {
       input.name,
       input.email,
       input.avatarUrl,
-      input.isAdmin ? 'approved' : 'pending',
+      input.isAdmin ? 'approved' : 'onboarding',
       input.isAdmin ? 'admin' : 'user',
       input.initialQuotaCny,
       at,
@@ -384,7 +424,62 @@ export class Store {
 
   setUserStatus(id: string, status: UserStatus, by: string): void {
     const at = status === 'approved' ? nowIso() : null
-    this.run('UPDATE users SET status = ?, approved_at = COALESCE(?, approved_at), approved_by = ? WHERE id = ?', status, at, by, id)
+    this.run(
+      'UPDATE users SET status = ?, approved_at = COALESCE(?, approved_at), approved_by = ?, reviewed_at = ? WHERE id = ?',
+      status,
+      at,
+      by,
+      nowIso(),
+      id,
+    )
+  }
+
+  submitApplication(
+    id: string,
+    input: {
+      name: string
+      disclaimerVersion: string
+      securityVersion: string
+      agreementHash: string
+      ip: string | null
+      userAgent: string | null
+    },
+  ): boolean {
+    const at = nowIso()
+    const result = this.db
+      .prepare(
+        `UPDATE users SET status = 'pending', disclaimer_name = ?, disclaimer_version = ?, disclaimer_accepted_at = ?,
+         security_version = ?, security_accepted_at = ?, agreement_hash = ?, application_submitted_at = ?,
+         application_ip = ?, application_ua = ? WHERE id = ? AND status = 'onboarding'`,
+      )
+      .run(
+        input.name,
+        input.disclaimerVersion,
+        at,
+        input.securityVersion,
+        at,
+        input.agreementHash,
+        at,
+        input.ip,
+        input.userAgent,
+        id,
+      )
+    return Number(result.changes) > 0
+  }
+
+  queuePosition(id: string): number | null {
+    const user = this.userById(id)
+    if (user === undefined || user.status !== 'pending') return null
+    const row = this.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM users WHERE status = 'pending' AND COALESCE(application_submitted_at, created_at) < COALESCE(?, created_at)",
+      user.application_submitted_at,
+    )
+    return Number(row?.n ?? 0) + 1
+  }
+
+  pendingTotal(): number {
+    const row = this.get<{ n: number }>("SELECT COUNT(*) AS n FROM users WHERE status = 'pending'")
+    return Number(row?.n ?? 0)
   }
 
   markApprovalSent(id: string): void {

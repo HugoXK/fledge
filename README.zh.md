@@ -80,8 +80,9 @@ Fledge 是幼鸟长齐飞羽、离巢试飞的那一刻——不是因为被推�
 
 ### 访问与安全
 
-- **GitHub OAuth 登录 + 待审批**：首次登录给管理员
-  `flybot@yeah.net` → `hugo2001xk@gmail.com` 发一封一次性批准邮件。
+- **GitHub 登录 + 申请审批**：新用户先签署《免责声明》和《信息安全承诺》，
+  提交一次后可在状态页看实时排队位置；管理员收到一次性批准邮件
+  （`flybot@yeah.net` → `hugo2001xk@gmail.com`）。
 - **Admin 面板**：批准/拒绝、改额度、审计、最近任务。
 - **fine-grained GitHub token**：添加时验证写权限，AES-256-GCM 加密保存，
   只在任务运行时解密。

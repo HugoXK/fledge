@@ -1,0 +1,1 @@
+Added the access application flow: GitHub login, a signed disclaimer and information-security agreement, a live queue/status page that prevents duplicate submissions, and admin review details (signature, timestamps, IP).
