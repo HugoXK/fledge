@@ -201,7 +201,7 @@ docker compose up -d --build
 - Homepage: `https://fledge.example.com`（或 `http://localhost:8080`）
 - Callback: `https://fledge.example.com/auth/github/callback`
 
-默认 scope：`read:user user:email repo`。用户加仓库时仍要单独提供 fine-grained token。
+默认 scope：`read:user user:email`。用户加仓库时仍要单独提供 fine-grained token；OAuth 登录本身不需要仓库权限。
 
 ### FlyBot bridge
 

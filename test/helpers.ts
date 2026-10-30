@@ -32,7 +32,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     github: {
       clientId: 'client',
       clientSecret: 'secret',
-      scopes: 'read:user user:email repo',
+      scopes: 'read:user user:email',
       adminLogin: 'admin',
       apiBase: 'https://api.github.com',
     },

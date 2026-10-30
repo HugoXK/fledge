@@ -212,8 +212,8 @@ Create an OAuth app at <https://github.com/settings/developers>:
 - Homepage: `https://fledge.example.com` (or `http://localhost:8080`)
 - Callback: `https://fledge.example.com/auth/github/callback`
 
-Default scope: `read:user user:email repo`. Users still supply a per-repository
-fine-grained token when they add a repo.
+Default scope: `read:user user:email`. Users still supply a per-repository
+fine-grained token when they add a repo; the OAuth login never needs repo access.
 
 ### FlyBot bridge
 

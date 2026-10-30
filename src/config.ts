@@ -111,7 +111,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     github: {
       clientId: text('GITHUB_CLIENT_ID'),
       clientSecret: text('GITHUB_CLIENT_SECRET'),
-      scopes: text('GITHUB_OAUTH_SCOPES', 'read:user user:email repo'),
+      scopes: text('GITHUB_OAUTH_SCOPES', 'read:user user:email'),
       adminLogin: text('ADMIN_GITHUB_LOGIN', 'HugoXK'),
       apiBase: text('GITHUB_API_BASE', 'https://api.github.com').replace(/\/$/, ''),
     },

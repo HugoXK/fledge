@@ -54,8 +54,8 @@ SMTP password are missing.
 - Homepage URL: `${BASE_URL}`
 - Authorization callback URL: `${BASE_URL}/auth/github/callback`
 
-Scopes requested: `read:user user:email repo`. Users still supply a
-fine-grained token per repository.
+Scopes requested: `read:user user:email`. Users still supply a fine-grained
+token per repository; OAuth only confirms identity.
 
 If the OAuth App is not ready, leave `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`
 empty and set `ALLOW_TOKEN_LOGIN_ONLY=true`. The landing page then offers a
