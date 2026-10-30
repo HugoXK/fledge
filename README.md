@@ -85,7 +85,9 @@ own improvements. See [docs/decisions/0001-name.md](docs/decisions/0001-name.md)
 ### Access and safety
 
 - **GitHub OAuth login** with a pending-application gate. The first login sends a
-  single-use approval email to the configured administrator.
+  single-use approval email to `admin@hugoxk.online` (forwarded to the
+  operator's inbox). Outgoing mail is sent from `fledge@hugoxk.online`;
+  user confirmations go to the user's GitHub email.
 - **Admin panel** for approve/reject, quota, user activity (last login, repos,
   jobs), audit and recent jobs. Admin-only; normal users never see it.
 - **Service console** at `/console`: an approved Fledge user sees Fledge as
@@ -243,7 +245,7 @@ full list and comments.
 | `ADMIN_GITHUB_LOGIN` | `HugoXK` | Auto-approved bootstrap admin |
 | `DEV_LOGIN_LOGIN` | empty | Local demo login; must be empty in production |
 | `MAIL_TRANSPORT` | `console` | `console` writes `.eml` files; `smtp` sends |
-| `MAIL_FROM` / `ADMIN_EMAIL` | `no-reply@example.com` / `admin@example.com` | Operator SMTP and approval mail |
+| `MAIL_FROM` / `ADMIN_EMAIL` | `fledge@hugoxk.online` / `admin@hugoxk.online` | Service sender and admin recipient (role aliases) |
 | `PLATFORM_LLM_BASE_URL` | `http://127.0.0.1:8081/v1` | OpenAI-compatible endpoint |
 | `PLATFORM_LLM_KEY` | — | Platform-funded key |
 | `INITIAL_QUOTA_CNY` | `1` | Initial platform budget per user |

@@ -82,7 +82,7 @@ Fledge 是幼鸟长齐飞羽、离巢试飞的那一刻——不是因为被推�
 
 - **GitHub 登录 + 申请审批**：新用户先签署《免责声明》和《信息安全承诺》，
   提交一次后可在状态页看实时排队位置；管理员收到一次性批准邮件
-  （由运营方配置的管理员地址接收）。
+  （发到 `admin@hugoxk.online`，由运营方转发到自己的收件箱）。
 - **Admin 面板**：批准/拒绝、改额度、用户活跃情况（最近登录、仓库、任务）、
   审计、最近任务。仅管理员可见，普通用户看不到。
 - **服务控制台** `/console`：已批准的 Fledge 用户看到 Fledge 可用，FlyBot、
@@ -229,7 +229,7 @@ node bridge/flybot-bridge.mjs
 | `ADMIN_GITHUB_LOGIN` | `HugoXK` | 自动批准的 bootstrap 管理员 |
 | `DEV_LOGIN_LOGIN` | 空 | 本地演示登录；生产必须为空 |
 | `MAIL_TRANSPORT` | `console` | `console` 写 `.eml`；`smtp` 真发 |
-| `MAIL_FROM` / `ADMIN_EMAIL` | `no-reply@example.com` / `admin@example.com` | 运营方 SMTP 与审批邮件 |
+| `MAIL_FROM` / `ADMIN_EMAIL` | `fledge@hugoxk.online` / `admin@hugoxk.online` | 服务发件人与管理员收件人（角色别名） |
 | `PLATFORM_LLM_BASE_URL` | `http://127.0.0.1:8081/v1` | OpenAI 兼容端点 |
 | `PLATFORM_LLM_KEY` | — | 平台代付 key |
 | `INITIAL_QUOTA_CNY` | `1` | 每用户初始额度 |
