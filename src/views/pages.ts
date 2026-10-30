@@ -47,6 +47,14 @@ function noticeBlock(viewer: Viewer, notifications: NotificationRow[]): string {
 }
 
 export function landingPage(config: Config, viewer?: Viewer | null, devLogin = false, oauthConfigured = true): string {
+  const tokenForm = `<details class="card narrow" id="token-login" open style="margin:24px 0 0">
+      <summary>使用 GitHub token 登录（备用）</summary>
+      <form method="post" action="/auth/token" class="form">
+        <label>GitHub token <input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required autocomplete="off" /></label>
+        <p class="fine">只用于确认 GitHub 身份，不会保存。仓库 token 在添加仓库时单独填写。</p>
+        <button class="btn" type="submit">用 token 登录</button>
+      </form>
+    </details>`
   const body = `<section class="hero">
     <div class="eyebrow">HOSTED · SELF-ITERATING · REVIEWABLE</div>
     <h1>让仓库自己长大。</h1>
@@ -58,14 +66,7 @@ export function landingPage(config: Config, viewer?: Viewer | null, devLogin = f
     </div>
     <p class="fine">首次登录需要 GitHub 授权；没有权限时先签署《免责声明》和《信息安全承诺》，提交后可在状态页查看排队位置，不要重复提交。平台初始额度 1 元；用完后配置自己的模型 API 即可继续。</p>
     ${oauthConfigured ? '' : '<p class="fine">OAuth App 尚未配置；先用 GitHub token 登录（只用于确认身份，不会保存），部署后可在 .env 补 OAuth。</p>'}
-    <details class="card narrow" id="token-login" ${oauthConfigured ? '' : 'open'} style="margin:24px 0 0">
-      <summary>使用 GitHub token 登录（备用）</summary>
-      <form method="post" action="/auth/token" class="form">
-        <label>GitHub token <input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required autocomplete="off" /></label>
-        <p class="fine">只用于确认 GitHub 身份，不会保存。仓库 token 在添加仓库时单独填写。</p>
-        <button class="btn" type="submit">用 token 登录</button>
-      </form>
-    </details>
+    ${oauthConfigured ? '' : tokenForm}
   </section>
   <section class="grid3">
     <article class="card"><h3>多仓库</h3><p>一个账号绑定多个仓库，每个仓库有自己的目标、节奏和状态。</p></article>
