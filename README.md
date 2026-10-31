@@ -90,9 +90,10 @@ own improvements. See [docs/decisions/0001-name.md](docs/decisions/0001-name.md)
   user confirmations go to the user's GitHub email.
 - **Admin panel** for approve/reject, quota, user activity (last login, repos,
   jobs), audit and recent jobs. Admin-only; normal users never see it.
-- **Service console** at `/console`: an approved Fledge user sees Fledge as
-  available and FlyBot, Bot Social and ScienceDiscovery as not open/unauthorized.
-  Fledge approval never grants those services.
+- **Workspace** at `/console`: an approved Fledge user gets a focused overview
+  of connected repositories, active jobs and quota, with shortcuts to the full
+  repository list, settings and docs. The shared Portal is linked in the footer;
+  Fledge approval never grants access to other services.
 - **Fine-grained GitHub tokens**, validated for write access on add, encrypted
   with AES-256-GCM, and only decrypted for a running job.
 - **Sessions and CSRF** on every browser form; approval links are single-use and
@@ -246,8 +247,6 @@ full list and comments.
 | `DEV_LOGIN_LOGIN` | empty | Local demo login; must be empty in production |
 | `MAIL_TRANSPORT` | `console` | `console` writes `.eml` files; `smtp` sends |
 | `MAIL_FROM` / `ADMIN_EMAIL` | `fledge@hugoxk.online` / `admin@hugoxk.online` | Service sender and admin recipient (role aliases) |
-| `PLATFORM_LLM_BASE_URL` | `http://127.0.0.1:8081/v1` | OpenAI-compatible endpoint |
-| `PLATFORM_LLM_KEY` | — | Platform-funded key |
 | `INITIAL_QUOTA_CNY` | `1` | Initial platform budget per user |
 | `USD_CNY_RATE` | `7.2` | Conversion for display and enforcement |
 | `RUNNER_MODE` | `mock` | `mock` or `flybot` |
@@ -302,7 +301,7 @@ is in [docs/security.md](docs/security.md).
 curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer flg_…" \
   -H "Content-Type: application/json" \
-  -d '{"model":"DeepSeek-V4.1-Flash-1017","messages":[{"role":"user","content":"hi"}],"max_tokens":64}'
+  -d '{"model":"your-model","messages":[{"role":"user","content":"hi"}],"max_tokens":64}'
 ```
 
 ## Development
@@ -404,7 +403,7 @@ Contributions are welcome when they follow [CONTRIBUTING.md](CONTRIBUTING.md),
 - One issue, one branch, one PR. If an issue already has a PR, push there.
 - Add a failing test first; list what you ran and did not run.
 - Never commit secrets. Never open a public issue with exploit detail.
-- User-facing UI text is Chinese; keep the English and Chinese READMEs in step.
+- User-facing UI text is bilingual Chinese/English; keep both translations and the two READMEs in step.
 
 ## License
 

@@ -41,7 +41,7 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
 
     const dashboard = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
     assert.equal(dashboard.statusCode, 200)
-    assert.match(dashboard.body, /控制台/)
+    assert.match(dashboard.body, /仓库/)
 
     const added = await built.app.inject({
       method: 'POST',
@@ -193,8 +193,9 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     assert.equal(userDashboard.statusCode, 200)
     const consolePage = await built.app.inject({ method: 'GET', url: '/console', headers: { cookie: tokenCookie } })
     assert.equal(consolePage.statusCode, 200)
-    assert.match(consolePage.body, /FlyBot/)
-    assert.match(consolePage.body, /暂未开放/)
+    assert.match(consolePage.body, /工作区/)
+    assert.match(consolePage.body, /最近任务/)
+    assert.doesNotMatch(consolePage.body, /暂未开放|flybot\.hugoxk\.online/)
   } finally {
     await built.close()
     await github.close()

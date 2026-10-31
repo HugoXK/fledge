@@ -47,6 +47,11 @@ export interface Config {
     bridgeToken: string
     timeoutMinutes: number
   }
+  services: {
+    portal: string
+    docs: string
+    status: string
+  }
   dataDir: string
   dbPath: string
   allowPrivateModelUrls: boolean
@@ -128,9 +133,9 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       },
     },
     llm: {
-      baseUrl: text('PLATFORM_LLM_BASE_URL', 'http://127.0.0.1:8081/v1').replace(/\/$/, ''),
+      baseUrl: text('PLATFORM_LLM_BASE_URL').replace(/\/$/, ''),
       key: text('PLATFORM_LLM_KEY'),
-      model: text('PLATFORM_LLM_MODEL', 'DeepSeek-V4.1-Flash-1017'),
+      model: text('PLATFORM_LLM_MODEL', 'your-model'),
       pricePerTokenUsd: number('PLATFORM_LLM_PRICE_PER_TOKEN', 0.0000002),
     },
     quota: {
@@ -142,6 +147,11 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       bridgeUrl: text('FLYBOT_BRIDGE_URL', 'http://127.0.0.1:8787/run'),
       bridgeToken: text('FLYBOT_BRIDGE_TOKEN'),
       timeoutMinutes: number('JOB_TIMEOUT_MINUTES', 45),
+    },
+    services: {
+      portal: text('PORTAL_URL', 'https://portal.hugoxk.online').replace(/\/$/, ''),
+      docs: text('FLEDGE_DOCS_URL', 'https://fledge-docs.hugoxk.online/docs/').replace(/\/$/, ''),
+      status: text('STATUS_URL', 'https://hugoxk.online/status/').replace(/\/$/, ''),
     },
     dataDir,
     dbPath: resolve(text('DB_PATH', `${dataDir}/fledge.db`)),

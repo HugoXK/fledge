@@ -1,0 +1,1 @@
+The interface now supports Chinese and English with the same language preference as the rest of hugoxk.online, adopts the platform's blue interaction palette, adds a landing-page iteration card and a focused workspace overview, and removes the skip link and service directory.

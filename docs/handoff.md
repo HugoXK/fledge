@@ -40,6 +40,10 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
   page. The administrator receives a single-use approve/reject email from
   the configured administrator address (7 days). The login is OAuth when
   `GITHUB_CLIENT_ID` is configured; the token login is a bootstrap fallback.
+- Bilingual Chinese/English UI with a persistent language switch shared with the
+  rest of the platform, and a focused `/console` workspace for repositories,
+  active jobs and quota. The shared Portal is a footer link, never a permission
+  handoff.
 - Admin panel, roles, audit log, in-app notifications.
 - Multiple repositories per user; per-repo fine-grained GitHub tokens, validated
   on add and encrypted with AES-256-GCM.

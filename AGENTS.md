@@ -244,4 +244,5 @@ merge.
 - Escape every value interpolated into HTML.
 - Never log a request body, a token, a key, a full email, or a repo clone URL
   with credentials.
-- User-facing UI text is Chinese; keep `README.md` and `README.zh.md` in step.
+- User-facing UI text is bilingual Chinese/English; keep both translations and
+  `README.md` / `README.zh.md` in step.

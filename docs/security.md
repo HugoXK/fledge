@@ -23,7 +23,11 @@ means tokens must be re-entered, so back it up separately from the database.
 
 - 32-byte random session id; only its SHA-256 hash is stored.
 - Cookie: `HttpOnly`, `SameSite=Lax`, `Secure` when `BASE_URL` is HTTPS, 30 days.
-- Logout deletes the session row and clears both cookies.
+- The `fledge_lang` preference cookie is `HttpOnly`, `SameSite=Lax`, valid for
+  one year, and stores only `zh` or `en`; it carries no identity. The UI keeps it
+  in step with the platform-wide `hugoxk-lang` localStorage preference.
+- Logout deletes the session row and clears the session and CSRF cookies; the
+  language preference remains.
 - Expired sessions are swept every minute.
 
 ### CSRF
@@ -59,10 +63,11 @@ variable is set). Never set it on a public instance.
 ### Authorization scope
 
 An approved Fledge account grants Fledge only. It does not grant access to
-FlyBot, Bot Social, ScienceDiscovery or the shared Portal. The `/console` page
-shows the other services as not open/unauthorized, and Fledge never creates a
-session or permission for them. Admin users see the Fledge Admin panel; their
-rights in other products are managed by those products.
+FlyBot, Bot Social, ScienceDiscovery or the shared Portal. The `/console` page is
+a workspace for Fledge repositories, jobs and quota; it never creates a session
+or permission for another product. The shared Portal is only a footer link.
+Admin users see the Fledge Admin panel; their rights in other products are
+managed by those products.
 
 ### Application and approval
 
@@ -112,7 +117,7 @@ are untrusted.
 ### Logging
 
 `redact()` removes GitHub tokens, `sk-…` keys, `flg_…` tokens, bearer values and
-LiteLLM `api_key:` hashes from log messages. Request bodies are never logged.
+Upstream `api_key:` hashes from log messages. Request bodies are never logged.
 The development mail outbox is written with mode 0600 and contains approval links;
 treat it as a secret.
 

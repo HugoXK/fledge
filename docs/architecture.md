@@ -2,9 +2,9 @@
 
 ## Principles
 
-0. **Approval is scoped.** A Fledge approval grants Fledge only; the console
-   lists the other services as unavailable and Fledge never issues permissions
-   for them.
+0. **Approval is scoped.** A Fledge approval grants Fledge only. The console is
+   a focused workspace; it never issues permissions or sessions for other
+   products, and the shared Portal is only a footer link.
 
 1. **A human merges.** Fledge opens one focused pull request per job. It never
    pushes the default branch, force-pushes, or merges.
@@ -41,6 +41,9 @@
 ### Fledge
 
 - **Fastify** HTTP server, server-rendered HTML, no frontend build step.
+- **Bilingual UI** in Chinese and English. The locale is stored in the
+  `fledge_lang` cookie, and the header switch shares the `hugoxk-lang`
+  preference with the rest of the platform.
 - **SQLite** via Node's built-in `node:sqlite` (WAL, foreign keys). The database
   file is the only state; the mail outbox is a development artifact.
 - **Sessions** are random 32-byte tokens, stored as SHA-256 hashes; the cookie is
@@ -68,9 +71,8 @@
 - Streaming is passed through; `stream_options.include_usage` is added so the
   final usage chunk can be metered.
 
-In the reference deployment `PLATFORM_LLM_BASE_URL` points at the local model
-router (`127.0.0.1:8081/v1`), so the primary/alternate key failover applies
-before the per-user quota.
+The operator chooses the upstream through `PLATFORM_LLM_BASE_URL`; keep the
+real endpoint and key out of git and out of public documentation.
 
 ### FlyBot bridge
 

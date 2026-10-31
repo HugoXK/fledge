@@ -85,7 +85,7 @@ curl -H "Authorization: Bearer flg_…" http://localhost:8080/v1/models
 curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer flg_…" \
   -H "Content-Type: application/json" \
-  -d '{"model":"DeepSeek-V4.1-Flash-1017","messages":[{"role":"user","content":"hi"}],"max_tokens":64}'
+  -d '{"model":"your-model","messages":[{"role":"user","content":"hi"}],"max_tokens":64}'
 ```
 
 Response headers include:

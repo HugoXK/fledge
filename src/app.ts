@@ -17,8 +17,9 @@ import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
 import { RateLimiter } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, sha256Hex } from './lib/secrets.js'
-import { AGREEMENT_VERSION, agreementHash } from './users/agreements.js'
+import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes } from './lib/time.js'
+import { isLocale, LOCALE_COOKIE, resolveLocale, type Locale } from './i18n.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -29,7 +30,7 @@ import {
   applyPage,
   applicationStatusPage,
   repoPage,
-  servicesPage,
+  workspacePage,
   settingsPage,
   errorPage,
 } from './views/pages.js'
@@ -115,6 +116,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.addHook('onRequest', async (request) => {
     request.viewer = sessions.read(request) ?? undefined
+    request.locale = resolveLocale(request)
   })
 
   app.addHook('onSend', async (request, reply, payload) => {
@@ -152,19 +154,35 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: '0.1.0', time: new Date().toISOString() }))
 
+  app.get('/lang/:locale', async (request, reply) => {
+    const requested = String((request.params as Record<string, string>).locale)
+    if (!isLocale(requested)) return reply.code(404).send(errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。', request.locale))
+    const next = queryText(request, 'next')
+    const safeNext = next !== undefined && next.startsWith('/') && !next.startsWith('//') ? next : '/'
+    reply.setCookie(LOCALE_COOKIE, requested, {
+      path: '/',
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: config.baseUrl.startsWith('https://'),
+      maxAge: 365 * 86_400,
+    })
+    return reply.redirect(safeNext)
+  })
+
   app.get('/', async (request, reply) => {
     const viewer = request.viewer
+    const locale: Locale = request.locale ?? 'zh'
     if (viewer !== undefined) {
       if (viewer.user.status === 'approved') return reply.redirect('/dashboard')
       if (viewer.user.status === 'onboarding') return reply.redirect('/apply')
       return reply.redirect('/apply/status')
     }
-    return reply.type('text/html').send(landingPage(config, null, config.env !== 'production' && config.devLogin.login !== '', config.github.clientId !== '' && config.github.clientSecret !== ''))
+    return reply.type('text/html').send(landingPage(config, null, config.env !== 'production' && config.devLogin.login !== '', config.github.clientId !== '' && config.github.clientSecret !== '', locale))
   })
 
   app.get('/auth/dev', async (request, reply) => {
     if (config.env === 'production' || config.devLogin.login === '') {
-      return reply.code(404).send(errorPage(config, request.viewer ?? null, '页面不存在', 'Dev 登录没有开启。'))
+      return reply.code(404).send(errorPage(config, request.viewer ?? null, '页面不存在', 'Dev 登录没有开启。', request.locale))
     }
     const user = store.upsertGithubUser({
       id: randomId('usr'),
@@ -183,15 +201,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/auth/token', async (request, reply) => {
-    if (!loginLimiter.take(`token:${request.ip}`)) return reply.code(429).send(errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。'))
+    if (!loginLimiter.take(`token:${request.ip}`)) return reply.code(429).send(errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const token = (form(request).token ?? '').trim()
-    if (token === '') return reply.code(400).send(messagePage(config, '缺少 token', '请填写一个 GitHub token。'))
+    if (token === '') return reply.code(400).send(messagePage(config, '缺少 token', '请填写一个 GitHub token。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
     let profile
     try {
       profile = await oauth.profile(token)
     } catch (error) {
       log.warn('github token login failed', { error: String(error) })
-      return reply.code(401).send(messagePage(config, 'GitHub token 无效', '无法用这个 token 读取 GitHub 身份，请检查权限或重新生成。'))
+      return reply.code(401).send(messagePage(config, 'GitHub token 无效', '无法用这个 token 读取 GitHub 身份，请检查权限或重新生成。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
     }
     const isAdmin = profile.login.toLowerCase() === config.github.adminLogin.toLowerCase()
     const user = store.upsertGithubUser({
@@ -212,9 +230,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/auth/github', async (request, reply) => {
-    if (!loginLimiter.take(`login:${request.ip}`)) return reply.code(429).send(errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。'))
+    if (!loginLimiter.take(`login:${request.ip}`)) return reply.code(429).send(errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     if (config.github.clientId === '' || config.github.clientSecret === '') {
-      return reply.code(503).send(errorPage(config, request.viewer ?? null, 'GitHub OAuth 未配置', '请先在 .env 设置 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET。'))
+      return reply.code(503).send(errorPage(config, request.viewer ?? null, 'GitHub OAuth 未配置', '请先在 .env 设置 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET。', request.locale))
     }
     const state = randomToken(32)
     store.createOAuthState(sha256Hex(state), addMinutes(10), null)
@@ -226,7 +244,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const code = query.code ?? ''
     const state = query.state ?? ''
     if (code === '' || state === '' || store.consumeOAuthState(sha256Hex(state)) === undefined) {
-      return reply.code(400).send(errorPage(config, request.viewer ?? null, '登录失败', 'OAuth state 无效或已过期，请重新登录。'))
+      return reply.code(400).send(errorPage(config, request.viewer ?? null, '登录失败', 'OAuth state 无效或已过期，请重新登录。', request.locale))
     }
     let profile
     let token
@@ -235,7 +253,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       profile = await oauth.profile(token)
     } catch (error) {
       log.warn('github login failed', { error: String(error) })
-      return reply.code(400).send(errorPage(config, request.viewer ?? null, 'GitHub 登录失败', '无法完成 GitHub 登录，请重试。'))
+      return reply.code(400).send(errorPage(config, request.viewer ?? null, 'GitHub 登录失败', '无法完成 GitHub 登录，请重试。', request.locale))
     }
     const isAdmin = profile.login.toLowerCase() === config.github.adminLogin.toLowerCase()
     const user = store.upsertGithubUser({
@@ -276,7 +294,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (viewer.user.status === 'approved') return reply.redirect('/dashboard')
     if (viewer.user.status !== 'onboarding') return reply.redirect('/apply/status')
     return reply.type('text/html').send(
-      applyPage({ config, viewer: viewOf(viewer), notice: queryText(request, 'notice'), error: queryText(request, 'error') }),
+      applyPage({ config, locale: request.locale ?? 'zh', viewer: viewOf(viewer), notice: queryText(request, 'notice'), error: queryText(request, 'error') }),
     )
   })
 
@@ -295,7 +313,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       name: signature,
       disclaimerVersion: AGREEMENT_VERSION,
       securityVersion: AGREEMENT_VERSION,
-      agreementHash: agreementHash(),
+      agreementHash: agreementHashFor(request.locale ?? 'zh'),
       ip: request.ip,
       userAgent: String(request.headers['user-agent'] ?? '').slice(0, 300),
     })
@@ -323,6 +341,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.type('text/html').send(
       applicationStatusPage({
         config,
+        locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         position: store.queuePosition(viewer.user.id),
         total: store.pendingTotal(),
@@ -351,6 +370,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.type('text/html').send(
       dashboardPage({
         config,
+        locale: request.locale ?? 'zh',
         viewer: view,
         repos: store.listRepos(viewer.user.id),
         jobs: store.listJobs(viewer.user.id),
@@ -364,7 +384,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.get('/console', async (request, reply) => {
     const viewer = requireApproved(request)
     return reply.type('text/html').send(
-      servicesPage({ config, viewer: viewOf(viewer), notice: queryText(request, 'notice'), error: queryText(request, 'error') }),
+      workspacePage({
+        config,
+        locale: request.locale ?? 'zh',
+        viewer: viewOf(viewer),
+        repos: store.listRepos(viewer.user.id),
+        jobs: store.listJobs(viewer.user.id),
+        notice: queryText(request, 'notice'),
+        error: queryText(request, 'error'),
+      }),
     )
   })
 
@@ -401,6 +429,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.type('text/html').send(
       repoPage({
         config,
+        locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         repo,
         jobs: store.listJobsForRepo(repo.id),
@@ -446,6 +475,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.type('text/html').send(
       settingsPage({
         config,
+        locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         tokens: store.listApiTokens(viewer.user.id),
         notice: queryText(request, 'notice'),
@@ -464,7 +494,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     const render = (error: string) =>
       reply.type('text/html').send(
-        settingsPage({ config, viewer: viewOf(viewer), tokens: store.listApiTokens(viewer.user.id), error }),
+        settingsPage({ config, locale: request.locale ?? 'zh', viewer: viewOf(viewer), tokens: store.listApiTokens(viewer.user.id), error }),
       )
     try {
       const baseUrl = (body.baseUrl ?? '').trim()
@@ -500,6 +530,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.type('text/html').send(
       settingsPage({
         config,
+        locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         tokens: store.listApiTokens(viewer.user.id),
         newToken: raw,
@@ -528,6 +559,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.type('text/html').send(
       adminPage({
         config,
+        locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         users,
         activity,
@@ -581,16 +613,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.get('/approve/:token', async (request, reply) => {
     const token = String((request.params as Record<string, string>).token)
     const resolved = approvals.resolve(token)
-    if (resolved === undefined) return reply.code(404).send(errorPage(config, request.viewer ?? null, '链接无效', '这个审批链接无效或已经过期。'))
-    if (resolved.user.status !== 'pending') return reply.type('text/html').send(messagePage(config, '已经处理过', '这个申请已经处理过了。', request.viewer === undefined ? null : viewOf(request.viewer)))
-    return reply.type('text/html').send(approvalPage({ config, user: resolved.user, action: resolved.row.action, token }))
+    if (resolved === undefined) return reply.code(404).send(errorPage(config, request.viewer ?? null, '链接无效', '这个审批链接无效或已经过期。', request.locale))
+    if (resolved.user.status !== 'pending') return reply.type('text/html').send(messagePage(config, '已经处理过', '这个申请已经处理过了。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
+    return reply.type('text/html').send(approvalPage({ config, locale: request.locale ?? 'zh', user: resolved.user, action: resolved.row.action, token }))
   })
 
   app.post('/approve/:token', async (request, reply) => {
     const token = String((request.params as Record<string, string>).token)
     const result = await approvals.apply(token, 'email-link')
-    if (!result.ok) return reply.code(400).send(messagePage(config, '无法处理', result.reason, request.viewer === undefined ? null : viewOf(request.viewer)))
-    return reply.type('text/html').send(messagePage(config, result.user.status === 'approved' ? '已批准' : '已拒绝', `@${result.user.login} 的申请已${result.user.status === 'approved' ? '批准' : '拒绝'}。`, request.viewer === undefined ? null : viewOf(request.viewer)))
+    if (!result.ok) return reply.code(400).send(messagePage(config, '无法处理', result.reason, request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
+    return reply.type('text/html').send(messagePage(config, result.user.status === 'approved' ? '已批准' : '已拒绝', `@${result.user.login} 的申请已${result.user.status === 'approved' ? '批准' : '拒绝'}。`, request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
   })
 
   app.get('/api/jobs/:id/credential', async (request, reply) => {
@@ -615,7 +647,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.setNotFoundHandler((request, reply) => {
     if (request.url.startsWith('/v1') || request.url.startsWith('/api/')) return reply.code(404).send({ error: { type: 'not_found', message: 'No such endpoint' } })
-    return reply.code(404).send(errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。'))
+    return reply.code(404).send(errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。', request.locale))
   })
 
   app.setErrorHandler((error, request, reply) => {
@@ -627,7 +659,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (request.url.startsWith('/v1') || request.url.startsWith('/api/')) {
       return reply.code(status).send({ error: { type: code, message } })
     }
-    return reply.code(status).send(errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), status === 404 ? '页面不存在' : '出错了', status >= 500 ? '服务器出了点问题，请稍后再试。' : message))
+    return reply.code(status).send(errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), status === 404 ? '页面不存在' : '出错了', status >= 500 ? '服务器出了点问题，请稍后再试。' : message, request.locale))
   })
 
   const sweeper = setInterval(() => {

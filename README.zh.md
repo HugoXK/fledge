@@ -85,9 +85,9 @@ Fledge 是幼鸟长齐飞羽、离巢试飞的那一刻——不是因为被推�
   （发到 `admin@hugoxk.online`，由运营方转发到自己的收件箱）。
 - **Admin 面板**：批准/拒绝、改额度、用户活跃情况（最近登录、仓库、任务）、
   审计、最近任务。仅管理员可见，普通用户看不到。
-- **服务控制台** `/console`：已批准的 Fledge 用户看到 Fledge 可用，FlyBot、
-  Bot Social、ScienceDiscovery 显示暂未开放/未授权。Fledge 审批不会自动开通
-  这些服务。
+- **工作区** `/console`：已批准的 Fledge 用户看到仓库、进行中任务和额度的概览，
+  以及进入完整仓库列表、设置和文档的快捷入口。统一入口 Portal 放在页脚；
+  Fledge 审批不会自动开通其他服务。
 - **fine-grained GitHub token**：添加时验证写权限，AES-256-GCM 加密保存，
   只在任务运行时解密。
 - **Session + CSRF**：所有表单都有 CSRF；审批链接一次性、7 天过期。
@@ -230,8 +230,6 @@ node bridge/flybot-bridge.mjs
 | `DEV_LOGIN_LOGIN` | 空 | 本地演示登录；生产必须为空 |
 | `MAIL_TRANSPORT` | `console` | `console` 写 `.eml`；`smtp` 真发 |
 | `MAIL_FROM` / `ADMIN_EMAIL` | `fledge@hugoxk.online` / `admin@hugoxk.online` | 服务发件人与管理员收件人（角色别名） |
-| `PLATFORM_LLM_BASE_URL` | `http://127.0.0.1:8081/v1` | OpenAI 兼容端点 |
-| `PLATFORM_LLM_KEY` | — | 平台代付 key |
 | `INITIAL_QUOTA_CNY` | `1` | 每用户初始额度 |
 | `USD_CNY_RATE` | `7.2` | 展示与执行换算 |
 | `RUNNER_MODE` | `mock` | `mock` 或 `flybot` |
@@ -280,7 +278,7 @@ SMTP 密码会拒绝启动。
 curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer flg_…" \
   -H "Content-Type: application/json" \
-  -d '{"model":"DeepSeek-V4.1-Flash-1017","messages":[{"role":"user","content":"hi"}],"max_tokens":64}'
+  -d '{"model":"your-model","messages":[{"role":"user","content":"hi"}],"max_tokens":64}'
 ```
 
 ## 开发
@@ -374,7 +372,7 @@ v0.1 不支持。GitHub 客户端隔离在 `src/repos/`，第二个 provider 在
 - 一个 issue 一个分支一个 PR；已有 PR 就推到那个分支。
 - 先写失败测试；报告你跑了什么、没跑什么。
 - 不提交密钥；不在公开 issue 里贴漏洞细节。
-- 用户可见 UI 是中文；英文和中文 README 保持同步。
+- 用户可见 UI 是中英双语；两种语言和两个 README 保持同步。
 
 ## 许可证
 

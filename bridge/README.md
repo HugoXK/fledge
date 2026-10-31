@@ -47,7 +47,7 @@ loopback only; keep it that way.
   "credentialSecret": "…",
   "platform": {
     "baseUrl": "https://fledge.example/v1",
-    "model": "DeepSeek-V4.1-Flash-1017",
+    "model": "your-model",
     "token": "flg_…"
   },
   "timeoutMinutes": 45,
