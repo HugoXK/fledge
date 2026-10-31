@@ -4,6 +4,7 @@ import type { Mailer } from '../email/mailer.js'
 import { QuotaNotifier } from '../gateway/notifier.js'
 import { quotaView } from '../gateway/quota.js'
 import { log } from '../lib/log.js'
+import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { decryptSecret, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient } from '../repos/github.js'
@@ -22,24 +23,6 @@ export interface EnqueueResult {
   job?: JobRow
   error?: string
   code?: string
-}
-
-const ATTRIBUTION_KEYS = ['writtenBy', 'claimedBy', 'implementedBy', 'testedBy', 'reviewedBy'] as const
-
-function parseAttribution(value: unknown): Record<string, string> | null {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
-  const out: Record<string, string> = {}
-  for (const key of ATTRIBUTION_KEYS) {
-    const raw = (value as Record<string, unknown>)[key]
-    if (typeof raw !== 'string') continue
-    const text = raw.trim().slice(0, 80)
-    if (text !== '') out[key] = text
-  }
-  return Object.keys(out).length === 0 ? null : out
-}
-
-function attributionLabel(attribution: Record<string, string> | null, key: (typeof ATTRIBUTION_KEYS)[number], fallback: string): string {
-  return attribution?.[key] ?? fallback
 }
 
 function progressSummary(value: unknown): string | undefined {
@@ -208,7 +191,7 @@ export class Jobs {
     }
   }
 
-  private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }, revoke: () => void, attribution: Record<string, string> | null = null): void {
+  private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }, revoke: () => void, attribution: Attribution | null = null): void {
     const job = this.store.getJob(jobId)
     if (job === undefined) return
     this.store.updateJob(jobId, {
@@ -230,7 +213,7 @@ export class Jobs {
     if (result.status === 'succeeded') void this.postAutomationComment(job, result, attribution)
   }
 
-  private async postAutomationComment(job: JobRow, result: { prUrl?: string; issueUrl?: string }, attribution: Record<string, string> | null): Promise<void> {
+  private async postAutomationComment(job: JobRow, result: { prUrl?: string; issueUrl?: string }, attribution: Attribution | null): Promise<void> {
     if (job.kind === 'review' || result.prUrl === undefined) return
     const match = /\/pull\/(\d+)(?:[/?#]|$)/.exec(result.prUrl)
     if (match === null) return
@@ -241,25 +224,24 @@ export class Jobs {
     const owner = repo.upstream_owner || repo.owner
     const name = repo.upstream_name || repo.name
     const number = Number(match[1])
-    const lines = [
-      '### Fledge automation / 自动化任务',
+    const teamLabel = team ?? `${owner}/${name}`
+    const journey = attributionSentence(attribution)
+    const body = [
+      '<details>',
+      `<summary>Fledge automation · ${teamLabel} · job <code>${job.id}</code> (${job.trigger}, ${job.kind})</summary>`,
       '',
-      'This pull request was produced by an automated Fledge job. Fledge never merges; a human must review and merge.',
+      journey === '' ? `Produced by the ${teamLabel} team.` : `Automated run: ${journey}.`,
       '',
-      `- Job: \`${job.id}\` (${job.trigger}, ${job.kind})`,
-      `- Team: ${team ?? `${owner}/${name}`}`,
+      'Fledge never merges; a human must review and merge.',
+      '',
       `- Issue: ${result.issueUrl ?? 'none'}`,
-      `- Written by: ${attributionLabel(attribution, 'writtenBy', 'Lead')}`,
-      `- Claimed by: ${attributionLabel(attribution, 'claimedBy', 'Lead')}`,
-      `- Implemented by: ${attributionLabel(attribution, 'implementedBy', 'Lead')}`,
-      `- Tested by: ${attributionLabel(attribution, 'testedBy', 'not recorded')}`,
-      `- Reviewed by: ${attributionLabel(attribution, 'reviewedBy', 'pending')}`,
-      `- Result: succeeded`,
+      `- Team console: ${this.config.baseUrl}/repos/${job.repo_id}/team`,
+      '</details>',
     ]
     try {
       const token = decryptSecret(repo.token_enc, this.config.tokenEncryptionKey)
       const client = new GithubClient(token, this.config.github.apiBase)
-      await client.comment(owner, name, number, lines.join('\n'))
+      await client.comment(owner, name, number, body.join('\n'))
       log.info('automation comment posted', { job: job.id, pr: number })
     } catch (error) {
       log.warn('automation comment failed', { job: job.id, pr: number, error: String(error) })

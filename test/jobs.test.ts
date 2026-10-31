@@ -100,9 +100,11 @@ test('a successful callback stores attribution and posts a PR automation comment
     assert.match(comment.path, /\/repos\/owner\/repo\/issues\/42\/comments/)
     const body = JSON.parse(comment.body) as { body: string }
     assert.match(body.body, /Fledge automation/)
-    assert.match(body.body, /Written by: Dev-1/)
-    assert.match(body.body, /Tested by: Test/)
-    assert.match(body.body, /Reviewed by: Reviewer/)
+    assert.match(body.body, /Lead claimed/)
+    assert.match(body.body, /Dev-1 implemented/)
+    assert.match(body.body, /Test tested/)
+    assert.match(body.body, /Reviewer reviewed/)
+    assert.doesNotMatch(body.body, /not recorded|pending/)
   } finally {
     store.close()
     await github.close()

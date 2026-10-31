@@ -1,6 +1,6 @@
 import { sha256Hex } from '../lib/secrets.js'
 
-export const PLAYBOOK_VERSION = 3
+export const PLAYBOOK_VERSION = 4
 
 export type TeamRole = 'chief' | 'lead' | 'product' | 'test' | 'security' | 'reviewer' | 'dev1' | 'dev2'
 
@@ -33,7 +33,7 @@ const PROTOCOL = [
   '- Send a progress heartbeat by POSTing the job callback with {"status":"running","summary":"<one line progress>"} after each major step and at least every 10 minutes.',
   '- Finish with the final callback before the time limit. If blocked, POST {"status":"failed","error":"<concrete blocker>"} instead of running silently.',
   '- Report the commands actually run and the checks not run.',
-  '- Make the automation visible on GitHub: end every issue, PR and comment with a one-line attribution naming the actual role and team ("Written by Dev-1 (Team) · Fledge job <id>"). Use "Claimed by Lead (Team)", "Tested by Test (Team)" and "Written-by: Reviewer (Team)" for the matching steps. Never claim a role that did not do the work.',
+  '- Make the automation visible: end every GitHub issue, PR and comment with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',
   '',
   'Handoff protocol:',
   '1. Every delegation is self-contained: goal, repo and fork, branch, acceptance criteria and what to return. Never paste token values.',

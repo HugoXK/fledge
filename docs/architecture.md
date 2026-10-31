@@ -125,12 +125,13 @@ descriptor; the bridge relays it to a configured FlyBot chat session. The agent:
    implemented, tested and reviewed the change. Review jobs instead list all
    open upstream PRs, post scored COMMENT reviews, and return `reviewScore`.
 
-The playbook asks every role to sign its GitHub issues, PRs and comments with
-the role and team, for example `Written by Dev-1 (Team) · Fledge job <id>`. On a
-successful iterate job Fledge also posts a summary comment on the PR: job id,
-trigger, team, issue, the recorded attribution and the reminder that Fledge
-never merges. That way a reader sees the automation flow even if a role forgot
-its signature.
+The playbook asks every role to end its GitHub issues, PRs and comments with one
+small line: `<sub>Fledge · team · role · step</sub>`, where step is claimed,
+implemented, tested or reviewed. On a successful iterate job Fledge also adds a
+collapsible automation block to the PR. It lists only the steps that actually
+happened (a single role is grouped once), links the issue and team console, and
+repeats that Fledge never merges. A missing step is omitted rather than shown as
+"pending", so the block stays truthful and quiet even when attribution is thin.
 
 Both endpoints require `Authorization: Bearer <callbackSecret>`. The secret is
 generated per job, stored as a hash, and never appears in the UI.

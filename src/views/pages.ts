@@ -5,6 +5,7 @@ import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
+import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
 import { parseTeam, type TeamLiveState } from '../flybot/instances.js'
 
@@ -109,28 +110,16 @@ function jobSummary(t: Translate, job: JobRow): string {
   return raw
 }
 
-const ATTRIBUTION_LABELS: Array<[string, string, string]> = [
-  ['writtenBy', '编写', 'Written by'],
-  ['claimedBy', '领取', 'Claimed by'],
-  ['implementedBy', '实现', 'Implemented by'],
-  ['testedBy', '测试', 'Tested by'],
-  ['reviewedBy', '审核', 'Reviewed by'],
-]
-
 function jobAttribution(t: Translate, job: JobRow): string {
-  if (job.attribution_json === null) return ''
-  try {
-    const parsed = JSON.parse(job.attribution_json) as Record<string, unknown>
-    return ATTRIBUTION_LABELS
-      .map(([key, zh, en]) => {
-        const value = parsed[key]
-        return typeof value === 'string' && value.trim() !== '' ? `${t(zh, en)}: ${value}` : ''
+  return attributionJourney(parseAttributionJson(job.attribution_json))
+    .map(({ role, keys }) => {
+      const labels = keys.map((key) => {
+        const field = ATTRIBUTION_FIELDS.find((entry) => entry.key === key)
+        return field === undefined ? key : t(field.zh, field.en)
       })
-      .filter((value) => value !== '')
-      .join(' · ')
-  } catch {
-    return ''
-  }
+      return `${role} ${labels.join(' + ')}`
+    })
+    .join(' · ')
 }
 
 function jobRows(locale: Locale, jobs: JobRow[]): string {
