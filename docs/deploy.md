@@ -102,8 +102,11 @@ never expose it publicly without TLS and a strong token.
 Set `RUNNER_MODE=flybot`, `FLYBOT_BRIDGE_URL`, `FLYBOT_BRIDGE_TOKEN` in Fledge.
 
 The agent prompt tells FlyBot to fetch the token from the credential URL, use
-the job-scoped model token, open a PR and call back. The platform will fail the
-job after `JOB_TIMEOUT_MINUTES` if no callback arrives.
+the job-scoped model token, open a PR and call back. It also asks for a
+`{"status":"running","summary":"..."}` heartbeat after each major step and at
+least every 10 minutes; heartbeats update the job summary but do not extend the
+limit. The platform fails the job after `JOB_TIMEOUT_MINUTES` (default 90) if no
+final callback arrives.
 
 ## 5. Run
 

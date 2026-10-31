@@ -81,7 +81,14 @@ Headers: `Authorization: Bearer <callbackSecret>`, `Content-Type: application/js
   "prUrl": "https://github.com/octo/demo/pull/42",
   "issueUrl": "https://github.com/octo/demo/issues/41",
   "summary": "Fixed the off-by-one in the CSV splitter; added a regression test.",
-  "error": ""
+  "error": "",
+  "attribution": {
+    "writtenBy": "Dev-1",
+    "claimedBy": "Lead",
+    "implementedBy": "Dev-1",
+    "testedBy": "Test",
+    "reviewedBy": "Reviewer"
+  }
 }
 ```
 
@@ -92,8 +99,13 @@ branch/PR:
 { "status": "succeeded", "summary": "Reviewed 6 PRs; average 78.", "reviewScore": 78 }
 ```
 
-`status` may be `running`, `succeeded` or `failed`. A finished job revokes its
-job-scoped model token.
+`status` may be `running`, `succeeded` or `failed`. A `running` callback is a
+progress heartbeat: it updates `summary` (and optionally `branch` or
+`attribution`) without finishing the job or extending `JOB_TIMEOUT_MINUTES`. On
+success, Fledge posts a short automation comment on the PR with the job, team
+and attribution so humans can see which role wrote, claimed, implemented, tested
+and reviewed the change. A finished job revokes its job-scoped model token, and
+later callbacks or credential reads return HTTP 409.
 
 ## Model gateway
 

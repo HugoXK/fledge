@@ -4,7 +4,7 @@ import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
-import { escapeHtml, layout, money, type Viewer } from './layout.js'
+import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
 import { parseTeam, type TeamLiveState } from '../flybot/instances.js'
 
@@ -109,17 +109,41 @@ function jobSummary(t: Translate, job: JobRow): string {
   return raw
 }
 
+const ATTRIBUTION_LABELS: Array<[string, string, string]> = [
+  ['writtenBy', '编写', 'Written by'],
+  ['claimedBy', '领取', 'Claimed by'],
+  ['implementedBy', '实现', 'Implemented by'],
+  ['testedBy', '测试', 'Tested by'],
+  ['reviewedBy', '审核', 'Reviewed by'],
+]
+
+function jobAttribution(t: Translate, job: JobRow): string {
+  if (job.attribution_json === null) return ''
+  try {
+    const parsed = JSON.parse(job.attribution_json) as Record<string, unknown>
+    return ATTRIBUTION_LABELS
+      .map(([key, zh, en]) => {
+        const value = parsed[key]
+        return typeof value === 'string' && value.trim() !== '' ? `${t(zh, en)}: ${value}` : ''
+      })
+      .filter((value) => value !== '')
+      .join(' · ')
+  } catch {
+    return ''
+  }
+}
+
 function jobRows(locale: Locale, jobs: JobRow[]): string {
   const t = translator(locale)
   if (jobs.length === 0) return `<tr><td colspan="6" class="muted">${escapeHtml(t('还没有任务。', 'No jobs yet.'))}</td></tr>`
   return jobs
     .map(
-      (job) => `<tr>
+      (job) => `<tr data-job-id="${escapeHtml(job.id)}">
         <td><code>${escapeHtml(job.id)}</code> <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span></td>
-        <td>${badge(t, job.status)}</td>
+        <td data-job-status>${badge(t, job.status)}</td>
         <td>${escapeHtml(triggerLabel(t, job.trigger))}</td>
         <td>${jobLinks(job)}</td>
-        <td>${escapeHtml(jobSummary(t, job)).slice(0, 120)}</td>
+        <td data-job-summary><span data-job-summary-text>${escapeHtml(jobSummary(t, job)).slice(0, 120)}</span>${jobAttribution(t, job) === '' ? '' : `<br /><small class="muted" data-job-attribution>${escapeHtml(jobAttribution(t, job))}</small>`}</td>
         <td>${escapeHtml(humanTimeShort(job.created_at))}</td>
       </tr>`,
     )
@@ -258,10 +282,10 @@ export function dashboardPage(input: {
   <section class="quota-card card">
     <div>
       <div class="eyebrow">${escapeHtml(t('平台额度', 'PLATFORM QUOTA'))}</div>
-      <div class="quota-big">${money(quota.remainingCny)}<small> / ${money(quota.initialCny)}</small></div>
-      <p class="muted">${escapeHtml(t(`已用 ${money(quota.usedCny)} · 平台额度用完后可配置自己的模型 API`, `Used ${money(quota.usedCny)} · add your own model API when the platform quota runs out`))}</p>
+      <div class="quota-big">${quota.unlimited ? escapeHtml(t('不限额', 'Unlimited')) : quotaMoney(quota.remainingCny)}${quota.unlimited ? '' : `<small> / ${money(quota.initialCny)}</small>`}</div>
+      <p class="muted">${escapeHtml(quota.unlimited ? t(`已用 ${quotaMoney(quota.usedCny)} · 平台额度不限额`, `Used ${quotaMoney(quota.usedCny)} · platform quota is unlimited`) : t(`已用 ${quotaMoney(quota.usedCny)} · 平台额度用完后可配置自己的模型 API`, `Used ${quotaMoney(quota.usedCny)} · add your own model API when the platform quota runs out`))}</p>
     </div>
-    <div class="meter"><span style="width:${Math.min(100, Math.max(0, (quota.usedCny / Math.max(0.0001, quota.initialCny)) * 100)).toFixed(2)}%"></span></div>
+    <div class="meter"><span style="width:${quota.unlimited ? '0' : Math.min(100, Math.max(0, (quota.usedCny / Math.max(0.0001, quota.initialCny)) * 100)).toFixed(2)}%"></span></div>
   </section>
 
   <section class="cols">
@@ -358,13 +382,16 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const reviewerScopeText = instanceTeam === null ? '' : instanceTeam.reviewerScope === 'upstream'
     ? t('上游全部 PR', 'all upstream PRs')
     : instanceTeam.reviewerScope === 'self' ? t('仅自审', 'self-review') : t('未启用', 'off')
+  const reviewerNote = reviewerEnabled
+    ? `${t('已启用', 'Enabled')} · ${reviewerScopeText}`
+    : canReview ? t('未启用（设置里开启）', 'Created but disabled (enable in settings)') : t('不可用', 'Unavailable')
   const teamRoles = instanceTeam === null ? [] : [
     { label: t('总控', 'Chief'), id: instanceTeam.chief, note: t('已创建', 'Created') },
     { label: t('负责人', 'Lead'), id: instanceTeam.lead, note: t('已创建', 'Created') },
     { label: t('产品', 'Product'), id: instanceTeam.product, note: t('已创建', 'Created') },
     { label: t('测试', 'Test'), id: instanceTeam.test, note: t('已创建', 'Created') },
     { label: t('安全', 'Security'), id: instanceTeam.security, note: t('已创建', 'Created') },
-    { label: t('审核', 'Reviewer'), id: instanceTeam.reviewer ?? '—', note: `${t('已创建', 'Created')} · ${reviewerScopeText}` },
+    { label: t('审核', 'Reviewer'), id: instanceTeam.reviewer ?? '—', note: reviewerNote },
     { label: t('开发 1', 'Dev-1'), id: instanceTeam.dev1, note: t('已创建', 'Created') },
     { label: t('开发 2', 'Dev-2'), id: instanceTeam.dev2, note: t('已创建', 'Created') },
   ]
@@ -390,7 +417,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <div>
         <div class="eyebrow">${escapeHtml(t('每仓库 FlyBot', 'PER-REPOSITORY FLYBOT'))}</div>
         <h2>${escapeHtml(t('实例与团队', 'Instance & team'))}</h2>
-        <p class="muted">${instance === undefined ? escapeHtml(t('未创建', 'Not created')) : `${badge(t, instance.status)} <span class="muted">${escapeHtml(instance.container)}</span>`}${instanceReady ? ` · ${escapeHtml(t('任务会发给负责人', 'jobs go to the Lead'))}` : ''}</p>
+        <p class="muted">${instance === undefined ? escapeHtml(t('未创建', 'Not created')) : `${badge(t, instance.status)} <span class="muted">${escapeHtml(instance.container)}</span>`}${instanceReady ? ` · ${escapeHtml(t('任务先发给总控，再由负责人执行', 'jobs go to the Chief, then the Lead'))}` : ''}</p>
       </div>
       ${instanceActions}
     </div>
@@ -413,6 +440,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval" ${canReview ? '' : 'disabled'}>${reviewIntervalOptions(t, repo.review_interval_minutes)}</select></label>
         </div>
         ${canReview ? '' : `<p class="fine">${escapeHtml(t('你在这个上游没有 maintain/write 权限，审核角色不可用。', 'You do not have maintain/write permission on this upstream, so the reviewer role is unavailable.'))}</p>`}
+        <p class="fine">${escapeHtml(t('保存目标后，团队 playbook 会按新目标个性化更新：总控 → 负责人 → 产品/测试/安全/审核/开发。审核角色只有勾选“启用 PR 审核”后才会参与任务。', 'Saving the goal personalizes the team playbook: Chief -> Lead -> Product/Test/Security/Reviewer/Dev. The Reviewer takes part only when "Enable PR reviewer" is checked.'))}</p>
         <p class="fine">${escapeHtml(t('自动迭代间隔是最小运行间隔；每次运行创建一个 PR/issue，仓库可以持续积累多个。上一轮未结束时本轮会跳过；手动运行会重置迭代倒计时，审核任务不会。平台全局同时最多 2 个任务，多个仓库会排队。', 'The auto-iterate interval is the minimum gap between runs; each run creates one PR/issue and the repository can accumulate many. A run is skipped while the previous one is active. A manual iterate run resets the countdown; a review run does not. The platform runs at most two jobs at a time.'))}</p>
         <button class="btn" type="submit">${escapeHtml(t('保存', 'Save'))}</button>
       </form>
@@ -497,14 +525,15 @@ export function teamPage(input: {
       sessionId: live?.sessionId ?? teamSession(team, role),
       activity: live?.activity ?? 'unknown',
       calls: live?.calls ?? 0,
+      disabled: live?.disabled ?? (role === 'reviewer' && repo.reviewer_enabled !== 1),
     }
   })
   const roleCards = roles
     .map(
-      (role) => `<div class="team-role${role.activity === 'thinking' || role.activity === 'working' ? ' is-thinking' : ''}" data-role="${escapeHtml(role.role)}">
+      (role) => `<div class="team-role${role.activity === 'thinking' || role.activity === 'working' ? ' is-thinking' : ''}${role.disabled ? ' is-disabled' : ''}" data-role="${escapeHtml(role.role)}">
         <b>${escapeHtml(role.label)}</b>
-        <span class="team-activity">${escapeHtml(activityLabel(t, role.activity))}</span>
-        <small class="team-calls">${role.calls > 0 ? `${role.calls} ${escapeHtml(t('次调用', 'calls'))}` : ''}</small>
+        <span class="team-activity">${escapeHtml(role.disabled ? t('未启用', 'Disabled') : activityLabel(t, role.activity))}</span>
+        <small class="team-calls">${!role.disabled && role.calls > 0 ? `${role.calls} ${escapeHtml(t('次调用', 'calls'))}` : ''}</small>
       </div>`,
     )
     .join('')
@@ -528,7 +557,7 @@ export function teamPage(input: {
         ${csrf(viewer)}
         <label>${escapeHtml(t('发送给', 'Send to'))}
           <select name="target">
-            ${roles.map((role) => `<option value="${escapeHtml(role.role)}"${role.role === 'lead' ? ' selected' : ''}>${escapeHtml(role.label)}</option>`).join('')}
+            ${roles.filter((role) => !role.disabled).map((role) => `<option value="${escapeHtml(role.role)}"${role.role === 'lead' ? ' selected' : ''}>${escapeHtml(role.label)}</option>`).join('')}
           </select>
         </label>
         <label>${escapeHtml(t('新的指导意见', 'New guidance'))}<textarea name="text" rows="4" required placeholder="${escapeHtml(t('例如：先不要改代码，汇报当前实现和风险。', 'For example: do not change code yet; report the current implementation and risks.'))}"></textarea></label>
@@ -590,13 +619,13 @@ export function settingsPage(input: {
   const body = `<section class="card">
     <div class="eyebrow">${escapeHtml(t('账户', 'ACCOUNT'))}</div>
     <h1>@${escapeHtml(user.login)}</h1>
-    <p class="muted">${escapeHtml(user.email ?? t('未公开邮箱', 'No public email'))} · ${escapeHtml(t('加入于', 'Joined'))} ${escapeHtml(humanTimeShort(user.created_at))} · ${escapeHtml(t('平台额度', 'Platform quota'))} ${money(quota.remainingCny)} / ${money(quota.initialCny)}</p>
+    <p class="muted">${escapeHtml(user.email ?? t('未公开邮箱', 'No public email'))} · ${escapeHtml(t('加入于', 'Joined'))} ${escapeHtml(humanTimeShort(user.created_at))} · ${escapeHtml(t('平台额度', 'Platform quota'))} ${quota.unlimited ? escapeHtml(t('不限额', 'Unlimited')) : `${quotaMoney(quota.remainingCny)} / ${money(quota.initialCny)}`}</p>
     ${user.github_token_enc !== null ? `<p class="fine">${escapeHtml(t('登录时保存了一个默认 GitHub token；添加仓库时仍以仓库表单里的 token 为准。', 'A default GitHub token was saved at sign-in; the token in the repository form still takes precedence.'))}</p>` : ''}
   </section>
 
   <section class="card" id="model">
     <h2>${escapeHtml(t('模型服务', 'Model service'))}</h2>
-    <p class="muted">${escapeHtml(t(`默认使用平台额度（${money(quota.initialCny)}）。额度用完后，填入你自己的 OpenAI 兼容服务即可继续；平台不再扣额度。`, `The platform quota (${money(quota.initialCny)}) is used by default. When it runs out, add your own OpenAI-compatible service to continue; the platform no longer meters it.`))}</p>
+    <p class="muted">${escapeHtml(quota.unlimited ? t('你的平台额度不限额，平台会继续记录用量但不拦截任务。', 'Your platform quota is unlimited: usage is still recorded but jobs are never blocked.') : t(`默认使用平台额度（${money(quota.initialCny)}）。额度用完后，填入你自己的 OpenAI 兼容服务即可继续；平台不再扣额度。`, `The platform quota (${money(quota.initialCny)}) is used by default. When it runs out, add your own OpenAI-compatible service to continue; the platform no longer meters it.`))}</p>
     ${quota.exhausted ? `<div class="banner bad">${escapeHtml(t('平台额度已用完。保存自己的模型服务后，任务会自动使用它。', 'Platform quota is used up. After you save your own model service, jobs will use it automatically.'))}</div>` : ''}
     <form method="post" action="/settings/model" class="form">
       ${csrf(viewer)}
@@ -748,10 +777,10 @@ export function adminPage(input: {
         <td>@${escapeHtml(user.login)}<br /><small class="muted">${escapeHtml(user.email ?? '')}</small></td>
         <td>${badge(t, user.status)}</td>
         <td>${escapeHtml(roleLabel(t, user.role))}</td>
-        <td>${money(user.quota_cny)}</td>
-        <td>${money(quotaView(user, config).usedCny)}</td>
+        <td>${user.quota_unlimited === 1 ? escapeHtml(t('不限额', 'Unlimited')) : money(user.quota_cny)}</td>
+        <td>${quotaMoney(quotaView(user, config).usedCny)}</td>
         <td><small class="muted">${escapeHtml(t('最近登录', 'Last sign-in'))} ${escapeHtml(humanTimeShort(user.last_login_at))}<br />${escapeHtml(t('仓库', 'Repos'))} ${activity?.get(user.id)?.repos ?? 0} · ${escapeHtml(t('任务', 'Jobs'))} ${activity?.get(user.id)?.jobs ?? 0}<br />${escapeHtml(t('最近任务', 'Last job'))} ${escapeHtml(humanTimeShort(activity?.get(user.id)?.lastJobAt))}</small></td>
-        <td><form method="post" action="/admin/users/${escapeHtml(user.id)}/quota" class="row">${csrf(viewer)}<input name="quota" type="number" step="0.1" min="0" value="${user.quota_cny}" /><button class="link" type="submit">${escapeHtml(t('改额度', 'Set quota'))}</button></form>
+        <td><form method="post" action="/admin/users/${escapeHtml(user.id)}/quota" class="row">${csrf(viewer)}<input name="quota" type="number" step="0.1" min="0" value="${user.quota_cny}" /><label class="check"><input type="checkbox" name="unlimited" value="1"${user.quota_unlimited === 1 ? ' checked' : ''} /> ${escapeHtml(t('不限额', 'Unlimited'))}</label><button class="link" type="submit">${escapeHtml(t('改额度', 'Set quota'))}</button></form>
           ${user.status === 'rejected' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/approve">${csrf(viewer)}<button class="link good" type="submit">${escapeHtml(t('重新批准', 'Re-approve'))}</button></form>` : ''}
           ${user.status === 'approved' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/reject" onsubmit="return confirm('${escapeHtml(t('停用这个用户并停止其所有 FlyBot 实例？', 'Disable this user and stop all their FlyBot instances?'))}')">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('停用', 'Disable'))}</button></form>` : ''}
         </td>
@@ -955,7 +984,7 @@ export function workspacePage(input: {
   <section class="stats">
     <a class="stat" href="/dashboard"><span>${escapeHtml(t('仓库', 'Repositories'))}</span><strong>${repos.length}</strong><small>${escapeHtml(t('已接入', 'Connected'))}</small></a>
     <a class="stat" href="/dashboard"><span>${escapeHtml(t('进行中', 'In progress'))}</span><strong>${active}</strong><small>${escapeHtml(t('排队或运行', 'Queued or running'))}</small></a>
-    <a class="stat" href="/settings#model"><span>${escapeHtml(t('平台额度', 'Platform quota'))}</span><strong>${money(quota.remainingCny)}</strong><small>${escapeHtml(t(`剩余 / ${money(quota.initialCny)}`, `left of ${money(quota.initialCny)}`))}</small></a>
+    <a class="stat" href="/settings#model"><span>${escapeHtml(t('平台额度', 'Platform quota'))}</span><strong>${quota.unlimited ? escapeHtml(t('不限额', 'Unlimited')) : quotaMoney(quota.remainingCny)}</strong><small>${escapeHtml(quota.unlimited ? t('用量仍会记录', 'usage is still recorded') : t(`剩余 / ${money(quota.initialCny)}`, `left of ${money(quota.initialCny)}`))}</small></a>
   </section>
   <section class="card">
     <div class="row between"><h2>${escapeHtml(t('仓库', 'Repositories'))}</h2><a class="link" href="/dashboard">${escapeHtml(t('管理全部', 'Manage all'))}</a></div>

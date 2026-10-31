@@ -4,6 +4,31 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { dashboardPage } from '../src/views/pages.js'
+import { quotaMoney } from '../src/views/layout.js'
+
+test('small quota changes are visible below one yuan', () => {
+  assert.equal(quotaMoney(0.0001), '¥0.0001')
+  assert.equal(quotaMoney(0.5), '¥0.5000')
+  assert.equal(quotaMoney(1.234), '¥1.23')
+})
+
+test('unlimited quota is shown instead of a finite balance', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'unlimited-ui', status: 'approved' })
+    store.setUserQuotaUnlimited(user.id, true)
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const en = dashboardPage({ config, locale: 'en', viewer, repos: [], jobs: [], notifications: [] })
+    assert.match(en, /Unlimited/)
+    assert.match(en, /usage is still recorded|platform quota is unlimited/)
+    const zh = dashboardPage({ config, locale: 'zh', viewer, repos: [], jobs: [], notifications: [] })
+    assert.match(zh, /不限额/)
+  } finally {
+    store.close()
+  }
+})
 
 test('the workspace stays focused and the UI switches language', async () => {
   const config = testConfig()

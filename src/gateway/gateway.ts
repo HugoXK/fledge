@@ -1,5 +1,6 @@
 import http from 'node:http'
 import https from 'node:https'
+import { StringDecoder } from 'node:string_decoder'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { Config } from '../config.js'
 import type { ApiTokenRow, Store, UserRow } from '../db.js'
@@ -11,6 +12,7 @@ interface GatewayDeps {
   config: Config
   store: Store
   onQuotaExhausted?: (user: UserRow) => Promise<void> | void
+  onQuotaBlocked?: (user: UserRow) => Promise<void> | void
 }
 
 interface ChatBody {
@@ -83,12 +85,14 @@ function forwardHeaders(headers: http.IncomingHttpHeaders): Record<string, strin
   return out
 }
 
-function findUsage(text: string): unknown {
-  const matches = [...text.matchAll(/"usage"\s*:\s*\{[^}]*\}/g)]
-  const last = matches.at(-1)?.[0]
-  if (last === undefined) return null
+function sseUsage(line: string): unknown {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith('data:')) return null
+  const data = trimmed.slice(5).trim()
+  if (data === '' || data === '[DONE]') return null
   try {
-    return JSON.parse(`{${last}}`).usage
+    const parsed = JSON.parse(data) as { usage?: unknown }
+    return parsed.usage ?? null
   } catch {
     return null
   }
@@ -126,7 +130,10 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
     if ('error' in target) return reply.code(503).send({ error: { type: 'platform_model_unavailable', message: target.error } })
 
     const quota = quotaView(auth.user, config)
-    if (target.platformFunded && quota.exhausted) return quotaError(reply, auth.user, config)
+    if (target.platformFunded && quota.exhausted) {
+      await deps.onQuotaBlocked?.(auth.user)
+      return quotaError(reply, auth.user, config)
+    }
 
     const stream = body.stream === true
     const payload: ChatBody = { ...body, model: target.model }
@@ -161,20 +168,30 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
     const targetModel = target.model
     const costFromHeader = headerCost(upstream.headers)
     const writeHeaders = forwardHeaders(upstream.headers)
-    writeHeaders['x-fledge-quota-remaining-cny'] = quota.remainingCny.toFixed(4)
+    writeHeaders['x-fledge-quota-remaining-cny'] = quota.unlimited ? 'unlimited' : quota.remainingCny.toFixed(4)
     writeHeaders['x-fledge-top-up-url'] = `${config.baseUrl}/settings`
 
     if (stream && upstream.status >= 200 && upstream.status < 300) {
       reply.hijack()
       reply.raw.writeHead(upstream.status, writeHeaders)
-      let captured = ''
+      const decoder = new StringDecoder('utf8')
+      let pending = ''
+      let usage: unknown = null
       upstream.res.on('data', (chunk: Buffer) => {
-        if (captured.length < 256 * 1024) captured += chunk.toString('utf8')
         reply.raw.write(chunk)
+        pending += decoder.write(chunk)
+        const lines = pending.split('\n')
+        pending = lines.pop() ?? ''
+        for (const line of lines) {
+          const found = sseUsage(line)
+          if (found !== null) usage = found
+        }
       })
       upstream.res.on('end', () => {
+        pending += decoder.end()
+        const found = sseUsage(pending)
+        if (found !== null) usage = found
         reply.raw.end()
-        const usage = findUsage(captured)
         const cost = costFromHeader ?? costUsdFromUsage(usage, config.llm.pricePerTokenUsd)
         finishCost(cost, usage)
       })

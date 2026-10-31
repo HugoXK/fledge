@@ -34,6 +34,7 @@ export interface UserRow {
   status: UserStatus
   role: UserRole
   quota_cny: number
+  quota_unlimited: number
   quota_used_usd: number
   github_token_enc: string | null
   own_llm_base_url: string | null
@@ -130,6 +131,7 @@ export interface JobRow {
   kind: string
   issue_url: string | null
   review_score: number | null
+  attribution_json: string | null
   created_at: string
   started_at: string | null
   finished_at: string | null
@@ -201,6 +203,7 @@ CREATE TABLE IF NOT EXISTS users (
   status TEXT NOT NULL DEFAULT 'pending',
   role TEXT NOT NULL DEFAULT 'user',
   quota_cny REAL NOT NULL DEFAULT 1,
+  quota_unlimited INTEGER NOT NULL DEFAULT 0,
   quota_used_usd REAL NOT NULL DEFAULT 0,
   github_token_enc TEXT,
   own_llm_base_url TEXT,
@@ -329,6 +332,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   kind TEXT NOT NULL DEFAULT 'iterate',
   issue_url TEXT,
   review_score INTEGER,
+  attribution_json TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   finished_at TEXT
@@ -400,7 +404,7 @@ export class Store {
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
-    this.db.exec('PRAGMA user_version = 3;')
+    this.db.exec('PRAGMA user_version = 5;')
   }
 
   private migrateColumns(): void {
@@ -416,6 +420,7 @@ export class Store {
       ['application_ip', 'TEXT'],
       ['application_ua', 'TEXT'],
       ['reviewed_at', 'TEXT'],
+      ['quota_unlimited', 'INTEGER NOT NULL DEFAULT 0'],
     ]
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE users ADD COLUMN ${name} ${type}`)
@@ -456,6 +461,7 @@ export class Store {
     if (!jobColumns.has('kind')) this.run("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'iterate'")
     if (!jobColumns.has('issue_url')) this.run('ALTER TABLE jobs ADD COLUMN issue_url TEXT')
     if (!jobColumns.has('review_score')) this.run('ALTER TABLE jobs ADD COLUMN review_score INTEGER')
+    if (!jobColumns.has('attribution_json')) this.run('ALTER TABLE jobs ADD COLUMN attribution_json TEXT')
   }
 
   close(): void {
@@ -630,6 +636,10 @@ export class Store {
 
   setUserQuota(id: string, quotaCny: number): void {
     this.run('UPDATE users SET quota_cny = ? WHERE id = ?', quotaCny, id)
+  }
+
+  setUserQuotaUnlimited(id: string, unlimited: boolean): void {
+    this.run('UPDATE users SET quota_unlimited = ? WHERE id = ?', unlimited ? 1 : 0, id)
   }
 
   addUserUsage(id: string, usd: number): void {
@@ -863,7 +873,11 @@ export class Store {
     return this.get<JobRow>("SELECT * FROM jobs WHERE repo_id = ? AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1", repoId)
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at'>>): void {
+  listActiveJobsForUser(userId: string): JobRow[] {
+    return this.all<JobRow>("SELECT * FROM jobs WHERE user_id = ? AND status IN ('queued','running') ORDER BY created_at DESC", userId)
+  }
+
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')

@@ -38,7 +38,7 @@ export interface RunnerContext {
   callback: JobCredential
   credential: JobCredential
   platform: PlatformModel
-  flybot?: { url: string; token: string; sessionId: string }
+  flybot?: { url: string; token: string; sessionId: string; role: 'chief' | 'lead' | 'reviewer'; leadName: string }
   timeoutMinutes: number
 }
 

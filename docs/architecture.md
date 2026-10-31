@@ -99,6 +99,17 @@ the Reviewer is scoped to upstream/all PRs or self-review based on the user's
 upstream permission. Deleting or stopping a repository stops only that
 container. The shared operator FlyBot is never used for user jobs.
 
+Provisioning writes a versioned team playbook into every role and records the
+version and a goal fingerprint in `team_json` (`playbook`, `playbookHash`). It
+defines the hierarchy (Chief -> Lead -> Product/Test/Security/Reviewer/Dev), the
+Lead as the single job owner, the one-issue/one-PR rule, the handoff protocol,
+the progress heartbeat, and the current repository goal with role-specific
+guidance for it. Saving a new goal refreshes the playbook; older instances are
+also refreshed on the next job before dispatch. Iterate jobs go to the Chief,
+which must pass the job block to the Lead verbatim; review jobs go to the
+Reviewer only when the repository has enabled it. The Lead delegates to the
+member whose scope fits and posts the final callback exactly once.
+
 ### FlyBot bridge
 
 The bridge is a tiny HTTP service on the FlyBot host. Fledge POSTs a job
@@ -109,9 +120,17 @@ descriptor; the bridge relays it to a configured FlyBot chat session. The agent:
 2. uses the platform model at `.../v1` with the job token;
 3. creates a branch, commits to the fork when one is used, opens an issue and a
    PR against the upstream;
-4. calls `POST /api/jobs/:id/callback` with the branch, issue URL, PR URL and
-   summary. Review jobs instead list all open upstream PRs, post scored COMMENT
-   reviews, and return `reviewScore`.
+4. calls `POST /api/jobs/:id/callback` with the branch, issue URL, PR URL,
+   summary and an `attribution` object naming the roles that wrote, claimed,
+   implemented, tested and reviewed the change. Review jobs instead list all
+   open upstream PRs, post scored COMMENT reviews, and return `reviewScore`.
+
+The playbook asks every role to sign its GitHub issues, PRs and comments with
+the role and team, for example `Written by Dev-1 (Team) · Fledge job <id>`. On a
+successful iterate job Fledge also posts a summary comment on the PR: job id,
+trigger, team, issue, the recorded attribution and the reminder that Fledge
+never merges. That way a reader sees the automation flow even if a role forgot
+its signature.
 
 Both endpoints require `Authorization: Bearer <callbackSecret>`. The secret is
 generated per job, stored as a hash, and never appears in the UI.
@@ -164,7 +183,7 @@ queued ──► running ──► succeeded
 | Failure | Behaviour |
 |---|---|
 | Bridge unreachable | job fails with `RUNNER_ERROR`; user notified |
-| Agent never calls back | job failed after `JOB_TIMEOUT_MINUTES` |
+| Agent never calls back | job failed after `JOB_TIMEOUT_MINUTES` (default 90); progress heartbeats update the running summary but do not extend the limit |
 | Provider 429/5xx | gateway returns the upstream status; user sees the error |
 | Quota exhausted | job marked `quota_exhausted`; one notification + email per day |
 | SQLite locked | WAL + single process; retries surface as 500 and are logged |

@@ -145,6 +145,7 @@ function buildText(job) {
     `Upstream: ${upstream.owner}/${upstream.name} (base ${upstream.defaultBranch})`,
     `Fork: ${fork.owner}/${fork.name}${job.isFork ? ' (push here)' : ' (same as upstream)'}`,
     `Permission: ${job.permission || 'unknown'}${job.canReview ? ' · review enabled' : ''}`,
+    `Time limit: ${job.timeoutMinutes ?? 90} minutes.`,
     `Goal: ${job.goal}`,
     '',
     'Credentials:',
@@ -155,12 +156,29 @@ function buildText(job) {
     'Rules:',
     ...rules,
     '- Do not print the GitHub token or the job token.',
+    '- End every GitHub issue, PR and comment with a one-line attribution naming the role and team, e.g. "Written by Dev-1 (Team) · Fledge job <id>". Use "Claimed by", "Tested by" and "Written-by:" for claim, test and review comments. Never claim a role that did not do the work.',
+    '- The final callback must include "attribution": {"writtenBy":"...","claimedBy":"...","implementedBy":"...","testedBy":"...","reviewedBy":"..."} using the roles that actually did each step; use "not run" for skipped steps.',
+    `- After each major step and at least every 10 minutes, POST ${job.callbackUrl} with JSON {"status":"running","summary":"<one line progress>"}`,
+    `  and "Authorization: Bearer ${job.callbackSecret}". This is a heartbeat, not a finish.`,
     `- Finish by POSTing ${job.callbackUrl} with JSON {status, branch, prUrl, issueUrl, reviewScore, summary, error}`,
     `  and "Authorization: Bearer ${job.callbackSecret}".`,
     '',
     job.instructions ?? '',
   ]
-  return lines.join('\n').slice(0, MAX_PROMPT)
+  const block = lines.join('\n').slice(0, MAX_PROMPT)
+  if (job.dispatchRole === 'chief') {
+    const lead = job.leadName || 'the Lead'
+    return [
+      'A Fledge job is ready. You are the Chief.',
+      `Delegate the JOB BLOCK below verbatim to your direct child "${lead}" and wait for the Lead to finish.`,
+      'Do not rewrite the credentials, do not do the work yourself, and do not post the callback: the Lead owns execution and the final callback.',
+      'If the Lead reports a blocker that needs a human decision, stop and report it.',
+      '',
+      '--- JOB BLOCK (pass verbatim) ---',
+      block,
+    ].join('\n').slice(0, MAX_PROMPT)
+  }
+  return block
 }
 
 function json(response, status, body) {

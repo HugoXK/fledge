@@ -29,7 +29,7 @@ through a signed bridge; the agent writes a failing test, makes the smallest
 correct fix, opens one pull request, and reports back. Fledge never pushes to the
 default branch, never merges, and never runs a user repository itself.
 
-> **Status:** `v0.1.0` is live at <https://fledge.hugoxk.online/> with the GitHub
+> **Status:** `v0.2.0` is live at <https://fledge.hugoxk.online/> with the GitHub
 > token login fallback (the OAuth App is not configured yet). Documentation is at
 > <https://fledge-docs.hugoxk.online/docs/>; the project homepage and guide are at
 > <https://hugoxk.online/fledge/>.

@@ -8,6 +8,7 @@ import type { RepoInstanceRow, RepoRow, Store } from '../db.js'
 import { log } from '../lib/log.js'
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from '../lib/secrets.js'
 import { nowIso } from '../lib/time.js'
+import { PLAYBOOK_VERSION, TEAM_ROLES, playbookFingerprint, playbookFor } from './playbook.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -22,6 +23,8 @@ export interface RepoTeam {
   dev2: string
   reviewerScope: 'upstream' | 'self' | 'none'
   team: string
+  playbook: number
+  playbookHash: string
 }
 
 export interface TeamBotState {
@@ -32,6 +35,7 @@ export interface TeamBotState {
   activity: string
   calls: number
   since: number | null
+  disabled: boolean
 }
 
 export interface TeamQuestionState {
@@ -69,6 +73,8 @@ export function parseTeam(value: string | null): RepoTeam | null {
       dev2: typeof parsed.dev2 === 'string' ? parsed.dev2 : '',
       reviewerScope: parsed.reviewerScope === 'upstream' || parsed.reviewerScope === 'self' ? parsed.reviewerScope : 'none',
       team: typeof parsed.team === 'string' ? parsed.team : 'repo',
+      playbook: typeof parsed.playbook === 'number' ? parsed.playbook : 0,
+      playbookHash: typeof parsed.playbookHash === 'string' ? parsed.playbookHash : '',
     }
   } catch {
     return null
@@ -303,6 +309,9 @@ server.listen(3081, '0.0.0.0')
       const chief = await this.ensureChief(bridgePort, bridgeToken)
       this.store.updateRepoInstance(repo.id, { chief_session: chief, status: 'provisioning' })
       const team = await this.provisionTeam(repo, bridgePort, bridgeToken, chief)
+      const applied = await this.applyPlaybook(bridgePort, bridgeToken, team, repo.goal)
+      team.playbook = applied ? PLAYBOOK_VERSION : 0
+      team.playbookHash = applied ? playbookFingerprint(repo.goal) : ''
       this.store.updateRepoInstance(repo.id, {
         status: 'ready',
         team_json: JSON.stringify(team),
@@ -454,10 +463,76 @@ server.listen(3081, '0.0.0.0')
           dev2: session(`${label} Dev-2`),
           reviewerScope,
           team: label,
+          playbook: 0,
+          playbookHash: '',
         }
       }
     }
     throw new Error(`团队在 ${this.config.flybot.teamTimeoutSeconds} 秒内没有创建完成`)
+  }
+
+  private teamSession(team: RepoTeam, role: string): string {
+    if (role === 'chief') return team.chief
+    if (role === 'lead') return team.lead
+    if (role === 'product') return team.product
+    if (role === 'test') return team.test
+    if (role === 'security') return team.security
+    if (role === 'reviewer') return team.reviewer ?? ''
+    if (role === 'dev1') return team.dev1
+    if (role === 'dev2') return team.dev2
+    return ''
+  }
+
+  private async applyPlaybook(port: number, token: string, team: RepoTeam, goal: string): Promise<boolean> {
+    const state = await this.state(port, token)
+    const bySession = new Map<string, Record<string, unknown>>()
+    for (const bot of state.bots) {
+      if (typeof bot.id === 'string' && bot.id !== '') bySession.set(bot.id, bot)
+      if (typeof bot.sessionId === 'string' && bot.sessionId !== '') bySession.set(bot.sessionId, bot)
+    }
+    let expected = 0
+    for (const role of TEAM_ROLES) {
+      const sessionId = this.teamSession(team, role)
+      if (sessionId === '') continue
+      expected += 1
+      const bot = bySession.get(sessionId)
+      if (bot === undefined || typeof bot.id !== 'string') {
+        log.warn('team playbook role missing', { role, sessionId })
+        continue
+      }
+      const payload: Record<string, unknown> = { id: bot.id, instructions: playbookFor(role, team.team, goal) }
+      if (typeof bot.name === 'string' && bot.name !== '') payload.name = bot.name
+      if (typeof bot.role === 'string' && bot.role !== '') payload.role = bot.role
+      await this.dsh(port, token, 'update-bot', payload).catch((error) => {
+        log.warn('team playbook update failed', { role, error: String(error) })
+      })
+    }
+    const refreshed = await this.state(port, token)
+    const marker = `Fledge team playbook v${PLAYBOOK_VERSION}`
+    const applied = refreshed.bots.filter((bot) => typeof bot.instructions === 'string' && bot.instructions.includes(marker)).length
+    if (applied < expected) {
+      log.warn('team playbook incomplete', { repo: team.team, applied, expected })
+      return false
+    }
+    return true
+  }
+
+  async ensurePlaybook(repoId: string): Promise<void> {
+    const instance = this.store.getRepoInstance(repoId)
+    if (instance === undefined || instance.status !== 'ready' || instance.bridge_token_enc === null) return
+    const team = parseTeam(instance.team_json)
+    if (team === null) return
+    const repo = this.store.getRepo(repoId)
+    const goal = repo?.goal ?? ''
+    const hash = playbookFingerprint(goal)
+    if (team.playbook === PLAYBOOK_VERSION && team.playbookHash === hash) return
+    const token = decryptSecret(instance.bridge_token_enc, this.config.tokenEncryptionKey)
+    if (!await this.applyPlaybook(instance.bridge_port, token, team, goal)) return
+    this.store.updateRepoInstance(repoId, {
+      team_json: JSON.stringify({ ...team, playbook: PLAYBOOK_VERSION, playbookHash: hash }),
+      updated_at: nowIso(),
+    })
+    log.info('team playbook applied', { repo: repoId, version: PLAYBOOK_VERSION })
   }
 
   bridgeFor(repoId: string): InstanceBridge {
@@ -477,6 +552,7 @@ server.listen(3081, '0.0.0.0')
 
   async teamState(repoId: string): Promise<TeamLiveState> {
     const bridge = this.bridgeFor(repoId)
+    const repo = this.store.getRepo(repoId)
     const raw = await this.dsh(bridge.instance.bridge_port, bridge.token, 'state', {})
     const value = ((raw as { value?: Record<string, unknown> }).value ?? raw) as Record<string, unknown>
     const bots = Array.isArray(value.bots) ? (value.bots as Array<Record<string, unknown>>) : []
@@ -504,6 +580,7 @@ server.listen(3081, '0.0.0.0')
           activity: typeof activity[sessionId] === 'string' ? String(activity[sessionId]) : 'idle',
           calls: Number(work?.[sessionId]?.calls ?? 0),
           since: typeof work?.[sessionId]?.since === 'number' ? Number(work[sessionId].since) : null,
+          disabled: role === 'reviewer' && repo?.reviewer_enabled !== 1,
         }
       }),
       questions: Object.entries(questions).slice(0, 10).map(([sessionId, question]) => ({

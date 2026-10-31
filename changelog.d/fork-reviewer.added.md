@@ -1,1 +1,0 @@
-Added fork-aware repository onboarding and a reviewer role: Fledge detects or creates the user's fork, pushes iteration branches there while opening issues and PRs on the upstream, and lets upstream maintainers run scheduled FlyBot reviews of every open PR with a score and COMMENT review.

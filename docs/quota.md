@@ -21,14 +21,17 @@ on their key, with no platform metering.
 2. Otherwise `usage.total_tokens` (or prompt + completion) ×
    `PLATFORM_LLM_PRICE_PER_TOKEN` (default `0.0000002` USD/token).
 
-For streaming requests Fledge adds `stream_options.include_usage = true`, reads
-the final usage chunk, and meters after the stream ends. A request that is already
-in flight is allowed to finish; the **next** request sees the updated balance.
+For streaming requests Fledge adds `stream_options.include_usage = true` and
+parses each SSE `data:` line. It keeps the last `usage` object, including nested
+`completion_tokens_details` / `prompt_tokens_details`, and meters after the
+stream ends. A request that is already in flight is allowed to finish; the
+**next** request sees the updated balance.
 
 ## Enforcement
 
 - Before a platform-funded request: if `remaining_cny <= 0`, return HTTP 402
-  immediately.
+  immediately and mark that user's active jobs `quota_exhausted` (their job
+  tokens are revoked) so the UI does not wait for the job timeout.
 - After a platform-funded request: record a `quota_ledger` row and increment
   `users.quota_used_usd`.
 - When the balance crosses zero: create one in-app notification and at most one
@@ -64,9 +67,12 @@ returns the user to the platform quota.
 
 ## Admin
 
-Admins can set `quota_cny` per user from `/admin` (0–10000). Changes are audited.
-Resetting usage is intentionally not a button in `v0.1`; raise the quota instead
-so the ledger stays honest.
+Admins can set `quota_cny` per user from `/admin` (0–10000), or tick
+**Unlimited** (`users.quota_unlimited = 1`). Changes are audited. An unlimited
+user is never blocked and no quota notice is sent, but every platform-funded call
+is still recorded in `quota_ledger` and shown as usage. Resetting usage is
+intentionally not a button in `v0.1`; raise the quota instead so the ledger stays
+honest.
 
 ## Edge cases
 
@@ -79,6 +85,8 @@ so the ledger stays honest.
 | User switches to own model mid-day | New requests bypass quota; old ledger stays |
 | User has no email | In-app notification only |
 | Admin lowers quota below usage | Remaining is clamped to zero |
+| User is marked unlimited | No 402 and no notice; usage keeps accumulating |
+| Streaming response omits the cost header | Metered from the final usage chunk |
 
 ## Why 1 CNY
 

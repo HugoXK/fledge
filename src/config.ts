@@ -161,7 +161,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       mode: (text('RUNNER_MODE', 'mock') as RunnerMode) || 'mock',
       bridgeUrl: text('FLYBOT_BRIDGE_URL', 'http://127.0.0.1:8787/run'),
       bridgeToken: text('FLYBOT_BRIDGE_TOKEN'),
-      timeoutMinutes: number('JOB_TIMEOUT_MINUTES', 45),
+      timeoutMinutes: number('JOB_TIMEOUT_MINUTES', 90),
     },
     flybot: {
       instanceImage: text('FLYBOT_INSTANCE_IMAGE'),

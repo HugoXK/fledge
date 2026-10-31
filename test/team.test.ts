@@ -61,12 +61,15 @@ test('team console reads live state and sends guidance', async () => {
     assert.match(page.body, /团队状态/)
     assert.match(page.body, /思考中/)
     assert.match(page.body, /发送给团队/)
+    assert.match(page.body, /未启用/)
+    assert.doesNotMatch(page.body, /已创建 · 上游全部 PR/)
 
     const api = await built.app.inject({ method: 'GET', url: `/api/repos/${repo.id}/team`, headers: { cookie } })
     assert.equal(api.statusCode, 200)
-    const data = api.json() as { bots: Array<{ role: string; activity: string; calls: number }> }
+    const data = api.json() as { bots: Array<{ role: string; activity: string; calls: number; disabled: boolean }> }
     assert.equal(data.bots.find((bot) => bot.role === 'lead')?.activity, 'thinking')
     assert.equal(data.bots.find((bot) => bot.role === 'lead')?.calls, 3)
+    assert.equal(data.bots.find((bot) => bot.role === 'reviewer')?.disabled, true)
 
     const sent = await built.app.inject({
       method: 'POST',

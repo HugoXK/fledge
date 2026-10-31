@@ -1,1 +1,0 @@
-Expanded automatic iteration and review cadence options from every 15 minutes to every 30 days, and clarified that the interval is the minimum gap between runs rather than a cap on the number of PRs or issues a repository can produce.

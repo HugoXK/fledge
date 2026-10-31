@@ -1,7 +1,7 @@
 import type { UserRow } from '../db.js'
-import { quotaView } from '../gateway/quota.js'
+import { quotaView, type QuotaView } from '../gateway/quota.js'
 import type { Config } from '../config.js'
-import { localizeMessage, translator, type Locale } from '../i18n.js'
+import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
 
 export function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch)
@@ -9,6 +9,14 @@ export function escapeHtml(value: unknown): string {
 
 export function money(cny: number): string {
   return `¥${cny.toFixed(2)}`
+}
+
+export function quotaMoney(cny: number): string {
+  return cny > 0 && cny < 1 ? `¥${cny.toFixed(4)}` : money(cny)
+}
+
+export function quotaAmount(quota: QuotaView, t: Translate): string {
+  return quota.unlimited ? t('不限额', 'Unlimited') : quotaMoney(quota.remainingCny)
 }
 
 export interface Viewer {
@@ -38,8 +46,8 @@ function languageSwitch(locale: Locale, path: string): string {
 export function quotaPill(user: UserRow, config: Config, locale: Locale = 'zh'): string {
   const t = translator(locale)
   const quota = quotaView(user, config)
-  const cls = quota.exhausted ? 'pill pill-danger' : quota.remainingCny < quota.initialCny * 0.2 ? 'pill pill-warn' : 'pill'
-  return `<span class="${cls}" title="${escapeHtml(t('平台额度', 'Platform quota'))}">${quota.exhausted ? t('额度已用完', 'Quota used up') : money(quota.remainingCny)}</span>`
+  const cls = quota.unlimited ? 'pill' : quota.exhausted ? 'pill pill-danger' : quota.remainingCny < quota.initialCny * 0.2 ? 'pill pill-warn' : 'pill'
+  return `<span class="${cls}" title="${escapeHtml(t('平台额度', 'Platform quota'))}">${quota.exhausted ? t('额度已用完', 'Quota used up') : quotaAmount(quota, t)}</span>`
 }
 
 export function layout(options: LayoutOptions): string {

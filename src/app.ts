@@ -636,16 +636,23 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const body = form(request)
     const interval = normalizeInterval(body.interval, repo.interval_minutes)
     const reviewInterval = normalizeInterval(body.reviewInterval, repo.review_interval_minutes)
+    const goal = (body.goal ?? '').slice(0, 4000)
+    const goalChanged = goal !== repo.goal
     store.updateRepo(repo.id, {
-      goal: (body.goal ?? '').slice(0, 4000),
+      goal,
       auto_iterate: body.auto === '1' ? 1 : 0,
       enabled: body.enabled === '1' ? 1 : 0,
       interval_minutes: interval,
       reviewer_enabled: repo.can_review === 1 && body.review === '1' ? 1 : 0,
       review_interval_minutes: reviewInterval,
     })
-    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} reviewer=${repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}`)
-    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('设置已保存。')}`)
+    if (goalChanged) {
+      await instances.ensurePlaybook(repo.id).catch((error) => {
+        log.warn('team playbook not updated after goal change', { repo: repo.id, error: String(error) })
+      })
+    }
+    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} reviewer=${repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''}`)
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(goalChanged ? '设置已保存；团队规则已按新目标更新。' : '设置已保存。')}`)
   })
 
   app.post('/repos/:id/delete', async (request, reply) => {
@@ -811,11 +818,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const viewer = csrfGuard(request)
     if (viewer.user.role !== 'admin') throw httpError(403, 'Admin only', 'ADMIN_ONLY')
     const id = String((request.params as Record<string, string>).id)
-    const quota = Number(form(request).quota)
-    if (!Number.isFinite(quota) || quota < 0 || quota > 10_000) throw httpError(400, '额度必须是 0–10000 之间的数字。', 'BAD_QUOTA')
-    store.setUserQuota(id, quota)
-    store.audit(id, 'admin.quota', `${quota} CNY by @${viewer.user.login}`)
-    return reply.redirect(`/admin?notice=${encodeURIComponent('额度已更新。')}`)
+    const body = form(request)
+    const unlimited = body.unlimited === '1'
+    const quota = Number(body.quota)
+    if (!unlimited && (!Number.isFinite(quota) || quota < 0 || quota > 10_000)) throw httpError(400, '额度必须是 0–10000 之间的数字。', 'BAD_QUOTA')
+    if (!unlimited) store.setUserQuota(id, quota)
+    store.setUserQuotaUnlimited(id, unlimited)
+    store.audit(id, 'admin.quota', `${unlimited ? 'unlimited' : `${quota} CNY`} by @${viewer.user.login}`)
+    return reply.redirect(`/admin?notice=${encodeURIComponent(unlimited ? '额度已设为不限额。' : '额度已更新。')}`)
   })
 
   app.get('/approve/:token', async (request, reply) => {
@@ -851,7 +861,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return { ok: true }
   })
 
-  registerGateway(app, { config, store, onQuotaExhausted: (user) => jobs.notifier.notify(user) })
+  registerGateway(app, {
+    config,
+    store,
+    onQuotaExhausted: (user) => jobs.notifier.notify(user),
+    onQuotaBlocked: (user) => jobs.quotaBlocked(user),
+  })
 
   app.setNotFoundHandler((request, reply) => {
     if (request.url.startsWith('/v1') || request.url.startsWith('/api/')) return reply.code(404).send({ error: { type: 'not_found', message: 'No such endpoint' } })

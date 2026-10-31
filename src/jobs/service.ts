@@ -1,11 +1,13 @@
 import type { Config } from '../config.js'
-import type { JobRow, RepoRow, Store } from '../db.js'
+import type { JobRow, RepoRow, Store, UserRow } from '../db.js'
 import type { Mailer } from '../email/mailer.js'
 import { QuotaNotifier } from '../gateway/notifier.js'
 import { quotaView } from '../gateway/quota.js'
 import { log } from '../lib/log.js'
 import { decryptSecret, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
+import { GithubClient } from '../repos/github.js'
+import { parseTeam } from '../flybot/instances.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
 import type { InstanceManager } from '../flybot/instances.js'
 
@@ -22,6 +24,36 @@ export interface EnqueueResult {
   code?: string
 }
 
+const ATTRIBUTION_KEYS = ['writtenBy', 'claimedBy', 'implementedBy', 'testedBy', 'reviewedBy'] as const
+
+function parseAttribution(value: unknown): Record<string, string> | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
+  const out: Record<string, string> = {}
+  for (const key of ATTRIBUTION_KEYS) {
+    const raw = (value as Record<string, unknown>)[key]
+    if (typeof raw !== 'string') continue
+    const text = raw.trim().slice(0, 80)
+    if (text !== '') out[key] = text
+  }
+  return Object.keys(out).length === 0 ? null : out
+}
+
+function attributionLabel(attribution: Record<string, string> | null, key: (typeof ATTRIBUTION_KEYS)[number], fallback: string): string {
+  return attribution?.[key] ?? fallback
+}
+
+function progressSummary(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  if (text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text) as { summary?: unknown }
+      if (typeof parsed.summary === 'string' && parsed.summary.trim() !== '') return parsed.summary.slice(0, 4000)
+    } catch {}
+  }
+  return value.slice(0, 4000)
+}
+
 export interface CallbackPayload {
   status?: unknown
   branch?: unknown
@@ -30,6 +62,7 @@ export interface CallbackPayload {
   reviewScore?: unknown
   summary?: unknown
   error?: unknown
+  attribution?: unknown
 }
 
 export class Jobs {
@@ -48,6 +81,17 @@ export class Jobs {
 
   get notifier(): QuotaNotifier {
     return this.quotaNotifier
+  }
+
+  async quotaBlocked(user: UserRow): Promise<void> {
+    await this.quotaNotifier.notify(user)
+    for (const job of this.store.listActiveJobsForUser(user.id)) {
+      const revoke = (): void => {
+        const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
+        if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
+      }
+      this.finish(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API 后重试。' }, revoke)
+    }
   }
 
   async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule', goalOverride?: string, kind: JobKind = 'iterate'): Promise<EnqueueResult> {
@@ -75,13 +119,18 @@ export class Jobs {
       return { ok: false, error: '平台额度已用完，请先配置自己的模型 API', code: 'QUOTA_EXHAUSTED', job: this.store.getJob(job.id) }
     }
 
-    let flybot: { url: string; token: string; sessionId: string } | undefined
+    let flybot: { url: string; token: string; sessionId: string; role: 'chief' | 'lead' | 'reviewer'; leadName: string } | undefined
     if (this.config.flybot.instanceImage !== '') {
       if (this.instances === undefined) return { ok: false, error: 'FlyBot 实例管理器未配置', code: 'INSTANCE_UNAVAILABLE' }
       try {
+        await this.instances.ensurePlaybook(repo.id).catch((error) => {
+          log.warn('team playbook not refreshed', { repo: repo.id, error: String(error) })
+        })
         const bridge = this.instances.bridgeFor(repo.id)
-        const sessionId = kind === 'review' ? bridge.team.reviewer ?? bridge.team.lead : bridge.team.lead
-        flybot = { url: bridge.url, token: bridge.token, sessionId }
+        const reviewer = kind === 'review' ? bridge.team.reviewer : null
+        const role = reviewer !== null && reviewer !== '' ? 'reviewer' : bridge.team.chief !== '' ? 'chief' : 'lead'
+        const sessionId = reviewer !== null && reviewer !== '' ? reviewer : bridge.team.chief !== '' ? bridge.team.chief : bridge.team.lead
+        flybot = { url: bridge.url, token: bridge.token, sessionId, role, leadName: `${bridge.team.team} Lead` }
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error), code: 'INSTANCE_NOT_READY' }
       }
@@ -159,7 +208,7 @@ export class Jobs {
     }
   }
 
-  private finish(jobId: string, result: { status: 'succeeded' | 'failed'; branch?: string; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }, revoke: () => void): void {
+  private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }, revoke: () => void, attribution: Record<string, string> | null = null): void {
     const job = this.store.getJob(jobId)
     if (job === undefined) return
     this.store.updateJob(jobId, {
@@ -168,6 +217,7 @@ export class Jobs {
       pr_url: result.prUrl ?? null,
       issue_url: result.issueUrl ?? null,
       review_score: result.reviewScore ?? null,
+      attribution_json: attribution === null ? job.attribution_json : JSON.stringify(attribution),
       summary: (result.summary ?? '').slice(0, 4000),
       error: (result.error ?? '').slice(0, 2000),
       finished_at: nowIso(),
@@ -177,6 +227,43 @@ export class Jobs {
     revoke()
     this.store.audit(job.user_id, `job.${result.status}`, jobId)
     if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? '未知原因'}`)
+    if (result.status === 'succeeded') void this.postAutomationComment(job, result, attribution)
+  }
+
+  private async postAutomationComment(job: JobRow, result: { prUrl?: string; issueUrl?: string }, attribution: Record<string, string> | null): Promise<void> {
+    if (job.kind === 'review' || result.prUrl === undefined) return
+    const match = /\/pull\/(\d+)(?:[/?#]|$)/.exec(result.prUrl)
+    if (match === null) return
+    const repo = this.store.getRepo(job.repo_id)
+    if (repo === undefined) return
+    const instance = this.store.getRepoInstance(job.repo_id)
+    const team = instance === undefined ? null : parseTeam(instance.team_json)?.team
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    const number = Number(match[1])
+    const lines = [
+      '### Fledge automation / 自动化任务',
+      '',
+      'This pull request was produced by an automated Fledge job. Fledge never merges; a human must review and merge.',
+      '',
+      `- Job: \`${job.id}\` (${job.trigger}, ${job.kind})`,
+      `- Team: ${team ?? `${owner}/${name}`}`,
+      `- Issue: ${result.issueUrl ?? 'none'}`,
+      `- Written by: ${attributionLabel(attribution, 'writtenBy', 'Lead')}`,
+      `- Claimed by: ${attributionLabel(attribution, 'claimedBy', 'Lead')}`,
+      `- Implemented by: ${attributionLabel(attribution, 'implementedBy', 'Lead')}`,
+      `- Tested by: ${attributionLabel(attribution, 'testedBy', 'not recorded')}`,
+      `- Reviewed by: ${attributionLabel(attribution, 'reviewedBy', 'pending')}`,
+      `- Result: succeeded`,
+    ]
+    try {
+      const token = decryptSecret(repo.token_enc, this.config.tokenEncryptionKey)
+      const client = new GithubClient(token, this.config.github.apiBase)
+      await client.comment(owner, name, number, lines.join('\n'))
+      log.info('automation comment posted', { job: job.id, pr: number })
+    } catch (error) {
+      log.warn('automation comment failed', { job: job.id, pr: number, error: String(error) })
+    }
   }
 
   async handleCallback(jobId: string, secret: string, payload: CallbackPayload): Promise<{ ok: boolean; status?: number; error?: string }> {
@@ -190,17 +277,23 @@ export class Jobs {
     const prUrl = typeof payload.prUrl === 'string' && payload.prUrl.startsWith('https://') ? payload.prUrl.slice(0, 500) : undefined
     const issueUrl = typeof payload.issueUrl === 'string' && payload.issueUrl.startsWith('https://') ? payload.issueUrl.slice(0, 500) : undefined
     const reviewScore = typeof payload.reviewScore === 'number' && Number.isFinite(payload.reviewScore) ? Math.max(0, Math.min(100, Math.round(payload.reviewScore))) : undefined
-    const summary = typeof payload.summary === 'string' ? payload.summary.slice(0, 4000) : undefined
+    const summary = progressSummary(payload.summary)
     const error = typeof payload.error === 'string' ? payload.error.slice(0, 2000) : undefined
+    const attribution = parseAttribution(payload.attribution)
     if (status === 'running') {
-      this.store.updateJob(jobId, { status: 'running', ...(branch === undefined ? {} : { branch }), ...(summary === undefined ? {} : { summary }) })
+      this.store.updateJob(jobId, {
+        status: 'running',
+        ...(branch === undefined ? {} : { branch }),
+        ...(summary === undefined ? {} : { summary }),
+        ...(attribution === null ? {} : { attribution_json: JSON.stringify(attribution) }),
+      })
       return { ok: true }
     }
     const revoke = (): void => {
       const row = this.store.findApiToken(job.platform_token_hash ?? '')
       if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     }
-    this.finish(jobId, { status, branch, prUrl, issueUrl, reviewScore, summary, error }, revoke)
+    this.finish(jobId, { status, branch, prUrl, issueUrl, reviewScore, summary, error }, revoke, attribution)
     return { ok: true }
   }
 
