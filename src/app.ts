@@ -36,6 +36,7 @@ import {
   errorPage,
 } from './views/pages.js'
 import { parseRepoInput, prepareRepo } from './repos/github.js'
+import { InstanceManager } from './flybot/instances.js'
 
 export interface BuildOptions {
   config: Config
@@ -50,6 +51,7 @@ export interface BuiltApp {
   store: Store
   jobs: Jobs
   sessions: Sessions
+  instances: InstanceManager
   close: () => Promise<void>
 }
 
@@ -102,7 +104,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const oauth = new GithubOAuth(config)
   const sessions = new Sessions(store, config)
   const approvals = new Approvals(store, config, mailer)
-  const jobs = new Jobs(store, config, runner, mailer)
+  const instances = new InstanceManager(store, config)
+  const jobs = new Jobs(store, config, runner, mailer, instances)
   const loginLimiter = new RateLimiter(30, 60_000)
   const apiLimiter = new RateLimiter(120, 60_000)
 
@@ -110,6 +113,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     logger: false,
     trustProxy: true,
     bodyLimit: 20 * 1024 * 1024,
+    routerOptions: { ignoreTrailingSlash: true },
   })
   await app.register(fastifyCookie)
   await app.register(fastifyFormbody)
@@ -140,8 +144,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return viewer
   }
 
-  const ownedRepo = (request: FastifyRequest, id: string) => {
-    const viewer = requireApproved(request)
+  const ownedRepo = (request: FastifyRequest, id: string, mutating = false) => {
+    const viewer = mutating ? csrfGuard(request) : requireApproved(request)
     const repo = store.getRepo(id)
     if (repo === undefined || repo.user_id !== viewer.user.id) throw httpError(404, '仓库不存在。', 'REPO_NOT_FOUND')
     return { viewer, repo }
@@ -397,6 +401,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     )
   })
 
+  app.get('/repos', async (_request, reply) => {
+    return reply.redirect('/dashboard#add-repo')
+  })
+
   app.post('/repos', async (request, reply) => {
     const viewer = csrfGuard(request)
     const body = form(request)
@@ -442,6 +450,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       else bits.push(t('这是你自己的仓库，无需 fork。', 'You own this repository; no fork is needed.'))
       if (!prepared.canReview) bits.push(t('你不是上游维护者/写权限成员，审核角色未启用。', 'You are not an upstream maintainer/write member; the reviewer role is not enabled.'))
       else bits.push(reviewerEnabled ? t('已启用 PR 审核角色。', 'PR reviewer role enabled.') : t('审核角色已关闭。', 'Reviewer role disabled.'))
+      if (config.flybot.instanceImage !== '') {
+        instances.ensureUserDir(viewer.user.id)
+        void instances.provision(repo).catch((error) => log.error('flybot provisioning failed', { repo: repo.id, error: String(error) }))
+        bits.push(t('FlyBot 实例初始化中。', 'FlyBot instance is initializing.'))
+      }
       return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(bits.join(' '))}`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -457,6 +470,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         repo,
+        instance: store.getRepoInstance(repo.id),
         jobs: store.listJobsForRepo(repo.id),
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
@@ -475,7 +489,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/refresh', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     try {
       const token = decryptSecret(repo.token_enc, config.tokenEncryptionKey)
       const prepared = await prepareRepo(token, repo.upstream_owner || repo.owner, repo.upstream_name || repo.name, viewer.user.login, config.github.apiBase)
@@ -505,8 +519,23 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
   })
 
+  app.post('/repos/:id/instance', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (config.flybot.instanceImage === '') throw httpError(400, 'FlyBot 实例未配置', 'INSTANCE_DISABLED')
+    instances.ensureUserDir(viewer.user.id)
+    void instances.provision(repo).catch((error) => log.error('flybot provisioning failed', { repo: repo.id, error: String(error) }))
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例初始化中。')}`)
+  })
+
+  app.post('/repos/:id/instance/stop', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    await instances.stop(repo.id)
+    store.audit(viewer.user.id, 'flybot.instance.stopped', `${repo.owner}/${repo.name}`)
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例已停止。')}`)
+  })
+
   app.post('/repos/:id/review', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const result = await jobs.enqueue(repo, 'manual', undefined, 'review')
     const key = result.ok ? 'notice' : 'error'
     const message = result.ok ? '审核任务已排队。' : result.error ?? '审核任务启动失败。'
@@ -515,7 +544,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/settings', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const body = form(request)
     const interval = normalizeInterval(body.interval, repo.interval_minutes)
     const reviewInterval = normalizeInterval(body.reviewInterval, repo.review_interval_minutes)
@@ -532,7 +561,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/delete', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    await instances.remove(repo.id)
     store.deleteRepo(repo.id)
     store.audit(viewer.user.id, 'repo.deleted', `${repo.owner}/${repo.name}`)
     return reply.redirect(`/dashboard?notice=${encodeURIComponent('仓库已删除。')}`)
@@ -662,6 +692,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const user = store.userById(id)
     if (user === undefined) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
     store.setUserStatus(user.id, status, `admin:${viewer.user.login}`)
+    if (status === 'rejected') {
+      for (const instance of store.listRepoInstances().filter((entry) => entry.user_id === user.id)) {
+        await instances.stop(instance.repo_id)
+      }
+    }
     store.audit(user.id, `admin.${status}`, `by @${viewer.user.login}`)
     try {
       if (user.email !== null && user.email !== '') {
@@ -760,6 +795,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store,
     jobs,
     sessions,
+    instances,
     close: async () => {
       jobs.stop()
       clearInterval(sweeper)

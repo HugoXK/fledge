@@ -47,6 +47,19 @@ export interface Config {
     bridgeToken: string
     timeoutMinutes: number
   }
+  flybot: {
+    instanceImage: string
+    instanceRoot: string
+    bridgeScript: string
+    networkPrefix: string
+    dshPortStart: number
+    bridgePortStart: number
+    modelPortStart: number
+    memory: string
+    cpus: string
+    model: string
+    teamTimeoutSeconds: number
+  }
   services: {
     portal: string
     docs: string
@@ -147,6 +160,19 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       bridgeUrl: text('FLYBOT_BRIDGE_URL', 'http://127.0.0.1:8787/run'),
       bridgeToken: text('FLYBOT_BRIDGE_TOKEN'),
       timeoutMinutes: number('JOB_TIMEOUT_MINUTES', 45),
+    },
+    flybot: {
+      instanceImage: text('FLYBOT_INSTANCE_IMAGE'),
+      instanceRoot: resolve(text('FLYBOT_INSTANCE_ROOT', `${dataDir}/flybot-users`)),
+      bridgeScript: resolve(text('FLYBOT_BRIDGE_SCRIPT', 'bridge/flybot-bridge.mjs')),
+      networkPrefix: text('FLYBOT_NETWORK_PREFIX', 'fledge'),
+      dshPortStart: number('FLYBOT_DSH_PORT_START', 31000),
+      bridgePortStart: number('FLYBOT_BRIDGE_PORT_START', 32000),
+      modelPortStart: number('FLYBOT_MODEL_PORT_START', 33000),
+      memory: text('FLYBOT_MEMORY', '2g'),
+      cpus: text('FLYBOT_CPUS', '1'),
+      model: text('FLYBOT_MODEL', text('PLATFORM_LLM_MODEL', 'your-model')),
+      teamTimeoutSeconds: number('FLYBOT_TEAM_TIMEOUT_SECONDS', 180),
     },
     services: {
       portal: text('PORTAL_URL', 'https://portal.hugoxk.online').replace(/\/$/, ''),

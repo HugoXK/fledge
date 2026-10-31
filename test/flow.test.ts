@@ -59,6 +59,12 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     assert.equal(dashboard.statusCode, 200)
     assert.match(dashboard.body, /仓库/)
 
+    for (const url of ['/repos', '/repos/']) {
+      const reposIndex = await built.app.inject({ method: 'GET', url, headers: { cookie } })
+      assert.equal(reposIndex.statusCode, 302)
+      assert.equal(reposIndex.headers.location, '/dashboard#add-repo')
+    }
+
     const added = await built.app.inject({
       method: 'POST',
       url: '/repos',
@@ -102,6 +108,22 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
     assert.equal(page.statusCode, 200)
     assert.match(page.body, /octo\/demo/)
+
+    const settingsWithoutCsrf = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/settings`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ goal: 'changed without csrf' }),
+    })
+    assert.equal(settingsWithoutCsrf.statusCode, 403)
+    const settingsWithCsrf = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/settings`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, goal: 'changed with csrf' }),
+    })
+    assert.equal(settingsWithCsrf.statusCode, 302)
+    assert.equal(store.getRepo(repo.id)?.goal, 'changed with csrf')
 
     const anonymous = await built.app.inject({ method: 'GET', url: '/dashboard' })
     assert.equal(anonymous.statusCode, 401)

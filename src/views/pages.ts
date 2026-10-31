@@ -1,11 +1,12 @@
 import type { Config } from '../config.js'
-import type { AuditRow, JobRow, NotificationRow, RepoRow, UserRow, ApiTokenRow } from '../db.js'
+import type { AuditRow, JobRow, NotificationRow, RepoInstanceRow, RepoRow, UserRow, ApiTokenRow } from '../db.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, type Viewer } from './layout.js'
 import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
+import { parseTeam } from '../flybot/instances.js'
 
 function csrf(viewer: Viewer): string {
   return `<input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />`
@@ -30,6 +31,11 @@ function statusLabel(t: Translate, status: string): string {
     onboarding: t('待申请', 'Onboarding'),
     idle: t('空闲', 'Idle'),
     quota_exhausted: t('额度用完', 'Quota exhausted'),
+    ready: t('就绪', 'Ready'),
+    starting: t('启动中', 'Starting'),
+    provisioning: t('初始化中', 'Provisioning'),
+    stopped: t('已停止', 'Stopped'),
+    starting_container: t('启动容器', 'Starting container'),
   }
   return labels[status] ?? status
 }
@@ -265,8 +271,8 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; jobs: JobRow[]; notice?: string; error?: string }): string {
-  const { config, locale, viewer, repo, jobs, notice, error } = input
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; notice?: string; error?: string }): string {
+  const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const t = translator(locale)
   const upstreamOwner = repo.upstream_owner || repo.owner
   const upstreamName = repo.upstream_name || repo.name
@@ -294,7 +300,43 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         : nextRun.getTime() <= Date.now()
           ? t('等待调度', 'Waiting for the scheduler')
           : humanTimeShort(nextRun.toISOString())
-  const body = `<section class="card">
+  const instanceTeam = instance === undefined ? null : parseTeam(instance.team_json)
+  const instanceReady = instance?.status === 'ready' && instanceTeam !== null
+  const instanceNotice = config.flybot.instanceImage === ''
+    ? `<div class="banner">${escapeHtml(t('这个部署没有启用每仓库 FlyBot 实例，任务由全局 mock/runner 处理。', 'This deployment has no per-repository FlyBot instance; jobs use the global mock/runner.'))}</div>`
+    : instance === undefined
+      ? `<div class="banner">${escapeHtml(t('FlyBot 实例尚未创建。保存仓库后会自动初始化；也可以手动启动。', 'The FlyBot instance has not been created yet. It starts automatically after the repository is saved, or you can start it manually.'))}</div>`
+      : instance.status !== 'ready'
+        ? `<div class="banner ${instance.status === 'failed' ? 'bad' : ''}">${escapeHtml(t(`FlyBot 实例状态：${instance.status}`, `FlyBot instance status: ${instance.status}`))}${instance.last_error === null ? '' : ` · ${escapeHtml(instance.last_error)}`}</div>`
+        : ''
+  const teamHtml = instanceTeam === null ? '' : `<div class="list">
+    <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('Chief', 'Chief'))}</strong><small><code>${escapeHtml(instanceTeam.chief)}</code></small></div></div>
+    <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('Lead', 'Lead'))}</strong><small><code>${escapeHtml(instanceTeam.lead)}</code></small></div></div>
+    <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('Product', 'Product'))}</strong><small><code>${escapeHtml(instanceTeam.product)}</code></small></div></div>
+    <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('Test', 'Test'))}</strong><small><code>${escapeHtml(instanceTeam.test)}</code></small></div></div>
+    <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('Security', 'Security'))}</strong><small><code>${escapeHtml(instanceTeam.security)}</code></small></div></div>
+    <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('Reviewer', 'Reviewer'))}</strong><small><code>${escapeHtml(instanceTeam.reviewer ?? '—')}</code> · ${escapeHtml(instanceTeam.reviewerScope)}</small></div></div>
+    <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('Dev-1 / Dev-2', 'Dev-1 / Dev-2'))}</strong><small><code>${escapeHtml(instanceTeam.dev1)}</code> · <code>${escapeHtml(instanceTeam.dev2)}</code></small></div></div>
+  </div>`
+  const instanceActions = config.flybot.instanceImage === ''
+    ? ''
+    : instance === undefined || instance.status === 'failed' || instance.status === 'stopped'
+      ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/instance">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('启动 FlyBot', 'Start FlyBot'))}</button></form>`
+      : instance.status === 'ready'
+        ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/instance/stop">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('停止 FlyBot', 'Stop FlyBot'))}</button></form>`
+        : ''
+  const body = `${instanceNotice}<section class="card">
+    <div class="row between">
+      <div>
+        <div class="eyebrow">${escapeHtml(t('每仓库 FlyBot', 'PER-REPOSITORY FLYBOT'))}</div>
+        <h2>${escapeHtml(t('实例与团队', 'Instance & team'))}</h2>
+        <p class="muted">${escapeHtml(instance === undefined ? t('未创建', 'Not created') : `${instance.status} · ${instance.container}`)}${instanceReady ? ` · ${escapeHtml(t('任务会发给 Lead', 'jobs go to the Lead'))}` : ''}</p>
+      </div>
+      ${instanceActions}
+    </div>
+    ${teamHtml}
+  </section>
+  <section class="card">
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('仓库', 'REPOSITORY'))}</div>

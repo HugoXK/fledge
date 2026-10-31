@@ -114,6 +114,9 @@ own improvements. See [docs/decisions/0001-name.md](docs/decisions/0001-name.md)
   The interval is the minimum gap between runs; it does not cap the number of
   PRs or issues the repository can produce.
 - **Job lifecycle**: `queued → running → succeeded | failed | quota_exhausted`.
+- **Per-repository FlyBot**: each repository gets a separate container, a
+  private bridge/model proxy and a team (Chief, Lead, Product, Test, Security,
+  Reviewer, two Devs). The shared operator FlyBot is never used for user jobs.
 - **FlyBot bridge**: Fledge sends a job descriptor; the agent fetches a scoped
   GitHub credential, uses a job-scoped model token, opens a PR and calls back
   with a signature.

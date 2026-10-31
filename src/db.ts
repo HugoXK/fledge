@@ -89,6 +89,30 @@ export interface RepoRow {
   fork_html_url: string | null
 }
 
+export interface RepoInstanceRow {
+  repo_id: string
+  user_id: string
+  container: string
+  network: string
+  data_dir: string
+  bridge_script: string
+  dsh_port: number
+  bridge_port: number
+  model_port: number
+  model_bind: string
+  image: string
+  status: string
+  chief_session: string | null
+  team_json: string | null
+  bridge_token_enc: string | null
+  bridge_pid: number | null
+  log_pid: number | null
+  last_error: string | null
+  created_at: string
+  updated_at: string
+  last_health_at: string | null
+}
+
 export interface JobRow {
   id: string
   repo_id: string
@@ -262,6 +286,31 @@ CREATE TABLE IF NOT EXISTS repos (
   UNIQUE(user_id, owner, name)
 );
 CREATE INDEX IF NOT EXISTS repos_user_idx ON repos(user_id);
+
+CREATE TABLE IF NOT EXISTS repo_instances (
+  repo_id TEXT PRIMARY KEY REFERENCES repos(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  container TEXT NOT NULL,
+  network TEXT NOT NULL,
+  data_dir TEXT NOT NULL,
+  bridge_script TEXT NOT NULL,
+  dsh_port INTEGER NOT NULL,
+  bridge_port INTEGER NOT NULL,
+  model_port INTEGER NOT NULL,
+  model_bind TEXT NOT NULL,
+  image TEXT NOT NULL,
+  status TEXT NOT NULL,
+  chief_session TEXT,
+  team_json TEXT,
+  bridge_token_enc TEXT,
+  bridge_pid INTEGER,
+  log_pid INTEGER,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_health_at TEXT
+);
+CREATE INDEX IF NOT EXISTS repo_instances_user_idx ON repo_instances(user_id);
 
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
@@ -730,6 +779,55 @@ export class Store {
 
   listReviewRepos(): RepoRow[] {
     return this.all<RepoRow>('SELECT * FROM repos WHERE enabled = 1 AND reviewer_enabled = 1 AND can_review = 1')
+  }
+
+  getRepoInstance(repoId: string): RepoInstanceRow | undefined {
+    return this.get<RepoInstanceRow>('SELECT * FROM repo_instances WHERE repo_id = ?', repoId)
+  }
+
+  listRepoInstances(): RepoInstanceRow[] {
+    return this.all<RepoInstanceRow>('SELECT * FROM repo_instances ORDER BY created_at DESC')
+  }
+
+  saveRepoInstance(input: RepoInstanceRow): RepoInstanceRow {
+    this.run(
+      `INSERT OR REPLACE INTO repo_instances
+       (repo_id, user_id, container, network, data_dir, bridge_script, dsh_port, bridge_port, model_port, model_bind, image, status, chief_session, team_json, bridge_token_enc, bridge_pid, log_pid, last_error, created_at, updated_at, last_health_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      input.repo_id,
+      input.user_id,
+      input.container,
+      input.network,
+      input.data_dir,
+      input.bridge_script,
+      input.dsh_port,
+      input.bridge_port,
+      input.model_port,
+      input.model_bind,
+      input.image,
+      input.status,
+      input.chief_session,
+      input.team_json,
+      input.bridge_token_enc,
+      input.bridge_pid,
+      input.log_pid,
+      input.last_error,
+      input.created_at,
+      input.updated_at,
+      input.last_health_at,
+    )
+    return this.getRepoInstance(input.repo_id)!
+  }
+
+  updateRepoInstance(repoId: string, patch: Partial<Omit<RepoInstanceRow, 'repo_id' | 'user_id' | 'created_at'>>): void {
+    const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
+    if (entries.length === 0) return
+    const sets = entries.map(([key]) => `${key} = ?`).join(', ')
+    this.run(`UPDATE repo_instances SET ${sets} WHERE repo_id = ?`, ...entries.map(([, value]) => value), repoId)
+  }
+
+  deleteRepoInstance(repoId: string): void {
+    this.run('DELETE FROM repo_instances WHERE repo_id = ?', repoId)
   }
 
   createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string }): JobRow {

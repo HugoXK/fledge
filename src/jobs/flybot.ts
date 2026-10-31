@@ -5,6 +5,7 @@ import type { Runner, RunnerContext, RunnerResult } from './runner.js'
 interface BridgePayload {
   jobId: string
   kind: 'iterate' | 'review'
+  sessionId?: string
   repo: { owner: string; name: string; defaultBranch: string }
   upstream: { owner: string; name: string; defaultBranch: string; htmlUrl: string }
   fork: { owner: string; name: string; defaultBranch: string; htmlUrl: string }
@@ -58,12 +59,15 @@ export class FlyBotRunner implements Runner {
   constructor(private readonly config: Config) {}
 
   async run(context: RunnerContext): Promise<RunnerResult> {
-    if (this.config.runner.bridgeUrl === '' || this.config.runner.bridgeToken === '') {
-      throw new Error('FLYBOT_BRIDGE_URL / FLYBOT_BRIDGE_TOKEN are not configured')
+    const bridgeUrl = context.flybot?.url ?? this.config.runner.bridgeUrl
+    const bridgeToken = context.flybot?.token ?? this.config.runner.bridgeToken
+    if (bridgeUrl === '' || bridgeToken === '') {
+      throw new Error('FlyBot bridge is not configured for this repository')
     }
     const payload: BridgePayload = {
       jobId: context.job.id,
       kind: context.kind,
+      sessionId: context.flybot?.sessionId,
       repo: { owner: context.upstream.owner, name: context.upstream.name, defaultBranch: context.upstream.defaultBranch },
       upstream: context.upstream,
       fork: context.fork,
@@ -87,9 +91,9 @@ export class FlyBotRunner implements Runner {
         'Do not print the GitHub token or the job token. Do not force-push. Do not merge.',
       ].join('\n'),
     }
-    const response = await fetch(this.config.runner.bridgeUrl, {
+    const response = await fetch(bridgeUrl, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.config.runner.bridgeToken}` },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${bridgeToken}` },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(20_000),
     })

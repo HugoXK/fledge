@@ -26,8 +26,13 @@ node bridge/flybot-bridge.mjs
 | `BRIDGE_PORT` | no | Default 8787 |
 | `BRIDGE_HOST` | no | Default 127.0.0.1 |
 | `FLYBOT_WEB` | no | Default `http://127.0.0.1:3080` |
-| `FLYBOT_LOG` | no | Default `/home/xuke/work/dsh-web.log` |
+| `FLYBOT_LOG` | no | DSH web log that contains the rotating sign-in token |
+| `FLYBOT_REVIEW_SESSION_ID` | no | Dedicated reviewer chat; defaults to the iterate chat |
 | `MAX_PROMPT_BYTES` | no | Default 32768 |
+| `FLEDGE_GATEWAY_ORIGIN` | no | Enables the per-instance `/v1` model proxy |
+| `FLEDGE_GATEWAY_TOKEN` | no | User-scoped `flg_` token used by the model proxy |
+| `MODEL_PROXY_BIND` / `MODEL_PROXY_PORT` | no | Proxy bind address/port; unset disables it |
+| `MODEL_PROXY_KEY` | no | Key the instance model client sends to the proxy |
 
 The bridge reads the current DSH web token from the log (it changes when DSH
 restarts), logs in, and calls `/api/bot` with `endpoint: "send"`. It listens on
@@ -64,7 +69,14 @@ loopback only; keep it that way.
 ```
 
 The bridge returns `202 {ok:true}` once DSH accepted the message. It does not wait
-for the job; the agent reports back to Fledge.
+for the job; the agent reports back to Fledge. `sessionId` in the payload routes
+the job to a repository-specific Lead or Reviewer.
+
+The bridge also exposes `POST /dsh` (authenticated with `BRIDGE_TOKEN`) as a
+small proxy for DSH `/api/bot`. Fledge uses it to read state, rename the Chief
+and provision the repository team. The `/v1/*` listener is the instance model
+proxy: it replaces the caller's key with the user-scoped Fledge gateway token
+and streams the response back.
 
 The agent prompt includes:
 

@@ -89,6 +89,16 @@
 The operator chooses the upstream through `PLATFORM_LLM_BASE_URL`; keep the
 real endpoint and key out of git and out of public documentation.
 
+### Per-repository FlyBot instances
+
+Each hosted repository gets its own FlyBot container and its own team. The user
+directory contains the per-repo data; a container has a private network, a
+private bridge, a model proxy and a fixed FlyBot release image. A repository
+team is one Chief plus Lead, Product, Test, Security, Reviewer and two Devs;
+the Reviewer is scoped to upstream/all PRs or self-review based on the user's
+upstream permission. Deleting or stopping a repository stops only that
+container. The shared operator FlyBot is never used for user jobs.
+
 ### FlyBot bridge
 
 The bridge is a tiny HTTP service on the FlyBot host. Fledge POSTs a job

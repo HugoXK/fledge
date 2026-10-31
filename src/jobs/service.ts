@@ -7,6 +7,7 @@ import { log } from '../lib/log.js'
 import { decryptSecret, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
+import type { InstanceManager } from '../flybot/instances.js'
 
 export const DEFAULT_GOAL =
   'Review this repository for one high-value defect or improvement. Write a failing test first, implement the smallest correct fix, run the relevant tests, and open a pull request. Do not refactor unrelated code.'
@@ -40,6 +41,7 @@ export class Jobs {
     private readonly config: Config,
     private readonly runner: Runner,
     private readonly mailer: Mailer,
+    private readonly instances?: InstanceManager,
   ) {
     this.quotaNotifier = new QuotaNotifier(store, mailer, config)
   }
@@ -71,6 +73,18 @@ export class Jobs {
       this.store.updateRepo(repo.id, { last_status: 'quota_exhausted', last_run_at: nowIso() })
       await this.quotaNotifier.notify(user)
       return { ok: false, error: '平台额度已用完，请先配置自己的模型 API', code: 'QUOTA_EXHAUSTED', job: this.store.getJob(job.id) }
+    }
+
+    let flybot: { url: string; token: string; sessionId: string } | undefined
+    if (this.config.flybot.instanceImage !== '') {
+      if (this.instances === undefined) return { ok: false, error: 'FlyBot 实例管理器未配置', code: 'INSTANCE_UNAVAILABLE' }
+      try {
+        const bridge = this.instances.bridgeFor(repo.id)
+        const sessionId = kind === 'review' ? bridge.team.reviewer ?? bridge.team.lead : bridge.team.lead
+        flybot = { url: bridge.url, token: bridge.token, sessionId }
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error), code: 'INSTANCE_NOT_READY' }
+      }
     }
 
     const platformToken = `flg_${randomToken(32)}`
@@ -121,6 +135,7 @@ export class Jobs {
         callback: { url: `${this.config.baseUrl}/api/jobs/${job.id}/callback`, secret: callbackSecret },
         credential: { url: `${this.config.baseUrl}/api/jobs/${job.id}/credential`, secret: callbackSecret },
         platform: { baseUrl: `${this.config.baseUrl}/v1`, model: this.config.llm.model, token: platformToken },
+        ...(flybot === undefined ? {} : { flybot }),
         timeoutMinutes: this.config.runner.timeoutMinutes,
       })
       if (result.status === 'running') {

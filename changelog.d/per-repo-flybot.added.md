@@ -1,0 +1,1 @@
+Added per-repository FlyBot containers with isolated data, bridge and model proxy, a configurable fixed release image, and an automatically provisioned Chief plus Lead, Product, Test, Security, Reviewer and two-Dev team.

@@ -73,6 +73,10 @@ const MESSAGES: Record<string, string> = {
   '这个仓库已有任务在运行': 'A job is already running for this repository.',
   '用户不可用': 'The user is not available.',
   '平台额度已用完，请先配置自己的模型 API': 'Platform quota is used up. Configure your own model API first.',
+  'FlyBot 实例初始化中。': 'FlyBot instance is initializing.',
+  'FlyBot 实例未配置': 'FlyBot instance is not configured.',
+  'FlyBot 实例已停止。': 'FlyBot instance stopped.',
+  'FlyBot 实例未就绪': 'FlyBot instance is not ready.',
   '已批准': 'Approved',
   '已拒绝': 'Rejected',
 }

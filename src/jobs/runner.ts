@@ -38,6 +38,7 @@ export interface RunnerContext {
   callback: JobCredential
   credential: JobCredential
   platform: PlatformModel
+  flybot?: { url: string; token: string; sessionId: string }
   timeoutMinutes: number
 }
 
@@ -57,5 +58,5 @@ export interface Runner {
 }
 
 export function createRunner(config: Config): Runner {
-  return config.runner.mode === 'flybot' ? new FlyBotRunner(config) : new MockRunner()
+  return config.runner.mode === 'flybot' || config.flybot.instanceImage !== '' ? new FlyBotRunner(config) : new MockRunner()
 }

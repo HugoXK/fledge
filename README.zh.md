@@ -103,6 +103,9 @@ Fledge 是幼鸟长齐飞羽、离巢试飞的那一刻——不是因为被推�
 - **一个账号多个仓库**：每个仓库有独立目标、节奏（手动，15 分钟到 30 天）、
   启用状态和上次状态。间隔是最小运行间隔，不是 PR/issue 数量上限。
 - **任务状态**：`queued → running → succeeded | failed | quota_exhausted`。
+- **每仓库 FlyBot**：每个仓库一个独立容器、独立 bridge/模型代理和团队
+  （Chief、Lead、Product、Test、Security、Reviewer、2 个 Dev）。共享的运营方
+  FlyBot 永远不接用户任务。
 - **FlyBot bridge**：Fledge 发任务描述；代理从一次性凭据 URL 取 GitHub token，
   用任务级模型 token 调模型，开 PR，再签名回调。
 - **Mock runner**：本地演示和测试不需要网络。

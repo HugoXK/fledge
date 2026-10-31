@@ -24,6 +24,8 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/repos` | approved + CSRF | Add an upstream repository; Fledge checks or creates the user's fork |
 | GET | `/repos/:id` | owner | Repo detail |
 | POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job |
+| POST | `/repos/:id/instance` | owner + CSRF | Start the per-repository FlyBot instance |
+| POST | `/repos/:id/instance/stop` | owner + CSRF | Stop the per-repository FlyBot instance |
 | POST | `/repos/:id/refresh` | owner + CSRF | Re-check the upstream, fork and permissions |
 | POST | `/repos/:id/review` | owner + CSRF | Enqueue a manual review job |
 | POST | `/repos/:id/settings` | owner + CSRF | Goal, cadence, enabled, reviewer interval |

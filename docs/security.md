@@ -27,6 +27,15 @@ requests on the upstream. Fledge refuses a token whose GitHub login differs from
 the signed-in user. The token is never sent to the bridge; the agent fetches it
 from the job-scoped credential URL.
 
+### Per-repository FlyBot isolation
+
+Each hosted repository runs in its own container with a private data volume,
+network, bridge token and model proxy. The model proxy injects a user-scoped
+`flg_` token, so the instance cannot use the operator's model key. The shared
+operator FlyBot is not used for user jobs. A container is limited by CPU,
+memory, PID and filesystem mounts; stopping or deleting a repository affects
+only that container.
+
 ### Sessions
 
 - 32-byte random session id; only its SHA-256 hash is stored.
