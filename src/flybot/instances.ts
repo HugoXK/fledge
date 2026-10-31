@@ -299,17 +299,15 @@ export class InstanceManager {
     return child
   }
 
-  private async waitForDsh(port: number, row: RepoInstanceRow): Promise<void> {
+  private async waitForDsh(_port: number, row: RepoInstanceRow): Promise<void> {
     const deadline = Date.now() + 180_000
     const logPath = join(row.data_dir, 'dsh-web.log')
-    let tokenSeen = false
     while (Date.now() < deadline) {
       try {
-        if (!tokenSeen && existsSync(logPath)) tokenSeen = /token=([A-Za-z0-9_-]+)/.test(readFileSync(logPath, 'utf8'))
-      } catch {}
-      try {
-        const response = await fetch(`http://127.0.0.1:${port}/`, { redirect: 'manual', signal: AbortSignal.timeout(3_000) })
-        if (response.status > 0 && tokenSeen) return
+        if (existsSync(logPath) && /token=([A-Za-z0-9_-]+)/.test(readFileSync(logPath, 'utf8'))) {
+          await sleep(1_000)
+          return
+        }
       } catch {}
       await sleep(2_000)
     }
