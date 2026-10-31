@@ -77,6 +77,10 @@ function viewOf(viewer: { user: UserRow; csrfToken: string }): { user: UserRow; 
   return { user: viewer.user, csrfToken: viewer.csrfToken }
 }
 
+function htmlPage(reply: FastifyReply, status: number, page: string): FastifyReply {
+  return reply.code(status).type('text/html; charset=utf-8').send(page)
+}
+
 async function testOwnModel(baseUrl: string, key: string, model: string): Promise<void> {
   let response: Response
   try {
@@ -128,6 +132,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     reply.header('x-content-type-options', 'nosniff')
     reply.header('referrer-policy', 'strict-origin-when-cross-origin')
     reply.header('x-frame-options', 'DENY')
+    if (request.url.startsWith('/auth/') || request.url.startsWith('/approve/')) reply.header('cache-control', 'no-store')
     if (!request.url.startsWith('/v1') && !request.url.startsWith('/api/')) {
       reply.header(
         'content-security-policy',
@@ -161,7 +166,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/lang/:locale', async (request, reply) => {
     const requested = String((request.params as Record<string, string>).locale)
-    if (!isLocale(requested)) return reply.code(404).send(errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。', request.locale))
+    if (!isLocale(requested)) return htmlPage(reply, 404, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。', request.locale))
     const next = queryText(request, 'next')
     const safeNext = next !== undefined && next.startsWith('/') && !next.startsWith('//') ? next : '/'
     reply.setCookie(LOCALE_COOKIE, requested, {
@@ -187,7 +192,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/auth/dev', async (request, reply) => {
     if (config.env === 'production' || config.devLogin.login === '') {
-      return reply.code(404).send(errorPage(config, request.viewer ?? null, '页面不存在', 'Dev 登录没有开启。', request.locale))
+      return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, '页面不存在', 'Dev 登录没有开启。', request.locale))
     }
     const user = store.upsertGithubUser({
       id: randomId('usr'),
@@ -206,15 +211,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/auth/token', async (request, reply) => {
-    if (!loginLimiter.take(`token:${request.ip}`)) return reply.code(429).send(errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!loginLimiter.take(`token:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const token = (form(request).token ?? '').trim()
-    if (token === '') return reply.code(400).send(messagePage(config, '缺少 token', '请填写一个 GitHub token。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
+    if (token === '') return htmlPage(reply, 400, messagePage(config, '缺少 token', '请填写一个 GitHub token。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
     let profile
     try {
       profile = await oauth.profile(token)
     } catch (error) {
       log.warn('github token login failed', { error: String(error) })
-      return reply.code(401).send(messagePage(config, 'GitHub token 无效', '无法用这个 token 读取 GitHub 身份，请检查权限或重新生成。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
+      return htmlPage(reply, 401, messagePage(config, 'GitHub token 无效', '无法用这个 token 读取 GitHub 身份，请检查权限或重新生成。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
     }
     const isAdmin = profile.login.toLowerCase() === config.github.adminLogin.toLowerCase()
     const user = store.upsertGithubUser({
@@ -235,12 +240,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/auth/github', async (request, reply) => {
-    if (!loginLimiter.take(`login:${request.ip}`)) return reply.code(429).send(errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!loginLimiter.take(`login:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     if (config.github.clientId === '' || config.github.clientSecret === '') {
-      return reply.code(503).send(errorPage(config, request.viewer ?? null, 'GitHub OAuth 未配置', '请先在 .env 设置 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET。', request.locale))
+      return htmlPage(reply, 503, errorPage(config, request.viewer ?? null, 'GitHub OAuth 未配置', '请先在 .env 设置 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET。', request.locale))
     }
     const state = randomToken(32)
-    store.createOAuthState(sha256Hex(state), addMinutes(10), null)
+    store.createOAuthState(sha256Hex(state), addMinutes(20), null)
     return reply.redirect(oauth.authorizeUrl(state))
   })
 
@@ -249,7 +254,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const code = query.code ?? ''
     const state = query.state ?? ''
     if (code === '' || state === '' || store.consumeOAuthState(sha256Hex(state)) === undefined) {
-      return reply.code(400).send(errorPage(config, request.viewer ?? null, '登录失败', 'OAuth state 无效或已过期，请重新登录。', request.locale))
+      const t = translator(request.locale ?? 'zh')
+      return htmlPage(reply, 400, errorPage(
+        config,
+        request.viewer ?? null,
+        '登录链接已失效',
+        '这个 GitHub 登录链接已失效或已经被使用。请重新登录；如果是在微信/QQ 内置浏览器打开，请改用 Safari 或 Chrome。',
+        request.locale,
+        { href: '/auth/github', label: t('重新登录', 'Sign in again') },
+      ))
     }
     let profile
     let token
@@ -258,7 +271,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       profile = await oauth.profile(token)
     } catch (error) {
       log.warn('github login failed', { error: String(error) })
-      return reply.code(400).send(errorPage(config, request.viewer ?? null, 'GitHub 登录失败', '无法完成 GitHub 登录，请重试。', request.locale))
+      const t = translator(request.locale ?? 'zh')
+      return htmlPage(reply, 400, errorPage(config, request.viewer ?? null, 'GitHub 登录失败', '无法完成 GitHub 登录，请重试。', request.locale, { href: '/auth/github', label: t('重新登录', 'Sign in again') }))
     }
     const isAdmin = profile.login.toLowerCase() === config.github.adminLogin.toLowerCase()
     const user = store.upsertGithubUser({
@@ -476,6 +490,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         error: queryText(request, 'error'),
       }),
     )
+  })
+
+  app.get('/repos/:id/settings', async (request, reply) => {
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    return reply.redirect(`/repos/${repo.id}#repo-settings`)
+  })
+
+  app.get('/repos/:id/:action', async (request, reply) => {
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    return reply.redirect(`/repos/${repo.id}`)
   })
 
   app.post('/repos/:id/run', async (request, reply) => {
@@ -732,7 +756,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.get('/approve/:token', async (request, reply) => {
     const token = String((request.params as Record<string, string>).token)
     const resolved = approvals.resolve(token)
-    if (resolved === undefined) return reply.code(404).send(errorPage(config, request.viewer ?? null, '链接无效', '这个审批链接无效或已经过期。', request.locale))
+    if (resolved === undefined) return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, '链接无效', '这个审批链接无效或已经过期。', request.locale))
     if (resolved.user.status !== 'pending') return reply.type('text/html').send(messagePage(config, '已经处理过', '这个申请已经处理过了。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
     return reply.type('text/html').send(approvalPage({ config, locale: request.locale ?? 'zh', user: resolved.user, action: resolved.row.action, token }))
   })
@@ -740,7 +764,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/approve/:token', async (request, reply) => {
     const token = String((request.params as Record<string, string>).token)
     const result = await approvals.apply(token, 'email-link')
-    if (!result.ok) return reply.code(400).send(messagePage(config, '无法处理', result.reason, request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
+    if (!result.ok) return htmlPage(reply, 400, messagePage(config, '无法处理', result.reason, request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
     return reply.type('text/html').send(messagePage(config, result.user.status === 'approved' ? '已批准' : '已拒绝', `@${result.user.login} 的申请已${result.user.status === 'approved' ? '批准' : '拒绝'}。`, request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
   })
 
@@ -766,7 +790,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.setNotFoundHandler((request, reply) => {
     if (request.url.startsWith('/v1') || request.url.startsWith('/api/')) return reply.code(404).send({ error: { type: 'not_found', message: 'No such endpoint' } })
-    return reply.code(404).send(errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。', request.locale))
+    return htmlPage(reply, 404, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。', request.locale))
   })
 
   app.setErrorHandler((error, request, reply) => {
@@ -778,7 +802,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (request.url.startsWith('/v1') || request.url.startsWith('/api/')) {
       return reply.code(status).send({ error: { type: code, message } })
     }
-    return reply.code(status).send(errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), status === 404 ? '页面不存在' : '出错了', status >= 500 ? '服务器出了点问题，请稍后再试。' : message, request.locale))
+    return htmlPage(reply, status, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), status === 404 ? '页面不存在' : '出错了', status >= 500 ? '服务器出了点问题，请稍后再试。' : message, request.locale))
   })
 
   const sweeper = setInterval(() => {

@@ -351,7 +351,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     </div>
   </section>
   <section class="cols">
-    <div class="card">
+    <div class="card" id="repo-settings">
       <h2>${escapeHtml(t('迭代目标', 'Iteration goal'))}</h2>
       <form method="post" action="/repos/${escapeHtml(repo.id)}/settings" class="form">
         ${csrf(viewer)}
@@ -615,16 +615,25 @@ export function approvalPage(input: { config: Config; locale: Locale; user: User
   return layout({ title: `${verb}`, body, config, locale, path: `/approve/${token}`, error })
 }
 
-export function errorPage(config: Config, viewer: Viewer | null, title: string, message: string, locale: Locale = 'zh'): string {
+export function errorPage(
+  config: Config,
+  viewer: Viewer | null,
+  title: string,
+  message: string,
+  locale: Locale = 'zh',
+  action?: { href: string; label: string },
+): string {
+  const t = translator(locale)
   const localizedTitle = localizeMessage(locale, title) ?? title
   const localizedMessage = localizeMessage(locale, message) ?? message
+  const actionHtml = action === undefined ? '' : `<a class="btn" href="${escapeHtml(action.href)}">${escapeHtml(action.label)}</a>`
   return layout({
     title: localizedTitle,
     viewer,
     config,
     locale,
     path: '/',
-    body: `<section class="card narrow"><h1>${escapeHtml(localizedTitle)}</h1><p>${escapeHtml(localizedMessage)}</p><a class="btn btn-ghost" href="/">${escapeHtml(translator(locale)('回首页', 'Back home'))}</a></section>`,
+    body: `<section class="card narrow"><h1>${escapeHtml(localizedTitle)}</h1><p>${escapeHtml(localizedMessage)}</p><div class="actions">${actionHtml}<a class="btn btn-ghost" href="/">${escapeHtml(t('回首页', 'Back home'))}</a></div></section>`,
   })
 }
 

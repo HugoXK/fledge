@@ -55,6 +55,12 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     assert.equal(devLogin.statusCode, 302)
     assert.match(String(devLogin.headers['set-cookie'] ?? ''), /fledge_session=/)
 
+    const expiredOauth = await built.app.inject({ method: 'GET', url: '/auth/github/callback?code=x&state=y' })
+    assert.equal(expiredOauth.statusCode, 400)
+    assert.match(String(expiredOauth.headers['content-type']), /text\/html/)
+    assert.match(expiredOauth.body, /重新登录/)
+    assert.equal(expiredOauth.headers['cache-control'], 'no-store')
+
     const dashboard = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
     assert.equal(dashboard.statusCode, 200)
     assert.match(dashboard.body, /仓库/)
@@ -108,6 +114,13 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
     assert.equal(page.statusCode, 200)
     assert.match(page.body, /octo\/demo/)
+
+    const settingsGet = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/settings`, headers: { cookie } })
+    assert.equal(settingsGet.statusCode, 302)
+    assert.equal(settingsGet.headers.location, `/repos/${repo.id}#repo-settings`)
+    const runGet = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/run`, headers: { cookie } })
+    assert.equal(runGet.statusCode, 302)
+    assert.equal(runGet.headers.location, `/repos/${repo.id}`)
 
     const settingsWithoutCsrf = await built.app.inject({
       method: 'POST',
