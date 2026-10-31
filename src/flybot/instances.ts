@@ -131,6 +131,15 @@ export class InstanceManager {
     const dir = this.repoDir(repo.user_id, repo.id)
     const dataDir = join(dir, 'data')
     mkdirSync(dataDir, { recursive: true, mode: 0o700 })
+    writeFileSync(join(dataDir, 'tcp-proxy.mjs'), `import net from 'node:net'
+const server = net.createServer((client) => {
+  const upstream = net.connect(3080, '127.0.0.1')
+  client.pipe(upstream).pipe(client)
+  client.on('error', () => upstream.destroy())
+  upstream.on('error', () => client.destroy())
+})
+server.listen(3081, '0.0.0.0')
+`, { mode: 0o600 })
     this.ensureUserDir(repo.user_id)
 
     const used = await this.usedPorts()
@@ -237,11 +246,12 @@ export class InstanceManager {
 
       const uid = typeof process.getuid === 'function' ? process.getuid() : 1000
       const gid = typeof process.getgid === 'function' ? process.getgid() : 1000
+      writeFileSync(join(dataDir, 'dsh-web.log'), '')
       await this.docker([
         'run', '-d',
         '--name', container,
         '--network', network,
-        '-p', `127.0.0.1:${dshPort}:3080`,
+        '-p', `127.0.0.1:${dshPort}:3081`,
         '-v', `${dataDir}:/data`,
         '--user', `${uid}:${gid}`,
         '--memory', this.config.flybot.memory,
@@ -249,17 +259,14 @@ export class InstanceManager {
         '--pids-limit', '512',
         '--security-opt', 'no-new-privileges',
         '--restart', 'no',
+        '--entrypoint', '/bin/sh',
         '-e', 'HOME=/data',
         '-e', 'DSH_HOME=/data',
         '-e', 'NPM_CONFIG_REGISTRY=https://registry.npmmirror.com',
         '-e', 'npm_config_registry=https://registry.npmmirror.com',
         this.config.flybot.instanceImage,
+        '-c', 'node /opt/flybot/docker/entrypoint.mjs >> /data/dsh-web.log 2>&1 & exec node /data/tcp-proxy.mjs',
       ], 180_000)
-
-      const logFd = openSync(join(dataDir, 'dsh-web.log'), 'a', 0o600)
-      const logChild = spawn('docker', ['logs', '-f', container], { detached: true, stdio: ['ignore', logFd, logFd] })
-      logChild.unref()
-      this.store.updateRepoInstance(repo.id, { log_pid: logChild.pid ?? null })
 
       await this.waitForDsh(dshPort, row)
       const bridge = this.startBridge(row, bridgeEnv, join(dataDir, 'bridge.log'))
