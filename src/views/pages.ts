@@ -6,7 +6,7 @@ import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, type Viewer } from './layout.js'
 import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
-import { parseTeam } from '../flybot/instances.js'
+import { parseTeam, type TeamLiveState } from '../flybot/instances.js'
 
 function csrf(viewer: Viewer): string {
   return `<input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />`
@@ -374,6 +374,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <p class="fine">${escapeHtml(t('上游', 'Upstream'))} <a href="${escapeHtml(upstreamUrl)}" target="_blank" rel="noreferrer">${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</a> · ${repo.is_fork === 1 ? `${escapeHtml(t('Fork', 'Fork'))} <a href="${escapeHtml(forkUrl)}" target="_blank" rel="noreferrer">${escapeHtml(forkOwner)}/${escapeHtml(forkName)}</a>` : escapeHtml(t('自有仓库，无需 fork', 'Own repository, no fork'))} · ${escapeHtml(t('角色', 'Role'))} <code>${escapeHtml(permission)}</code> · ${escapeHtml(reviewerLabel)}</p>
       </div>
       <div class="row">
+        <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>
         <form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button></form>
         ${canReview && reviewerEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/review">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('立即审核', 'Review now'))}</button></form>` : ''}
       </div>
@@ -428,6 +429,136 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     <table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('触发', 'Trigger'))}</th><th>PR / Issue</th><th>${escapeHtml(t('摘要', 'Summary'))}</th><th>${escapeHtml(t('时间', 'Time'))}</th></tr></thead><tbody>${jobRows(locale, jobs)}</tbody></table>
   </section>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
+}
+
+function teamRoleLabel(t: Translate, role: string): string {
+  const labels: Record<string, [string, string]> = {
+    chief: ['总控', 'Chief'],
+    lead: ['负责人', 'Lead'],
+    product: ['产品', 'Product'],
+    test: ['测试', 'Test'],
+    security: ['安全', 'Security'],
+    reviewer: ['审核', 'Reviewer'],
+    dev1: ['开发 1', 'Dev-1'],
+    dev2: ['开发 2', 'Dev-2'],
+  }
+  const value = labels[role]
+  return value === undefined ? role : t(value[0], value[1])
+}
+
+function activityLabel(t: Translate, activity: string): string {
+  if (activity === 'thinking') return t('思考中', 'Thinking')
+  if (activity === 'idle') return t('空闲', 'Idle')
+  if (activity === 'unknown') return t('未知', 'Unknown')
+  return activity
+}
+
+function teamSession(team: ReturnType<typeof parseTeam>, role: string): string {
+  if (team === null) return ''
+  if (role === 'chief') return team.chief
+  if (role === 'lead') return team.lead
+  if (role === 'product') return team.product
+  if (role === 'test') return team.test
+  if (role === 'security') return team.security
+  if (role === 'reviewer') return team.reviewer ?? ''
+  if (role === 'dev1') return team.dev1
+  if (role === 'dev2') return team.dev2
+  return ''
+}
+
+export function teamPage(input: {
+  config: Config
+  locale: Locale
+  viewer: Viewer
+  repo: RepoRow
+  instance?: RepoInstanceRow
+  state?: TeamLiveState
+  stateError?: string
+  jobs: JobRow[]
+  notice?: string
+  error?: string
+}): string {
+  const { config, locale, viewer, repo, instance, state, stateError, jobs, notice, error } = input
+  const t = translator(locale)
+  const team = instance === undefined ? null : parseTeam(instance.team_json)
+  const ready = instance?.status === 'ready' && team !== null
+  const roleKeys = ['chief', 'lead', 'product', 'test', 'security', 'reviewer', 'dev1', 'dev2']
+  const roles = roleKeys.map((role) => {
+    const live = state?.bots.find((bot) => bot.role === role)
+    return {
+      role,
+      label: teamRoleLabel(t, role),
+      sessionId: live?.sessionId ?? teamSession(team, role),
+      activity: live?.activity ?? 'unknown',
+      calls: live?.calls ?? 0,
+    }
+  })
+  const roleCards = roles
+    .map(
+      (role) => `<div class="team-role${role.activity === 'thinking' ? ' is-thinking' : ''}" data-role="${escapeHtml(role.role)}">
+        <b>${escapeHtml(role.label)}</b>
+        <span class="team-activity">${escapeHtml(activityLabel(t, role.activity))}</span>
+        <small class="team-calls">${role.calls > 0 ? `${role.calls} ${escapeHtml(t('次调用', 'calls'))}` : ''}</small>
+      </div>`,
+    )
+    .join('')
+  const sessionDetails = roles.some((role) => role.sessionId !== '')
+    ? `<details class="fine session-details"><summary>${escapeHtml(t('查看 session ID', 'View session IDs'))}</summary><div class="session-list">${roles.filter((role) => role.sessionId !== '').map((role) => `<code>${escapeHtml(role.label)}: ${escapeHtml(role.sessionId)}</code>`).join('')}</div></details>`
+    : ''
+  const questions = state?.questions ?? []
+  const questionHtml = questions.length === 0
+    ? `<p class="muted">${escapeHtml(t('没有待回答的问题。', 'No open questions.'))}</p>`
+    : `<div class="list">${questions.map((question) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(question.question || t('团队提问', 'Team question'))}</strong>${question.options.length === 0 ? '' : `<small>${question.options.map((option) => escapeHtml(option)).join(' · ')}</small>`}</div></div>`).join('')}</div>`
+  const stateErrorHtml = stateError === undefined ? '' : `<div class="banner bad">${escapeHtml(t('读取团队状态失败：', 'Could not read team state: '))}${escapeHtml(stateError)}</div>`
+  const instanceActions = config.flybot.instanceImage === ''
+    ? ''
+    : instance === undefined || instance.status === 'failed' || instance.status === 'stopped'
+      ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/instance">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('启动 FlyBot', 'Start FlyBot'))}</button></form>`
+      : instance.status === 'ready'
+        ? ''
+        : `<form method="post" action="/repos/${escapeHtml(repo.id)}/instance">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('重新初始化 FlyBot', 'Reinitialize FlyBot'))}</button></form>`
+  const guidanceForm = ready
+    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/team/guidance" class="form">
+        ${csrf(viewer)}
+        <label>${escapeHtml(t('发送给', 'Send to'))}
+          <select name="target">
+            ${roles.map((role) => `<option value="${escapeHtml(role.role)}"${role.role === 'lead' ? ' selected' : ''}>${escapeHtml(role.label)}</option>`).join('')}
+          </select>
+        </label>
+        <label>${escapeHtml(t('新的指导意见', 'New guidance'))}<textarea name="text" rows="4" required placeholder="${escapeHtml(t('例如：先不要改代码，汇报当前实现和风险。', 'For example: do not change code yet; report the current implementation and risks.'))}"></textarea></label>
+        <button class="btn" type="submit">${escapeHtml(t('发送给团队', 'Send to team'))}</button>
+      </form>`
+    : `<p class="muted">${escapeHtml(t('实例就绪后可以给团队发送指导意见。', 'Guidance can be sent after the instance is ready.'))}</p>`
+  const body = `<section class="card">
+    <div class="row between">
+      <div>
+        <div class="eyebrow">${escapeHtml(t('团队', 'TEAM'))}</div>
+        <h1>${escapeHtml(repo.owner)}/${escapeHtml(repo.name)}</h1>
+        <p class="muted">${instance === undefined ? escapeHtml(t('未创建实例', 'No instance')) : `${badge(t, instance.status)} <span class="muted">${escapeHtml(instance.container)}</span>`} · <a href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a></p>
+      </div>
+      <div class="row">
+        ${instanceActions}
+        <button class="btn btn-ghost" type="button" onclick="location.reload()">${escapeHtml(t('刷新', 'Refresh'))}</button>
+      </div>
+    </div>
+  </section>
+  ${stateErrorHtml}
+  <section class="card" id="team-live" data-team-api="/api/repos/${escapeHtml(repo.id)}/team" data-team-locale="${escapeHtml(locale)}">
+    <div class="row between"><h2>${escapeHtml(t('团队状态', 'Team status'))}</h2><span class="fine">${escapeHtml(t('上次更新', 'Updated'))} <span data-team-updated>—</span></span></div>
+    <div class="team-grid">${roleCards}</div>
+    ${sessionDetails}
+  </section>
+  <section class="cols">
+    <div class="card"><h2>${escapeHtml(t('待回答的问题', 'Open questions'))}</h2>${questionHtml}</div>
+    <div class="card"><h2>${escapeHtml(t('发送指导意见', 'Send guidance'))}</h2>${guidanceForm}</div>
+  </section>
+  <section class="card">
+    <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
+    <p class="fine">${escapeHtml(t('任务按时间倒序；同一仓库同时最多运行一个任务，历史任务会保留。', 'Jobs are newest first; one job per repository runs at a time, and history is kept.'))}</p>
+    <table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('触发', 'Trigger'))}</th><th>PR / Issue</th><th>${escapeHtml(t('摘要', 'Summary'))}</th><th>${escapeHtml(t('时间', 'Time'))}</th></tr></thead><tbody>${jobRows(locale, jobs)}</tbody></table>
+  </section>
+  <script src="/assets/team.js" defer></script>`
+  return layout({ title: t('团队工作台', 'Team console'), viewer, body, config, locale, path: `/repos/${repo.id}/team`, active: 'dashboard', notice, error })
 }
 
 export function settingsPage(input: {

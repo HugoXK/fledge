@@ -31,6 +31,7 @@ import {
   applyPage,
   applicationStatusPage,
   repoPage,
+  teamPage,
   workspacePage,
   settingsPage,
   errorPage,
@@ -504,6 +505,58 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.get('/repos/:id/settings', async (request, reply) => {
     const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
     return reply.redirect(`/repos/${repo.id}#repo-settings`)
+  })
+
+  app.get('/repos/:id/team', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const instance = store.getRepoInstance(repo.id)
+    let state
+    let stateError: string | undefined
+    if (instance !== undefined && instance.status === 'ready') {
+      try {
+        state = await instances.teamState(repo.id)
+      } catch (error) {
+        stateError = error instanceof Error ? error.message : String(error)
+      }
+    }
+    return reply.type('text/html').send(teamPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      repo,
+      instance,
+      state,
+      stateError,
+      jobs: store.listJobsForRepo(repo.id),
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
+  })
+
+  app.get('/api/repos/:id/team', async (request, reply) => {
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    try {
+      const state = await instances.teamState(repo.id)
+      return { ...state, jobs: store.listJobsForRepo(repo.id).slice(0, 5) }
+    } catch (error) {
+      return reply.code(503).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
+
+  app.post('/repos/:id/team/guidance', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const body = form(request)
+    const target = (body.target ?? '').trim()
+    const text = (body.text ?? '').trim()
+    try {
+      await instances.sendGuidance(repo.id, target, text)
+      store.audit(viewer.user.id, 'team.guidance', `${repo.owner}/${repo.name} target=${target} chars=${text.length}`)
+      const t = translator(request.locale ?? 'zh')
+      return reply.redirect(`/repos/${repo.id}/team?notice=${encodeURIComponent(t('指导意见已发送给团队。', 'Guidance sent to the team.'))}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return reply.redirect(`/repos/${repo.id}/team?error=${encodeURIComponent(message)}`)
+    }
   })
 
   app.get('/repos/:id/:action', async (request, reply) => {

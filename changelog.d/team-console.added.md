@@ -1,0 +1,1 @@
+Added an authenticated per-repository team console that shows live role activity and open questions from the isolated FlyBot instance and lets the owner send new guidance to the Chief, Lead or any team role without exposing the native FlyBot UI publicly.

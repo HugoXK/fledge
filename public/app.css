@@ -278,6 +278,9 @@ textarea { resize: vertical; min-height: 70px; }
 .team-role { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: #090e14; }
 .team-role b { display: block; font-size: 13.5px; }
 .team-role span { display: block; margin-top: 3px; color: var(--muted-2); font-size: 11px; }
+.team-role.is-thinking { border-color: rgba(184, 243, 74, 0.42); }
+.team-role.is-thinking b { color: var(--accent); }
+.team-role .team-calls { display: block; margin-top: 3px; color: var(--muted-2); font-size: 10.5px; }
 .session-details { margin-top: 12px; }
 .session-details summary { cursor: pointer; }
 .session-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }

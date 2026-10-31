@@ -24,6 +24,28 @@ export interface RepoTeam {
   team: string
 }
 
+export interface TeamBotState {
+  role: string
+  label: string
+  sessionId: string
+  name: string
+  activity: string
+  calls: number
+  since: number | null
+}
+
+export interface TeamQuestionState {
+  sessionId: string
+  question: string
+  options: string[]
+}
+
+export interface TeamLiveState {
+  bots: TeamBotState[]
+  questions: TeamQuestionState[]
+  instance: { status: string; container: string }
+}
+
 export interface InstanceBridge {
   url: string
   token: string
@@ -451,6 +473,68 @@ server.listen(3081, '0.0.0.0')
       team,
       instance,
     }
+  }
+
+  async teamState(repoId: string): Promise<TeamLiveState> {
+    const bridge = this.bridgeFor(repoId)
+    const raw = await this.dsh(bridge.instance.bridge_port, bridge.token, 'state', {})
+    const value = ((raw as { value?: Record<string, unknown> }).value ?? raw) as Record<string, unknown>
+    const bots = Array.isArray(value.bots) ? (value.bots as Array<Record<string, unknown>>) : []
+    const activity = (value.activity ?? {}) as Record<string, unknown>
+    const work = ((value.work ?? {}) as Record<string, unknown>).bots as Record<string, { calls?: number; since?: number }> | undefined
+    const questions = (value.questions ?? {}) as Record<string, Record<string, unknown>>
+    const roleMap: Array<[string, string, string]> = [
+      ['chief', 'Chief', bridge.team.chief],
+      ['lead', 'Lead', bridge.team.lead],
+      ['product', 'Product', bridge.team.product],
+      ['test', 'Test', bridge.team.test],
+      ['security', 'Security', bridge.team.security],
+      ['reviewer', 'Reviewer', bridge.team.reviewer ?? ''],
+      ['dev1', 'Dev-1', bridge.team.dev1],
+      ['dev2', 'Dev-2', bridge.team.dev2],
+    ]
+    return {
+      bots: roleMap.map(([role, label, sessionId]) => {
+        const bot = bots.find((entry) => entry.sessionId === sessionId)
+        return {
+          role,
+          label,
+          sessionId,
+          name: typeof bot?.name === 'string' ? bot.name : label,
+          activity: typeof activity[sessionId] === 'string' ? String(activity[sessionId]) : 'idle',
+          calls: Number(work?.[sessionId]?.calls ?? 0),
+          since: typeof work?.[sessionId]?.since === 'number' ? Number(work[sessionId].since) : null,
+        }
+      }),
+      questions: Object.entries(questions).slice(0, 10).map(([sessionId, question]) => ({
+        sessionId,
+        question: typeof question.question === 'string' ? question.question.slice(0, 500) : '',
+        options: Array.isArray(question.options) ? question.options.map((option) => {
+          const value = option as Record<string, unknown>
+          return typeof value.label === 'string' ? value.label : ''
+        }).filter((value) => value !== '') : [],
+      })),
+      instance: { status: bridge.instance.status, container: bridge.instance.container },
+    }
+  }
+
+  async sendGuidance(repoId: string, target: string, text: string): Promise<void> {
+    const bridge = this.bridgeFor(repoId)
+    const sessions: Record<string, string> = {
+      chief: bridge.team.chief,
+      lead: bridge.team.lead,
+      product: bridge.team.product,
+      test: bridge.team.test,
+      security: bridge.team.security,
+      reviewer: bridge.team.reviewer ?? '',
+      dev1: bridge.team.dev1,
+      dev2: bridge.team.dev2,
+    }
+    const sessionId = sessions[target]
+    if (sessionId === undefined || sessionId === '') throw new Error('请选择有效的团队角色')
+    const body = text.trim().slice(0, 4000)
+    if (body === '') throw new Error('指导意见不能为空')
+    await this.dsh(bridge.instance.bridge_port, bridge.token, 'send', { sessionId, text: body })
   }
 
   async stop(repoId: string, update = true): Promise<void> {
