@@ -101,7 +101,12 @@ function jobSummary(t: Translate, job: JobRow): string {
     const meaningful = raw !== '' && raw !== 'probe' && raw.length >= 12
     return meaningful ? `${raw}${score}` : `${t('审核完成', 'Review completed')}${score}`
   }
-  return raw === '' ? '—' : raw
+  if (raw === '' || raw === 'probe' || raw.length < 8) {
+    if (job.status === 'succeeded') return t('任务完成', 'Job completed')
+    if (job.status === 'failed') return t('任务失败', 'Job failed')
+    return '—'
+  }
+  return raw
 }
 
 function jobRows(locale: Locale, jobs: JobRow[]): string {
@@ -448,6 +453,7 @@ function teamRoleLabel(t: Translate, role: string): string {
 
 function activityLabel(t: Translate, activity: string): string {
   if (activity === 'thinking') return t('思考中', 'Thinking')
+  if (activity === 'working') return t('工作中', 'Working')
   if (activity === 'idle') return t('空闲', 'Idle')
   if (activity === 'unknown') return t('未知', 'Unknown')
   return activity
@@ -495,7 +501,7 @@ export function teamPage(input: {
   })
   const roleCards = roles
     .map(
-      (role) => `<div class="team-role${role.activity === 'thinking' ? ' is-thinking' : ''}" data-role="${escapeHtml(role.role)}">
+      (role) => `<div class="team-role${role.activity === 'thinking' || role.activity === 'working' ? ' is-thinking' : ''}" data-role="${escapeHtml(role.role)}">
         <b>${escapeHtml(role.label)}</b>
         <span class="team-activity">${escapeHtml(activityLabel(t, role.activity))}</span>
         <small class="team-calls">${role.calls > 0 ? `${role.calls} ${escapeHtml(t('次调用', 'calls'))}` : ''}</small>

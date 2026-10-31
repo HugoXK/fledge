@@ -7,6 +7,7 @@
   const t = (a, b) => (zh ? a : b)
   const activityLabel = (value) => {
     if (value === 'thinking') return t('思考中', 'Thinking')
+    if (value === 'working') return t('工作中', 'Working')
     if (value === 'idle') return t('空闲', 'Idle')
     if (value === 'unknown') return t('未知', 'Unknown')
     return value
@@ -19,7 +20,7 @@
       for (const bot of data.bots || []) {
         const row = root.querySelector(`[data-role="${bot.role}"]`)
         if (!row) continue
-        row.classList.toggle('is-thinking', bot.activity === 'thinking')
+        row.classList.toggle('is-thinking', bot.activity === 'thinking' || bot.activity === 'working')
         const activity = row.querySelector('.team-activity')
         if (activity) activity.textContent = activityLabel(bot.activity)
         const calls = row.querySelector('.team-calls')
