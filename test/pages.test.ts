@@ -1,11 +1,26 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
 import { dashboardPage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
+
+test('healthz reports the package version', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const response = await built.app.inject({ method: 'GET', url: '/healthz' })
+    const body = response.json() as { version: string }
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
+    assert.equal(body.version, pkg.version)
+  } finally {
+    await built.close()
+  }
+})
 
 test('small quota changes are visible below one yuan', () => {
   assert.equal(quotaMoney(0.0001), '¥0.0001')
