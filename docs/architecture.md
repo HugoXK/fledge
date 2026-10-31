@@ -54,8 +54,23 @@
   emails the administrator. The status page shows the live queue position and
   rejects a second submission. Approvals create two single-use random tokens
   (approve/reject), stored as hashes, valid for 7 days.
-- **No worker process**: a 60-second tick schedules due repos with a global
-  concurrency cap of 2. Jobs that exceed the timeout are failed.
+- **No worker process**: a 60-second tick schedules due iterate jobs and, when
+  the upstream grants maintain/write permission, review jobs for all open PRs.
+  The interval is the minimum gap between runs, not a cap on PRs or issues; a
+  repository can accumulate many PRs/issues over time. A run is skipped while
+  another job for that repository is active. The global concurrency cap is 2.
+  Iteration cadence ranges from every 15 minutes to every 30 days; review
+  cadence from every 6 hours to every 30 days. Jobs that exceed the timeout are
+  failed.
+- **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
+  reads it with the user's token, checks for a same-name fork, creates one when
+  needed, and stores both sides. Iteration jobs push to the fork and open the PR
+  against the upstream; issues are created on the upstream. If the token user
+  owns the upstream, no fork is created and the branch/PR stay in that repo.
+- **Reviewer role**: a user with maintain/write permission on the upstream (or
+  ownership) can enable a scheduled reviewer. Review jobs list every open
+  upstream PR, score each one, and post a COMMENT review; they never merge or
+  modify code.
 
 ### Model gateway
 
@@ -82,8 +97,11 @@ descriptor; the bridge relays it to a configured FlyBot chat session. The agent:
 1. fetches the GitHub token from `GET /api/jobs/:id/credential` with the job
    secret;
 2. uses the platform model at `.../v1` with the job token;
-3. creates a branch, commits, opens a PR;
-4. calls `POST /api/jobs/:id/callback` with the branch, PR URL and summary.
+3. creates a branch, commits to the fork when one is used, opens an issue and a
+   PR against the upstream;
+4. calls `POST /api/jobs/:id/callback` with the branch, issue URL, PR URL and
+   summary. Review jobs instead list all open upstream PRs, post scored COMMENT
+   reviews, and return `reviewScore`.
 
 Both endpoints require `Authorization: Bearer <callbackSecret>`. The secret is
 generated per job, stored as a hash, and never appears in the UI.
@@ -96,8 +114,8 @@ generated per job, stored as a hash, and never appears in the UI.
 | `sessions` | hashed session id, expiry, IP/UA |
 | `oauth_states` | short-lived OAuth `state` values |
 | `approval_tokens` | single-use approve/reject links |
-| `repos` | repo owner/name, encrypted token, goal, cadence, state |
-| `jobs` | lifecycle, branch, PR URL, summary, cost, job-scoped token hash |
+| `repos` | upstream/fork identity, encrypted token, permission, reviewer config, goal, cadence, state |
+| `jobs` | lifecycle, kind (iterate/review), branch, issue/PR URL, review score, summary, cost, job-scoped token hash |
 | `api_tokens` | `flg_` tokens (PAT or job), hashed |
 | `quota_ledger` | per-request cost records |
 | `notifications` | in-app messages (quota, job failure) |

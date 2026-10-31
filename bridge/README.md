@@ -21,7 +21,8 @@ node bridge/flybot-bridge.mjs
 | Variable | Required | Meaning |
 |---|---|---|
 | `BRIDGE_TOKEN` | yes | Shared secret with Fledge; >= 16 chars |
-| `FLYBOT_CHAT_SESSION_ID` | yes | The Bot chat that should take jobs |
+| `FLYBOT_CHAT_SESSION_ID` | yes | The Bot chat that should take iterate jobs |
+| `FLYBOT_REVIEW_SESSION_ID` | no | A dedicated reviewer chat; defaults to the iterate session |
 | `BRIDGE_PORT` | no | Default 8787 |
 | `BRIDGE_HOST` | no | Default 127.0.0.1 |
 | `FLYBOT_WEB` | no | Default `http://127.0.0.1:3080` |
@@ -39,7 +40,14 @@ loopback only; keep it that way.
 ```json
 {
   "jobId": "job_abc",
+  "kind": "iterate",
   "repo": { "owner": "octo", "name": "demo", "defaultBranch": "main" },
+  "upstream": { "owner": "octo", "name": "demo", "defaultBranch": "main", "htmlUrl": "https://github.com/octo/demo" },
+  "fork": { "owner": "alice", "name": "demo", "defaultBranch": "main", "htmlUrl": "https://github.com/alice/demo" },
+  "isFork": true,
+  "permission": "write",
+  "canReview": true,
+  "canCreateIssue": true,
   "goal": "Fix one reproducible bug and open a PR.",
   "callbackUrl": "https://fledge.example/api/jobs/job_abc/callback",
   "callbackSecret": "…",
@@ -62,8 +70,12 @@ The agent prompt includes:
 
 1. get the GitHub token from `credentialUrl` with `credentialSecret`;
 2. use the model at `platform.baseUrl` with `platform.token`;
-3. one branch, one focused PR, no force-push, no merge;
-4. POST the result to `callbackUrl` with `{status, branch, prUrl, summary, error}`.
+3. for `kind=iterate`: push to `fork`, create/reuse an issue on `upstream`, open
+   one focused PR against `upstream`, no force-push, no merge;
+4. for `kind=review`: review every open upstream PR, score each 0–100 and post a
+   COMMENT review, never approve/merge, and report `reviewScore`;
+5. POST the result to `callbackUrl` with
+   `{status, branch, prUrl, issueUrl, reviewScore, summary, error}`.
 
 ## Security
 

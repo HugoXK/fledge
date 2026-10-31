@@ -94,6 +94,12 @@ own improvements. See [docs/decisions/0001-name.md](docs/decisions/0001-name.md)
   of connected repositories, active jobs and quota, with shortcuts to the full
   repository list, settings and docs. The shared Portal is linked in the footer;
   Fledge approval never grants access to other services.
+- **Fork-aware onboarding**: enter the upstream repository; Fledge checks for a
+  same-name fork, creates it when needed, keeps issues and PRs on the upstream,
+  and pushes branches to the fork. If you own the upstream, no fork is created.
+- **Reviewer role** for upstream maintainers/write members: a scheduled FlyBot
+  reviewer scores every open upstream PR and posts a COMMENT review. It never
+  merges or changes code.
 - **Fine-grained GitHub tokens**, validated for write access on add, encrypted
   with AES-256-GCM, and only decrypted for a running job.
 - **Sessions and CSRF** on every browser form; approval links are single-use and
@@ -104,7 +110,9 @@ own improvements. See [docs/decisions/0001-name.md](docs/decisions/0001-name.md)
 ### Repositories and jobs
 
 - **One account, many repositories.** Each repo has its own goal, cadence
-  (manual / hourly / daily / weekly), enabled flag and last status.
+  (manual, every 15 minutes to every 30 days), enabled flag and last status.
+  The interval is the minimum gap between runs; it does not cap the number of
+  PRs or issues the repository can produce.
 - **Job lifecycle**: `queued → running → succeeded | failed | quota_exhausted`.
 - **FlyBot bridge**: Fledge sends a job descriptor; the agent fetches a scoped
   GitHub credential, uses a job-scoped model token, opens a PR and calls back

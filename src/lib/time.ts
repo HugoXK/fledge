@@ -22,3 +22,10 @@ export function humanTime(iso: string | null | undefined): string {
   if (Number.isNaN(date.getTime())) return '—'
   return date.toISOString().replace('T', ' ').replace('.000Z', 'Z')
 }
+
+export function humanTimeShort(iso: string | null | undefined): string {
+  if (iso === null || iso === undefined || iso === '') return '—'
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toISOString().slice(0, 19).replace('T', ' ')
+}

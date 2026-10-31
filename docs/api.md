@@ -20,11 +20,13 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/apply/status` | session | Live queue position and status |
 | GET | `/api/application` | session | JSON status/queue for the status page |
 | GET | `/dashboard` | approved + session | Repos, quota, jobs |
-| GET | `/console` | approved + session | Service permissions (Fledge only by default) |
-| POST | `/repos` | approved + CSRF | Add a repository |
+| GET | `/console` | approved + session | Workspace overview (repos, jobs, quota) |
+| POST | `/repos` | approved + CSRF | Add an upstream repository; Fledge checks or creates the user's fork |
 | GET | `/repos/:id` | owner | Repo detail |
-| POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual job |
-| POST | `/repos/:id/settings` | owner + CSRF | Goal, cadence, enabled |
+| POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job |
+| POST | `/repos/:id/refresh` | owner + CSRF | Re-check the upstream, fork and permissions |
+| POST | `/repos/:id/review` | owner + CSRF | Enqueue a manual review job |
+| POST | `/repos/:id/settings` | owner + CSRF | Goal, cadence, enabled, reviewer interval |
 | POST | `/repos/:id/delete` | owner + CSRF | Delete repo and jobs |
 | GET | `/settings` | approved | Account, model, API tokens |
 | POST | `/settings/model` | approved + CSRF | Save/clear own model |
@@ -47,10 +49,24 @@ These are called by the FlyBot bridge/agent, not by a browser.
 Headers: `Authorization: Bearer <callbackSecret>`
 
 ```json
-{ "token": "github_pat_…", "owner": "octo", "name": "demo", "defaultBranch": "main" }
+{
+  "token": "github_pat_…",
+  "owner": "octo",
+  "name": "demo",
+  "defaultBranch": "main",
+  "upstream": { "owner": "octo", "name": "demo", "defaultBranch": "main", "htmlUrl": "https://github.com/octo/demo" },
+  "fork": { "owner": "alice", "name": "demo", "defaultBranch": "main", "htmlUrl": "https://github.com/alice/demo" },
+  "isFork": true,
+  "permission": "write",
+  "canReview": true,
+  "canCreateIssue": true
+}
 ```
 
-Only while the job is `queued` or `running`.
+`owner/name` is always the upstream. When the token belongs to the upstream
+owner, `fork` equals `upstream` and `isFork` is false. Otherwise the agent must
+push to `fork` and open the PR against `upstream`. Only while the job is
+`queued` or `running`.
 
 ### `POST /api/jobs/:id/callback`
 
@@ -61,9 +77,17 @@ Headers: `Authorization: Bearer <callbackSecret>`, `Content-Type: application/js
   "status": "succeeded",
   "branch": "fledge/fix-123",
   "prUrl": "https://github.com/octo/demo/pull/42",
+  "issueUrl": "https://github.com/octo/demo/issues/41",
   "summary": "Fixed the off-by-one in the CSV splitter; added a regression test.",
   "error": ""
 }
+```
+
+Review jobs use `kind=review` and return `reviewScore` (0–100) instead of a
+branch/PR:
+
+```json
+{ "status": "succeeded", "summary": "Reviewed 6 PRs; average 78.", "reviewScore": 78 }
 ```
 
 `status` may be `running`, `succeeded` or `failed`. A finished job revokes its

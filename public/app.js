@@ -18,6 +18,25 @@
     // Storage can be unavailable in private modes; the server-rendered locale still works.
   }
 
+
+  document.querySelectorAll('[data-auto-group]').forEach((group) => {
+    const toggle = group.querySelector('input[name="auto"]')
+    const select = group.querySelector('select[name="interval"]')
+    if (!toggle || !select) return
+    const sync = () => { select.disabled = !toggle.checked }
+    toggle.addEventListener('change', sync)
+    sync()
+  })
+
+  document.querySelectorAll('[data-review-group]').forEach((group) => {
+    const toggle = group.querySelector('input[name="review"]')
+    const select = group.querySelector('select[name="reviewInterval"]')
+    if (!toggle || !select) return
+    const sync = () => { select.disabled = !toggle.checked || toggle.disabled }
+    toggle.addEventListener('change', sync)
+    sync()
+  })
+
   document.querySelectorAll('[data-lang-btn]').forEach((el) => {
     el.addEventListener('click', () => {
       const next = el.getAttribute('data-lang-btn')

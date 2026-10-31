@@ -70,6 +70,23 @@ export interface RepoRow {
   last_run_at: string | null
   last_status: string | null
   created_at: string
+  upstream_owner: string
+  upstream_name: string
+  fork_owner: string
+  fork_name: string
+  upstream_default_branch: string
+  fork_default_branch: string
+  is_fork: number
+  fork_created: number
+  permission: string
+  can_review: number
+  can_create_issue: number
+  reviewer_enabled: number
+  review_interval_minutes: number
+  last_review_at: string | null
+  last_review_status: string | null
+  upstream_html_url: string | null
+  fork_html_url: string | null
 }
 
 export interface JobRow {
@@ -86,6 +103,9 @@ export interface JobRow {
   cost_usd: number
   platform_token_hash: string | null
   callback_hash: string
+  kind: string
+  issue_url: string | null
+  review_score: number | null
   created_at: string
   started_at: string | null
   finished_at: string | null
@@ -222,6 +242,23 @@ CREATE TABLE IF NOT EXISTS repos (
   last_run_at TEXT,
   last_status TEXT,
   created_at TEXT NOT NULL,
+  upstream_owner TEXT NOT NULL DEFAULT '',
+  upstream_name TEXT NOT NULL DEFAULT '',
+  fork_owner TEXT NOT NULL DEFAULT '',
+  fork_name TEXT NOT NULL DEFAULT '',
+  upstream_default_branch TEXT NOT NULL DEFAULT 'main',
+  fork_default_branch TEXT NOT NULL DEFAULT 'main',
+  is_fork INTEGER NOT NULL DEFAULT 0,
+  fork_created INTEGER NOT NULL DEFAULT 0,
+  permission TEXT NOT NULL DEFAULT 'write',
+  can_review INTEGER NOT NULL DEFAULT 0,
+  can_create_issue INTEGER NOT NULL DEFAULT 1,
+  reviewer_enabled INTEGER NOT NULL DEFAULT 0,
+  review_interval_minutes INTEGER NOT NULL DEFAULT 1440,
+  last_review_at TEXT,
+  last_review_status TEXT,
+  upstream_html_url TEXT,
+  fork_html_url TEXT,
   UNIQUE(user_id, owner, name)
 );
 CREATE INDEX IF NOT EXISTS repos_user_idx ON repos(user_id);
@@ -240,6 +277,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   cost_usd REAL NOT NULL DEFAULT 0,
   platform_token_hash TEXT,
   callback_hash TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'iterate',
+  issue_url TEXT,
+  review_score INTEGER,
   created_at TEXT NOT NULL,
   started_at TEXT,
   finished_at TEXT
@@ -310,7 +350,8 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec(SCHEMA)
     this.migrateColumns()
-    this.db.exec('PRAGMA user_version = 2;')
+    this.migrateRepoColumns()
+    this.db.exec('PRAGMA user_version = 3;')
   }
 
   private migrateColumns(): void {
@@ -330,6 +371,42 @@ export class Store {
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE users ADD COLUMN ${name} ${type}`)
     }
+  }
+
+  private migrateRepoColumns(): void {
+    const repoColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(repos)').map((row) => row.name))
+    const repoAdditions: Array<[string, string]> = [
+      ['upstream_owner', "TEXT NOT NULL DEFAULT ''"],
+      ['upstream_name', "TEXT NOT NULL DEFAULT ''"],
+      ['fork_owner', "TEXT NOT NULL DEFAULT ''"],
+      ['fork_name', "TEXT NOT NULL DEFAULT ''"],
+      ['upstream_default_branch', "TEXT NOT NULL DEFAULT 'main'"],
+      ['fork_default_branch', "TEXT NOT NULL DEFAULT 'main'"],
+      ['is_fork', 'INTEGER NOT NULL DEFAULT 0'],
+      ['fork_created', 'INTEGER NOT NULL DEFAULT 0'],
+      ['permission', "TEXT NOT NULL DEFAULT 'write'"],
+      ['can_review', 'INTEGER NOT NULL DEFAULT 0'],
+      ['can_create_issue', 'INTEGER NOT NULL DEFAULT 1'],
+      ['reviewer_enabled', 'INTEGER NOT NULL DEFAULT 0'],
+      ['review_interval_minutes', 'INTEGER NOT NULL DEFAULT 1440'],
+      ['last_review_at', 'TEXT'],
+      ['last_review_status', 'TEXT'],
+      ['upstream_html_url', 'TEXT'],
+      ['fork_html_url', 'TEXT'],
+    ]
+    for (const [name, type] of repoAdditions) {
+      if (!repoColumns.has(name)) this.run(`ALTER TABLE repos ADD COLUMN ${name} ${type}`)
+    }
+    this.run("UPDATE repos SET upstream_owner = owner WHERE upstream_owner = ''")
+    this.run("UPDATE repos SET upstream_name = name WHERE upstream_name = ''")
+    this.run("UPDATE repos SET fork_owner = owner WHERE fork_owner = ''")
+    this.run("UPDATE repos SET fork_name = name WHERE fork_name = ''")
+    this.run("UPDATE repos SET upstream_default_branch = default_branch WHERE upstream_default_branch = 'main'")
+    this.run("UPDATE repos SET fork_default_branch = default_branch WHERE fork_default_branch = 'main'")
+    const jobColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(jobs)').map((row) => row.name))
+    if (!jobColumns.has('kind')) this.run("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'iterate'")
+    if (!jobColumns.has('issue_url')) this.run('ALTER TABLE jobs ADD COLUMN issue_url TEXT')
+    if (!jobColumns.has('review_score')) this.run('ALTER TABLE jobs ADD COLUMN review_score INTEGER')
   }
 
   close(): void {
@@ -574,10 +651,27 @@ export class Store {
     goal: string
     autoIterate: boolean
     intervalMinutes: number
+    upstreamOwner?: string
+    upstreamName?: string
+    forkOwner?: string
+    forkName?: string
+    upstreamDefaultBranch?: string
+    forkDefaultBranch?: string
+    isFork?: boolean
+    forkCreated?: boolean
+    permission?: string
+    canReview?: boolean
+    canCreateIssue?: boolean
+    reviewerEnabled?: boolean
+    reviewIntervalMinutes?: number
+    upstreamHtmlUrl?: string | null
+    forkHtmlUrl?: string | null
   }): RepoRow {
     this.run(
-      `INSERT INTO repos (id, user_id, owner, name, default_branch, token_enc, goal, enabled, auto_iterate, interval_minutes, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+      `INSERT INTO repos (id, user_id, owner, name, default_branch, token_enc, goal, enabled, auto_iterate, interval_minutes, created_at,
+         upstream_owner, upstream_name, fork_owner, fork_name, upstream_default_branch, fork_default_branch,
+         is_fork, fork_created, permission, can_review, can_create_issue, reviewer_enabled, review_interval_minutes, upstream_html_url, fork_html_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.userId,
       input.owner,
@@ -588,6 +682,21 @@ export class Store {
       input.autoIterate ? 1 : 0,
       input.intervalMinutes,
       nowIso(),
+      input.upstreamOwner ?? input.owner,
+      input.upstreamName ?? input.name,
+      input.forkOwner ?? input.owner,
+      input.forkName ?? input.name,
+      input.upstreamDefaultBranch ?? input.defaultBranch,
+      input.forkDefaultBranch ?? input.defaultBranch,
+      input.isFork === true ? 1 : 0,
+      input.forkCreated === true ? 1 : 0,
+      input.permission ?? 'write',
+      input.canReview === true ? 1 : 0,
+      input.canCreateIssue === true ? 1 : 0,
+      input.reviewerEnabled === true ? 1 : 0,
+      input.reviewIntervalMinutes ?? 1440,
+      input.upstreamHtmlUrl ?? null,
+      input.forkHtmlUrl ?? null,
     )
     return this.getRepo(input.id)!
   }
@@ -604,7 +713,7 @@ export class Store {
     return this.get<RepoRow>('SELECT * FROM repos WHERE user_id = ? AND lower(owner) = lower(?) AND lower(name) = lower(?)', userId, owner, name)
   }
 
-  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch'>>): void {
+  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -619,10 +728,14 @@ export class Store {
     return this.all<RepoRow>('SELECT * FROM repos WHERE enabled = 1 AND auto_iterate = 1')
   }
 
-  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string }): JobRow {
+  listReviewRepos(): RepoRow[] {
+    return this.all<RepoRow>('SELECT * FROM repos WHERE enabled = 1 AND reviewer_enabled = 1 AND can_review = 1')
+  }
+
+  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string }): JobRow {
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, created_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -630,6 +743,7 @@ export class Store {
       input.goal,
       input.callbackHash,
       input.platformTokenHash,
+      input.kind ?? 'iterate',
       nowIso(),
     )
     return this.getJob(input.id)!
@@ -651,7 +765,7 @@ export class Store {
     return this.get<JobRow>("SELECT * FROM jobs WHERE repo_id = ? AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1", repoId)
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -732,6 +846,24 @@ export class Store {
 
   listAudit(limit = 100): AuditRow[] {
     return this.all<AuditRow>('SELECT * FROM audit_log ORDER BY id DESC LIMIT ?', limit)
+  }
+
+  listAuditPage(limit: number, offset: number): AuditRow[] {
+    return this.all<AuditRow>('SELECT * FROM audit_log ORDER BY id DESC LIMIT ? OFFSET ?', limit, offset)
+  }
+
+  countAudit(): number {
+    const row = this.get<{ n: number }>('SELECT COUNT(*) AS n FROM audit_log')
+    return Number(row?.n ?? 0)
+  }
+
+  listJobsPage(limit: number, offset: number): JobRow[] {
+    return this.all<JobRow>('SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?', limit, offset)
+  }
+
+  countJobs(): number {
+    const row = this.get<{ n: number }>('SELECT COUNT(*) AS n FROM jobs')
+    return Number(row?.n ?? 0)
   }
 
   getSetting(key: string): string | undefined {

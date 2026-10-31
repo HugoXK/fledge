@@ -23,6 +23,7 @@ const PORT = Number(process.env.BRIDGE_PORT ?? 8787)
 const HOST = process.env.BRIDGE_HOST ?? '127.0.0.1'
 const TOKEN = process.env.BRIDGE_TOKEN ?? ''
 const SESSION_ID = process.env.FLYBOT_CHAT_SESSION_ID ?? ''
+const REVIEW_SESSION_ID = process.env.FLYBOT_REVIEW_SESSION_ID ?? SESSION_ID
 const WEB = (process.env.FLYBOT_WEB ?? 'http://127.0.0.1:3080').replace(/\/$/, '')
 const LOG = process.env.FLYBOT_LOG ?? '/home/xuke/work/dsh-web.log'
 const MAX_PROMPT = Number(process.env.MAX_PROMPT_BYTES ?? 32768)
@@ -68,12 +69,12 @@ async function dshCookie() {
   return cookie
 }
 
-async function sendToBot(text) {
+async function sendToBot(text, sessionId) {
   const cookie = await dshCookie()
   const response = await fetch(`${WEB}/api/bot`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', cookie },
-    body: JSON.stringify({ endpoint: 'send', payload: { sessionId: SESSION_ID, text } }),
+    body: JSON.stringify({ endpoint: 'send', payload: { sessionId, text } }),
     signal: AbortSignal.timeout(30_000),
   })
   const body = await response.text()
@@ -82,11 +83,31 @@ async function sendToBot(text) {
 }
 
 function buildText(job) {
+  const kind = job.kind === 'review' ? 'review' : 'iterate'
+  const upstream = job.upstream || job.repo || {}
+  const fork = job.fork || job.repo || upstream
+  const rules = kind === 'review'
+    ? [
+        '- Review every open pull request on the upstream, including PRs not created by Fledge.',
+        '- Score each PR 0-100 with a short rationale and post a COMMENT review; never approve, merge, push or change settings.',
+        '- Do not modify code in review mode.',
+      ]
+    : [
+        `- Push the branch to ${fork.owner}/${fork.name}; open one pull request against ${upstream.owner}/${upstream.name} (base ${upstream.defaultBranch}).`,
+        job.canCreateIssue === false
+          ? '- The token may not be able to create upstream issues; report a clear error instead of guessing.'
+          : `- Create or reuse one issue on ${upstream.owner}/${upstream.name}; reference it from the PR.`,
+        '- Never push to the upstream base branch. Do not force-push, merge or change repository settings.',
+        '- Write a failing test first when a test is possible.',
+      ]
   const lines = [
     'A Fledge job is ready. Work in your own workspace; do not touch the Fledge service.',
     '',
     `Job: ${job.jobId}`,
-    `Repository: ${job.repo?.owner}/${job.repo?.name} (base ${job.repo?.defaultBranch})`,
+    `Mode: ${kind}`,
+    `Upstream: ${upstream.owner}/${upstream.name} (base ${upstream.defaultBranch})`,
+    `Fork: ${fork.owner}/${fork.name}${job.isFork ? ' (push here)' : ' (same as upstream)'}`,
+    `Permission: ${job.permission || 'unknown'}${job.canReview ? ' · review enabled' : ''}`,
     `Goal: ${job.goal}`,
     '',
     'Credentials:',
@@ -95,11 +116,9 @@ function buildText(job) {
     `- Model id: ${job.platform?.model}`,
     '',
     'Rules:',
-    '- Create a branch and one focused pull request. Never push to the base branch.',
-    '- Write a failing test first when a test is possible.',
+    ...rules,
     '- Do not print the GitHub token or the job token.',
-    '- Do not force-push, merge, or change repository settings.',
-    `- Finish by POSTing ${job.callbackUrl} with JSON {status, branch, prUrl, summary, error}`,
+    `- Finish by POSTing ${job.callbackUrl} with JSON {status, branch, prUrl, issueUrl, reviewScore, summary, error}`,
     `  and "Authorization: Bearer ${job.callbackSecret}".`,
     '',
     job.instructions ?? '',
@@ -146,8 +165,9 @@ const server = http.createServer((request, response) => {
       return json(response, 400, { error: 'jobId, credentialUrl and callbackUrl are required' })
     }
     try {
-      await sendToBot(buildText(job))
-      logEvent('job-forwarded', { jobId: job.jobId, repo: `${job.repo?.owner}/${job.repo?.name}` })
+      const sessionId = job.kind === 'review' ? REVIEW_SESSION_ID : SESSION_ID
+      await sendToBot(buildText(job), sessionId)
+      logEvent('job-forwarded', { jobId: job.jobId, kind: job.kind === 'review' ? 'review' : 'iterate', repo: `${job.upstream?.owner || job.repo?.owner}/${job.upstream?.name || job.repo?.name}`, session: sessionId.slice(0, 12) })
       return json(response, 202, { ok: true, accepted: true })
     } catch (error) {
       logEvent('job-failed', { jobId: job.jobId, error: redact(String(error)) })

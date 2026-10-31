@@ -19,6 +19,14 @@ GitHub tokens and user model keys are encrypted with AES-256-GCM using
 `v1:<iv>:<tag>:<ciphertext>`; the key is never written to the database. A lost key
 means tokens must be re-entered, so back it up separately from the database.
 
+### Repository token scope
+
+A repository token must read the upstream repository, create a fork when the
+user is not the upstream owner, push to the fork, and create issues/pull
+requests on the upstream. Fledge refuses a token whose GitHub login differs from
+the signed-in user. The token is never sent to the bridge; the agent fetches it
+from the job-scoped credential URL.
+
 ### Sessions
 
 - 32-byte random session id; only its SHA-256 hash is stored.

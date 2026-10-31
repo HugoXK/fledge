@@ -19,7 +19,8 @@ import { RateLimiter } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, sha256Hex } from './lib/secrets.js'
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes } from './lib/time.js'
-import { isLocale, LOCALE_COOKIE, resolveLocale, type Locale } from './i18n.js'
+import { isLocale, LOCALE_COOKIE, resolveLocale, translator, type Locale } from './i18n.js'
+import { normalizeInterval } from './lib/intervals.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -34,7 +35,7 @@ import {
   settingsPage,
   errorPage,
 } from './views/pages.js'
-import { parseRepoInput, validateRepoToken } from './repos/github.js'
+import { parseRepoInput, prepareRepo } from './repos/github.js'
 
 export interface BuildOptions {
   config: Config
@@ -403,21 +404,45 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const { owner, name } = parseRepoInput(body.repo ?? '')
       const token = (body.token ?? '').trim()
       if (token === '') throw new Error('请填写 GitHub token')
-      const info = await validateRepoToken(token, owner, name, config.github.apiBase)
-      const interval = [60, 360, 1440, 10080].includes(Number(body.interval)) ? Number(body.interval) : 1440
+      const prepared = await prepareRepo(token, owner, name, viewer.user.login, config.github.apiBase)
+      const interval = normalizeInterval(body.interval, 1440)
+      const reviewInterval = normalizeInterval(body.reviewInterval, 1440)
+      const reviewerEnabled = prepared.canReview && body.review === '1'
       const repo = store.createRepo({
         id: randomId('repo'),
         userId: viewer.user.id,
-        owner: info.owner,
-        name: info.name,
-        defaultBranch: info.defaultBranch,
+        owner: prepared.upstream.owner,
+        name: prepared.upstream.name,
+        defaultBranch: prepared.upstream.defaultBranch,
         tokenEnc: encryptSecret(token, config.tokenEncryptionKey),
         goal: (body.goal ?? '').slice(0, 4000),
         autoIterate: body.auto === '1',
         intervalMinutes: interval,
+        upstreamOwner: prepared.upstream.owner,
+        upstreamName: prepared.upstream.name,
+        forkOwner: prepared.fork.owner,
+        forkName: prepared.fork.name,
+        upstreamDefaultBranch: prepared.upstream.defaultBranch,
+        forkDefaultBranch: prepared.fork.defaultBranch,
+        isFork: prepared.isFork,
+        forkCreated: prepared.forkCreated,
+        permission: prepared.permission,
+        canReview: prepared.canReview,
+        canCreateIssue: prepared.canCreateIssue,
+        reviewerEnabled,
+        reviewIntervalMinutes: reviewInterval,
+        upstreamHtmlUrl: prepared.upstream.htmlUrl,
+        forkHtmlUrl: prepared.fork.htmlUrl,
       })
-      store.audit(viewer.user.id, 'repo.added', `${repo.owner}/${repo.name}`)
-      return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('仓库已添加。')}`)
+      store.audit(viewer.user.id, 'repo.added', `${repo.owner}/${repo.name} fork=${repo.fork_owner}/${repo.fork_name} permission=${repo.permission} reviewer=${reviewerEnabled ? 'on' : 'off'}`)
+      const t = translator(request.locale ?? 'zh')
+      const bits = [t('仓库已添加。', 'Repository added.')]
+      if (prepared.forkCreated) bits.push(t(`已创建 fork ${prepared.fork.fullName}。`, `Created fork ${prepared.fork.fullName}.`))
+      else if (prepared.isFork) bits.push(t(`使用你的 fork ${prepared.fork.fullName}。`, `Using your fork ${prepared.fork.fullName}.`))
+      else bits.push(t('这是你自己的仓库，无需 fork。', 'You own this repository; no fork is needed.'))
+      if (!prepared.canReview) bits.push(t('你不是上游维护者/写权限成员，审核角色未启用。', 'You are not an upstream maintainer/write member; the reviewer role is not enabled.'))
+      else bits.push(reviewerEnabled ? t('已启用 PR 审核角色。', 'PR reviewer role enabled.') : t('审核角色已关闭。', 'Reviewer role disabled.'))
+      return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(bits.join(' '))}`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return reply.redirect(`/dashboard?error=${encodeURIComponent(message)}`)
@@ -449,17 +474,60 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
   })
 
+  app.post('/repos/:id/refresh', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    try {
+      const token = decryptSecret(repo.token_enc, config.tokenEncryptionKey)
+      const prepared = await prepareRepo(token, repo.upstream_owner || repo.owner, repo.upstream_name || repo.name, viewer.user.login, config.github.apiBase)
+      const enableReviewer = prepared.canReview && (repo.can_review !== 1 || repo.reviewer_enabled === 1)
+      store.updateRepo(repo.id, {
+        upstream_owner: prepared.upstream.owner,
+        upstream_name: prepared.upstream.name,
+        fork_owner: prepared.fork.owner,
+        fork_name: prepared.fork.name,
+        upstream_default_branch: prepared.upstream.defaultBranch,
+        fork_default_branch: prepared.fork.defaultBranch,
+        is_fork: prepared.isFork ? 1 : 0,
+        fork_created: prepared.forkCreated ? 1 : 0,
+        permission: prepared.permission,
+        can_review: prepared.canReview ? 1 : 0,
+        can_create_issue: prepared.canCreateIssue ? 1 : 0,
+        reviewer_enabled: enableReviewer ? 1 : 0,
+        upstream_html_url: prepared.upstream.htmlUrl,
+        fork_html_url: prepared.fork.htmlUrl,
+      })
+      store.audit(viewer.user.id, 'repo.refreshed', `${repo.owner}/${repo.name} fork=${prepared.fork.owner}/${prepared.fork.name} permission=${prepared.permission}`)
+      const t = translator(request.locale ?? 'zh')
+      return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(prepared.forkCreated ? t(`已创建 fork ${prepared.fork.fullName}。`, `Created fork ${prepared.fork.fullName}.`) : t('上游 / fork / 权限已重新检测。', 'Upstream, fork and permissions refreshed.'))}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(message)}`)
+    }
+  })
+
+  app.post('/repos/:id/review', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const result = await jobs.enqueue(repo, 'manual', undefined, 'review')
+    const key = result.ok ? 'notice' : 'error'
+    const message = result.ok ? '审核任务已排队。' : result.error ?? '审核任务启动失败。'
+    store.audit(viewer.user.id, 'review.enqueued', `${repo.owner}/${repo.name} ${result.ok ? 'ok' : message}`)
+    return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
+  })
+
   app.post('/repos/:id/settings', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
     const body = form(request)
-    const interval = [60, 360, 1440, 10080].includes(Number(body.interval)) ? Number(body.interval) : repo.interval_minutes
+    const interval = normalizeInterval(body.interval, repo.interval_minutes)
+    const reviewInterval = normalizeInterval(body.reviewInterval, repo.review_interval_minutes)
     store.updateRepo(repo.id, {
       goal: (body.goal ?? '').slice(0, 4000),
       auto_iterate: body.auto === '1' ? 1 : 0,
       enabled: body.enabled === '1' ? 1 : 0,
       interval_minutes: interval,
+      reviewer_enabled: repo.can_review === 1 && body.review === '1' ? 1 : 0,
+      review_interval_minutes: reviewInterval,
     })
-    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name}`)
+    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} reviewer=${repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('设置已保存。')}`)
   })
 
@@ -556,6 +624,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const viewer = requireAdmin(request)
     const users = store.listUsers()
     const activity = new Map(users.map((user) => [user.id, store.userActivity(user.id)]))
+    const perPage = 10
+    const pageNumber = (name: string): number => {
+      const n = Number(queryText(request, name))
+      return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1
+    }
+    const jobsTotal = store.countJobs()
+    const auditTotal = store.countAudit()
+    const jobsPages = Math.max(1, Math.ceil(jobsTotal / perPage))
+    const auditPages = Math.max(1, Math.ceil(auditTotal / perPage))
+    const jobsPage = Math.min(pageNumber('jobsPage'), jobsPages)
+    const auditPage = Math.min(pageNumber('auditPage'), auditPages)
     return reply.type('text/html').send(
       adminPage({
         config,
@@ -563,8 +642,13 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         viewer: viewOf(viewer),
         users,
         activity,
-        jobs: store.all<JobRow>('SELECT * FROM jobs ORDER BY created_at DESC LIMIT 30'),
-        audit: store.listAudit(50),
+        jobs: store.listJobsPage(perPage, (jobsPage - 1) * perPage),
+        jobsPage,
+        jobsTotal,
+        audit: store.listAuditPage(perPage, (auditPage - 1) * perPage),
+        auditPage,
+        auditTotal,
+        perPage,
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
       }),

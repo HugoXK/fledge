@@ -66,6 +66,13 @@ const MESSAGES: Record<string, string> = {
   '出错了': 'Something went wrong',
   '服务器出了点问题，请稍后再试。': 'The server had a problem. Try again later.',
   '新 token 只显示这一次，请现在复制保存。': 'This token is shown only once. Copy it now.',
+  '审核任务已排队。': 'Review job queued.',
+  '审核任务启动失败。': 'Could not start the review job.',
+  '这个仓库没有启用审核角色': 'The reviewer role is not enabled for this repository.',
+  '这个仓库已停用': 'This repository is disabled.',
+  '这个仓库已有任务在运行': 'A job is already running for this repository.',
+  '用户不可用': 'The user is not available.',
+  '平台额度已用完，请先配置自己的模型 API': 'Platform quota is used up. Configure your own model API first.',
   '已批准': 'Approved',
   '已拒绝': 'Rejected',
 }

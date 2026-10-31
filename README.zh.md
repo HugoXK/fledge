@@ -88,6 +88,10 @@ Fledge 是幼鸟长齐飞羽、离巢试飞的那一刻——不是因为被推�
 - **工作区** `/console`：已批准的 Fledge 用户看到仓库、进行中任务和额度的概览，
   以及进入完整仓库列表、设置和文档的快捷入口。统一入口 Portal 放在页脚；
   Fledge 审批不会自动开通其他服务。
+- **上游 / fork 自动识别**：填写上游仓库后，Fledge 会检查同名 fork，不存在就创建；
+  issue 和 PR 提到上游，开发分支推到 fork。若上游 owner 就是你，则直接在原仓库开发。
+- **审核角色**：上游 maintain/write 成员可以启用定时审核，FlyBot 会审核上游所有
+  open PR、打分并发表 COMMENT review，不合并、不改代码。
 - **fine-grained GitHub token**：添加时验证写权限，AES-256-GCM 加密保存，
   只在任务运行时解密。
 - **Session + CSRF**：所有表单都有 CSRF；审批链接一次性、7 天过期。
@@ -96,8 +100,8 @@ Fledge 是幼鸟长齐飞羽、离巢试飞的那一刻——不是因为被推�
 
 ### 仓库与任务
 
-- **一个账号多个仓库**：每个仓库有独立目标、节奏（手动/每小时/每天/每周）、
-  启用状态和上次状态。
+- **一个账号多个仓库**：每个仓库有独立目标、节奏（手动，15 分钟到 30 天）、
+  启用状态和上次状态。间隔是最小运行间隔，不是 PR/issue 数量上限。
 - **任务状态**：`queued → running → succeeded | failed | quota_exhausted`。
 - **FlyBot bridge**：Fledge 发任务描述；代理从一次性凭据 URL 取 GitHub token，
   用任务级模型 token 调模型，开 PR，再签名回调。

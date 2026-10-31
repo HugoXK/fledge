@@ -9,7 +9,9 @@ import { formBody, json, makeUser, sessionFor, startFakeServer, testConfig, Memo
 test('browser flow: session, repo add, manual run, approval link', async () => {
   const github = await startFakeServer((request, response) => {
     if (request.url === '/user') {
-      json(response, 200, { id: 4242, login: 'token-user', name: 'Token User', email: 'token@example.com', avatar_url: null })
+      const repoUser = String(request.headers.authorization ?? '').includes('repo-token')
+      const login = repoUser ? 'octo-user' : 'token-user'
+      json(response, 200, { id: repoUser ? 4343 : 4242, login, name: login, email: repoUser ? 'octo-user@example.com' : 'token@example.com', avatar_url: null })
       return
     }
     if (request.url === '/repos/octo/demo') {
@@ -21,6 +23,20 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
         html_url: 'https://github.com/octo/demo',
         owner: { login: 'octo' },
         permissions: { push: true },
+      })
+      return
+    }
+    if (request.url === '/repos/octo-user/demo') {
+      json(response, 200, {
+        name: 'demo',
+        full_name: 'octo-user/demo',
+        default_branch: 'main',
+        private: false,
+        html_url: 'https://github.com/octo-user/demo',
+        fork: true,
+        parent: { full_name: 'octo/demo' },
+        owner: { login: 'octo-user' },
+        permissions: { admin: true, push: true },
       })
       return
     }
@@ -47,7 +63,7 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
       method: 'POST',
       url: '/repos',
       headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
-      payload: formBody({ csrf, repo: 'octo/demo', token: 'test-token', goal: 'fix the bug', auto: '1', interval: '60' }),
+      payload: formBody({ csrf, repo: 'octo/demo', token: 'repo-token', goal: 'fix the bug', auto: '1', interval: '120' }),
     })
     assert.equal(added.statusCode, 302)
     const repo = store.listRepos(user.id)[0]
@@ -55,6 +71,13 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     assert.equal(repo.owner, 'octo')
     assert.equal(repo.name, 'demo')
     assert.equal(repo.auto_iterate, 1)
+    assert.equal(repo.interval_minutes, 120)
+    assert.equal(repo.is_fork, 1)
+    assert.equal(repo.fork_owner, 'octo-user')
+    assert.equal(repo.fork_name, 'demo')
+    assert.equal(repo.permission, 'write')
+    assert.equal(repo.can_review, 1)
+    assert.equal(repo.reviewer_enabled, 0)
 
     const noCsrf = await built.app.inject({
       method: 'POST',
@@ -177,6 +200,24 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     assert.equal(adminPage.statusCode, 200)
     assert.match(adminPage.body, /审批与额度/)
     assert.match(adminPage.body, /#1/)
+
+    const quotaUpdated = await built.app.inject({
+      method: 'POST',
+      url: `/admin/users/${tokenUser.id}/quota`,
+      headers: { cookie: adminSession.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf: adminSession.csrf, quota: '5' }),
+    })
+    assert.equal(quotaUpdated.statusCode, 302)
+    assert.equal(store.userById(tokenUser.id)?.quota_cny, 5)
+
+    const quotaWithoutCsrf = await built.app.inject({
+      method: 'POST',
+      url: `/admin/users/${tokenUser.id}/quota`,
+      headers: { cookie: adminSession.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ quota: '2' }),
+    })
+    assert.equal(quotaWithoutCsrf.statusCode, 403)
+    assert.equal(store.userById(tokenUser.id)?.quota_cny, 5)
 
     const approved = await built.app.inject({
       method: 'POST',

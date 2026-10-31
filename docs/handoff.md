@@ -47,6 +47,12 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 - Admin panel, roles, audit log, in-app notifications.
 - Multiple repositories per user; per-repo fine-grained GitHub tokens, validated
   on add and encrypted with AES-256-GCM.
+- Upstream/fork onboarding: Fledge detects or creates the user's fork, pushes
+  work to the fork, and targets issues/PRs at the upstream. If the user owns the
+  upstream, work stays in that repository.
+- Reviewer role for upstream maintainers/write members: scheduled review jobs
+  list all open upstream PRs, score them, and post COMMENT reviews without
+  merging.
 - Repo goals, manual/hourly/daily/weekly cadence, enabled flag.
 - Job lifecycle (`queued → running → succeeded|failed|quota_exhausted`), a mock
   runner and a signed FlyBot bridge contract (credential URL + callback).
