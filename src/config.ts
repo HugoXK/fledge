@@ -97,7 +97,9 @@ function text(name: string, fallback = ''): string {
 }
 
 function number(name: string, fallback: number): number {
-  const n = Number(text(name))
+  const raw = text(name)
+  if (raw === '') return fallback
+  const n = Number(raw)
   return Number.isFinite(n) ? n : fallback
 }
 

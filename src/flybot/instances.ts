@@ -71,6 +71,7 @@ function isFree(port: number): Promise<boolean> {
 }
 
 async function freePort(start: number, used: Set<number>): Promise<number> {
+  if (!Number.isInteger(start) || start < 1024 || start > 65_000) throw new Error(`无效的端口起点：${start}`)
   for (let port = start; port < start + 2000; port += 1) {
     if (used.has(port)) continue
     if (await isFree(port)) return port
