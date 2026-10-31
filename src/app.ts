@@ -5,7 +5,7 @@ import fastifyStatic from '@fastify/static'
 import { join } from 'node:path'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
-import { openStore, type JobRow, type Store, type UserRow } from './db.js'
+import { openStore, type Store, type UserRow } from './db.js'
 import { GithubOAuth } from './auth/github.js'
 import { requireAdmin, requireApproved, requireViewer, Sessions } from './auth/session.js'
 import { createMailer, type Mailer } from './email/mailer.js'
@@ -157,6 +157,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   }
 
   const startSession = (user: UserRow, request: FastifyRequest, reply: FastifyReply): void => {
+    if (user.status === 'approved') instances.ensureUserDir(user.id)
     const raw = sessions.start(user.id, request)
     const sessionHash = sha256Hex(raw)
     sessions.setCookies(reply, raw, { sessionHash, user, csrfToken: sessions.csrfFor(sessionHash) })
@@ -211,6 +212,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/auth/token', async (request, reply) => {
+    if (config.github.clientId !== '' && config.github.clientSecret !== '' && !config.allowTokenLoginOnly) {
+      const t = translator(request.locale ?? 'zh')
+      return htmlPage(reply, 403, errorPage(config, request.viewer ?? null, 'OAuth 已启用', '这个部署已经启用 GitHub OAuth，请使用 GitHub 登录。', request.locale, { href: '/auth/github', label: t('使用 GitHub 登录', 'Sign in with GitHub') }))
+    }
     if (!loginLimiter.take(`token:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const token = (form(request).token ?? '').trim()
     if (token === '') return htmlPage(reply, 400, messagePage(config, '缺少 token', '请填写一个 GitHub token。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
@@ -424,6 +429,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const body = form(request)
     try {
       const { owner, name } = parseRepoInput(body.repo ?? '')
+      const existing = store.getRepoByOwnerName(viewer.user.id, owner, name)
+      if (existing !== undefined) {
+        return reply.redirect(`/repos/${existing.id}?notice=${encodeURIComponent('这个仓库已经添加过了。')}`)
+      }
       const token = (body.token ?? '').trim()
       if (token === '') throw new Error('请填写 GitHub token')
       const prepared = await prepareRepo(token, owner, name, viewer.user.login, config.github.apiBase)
@@ -547,6 +556,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     if (config.flybot.instanceImage === '') throw httpError(400, 'FlyBot 实例未配置', 'INSTANCE_DISABLED')
     instances.ensureUserDir(viewer.user.id)
+    const existing = store.getRepoInstance(repo.id)
+    if (existing !== undefined && existing.status !== 'ready') await instances.stop(repo.id)
     void instances.provision(repo).catch((error) => log.error('flybot provisioning failed', { repo: repo.id, error: String(error) }))
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例初始化中。')}`)
   })
@@ -599,7 +610,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         config,
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
-        tokens: store.listApiTokens(viewer.user.id),
+        tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'),
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
       }),
@@ -616,7 +627,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     const render = (error: string) =>
       reply.type('text/html').send(
-        settingsPage({ config, locale: request.locale ?? 'zh', viewer: viewOf(viewer), tokens: store.listApiTokens(viewer.user.id), error }),
+        settingsPage({ config, locale: request.locale ?? 'zh', viewer: viewOf(viewer), tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'), error }),
       )
     try {
       const baseUrl = (body.baseUrl ?? '').trim()
@@ -654,7 +665,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         config,
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
-        tokens: store.listApiTokens(viewer.user.id),
+        tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'),
         newToken: raw,
         notice: '新 token 只显示这一次，请现在复制保存。',
       }),
@@ -716,6 +727,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const user = store.userById(id)
     if (user === undefined) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
     store.setUserStatus(user.id, status, `admin:${viewer.user.login}`)
+    if (status === 'approved') instances.ensureUserDir(user.id)
     if (status === 'rejected') {
       for (const instance of store.listRepoInstances().filter((entry) => entry.user_id === user.id)) {
         await instances.stop(instance.repo_id)

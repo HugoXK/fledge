@@ -118,6 +118,14 @@ export class InstanceManager {
     return used
   }
 
+  private revokeTokens(repoId: string, userId: string): void {
+    for (const token of this.store.listApiTokens(userId)) {
+      if (token.kind === 'instance' && token.name === `flybot:${repoId}` && token.revoked_at === null) {
+        this.store.revokeApiToken(token.id, userId)
+      }
+    }
+  }
+
   async provision(repo: RepoRow): Promise<void> {
     if (this.config.flybot.instanceImage === '') throw new Error('FLYBOT_INSTANCE_IMAGE 未配置')
     const existing = this.store.getRepoInstance(repo.id)
@@ -159,11 +167,7 @@ server.listen(3081, '0.0.0.0')
       const gatewayToken = `flg_${randomToken(32)}`
       const bridgeToken = randomToken(32)
       const modelKey = randomToken(24)
-      for (const token of this.store.listApiTokens(user.id)) {
-        if (token.kind === 'instance' && token.name === `flybot:${repo.id}` && token.revoked_at === null) {
-          this.store.revokeApiToken(token.id, user.id)
-        }
-      }
+      this.revokeTokens(repo.id, user.id)
       this.store.createApiToken({
         id: `tok_${randomToken(8)}`,
         userId: user.id,
@@ -272,7 +276,7 @@ server.listen(3081, '0.0.0.0')
       await this.waitForDsh(dshPort, row)
       const bridge = this.startBridge(row, bridgeEnv, join(dataDir, 'bridge.log'))
       this.store.updateRepoInstance(repo.id, { bridge_pid: bridge.pid ?? null })
-      await this.waitForBridge(bridgePort, bridgeToken)
+      await this.waitForBridge(bridgePort)
 
       const chief = await this.ensureChief(bridgePort, bridgeToken)
       this.store.updateRepoInstance(repo.id, { chief_session: chief, status: 'provisioning' })
@@ -322,7 +326,7 @@ server.listen(3081, '0.0.0.0')
     throw new Error(`FlyBot DSH 在 180 秒内没有就绪（${row.container}）`)
   }
 
-  private async waitForBridge(port: number, token: string): Promise<void> {
+  private async waitForBridge(port: number): Promise<void> {
     const deadline = Date.now() + 30_000
     while (Date.now() < deadline) {
       try {
@@ -460,6 +464,7 @@ server.listen(3081, '0.0.0.0')
     await this.docker(['stop', '-t', '5', instance.container]).catch(() => {})
     await this.docker(['rm', '-f', instance.container]).catch(() => {})
     await this.docker(['network', 'rm', instance.network]).catch(() => {})
+    this.revokeTokens(repoId, instance.user_id)
     if (update) {
       this.store.updateRepoInstance(repoId, {
         status: 'stopped',
@@ -476,11 +481,6 @@ server.listen(3081, '0.0.0.0')
     const instance = this.store.getRepoInstance(repoId)
     if (instance !== undefined) {
       await this.stop(repoId, false)
-      for (const token of this.store.listApiTokens(instance.user_id)) {
-        if (token.kind === 'instance' && token.name === `flybot:${repoId}` && token.revoked_at === null) {
-          this.store.revokeApiToken(token.id, instance.user_id)
-        }
-      }
       try { rmSync(instance.data_dir, { recursive: true, force: true }) } catch {}
       this.store.deleteRepoInstance(repoId)
     }

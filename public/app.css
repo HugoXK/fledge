@@ -274,6 +274,14 @@ textarea { resize: vertical; min-height: 70px; }
 .empty { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap; padding: 18px; border: 1px dashed var(--line-strong); border-radius: 12px; background: #090e14; }
 .empty p { margin: 0; color: var(--muted); font-size: 13.5px; }
 .empty strong { color: var(--text); }
+.team-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-top: 14px; }
+.team-role { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: #090e14; }
+.team-role b { display: block; font-size: 13.5px; }
+.team-role span { display: block; margin-top: 3px; color: var(--muted-2); font-size: 11px; }
+.session-details { margin-top: 12px; }
+.session-details summary { cursor: pointer; }
+.session-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.session-list code { font-size: 11px; }
 .list { display: grid; }
 .list-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--line); color: var(--text); }
 .list-row:last-child { border-bottom: 0; }

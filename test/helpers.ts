@@ -23,6 +23,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     dataDir: '/tmp/fledge-test',
     dbPath: ':memory:',
     runner: { mode: 'mock', bridgeUrl: '', bridgeToken: '', timeoutMinutes: 45 },
+    allowTokenLoginOnly: true,
     mail: {
       transport: 'console',
       from: 'no-reply@example.com',

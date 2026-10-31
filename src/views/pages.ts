@@ -57,6 +57,19 @@ function roleLabel(t: Translate, role: string): string {
   return role
 }
 
+function permissionLabel(t: Translate, permission: string): string {
+  const labels: Record<string, [string, string]> = {
+    admin: ['管理员', 'Admin'],
+    maintain: ['维护者', 'Maintainer'],
+    write: ['写入', 'Write'],
+    triage: ['分诊', 'Triage'],
+    read: ['只读', 'Read'],
+    none: ['无', 'None'],
+  }
+  const value = labels[permission]
+  return value === undefined ? permission : t(value[0], value[1])
+}
+
 function intervalOptions(t: Translate, selected = 1440, values = ITERATION_INTERVALS): string {
   const current = normalizeInterval(selected)
   const list = values.includes(current) ? values : [...values, current].sort((a, b) => a - b)
@@ -81,6 +94,16 @@ function jobLinks(job: JobRow): string {
   return links.length === 0 ? '—' : links.join(' · ')
 }
 
+function jobSummary(t: Translate, job: JobRow): string {
+  const raw = (job.summary ?? job.error ?? '').trim()
+  if (job.kind === 'review') {
+    const score = job.review_score === null ? '' : ` · ${job.review_score}/100`
+    const meaningful = raw !== '' && raw !== 'probe' && raw.length >= 12
+    return meaningful ? `${raw}${score}` : `${t('审核完成', 'Review completed')}${score}`
+  }
+  return raw === '' ? '—' : raw
+}
+
 function jobRows(locale: Locale, jobs: JobRow[]): string {
   const t = translator(locale)
   if (jobs.length === 0) return `<tr><td colspan="6" class="muted">${escapeHtml(t('还没有任务。', 'No jobs yet.'))}</td></tr>`
@@ -91,7 +114,7 @@ function jobRows(locale: Locale, jobs: JobRow[]): string {
         <td>${badge(t, job.status)}</td>
         <td>${escapeHtml(triggerLabel(t, job.trigger))}</td>
         <td>${jobLinks(job)}</td>
-        <td>${escapeHtml(job.summary ?? job.error ?? '—').slice(0, 120)}</td>
+        <td>${escapeHtml(jobSummary(t, job)).slice(0, 120)}</td>
         <td>${escapeHtml(humanTimeShort(job.created_at))}</td>
       </tr>`,
     )
@@ -105,7 +128,7 @@ function jobList(locale: Locale, jobs: JobRow[]): string {
     .map(
       (job) => `<div class="list-row">
         <div class="list-main">
-          <div class="list-title">${badge(t, job.status)} <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span> <span>${escapeHtml((job.summary ?? job.error ?? '—').slice(0, 120))}</span></div>
+          <div class="list-title">${badge(t, job.status)} <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span> <span>${escapeHtml(jobSummary(t, job).slice(0, 120))}</span></div>
           <small><code>${escapeHtml(job.id)}</code> · ${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(humanTimeShort(job.created_at))}</small>
         </div>
         <span class="list-meta">${jobLinks(job)}</span>
@@ -253,7 +276,7 @@ export function dashboardPage(input: {
           <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))} <select name="interval">${intervalOptions(t)}</select></label>
         </div>
         <div class="row" data-review-group>
-          <label class="check"><input type="checkbox" name="review" value="1" checked /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}</label>
+          <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}</label>
           <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval">${reviewIntervalOptions(t)}</select></label>
         </div>
         <p class="fine">${escapeHtml(t('间隔是两次自动迭代之间的最小间隔，不是 PR/issue 总数上限。每次运行仍会创建一个 issue/PR，仓库可以持续积累多个；上一轮未结束时本轮会跳过。手动运行会重置迭代倒计时，审核任务不会。平台全局同时最多 2 个任务，多个仓库会排队。', 'The interval is the minimum gap between automatic runs, not a cap on issues or PRs. Each run can create one issue/PR and the repository can accumulate many; a run is skipped while the previous one is still active. A manual iterate run resets the countdown; a review run does not. The platform runs at most two jobs at a time, so extra repositories wait in the queue.'))}</p>
@@ -266,6 +289,7 @@ export function dashboardPage(input: {
 
   <section class="card">
     <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
+    <p class="fine">${escapeHtml(t('任务按时间倒序；同一仓库同时最多运行一个任务，历史任务会保留。', 'Jobs are newest first; one job per repository runs at a time, and history is kept.'))}</p>
     <table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('触发', 'Trigger'))}</th><th>PR</th><th>${escapeHtml(t('摘要', 'Summary'))}</th><th>${escapeHtml(t('时间', 'Time'))}</th></tr></thead><tbody>${jobRows(locale, jobs)}</tbody></table>
   </section>`
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
@@ -324,32 +348,49 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/instance">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('启动 FlyBot', 'Start FlyBot'))}</button></form>`
       : instance.status === 'ready'
         ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/instance/stop">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('停止 FlyBot', 'Stop FlyBot'))}</button></form>`
-        : ''
-  const body = `${instanceNotice}<section class="card">
-    <div class="row between">
-      <div>
-        <div class="eyebrow">${escapeHtml(t('每仓库 FlyBot', 'PER-REPOSITORY FLYBOT'))}</div>
-        <h2>${escapeHtml(t('实例与团队', 'Instance & team'))}</h2>
-        <p class="muted">${escapeHtml(instance === undefined ? t('未创建', 'Not created') : `${instance.status} · ${instance.container}`)}${instanceReady ? ` · ${escapeHtml(t('任务会发给 Lead', 'jobs go to the Lead'))}` : ''}</p>
-      </div>
-      ${instanceActions}
-    </div>
-    ${teamHtml}
-  </section>
-  <section class="card">
+        : `<form method="post" action="/repos/${escapeHtml(repo.id)}/instance">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('重新初始化 FlyBot', 'Reinitialize FlyBot'))}</button></form>`
+  const permission = permissionLabel(t, repo.permission)
+  const reviewerScopeText = instanceTeam === null ? '' : instanceTeam.reviewerScope === 'upstream'
+    ? t('上游全部 PR', 'all upstream PRs')
+    : instanceTeam.reviewerScope === 'self' ? t('仅自审', 'self-review') : t('未启用', 'off')
+  const teamRoles = instanceTeam === null ? [] : [
+    { label: t('总控', 'Chief'), id: instanceTeam.chief, note: t('已创建', 'Created') },
+    { label: t('负责人', 'Lead'), id: instanceTeam.lead, note: t('已创建', 'Created') },
+    { label: t('产品', 'Product'), id: instanceTeam.product, note: t('已创建', 'Created') },
+    { label: t('测试', 'Test'), id: instanceTeam.test, note: t('已创建', 'Created') },
+    { label: t('安全', 'Security'), id: instanceTeam.security, note: t('已创建', 'Created') },
+    { label: t('审核', 'Reviewer'), id: instanceTeam.reviewer ?? '—', note: `${t('已创建', 'Created')} · ${reviewerScopeText}` },
+    { label: t('开发 1', 'Dev-1'), id: instanceTeam.dev1, note: t('已创建', 'Created') },
+    { label: t('开发 2', 'Dev-2'), id: instanceTeam.dev2, note: t('已创建', 'Created') },
+  ]
+  const teamGrid = teamRoles.length === 0 ? '' : `<div class="team-grid">${teamRoles.map((role) => `<div class="team-role"><b>${escapeHtml(role.label)}</b><span>${escapeHtml(role.note)}</span></div>`).join('')}</div>
+    <details class="fine session-details"><summary>${escapeHtml(t('查看 session ID', 'View session IDs'))}</summary><div class="session-list">${teamRoles.map((role) => `<code>${escapeHtml(role.label)}: ${escapeHtml(role.id)}</code>`).join('')}</div></details>`
+  const repoHeader = `<section class="card">
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('仓库', 'REPOSITORY'))}</div>
         <h1>${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</h1>
         <p class="muted">${escapeHtml(t('默认分支', 'Default branch'))} <code>${escapeHtml(repo.upstream_default_branch || repo.default_branch)}</code> · ${escapeHtml(repo.auto_iterate === 1 ? t('自动迭代已开启', 'Auto-iteration on') : t('仅手动运行', 'Manual runs only'))} · ${escapeHtml(t('自动间隔', 'Auto every'))} <b>${escapeHtml(intervalLabel(repo.interval_minutes, t))}</b> · ${escapeHtml(t('下次约', 'Next'))} ${escapeHtml(nextRunText)} · ${badge(t, repo.last_status ?? 'idle')}</p>
-        <p class="fine">${escapeHtml(t('上游', 'Upstream'))} <a href="${escapeHtml(upstreamUrl)}" target="_blank" rel="noreferrer">${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</a> · ${repo.is_fork === 1 ? `${escapeHtml(t('Fork', 'Fork'))} <a href="${escapeHtml(forkUrl)}" target="_blank" rel="noreferrer">${escapeHtml(forkOwner)}/${escapeHtml(forkName)}</a>` : escapeHtml(t('自有仓库，无需 fork', 'Own repository, no fork'))} · ${escapeHtml(t('角色', 'Role'))} <code>${escapeHtml(repo.permission)}</code> · ${escapeHtml(reviewerLabel)}</p>
+        <p class="fine">${escapeHtml(t('上游', 'Upstream'))} <a href="${escapeHtml(upstreamUrl)}" target="_blank" rel="noreferrer">${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</a> · ${repo.is_fork === 1 ? `${escapeHtml(t('Fork', 'Fork'))} <a href="${escapeHtml(forkUrl)}" target="_blank" rel="noreferrer">${escapeHtml(forkOwner)}/${escapeHtml(forkName)}</a>` : escapeHtml(t('自有仓库，无需 fork', 'Own repository, no fork'))} · ${escapeHtml(t('角色', 'Role'))} <code>${escapeHtml(permission)}</code> · ${escapeHtml(reviewerLabel)}</p>
       </div>
       <div class="row">
         <form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button></form>
         ${canReview && reviewerEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/review">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('立即审核', 'Review now'))}</button></form>` : ''}
       </div>
     </div>
-  </section>
+  </section>`
+  const instanceCard = `<section class="card">
+    <div class="row between">
+      <div>
+        <div class="eyebrow">${escapeHtml(t('每仓库 FlyBot', 'PER-REPOSITORY FLYBOT'))}</div>
+        <h2>${escapeHtml(t('实例与团队', 'Instance & team'))}</h2>
+        <p class="muted">${instance === undefined ? escapeHtml(t('未创建', 'Not created')) : `${badge(t, instance.status)} <span class="muted">${escapeHtml(instance.container)}</span>`}${instanceReady ? ` · ${escapeHtml(t('任务会发给负责人', 'jobs go to the Lead'))}` : ''}</p>
+      </div>
+      ${instanceActions}
+    </div>
+    ${teamGrid}
+  </section>`
+  const body = `${repoHeader}${instanceNotice}${instanceCard}
   <section class="cols">
     <div class="card" id="repo-settings">
       <h2>${escapeHtml(t('迭代目标', 'Iteration goal'))}</h2>
@@ -383,6 +424,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   </section>
   <section class="card">
     <h2>${escapeHtml(t('任务', 'Jobs'))}</h2>
+    <p class="fine">${escapeHtml(t('任务按时间倒序；同一仓库同时最多运行一个任务，历史任务会保留。', 'Jobs are newest first; one job per repository runs at a time, and history is kept.'))}</p>
     <table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('触发', 'Trigger'))}</th><th>PR / Issue</th><th>${escapeHtml(t('摘要', 'Summary'))}</th><th>${escapeHtml(t('时间', 'Time'))}</th></tr></thead><tbody>${jobRows(locale, jobs)}</tbody></table>
   </section>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
@@ -448,6 +490,7 @@ const AUDIT_ACTIONS: Record<string, [string, string]> = {
   'login.dev': ['Dev 登录', 'Dev sign-in'],
   logout: ['退出登录', 'Sign out'],
   'application.submitted': ['提交申请', 'Application submitted'],
+  'approval.requested': ['发送审批邮件', 'Approval mail sent'],
   'admin.approved': ['批准用户', 'User approved'],
   'admin.rejected': ['拒绝用户', 'User rejected'],
   'admin.quota': ['调整额度', 'Quota changed'],
@@ -459,6 +502,9 @@ const AUDIT_ACTIONS: Record<string, [string, string]> = {
   'job.succeeded': ['任务成功', 'Job succeeded'],
   'job.failed': ['任务失败', 'Job failed'],
   'review.enqueued': ['审核入队', 'Review queued'],
+  'flybot.instance.ready': ['FlyBot 实例就绪', 'FlyBot instance ready'],
+  'flybot.instance.failed': ['FlyBot 实例失败', 'FlyBot instance failed'],
+  'flybot.instance.stopped': ['FlyBot 实例停止', 'FlyBot instance stopped'],
   'token.created': ['创建 token', 'Token created'],
   'token.revoked': ['撤销 token', 'Token revoked'],
   'model.saved': ['保存模型', 'Model saved'],
@@ -568,7 +614,10 @@ export function adminPage(input: {
         <td>${money(user.quota_cny)}</td>
         <td>${money(quotaView(user, config).usedCny)}</td>
         <td><small class="muted">${escapeHtml(t('最近登录', 'Last sign-in'))} ${escapeHtml(humanTimeShort(user.last_login_at))}<br />${escapeHtml(t('仓库', 'Repos'))} ${activity?.get(user.id)?.repos ?? 0} · ${escapeHtml(t('任务', 'Jobs'))} ${activity?.get(user.id)?.jobs ?? 0}<br />${escapeHtml(t('最近任务', 'Last job'))} ${escapeHtml(humanTimeShort(activity?.get(user.id)?.lastJobAt))}</small></td>
-        <td><form method="post" action="/admin/users/${escapeHtml(user.id)}/quota" class="row">${csrf(viewer)}<input name="quota" type="number" step="0.1" min="0" value="${user.quota_cny}" /><button class="link" type="submit">${escapeHtml(t('改额度', 'Set quota'))}</button></form></td>
+        <td><form method="post" action="/admin/users/${escapeHtml(user.id)}/quota" class="row">${csrf(viewer)}<input name="quota" type="number" step="0.1" min="0" value="${user.quota_cny}" /><button class="link" type="submit">${escapeHtml(t('改额度', 'Set quota'))}</button></form>
+          ${user.status === 'rejected' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/approve">${csrf(viewer)}<button class="link good" type="submit">${escapeHtml(t('重新批准', 'Re-approve'))}</button></form>` : ''}
+          ${user.status === 'approved' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/reject" onsubmit="return confirm('${escapeHtml(t('停用这个用户并停止其所有 FlyBot 实例？', 'Disable this user and stop all their FlyBot instances?'))}')">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('停用', 'Disable'))}</button></form>` : ''}
+        </td>
       </tr>`,
     )
     .join('')

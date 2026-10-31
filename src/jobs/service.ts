@@ -266,6 +266,7 @@ export class Jobs {
     if (this.store.countActiveJobs() >= 2) return
     for (const repo of this.store.listReviewRepos()) {
       if (this.store.countActiveJobs() >= 2) break
+      if (!this.instanceReady(repo.id)) continue
       if (this.store.activeJobForRepo(repo.id) !== undefined) continue
       if (!this.dueReview(repo)) continue
       const result = await this.enqueue(repo, 'schedule', undefined, 'review')
@@ -274,12 +275,18 @@ export class Jobs {
     }
     for (const repo of this.store.listAutoRepos()) {
       if (this.store.countActiveJobs() >= 2) break
+      if (!this.instanceReady(repo.id)) continue
       if (this.store.activeJobForRepo(repo.id) !== undefined) continue
       if (!this.due(repo)) continue
       const result = await this.enqueue(repo, 'schedule')
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
       log.info('scheduled job', { repo: `${repo.owner}/${repo.name}`, ok: result.ok, job: result.job?.id })
     }
+  }
+
+  private instanceReady(repoId: string): boolean {
+    if (this.config.flybot.instanceImage === '') return true
+    return this.store.getRepoInstance(repoId)?.status === 'ready'
   }
 
   private due(repo: RepoRow): boolean {
