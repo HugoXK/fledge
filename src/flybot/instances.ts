@@ -185,7 +185,7 @@ server.listen(3081, '0.0.0.0')
         '        displayName: Fledge',
         '        api: openai-completions',
         `        baseURL: ${yaml(`http://${modelBind}:${modelPort}/v1`)}`,
-        `        apiKey: ${yaml(modelKey)}`,
+        '        apiKeyEnv: FLEDGE_MODEL_KEY',
         '        models:',
         `          - id: ${yaml(model)}`,
         `            name: ${yaml(model)}`,
@@ -264,6 +264,7 @@ server.listen(3081, '0.0.0.0')
         '-e', 'DSH_HOME=/data',
         '-e', 'NPM_CONFIG_REGISTRY=https://registry.npmmirror.com',
         '-e', 'npm_config_registry=https://registry.npmmirror.com',
+        '-e', `FLEDGE_MODEL_KEY=${modelKey}`,
         this.config.flybot.instanceImage,
         '-c', 'node /opt/flybot/docker/entrypoint.mjs >> /data/dsh-web.log 2>&1 & exec node /data/tcp-proxy.mjs',
       ], 180_000)
