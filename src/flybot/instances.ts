@@ -187,6 +187,8 @@ export class InstanceManager {
         '- id: flybot-tree',
         '  config:',
         '    dailyTidy: false',
+        '- id: flybot-social',
+        '  disabled: true',
       ].join('\n') + '\n'
       writeFileSync(join(profileDir, 'cordis.patch.yml'), patch, { mode: 0o600 })
 
