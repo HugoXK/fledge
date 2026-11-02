@@ -67,6 +67,17 @@ and do not use CSRF.
   before parsing. A bad signature is 401; an unconfigured webhook is 503.
   Verified event metadata is stored without payload secrets.
 
+### Agent workspace proxy
+
+The workspace proxy is owner-only and same-origin. The session cookie and repo
+ownership are checked on every HTTP request; WebSocket upgrades check the same
+session hash, user status and repo owner. The DSH token is read from the
+instance log and exchanged for a DSH cookie server-side; that cookie and the
+token are never sent to the browser. Upstream `Set-Cookie`, CSP and
+`X-Frame-Options` headers are stripped; the proxied document is scoped to the
+workspace path and carries the Fledge brand assets. The DSH loopback port is
+never exposed.
+
 ### Webhook follow-up
 
 Webhook deliveries are deduped by `X-GitHub-Delivery` in `settings`; the same

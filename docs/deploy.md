@@ -70,7 +70,9 @@ For the hosted instance `MAIL_FROM=fledge@hugoxk.online`; job and digest
 notifications use the same sender. The standalone FlyBot service on
 `flybot.hugoxk.online` keeps `flybot@hugoxk.online`; they are separate projects.
 Set `DIGEST_HOUR` (default 9) and `DIGEST_TIMEZONE` (default `Asia/Shanghai`) for
-the daily summary. When the bridge code changes, restart each per-repository
+the daily summary. The agent workspace is served at `/repos/:id/workspace/`; it needs no wildcard
+DNS or certificate. It proxies the per-repo DSH port over loopback, so keep that
+port bound to loopback. When the bridge code changes, restart each per-repository
 bridge (the Fledge service restart alone does not): `InstanceManager.restartBridge(repoId)`
 stops the old bridge, starts the current `bridge/flybot-bridge.mjs` with the
 same `bridge.env`, updates `bridge_pid` and waits for `/healthz`.

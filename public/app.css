@@ -341,3 +341,6 @@ a.list-row:hover strong { color: var(--accent); }
   html { scroll-behavior: auto; }
   * { transition: none !important; animation: none !important; }
 }
+
+.workspace-frame { width: 100%; height: calc(100vh - 230px); min-height: 620px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.workspace-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }

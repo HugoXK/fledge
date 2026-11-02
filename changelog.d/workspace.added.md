@@ -1,0 +1,1 @@
+Added a Fledge-branded agent workspace at /repos/:id/workspace/: an authenticated same-origin proxy to the per-repository FlyBot UI with server-side DSH cookie injection, WebSocket support, HTML rebranding and a 'powered by FlyBot' badge. The raw DSH token is never exposed to the browser and the workspace needs no wildcard DNS.

@@ -8,7 +8,7 @@ import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
 import { openStore, type Store, type UserRow } from './db.js'
 import { GithubOAuth } from './auth/github.js'
-import { requireAdmin, requireApproved, requireViewer, Sessions } from './auth/session.js'
+import { requireAdmin, requireApproved, requireViewer, Sessions, SESSION_COOKIE } from './auth/session.js'
 import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
 import { notifyEmail } from './email/recipient.js'
@@ -40,6 +40,7 @@ import {
   metricsPage,
   appReposPage,
   workspacePage,
+  agentWorkspacePage,
   settingsPage,
   errorPage,
 } from './views/pages.js'
@@ -47,6 +48,7 @@ import { GithubClient, parseRepoInput, prepareRepo, prepareRepoWithInstallation 
 import { GithubApp } from './repos/app.js'
 import { repoGithubToken } from './repos/token.js'
 import { InstanceManager } from './flybot/instances.js'
+import { dshCookie, proxyWorkspaceHttp, proxyWorkspaceUpgrade } from './flybot/workspace.js'
 
 export interface BuildOptions {
   config: Config
@@ -140,7 +142,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.addHook('preParsing', async (request, _reply, payload) => {
-    if (request.url.split('?')[0] !== '/api/github/webhook') return payload
+    const path = request.url.split('?')[0] ?? ''
+    if (path !== '/api/github/webhook' && !(path.startsWith('/repos/') && path.includes('/workspace/app/'))) return payload
     const chunks: Buffer[] = []
     for await (const chunk of payload) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
     const raw = Buffer.concat(chunks)
@@ -182,6 +185,28 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const sessionHash = sha256Hex(raw)
     sessions.setCookies(reply, raw, { sessionHash, user, csrfToken: sessions.csrfFor(sessionHash) })
   }
+
+
+  app.server.on('upgrade', (request, socket, head) => {
+    const match = /^\/repos\/([^/]+)\/workspace\/app\/(.*)$/.exec(request.url ?? '')
+    if (match === null) return
+    const fail = (status: string): void => {
+      try { socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`) } catch {}
+      socket.destroy()
+    }
+    const raw = /(?:^|; )fledge_session=([^;]+)/.exec(String(request.headers.cookie ?? ''))?.[1]
+    if (raw === undefined) return fail('401 Unauthorized')
+    const session = store.getSession(sha256Hex(decodeURIComponent(raw)))
+    if (session === undefined) return fail('401 Unauthorized')
+    const user = store.userById(session.user_id)
+    const repo = store.getRepo(decodeURIComponent(match[1] ?? ''))
+    if (user === undefined || user.status !== 'approved' || repo === undefined || repo.user_id !== user.id) return fail('403 Forbidden')
+    const instance = store.getRepoInstance(repo.id)
+    if (instance === undefined || instance.status !== 'ready') return fail('409 Conflict')
+    void dshCookie(instance).then((cookie) => {
+      proxyWorkspaceUpgrade(request, socket as import('node:net').Socket, head, instance, match[2] ?? '', cookie)
+    }).catch(() => fail('502 Bad Gateway'))
+  })
 
   app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: '0.2.1', time: new Date().toISOString() }))
 
@@ -878,6 +903,50 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(result.error ?? '执行计划失败。')}`)
     }
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已按计划开始执行。')}`)
+  })
+
+  app.get('/repos/:id/workspace', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const instance = store.getRepoInstance(repo.id)
+    return reply.type('text/html').send(agentWorkspacePage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      repo,
+      instance,
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
+  })
+
+  app.all('/repos/:id/workspace/app', async (request, reply) => {
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const url = request.raw.url ?? ''
+    const query = url.includes('?') ? url.slice(url.indexOf('?')) : ''
+    if (!url.split('?')[0]?.endsWith('/')) return reply.redirect(`/repos/${repo.id}/workspace/app/${query}`)
+    const instance = store.getRepoInstance(repo.id)
+    if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
+    try {
+      await proxyWorkspaceHttp(request, reply, instance, repo, '')
+    } catch (error) {
+      log.warn('workspace root request failed', { repo: repo.id, error: String(error) })
+      if (!reply.raw.headersSent) reply.code(502).send({ error: 'Workspace proxy failed' })
+    }
+  })
+
+  app.all('/repos/:id/workspace/app/*', async (request, reply) => {
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const instance = store.getRepoInstance(repo.id)
+    if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
+    const prefix = `/repos/${repo.id}/workspace/app/`
+    const index = request.url.indexOf(prefix)
+    const subpath = index === -1 ? '' : request.url.slice(index + prefix.length)
+    try {
+      await proxyWorkspaceHttp(request, reply, instance, repo, subpath)
+    } catch (error) {
+      log.warn('workspace request failed', { repo: repo.id, error: String(error) })
+      if (!reply.raw.headersSent) reply.code(502).send({ error: 'Workspace proxy failed' })
+    }
   })
 
   app.get('/repos/:id/:action', async (request, reply) => {

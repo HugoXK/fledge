@@ -417,6 +417,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <p class="fine">${escapeHtml(t('上游', 'Upstream'))} <a href="${escapeHtml(upstreamUrl)}" target="_blank" rel="noreferrer">${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</a> · ${repo.is_fork === 1 ? `${escapeHtml(t('Fork', 'Fork'))} <a href="${escapeHtml(forkUrl)}" target="_blank" rel="noreferrer">${escapeHtml(forkOwner)}/${escapeHtml(forkName)}</a>` : escapeHtml(t('自有仓库，无需 fork', 'Own repository, no fork'))} · ${escapeHtml(t('角色', 'Role'))} <code>${escapeHtml(permission)}</code> · ${escapeHtml(reviewerLabel)}</p>
       </div>
       <div class="row">
+        <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>
         <form method="post" action="/repos/${escapeHtml(repo.id)}/plan">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('只出计划', 'Plan only'))}</button></form>
         <form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button></form>
@@ -1091,6 +1092,7 @@ export function jobPage(input: {
       </div>
       <div class="row">
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a>
+        <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>
         ${execute}
         ${retry}
@@ -1224,4 +1226,40 @@ export function appReposPage(input: {
   </section>
   ${picker}`
   return layout({ title: t('GitHub App 接入', 'GitHub App'), viewer, body, config, locale, path: '/repos/new', active: 'dashboard', notice, error })
+}
+
+export function agentWorkspacePage(input: {
+  config: Config
+  locale: Locale
+  viewer: Viewer
+  repo: RepoRow
+  instance?: RepoInstanceRow
+  notice?: string
+  error?: string
+}): string {
+  const { config, locale, viewer, repo, instance, notice, error } = input
+  const t = translator(locale)
+  const ready = instance?.status === 'ready'
+  const body = `<section class="card">
+    <div class="row between">
+      <div>
+        <div class="eyebrow">${escapeHtml(t('工作区', 'WORKSPACE'))}</div>
+        <h1>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</h1>
+        <p class="muted">${instance === undefined ? escapeHtml(t('实例未创建', 'Instance not created')) : `${badge(t, instance.status)} · ${escapeHtml(instance.container)}`} · <a href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a> · <a href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a></p>
+      </div>
+      <div class="row workspace-toolbar">
+        ${ready ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace/app/" target="_blank" rel="noreferrer">${escapeHtml(t('新窗口打开', 'Open in new window'))}</a>` : ''}
+        <button class="btn btn-ghost" type="button" onclick="location.reload()">${escapeHtml(t('刷新', 'Refresh'))}</button>
+        ${ready ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/team/stop">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('请求暂停', 'Request stop'))}</button></form>` : ''}
+      </div>
+    </div>
+  </section>
+  ${ready
+    ? `<section class="card">
+        <p class="fine">${escapeHtml(t('这是你的仓库工作区。Fledge 负责认证、隔离和审计；底层界面由 FlyBot 提供。', 'This is your repository workspace. Fledge handles auth, isolation and audit; the underlying UI is provided by FlyBot.'))}</p>
+        <iframe class="workspace-frame" src="/repos/${escapeHtml(repo.id)}/workspace/app/" title="Fledge workspace" allow="clipboard-read; clipboard-write"></iframe>
+      </section>`
+    : `<section class="card"><p class="muted">${escapeHtml(t('实例就绪后才能打开工作区。', 'The workspace opens after the instance is ready.'))}</p></section>`}
+  <p class="fine" style="text-align:right">Fledge · powered by FlyBot</p>`
+  return layout({ title: `${t('工作区', 'Workspace')} · ${repo.upstream_name || repo.name}`, viewer, body, config, locale, path: `/repos/${repo.id}/workspace`, active: 'dashboard', notice, error })
 }

@@ -141,6 +141,19 @@ through the user's OAuth token or an individual account match). GitHub webhooks
 are verified with `X-Hub-Signature-256` before parsing; verified events are
 recorded in `events` for the follow-up loop. PAT onboarding stays available.
 
+### Agent workspace
+
+The workspace is path-based to avoid a wildcard certificate:
+`https://fledge.hugoxk.online/repos/:id/workspace/`. The shell is Fledge-branded
+and embeds an iframe on `/repos/:id/workspace/app/`. That path is a same-origin
+reverse proxy to the repo's DSH web port: Fledge checks the session and repo
+ownership, reads the latest DSH token from `dsh-web.log`, obtains the DSH cookie
+server-side and injects it, strips `Set-Cookie`/CSP/`X-Frame-Options`, rewrites
+the document title/base, injects `workspace-brand.js`/`.css`, and proxies
+WebSocket upgrades with the same cookie. The browser sees only Fledge URLs and
+the Fledge brand ("powered by FlyBot"); the raw DSH token never leaves the
+server. A wildcard subdomain remains a future option if a certificate covers it.
+
 ### PR follow-up
 
 Verified webhooks drive a small follow-up loop: a failed check run/suite or a

@@ -37,6 +37,8 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/repos/:id/jobs/:jobId` | owner | Job detail: evidence, cost, attribution, retry |
 | POST | `/repos/:id/jobs/:jobId/retry` | owner + CSRF | Retry a failed job, including its checkpoint |
 | POST | `/repos/:id/jobs/:jobId/execute` | owner + CSRF | Execute a completed plan as an iterate job |
+| GET | `/repos/:id/workspace` | owner | Fledge-branded agent workspace shell |
+| `*` | `/repos/:id/workspace/app/*` | owner | Authenticated reverse proxy to the per-repo DSH UI |
 | GET | `/repos/:id/team` | owner | Team console |
 | GET | `/api/repos/:id/team` | owner | Team state JSON (polling fallback) |
 | GET | `/api/repos/:id/team/events` | owner | Server-Sent Events snapshot stream |
@@ -67,6 +69,16 @@ waiting. The user can set a notification email (blank uses the GitHub email), di
 mail, disable the daily digest, or send a test mail in Settings → Email
 notifications. Approval and quota mail are not affected. A question is mailed
 once per `sessionId + questionId`; the preference is stored on the user.
+
+## Workspace
+
+`GET /repos/:id/workspace` renders the Fledge shell and embeds
+`/repos/:id/workspace/app/`. The `app` path is an authenticated same-origin
+reverse proxy to the per-repository DSH instance: Fledge verifies the session and
+repository ownership, fetches the DSH cookie server-side, strips upstream
+`Set-Cookie`/CSP/frame headers, rewrites the HTML title/base and injects the
+Fledge brand, and proxies WebSocket upgrades. The raw DSH token is never sent to
+the browser.
 
 ## Team endpoints
 
