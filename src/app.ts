@@ -493,17 +493,21 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       log.warn('github app installation lookup failed', { installationId, error: String(error) })
     }
     if (installation === undefined || installation === null) return reply.redirect(`/repos/new?error=${encodeURIComponent('找不到这个 GitHub App 安装。')}`)
-    let owned = false
+    let stateOk = true
     const state = queryText(request, 'state') ?? ''
     if (state !== '') {
       const value = store.getSetting(`github_app_state:${state}`)
-      if (value !== undefined) {
-        const [userId, at] = value.split(':')
-        if (userId === viewer.user.id && Date.now() - Number(at) < 10 * 60_000) owned = true
-        store.deleteSetting(`github_app_state:${state}`)
-      }
+      const [userId = '', at = '0'] = value === undefined ? [] : value.split(':')
+      stateOk = userId === viewer.user.id && Date.now() - Number(at) < 10 * 60_000
+      store.deleteSetting(`github_app_state:${state}`)
     }
-    if (!owned) {
+    if (!stateOk) return reply.redirect(`/repos/new?error=${encodeURIComponent('安装状态已过期，请重新从工作区发起安装。')}`)
+    const existing = store.getInstallation(installationId)
+    if (existing !== undefined && existing.user_id !== viewer.user.id) {
+      return reply.redirect(`/repos/new?error=${encodeURIComponent('这个安装已经绑定到另一个 Fledge 用户。')}`)
+    }
+    let owned = false
+    {
       const sender = store.getSetting(`installation_sender:${installationId}`)
       if (sender !== undefined) {
         const [login = '', at = '0'] = sender.split(':')

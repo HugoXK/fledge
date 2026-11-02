@@ -152,3 +152,33 @@ test('a job-scoped token records usage and cost on the job', async () => {
     await platform.close()
   }
 })
+
+test('gateway tokens are scoped to their user', async () => {
+  const platform = await startFakeServer(async (request, response) => {
+    await readBody(request)
+    json(response, 200, { id: 'x', choices: [{ message: { role: 'assistant', content: 'ok' } }], usage: { total_tokens: 1000 } }, { 'x-litellm-response-cost': '0.0002' })
+  })
+  const config = testConfig({ llm: { baseUrl: `${platform.url}/v1`, key: 'platform-key', model: 'platform-model', pricePerTokenUsd: 0.0000002 }, quota: { initialCny: 10, usdCny: 7.2 } })
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const alice = makeUser(store, { login: 'alice-token', status: 'approved', quota: 10 })
+    const bob = makeUser(store, { login: 'bob-token', status: 'approved', quota: 10 })
+    const aliceRaw = `flg_${randomToken(32)}`
+    const bobRaw = `flg_${randomToken(32)}`
+    store.createApiToken({ id: 'tok_alice', userId: alice.id, kind: 'pat', name: 'alice', tokenHash: sha256Hex(aliceRaw), prefix: aliceRaw.slice(0, 8), expiresAt: null })
+    store.createApiToken({ id: 'tok_bob', userId: bob.id, kind: 'pat', name: 'bob', tokenHash: sha256Hex(bobRaw), prefix: bobRaw.slice(0, 8), expiresAt: null })
+    const payload = { model: 'ignored', messages: [{ role: 'user', content: 'hi' }] }
+    const a = await built.app.inject({ method: 'POST', url: '/v1/chat/completions', headers: { authorization: `Bearer ${aliceRaw}`, 'content-type': 'application/json' }, payload })
+    assert.equal(a.statusCode, 200)
+    assert.equal((store.userById(alice.id)?.quota_used_usd ?? 0) > 0, true)
+    assert.equal(store.userById(bob.id)?.quota_used_usd, 0)
+    const b = await built.app.inject({ method: 'POST', url: '/v1/chat/completions', headers: { authorization: `Bearer ${bobRaw}`, 'content-type': 'application/json' }, payload })
+    assert.equal(b.statusCode, 200)
+    assert.equal((store.userById(bob.id)?.quota_used_usd ?? 0) > 0, true)
+    assert.equal((store.userById(alice.id)?.quota_used_usd ?? 0) > 0, true)
+  } finally {
+    await built.close()
+    await platform.close()
+  }
+})

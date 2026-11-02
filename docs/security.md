@@ -54,6 +54,15 @@ Every state-changing browser form includes a hidden `csrf` field derived from
 JSON endpoints. Approval links and job endpoints use their own bearer secrets
 and do not use CSRF.
 
+### GitHub App installation isolation
+
+The install `state` is a CSRF marker only; it does not prove ownership. The
+setup callback binds an installation only after a verified webhook sender, the
+user's OAuth installation list, or an individual-account login match; an
+existing binding cannot be moved to a different Fledge user. Installation
+tokens stay in memory and are never stored in SQLite. A user cannot list or use
+an installation bound to another user.
+
 ### GitHub App
 
 - The private key lives outside the repository (`GITHUB_APP_PRIVATE_KEY_PATH`,
