@@ -9,14 +9,21 @@ export const ATTRIBUTION_FIELDS = [
 export type AttributionKey = (typeof ATTRIBUTION_FIELDS)[number]['key']
 export type Attribution = Partial<Record<AttributionKey, string>>
 
+const EMPTY = new Set(['not run', 'not recorded', 'none', 'n/a', 'na', 'pending', 'unknown', '-', '—', ''])
+
+function cleanRole(value: string): string {
+  return value.trim().replace(/\s*\((?:team|automation|自动化)\)$/i, '').trim().slice(0, 80)
+}
+
 export function parseAttribution(value: unknown): Attribution | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
   const out: Attribution = {}
   for (const field of ATTRIBUTION_FIELDS) {
     const raw = (value as Record<string, unknown>)[field.key]
     if (typeof raw !== 'string') continue
-    const text = raw.trim().slice(0, 80)
-    if (text !== '') out[field.key] = text
+    const text = cleanRole(raw)
+    if (EMPTY.has(text.toLowerCase())) continue
+    out[field.key] = text
   }
   return Object.keys(out).length === 0 ? null : out
 }

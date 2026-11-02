@@ -19,11 +19,19 @@ test('attribution deduplicates roles and skips writtenBy when the same role impl
   assert.equal(attributionSentence(attribution), 'Lead claimed · Dev-1 implemented · Test tested · Reviewer reviewed')
 })
 
-test('attribution drops empty and malformed values', () => {
+test('attribution drops empty, placeholder and "(Team)" values', () => {
   assert.equal(parseAttribution(null), null)
   assert.equal(parseAttribution({}), null)
   assert.deepEqual(parseAttribution({ claimedBy: ' Lead ', testedBy: '', unknown: 'x' }), { claimedBy: 'Lead' })
+  assert.deepEqual(parseAttribution({
+    writtenBy: 'not run',
+    claimedBy: 'Lead (Team)',
+    implementedBy: 'not run',
+    testedBy: 'N/A',
+    reviewedBy: 'pending',
+  }), { claimedBy: 'Lead' })
   assert.equal(parseAttributionJson('not json'), null)
   assert.deepEqual(parseAttributionJson('{"implementedBy":"Dev-2"}'), { implementedBy: 'Dev-2' })
   assert.equal(attributionSentence(null), '')
+  assert.equal(attributionSentence(parseAttribution({ claimedBy: 'Lead (Team)', reviewedBy: 'not run' })), 'Lead claimed')
 })

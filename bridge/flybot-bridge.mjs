@@ -157,7 +157,7 @@ function buildText(job) {
     ...rules,
     '- Do not print the GitHub token or the job token.',
     '- End every GitHub issue, PR and comment with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',
-    '- The final callback must include "attribution": {"writtenBy":"...","claimedBy":"...","implementedBy":"...","testedBy":"...","reviewedBy":"..."} using the roles that actually did each step; use "not run" for skipped steps.',
+    '- The final callback must include "attribution": {"writtenBy":"...","claimedBy":"...","implementedBy":"...","testedBy":"...","reviewedBy":"..."} with role names only (Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2). Omit a key for a step that did not happen; never write "not run", "pending" or "(Team)".',
     `- After each major step and at least every 10 minutes, POST ${job.callbackUrl} with JSON {"status":"running","summary":"<one line progress>"}`,
     `  and "Authorization: Bearer ${job.callbackSecret}". This is a heartbeat, not a finish.`,
     `- Finish by POSTing ${job.callbackUrl} with JSON {status, branch, prUrl, issueUrl, reviewScore, summary, error}`,
