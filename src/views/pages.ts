@@ -285,17 +285,25 @@ export function dashboardPage(input: {
   repos: RepoRow[]
   jobs: JobRow[]
   notifications: NotificationRow[]
+  reposPage?: number
+  reposTotal?: number
+  jobsPage?: number
+  jobsTotal?: number
   notice?: string
   error?: string
 }): string {
   const { config, locale, viewer, repos, jobs, notifications, notice, error } = input
+  const reposPage = input.reposPage ?? 1
+  const reposTotal = input.reposTotal ?? repos.length
+  const jobsPage = input.jobsPage ?? 1
+  const jobsTotal = input.jobsTotal ?? jobs.length
   const t = translator(locale)
   const quota = quotaView(viewer.user, config)
   const repoRows = repos.length === 0
     ? `<tr><td colspan="5" class="muted">${escapeHtml(t('还没有仓库。先添加一个。', 'No repositories yet. Add one first.'))}</td></tr>`
     : repos
         .map(
-          (repo) => `<tr>
+          (repo) => `<tr data-repo-id="${escapeHtml(repo.id)}">
             <td><a href="/repos/${escapeHtml(repo.id)}"><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></a>${repo.is_fork === 1 ? `<br /><small class="muted">${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}</small>` : ''}${repo.reviewer_enabled === 1 ? ' <span class="badge">reviewer</span>' : ''}</td>
             <td>${repo.auto_iterate === 1 ? `<span class="badge good">${escapeHtml(t('自动', 'Auto'))}</span><br /><small class="muted">${escapeHtml(intervalLabel(repo.interval_minutes, t))}</small>` : `<span class="badge">${escapeHtml(t('手动', 'Manual'))}</span>`}</td>
             <td>${badge(t, repo.last_status ?? 'idle')}</td>
@@ -304,6 +312,25 @@ export function dashboardPage(input: {
           </tr>`,
         )
         .join('')
+  const manualForm = `      <form method="post" action="/repos" class="form">
+        ${csrf(viewer)}
+        <label>${escapeHtml(t('上游仓库', 'Upstream repository'))} <input name="repo" placeholder="owner/name" required autocomplete="off" /></label>
+        <label>${escapeHtml(t('GitHub token', 'GitHub token'))} <input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required autocomplete="off" /></label>
+        ${goalTemplateSelect(t, 'goal-new')}
+        <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))} <textarea id="goal-new" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
+        <div class="row" data-auto-group>
+          <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
+          <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))} <select name="interval">${intervalOptions(t)}</select></label>
+        </div>
+        <div class="row" data-review-group>
+          <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}</label>
+          <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval">${reviewIntervalOptions(t)}</select></label>
+        </div>
+        <p class="fine">${escapeHtml(t('间隔是两次自动迭代之间的最小间隔，不是 PR/issue 总数上限。每次运行仍会创建一个 issue/PR，仓库可以持续积累多个；上一轮未结束时本轮会跳过。手动运行会重置迭代倒计时，审核任务不会。平台全局同时最多 2 个任务，多个仓库会排队。', 'The interval is the minimum gap between automatic runs, not a cap on issues or PRs. Each run can create one issue/PR and the repository can accumulate many; a run is skipped while the previous one is still active. A manual iterate run resets the countdown; a review run does not. The platform runs at most two jobs at a time, so extra repositories wait in the queue.'))}</p>
+        <p class="fine">${escapeHtml(t('填写上游仓库（例如 openJiuwen-ai/DigitalMate）。Fledge 会检查并在需要时创建你的 fork；开发分支推到 fork，issue 和 PR 提到上游。若上游 owner 就是你，则直接在原仓库开分支。审核角色只在上游给你 maintain/write 权限时启用。', 'Enter the upstream repository (for example openJiuwen-ai/DigitalMate). Fledge checks and creates your fork when needed; branches go to the fork, while issues and PRs target the upstream. If you own the upstream, work directly in it. The reviewer role is enabled only when the upstream grants you maintain/write permission.'))}</p>
+        <p class="fine">${escapeHtml(t('token 需要能读取上游、创建 fork、写入 fork，并在上游创建 issue/PR；建议使用 fine-grained token 并只授权实际需要的仓库。token 会加密保存，页面不会回显。', 'The token must read the upstream, create a fork, write to the fork, and create issues/PRs on the upstream. Use a fine-grained token limited to the repositories you actually need. It is encrypted at rest and never shown again.'))}</p>
+        <button class="btn" type="submit">${escapeHtml(t('添加仓库', 'Add repository'))}</button>
+      </form>`
   const body = `<section class="workspace-hero">
     <div class="workspace-intro">
       <div class="eyebrow">${escapeHtml(t('仓库', 'REPOSITORIES'))}</div>
@@ -327,30 +354,12 @@ export function dashboardPage(input: {
     <div class="card">
       <h2>${escapeHtml(t('仓库', 'Repositories'))}</h2>
       <table><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('模式', 'Mode'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('上次运行', 'Last run'))}</th><th></th></tr></thead><tbody>${repoRows}</tbody></table>
+      ${pager('/dashboard', 'reposPage', reposPage, reposTotal, 10, t, { jobsPage }, '#add-repo')}
     </div>
     <div class="card" id="add-repo">
       <h2>${escapeHtml(t('添加仓库', 'Add repository'))}</h2>
-      ${config.githubApp.id === '' ? '' : `<div class="banner"><p>${escapeHtml(t('推荐：用 GitHub App 安装并选择仓库，不需要创建 PAT。', 'Recommended: install the GitHub App and choose repositories; no PAT needed.'))}</p><p><a class="btn" href="/auth/github/app/install">${escapeHtml(t('通过 GitHub App 接入', 'Connect with GitHub App'))}</a> <a class="link" href="/repos/new">${escapeHtml(t('选择已安装的仓库', 'Choose installed repositories'))}</a></p></div>`}
-      <p class="fine">${escapeHtml(t('或者手动提供 fine-grained token：', 'Or provide a fine-grained token manually:'))}</p>
-      <form method="post" action="/repos" class="form">
-        ${csrf(viewer)}
-        <label>${escapeHtml(t('上游仓库', 'Upstream repository'))} <input name="repo" placeholder="owner/name" required autocomplete="off" /></label>
-        <label>${escapeHtml(t('GitHub token', 'GitHub token'))} <input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required autocomplete="off" /></label>
-        ${goalTemplateSelect(t, 'goal-new')}
-        <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))} <textarea id="goal-new" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
-        <div class="row" data-auto-group>
-          <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
-          <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))} <select name="interval">${intervalOptions(t)}</select></label>
-        </div>
-        <div class="row" data-review-group>
-          <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}</label>
-          <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval">${reviewIntervalOptions(t)}</select></label>
-        </div>
-        <p class="fine">${escapeHtml(t('间隔是两次自动迭代之间的最小间隔，不是 PR/issue 总数上限。每次运行仍会创建一个 issue/PR，仓库可以持续积累多个；上一轮未结束时本轮会跳过。手动运行会重置迭代倒计时，审核任务不会。平台全局同时最多 2 个任务，多个仓库会排队。', 'The interval is the minimum gap between automatic runs, not a cap on issues or PRs. Each run can create one issue/PR and the repository can accumulate many; a run is skipped while the previous one is still active. A manual iterate run resets the countdown; a review run does not. The platform runs at most two jobs at a time, so extra repositories wait in the queue.'))}</p>
-        <p class="fine">${escapeHtml(t('填写上游仓库（例如 openJiuwen-ai/DigitalMate）。Fledge 会检查并在需要时创建你的 fork；开发分支推到 fork，issue 和 PR 提到上游。若上游 owner 就是你，则直接在原仓库开分支。审核角色只在上游给你 maintain/write 权限时启用。', 'Enter the upstream repository (for example openJiuwen-ai/DigitalMate). Fledge checks and creates your fork when needed; branches go to the fork, while issues and PRs target the upstream. If you own the upstream, work directly in it. The reviewer role is enabled only when the upstream grants you maintain/write permission.'))}</p>
-        <p class="fine">${escapeHtml(t('token 需要能读取上游、创建 fork、写入 fork，并在上游创建 issue/PR；建议使用 fine-grained token 并只授权实际需要的仓库。token 会加密保存，页面不会回显。', 'The token must read the upstream, create a fork, write to the fork, and create issues/PRs on the upstream. Use a fine-grained token limited to the repositories you actually need. It is encrypted at rest and never shown again.'))}</p>
-        <button class="btn" type="submit">${escapeHtml(t('添加仓库', 'Add repository'))}</button>
-      </form>
+      ${config.githubApp.id === '' ? `<p class="fine">${escapeHtml(t('GitHub App 未配置，请使用下面的 fine-grained token。', 'The GitHub App is not configured; use the fine-grained token below.'))}</p>${manualForm}` : `<div class="add-choice"><h3>${escapeHtml(t('方式一（推荐）：GitHub App', 'Option 1 (recommended): GitHub App'))}</h3><p class="muted">${escapeHtml(t('安装 App 并选择仓库，不需要创建 PAT；Fledge 使用短时 installation token。', 'Install the App and choose repositories; no PAT is needed. Fledge uses short-lived installation tokens.'))}</p><p><a class="btn" href="/auth/github/app/install">${escapeHtml(t('通过 GitHub App 接入', 'Connect with GitHub App'))}</a> <a class="link" href="/repos/new">${escapeHtml(t('选择已安装的仓库', 'Choose installed repositories'))}</a></p></div><details class="add-manual"><summary>${escapeHtml(t('方式二：手动提供 fine-grained token', 'Option 2: provide a fine-grained token manually'))}</summary>${manualForm}</details>`}
+      <p class="fine">${escapeHtml(t('两种方式选一种即可；GitHub App 不需要 PAT。', 'Choose one of the two options; the GitHub App does not need a PAT.'))}</p>
     </div>
   </section>
 
@@ -358,12 +367,15 @@ export function dashboardPage(input: {
     <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
     <p class="fine">${escapeHtml(t('任务按时间倒序；同一仓库同时最多运行一个任务，历史任务会保留。', 'Jobs are newest first; one job per repository runs at a time, and history is kept.'))}</p>
     <table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('触发', 'Trigger'))}</th><th>PR</th><th>${escapeHtml(t('摘要', 'Summary'))}</th><th>${escapeHtml(t('时间', 'Time'))}</th></tr></thead><tbody>${jobRows(locale, jobs)}</tbody></table>
+    ${pager('/dashboard', 'jobsPage', jobsPage, jobsTotal, 10, t, { reposPage }, '#jobs')}
   </section>`
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; notice?: string; error?: string }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
+  const jobsPage = input.jobsPage ?? 1
+  const jobsTotal = input.jobsTotal ?? jobs.length
   const t = translator(locale)
   const upstreamOwner = repo.upstream_owner || repo.owner
   const upstreamName = repo.upstream_name || repo.name
@@ -501,6 +513,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     <h2>${escapeHtml(t('任务', 'Jobs'))}</h2>
     <p class="fine">${escapeHtml(t('任务按时间倒序；同一仓库同时最多运行一个任务，历史任务会保留。', 'Jobs are newest first; one job per repository runs at a time, and history is kept.'))}</p>
     <table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('触发', 'Trigger'))}</th><th>PR / Issue</th><th>${escapeHtml(t('摘要', 'Summary'))}</th><th>${escapeHtml(t('时间', 'Time'))}</th></tr></thead><tbody>${jobRows(locale, jobs)}</tbody></table>
+    ${pager(`/repos/${repo.id}`, 'jobsPage', jobsPage, jobsTotal, 10, t, {}, '#jobs')}
   </section>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
 }
@@ -560,10 +573,14 @@ export function teamPage(input: {
   state?: TeamLiveState
   stateError?: string
   jobs: JobRow[]
+  jobsPage?: number
+  jobsTotal?: number
   notice?: string
   error?: string
 }): string {
   const { config, locale, viewer, repo, instance, state, stateError, jobs, notice, error } = input
+  const jobsPage = input.jobsPage ?? 1
+  const jobsTotal = input.jobsTotal ?? jobs.length
   const t = translator(locale)
   const team = instance === undefined ? null : parseTeam(instance.team_json)
   const ready = instance?.status === 'ready' && team !== null
@@ -654,6 +671,7 @@ export function teamPage(input: {
     <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
     <p class="fine">${escapeHtml(t('任务按时间倒序；同一仓库同时最多运行一个任务，历史任务会保留。', 'Jobs are newest first; one job per repository runs at a time, and history is kept.'))}</p>
     <table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('触发', 'Trigger'))}</th><th>PR / Issue</th><th>${escapeHtml(t('摘要', 'Summary'))}</th><th>${escapeHtml(t('时间', 'Time'))}</th></tr></thead><tbody>${jobRows(locale, jobs)}</tbody></table>
+    ${pager(`/repos/${repo.id}`, 'jobsPage', jobsPage, jobsTotal, 10, t, {}, '#jobs')}
   </section>
   <script src="/assets/team.js" defer></script>`
   return layout({ title: t('团队工作台', 'Team console'), viewer, body, config, locale, path: `/repos/${repo.id}/team`, active: 'dashboard', notice, error })
@@ -807,14 +825,14 @@ function auditRows(locale: Locale, audit: AuditRow[], usersById: Map<string, str
     .join('')
 }
 
-function pager(path: string, pageParam: string, page: number, total: number, perPage: number, t: Translate, other: Record<string, string | number> = {}): string {
+function pager(path: string, pageParam: string, page: number, total: number, perPage: number, t: Translate, other: Record<string, string | number> = {}, hash = ''): string {
   const pages = Math.max(1, Math.ceil(total / perPage))
   if (pages <= 1) return ''
   const href = (target: number): string => {
     const params = new URLSearchParams()
     for (const [key, value] of Object.entries(other)) if (String(value) !== '') params.set(key, String(value))
     params.set(pageParam, String(target))
-    return `${path}?${params.toString()}`
+    return `${path}?${params.toString()}${hash}`
   }
   const prev = page > 1
     ? `<a class="btn btn-ghost btn-small" href="${escapeHtml(href(page - 1))}">${escapeHtml(t('上一页', 'Previous'))}</a>`

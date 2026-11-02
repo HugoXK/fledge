@@ -159,6 +159,14 @@ once with the instance token on a 401/403 from the gateway. This keeps per-job
 cost attribution while avoiding a stale/revoked job token breaking later Chief
 greetings, memory reviews or guidance turns.
 
+### Dashboard lists and onboarding
+
+The dashboard paginates repositories and jobs at ten per page; a repository page
+and the team console paginate their job tables at ten per page, with the page
+number clamped to the available pages. Add repository presents two explicit
+alternatives: the GitHub App installation path (recommended) and a collapsed
+fine-grained token form; users pick one, not both.
+
 ### Team observation and effectiveness
 
 `teamState` now exposes each role's current tool/step, start time and last

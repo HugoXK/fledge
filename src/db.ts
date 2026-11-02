@@ -928,6 +928,14 @@ export class Store {
     return this.all<RepoRow>('SELECT * FROM repos WHERE user_id = ? ORDER BY created_at DESC', userId)
   }
 
+  listReposPage(userId: string, limit: number, offset: number): RepoRow[] {
+    return this.all<RepoRow>('SELECT * FROM repos WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?', userId, limit, offset)
+  }
+
+  countReposForUser(userId: string): number {
+    return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM repos WHERE user_id = ?', userId)?.n ?? 0)
+  }
+
   getRepo(id: string): RepoRow | undefined {
     return this.get<RepoRow>('SELECT * FROM repos WHERE id = ?', id)
   }
@@ -1036,12 +1044,28 @@ export class Store {
     return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?', userId, limit)
   }
 
+  listJobsPageForUser(userId: string, limit: number, offset: number): JobRow[] {
+    return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?', userId, limit, offset)
+  }
+
+  countJobsForUser(userId: string): number {
+    return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM jobs WHERE user_id = ?', userId)?.n ?? 0)
+  }
+
   listJobsSince(userId: string, sinceIso: string): JobRow[] {
     return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? AND (created_at >= ? OR finished_at >= ?) ORDER BY created_at DESC', userId, sinceIso, sinceIso)
   }
 
   listJobsForRepo(repoId: string, limit = 20): JobRow[] {
     return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC LIMIT ?', repoId, limit)
+  }
+
+  listJobsPageForRepo(repoId: string, limit: number, offset: number): JobRow[] {
+    return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?', repoId, limit, offset)
+  }
+
+  countJobsForRepo(repoId: string): number {
+    return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM jobs WHERE repo_id = ?', repoId)?.n ?? 0)
   }
 
   latestJobByPrUrl(userId: string, prUrl: string): JobRow | undefined {

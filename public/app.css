@@ -344,3 +344,8 @@ a.list-row:hover strong { color: var(--accent); }
 
 .workspace-frame { width: 100%; height: calc(100vh - 230px); min-height: 620px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
 .workspace-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+.add-choice { border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+.add-choice h3 { margin: 0 0 6px; font-size: 15px; }
+.add-manual { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 10px; }
+.add-manual summary { cursor: pointer; color: var(--muted-2); font-size: 13px; }

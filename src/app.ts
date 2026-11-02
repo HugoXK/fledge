@@ -440,13 +440,27 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.get('/dashboard', async (request, reply) => {
     const viewer = requireApproved(request)
     const view = viewOf(viewer)
+    const perPage = 10
+    const reposTotal = store.countReposForUser(viewer.user.id)
+    const jobsTotal = store.countJobsForUser(viewer.user.id)
+    const pageNumber = (name: string, total: number): number => {
+      const pages = Math.max(1, Math.ceil(total / perPage))
+      const n = Number(queryText(request, name))
+      return Number.isFinite(n) && n >= 1 ? Math.min(Math.floor(n), pages) : 1
+    }
+    const reposPage = pageNumber('reposPage', reposTotal)
+    const jobsPage = pageNumber('jobsPage', jobsTotal)
     return reply.type('text/html').send(
       dashboardPage({
         config,
         locale: request.locale ?? 'zh',
         viewer: view,
-        repos: store.listRepos(viewer.user.id),
-        jobs: store.listJobs(viewer.user.id),
+        repos: store.listReposPage(viewer.user.id, perPage, (reposPage - 1) * perPage),
+        jobs: store.listJobsPageForUser(viewer.user.id, perPage, (jobsPage - 1) * perPage),
+        reposPage,
+        reposTotal,
+        jobsPage,
+        jobsTotal,
         notifications: store.listNotifications(viewer.user.id),
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
@@ -692,6 +706,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/repos/:id', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const jobsTotal = store.countJobsForRepo(repo.id)
+    const jobsPage = Math.min(Math.max(1, Math.floor(Number(queryText(request, 'jobsPage')) || 1)), Math.max(1, Math.ceil(jobsTotal / 10)))
     return reply.type('text/html').send(
       repoPage({
         config,
@@ -699,7 +715,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         viewer: viewOf(viewer),
         repo,
         instance: store.getRepoInstance(repo.id),
-        jobs: store.listJobsForRepo(repo.id),
+        jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
+        jobsPage,
+        jobsTotal,
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
       }),
@@ -723,6 +741,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         stateError = error instanceof Error ? error.message : String(error)
       }
     }
+    const jobsTotal = store.countJobsForRepo(repo.id)
+    const jobsPage = Math.min(Math.max(1, Math.floor(Number(queryText(request, 'jobsPage')) || 1)), Math.max(1, Math.ceil(jobsTotal / 10)))
     return reply.type('text/html').send(teamPage({
       config,
       locale: request.locale ?? 'zh',
@@ -731,7 +751,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       instance,
       state,
       stateError,
-      jobs: store.listJobsForRepo(repo.id),
+      jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
+      jobsPage,
+      jobsTotal,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))

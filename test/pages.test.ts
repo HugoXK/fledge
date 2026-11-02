@@ -250,3 +250,50 @@ test('a plan job can be executed after approval', async () => {
     await built.close()
   }
 })
+
+test('dashboard paginates repositories and jobs at ten per page', async () => {
+  const config = testConfig({ githubApp: { ...testConfig().githubApp, id: '1', slug: 'fledge' } })
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'page-user', status: 'approved' })
+    for (let i = 0; i < 11; i += 1) {
+      const repo = store.createRepo({ id: `repo_page_${i}`, userId: user.id, owner: 'o', name: `r${i}`, defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+      store.createJob({ id: `job_page_${i}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    }
+    const { cookie } = sessionFor(built, user)
+    const first = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
+    assert.equal(first.statusCode, 200)
+    assert.equal((first.body.match(/data-job-id=/g) || []).length, 10)
+    assert.equal((first.body.match(/data-repo-id=/g) || []).length, 10)
+    assert.match(first.body, /方式一（推荐）：GitHub App/)
+    assert.match(first.body, /方式二：手动提供 fine-grained token/)
+    assert.match(first.body, /add-manual/)
+    const secondJobs = await built.app.inject({ method: 'GET', url: '/dashboard?jobsPage=2', headers: { cookie } })
+    assert.equal((secondJobs.body.match(/data-job-id=/g) || []).length, 1)
+    const secondRepos = await built.app.inject({ method: 'GET', url: '/dashboard?reposPage=2', headers: { cookie } })
+    assert.equal((secondRepos.body.match(/data-repo-id=/g) || []).length, 1)
+  } finally {
+    await built.close()
+  }
+})
+
+test('a repository job table paginates at ten per page', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'repo-page-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_jobs_page', userId: user.id, owner: 'o', name: 'jobs', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    for (let i = 0; i < 11; i += 1) {
+      store.createJob({ id: `job_repo_page_${i}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    }
+    const { cookie } = sessionFor(built, user)
+    const first = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
+    assert.equal((first.body.match(/data-job-id=/g) || []).length, 10)
+    const second = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}?jobsPage=2`, headers: { cookie } })
+    assert.equal((second.body.match(/data-job-id=/g) || []).length, 1)
+  } finally {
+    await built.close()
+  }
+})
