@@ -24,12 +24,14 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/repos` | approved + CSRF | Add an upstream repository; Fledge checks or creates the user's fork |
 | GET | `/repos/:id` | owner | Repo detail |
 | POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job |
+| POST | `/repos/:id/plan` | owner + CSRF | Enqueue a plan-only job (no code, branch or PR) |
 | POST | `/repos/:id/instance` | owner + CSRF | Start the per-repository FlyBot instance |
 | POST | `/repos/:id/instance/stop` | owner + CSRF | Stop the per-repository FlyBot instance |
 | POST | `/repos/:id/refresh` | owner + CSRF | Re-check the upstream, fork and permissions |
 | POST | `/repos/:id/review` | owner + CSRF | Enqueue a manual review job |
 | GET | `/repos/:id/jobs/:jobId` | owner | Job detail: evidence, cost, attribution, retry |
-| POST | `/repos/:id/jobs/:jobId/retry` | owner + CSRF | Retry a failed job with the same goal/kind |
+| POST | `/repos/:id/jobs/:jobId/retry` | owner + CSRF | Retry a failed job, including its checkpoint |
+| POST | `/repos/:id/jobs/:jobId/execute` | owner + CSRF | Execute a completed plan as an iterate job |
 | GET | `/repos/:id/team` | owner | Team console |
 | GET | `/api/repos/:id/team` | owner | Team state JSON (polling fallback) |
 | GET | `/api/repos/:id/team/events` | owner | Server-Sent Events snapshot stream |
@@ -134,7 +136,8 @@ Headers: `Authorization: Bearer <callbackSecret>`, `Content-Type: application/js
     "files": 3,
     "risk": "low",
     "rollback": "revert the commit"
-  }
+  },
+  "checkpoint": "implemented the parser; next: add the rejection test"
 }
 ```
 
@@ -146,9 +149,12 @@ branch/PR:
 ```
 
 `status` may be `running`, `succeeded` or `failed`. A `running` callback is a
-progress heartbeat: it updates `summary` (and optionally `branch`,
-`attribution` or `evidence`) without finishing the job or extending
-`JOB_TIMEOUT_MINUTES`. `evidence` is stored structurally and shown on the job
+progress heartbeat: it updates `summary`, `checkpoint` and optionally `branch`,
+`attribution` or `evidence` without finishing the job or extending
+`JOB_TIMEOUT_MINUTES`. `checkpoint` is shown on the job page and is injected
+into the goal when a failed job is retried. A `plan` job writes the plan to
+`summary` and must not create a branch, issue or PR; the owner can execute it
+later as an iterate job. `evidence` is stored structurally and shown on the job
 detail page; the Fledge automation comment stays compact. On
 success, Fledge adds a collapsible automation block to the PR with the job,
 team and the attribution steps that actually happened, so humans can see which

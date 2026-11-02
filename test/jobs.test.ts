@@ -60,9 +60,10 @@ test('a running callback unwraps a nested progress summary', async () => {
     store.createJob({ id: 'job_summary', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '' })
     store.updateJob('job_summary', { status: 'running' })
     const nested = JSON.stringify({ status: 'running', summary: 'Round 4: one focused fix is in progress' })
-    const result = await jobs.handleCallback('job_summary', secret, { status: 'running', summary: nested })
+    const result = await jobs.handleCallback('job_summary', secret, { status: 'running', summary: nested, checkpoint: 'done A; next B' })
     assert.equal(result.ok, true)
     assert.equal(store.getJob('job_summary')?.summary, 'Round 4: one focused fix is in progress')
+    assert.equal(store.getJob('job_summary')?.checkpoint, 'done A; next B')
   } finally {
     store.close()
   }
@@ -239,6 +240,24 @@ test('daily digest sends once and includes the day summary', async () => {
     assert.match(digests[0]!.text, /https:\/\/github.com\/o\/digest\/pull\/1/)
     await jobs.tick()
     assert.equal(mailer.messages.filter((message) => /今日摘要/.test(message.subject)).length, 1)
+  } finally {
+    store.close()
+  }
+})
+
+test('plan jobs dispatch as plan and keep a checkpoint', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'plan-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_plan', userId: user.id, owner: 'o', name: 'p', defaultBranch: 'main', tokenEnc: 'x', goal: 'plan goal', autoIterate: false, intervalMinutes: 1440 })
+    const result = await jobs.enqueue(repo, 'manual', undefined, 'plan')
+    assert.equal(result.ok, true)
+    assert.equal(contexts[0]?.kind, 'plan')
+    assert.equal(result.job?.kind, 'plan')
   } finally {
     store.close()
   }

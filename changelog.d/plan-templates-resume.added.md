@@ -1,0 +1,1 @@
+Added plan-only jobs (inspect and propose a plan without code, branch or PR), an execute-plan action, four goal templates, and checkpoint-based resume: heartbeats store the latest checkpoint and a failed job's retry appends it to the goal.

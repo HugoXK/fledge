@@ -155,14 +155,20 @@ test('job detail shows evidence and can retry a failed job', async () => {
       summary: 'Tests failed',
       error: 'one assertion failed',
       cost_usd: 0.0123,
+      checkpoint: 'done A; next B',
       evidence_json: JSON.stringify({ tests: 'unit tests: 4 pass / 1 fail', checks: 'CI red', files: 3, risk: 'medium', rollback: 'revert the commit' }),
       attribution_json: JSON.stringify({ claimedBy: 'Lead', implementedBy: 'Dev-1', testedBy: 'Test' }),
     })
     const { cookie, csrf } = sessionFor(built, user)
+    const repoPage = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
+    assert.equal(repoPage.statusCode, 200)
+    assert.match(repoPage.body, /data-goal-template/)
+    assert.match(repoPage.body, /goal-settings/)
     const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${job.id}`, headers: { cookie } })
     assert.equal(page.statusCode, 200)
     assert.match(page.body, /unit tests: 4 pass \/ 1 fail/)
-    assert.match(page.body, /重试这个任务/)
+    assert.match(page.body, /done A; next B/)
+    assert.match(page.body, /从断点继续/)
     assert.match(page.body, /Dev-1/)
     const retried = await built.app.inject({
       method: 'POST',
@@ -171,7 +177,10 @@ test('job detail shows evidence and can retry a failed job', async () => {
       payload: formBody({ csrf }),
     })
     assert.equal(retried.statusCode, 302)
-    assert.equal(store.listJobsForRepo(repo.id).length, 2)
+    const jobs = store.listJobsForRepo(repo.id)
+    assert.equal(jobs.length, 2)
+    assert.match(jobs[0]!.goal, /Resume from checkpoint:/)
+    assert.match(jobs[0]!.goal, /done A; next B/)
   } finally {
     await built.close()
   }
@@ -189,6 +198,35 @@ test('admin product metrics page renders the funnel', async () => {
     assert.match(page.body, /产品指标/)
     assert.match(page.body, /漏斗/)
     assert.match(page.body, /成功率/)
+  } finally {
+    await built.close()
+  }
+})
+
+test('a plan job can be executed after approval', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'plan-exec-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_plan_exec', userId: user.id, owner: 'o', name: 'p', defaultBranch: 'main', tokenEnc: 'x', goal: 'goal', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_plan_exec', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'goal', callbackHash: 'cb', platformTokenHash: '', kind: 'plan' })
+    store.updateJob(job.id, { status: 'succeeded', summary: 'Plan: change one file and add one test', finished_at: new Date().toISOString() })
+    const { cookie, csrf } = sessionFor(built, user)
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${job.id}`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /执行这个计划/)
+    const executed = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/jobs/${job.id}/execute`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf }),
+    })
+    assert.equal(executed.statusCode, 302)
+    const jobs = store.listJobsForRepo(repo.id)
+    assert.equal(jobs.length, 2)
+    assert.match(jobs[0]!.goal, /Approved plan:/)
+    assert.match(jobs[0]!.goal, /Plan: change one file/)
   } finally {
     await built.close()
   }

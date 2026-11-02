@@ -84,8 +84,23 @@ function reviewIntervalOptions(t: Translate, selected = 1440): string {
   return intervalOptions(t, selected, REVIEW_INTERVALS)
 }
 
+
+function goalTemplateSelect(t: Translate, target: string): string {
+  return `<label>${escapeHtml(t('任务模板', 'Task template'))}
+    <select data-goal-template data-goal-target="${escapeHtml(target)}">
+      <option value="">${escapeHtml(t('选择一个模板…', 'Choose a template…'))}</option>
+      <option value="bug" data-text="Reproduce one concrete, user-visible bug. Write a failing test first, make the smallest correct fix, run the relevant tests, and open one PR. Do not refactor unrelated code.">${escapeHtml(t('修一个可复现 bug', 'Fix a reproducible bug'))}</option>
+      <option value="tests" data-text="Add focused tests for one existing module's highest-risk failure path. Write the failing test first, then the smallest fix or test-only change, and open one PR.">${escapeHtml(t('补关键测试', 'Add focused tests'))}</option>
+      <option value="docs" data-text="Fix one place where the docs or comments disagree with the code. Verify the code first, make the smallest documentation change, and open one PR. Do not add unproven features.">${escapeHtml(t('修正文档/注释', 'Fix docs or comments'))}</option>
+      <option value="deps" data-text="Check one dependency for a real security or compatibility issue. Make the smallest safe upgrade, run the existing tests, record pass/fail, and open one PR. Do not upgrade unrelated packages.">${escapeHtml(t('处理一个依赖问题', 'Handle one dependency issue'))}</option>
+    </select>
+  </label>`
+}
+
 function jobKindLabel(t: Translate, job: JobRow): string {
-  return job.kind === 'review' ? t('审核', 'Review') : t('迭代', 'Iterate')
+  if (job.kind === 'review') return t('审核', 'Review')
+  if (job.kind === 'plan') return t('计划', 'Plan')
+  return t('迭代', 'Iterate')
 }
 
 function jobLinks(job: JobRow): string {
@@ -290,7 +305,8 @@ export function dashboardPage(input: {
         ${csrf(viewer)}
         <label>${escapeHtml(t('上游仓库', 'Upstream repository'))} <input name="repo" placeholder="owner/name" required autocomplete="off" /></label>
         <label>${escapeHtml(t('GitHub token', 'GitHub token'))} <input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required autocomplete="off" /></label>
-        <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))} <textarea name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
+        ${goalTemplateSelect(t, 'goal-new')}
+        <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))} <textarea id="goal-new" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
           <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))} <select name="interval">${intervalOptions(t)}</select></label>
@@ -398,6 +414,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       </div>
       <div class="row">
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>
+        <form method="post" action="/repos/${escapeHtml(repo.id)}/plan">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('只出计划', 'Plan only'))}</button></form>
         <form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button></form>
         ${canReview && reviewerEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/review">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('立即审核', 'Review now'))}</button></form>` : ''}
       </div>
@@ -420,7 +437,8 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <h2>${escapeHtml(t('迭代目标', 'Iteration goal'))}</h2>
       <form method="post" action="/repos/${escapeHtml(repo.id)}/settings" class="form">
         ${csrf(viewer)}
-        <textarea name="goal" rows="5" placeholder="${escapeHtml(t('这个仓库每次迭代应该关注什么？', 'What should each iteration focus on for this repository?'))}">${escapeHtml(repo.goal)}</textarea>
+        ${goalTemplateSelect(t, 'goal-settings')}
+        <textarea id="goal-settings" name="goal" rows="5" placeholder="${escapeHtml(t('这个仓库每次迭代应该关注什么？', 'What should each iteration focus on for this repository?'))}">${escapeHtml(repo.goal)}</textarea>
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" ${repo.auto_iterate === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
           <label class="check"><input type="checkbox" name="enabled" value="1" ${repo.enabled === 1 ? 'checked' : ''} /> ${escapeHtml(t('启用', 'Enabled'))}</label>
@@ -1055,7 +1073,10 @@ export function jobPage(input: {
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('回滚', 'Rollback'))}</strong><small>${escapeHtml(evidence.rollback ?? '—')}</small></div></div>
       </div>`
   const retry = job.status === 'failed'
-    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/retry">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('重试这个任务', 'Retry this job'))}</button></form>`
+    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/retry">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(job.checkpoint === null || job.checkpoint === '' ? t('重试这个任务', 'Retry this job') : t('从断点继续', 'Resume from checkpoint'))}</button></form>`
+    : ''
+  const execute = job.kind === 'plan' && job.status === 'succeeded'
+    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/execute">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('执行这个计划', 'Execute this plan'))}</button></form>`
     : ''
   const body = `<section class="card">
     <div class="row between">
@@ -1067,6 +1088,7 @@ export function jobPage(input: {
       <div class="row">
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a>
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>
+        ${execute}
         ${retry}
       </div>
     </div>
@@ -1078,6 +1100,7 @@ export function jobPage(input: {
       ${job.error === null || job.error === '' ? '' : `<div class="banner bad">${escapeHtml(job.error)}</div>`}
       <p class="fine">${escapeHtml(t('成本', 'Cost'))} ${escapeHtml(cost)} · ${escapeHtml(t('创建', 'Created'))} ${escapeHtml(humanTimeShort(job.created_at))} · ${escapeHtml(t('结束', 'Finished'))} ${escapeHtml(humanTimeShort(job.finished_at))}</p>
       ${attribution === '' ? '' : `<p class="fine">${escapeHtml(attribution)}</p>`}
+      ${job.checkpoint === null || job.checkpoint === '' ? '' : `<p class="fine"><strong>${escapeHtml(t('断点', 'Checkpoint'))}:</strong> ${escapeHtml(job.checkpoint)}</p>`}
       <p class="fine">${jobLinks(job)}</p>
     </div>
     <div class="card">

@@ -1,6 +1,6 @@
 import { sha256Hex } from '../lib/secrets.js'
 
-export const PLAYBOOK_VERSION = 6
+export const PLAYBOOK_VERSION = 7
 
 export type TeamRole = 'chief' | 'lead' | 'product' | 'test' | 'security' | 'reviewer' | 'dev1' | 'dev2'
 
@@ -30,7 +30,7 @@ const PROTOCOL = [
   '- One focused issue and one pull request per job. Do not expand scope or start a second feature.',
   '- Never push to the upstream base branch, never force-push, never merge, never change repository settings.',
   '- Fetch the GitHub token only from the credential URL in the job; never print or store the token value.',
-  '- Send a progress heartbeat by POSTing the job callback with {"status":"running","summary":"<one line progress>"} after each major step and at least every 10 minutes.',
+  '- Send a progress heartbeat by POSTing the job callback with {"status":"running","summary":"<one line progress>","checkpoint":"<done + next>"} after each major step and at least every 10 minutes.',
   '- Finish with the final callback before the time limit. If blocked, POST {"status":"failed","error":"<concrete blocker>"} instead of running silently.',
   '- Report the commands actually run and the checks not run.',
   '- The final callback includes evidence: tests run, CI/checks, changed file count, risk and rollback. Use only what actually happened.',

@@ -50,6 +50,14 @@
     })
   })
 
+  document.querySelectorAll('[data-goal-template]').forEach((select) => {
+    select.addEventListener('change', () => {
+      const target = document.getElementById(select.getAttribute('data-goal-target') || '')
+      const option = select.selectedOptions[0]
+      if (target && option) target.value = option.getAttribute('data-text') || ''
+    })
+  })
+
   document.querySelectorAll('[data-copy]').forEach((el) => {
     el.addEventListener('click', async () => {
       const target = document.querySelector(el.getAttribute('data-copy'))

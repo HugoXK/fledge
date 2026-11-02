@@ -129,6 +129,21 @@ a per-repository authenticated subdomain and a Fledge shell around the native UI
 (branded "Powered by FlyBot"), with a short-lived ticket and server-side cookie
 injection so the raw DSH token never reaches the browser.
 
+### Plan-first-lite, checkpoints and templates
+
+A manual "plan only" job uses the same team and repository context but the
+bridge gives it plan rules: inspect, propose files/steps/tests/acceptance,
+risks and rollback, and never write code, branch or open a PR. The plan is
+returned in `summary`; a completed plan shows an **Execute this plan** action
+that enqueues an iterate job with the plan appended to the goal. This is the
+safe, small step before a full pause-and-approve protocol.
+
+Every heartbeat can carry a `checkpoint` (what is done and what is next). It is
+stored on the job, shown on the job page, and appended to the goal when a failed
+job is retried, so a new job can continue from the last known point instead of
+starting from scratch. The add/settings goal forms also offer four task
+templates (bug, tests, docs, dependency) that fill the goal text.
+
 ### Per-job cost, evidence and metrics
 
 The bridge's model proxy normally uses the per-repository instance token. While

@@ -136,6 +136,7 @@ export interface JobRow {
   review_score: number | null
   attribution_json: string | null
   evidence_json: string | null
+  checkpoint: string | null
   created_at: string
   started_at: string | null
   finished_at: string | null
@@ -341,6 +342,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   review_score INTEGER,
   attribution_json TEXT,
   evidence_json TEXT,
+  checkpoint TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   finished_at TEXT
@@ -424,7 +426,7 @@ export class Store {
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
-    this.db.exec('PRAGMA user_version = 8;')
+    this.db.exec('PRAGMA user_version = 9;')
   }
 
   private migrateColumns(): void {
@@ -486,6 +488,7 @@ export class Store {
     if (!jobColumns.has('review_score')) this.run('ALTER TABLE jobs ADD COLUMN review_score INTEGER')
     if (!jobColumns.has('attribution_json')) this.run('ALTER TABLE jobs ADD COLUMN attribution_json TEXT')
     if (!jobColumns.has('evidence_json')) this.run('ALTER TABLE jobs ADD COLUMN evidence_json TEXT')
+    if (!jobColumns.has('checkpoint')) this.run('ALTER TABLE jobs ADD COLUMN checkpoint TEXT')
   }
 
   close(): void {
@@ -971,7 +974,7 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE status IN ('queued','running') ORDER BY created_at ASC")
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'evidence_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')

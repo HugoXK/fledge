@@ -709,13 +709,29 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const active = store.activeJobForRepo(repo.id)
     if (active !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}`)
-    const kind = job.kind === 'review' ? 'review' : 'iterate'
-    const result = await jobs.enqueue(repo, 'manual', job.goal, kind)
+    const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : 'iterate'
+    const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
+    const result = await jobs.enqueue(repo, 'manual', goal, kind)
     store.audit(viewer.user.id, 'job.retried', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
     if (!result.ok || result.job === undefined) {
       return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(result.error ?? '重试失败。')}`)
     }
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已重新排队。')}`)
+  })
+
+  app.post('/repos/:id/jobs/:jobId/execute', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id || job.kind !== 'plan' || job.status !== 'succeeded') throw httpError(404, '计划任务不存在或尚未完成。', 'PLAN_NOT_READY')
+    const active = store.activeJobForRepo(repo.id)
+    if (active !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}`)
+    const goal = `${job.goal}\n\nApproved plan:\n${job.summary ?? ''}`
+    const result = await jobs.enqueue(repo, 'manual', goal, 'iterate')
+    store.audit(viewer.user.id, 'job.executed', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
+    if (!result.ok || result.job === undefined) {
+      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(result.error ?? '执行计划失败。')}`)
+    }
+    return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已按计划开始执行。')}`)
   })
 
   app.get('/repos/:id/:action', async (request, reply) => {
@@ -730,6 +746,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const result = await jobs.enqueue(repo, 'manual')
     const key = result.ok ? 'notice' : 'error'
     const message = result.ok ? '任务已排队。' : result.error ?? '任务启动失败。'
+    return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
+  })
+
+  app.post('/repos/:id/plan', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const result = await jobs.enqueue(repo, 'manual', undefined, 'plan')
+    store.audit(viewer.user.id, 'plan.enqueued', `${repo.owner}/${repo.name} ${result.ok ? 'ok' : result.error ?? 'failed'}`)
+    const key = result.ok ? 'notice' : 'error'
+    const message = result.ok ? '计划任务已排队，不会写代码或开 PR。' : result.error ?? '计划任务启动失败。'
     return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
   })
 

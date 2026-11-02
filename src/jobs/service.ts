@@ -50,6 +50,7 @@ export interface CallbackPayload {
   error?: unknown
   attribution?: unknown
   evidence?: unknown
+  checkpoint?: unknown
 }
 
 export class Jobs {
@@ -139,7 +140,8 @@ export class Jobs {
     this.store.event('job_enqueued', { userId: user.id, repoId: repo.id, jobId: job.id, meta: `${kind}:${trigger}` })
     if (priorJobs === 0) this.store.event('first_job_start', { userId: user.id, repoId: repo.id, jobId: job.id })
     if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'queued' })
-    else this.store.updateRepo(repo.id, { last_run_at: nowIso(), last_status: 'queued' })
+    else if (kind === 'iterate') this.store.updateRepo(repo.id, { last_run_at: nowIso(), last_status: 'queued' })
+    else this.store.updateRepo(repo.id, { last_status: 'queued' })
     this.store.audit(user.id, 'job.enqueued', `${job.id} ${repo.owner}/${repo.name} (${kind}, ${trigger})`)
 
     const revoke = (): void => {
@@ -443,6 +445,7 @@ export class Jobs {
     const error = typeof payload.error === 'string' ? payload.error.slice(0, 2000) : undefined
     const attribution = parseAttribution(payload.attribution)
     const evidence = parseEvidence(payload.evidence)
+    const checkpoint = typeof payload.checkpoint === 'string' ? payload.checkpoint.trim().slice(0, 4000) : undefined
     if (status === 'running') {
       this.store.updateJob(jobId, {
         status: 'running',
@@ -450,6 +453,7 @@ export class Jobs {
         ...(summary === undefined ? {} : { summary }),
         ...(attribution === null ? {} : { attribution_json: JSON.stringify(attribution) }),
         ...(evidence === null ? {} : { evidence_json: JSON.stringify(evidence) }),
+        ...(checkpoint === undefined ? {} : { checkpoint }),
       })
       return { ok: true }
     }
@@ -457,6 +461,7 @@ export class Jobs {
       const row = this.store.findApiToken(job.platform_token_hash ?? '')
       if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     }
+    if (checkpoint !== undefined) this.store.updateJob(jobId, { checkpoint })
     this.finish(jobId, { status, branch, prUrl, issueUrl, reviewScore, summary, error }, revoke, attribution, evidence)
     return { ok: true }
   }
