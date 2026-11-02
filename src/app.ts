@@ -3,6 +3,7 @@ import fastifyCookie from '@fastify/cookie'
 import fastifyFormbody from '@fastify/formbody'
 import fastifyStatic from '@fastify/static'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
 import { openStore, type Store, type UserRow } from './db.js'
@@ -37,11 +38,14 @@ import {
   teamPage,
   jobPage,
   metricsPage,
+  appReposPage,
   workspacePage,
   settingsPage,
   errorPage,
 } from './views/pages.js'
-import { parseRepoInput, prepareRepo } from './repos/github.js'
+import { GithubClient, parseRepoInput, prepareRepo, prepareRepoWithInstallation } from './repos/github.js'
+import { GithubApp } from './repos/app.js'
+import { repoGithubToken } from './repos/token.js'
 import { InstanceManager } from './flybot/instances.js'
 
 export interface BuildOptions {
@@ -115,7 +119,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const sessions = new Sessions(store, config)
   const approvals = new Approvals(store, config, mailer)
   const instances = new InstanceManager(store, config)
-  const jobs = new Jobs(store, config, runner, mailer, instances)
+  const githubApp = new GithubApp(config)
+  const jobs = new Jobs(store, config, runner, mailer, instances, githubApp)
   const loginLimiter = new RateLimiter(30, 60_000)
   const apiLimiter = new RateLimiter(120, 60_000)
 
@@ -132,6 +137,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.addHook('onRequest', async (request) => {
     request.viewer = sessions.read(request) ?? undefined
     request.locale = resolveLocale(request)
+  })
+
+  app.addHook('preParsing', async (request, _reply, payload) => {
+    if (request.url.split('?')[0] !== '/api/github/webhook') return payload
+    const chunks: Buffer[] = []
+    for await (const chunk of payload) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    const raw = Buffer.concat(chunks)
+    ;(request as FastifyRequest & { rawBody?: Buffer }).rawBody = raw
+    return Readable.from(raw)
   })
 
   app.addHook('onSend', async (request, reply, payload) => {
@@ -432,6 +446,138 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/repos', async (_request, reply) => {
     return reply.redirect('/dashboard#add-repo')
+  })
+
+  app.get('/auth/github/app/install', async (request, reply) => {
+    requireApproved(request)
+    if (config.githubApp.slug === '') return reply.redirect(`/repos/new?error=${encodeURIComponent('GitHub App 未配置。')}`)
+    return reply.redirect(`https://github.com/apps/${encodeURIComponent(config.githubApp.slug)}/installations/new`)
+  })
+
+  app.get('/auth/github/app/installed', async (request, reply) => {
+    const viewer = requireApproved(request)
+    if (!githubApp.configured) return reply.redirect(`/repos/new?error=${encodeURIComponent('GitHub App 未配置。')}`)
+    const installationId = Number(queryText(request, 'installation_id'))
+    if (!Number.isFinite(installationId) || installationId <= 0) return reply.redirect(`/repos/new?error=${encodeURIComponent('安装回调缺少 installation_id。')}`)
+    let installation
+    try {
+      installation = await githubApp.getInstallation(installationId)
+    } catch (error) {
+      log.warn('github app installation lookup failed', { installationId, error: String(error) })
+    }
+    if (installation === undefined || installation === null) return reply.redirect(`/repos/new?error=${encodeURIComponent('找不到这个 GitHub App 安装。')}`)
+    let owned = false
+    if (viewer.user.github_token_enc !== null) {
+      try {
+        const token = decryptSecret(viewer.user.github_token_enc, config.tokenEncryptionKey)
+        const installations = await new GithubClient(token, config.github.apiBase).listUserInstallations()
+        owned = installations.some((entry) => entry.id === installationId)
+      } catch (error) {
+        log.warn('github app user installation check failed', { user: viewer.user.login, error: String(error) })
+      }
+    }
+    if (!owned) owned = installation.account.type === 'User' && installation.account.login.toLowerCase() === viewer.user.login.toLowerCase()
+    if (!owned) return reply.redirect(`/repos/new?error=${encodeURIComponent('这个安装不属于当前 GitHub 用户；请用安装它的账号登录。')}`)
+    store.saveInstallation({ installationId, userId: viewer.user.id, accountLogin: installation.account.login, accountType: installation.account.type })
+    store.audit(viewer.user.id, 'github_app.installed', `${installationId} @${installation.account.login}`)
+    store.event('github_app_installed', { userId: viewer.user.id, meta: `@${installation.account.login}` })
+    return reply.redirect(`/repos/new?installation=${installationId}`)
+  })
+
+  app.get('/repos/new', async (request, reply) => {
+    const viewer = requireApproved(request)
+    if (!githubApp.configured) return reply.redirect(`/dashboard?error=${encodeURIComponent('GitHub App 未配置；仍可使用 PAT 接入。')}`)
+    const installations = store.listInstallations(viewer.user.id)
+    const raw = Number(queryText(request, 'installation'))
+    const installationId = Number.isFinite(raw) && raw > 0 ? raw : undefined
+    let repos
+    let error = queryText(request, 'error')
+    if (installationId !== undefined) {
+      const owned = store.getInstallation(installationId)
+      if (owned === undefined || owned.user_id !== viewer.user.id) throw httpError(404, '安装不存在。', 'INSTALLATION_NOT_FOUND')
+      try {
+        repos = await githubApp.installationRepos(installationId)
+      } catch (cause) {
+        error = cause instanceof Error ? cause.message : String(cause)
+      }
+    }
+    return reply.type('text/html').send(appReposPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      installations,
+      installationId,
+      repos,
+      notice: queryText(request, 'notice'),
+      error,
+    }))
+  })
+
+  app.post('/repos/app', async (request, reply) => {
+    const viewer = csrfGuard(request)
+    if (!githubApp.configured) return reply.redirect(`/dashboard?error=${encodeURIComponent('GitHub App 未配置。')}`)
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const installationId = Number(body.installation)
+    const installation = store.getInstallation(installationId)
+    if (installation === undefined || installation.user_id !== viewer.user.id) throw httpError(404, '安装不存在。', 'INSTALLATION_NOT_FOUND')
+    const rawSelected = body.repo
+    const selected = (Array.isArray(rawSelected) ? rawSelected : [rawSelected]).filter((value): value is string => typeof value === 'string' && value.includes('/'))
+    if (selected.length === 0) return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent('请选择至少一个仓库。')}`)
+    let available
+    try {
+      available = await githubApp.installationRepos(installationId)
+    } catch (error) {
+      return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`)
+    }
+    const byName = new Map(available.map((repo) => [repo.fullName.toLowerCase(), repo]))
+    const added: string[] = []
+    for (const fullName of selected) {
+      const repoInfo = byName.get(fullName.toLowerCase())
+      if (repoInfo === undefined) continue
+      if (store.getRepoByOwnerName(viewer.user.id, repoInfo.owner, repoInfo.name) !== undefined) continue
+      try {
+        const token = await githubApp.installationToken(installationId)
+        const prepared = await prepareRepoWithInstallation(token, repoInfo.owner, repoInfo.name, installation.account_login, config.github.apiBase)
+        const repo = store.createRepo({
+          id: randomId('repo'),
+          userId: viewer.user.id,
+          owner: prepared.upstream.owner,
+          name: prepared.upstream.name,
+          defaultBranch: prepared.upstream.defaultBranch,
+          tokenEnc: '',
+          installationId,
+          goal: '',
+          autoIterate: false,
+          intervalMinutes: 1440,
+          upstreamOwner: prepared.upstream.owner,
+          upstreamName: prepared.upstream.name,
+          forkOwner: prepared.fork.owner,
+          forkName: prepared.fork.name,
+          upstreamDefaultBranch: prepared.upstream.defaultBranch,
+          forkDefaultBranch: prepared.fork.defaultBranch,
+          isFork: prepared.isFork,
+          forkCreated: prepared.forkCreated,
+          permission: prepared.permission,
+          canReview: prepared.canReview,
+          canCreateIssue: prepared.canCreateIssue,
+          reviewerEnabled: false,
+          reviewIntervalMinutes: 1440,
+          upstreamHtmlUrl: prepared.upstream.htmlUrl,
+          forkHtmlUrl: prepared.fork.htmlUrl,
+        })
+        store.audit(viewer.user.id, 'repo.added', `${repo.owner}/${repo.name} app=${installationId} permission=${repo.permission}`)
+        store.event('repo_connect_success', { userId: viewer.user.id, repoId: repo.id, meta: 'github-app' })
+        if (config.flybot.instanceImage !== '') {
+          instances.ensureUserDir(viewer.user.id)
+          void instances.provision(repo).catch((error) => log.error('flybot provisioning failed', { repo: repo.id, error: String(error) }))
+        }
+        added.push(`${repo.owner}/${repo.name}`)
+      } catch (error) {
+        log.warn('github app repo add failed', { repo: repoInfo.fullName, error: String(error) })
+      }
+    }
+    if (added.length === 0) return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent('没有新增仓库；可能已经添加过，或 App 权限不足。')}`)
+    return reply.redirect(`/dashboard?notice=${encodeURIComponent(`已接入 ${added.length} 个仓库。`)}`)
   })
 
   app.post('/repos', async (request, reply) => {
@@ -761,7 +907,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/refresh', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     try {
-      const token = decryptSecret(repo.token_enc, config.tokenEncryptionKey)
+      const token = await repoGithubToken(repo, config, githubApp)
       const prepared = await prepareRepo(token, repo.upstream_owner || repo.owner, repo.upstream_name || repo.name, viewer.user.login, config.github.apiBase)
       const enableReviewer = prepared.canReview && (repo.can_review !== 1 || repo.reviewer_enabled === 1)
       store.updateRepo(repo.id, {
@@ -1077,7 +1223,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.get('/api/jobs/:id/credential', async (request, reply) => {
     const header = String(request.headers.authorization ?? '')
     const secret = /^Bearer\s+(.+)$/i.exec(header)?.[1] ?? ''
-    const result = jobs.credential(String((request.params as Record<string, string>).id), secret)
+    const result = await jobs.credential(String((request.params as Record<string, string>).id), secret)
     if (!result.ok) return reply.code(result.status ?? 400).send({ error: result.error ?? 'unauthorized' })
     return { token: result.token, owner: result.owner, name: result.name, defaultBranch: result.defaultBranch }
   })
@@ -1089,6 +1235,26 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const body = (request.body ?? {}) as Record<string, unknown>
     const result = await jobs.handleCallback(String((request.params as Record<string, string>).id), secret, body)
     if (!result.ok) return reply.code(result.status ?? 400).send({ error: result.error ?? 'callback rejected' })
+    return { ok: true }
+  })
+
+  app.post('/api/github/webhook', async (request, reply) => {
+    if (!githubApp.configured || config.githubApp.webhookSecret === '') return reply.code(503).send({ error: 'GitHub App webhook is not configured' })
+    const signature = String(request.headers['x-hub-signature-256'] ?? '')
+    const raw = (request as FastifyRequest & { rawBody?: Buffer }).rawBody
+    if (raw === undefined || !githubApp.verifyWebhook(raw, signature)) return reply.code(401).send({ error: 'bad webhook signature' })
+    const event = String(request.headers['x-github-event'] ?? '')
+    const delivery = String(request.headers['x-github-delivery'] ?? '')
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const action = typeof body.action === 'string' ? body.action : ''
+    const repository = typeof body.repository === 'object' && body.repository !== null ? (body.repository as Record<string, unknown>) : {}
+    const fullName = typeof repository.full_name === 'string' ? repository.full_name : ''
+    store.event('github_webhook', { meta: `${event}:${action}:${fullName}:${delivery}`.slice(0, 300) })
+    if (event === 'installation') {
+      const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
+      const installationId = Number(installation.id)
+      if (action === 'deleted' && Number.isFinite(installationId)) store.deleteInstallation(installationId)
+    }
     return { ok: true }
   })
 

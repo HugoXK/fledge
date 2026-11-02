@@ -54,6 +54,19 @@ Every state-changing browser form includes a hidden `csrf` field derived from
 JSON endpoints. Approval links and job endpoints use their own bearer secrets
 and do not use CSRF.
 
+### GitHub App
+
+- The private key lives outside the repository (`GITHUB_APP_PRIVATE_KEY_PATH`,
+  mode 0600). The App JWT is held in memory and never logged.
+- Installation tokens are cached in memory only until shortly before expiry and
+  are never stored in SQLite. Repositories with `installation_id` use a fresh
+  token; PAT repositories keep the encrypted token path.
+- The setup callback only binds an installation to a user after checking the
+  user's OAuth installations (or an individual account match).
+- `POST /api/github/webhook` verifies `X-Hub-Signature-256` on the raw body
+  before parsing. A bad signature is 401; an unconfigured webhook is 503.
+  Verified event metadata is stored without payload secrets.
+
 ### Job cost, evidence and metrics
 
 `events` stores activation/intervention names, user/repo/job ids and a short

@@ -19,6 +19,12 @@ export interface Config {
     adminLogin: string
     apiBase: string
   }
+  githubApp: {
+    id: string
+    slug: string
+    privateKeyPath: string
+    webhookSecret: string
+  }
   mail: {
     transport: MailTransport
     from: string
@@ -138,6 +144,12 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       scopes: text('GITHUB_OAUTH_SCOPES', 'read:user user:email'),
       adminLogin: text('ADMIN_GITHUB_LOGIN', 'HugoXK'),
       apiBase: text('GITHUB_API_BASE', 'https://api.github.com').replace(/\/$/, ''),
+    },
+    githubApp: {
+      id: text('GITHUB_APP_ID'),
+      slug: text('GITHUB_APP_SLUG'),
+      privateKeyPath: text('GITHUB_APP_PRIVATE_KEY_PATH'),
+      webhookSecret: text('GITHUB_APP_WEBHOOK_SECRET'),
     },
     mail: {
       transport: (text('MAIL_TRANSPORT', 'console') as MailTransport) || 'console',

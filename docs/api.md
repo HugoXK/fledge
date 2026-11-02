@@ -13,6 +13,11 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/` | public | Landing or redirect to dashboard |
 | GET | `/auth/github` | public | Start OAuth |
 | GET | `/auth/github/callback` | public | OAuth callback |
+| GET | `/auth/github/app/install` | approved | Redirect to the GitHub App installation page |
+| GET | `/auth/github/app/installed` | approved | Bind an installation to the current user |
+| GET | `/repos/new` | approved | GitHub App installations and repository picker |
+| POST | `/repos/app` | approved + CSRF | Connect repositories through an installation |
+| POST | `/api/github/webhook` | GitHub signature | GitHub App webhook ingestion |
 | POST | `/auth/token` | public, rate-limited | Sign in with a GitHub token when OAuth is not configured |
 | POST | `/auth/logout` | session + CSRF | Sign out |
 | GET | `/apply` | session | Disclaimer and information-security signature |

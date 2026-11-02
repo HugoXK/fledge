@@ -7,6 +7,7 @@ import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
+import type { InstallationRepo } from '../repos/app.js'
 import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
 import { parseTeam, type TeamLiveState } from '../flybot/instances.js'
 
@@ -301,6 +302,8 @@ export function dashboardPage(input: {
     </div>
     <div class="card" id="add-repo">
       <h2>${escapeHtml(t('添加仓库', 'Add repository'))}</h2>
+      ${config.githubApp.id === '' ? '' : `<div class="banner"><p>${escapeHtml(t('推荐：用 GitHub App 安装并选择仓库，不需要创建 PAT。', 'Recommended: install the GitHub App and choose repositories; no PAT needed.'))}</p><p><a class="btn" href="/auth/github/app/install">${escapeHtml(t('通过 GitHub App 接入', 'Connect with GitHub App'))}</a> <a class="link" href="/repos/new">${escapeHtml(t('选择已安装的仓库', 'Choose installed repositories'))}</a></p></div>`}
+      <p class="fine">${escapeHtml(t('或者手动提供 fine-grained token：', 'Or provide a fine-grained token manually:'))}</p>
       <form method="post" action="/repos" class="form">
         ${csrf(viewer)}
         <label>${escapeHtml(t('上游仓库', 'Upstream repository'))} <input name="repo" placeholder="owner/name" required autocomplete="off" /></label>
@@ -1174,4 +1177,50 @@ export function metricsPage(input: {
     <table><thead><tr><th>${escapeHtml(t('事件', 'Event'))}</th><th>${escapeHtml(t('次数', 'Count'))}</th></tr></thead><tbody>${eventRows}</tbody></table>
   </section>`
   return layout({ title: t('产品指标', 'Product metrics'), viewer, body, config, locale, path: '/admin/metrics', active: 'admin', notice, error })
+}
+
+export function appReposPage(input: {
+  config: Config
+  locale: Locale
+  viewer: Viewer
+  installations: Array<{ installation_id: number; account_login: string; account_type: string }>
+  installationId?: number
+  repos?: InstallationRepo[]
+  notice?: string
+  error?: string
+}): string {
+  const { config, locale, viewer, installations, installationId, repos, notice, error } = input
+  const t = translator(locale)
+  const installUrl = config.githubApp.slug === '' ? '' : `https://github.com/apps/${encodeURIComponent(config.githubApp.slug)}/installations/new`
+  const installationList = installations.length === 0
+    ? `<p class="muted">${escapeHtml(t('还没有安装 GitHub App。安装并选择仓库后，可以直接在这里接入。', 'The GitHub App is not installed yet. Install it, choose repositories, then connect them here.'))}</p>`
+    : `<div class="list">${installations.map((installation) => `<div class="list-row"><div class="list-main"><strong>@${escapeHtml(installation.account_login)}</strong><small>${escapeHtml(installation.account_type)} · installation ${installation.installation_id}</small></div><a class="link" href="/repos/new?installation=${installation.installation_id}">${escapeHtml(t('选择仓库', 'Choose repositories'))}</a></div>`).join('')}</div>`
+  const repoRows = (repos ?? []).map((repo) => `<tr>
+    <td><label class="check"><input type="checkbox" name="repo" value="${escapeHtml(repo.fullName)}" /> <strong>${escapeHtml(repo.fullName)}</strong></label></td>
+    <td>${repo.private ? escapeHtml(t('私有', 'Private')) : escapeHtml(t('公开', 'Public'))}</td>
+    <td><code>${escapeHtml(repo.defaultBranch)}</code></td>
+  </tr>`).join('')
+  const picker = installationId === undefined
+    ? ''
+    : `<section class="card">
+        <h2>${escapeHtml(t('选择要接入的仓库', 'Choose repositories'))}</h2>
+        ${repoRows === '' ? `<p class="muted">${escapeHtml(t('这个安装没有可访问的仓库。', 'This installation has no accessible repositories.'))}</p>` : `<form method="post" action="/repos/app" class="form">${csrf(viewer)}<input type="hidden" name="installation" value="${installationId}" /><table><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('可见性', 'Visibility'))}</th><th>${escapeHtml(t('默认分支', 'Default branch'))}</th></tr></thead><tbody>${repoRows}</tbody></table><button class="btn" type="submit">${escapeHtml(t('接入选中的仓库', 'Connect selected repositories'))}</button></form>`}
+      </section>`
+  const body = `<section class="card">
+    <div class="row between">
+      <div>
+        <div class="eyebrow">${escapeHtml(t('GITHUB APP', 'GITHUB APP'))}</div>
+        <h1>${escapeHtml(t('通过 GitHub App 接入', 'Connect with GitHub App'))}</h1>
+        <p class="muted">${escapeHtml(t('安装 App、选择仓库后，Fledge 使用短时 installation token，不需要你创建 PAT。', 'After installing the App and choosing repositories, Fledge uses short-lived installation tokens instead of a PAT.'))}</p>
+      </div>
+      <a class="btn btn-ghost" href="/dashboard">${escapeHtml(t('返回工作区', 'Back to dashboard'))}</a>
+    </div>
+  </section>
+  <section class="card">
+    <h2>${escapeHtml(t('已安装', 'Installed'))}</h2>
+    ${installationList}
+    ${installUrl === '' ? '' : `<p><a class="btn" href="${escapeHtml(installUrl)}" target="_blank" rel="noreferrer">${escapeHtml(t('安装 / 调整 GitHub App', 'Install / manage GitHub App'))}</a></p>`}
+  </section>
+  ${picker}`
+  return layout({ title: t('GitHub App 接入', 'GitHub App'), viewer, body, config, locale, path: '/repos/new', active: 'dashboard', notice, error })
 }

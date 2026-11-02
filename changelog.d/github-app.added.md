@@ -1,0 +1,1 @@
+Added optional GitHub App onboarding: install the App, bind the installation to the signed-in user, pick repositories and use short-lived installation tokens instead of a PAT. The PAT flow remains available. Added a signed GitHub webhook endpoint and event ingestion as the base for the CI/review follow-up loop.

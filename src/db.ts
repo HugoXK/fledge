@@ -67,6 +67,7 @@ export interface RepoRow {
   name: string
   default_branch: string
   token_enc: string
+  installation_id: number | null
   goal: string
   enabled: number
   auto_iterate: number
@@ -270,6 +271,7 @@ CREATE TABLE IF NOT EXISTS repos (
   name TEXT NOT NULL,
   default_branch TEXT NOT NULL DEFAULT 'main',
   token_enc TEXT NOT NULL,
+  installation_id INTEGER,
   goal TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
   auto_iterate INTEGER NOT NULL DEFAULT 0,
@@ -405,6 +407,16 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_name_at_idx ON events(name, at DESC);
 CREATE INDEX IF NOT EXISTS events_user_at_idx ON events(user_id, at DESC);
 
+CREATE TABLE IF NOT EXISTS github_installations (
+  installation_id INTEGER PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  account_login TEXT NOT NULL,
+  account_type TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS github_installations_user_idx ON github_installations(user_id);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -426,7 +438,7 @@ export class Store {
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
-    this.db.exec('PRAGMA user_version = 9;')
+    this.db.exec('PRAGMA user_version = 10;')
   }
 
   private migrateColumns(): void {
@@ -455,6 +467,7 @@ export class Store {
   private migrateRepoColumns(): void {
     const repoColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(repos)').map((row) => row.name))
     const repoAdditions: Array<[string, string]> = [
+      ['installation_id', 'INTEGER'],
       ['upstream_owner', "TEXT NOT NULL DEFAULT ''"],
       ['upstream_name', "TEXT NOT NULL DEFAULT ''"],
       ['fork_owner', "TEXT NOT NULL DEFAULT ''"],
@@ -681,6 +694,27 @@ export class Store {
     this.run('UPDATE users SET notify_email = ? WHERE id = ?', email, id)
   }
 
+  saveInstallation(input: { installationId: number; userId: string; accountLogin: string; accountType: string }): void {
+    this.run(
+      `INSERT INTO github_installations (installation_id, user_id, account_login, account_type, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(installation_id) DO UPDATE SET user_id = excluded.user_id, account_login = excluded.account_login, account_type = excluded.account_type, updated_at = excluded.updated_at`,
+      input.installationId, input.userId, input.accountLogin, input.accountType, nowIso(), nowIso(),
+    )
+  }
+
+  listInstallations(userId: string): Array<{ installation_id: number; user_id: string; account_login: string; account_type: string }> {
+    return this.all('SELECT installation_id, user_id, account_login, account_type FROM github_installations WHERE user_id = ? ORDER BY created_at DESC', userId)
+  }
+
+  getInstallation(installationId: number): { installation_id: number; user_id: string; account_login: string; account_type: string } | undefined {
+    return this.get('SELECT installation_id, user_id, account_login, account_type FROM github_installations WHERE installation_id = ?', installationId)
+  }
+
+  deleteInstallation(installationId: number): void {
+    this.run('DELETE FROM github_installations WHERE installation_id = ?', installationId)
+  }
+
   addUserUsage(id: string, usd: number): void {
     this.run('UPDATE users SET quota_used_usd = quota_used_usd + ? WHERE id = ?', usd, id)
   }
@@ -796,6 +830,7 @@ export class Store {
     name: string
     defaultBranch: string
     tokenEnc: string
+    installationId?: number | null
     goal: string
     autoIterate: boolean
     intervalMinutes: number
@@ -816,16 +851,17 @@ export class Store {
     forkHtmlUrl?: string | null
   }): RepoRow {
     this.run(
-      `INSERT INTO repos (id, user_id, owner, name, default_branch, token_enc, goal, enabled, auto_iterate, interval_minutes, created_at,
+      `INSERT INTO repos (id, user_id, owner, name, default_branch, token_enc, installation_id, goal, enabled, auto_iterate, interval_minutes, created_at,
          upstream_owner, upstream_name, fork_owner, fork_name, upstream_default_branch, fork_default_branch,
          is_fork, fork_created, permission, can_review, can_create_issue, reviewer_enabled, review_interval_minutes, upstream_html_url, fork_html_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.userId,
       input.owner,
       input.name,
       input.defaultBranch,
       input.tokenEnc,
+      input.installationId ?? null,
       input.goal,
       input.autoIterate ? 1 : 0,
       input.intervalMinutes,

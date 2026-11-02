@@ -8,9 +8,11 @@ import { notifyEmail } from '../email/recipient.js'
 import { log } from '../lib/log.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, type Evidence } from '../lib/evidence.js'
-import { decryptSecret, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
+import { randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient } from '../repos/github.js'
+import { GithubApp } from '../repos/app.js'
+import { repoGithubToken } from '../repos/token.js'
 import { parseTeam } from '../flybot/instances.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
 import type { InstanceManager } from '../flybot/instances.js'
@@ -64,6 +66,7 @@ export class Jobs {
     private readonly runner: Runner,
     private readonly mailer: Mailer,
     private readonly instances?: InstanceManager,
+    private readonly githubApp: GithubApp = new GithubApp(config),
   ) {
     this.quotaNotifier = new QuotaNotifier(store, mailer, config)
   }
@@ -421,7 +424,7 @@ export class Jobs {
       '</details>',
     ]
     try {
-      const token = decryptSecret(repo.token_enc, this.config.tokenEncryptionKey)
+      const token = await repoGithubToken(repo, this.config, this.githubApp)
       const client = new GithubClient(token, this.config.github.apiBase)
       await client.comment(owner, name, number, body.join('\n'))
       log.info('automation comment posted', { job: job.id, pr: number })
@@ -466,7 +469,7 @@ export class Jobs {
     return { ok: true }
   }
 
-  credential(jobId: string, secret: string): {
+  async credential(jobId: string, secret: string): Promise<{
     ok: boolean
     status?: number
     token?: string
@@ -480,7 +483,7 @@ export class Jobs {
     canReview?: boolean
     canCreateIssue?: boolean
     error?: string
-  } {
+  }> {
     const job = this.store.getJob(jobId)
     if (job === undefined) return { ok: false, status: 404, error: 'job not found' }
     if (!safeEqual(sha256Hex(secret), job.callback_hash)) return { ok: false, status: 401, error: 'bad credential secret' }
@@ -488,7 +491,7 @@ export class Jobs {
     const repo = this.store.getRepo(job.repo_id)
     if (repo === undefined) return { ok: false, status: 404, error: 'repo not found' }
     try {
-      const token = decryptSecret(repo.token_enc, this.config.tokenEncryptionKey)
+      const token = await repoGithubToken(repo, this.config, this.githubApp)
       const upstream: RepoRef = {
         owner: repo.upstream_owner || repo.owner,
         name: repo.upstream_name || repo.name,
