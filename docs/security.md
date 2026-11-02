@@ -67,6 +67,15 @@ and do not use CSRF.
   before parsing. A bad signature is 401; an unconfigured webhook is 503.
   Verified event metadata is stored without payload secrets.
 
+### Notification email display
+
+The settings page masks the notification and GitHub email (for example
+`k***@zju.edu.cn`); the full address is not rendered in the HTML, and leaving the
+field blank keeps the current address instead of silently clearing it. The
+admin panel still shows the contact email to administrators for account
+management, and approval mail includes it as required. The address is used only
+for job/digest mail and is never shown on a public page.
+
 ### Inbound email
 
 `POST /api/inbound/email` is disabled unless `INBOUND_EMAIL_SECRET` is set. The

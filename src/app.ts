@@ -1127,17 +1127,20 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const viewer = csrfGuard(request)
     const body = form(request)
     const rawEmail = (body.email ?? '').trim().slice(0, 254)
-    if (rawEmail !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail)) {
+    const clear = body.clear === '1'
+    if (!clear && rawEmail !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail)) {
       return reply.redirect(`/settings?error=${encodeURIComponent('通知邮箱格式不正确。')}`)
     }
     const jobUpdates = body.jobUpdates === '1'
     const dailyDigest = body.dailyDigest === '1'
-    store.setNotifyEmail(viewer.user.id, rawEmail === '' ? null : rawEmail)
+    if (clear) store.setNotifyEmail(viewer.user.id, null)
+    else if (rawEmail !== '') store.setNotifyEmail(viewer.user.id, rawEmail)
     store.setEmailJobUpdates(viewer.user.id, jobUpdates)
     store.setEmailDailyDigest(viewer.user.id, dailyDigest)
-    store.audit(viewer.user.id, 'settings.email', `email=${rawEmail === '' ? 'github' : 'custom'} jobs=${jobUpdates ? 'on' : 'off'} digest=${dailyDigest ? 'on' : 'off'}`)
+    const saved = store.userById(viewer.user.id)
+    store.audit(viewer.user.id, 'settings.email', `email=${saved?.notify_email === null || saved?.notify_email === undefined ? 'github' : 'custom'} jobs=${jobUpdates ? 'on' : 'off'} digest=${dailyDigest ? 'on' : 'off'}`)
     if (body.action === 'test') {
-      const updated = store.userById(viewer.user.id)
+      const updated = saved
       const to = updated === undefined ? '' : notifyEmail(updated)
       if (to === '') return reply.redirect(`/settings?error=${encodeURIComponent('请先填写通知邮箱。')}`)
       const key = `email_test:${viewer.user.id}`

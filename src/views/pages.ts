@@ -15,6 +15,14 @@ function csrf(viewer: Viewer): string {
   return `<input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />`
 }
 
+function maskEmail(email: string): string {
+  const at = email.lastIndexOf('@')
+  if (at <= 0) return '***'
+  const local = email.slice(0, at)
+  const domain = email.slice(at + 1)
+  return `${local.slice(0, 1)}***@${domain}`
+}
+
 function agreementHtml(text: string): string {
   return text
     .split(/\n\n/)
@@ -627,6 +635,7 @@ export function settingsPage(input: {
   const quota = quotaView(user, config)
   const customEmail = (user.notify_email ?? '').trim()
   const resolvedEmail = customEmail !== '' ? customEmail : (user.email ?? '')
+  const maskedEmail = resolvedEmail === '' ? '' : maskEmail(resolvedEmail)
   const hasEmail = resolvedEmail !== ''
   const tokenRows = tokens.length === 0
     ? `<tr><td colspan="4" class="muted">${escapeHtml(t('还没有 API token。', 'No API tokens yet.'))}</td></tr>`
@@ -638,7 +647,7 @@ export function settingsPage(input: {
   const body = `<section class="card">
     <div class="eyebrow">${escapeHtml(t('账户', 'ACCOUNT'))}</div>
     <h1>@${escapeHtml(user.login)}</h1>
-    <p class="muted">${escapeHtml(user.email ?? t('未公开邮箱', 'No public email'))} · ${escapeHtml(t('加入于', 'Joined'))} ${escapeHtml(humanTimeShort(user.created_at))} · ${escapeHtml(t('平台额度', 'Platform quota'))} ${quota.unlimited ? escapeHtml(t('不限额', 'Unlimited')) : `${quotaMoney(quota.remainingCny)} / ${money(quota.initialCny)}`}</p>
+    <p class="muted">${escapeHtml(user.email === null || user.email === '' ? t('未公开邮箱', 'No public email') : maskEmail(user.email))} · ${escapeHtml(t('加入于', 'Joined'))} ${escapeHtml(humanTimeShort(user.created_at))} · ${escapeHtml(t('平台额度', 'Platform quota'))} ${quota.unlimited ? escapeHtml(t('不限额', 'Unlimited')) : `${quotaMoney(quota.remainingCny)} / ${money(quota.initialCny)}`}</p>
     ${user.github_token_enc !== null ? `<p class="fine">${escapeHtml(t('登录时保存了一个默认 GitHub token；添加仓库时仍以仓库表单里的 token 为准。', 'A default GitHub token was saved at sign-in; the token in the repository form still takes precedence.'))}</p>` : ''}
   </section>
 
@@ -661,12 +670,13 @@ export function settingsPage(input: {
 
   <section class="card" id="notifications">
     <h2>${escapeHtml(t('邮件通知', 'Email notifications'))}</h2>
-    <p class="muted">${escapeHtml(t(`任务需要你回答、完成或失败时，发送到 ${resolvedEmail || '（未配置）'}；发件人是 ${config.mail.from}。`, `Send to ${resolvedEmail || '(not configured)'} when a job needs an answer, finishes or fails; the sender is ${config.mail.from}.`))}</p>
+    <p class="muted">${escapeHtml(t(`任务需要你回答、完成或失败时，发送到 ${maskedEmail || '（未配置）'}；发件人是 ${config.mail.from}。`, `Send to ${maskedEmail || '(not configured)'} when a job needs an answer, finishes or fails; the sender is ${config.mail.from}.`))}</p>
     ${hasEmail ? '' : `<div class="banner bad">${escapeHtml(t('还没有可用的通知邮箱，请填写一个邮箱后再开启通知。', 'There is no notification email yet; add one before enabling notifications.'))}</div>`}
     <form method="post" action="/settings/notifications" class="form">
       ${csrf(viewer)}
-      <label>${escapeHtml(t('通知邮箱', 'Notification email'))} <input name="email" type="email" value="${escapeHtml(customEmail)}" placeholder="${escapeHtml(user.email ?? 'you@example.com')}" autocomplete="email" /></label>
-      <p class="fine">${escapeHtml(t(`留空则使用 GitHub 邮箱（${user.email ?? '未提供'}）。`, `Leave blank to use the GitHub email (${user.email ?? 'not provided'}).`))}</p>
+      <label>${escapeHtml(t('通知邮箱', 'Notification email'))} <input name="email" type="email" value="" placeholder="${escapeHtml(maskedEmail || 'you@example.com')}" autocomplete="email" /></label>
+      <p class="fine">${escapeHtml(t('留空保持不变；勾选下方“清除”则改回 GitHub 邮箱（界面只显示掩码）。', 'Leave blank to keep the current address; tick "Clear" to use the GitHub email (the UI shows a mask only).'))}</p>
+      ${customEmail === '' ? '' : `<label class="check"><input type="checkbox" name="clear" value="1" /> ${escapeHtml(t('清除自定义邮箱，使用 GitHub 邮箱', 'Clear the custom email and use the GitHub email'))}</label>`}
       <label class="check"><input type="checkbox" name="jobUpdates" value="1" ${user.email_job_updates === 1 ? 'checked' : ''} /> ${escapeHtml(t('任务需要回答、完成或失败时发邮件', 'Email me when a job needs an answer, finishes or fails'))}</label>
       <label class="check"><input type="checkbox" name="dailyDigest" value="1" ${user.email_daily_digest === 1 ? 'checked' : ''} /> ${escapeHtml(t('每天发送一封今日摘要', 'Send a daily summary email'))}</label>
       <div class="row">

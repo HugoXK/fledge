@@ -69,6 +69,25 @@ test('email notification settings can be viewed and changed', async () => {
     assert.equal(updated?.notify_email, 'me@example.com')
     assert.equal(updated?.email_job_updates, 1)
     assert.equal(updated?.email_daily_digest, 1)
+    const after = await built.app.inject({ method: 'GET', url: '/settings', headers: { cookie } })
+    assert.doesNotMatch(after.body, /mail-settings@example\.com|me@example\.com/)
+    assert.match(after.body, /m\*\*\*@example\.com/)
+    const keep = await built.app.inject({
+      method: 'POST',
+      url: '/settings/notifications',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, jobUpdates: '1', dailyDigest: '1', action: 'save' }),
+    })
+    assert.equal(keep.statusCode, 302)
+    assert.equal(store.userById(user.id)?.notify_email, 'me@example.com')
+    const cleared = await built.app.inject({
+      method: 'POST',
+      url: '/settings/notifications',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, clear: '1', jobUpdates: '1', dailyDigest: '1', action: 'save' }),
+    })
+    assert.equal(cleared.statusCode, 302)
+    assert.equal(store.userById(user.id)?.notify_email, null)
     const tested = await built.app.inject({
       method: 'POST',
       url: '/settings/notifications',
