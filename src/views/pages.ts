@@ -137,6 +137,25 @@ function jobSummary(t: Translate, job: JobRow): string {
   return `${raw}${cost}`
 }
 
+function jobTeamStats(job: JobRow): Array<{ role: string; label: string; calls: number; activity: string; tool: string; step: string; lastActivityAt: number | null }> | null {
+  if (job.team_stats_json === null) return null
+  try {
+    const parsed = JSON.parse(job.team_stats_json) as Array<Record<string, unknown>>
+    if (!Array.isArray(parsed)) return null
+    return parsed.filter((entry) => typeof entry.role === 'string').map((entry) => ({
+      role: String(entry.role),
+      label: typeof entry.label === 'string' ? entry.label : String(entry.role),
+      calls: typeof entry.calls === 'number' ? entry.calls : 0,
+      activity: typeof entry.activity === 'string' ? entry.activity : 'idle',
+      tool: typeof entry.tool === 'string' ? entry.tool : '',
+      step: typeof entry.step === 'string' ? entry.step : '',
+      lastActivityAt: typeof entry.lastActivityAt === 'number' ? entry.lastActivityAt : null,
+    }))
+  } catch {
+    return null
+  }
+}
+
 function jobAttribution(t: Translate, job: JobRow): string {
   return attributionJourney(parseAttributionJson(job.attribution_json))
     .map(({ role, keys }) => {
@@ -522,6 +541,16 @@ function teamSession(team: ReturnType<typeof parseTeam>, role: string): string {
   return ''
 }
 
+function teamTimeline(t: Translate, timeline: Array<{ role: string; label: string; at: number; calls: number; kind: string; activity: string; tool: string; step: string }> | undefined): string {
+  if (timeline === undefined || timeline.length === 0) return `<p class="muted">${escapeHtml(t('还没有活动记录。', 'No activity yet.'))}</p>`
+  return `<div class="list">${timeline.map((entry) => {
+    const what = entry.kind === 'active'
+      ? `${activityLabel(t, entry.activity)}${entry.tool === '' ? '' : ` · ${entry.tool}${entry.step === '' ? '' : ` · ${entry.step}`}`}`
+      : t('刚结束', 'ended')
+    return `<div class="list-row"><div class="list-main"><strong>${escapeHtml(entry.label)}</strong><small>${escapeHtml(what)} · ${entry.calls} ${escapeHtml(t('次调用', 'calls'))} · ${escapeHtml(humanTimeShort(new Date(entry.at).toISOString()))}</small></div></div>`
+  }).join('')}</div>`
+}
+
 export function teamPage(input: {
   config: Config
   locale: Locale
@@ -547,6 +576,9 @@ export function teamPage(input: {
       sessionId: live?.sessionId ?? teamSession(team, role),
       activity: live?.activity ?? 'unknown',
       calls: live?.calls ?? 0,
+      tool: live?.tool ?? '',
+      step: live?.step ?? '',
+      since: live?.since ?? null,
       disabled: live?.disabled ?? (role === 'reviewer' && repo.reviewer_enabled !== 1),
     }
   })
@@ -555,6 +587,8 @@ export function teamPage(input: {
       (role) => `<div class="team-role${role.activity === 'thinking' || role.activity === 'working' ? ' is-thinking' : ''}${role.disabled ? ' is-disabled' : ''}" data-role="${escapeHtml(role.role)}">
         <b>${escapeHtml(role.label)}</b>
         <span class="team-activity">${escapeHtml(role.disabled ? t('未启用', 'Disabled') : activityLabel(t, role.activity))}</span>
+        <small class="team-tool" data-team-tool>${escapeHtml(role.disabled ? '' : `${role.tool}${role.step === '' ? '' : ` · ${role.step}`}`)}</small>
+        <small class="team-elapsed" data-team-since="${role.since === null ? '' : role.since}"></small>
         <small class="team-calls">${!role.disabled && role.calls > 0 ? `${role.calls} ${escapeHtml(t('次调用', 'calls'))}` : ''}</small>
       </div>`,
     )
@@ -602,10 +636,15 @@ export function teamPage(input: {
   </section>
   ${stateErrorHtml}
   <p class="fine" data-team-control></p>
+  <div class="banner bad" data-team-stale hidden></div>
   <section class="card" id="team-live" data-team-api="/api/repos/${escapeHtml(repo.id)}/team" data-team-events="/api/repos/${escapeHtml(repo.id)}/team/events" data-team-answer="/api/repos/${escapeHtml(repo.id)}/team/answer" data-team-stop-url="/api/repos/${escapeHtml(repo.id)}/team/stop" data-team-csrf="${escapeHtml(viewer.csrfToken)}" data-team-locale="${escapeHtml(locale)}">
     <div class="row between"><h2>${escapeHtml(t('团队状态', 'Team status'))}</h2><span class="fine">${escapeHtml(t('实时更新', 'Live'))} · <span data-team-updated>—</span></span></div>
     <div class="team-grid">${roleCards}</div>
     ${sessionDetails}
+  </section>
+  <section class="card">
+    <h2>${escapeHtml(t('最近活动', 'Recent activity'))}</h2>
+    <div data-team-timeline>${teamTimeline(t, state?.timeline)}</div>
   </section>
   <section class="cols">
     <div class="card"><h2>${escapeHtml(t('待回答的问题', 'Open questions'))}</h2><div id="team-questions">${questionHtml}</div></div>
@@ -1078,6 +1117,10 @@ export function jobPage(input: {
   const attribution = jobAttribution(t, job)
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
+  const teamStats = jobTeamStats(job)
+  const teamRows = teamStats === null
+    ? `<p class="muted">${escapeHtml(t('还没有团队调用统计。', 'No team call stats yet.'))}</p>`
+    : `<table><thead><tr><th>${escapeHtml(t('角色', 'Role'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('当前/最后工具', 'Current/last tool'))}</th><th>${escapeHtml(t('最后活动', 'Last activity'))}</th></tr></thead><tbody>${teamStats.map((entry) => `<tr><td>${escapeHtml(entry.label)}</td><td>${entry.calls}</td><td>${escapeHtml([entry.tool, entry.step].filter(Boolean).join(' · ') || '—')}</td><td>${escapeHtml(entry.lastActivityAt === null ? '—' : humanTimeShort(new Date(entry.lastActivityAt).toISOString()))}</td></tr>`).join('')}</tbody></table>`
   const evidenceRows = evidence === null
     ? `<p class="muted">${escapeHtml(t('团队还没有回报结构化证据。', 'The team has not reported structured evidence yet.'))}</p>`
     : `<div class="list">
@@ -1123,6 +1166,10 @@ export function jobPage(input: {
       <h2>${escapeHtml(t('证据', 'Evidence'))}</h2>
       ${evidenceRows}
     </div>
+  </section>
+  <section class="card">
+    <h2>${escapeHtml(t('团队参与', 'Team participation'))}</h2>
+    ${teamRows}
   </section>`
   return layout({ title: `${t('任务', 'Job')} ${job.id}`, viewer, body, config, locale, path: `/repos/${repo.id}/jobs/${job.id}`, active: 'dashboard', notice, error })
 }
@@ -1143,11 +1190,12 @@ export function metricsPage(input: {
     costUsd: number
     events: Array<{ name: string; n: number }>
   }
+  team: { jobs: number; avgRoles: number; leadOnly: number; roles: Array<{ role: string; calls: number; jobs: number }> }
   since: string
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, metrics, since, notice, error } = input
+  const { config, locale, viewer, metrics, team, since, notice, error } = input
   const t = translator(locale)
   const successRate = metrics.jobs === 0 ? 0 : Math.round((metrics.succeeded / metrics.jobs) * 1000) / 10
   const cost = quotaMoney(metrics.costUsd * config.quota.usdCny)
@@ -1184,6 +1232,15 @@ export function metricsPage(input: {
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(cost)}</strong><small>${escapeHtml(t('窗口内任务成本', 'Job cost in window'))}</small></div></div>
       </div>
     </div>
+  </section>
+  <section class="card">
+    <h2>${escapeHtml(t('团队参与', 'Team participation'))}</h2>
+    <div class="list">
+      <div class="list-row"><div class="list-main"><strong>${team.jobs}</strong><small>${escapeHtml(t('有统计的任务', 'Jobs with stats'))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${team.avgRoles}</strong><small>${escapeHtml(t('平均参与角色数', 'Average roles per job'))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${team.leadOnly}</strong><small>${escapeHtml(t('只有 Lead 干活的任务', 'Lead-only jobs'))}</small></div></div>
+    </div>
+    <table><thead><tr><th>${escapeHtml(t('角色', 'Role'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('参与任务', 'Jobs'))}</th></tr></thead><tbody>${team.roles.length === 0 ? `<tr><td colspan="3" class="muted">${escapeHtml(t('还没有团队统计。', 'No team stats yet.'))}</td></tr>` : team.roles.map((entry) => `<tr><td>${escapeHtml(entry.role)}</td><td>${entry.calls}</td><td>${entry.jobs}</td></tr>`).join('')}</tbody></table>
   </section>
   <section class="card">
     <h2>${escapeHtml(t('事件', 'Events'))}</h2>

@@ -1,0 +1,1 @@
+Added live team observation and effectiveness metrics: the team console shows each role's current tool/step, elapsed time, last activity, a stale-job warning and a recent activity timeline; finished jobs store per-role call statistics, shown on the job page and aggregated in the admin metrics page.

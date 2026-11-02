@@ -35,6 +35,9 @@ export interface TeamBotState {
   activity: string
   calls: number
   since: number | null
+  tool: string
+  step: string
+  lastActivityAt: number | null
   disabled: boolean
 }
 
@@ -47,9 +50,21 @@ export interface TeamQuestionState {
   multiSelect: boolean
 }
 
+export interface TeamTimelineEntry {
+  role: string
+  label: string
+  at: number
+  calls: number
+  kind: 'active' | 'ended'
+  activity: string
+  tool: string
+  step: string
+}
+
 export interface TeamLiveState {
   bots: TeamBotState[]
   questions: TeamQuestionState[]
+  timeline: TeamTimelineEntry[]
   instance: { status: string; container: string }
 }
 
@@ -585,7 +600,9 @@ server.listen(3081, '0.0.0.0')
     const value = ((raw as { value?: Record<string, unknown> }).value ?? raw) as Record<string, unknown>
     const bots = Array.isArray(value.bots) ? (value.bots as Array<Record<string, unknown>>) : []
     const activity = (value.activity ?? {}) as Record<string, unknown>
-    const work = ((value.work ?? {}) as Record<string, unknown>).bots as Record<string, { calls?: number; since?: number }> | undefined
+    const workRoot = (value.work ?? {}) as Record<string, unknown>
+    const work = workRoot.bots as Record<string, { calls?: number; since?: number; tool?: string; step?: string }> | undefined
+    const ended = Array.isArray(workRoot.ended) ? workRoot.ended as Array<Record<string, unknown>> : []
     const questions = (value.questions ?? {}) as Record<string, Record<string, unknown>>
     const roleMap: Array<[string, string, string]> = [
       ['chief', 'Chief', bridge.team.chief],
@@ -597,17 +614,57 @@ server.listen(3081, '0.0.0.0')
       ['dev1', 'Dev-1', bridge.team.dev1],
       ['dev2', 'Dev-2', bridge.team.dev2],
     ]
+    const roleBySession = new Map(roleMap.map(([role, label, sessionId]) => [sessionId, { role, label }]))
+    const lastEnded = (sessionId: string): Record<string, unknown> | undefined => ended
+      .filter((entry) => entry.sessionId === sessionId)
+      .sort((a, b) => Number(b.at ?? 0) - Number(a.at ?? 0))[0]
+    const timeline: TeamTimelineEntry[] = []
+    for (const entry of ended) {
+      const sessionId = typeof entry.sessionId === 'string' ? entry.sessionId : ''
+      const role = roleBySession.get(sessionId)
+      if (role === undefined) continue
+      timeline.push({
+        role: role.role,
+        label: role.label,
+        at: Number(entry.at ?? 0),
+        calls: Number(entry.calls ?? 0),
+        kind: 'ended',
+        activity: 'ended',
+        tool: '',
+        step: '',
+      })
+    }
+    for (const [role, label, sessionId] of roleMap) {
+      const current = work?.[sessionId]
+      if (current === undefined || typeof current.since !== 'number') continue
+      timeline.push({
+        role,
+        label,
+        at: current.since,
+        calls: Number(current.calls ?? 0),
+        kind: 'active',
+        activity: typeof activity[sessionId] === 'string' ? String(activity[sessionId]) : 'idle',
+        tool: typeof current.tool === 'string' ? current.tool.slice(0, 160) : '',
+        step: typeof current.step === 'string' ? current.step.slice(0, 300) : '',
+      })
+    }
+    timeline.sort((a, b) => b.at - a.at)
     return {
       bots: roleMap.map(([role, label, sessionId]) => {
         const bot = bots.find((entry) => entry.sessionId === sessionId)
+        const current = work?.[sessionId]
+        const endedEntry = lastEnded(sessionId)
         return {
           role,
           label,
           sessionId,
           name: typeof bot?.name === 'string' ? bot.name : label,
           activity: typeof activity[sessionId] === 'string' ? String(activity[sessionId]) : 'idle',
-          calls: Number(work?.[sessionId]?.calls ?? 0),
-          since: typeof work?.[sessionId]?.since === 'number' ? Number(work[sessionId].since) : null,
+          calls: Number(current?.calls ?? 0),
+          since: typeof current?.since === 'number' ? Number(current.since) : null,
+          tool: typeof current?.tool === 'string' ? current.tool.slice(0, 160) : '',
+          step: typeof current?.step === 'string' ? current.step.slice(0, 300) : '',
+          lastActivityAt: typeof current?.since === 'number' ? Number(current.since) : endedEntry === undefined ? null : Number(endedEntry.at ?? 0),
           disabled: role === 'reviewer' && repo?.reviewer_enabled !== 1,
         }
       }),
@@ -622,6 +679,7 @@ server.listen(3081, '0.0.0.0')
         }).filter((value) => value !== '') : [],
         multiSelect: question.multiSelect === true,
       })),
+      timeline: timeline.slice(0, 12),
       instance: { status: bridge.instance.status, container: bridge.instance.container },
     }
   }

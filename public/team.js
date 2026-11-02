@@ -56,6 +56,10 @@
       row.classList.toggle('is-disabled', bot.disabled === true)
       const activity = row.querySelector('.team-activity')
       if (activity) activity.textContent = bot.disabled ? t('未启用', 'Disabled') : activityLabel(bot.activity)
+      const tool = row.querySelector('[data-team-tool]')
+      if (tool) tool.textContent = bot.disabled ? '' : [bot.tool, bot.step].filter(Boolean).join(' · ')
+      const elapsed = row.querySelector('[data-team-since]')
+      if (elapsed) elapsed.textContent = !bot.disabled && bot.since ? duration(Date.now() - bot.since) : ''
       const calls = row.querySelector('.team-calls')
       if (calls) calls.textContent = !bot.disabled && bot.calls > 0 ? `${bot.calls} ${t('次调用', 'calls')}` : ''
     }
@@ -161,9 +165,63 @@
     }
   }
 
+  const duration = (ms) => {
+    if (!Number.isFinite(ms) || ms <= 0) return ''
+    const minutes = Math.floor(ms / 60_000)
+    if (minutes < 1) return t('不到 1 分钟', '< 1 min')
+    if (minutes < 60) return t(`已运行 ${minutes} 分钟`, `${minutes} min`)
+    return t(`已运行 ${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`, `${Math.floor(minutes / 60)}h ${minutes % 60}m`)
+  }
+
+  const renderTimeline = (timeline) => {
+    const root = document.querySelector('[data-team-timeline]')
+    if (!root) return
+    root.replaceChildren()
+    if (!timeline || timeline.length === 0) {
+      const empty = document.createElement('p')
+      empty.className = 'muted'
+      empty.textContent = t('还没有活动记录。', 'No activity yet.')
+      root.append(empty)
+      return
+    }
+    for (const entry of timeline.slice(0, 12)) {
+      const row = document.createElement('div')
+      row.className = 'list-row'
+      const main = document.createElement('div')
+      main.className = 'list-main'
+      const label = document.createElement('strong')
+      label.textContent = entry.label
+      const detail = document.createElement('small')
+      const what = entry.kind === 'active'
+        ? `${activityLabel(entry.activity)}${entry.tool ? ` · ${entry.tool}` : ''}${entry.step ? ` · ${entry.step}` : ''}`
+        : t('刚结束', 'ended')
+      detail.textContent = `${what} · ${entry.calls} ${t('次调用', 'calls')} · ${new Date(entry.at).toLocaleTimeString(zh ? 'zh-CN' : 'en-GB', { hour: '2-digit', minute: '2-digit' })}`
+      main.append(label, detail)
+      row.append(main)
+      root.append(row)
+    }
+  }
+
+  const updateStale = (data) => {
+    const stale = document.querySelector('[data-team-stale]')
+    if (!stale) return
+    const active = (data.jobs || []).some((job) => job.status === 'running' || job.status === 'queued')
+    const busy = (data.bots || []).some((bot) => bot.activity === 'thinking' || bot.activity === 'working')
+    const last = Math.max(0, ...(data.bots || []).map((bot) => Number(bot.lastActivityAt) || 0))
+    const idleMs = last === 0 ? 0 : Date.now() - last
+    if (active && !busy && idleMs > 5 * 60_000) {
+      stale.hidden = false
+      stale.textContent = t(`任务在运行，但团队已经 ${Math.floor(idleMs / 60_000)} 分钟没有活动，可能卡住。`, `The job is running but the team has been idle for ${Math.floor(idleMs / 60_000)} minutes; it may be stuck.`)
+    } else {
+      stale.hidden = true
+    }
+  }
+
   const applySnapshot = (data) => {
     applyBots(data.bots)
     renderQuestions(data.questions)
+    renderTimeline(data.timeline)
+    updateStale(data)
     applyJobs(data.jobs)
     const updated = root.querySelector('[data-team-updated]')
     if (updated) updated.textContent = new Date().toLocaleTimeString(zh ? 'zh-CN' : 'en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })

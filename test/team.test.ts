@@ -18,7 +18,10 @@ test('team console reads live state and sends guidance', async () => {
         json(response, 200, { value: {
           bots: [{ name: 'DigitalMate Lead', sessionId: 'lead-1', role: 'Lead' }],
           activity: { 'lead-1': 'thinking' },
-          work: { bots: { 'lead-1': { calls: 3, since: Date.now() } } },
+          work: {
+            bots: { 'lead-1': { calls: 3, since: Date.now(), tool: 'bash', step: 'npm test' } },
+            ended: [{ sessionId: 'lead-1', at: Date.now() - 1_000, calls: 2 }],
+          },
           rooms: {},
           questions: {
             'lead-1': {
@@ -78,9 +81,12 @@ test('team console reads live state and sends guidance', async () => {
 
     const api = await built.app.inject({ method: 'GET', url: `/api/repos/${repo.id}/team`, headers: { cookie } })
     assert.equal(api.statusCode, 200)
-    const data = api.json() as { bots: Array<{ role: string; activity: string; calls: number; disabled: boolean }>; questions: Array<{ id: string; sessionId: string; detail: string; multiSelect: boolean }> }
+    const data = api.json() as { bots: Array<{ role: string; activity: string; calls: number; tool: string; step: string; disabled: boolean }>; questions: Array<{ id: string; sessionId: string; detail: string; multiSelect: boolean }>; timeline: Array<{ role: string; kind: string; tool: string }> }
     assert.equal(data.bots.find((bot) => bot.role === 'lead')?.activity, 'thinking')
     assert.equal(data.bots.find((bot) => bot.role === 'lead')?.calls, 3)
+    assert.equal(data.bots.find((bot) => bot.role === 'lead')?.tool, 'bash')
+    assert.equal(data.bots.find((bot) => bot.role === 'lead')?.step, 'npm test')
+    assert.equal(data.timeline.some((entry) => entry.role === 'lead' && entry.kind === 'active'), true)
     assert.equal(data.bots.find((bot) => bot.role === 'reviewer')?.disabled, true)
     assert.deepEqual(data.questions[0], { id: 'q1', sessionId: 'lead-1', question: 'Which path should the next job take?', detail: 'Pick one.', options: ['Fix the bug', 'Write docs'], multiSelect: false })
 

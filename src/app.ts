@@ -1207,6 +1207,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       locale: request.locale ?? 'zh',
       viewer: viewOf(viewer),
       metrics: store.productMetrics(since),
+      team: store.teamMetrics(since),
       since,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),

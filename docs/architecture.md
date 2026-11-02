@@ -151,6 +151,17 @@ sends the remaining text to the Lead as guidance. Tokens live in `settings` with
 a 7-day expiry. Cloudflare Email Routing + an Email Worker can post to the
 endpoint; IMAP polling is not required.
 
+### Team observation and effectiveness
+
+`teamState` now exposes each role's current tool/step, start time and last
+activity, plus a recent active/ended timeline. The team console renders the
+tool, elapsed time, a stale warning when an active job has no role activity for
+five minutes, and a recent-activity list; SSE updates it every second. When a
+job finishes, Fledge captures a per-role call snapshot into
+`jobs.team_stats_json`. The admin metrics page aggregates those snapshots into
+jobs with stats, average participating roles, Lead-only jobs and calls per role,
+and the job page shows the same per-role table.
+
 ### Agent workspace
 
 The workspace is path-based to avoid a wildcard certificate:

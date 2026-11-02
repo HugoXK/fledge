@@ -104,6 +104,12 @@ test('events and product metrics are recorded', () => {
     assert.equal(metrics.succeeded, 1)
     assert.equal(metrics.usersWithPr, 1)
     assert.equal(metrics.events.find((event) => event.name === 'pr_open')?.n, 1)
+    store.updateJob(job.id, { team_stats_json: JSON.stringify([{ role: 'lead', calls: 12 }, { role: 'test', calls: 3 }]) })
+    const team = store.teamMetrics(new Date(0).toISOString())
+    assert.equal(team.jobs, 1)
+    assert.equal(team.avgRoles, 2)
+    assert.equal(team.leadOnly, 0)
+    assert.equal(team.roles.find((entry) => entry.role === 'lead')?.calls, 12)
   } finally {
     store.close()
   }

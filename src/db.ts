@@ -138,6 +138,7 @@ export interface JobRow {
   attribution_json: string | null
   evidence_json: string | null
   checkpoint: string | null
+  team_stats_json: string | null
   created_at: string
   started_at: string | null
   finished_at: string | null
@@ -345,6 +346,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   attribution_json TEXT,
   evidence_json TEXT,
   checkpoint TEXT,
+  team_stats_json TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   finished_at TEXT
@@ -438,7 +440,7 @@ export class Store {
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
-    this.db.exec('PRAGMA user_version = 10;')
+    this.db.exec('PRAGMA user_version = 11;')
   }
 
   private migrateColumns(): void {
@@ -502,6 +504,7 @@ export class Store {
     if (!jobColumns.has('attribution_json')) this.run('ALTER TABLE jobs ADD COLUMN attribution_json TEXT')
     if (!jobColumns.has('evidence_json')) this.run('ALTER TABLE jobs ADD COLUMN evidence_json TEXT')
     if (!jobColumns.has('checkpoint')) this.run('ALTER TABLE jobs ADD COLUMN checkpoint TEXT')
+    if (!jobColumns.has('team_stats_json')) this.run('ALTER TABLE jobs ADD COLUMN team_stats_json TEXT')
   }
 
   close(): void {
@@ -740,6 +743,42 @@ export class Store {
       ? this.get<{ n: number }>('SELECT COUNT(*) AS n FROM events WHERE name = ?', name)
       : this.get<{ n: number }>('SELECT COUNT(*) AS n FROM events WHERE name = ? AND at >= ?', name, sinceIso)
     return Number(row?.n ?? 0)
+  }
+
+  teamMetrics(sinceIso: string): {
+    jobs: number
+    avgRoles: number
+    leadOnly: number
+    roles: Array<{ role: string; calls: number; jobs: number }>
+  } {
+    const rows = this.all<{ team_stats_json: string }>('SELECT team_stats_json FROM jobs WHERE created_at >= ? AND team_stats_json IS NOT NULL', sinceIso)
+    const perRole = new Map<string, { calls: number; jobs: number }>()
+    let jobs = 0
+    let rolesTotal = 0
+    let leadOnly = 0
+    for (const row of rows) {
+      let stats: Array<{ role?: unknown; calls?: unknown }>
+      try { stats = JSON.parse(row.team_stats_json) as Array<{ role?: unknown; calls?: unknown }> } catch { continue }
+      if (!Array.isArray(stats)) continue
+      const active = stats.filter((entry) => typeof entry.calls === 'number' && entry.calls > 0 && typeof entry.role === 'string')
+      if (active.length === 0) continue
+      jobs += 1
+      rolesTotal += active.length
+      if (active.length === 1 && active[0]?.role === 'lead') leadOnly += 1
+      for (const entry of active) {
+        const role = String(entry.role)
+        const current = perRole.get(role) ?? { calls: 0, jobs: 0 }
+        current.calls += Number(entry.calls ?? 0)
+        current.jobs += 1
+        perRole.set(role, current)
+      }
+    }
+    return {
+      jobs,
+      avgRoles: jobs === 0 ? 0 : Math.round((rolesTotal / jobs) * 10) / 10,
+      leadOnly,
+      roles: [...perRole.entries()].map(([role, value]) => ({ role, ...value })).sort((a, b) => b.calls - a.calls),
+    }
   }
 
   productMetrics(sinceIso: string): {
@@ -1021,7 +1060,7 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE status IN ('queued','running') ORDER BY created_at ASC")
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')

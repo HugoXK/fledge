@@ -233,6 +233,29 @@ export class Jobs {
     if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? '未知原因'}`)
     if (result.status === 'succeeded') void this.postAutomationComment(job, result, attribution)
     if (result.status === 'succeeded' || result.status === 'failed') void this.sendJobEmail(job, result)
+    void this.captureTeamStats(jobId)
+  }
+
+  private async captureTeamStats(jobId: string): Promise<void> {
+    if (this.instances === undefined || this.config.flybot.instanceImage === '') return
+    const job = this.store.getJob(jobId)
+    if (job === undefined) return
+    try {
+      const state = await this.instances.teamState(job.repo_id)
+      const stats = state.bots.map((bot) => ({
+        role: bot.role,
+        label: bot.label,
+        calls: bot.calls,
+        activity: bot.activity,
+        tool: bot.tool,
+        step: bot.step,
+        lastActivityAt: bot.lastActivityAt,
+      }))
+      this.store.updateJob(jobId, { team_stats_json: JSON.stringify(stats) })
+      this.store.event('team_stats', { userId: job.user_id, repoId: job.repo_id, jobId })
+    } catch (error) {
+      log.warn('team stats capture failed', { job: jobId, error: String(error) })
+    }
   }
 
   private async sendJobEmail(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }): Promise<void> {

@@ -96,6 +96,13 @@ token are never sent to the browser. Upstream `Set-Cookie`, CSP and
 workspace path and carries the Fledge brand assets. The DSH loopback port is
 never exposed.
 
+### Team observation
+
+Tool/step strings and per-role call counts are operational metadata; they are
+shown only to the repository owner and admins. They never include prompts,
+tokens or full command output (the step is capped and the DSH UI remains the
+place for details). No new public surface is added.
+
 ### Webhook follow-up
 
 Webhook deliveries are deduped by `X-GitHub-Delivery` in `settings`; the same

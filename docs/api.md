@@ -54,7 +54,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/settings/tokens/:id/revoke` | owner + CSRF | Revoke a token |
 | POST | `/notifications/read` | approved + CSRF | Mark notifications read |
 | GET | `/admin` | admin | Pending users, quotas, audit |
-| GET | `/admin/metrics` | admin | Product funnel, success rate, job cost, events |
+| GET | `/admin/metrics` | admin | Product funnel, success rate, job cost, team participation, events |
 | POST | `/admin/users/:id/approve` | admin + CSRF | Approve |
 | POST | `/admin/users/:id/reject` | admin + CSRF | Reject |
 | POST | `/admin/users/:id/quota` | admin + CSRF | Set quota in CNY |
@@ -93,9 +93,10 @@ the browser.
 
 `GET /api/repos/:id/team/events` is an owner-only SSE stream. It emits a
 `snapshot` event when roles, questions, jobs or quota change, and a heartbeat
-comment otherwise. The snapshot includes `bots`, `questions` (with `id`,
-`sessionId`, `question`, `detail`, `options`, `multiSelect`), `jobs` (summary,
-status, issue/PR and attribution) and quota. Clients should fall back to the
+comment otherwise. The snapshot includes `bots` (with `tool`, `step`, `since`,
+`lastActivityAt`), `questions` (with `id`, `sessionId`, `question`, `detail`,
+`options`, `multiSelect`), `timeline` (active/ended role activity), `jobs`
+(summary, status, issue/PR and attribution) and quota. Clients should fall back to the
 5-second JSON poll if the stream drops.
 
 `POST /api/repos/:id/team/answer` takes JSON:
