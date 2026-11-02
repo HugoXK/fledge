@@ -129,6 +129,18 @@ a per-repository authenticated subdomain and a Fledge shell around the native UI
 (branded "Powered by FlyBot"), with a short-lived ticket and server-side cookie
 injection so the raw DSH token never reaches the browser.
 
+### Per-job cost, evidence and metrics
+
+The bridge's model proxy normally uses the per-repository instance token. While
+a job is running it uses that job's short-lived `flg_` token instead (the
+`/run` payload carries it), so the gateway can write `job_id` into
+`quota_ledger` and add `jobs.cost_usd`. The job page shows cost, attribution and
+structured evidence (`tests`, `checks`, `files`, `risk`, `rollback`); failed
+jobs have a one-click retry. Admins get a read-only `/admin/metrics` funnel:
+users, approved, repos, users with jobs/PRs, success rate, job cost and recent
+events. The `events` table records activation and intervention events only; no
+prompt or token data.
+
 ### Email notifications
 
 Fledge sends mail from the configured `MAIL_FROM` (production:

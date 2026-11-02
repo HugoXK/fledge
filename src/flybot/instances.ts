@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { mkdirSync, openSync, writeFileSync, chmodSync, rmSync, existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createServer } from 'node:net'
 import { promisify } from 'node:util'
 import type { Config } from '../config.js'
@@ -336,13 +336,38 @@ server.listen(3081, '0.0.0.0')
 
   private startBridge(row: RepoInstanceRow, env: Record<string, string>, logPath: string): ChildProcess {
     const fd = openSync(logPath, 'a', 0o600)
-    const child = spawn(process.execPath, [this.config.flybot.bridgeScript], {
+    const script = row.bridge_script !== '' ? row.bridge_script : this.config.flybot.bridgeScript
+    const child = spawn(process.execPath, [script], {
       env: { ...process.env, ...env },
       detached: true,
       stdio: ['ignore', fd, fd],
     })
     child.unref()
     return child
+  }
+
+
+  async restartBridge(repoId: string): Promise<void> {
+    const instance = this.store.getRepoInstance(repoId)
+    if (instance === undefined) return
+    if (instance.bridge_pid !== null) {
+      try { process.kill(instance.bridge_pid, 'SIGTERM') } catch {}
+      await sleep(300)
+    }
+    const env: Record<string, string> = {}
+    const envPath = join(dirname(instance.data_dir), 'bridge.env')
+    for (const line of readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (trimmed === '' || trimmed.startsWith('#')) continue
+      const index = trimmed.indexOf('=')
+      if (index <= 0) continue
+      env[trimmed.slice(0, index)] = trimmed.slice(index + 1)
+    }
+    const child = this.startBridge(instance, env, join(instance.data_dir, 'bridge.log'))
+    this.store.updateRepoInstance(repoId, { bridge_pid: child.pid ?? null, updated_at: nowIso() })
+    await this.waitForBridge(instance.bridge_port)
+    this.store.audit(instance.user_id, 'flybot.bridge.restarted', `${repoId} pid=${child.pid ?? '?'}`)
+    log.info('bridge restarted', { repo: repoId, pid: child.pid ?? null })
   }
 
   private async waitForDsh(_port: number, row: RepoInstanceRow): Promise<void> {

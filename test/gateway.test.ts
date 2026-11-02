@@ -128,3 +128,27 @@ test('unlimited quota is never exhausted but still records usage', async () => {
     await platform.close()
   }
 })
+
+test('a job-scoped token records usage and cost on the job', async () => {
+  const platform = await startFakeServer(async (request, response) => {
+    await readBody(request)
+    json(response, 200, { id: 'x', choices: [{ message: { role: 'assistant', content: 'ok' } }], usage: { total_tokens: 1000 } }, { 'x-litellm-response-cost': '0.0002' })
+  })
+  const config = testConfig({ llm: { baseUrl: `${platform.url}/v1`, key: 'platform-key', model: 'platform-model', pricePerTokenUsd: 0.0000002 }, quota: { initialCny: 10, usdCny: 7.2 } })
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'job-cost-user', status: 'approved', quota: 10 })
+    const repo = store.createRepo({ id: 'repo_cost', userId: user.id, owner: 'o', name: 'c', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_cost', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    const raw = `flg_${randomToken(32)}`
+    store.createApiToken({ id: 'tok_job_cost', userId: user.id, kind: 'job', name: 'job:job_cost', tokenHash: sha256Hex(raw), prefix: raw.slice(0, 8), expiresAt: null })
+    const response = await built.app.inject({ method: 'POST', url: '/v1/chat/completions', headers: { authorization: `Bearer ${raw}`, 'content-type': 'application/json' }, payload: { model: 'ignored', messages: [{ role: 'user', content: 'hi' }] } })
+    assert.equal(response.statusCode, 200)
+    assert.equal((store.getJob('job_cost')?.cost_usd ?? 0) > 0, true)
+    assert.equal(store.usageForJob('job_cost') > 0, true)
+  } finally {
+    await built.close()
+    await platform.close()
+  }
+})

@@ -54,6 +54,14 @@ Every state-changing browser form includes a hidden `csrf` field derived from
 JSON endpoints. Approval links and job endpoints use their own bearer secrets
 and do not use CSRF.
 
+### Job cost, evidence and metrics
+
+`events` stores activation/intervention names, user/repo/job ids and a short
+meta string (for example `guidance:lead`); it never stores prompts, tokens or
+full answers. Evidence strings (`tests`, `checks`, `rollback`) are written by
+the agent and rendered on an owner-only job page; they must not contain
+secrets. `/admin/metrics` is admin-only and read-only.
+
 ### Job email notifications
 
 Job and digest mail is sent from `MAIL_FROM` only to the owner's configured

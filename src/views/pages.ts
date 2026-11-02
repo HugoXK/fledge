@@ -6,6 +6,7 @@ import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
+import { parseEvidenceJson } from '../lib/evidence.js'
 import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
 import { parseTeam, type TeamLiveState } from '../flybot/instances.js'
 
@@ -97,17 +98,18 @@ function jobLinks(job: JobRow): string {
 
 function jobSummary(t: Translate, job: JobRow): string {
   const raw = (job.summary ?? job.error ?? '').trim()
+  const cost = job.cost_usd > 0 ? ` · $${job.cost_usd.toFixed(4)}` : ''
   if (job.kind === 'review') {
     const score = job.review_score === null ? '' : ` · ${job.review_score}/100`
     const meaningful = raw !== '' && raw !== 'probe' && raw.length >= 12
-    return meaningful ? `${raw}${score}` : `${t('审核完成', 'Review completed')}${score}`
+    return meaningful ? `${raw}${score}${cost}` : `${t('审核完成', 'Review completed')}${score}${cost}`
   }
   if (raw === '' || raw === 'probe' || raw.length < 8) {
-    if (job.status === 'succeeded') return t('任务完成', 'Job completed')
-    if (job.status === 'failed') return t('任务失败', 'Job failed')
+    if (job.status === 'succeeded') return `${t('任务完成', 'Job completed')}${cost}`
+    if (job.status === 'failed') return `${t('任务失败', 'Job failed')}${cost}`
     return '—'
   }
-  return raw
+  return `${raw}${cost}`
 }
 
 function jobAttribution(t: Translate, job: JobRow): string {
@@ -128,7 +130,7 @@ function jobRows(locale: Locale, jobs: JobRow[]): string {
   return jobs
     .map(
       (job) => `<tr data-job-id="${escapeHtml(job.id)}">
-        <td><code>${escapeHtml(job.id)}</code> <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span></td>
+        <td><a href="/repos/${escapeHtml(job.repo_id)}/jobs/${escapeHtml(job.id)}"><code>${escapeHtml(job.id)}</code></a> <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span></td>
         <td data-job-status>${badge(t, job.status)}</td>
         <td>${escapeHtml(triggerLabel(t, job.trigger))}</td>
         <td>${jobLinks(job)}</td>
@@ -679,6 +681,7 @@ const AUDIT_ACTIONS: Record<string, [string, string]> = {
   'job.enqueued': ['任务入队', 'Job queued'],
   'job.succeeded': ['任务成功', 'Job succeeded'],
   'job.failed': ['任务失败', 'Job failed'],
+  'job.retried': ['重试任务', 'Job retried'],
   'review.enqueued': ['审核入队', 'Review queued'],
   'team.guidance': ['发送团队指导', 'Team guidance'],
   'team.answer': ['回答团队问题', 'Team question answered'],
@@ -806,7 +809,7 @@ export function adminPage(input: {
   const body = `<section class="card">
     <div class="eyebrow">${escapeHtml(t('管理', 'ADMIN'))}</div>
     <h1>${escapeHtml(t('审批与额度', 'Approvals & quota'))}</h1>
-    <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))}</p>
+    <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · <a class="link" href="/admin/metrics">${escapeHtml(t('产品指标', 'Product metrics'))}</a></p>
   </section>
   <section class="card">
     <h2>${escapeHtml(t('待审批', 'Pending'))} <small class="count">${pending.length}</small></h2>
@@ -1025,4 +1028,127 @@ export function messagePage(config: Config, title: string, message: string, view
     path: '/',
     body: `<section class="card narrow"><h1>${escapeHtml(localizedTitle)}</h1><p>${escapeHtml(localizedMessage)}</p><a class="btn btn-ghost" href="/">${escapeHtml(t('回首页', 'Back home'))}</a></section>`,
   })
+}
+
+export function jobPage(input: {
+  config: Config
+  locale: Locale
+  viewer: Viewer
+  repo: RepoRow
+  job: JobRow
+  notice?: string
+  error?: string
+}): string {
+  const { config, locale, viewer, repo, job, notice, error } = input
+  const t = translator(locale)
+  const evidence = parseEvidenceJson(job.evidence_json)
+  const attribution = jobAttribution(t, job)
+  const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
+  const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
+  const evidenceRows = evidence === null
+    ? `<p class="muted">${escapeHtml(t('团队还没有回报结构化证据。', 'The team has not reported structured evidence yet.'))}</p>`
+    : `<div class="list">
+        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试', 'Tests'))}</strong><small>${escapeHtml(evidence.tests ?? '—')}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('CI / checks', 'CI / checks'))}</strong><small>${escapeHtml(evidence.checks ?? '—')}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('改动文件', 'Files changed'))}</strong><small>${evidence.files ?? '—'}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('风险', 'Risk'))}</strong><small>${escapeHtml(riskLabel)}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('回滚', 'Rollback'))}</strong><small>${escapeHtml(evidence.rollback ?? '—')}</small></div></div>
+      </div>`
+  const retry = job.status === 'failed'
+    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/retry">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('重试这个任务', 'Retry this job'))}</button></form>`
+    : ''
+  const body = `<section class="card">
+    <div class="row between">
+      <div>
+        <div class="eyebrow">${escapeHtml(t('任务', 'JOB'))}</div>
+        <h1><code>${escapeHtml(job.id)}</code></h1>
+        <p class="muted">${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)} · ${badge(t, job.status)} · ${escapeHtml(jobKindLabel(t, job))} · ${escapeHtml(triggerLabel(t, job.trigger))}</p>
+      </div>
+      <div class="row">
+        <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a>
+        <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>
+        ${retry}
+      </div>
+    </div>
+  </section>
+  <section class="cols">
+    <div class="card">
+      <h2>${escapeHtml(t('结果', 'Result'))}</h2>
+      <p>${escapeHtml(jobSummary(t, job))}</p>
+      ${job.error === null || job.error === '' ? '' : `<div class="banner bad">${escapeHtml(job.error)}</div>`}
+      <p class="fine">${escapeHtml(t('成本', 'Cost'))} ${escapeHtml(cost)} · ${escapeHtml(t('创建', 'Created'))} ${escapeHtml(humanTimeShort(job.created_at))} · ${escapeHtml(t('结束', 'Finished'))} ${escapeHtml(humanTimeShort(job.finished_at))}</p>
+      ${attribution === '' ? '' : `<p class="fine">${escapeHtml(attribution)}</p>`}
+      <p class="fine">${jobLinks(job)}</p>
+    </div>
+    <div class="card">
+      <h2>${escapeHtml(t('证据', 'Evidence'))}</h2>
+      ${evidenceRows}
+    </div>
+  </section>`
+  return layout({ title: `${t('任务', 'Job')} ${job.id}`, viewer, body, config, locale, path: `/repos/${repo.id}/jobs/${job.id}`, active: 'dashboard', notice, error })
+}
+
+export function metricsPage(input: {
+  config: Config
+  locale: Locale
+  viewer: Viewer
+  metrics: {
+    users: number
+    approved: number
+    repos: number
+    jobs: number
+    succeeded: number
+    failed: number
+    usersWithJobs: number
+    usersWithPr: number
+    costUsd: number
+    events: Array<{ name: string; n: number }>
+  }
+  since: string
+  notice?: string
+  error?: string
+}): string {
+  const { config, locale, viewer, metrics, since, notice, error } = input
+  const t = translator(locale)
+  const successRate = metrics.jobs === 0 ? 0 : Math.round((metrics.succeeded / metrics.jobs) * 1000) / 10
+  const cost = quotaMoney(metrics.costUsd * config.quota.usdCny)
+  const eventRows = metrics.events.length === 0
+    ? `<tr><td colspan="2" class="muted">${escapeHtml(t('还没有事件。', 'No events yet.'))}</td></tr>`
+    : metrics.events.map((event) => `<tr><td><code>${escapeHtml(event.name)}</code></td><td>${event.n}</td></tr>`).join('')
+  const body = `<section class="card">
+    <div class="row between">
+      <div>
+        <div class="eyebrow">${escapeHtml(t('产品指标', 'PRODUCT METRICS'))}</div>
+        <h1>${escapeHtml(t('漏斗与留存', 'Funnel & retention'))}</h1>
+        <p class="muted">${escapeHtml(t(`统计窗口从 ${since} 开始；只读，不会修改数据。`, `Window starts at ${since}; read-only.`))}</p>
+      </div>
+      <a class="btn btn-ghost" href="/admin">${escapeHtml(t('返回管理', 'Back to admin'))}</a>
+    </div>
+  </section>
+  <section class="cols">
+    <div class="card">
+      <h2>${escapeHtml(t('漏斗', 'Funnel'))}</h2>
+      <div class="list">
+        <div class="list-row"><div class="list-main"><strong>${metrics.users}</strong><small>${escapeHtml(t('注册用户', 'Users'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${metrics.approved}</strong><small>${escapeHtml(t('已批准', 'Approved'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${metrics.repos}</strong><small>${escapeHtml(t('已接入仓库', 'Repositories'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${metrics.usersWithJobs}</strong><small>${escapeHtml(t('跑过任务的用户', 'Users with jobs'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${metrics.usersWithPr}</strong><small>${escapeHtml(t('产出过 PR 的用户', 'Users with a PR'))}</small></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>${escapeHtml(t('质量与成本', 'Quality & cost'))}</h2>
+      <div class="list">
+        <div class="list-row"><div class="list-main"><strong>${metrics.jobs}</strong><small>${escapeHtml(t('任务总数', 'Jobs'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${successRate}%</strong><small>${escapeHtml(t('成功率', 'Success rate'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${metrics.failed}</strong><small>${escapeHtml(t('失败任务', 'Failed jobs'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${escapeHtml(cost)}</strong><small>${escapeHtml(t('窗口内任务成本', 'Job cost in window'))}</small></div></div>
+      </div>
+    </div>
+  </section>
+  <section class="card">
+    <h2>${escapeHtml(t('事件', 'Events'))}</h2>
+    <table><thead><tr><th>${escapeHtml(t('事件', 'Event'))}</th><th>${escapeHtml(t('次数', 'Count'))}</th></tr></thead><tbody>${eventRows}</tbody></table>
+  </section>`
+  return layout({ title: t('产品指标', 'Product metrics'), viewer, body, config, locale, path: '/admin/metrics', active: 'admin', notice, error })
 }

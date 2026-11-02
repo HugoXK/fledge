@@ -222,6 +222,7 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
     function finishCost(costUsd: number, usageValue: unknown): void {
       if (!funded || costUsd <= 0) return
       store.recordUsage(auth!.user.id, jobId, costUsd, JSON.stringify({ model: targetModel, usage: usageValue, ms: Date.now() - started }))
+      if (jobId !== null) store.addJobCost(jobId, costUsd)
       log.info('gateway usage', { user: auth!.user.login, costUsd, jobId, model: targetModel })
       const updated = store.userById(auth!.user.id)
       if (updated !== undefined && quotaView(updated, config).exhausted) {

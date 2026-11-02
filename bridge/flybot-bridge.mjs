@@ -42,6 +42,15 @@ const MAX_PROMPT = Number(process.env.MAX_PROMPT_BYTES ?? 32768)
 const MAX_PROXY_BODY = Number(process.env.MAX_PROXY_BODY ?? 64 * 1024 * 1024)
 const GATEWAY_ORIGIN = (process.env.FLEDGE_GATEWAY_ORIGIN ?? '').replace(/\/$/, '')
 const GATEWAY_TOKEN = process.env.FLEDGE_GATEWAY_TOKEN ?? ''
+
+// The model proxy uses the current job token while a job is running, so the
+// gateway can attribute usage to that job. The instance token remains the fallback.
+let activeJobToken = ''
+let activeJobUntil = 0
+
+function currentGatewayToken() {
+  return activeJobToken !== '' && Date.now() < activeJobUntil ? activeJobToken : GATEWAY_TOKEN
+}
 const MODEL_PROXY_BIND = process.env.MODEL_PROXY_BIND ?? '127.0.0.1'
 const MODEL_PROXY_PORT = Number(process.env.MODEL_PROXY_PORT ?? 0)
 const MODEL_PROXY_KEY = process.env.MODEL_PROXY_KEY ?? ''
@@ -158,6 +167,7 @@ function buildText(job) {
     '- Do not print the GitHub token or the job token.',
     '- End every GitHub issue, PR and comment with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',
     '- The final callback must include "attribution": {"writtenBy":"...","claimedBy":"...","implementedBy":"...","testedBy":"...","reviewedBy":"..."} with role names only (Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2). Omit a key for a step that did not happen; never write "not run", "pending" or "(Team)".',
+    '- Also include "evidence": {"tests":"<command and pass/fail>","checks":"<CI/check status>","files":<changed files>,"risk":"low|medium|high","rollback":"<one line>"}; use only what you actually ran.',
     `- After each major step and at least every 10 minutes, POST ${job.callbackUrl} with JSON {"status":"running","summary":"<one line progress>"}`,
     `  and "Authorization: Bearer ${job.callbackSecret}". This is a heartbeat, not a finish.`,
     `- Finish by POSTing ${job.callbackUrl} with JSON {status, branch, prUrl, issueUrl, reviewScore, summary, error}`,
@@ -243,6 +253,11 @@ const server = http.createServer(async (request, response) => {
     return json(response, 400, { error: 'jobId, credentialUrl and callbackUrl are required' })
   }
   try {
+    if (typeof job.platform?.token === 'string' && job.platform.token !== '') {
+      activeJobToken = job.platform.token
+      activeJobUntil = Date.now() + ((Number(job.timeoutMinutes) || 90) + 60) * 60_000
+      logEvent('model-token-bound', { jobId: job.jobId })
+    }
     const sessionId = typeof job.sessionId === 'string' && job.sessionId !== ''
       ? job.sessionId
       : job.kind === 'review' ? REVIEW_SESSION_ID : SESSION_ID
@@ -275,7 +290,7 @@ function createModelProxy() {
     const headers = {
       'content-type': request.headers['content-type'] ?? 'application/json',
       accept: request.headers.accept ?? '*/*',
-      authorization: `Bearer ${GATEWAY_TOKEN}`,
+      authorization: `Bearer ${currentGatewayToken()}`,
       'content-length': String(body.length),
       'user-agent': 'fledge-instance-proxy/0.1',
     }

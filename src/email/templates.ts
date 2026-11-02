@@ -216,6 +216,7 @@ export interface DigestJob {
   prUrl: string | null
   issueUrl: string | null
   reviewScore: number | null
+  costUsd: number
 }
 
 export interface DigestInput {
@@ -241,7 +242,7 @@ export function dailyDigestEmail(user: UserRow, input: DigestInput): { subject: 
     : input.jobs.slice(0, 12).flatMap((job) => {
       const links = [job.issueUrl === null ? '' : `Issue: ${job.issueUrl}`, job.prUrl === null ? '' : `PR: ${job.prUrl}`].filter((line) => line !== '')
       return [
-        `· ${job.repo} · ${job.kind} · ${job.status}${job.reviewScore === null ? '' : ` · ${job.reviewScore}/100`}`,
+        `· ${job.repo} · ${job.kind} · ${job.status}${job.reviewScore === null ? '' : ` · ${job.reviewScore}/100`}${job.costUsd > 0 ? ` · $${job.costUsd.toFixed(4)}` : ''}`,
         job.summary === '' ? '' : `  ${job.summary.slice(0, 240)}`,
         ...links.map((line) => `  ${line}`),
       ].filter((line) => line !== '')
@@ -268,7 +269,7 @@ export function dailyDigestEmail(user: UserRow, input: DigestInput): { subject: 
   const html = `<p>@${escapeHtml(user.login)}，这是 Fledge 今天为你托管仓库做的工作。</p>
 <p>${input.jobs.length} 个任务（成功 ${succeeded} / 失败 ${failed} / 进行中 ${running}），打开 ${pullRequests} 个 PR；${escapeHtml(usage)}。</p>
 <h3>今天</h3>
-${input.jobs.length === 0 ? '<p>今天没有新任务。</p>' : `<ul>${input.jobs.slice(0, 12).map((job) => `<li><strong>${escapeHtml(job.repo)}</strong> · ${escapeHtml(job.kind)} · ${escapeHtml(job.status)}${job.reviewScore === null ? '' : ` · ${job.reviewScore}/100`}${job.summary === '' ? '' : `<br />${escapeHtml(job.summary.slice(0, 240))}`}${job.issueUrl === null ? '' : `<br />Issue: <a href="${escapeHtml(job.issueUrl)}">${escapeHtml(job.issueUrl)}</a>`}${job.prUrl === null ? '' : `<br />PR: <a href="${escapeHtml(job.prUrl)}">${escapeHtml(job.prUrl)}</a>`}</li>`).join('')}</ul>`}
+${input.jobs.length === 0 ? '<p>今天没有新任务。</p>' : `<ul>${input.jobs.slice(0, 12).map((job) => `<li><strong>${escapeHtml(job.repo)}</strong> · ${escapeHtml(job.kind)} · ${escapeHtml(job.status)}${job.reviewScore === null ? '' : ` · ${job.reviewScore}/100`}${job.costUsd > 0 ? ` · $${job.costUsd.toFixed(4)}` : ''}${job.summary === '' ? '' : `<br />${escapeHtml(job.summary.slice(0, 240))}`}${job.issueUrl === null ? '' : `<br />Issue: <a href="${escapeHtml(job.issueUrl)}">${escapeHtml(job.issueUrl)}</a>`}${job.prUrl === null ? '' : `<br />PR: <a href="${escapeHtml(job.prUrl)}">${escapeHtml(job.prUrl)}</a>`}</li>`).join('')}</ul>`}
 <h3>明天</h3>
 <ul>
 ${input.nextRuns.length === 0 ? '<li>暂无自动迭代计划。</li>' : input.nextRuns.map((run) => `<li>下次自动迭代：${escapeHtml(run.repo)} · ${escapeHtml(run.when)}</li>`).join('')}

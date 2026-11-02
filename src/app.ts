@@ -35,6 +35,8 @@ import {
   applicationStatusPage,
   repoPage,
   teamPage,
+  jobPage,
+  metricsPage,
   workspacePage,
   settingsPage,
   errorPage,
@@ -212,6 +214,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (user.status !== 'approved') store.setUserStatus(user.id, 'approved', 'dev-login')
     startSession(store.userById(user.id)!, request, reply)
     store.audit(user.id, 'login.dev', 'DEV_LOGIN_LOGIN')
+    store.event('login', { userId: user.id, meta: 'dev' })
     return reply.redirect('/dashboard')
   })
 
@@ -242,6 +245,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       initialQuotaCny: config.quota.initialCny,
     })
     store.audit(user.id, 'login.github-token', `@${profile.login}`)
+    store.event('login', { userId: user.id, meta: 'github-token' })
     startSession(user, request, reply)
     if (user.status === 'approved') return reply.redirect('/dashboard')
     if (user.status === 'onboarding') return reply.redirect('/apply')
@@ -296,6 +300,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     })
     store.setUserGithubToken(user.id, encryptSecret(token, config.tokenEncryptionKey))
     store.audit(user.id, 'login.github', `@${profile.login}`)
+    store.event('login', { userId: user.id, meta: 'github' })
     startSession(user, request, reply)
     if (user.status === 'approved') return reply.redirect('/dashboard')
     if (user.status === 'onboarding') return reply.redirect('/apply')
@@ -348,6 +353,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!submitted) return reply.redirect('/apply/status')
     const updated = store.userById(viewer.user.id)!
     store.audit(viewer.user.id, 'application.submitted', `queue #${store.queuePosition(viewer.user.id) ?? '?'}`)
+    store.event('application_submitted', { userId: viewer.user.id })
     const position = store.queuePosition(updated.id)
     try {
       await approvals.request(updated)
@@ -437,6 +443,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (existing !== undefined) {
         return reply.redirect(`/repos/${existing.id}?notice=${encodeURIComponent('这个仓库已经添加过了。')}`)
       }
+      store.event('repo_connect_start', { userId: viewer.user.id, meta: `${owner}/${name}` })
       const token = (body.token ?? '').trim()
       if (token === '') throw new Error('请填写 GitHub token')
       const prepared = await prepareRepo(token, owner, name, viewer.user.login, config.github.apiBase)
@@ -470,6 +477,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         forkHtmlUrl: prepared.fork.htmlUrl,
       })
       store.audit(viewer.user.id, 'repo.added', `${repo.owner}/${repo.name} fork=${repo.fork_owner}/${repo.fork_name} permission=${repo.permission} reviewer=${reviewerEnabled ? 'on' : 'off'}`)
+      store.event('repo_connect_success', { userId: viewer.user.id, repoId: repo.id })
       const t = translator(request.locale ?? 'zh')
       const bits = [t('仓库已添加。', 'Repository added.')]
       if (prepared.forkCreated) bits.push(t(`已创建 fork ${prepared.fork.fullName}。`, `Created fork ${prepared.fork.fullName}.`))
@@ -554,6 +562,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     try {
       await instances.sendGuidance(repo.id, target, text)
       store.audit(viewer.user.id, 'team.guidance', `${repo.owner}/${repo.name} target=${target} chars=${text.length}`)
+      store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: `guidance:${target}` })
       const t = translator(request.locale ?? 'zh')
       return reply.redirect(`/repos/${repo.id}/team?notice=${encodeURIComponent(t('指导意见已发送给团队。', 'Guidance sent to the team.'))}`)
     } catch (error) {
@@ -651,6 +660,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) })
     }
     store.audit(viewer.user.id, 'team.answer', `${repo.owner}/${repo.name} question=${questionId.slice(0, 80)}`)
+    store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: 'answer' })
     return { ok: true }
   })
 
@@ -671,10 +681,41 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     try {
       const result = await instances.stopSessions(repo.id, sessions)
       store.audit(viewer.user.id, 'team.stop', `${repo.owner}/${repo.name} hard=${result.stopped.length} soft=${result.requested.length}`)
+      store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: 'stop' })
       return { ok: true, ...result }
     } catch (error) {
       return reply.code(503).send({ error: error instanceof Error ? error.message : String(error) })
     }
+  })
+
+  app.get('/repos/:id/jobs/:jobId', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    return reply.type('text/html').send(jobPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      repo,
+      job,
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
+  })
+
+  app.post('/repos/:id/jobs/:jobId/retry', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const active = store.activeJobForRepo(repo.id)
+    if (active !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}`)
+    const kind = job.kind === 'review' ? 'review' : 'iterate'
+    const result = await jobs.enqueue(repo, 'manual', job.goal, kind)
+    store.audit(viewer.user.id, 'job.retried', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
+    if (!result.ok || result.job === undefined) {
+      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(result.error ?? '重试失败。')}`)
+    }
+    return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已重新排队。')}`)
   })
 
   app.get('/repos/:id/:action', async (request, reply) => {
@@ -895,6 +936,20 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const viewer = csrfGuard(request)
     store.markNotificationsRead(viewer.user.id)
     return reply.redirect('/dashboard')
+  })
+
+  app.get('/admin/metrics', async (request, reply) => {
+    const viewer = requireAdmin(request)
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000).toISOString()
+    return reply.type('text/html').send(metricsPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      metrics: store.productMetrics(since),
+      since,
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
   })
 
   app.get('/admin', async (request, reply) => {

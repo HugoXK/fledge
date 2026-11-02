@@ -135,6 +135,7 @@ export interface JobRow {
   issue_url: string | null
   review_score: number | null
   attribution_json: string | null
+  evidence_json: string | null
   created_at: string
   started_at: string | null
   finished_at: string | null
@@ -339,6 +340,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   issue_url TEXT,
   review_score INTEGER,
   attribution_json TEXT,
+  evidence_json TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   finished_at TEXT
@@ -389,6 +391,18 @@ CREATE TABLE IF NOT EXISTS audit_log (
   detail TEXT
 );
 
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  user_id TEXT,
+  name TEXT NOT NULL,
+  repo_id TEXT,
+  job_id TEXT,
+  meta TEXT
+);
+CREATE INDEX IF NOT EXISTS events_name_at_idx ON events(name, at DESC);
+CREATE INDEX IF NOT EXISTS events_user_at_idx ON events(user_id, at DESC);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -410,7 +424,7 @@ export class Store {
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
-    this.db.exec('PRAGMA user_version = 7;')
+    this.db.exec('PRAGMA user_version = 8;')
   }
 
   private migrateColumns(): void {
@@ -471,6 +485,7 @@ export class Store {
     if (!jobColumns.has('issue_url')) this.run('ALTER TABLE jobs ADD COLUMN issue_url TEXT')
     if (!jobColumns.has('review_score')) this.run('ALTER TABLE jobs ADD COLUMN review_score INTEGER')
     if (!jobColumns.has('attribution_json')) this.run('ALTER TABLE jobs ADD COLUMN attribution_json TEXT')
+    if (!jobColumns.has('evidence_json')) this.run('ALTER TABLE jobs ADD COLUMN evidence_json TEXT')
   }
 
   close(): void {
@@ -665,6 +680,56 @@ export class Store {
 
   addUserUsage(id: string, usd: number): void {
     this.run('UPDATE users SET quota_used_usd = quota_used_usd + ? WHERE id = ?', usd, id)
+  }
+
+  addJobCost(id: string, usd: number): void {
+    this.run('UPDATE jobs SET cost_usd = cost_usd + ? WHERE id = ?', usd, id)
+  }
+
+  event(name: string, input: { userId?: string | null; repoId?: string | null; jobId?: string | null; meta?: string | null } = {}): void {
+    this.run(
+      'INSERT INTO events (at, user_id, name, repo_id, job_id, meta) VALUES (?, ?, ?, ?, ?, ?)',
+      nowIso(),
+      input.userId ?? null,
+      name,
+      input.repoId ?? null,
+      input.jobId ?? null,
+      input.meta ?? null,
+    )
+  }
+
+  countEvents(name: string, sinceIso?: string): number {
+    const row = sinceIso === undefined
+      ? this.get<{ n: number }>('SELECT COUNT(*) AS n FROM events WHERE name = ?', name)
+      : this.get<{ n: number }>('SELECT COUNT(*) AS n FROM events WHERE name = ? AND at >= ?', name, sinceIso)
+    return Number(row?.n ?? 0)
+  }
+
+  productMetrics(sinceIso: string): {
+    users: number
+    approved: number
+    repos: number
+    jobs: number
+    succeeded: number
+    failed: number
+    usersWithJobs: number
+    usersWithPr: number
+    costUsd: number
+    events: Array<{ name: string; n: number }>
+  } {
+    const count = (sql: string, ...params: Array<string | number>): number => Number(this.get<{ n: number }>(sql, ...params)?.n ?? 0)
+    return {
+      users: count('SELECT COUNT(*) AS n FROM users'),
+      approved: count("SELECT COUNT(*) AS n FROM users WHERE status = 'approved'"),
+      repos: count('SELECT COUNT(*) AS n FROM repos'),
+      jobs: count('SELECT COUNT(*) AS n FROM jobs'),
+      succeeded: count("SELECT COUNT(*) AS n FROM jobs WHERE status = 'succeeded'"),
+      failed: count("SELECT COUNT(*) AS n FROM jobs WHERE status = 'failed'"),
+      usersWithJobs: count('SELECT COUNT(DISTINCT user_id) AS n FROM jobs'),
+      usersWithPr: count("SELECT COUNT(DISTINCT user_id) AS n FROM jobs WHERE pr_url IS NOT NULL"),
+      costUsd: Number(this.get<{ n: number | null }>("SELECT SUM(cost_usd) AS n FROM jobs WHERE created_at >= ?", sinceIso)?.n ?? 0),
+      events: this.all<{ name: string; n: number }>('SELECT name, COUNT(*) AS n FROM events WHERE at >= ? GROUP BY name ORDER BY n DESC', sinceIso),
+    }
   }
 
   setUserGithubToken(id: string, encrypted: string | null): void {
@@ -906,7 +971,7 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE status IN ('queued','running') ORDER BY created_at ASC")
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'evidence_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -971,6 +1036,11 @@ export class Store {
 
   usageSince(userId: string, sinceIso: string): number {
     const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ? AND at >= ?', userId, sinceIso)
+    return Number(row?.total ?? 0)
+  }
+
+  usageForJob(jobId: string): number {
+    const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE job_id = ?', jobId)
     return Number(row?.total ?? 0)
   }
 

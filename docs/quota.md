@@ -33,7 +33,10 @@ stream ends. A request that is already in flight is allowed to finish; the
   immediately and mark that user's active jobs `quota_exhausted` (their job
   tokens are revoked) so the UI does not wait for the job timeout.
 - After a platform-funded request: record a `quota_ledger` row and increment
-  `users.quota_used_usd`.
+  `users.quota_used_usd`. While a job is running the bridge injects the
+  job-scoped `flg_` token into the model proxy, so the row also carries
+  `job_id`; the gateway adds the same cost to `jobs.cost_usd` for per-job
+  display. Outside a job the instance token is used and the row has no job id.
 - When the balance crosses zero: create one in-app notification and at most one
   email per user per day (deduped by `settings:quota_notified:<userId>`).
 - A failed job before it starts (quota already zero) is recorded as

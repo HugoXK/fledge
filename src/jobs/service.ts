@@ -7,6 +7,7 @@ import { dailyDigestEmail, jobAttentionEmail, jobFailedEmail, jobSucceededEmail,
 import { notifyEmail } from '../email/recipient.js'
 import { log } from '../lib/log.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
+import { parseEvidence, type Evidence } from '../lib/evidence.js'
 import { decryptSecret, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient } from '../repos/github.js'
@@ -48,6 +49,7 @@ export interface CallbackPayload {
   summary?: unknown
   error?: unknown
   attribution?: unknown
+  evidence?: unknown
 }
 
 export class Jobs {
@@ -132,7 +134,10 @@ export class Jobs {
       prefix: platformToken.slice(0, 8),
       expiresAt: addMinutes(this.config.runner.timeoutMinutes + 60),
     })
+    const priorJobs = this.store.listJobs(user.id, 1).length
     const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind })
+    this.store.event('job_enqueued', { userId: user.id, repoId: repo.id, jobId: job.id, meta: `${kind}:${trigger}` })
+    if (priorJobs === 0) this.store.event('first_job_start', { userId: user.id, repoId: repo.id, jobId: job.id })
     if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'queued' })
     else this.store.updateRepo(repo.id, { last_run_at: nowIso(), last_status: 'queued' })
     this.store.audit(user.id, 'job.enqueued', `${job.id} ${repo.owner}/${repo.name} (${kind}, ${trigger})`)
@@ -194,7 +199,7 @@ export class Jobs {
     }
   }
 
-  private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }, revoke: () => void, attribution: Attribution | null = null): void {
+  private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }, revoke: () => void, attribution: Attribution | null = null, evidence: Evidence | null = null): void {
     const job = this.store.getJob(jobId)
     if (job === undefined) return
     this.store.updateJob(jobId, {
@@ -204,6 +209,7 @@ export class Jobs {
       issue_url: result.issueUrl ?? null,
       review_score: result.reviewScore ?? null,
       attribution_json: attribution === null ? job.attribution_json : JSON.stringify(attribution),
+      evidence_json: evidence === null ? job.evidence_json : JSON.stringify(evidence),
       summary: (result.summary ?? '').slice(0, 4000),
       error: (result.error ?? '').slice(0, 2000),
       finished_at: nowIso(),
@@ -212,6 +218,8 @@ export class Jobs {
     else this.store.updateRepo(job.repo_id, { last_status: result.status })
     revoke()
     this.store.audit(job.user_id, `job.${result.status}`, jobId)
+    this.store.event(`job_${result.status}`, { userId: job.user_id, repoId: job.repo_id, jobId })
+    if (result.status === 'succeeded' && result.prUrl !== undefined) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
     if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? '未知原因'}`)
     if (result.status === 'succeeded') void this.postAutomationComment(job, result, attribution)
     if (result.status === 'succeeded' || result.status === 'failed') void this.sendJobEmail(job, result)
@@ -351,6 +359,7 @@ export class Jobs {
           prUrl: job.pr_url,
           issueUrl: job.issue_url,
           reviewScore: job.review_score,
+          costUsd: job.cost_usd,
         }
       }),
       usedCny: this.store.usageSince(user.id, since) * this.config.quota.usdCny,
@@ -433,12 +442,14 @@ export class Jobs {
     const summary = progressSummary(payload.summary)
     const error = typeof payload.error === 'string' ? payload.error.slice(0, 2000) : undefined
     const attribution = parseAttribution(payload.attribution)
+    const evidence = parseEvidence(payload.evidence)
     if (status === 'running') {
       this.store.updateJob(jobId, {
         status: 'running',
         ...(branch === undefined ? {} : { branch }),
         ...(summary === undefined ? {} : { summary }),
         ...(attribution === null ? {} : { attribution_json: JSON.stringify(attribution) }),
+        ...(evidence === null ? {} : { evidence_json: JSON.stringify(evidence) }),
       })
       return { ok: true }
     }
@@ -446,7 +457,7 @@ export class Jobs {
       const row = this.store.findApiToken(job.platform_token_hash ?? '')
       if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     }
-    this.finish(jobId, { status, branch, prUrl, issueUrl, reviewScore, summary, error }, revoke, attribution)
+    this.finish(jobId, { status, branch, prUrl, issueUrl, reviewScore, summary, error }, revoke, attribution, evidence)
     return { ok: true }
   }
 

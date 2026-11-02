@@ -141,3 +141,55 @@ test('the anonymous landing page follows the saved language', async () => {
     await built.close()
   }
 })
+
+test('job detail shows evidence and can retry a failed job', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'retry-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_retry', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', goal: 'keep it small', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_retry', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'keep it small', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob(job.id, {
+      status: 'failed',
+      summary: 'Tests failed',
+      error: 'one assertion failed',
+      cost_usd: 0.0123,
+      evidence_json: JSON.stringify({ tests: 'unit tests: 4 pass / 1 fail', checks: 'CI red', files: 3, risk: 'medium', rollback: 'revert the commit' }),
+      attribution_json: JSON.stringify({ claimedBy: 'Lead', implementedBy: 'Dev-1', testedBy: 'Test' }),
+    })
+    const { cookie, csrf } = sessionFor(built, user)
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${job.id}`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /unit tests: 4 pass \/ 1 fail/)
+    assert.match(page.body, /重试这个任务/)
+    assert.match(page.body, /Dev-1/)
+    const retried = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/jobs/${job.id}/retry`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf }),
+    })
+    assert.equal(retried.statusCode, 302)
+    assert.equal(store.listJobsForRepo(repo.id).length, 2)
+  } finally {
+    await built.close()
+  }
+})
+
+test('admin product metrics page renders the funnel', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'metrics-admin', admin: true, status: 'approved' })
+    const { cookie } = sessionFor(built, admin)
+    const page = await built.app.inject({ method: 'GET', url: '/admin/metrics', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /产品指标/)
+    assert.match(page.body, /漏斗/)
+    assert.match(page.body, /成功率/)
+  } finally {
+    await built.close()
+  }
+})

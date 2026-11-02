@@ -85,3 +85,26 @@ test('users, repos, jobs, tokens and usage persist in SQLite', () => {
     store.close()
   }
 })
+
+test('events and product metrics are recorded', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'metrics-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_metrics', userId: user.id, owner: 'o', name: 'm', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_metrics', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob(job.id, { status: 'succeeded', pr_url: 'https://github.com/o/m/pull/1', finished_at: new Date().toISOString() })
+    store.event('job_enqueued', { userId: user.id, repoId: repo.id, jobId: job.id })
+    store.event('pr_open', { userId: user.id, repoId: repo.id, jobId: job.id })
+    assert.equal(store.countEvents('job_enqueued'), 1)
+    const metrics = store.productMetrics(new Date(0).toISOString())
+    assert.equal(metrics.users, 1)
+    assert.equal(metrics.approved, 1)
+    assert.equal(metrics.repos, 1)
+    assert.equal(metrics.jobs, 1)
+    assert.equal(metrics.succeeded, 1)
+    assert.equal(metrics.usersWithPr, 1)
+    assert.equal(metrics.events.find((event) => event.name === 'pr_open')?.n, 1)
+  } finally {
+    store.close()
+  }
+})

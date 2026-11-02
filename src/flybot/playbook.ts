@@ -1,6 +1,6 @@
 import { sha256Hex } from '../lib/secrets.js'
 
-export const PLAYBOOK_VERSION = 5
+export const PLAYBOOK_VERSION = 6
 
 export type TeamRole = 'chief' | 'lead' | 'product' | 'test' | 'security' | 'reviewer' | 'dev1' | 'dev2'
 
@@ -33,6 +33,7 @@ const PROTOCOL = [
   '- Send a progress heartbeat by POSTing the job callback with {"status":"running","summary":"<one line progress>"} after each major step and at least every 10 minutes.',
   '- Finish with the final callback before the time limit. If blocked, POST {"status":"failed","error":"<concrete blocker>"} instead of running silently.',
   '- Report the commands actually run and the checks not run.',
+  '- The final callback includes evidence: tests run, CI/checks, changed file count, risk and rollback. Use only what actually happened.',
   '- Make the automation visible: end every GitHub issue, PR and comment with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',
   '- Attribution uses role names only (Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2). Omit a key for a step that did not happen; never write "not run", "pending" or "(Team)".',
   '',

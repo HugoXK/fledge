@@ -28,6 +28,8 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/repos/:id/instance/stop` | owner + CSRF | Stop the per-repository FlyBot instance |
 | POST | `/repos/:id/refresh` | owner + CSRF | Re-check the upstream, fork and permissions |
 | POST | `/repos/:id/review` | owner + CSRF | Enqueue a manual review job |
+| GET | `/repos/:id/jobs/:jobId` | owner | Job detail: evidence, cost, attribution, retry |
+| POST | `/repos/:id/jobs/:jobId/retry` | owner + CSRF | Retry a failed job with the same goal/kind |
 | GET | `/repos/:id/team` | owner | Team console |
 | GET | `/api/repos/:id/team` | owner | Team state JSON (polling fallback) |
 | GET | `/api/repos/:id/team/events` | owner | Server-Sent Events snapshot stream |
@@ -43,6 +45,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/settings/tokens/:id/revoke` | owner + CSRF | Revoke a token |
 | POST | `/notifications/read` | approved + CSRF | Mark notifications read |
 | GET | `/admin` | admin | Pending users, quotas, audit |
+| GET | `/admin/metrics` | admin | Product funnel, success rate, job cost, events |
 | POST | `/admin/users/:id/approve` | admin + CSRF | Approve |
 | POST | `/admin/users/:id/reject` | admin + CSRF | Reject |
 | POST | `/admin/users/:id/quota` | admin + CSRF | Set quota in CNY |
@@ -124,6 +127,13 @@ Headers: `Authorization: Bearer <callbackSecret>`, `Content-Type: application/js
     "implementedBy": "Dev-1",
     "testedBy": "Test",
     "reviewedBy": "Reviewer"
+  },
+  "evidence": {
+    "tests": "node --test tests/unit/foo.test.mjs — 12 pass",
+    "checks": "CI green",
+    "files": 3,
+    "risk": "low",
+    "rollback": "revert the commit"
   }
 }
 ```
@@ -136,8 +146,10 @@ branch/PR:
 ```
 
 `status` may be `running`, `succeeded` or `failed`. A `running` callback is a
-progress heartbeat: it updates `summary` (and optionally `branch` or
-`attribution`) without finishing the job or extending `JOB_TIMEOUT_MINUTES`. On
+progress heartbeat: it updates `summary` (and optionally `branch`,
+`attribution` or `evidence`) without finishing the job or extending
+`JOB_TIMEOUT_MINUTES`. `evidence` is stored structurally and shown on the job
+detail page; the Fledge automation comment stays compact. On
 success, Fledge adds a collapsible automation block to the PR with the job,
 team and the attribution steps that actually happened, so humans can see which
 role claimed, implemented, tested and reviewed the change without a fabricated
