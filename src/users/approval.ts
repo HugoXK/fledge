@@ -33,16 +33,16 @@ export class Approvals {
     const expiresAt = addDays(TOKEN_TTL_DAYS)
     this.store.createApprovalToken(sha256Hex(approve), user.id, 'approve', expiresAt)
     this.store.createApprovalToken(sha256Hex(reject), user.id, 'reject', expiresAt)
-    this.store.markApprovalSent(user.id)
     const approveUrl = `${this.config.baseUrl}/approve/${approve}`
     const rejectUrl = `${this.config.baseUrl}/approve/${reject}`
     const mail = applicationEmail(user, approveUrl, rejectUrl, this.config.baseUrl, this.store.queuePosition(user.id))
     try {
       await this.mailer.send({ to: this.config.mail.adminEmail, ...mail })
     } catch (error) {
-      log.error('approval mail failed; links are only in this log', { user: user.login, approveUrl })
+      log.error('approval mail failed', { user: user.login, error: String(error) })
       throw error
     }
+    this.store.markApprovalSent(user.id)
     this.store.audit(user.id, 'approval.requested', `mail to ${this.config.mail.adminEmail}`)
     log.info('approval requested', { user: user.login, admin: this.config.mail.adminEmail })
     return { sent: true, approveUrl, rejectUrl }

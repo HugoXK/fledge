@@ -1,1 +1,0 @@
-Closed a GitHub App installation binding hole: the install state is now only a CSRF check, ownership is verified through the webhook sender, the user's OAuth installations or an individual-account match, and an installation cannot be rebound to another Fledge user.

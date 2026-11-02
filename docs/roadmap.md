@@ -36,29 +36,29 @@ execution (LangSmith/Langfuse, OpenTelemetry, Temporal/DBOS):
 - [x] GitHub role attribution and a compact automation block on PRs
 - [x] 90-minute job limit, progress heartbeats and quota-exhausted job cleanup
 
-## v0.2.1 — live control surface (next)
+## v0.2.1 — live control surface (shipped)
 
-- [ ] Server-Sent Events from Fledge to the team console: roles, questions,
+- [x] Server-Sent Events from Fledge to the team console: roles, questions,
       jobs, progress, quota; reconnect and polling fallback.
-- [ ] Open questions render inline and can be answered without a refresh.
-- [ ] Stop request / pause: hard stop where DSH exposes it, otherwise a stop
+- [x] Open questions render inline and can be answered without a refresh.
+- [x] Stop request / pause: hard stop where DSH exposes it, otherwise a stop
       message that takes effect at the next safe point.
-- [ ] Guidance and stop actions are audited and visible to the job.
-- [ ] Job detail shows the current step, last heartbeat, cost and attribution.
+- [x] Guidance and stop actions are audited and visible to the job.
+- [x] Job detail shows the current step, last heartbeat, cost and attribution.
 
-## v0.3 — branded agent workspace
+## v0.3 — branded agent workspace (path workspace shipped)
 
 - [ ] Per-repository authenticated workspace on a subdomain, e.g.
       `<repo>.<user>.agent.fledge.hugoxk.online`.
-- [ ] Fledge shell around the native FlyBot UI: repo, job, status, cost,
+- [x] Fledge shell around the native FlyBot UI: repo, job, status, cost,
       pause/steer/approve, "Powered by FlyBot" footer; FlyBot/DeepSeek branding
       hidden.
-- [ ] Short-lived signed ticket, server-side DSH cookie injection, no raw DSH
+- [x] Short-lived signed ticket, server-side DSH cookie injection, no raw DSH
       token in the browser URL; ownership check, CSP, cookie isolation,
       WebSocket proxy and audit of human actions.
 - [ ] Interactive takeover: edit, pause and resume the same session; the job
       records human interventions.
-- [ ] Optional path proxy fallback for deployments without wildcard DNS.
+- [x] Optional path proxy fallback for deployments without wildcard DNS.
 
 ## v0.4 — durable execution and gates
 

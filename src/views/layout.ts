@@ -99,6 +99,7 @@ export function layout(options: LayoutOptions): string {
   <link rel="stylesheet" href="/assets/app.css" />
 </head>
 <body>
+  <a class="skip-link" href="#main">${escapeHtml(t('跳到主要内容', 'Skip to main content'))}</a>
   <header class="top">
     <div class="top-inner">
       <a class="brand" href="/"><span class="mark">F</span><span>Fledge${brandSmall}</span></a>
@@ -109,8 +110,8 @@ export function layout(options: LayoutOptions): string {
     </div>
   </header>
   <main class="wrap" id="main">
-    ${notice === undefined ? '' : `<div class="banner ok" role="status">${escapeHtml(notice)}</div>`}
-    ${error === undefined ? '' : `<div class="banner bad" role="alert">${escapeHtml(error)}</div>`}
+    ${notice === undefined || notice === '' ? '' : `<div class="banner ok" role="status">${escapeHtml(notice)}</div>`}
+    ${error === undefined || error === '' ? '' : `<div class="banner bad" role="alert">${escapeHtml(error)}</div>`}
     ${body}
   </main>
   ${footer}

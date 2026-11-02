@@ -78,6 +78,20 @@ test('team console reads live state and sends guidance', async () => {
     assert.match(page.body, /Which path should the next job take\?/)
     assert.match(page.body, /data-team-events/)
     assert.match(page.body, /data-team-stop/)
+    assert.match(page.body, /data-reload/)
+    assert.doesNotMatch(page.body, /onclick=|onsubmit=/)
+
+    const consolePage = await built.app.inject({ method: 'GET', url: '/console', headers: { cookie } })
+    assert.equal(consolePage.statusCode, 200)
+    assert.match(consolePage.body, /FlyBot 在等你回答/)
+    assert.match(consolePage.body, /Which path should the next job take\?/)
+    assert.match(consolePage.body, new RegExp(`/repos/${repo.id}/team/answer`))
+    assert.match(consolePage.body, /openJiuwen-ai\/DigitalMate/)
+
+    const dashboardPage = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
+    assert.equal(dashboardPage.statusCode, 200)
+    assert.match(dashboardPage.body, /FlyBot 在等你回答/)
+    assert.match(dashboardPage.body, /Which path should the next job take\?/)
 
     const api = await built.app.inject({ method: 'GET', url: `/api/repos/${repo.id}/team`, headers: { cookie } })
     assert.equal(api.statusCode, 200)
@@ -109,6 +123,17 @@ test('team console reads live state and sends guidance', async () => {
     const answerCall = received.find((entry) => entry.endpoint === 'answer-question')
     assert.deepEqual(answerCall?.payload, { sessionId: 'lead-1', questionId: 'q1', answer: { selected: ['Fix the bug'] } })
 
+    const formAnswered = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/team/answer`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, sessionId: 'lead-1', questionId: 'q1', selected: 'Write docs', custom: '', returnTo: `/repos/${repo.id}` }),
+    })
+    assert.equal(formAnswered.statusCode, 302)
+    assert.match(String(formAnswered.headers.location), new RegExp(`^/repos/${repo.id}\\?notice=`))
+    const formAnswerCall = received.filter((entry) => entry.endpoint === 'answer-question').at(-1)
+    assert.deepEqual(formAnswerCall?.payload, { sessionId: 'lead-1', questionId: 'q1', answer: { selected: ['Write docs'] } })
+
     const stopped = await built.app.inject({
       method: 'POST',
       url: `/api/repos/${repo.id}/team/stop`,
@@ -120,6 +145,17 @@ test('team console reads live state and sends guidance', async () => {
     assert.deepEqual(stoppedBody.requested, ['lead-1'])
     const stopCall = received.filter((entry) => entry.endpoint === 'send').at(-1)
     assert.match(String((stopCall?.payload as { text?: string })?.text), /Human stop request/)
+
+    const formStopped = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/team/stop`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, target: '', returnTo: `/repos/${repo.id}/workspace` }),
+    })
+    assert.equal(formStopped.statusCode, 302)
+    assert.match(String(formStopped.headers.location), new RegExp(`^/repos/${repo.id}/workspace\\?notice=`))
+    const formStopCall = received.filter((entry) => entry.endpoint === 'send').at(-1)
+    assert.match(String((formStopCall?.payload as { text?: string })?.text), /Human stop request/)
   } finally {
     await built.close()
     await bridge.close()

@@ -1097,7 +1097,11 @@ export class Store {
   }
 
   staleRunningJobs(beforeIso: string): JobRow[] {
-    return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'running' AND started_at < ?", beforeIso)
+    return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'running' AND COALESCE(started_at, created_at) < ?", beforeIso)
+  }
+
+  staleQueuedJobs(beforeIso: string): JobRow[] {
+    return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' AND created_at < ?", beforeIso)
   }
 
   createApiToken(input: { id: string; userId: string; kind: string; name: string; tokenHash: string; prefix: string; expiresAt: string | null }): ApiTokenRow {

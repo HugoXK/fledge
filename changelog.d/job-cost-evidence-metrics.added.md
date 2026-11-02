@@ -1,1 +1,0 @@
-Added per-job cost and token accounting, structured job evidence (tests, CI, files, risk, rollback), a job detail page with a one-click retry for failed jobs, and an admin product-metrics funnel. The bridge now uses the job-scoped model token while a job runs so usage is attributed to that job.

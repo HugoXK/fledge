@@ -87,19 +87,19 @@ export class Sessions {
 
 export function requireViewer(request: FastifyRequest): Viewer {
   const viewer = request.viewer
-  if (viewer === undefined) throw Object.assign(new Error('Sign in first'), { statusCode: 401, code: 'AUTH_REQUIRED' })
+  if (viewer === undefined) throw Object.assign(new Error('请先登录。'), { statusCode: 401, code: 'AUTH_REQUIRED' })
   return viewer
 }
 
 export function requireApproved(request: FastifyRequest): Viewer {
   const viewer = requireViewer(request)
-  if (viewer.user.status !== 'approved') throw Object.assign(new Error('Your account is awaiting approval'), { statusCode: 403, code: 'NOT_APPROVED' })
+  if (viewer.user.status !== 'approved') throw Object.assign(new Error('账号正在等待审批。'), { statusCode: 403, code: 'NOT_APPROVED' })
   return viewer
 }
 
 export function requireAdmin(request: FastifyRequest): Viewer {
   const viewer = requireApproved(request)
-  if (viewer.user.role !== 'admin') throw Object.assign(new Error('Admin only'), { statusCode: 403, code: 'ADMIN_ONLY' })
+  if (viewer.user.role !== 'admin') throw Object.assign(new Error('仅管理员可访问。'), { statusCode: 403, code: 'ADMIN_ONLY' })
   return viewer
 }
 

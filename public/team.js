@@ -34,6 +34,17 @@
     reviewedBy: t('审核', 'Reviewed'),
   }
 
+  const roleNames = {
+    chief: t('总控', 'Chief'),
+    lead: t('负责人', 'Lead'),
+    product: t('产品', 'Product'),
+    test: t('测试', 'Test'),
+    security: t('安全', 'Security'),
+    reviewer: t('审核', 'Reviewer'),
+    dev1: t('开发 1', 'Dev-1'),
+    dev2: t('开发 2', 'Dev-2'),
+  }
+
   const attribution = (value) => {
     if (!value || typeof value !== 'object') return ''
     const byRole = new Map()
@@ -94,8 +105,12 @@
     }
   }
 
+  let questionsSignature = null
   const renderQuestions = (questions) => {
     if (!questionsRoot) return
+    const signature = JSON.stringify(questions || [])
+    if (signature === questionsSignature) return
+    questionsSignature = signature
     questionsRoot.replaceChildren()
     if (!questions || questions.length === 0) {
       const empty = document.createElement('p')
@@ -156,7 +171,11 @@
       const row = document.querySelector(`[data-job-id="${job.id}"]`)
       if (!row) continue
       const cell = row.querySelector('[data-job-summary-text]')
-      if (cell && job.summary) cell.textContent = String(job.summary).slice(0, 120)
+      if (cell && job.summary) {
+        const summary = String(job.summary)
+        cell.textContent = summary.length > 160 ? `${summary.slice(0, 160)}…` : summary
+        cell.title = summary
+      }
       const attr = row.querySelector('[data-job-attribution]')
       if (attr) {
         const text = attribution(job.attribution)
@@ -190,7 +209,7 @@
       const main = document.createElement('div')
       main.className = 'list-main'
       const label = document.createElement('strong')
-      label.textContent = entry.label
+      label.textContent = roleNames[entry.role] || entry.label
       const detail = document.createElement('small')
       const what = entry.kind === 'active'
         ? `${activityLabel(entry.activity)}${entry.tool ? ` · ${entry.tool}` : ''}${entry.step ? ` · ${entry.step}` : ''}`

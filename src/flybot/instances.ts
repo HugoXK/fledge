@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, openSync, writeFileSync, chmodSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { createServer } from 'node:net'
 import { promisify } from 'node:util'
@@ -135,6 +135,8 @@ export class InstanceManager {
     private readonly config: Config,
   ) {}
 
+  private readonly provisioning = new Set<string>()
+
   userDir(userId: string): string {
     return join(this.config.flybot.instanceRoot, 'users', safe(userId))
   }
@@ -172,7 +174,21 @@ export class InstanceManager {
     }
   }
 
+  isProvisioning(repoId: string): boolean {
+    return this.provisioning.has(repoId)
+  }
+
   async provision(repo: RepoRow): Promise<void> {
+    if (this.provisioning.has(repo.id)) return
+    this.provisioning.add(repo.id)
+    try {
+      await this.provisionUnlocked(repo)
+    } finally {
+      this.provisioning.delete(repo.id)
+    }
+  }
+
+  private async provisionUnlocked(repo: RepoRow): Promise<void> {
     if (this.config.flybot.instanceImage === '') throw new Error('FLYBOT_INSTANCE_IMAGE 未配置')
     const existing = this.store.getRepoInstance(repo.id)
     if (existing !== undefined && (existing.status === 'ready' || existing.status === 'provisioning' || existing.status === 'starting')) return
@@ -320,6 +336,7 @@ server.listen(3081, '0.0.0.0')
       ], 180_000)
 
       await this.waitForDsh(dshPort, row)
+      if (this.store.getRepo(repo.id) === undefined) throw new Error('仓库已删除，停止初始化')
       const bridge = this.startBridge(row, bridgeEnv, join(dataDir, 'bridge.log'))
       this.store.updateRepoInstance(repo.id, { bridge_pid: bridge.pid ?? null })
       await this.waitForBridge(bridgePort)
@@ -358,6 +375,7 @@ server.listen(3081, '0.0.0.0')
       stdio: ['ignore', fd, fd],
     })
     child.unref()
+    try { closeSync(fd) } catch {}
     return child
   }
 
@@ -412,12 +430,12 @@ server.listen(3081, '0.0.0.0')
     throw new Error('FlyBot bridge 没有就绪')
   }
 
-  private async dsh(port: number, token: string, endpoint: string, payload: unknown = {}): Promise<unknown> {
+  private async dsh(port: number, token: string, endpoint: string, payload: unknown = {}, timeoutMs = 120_000): Promise<unknown> {
     const response = await fetch(`http://127.0.0.1:${port}/dsh`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
       body: JSON.stringify({ endpoint, payload }),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(timeoutMs),
     })
     if (!response.ok) throw new Error(`bridge /dsh ${response.status}: ${(await response.text()).slice(0, 300)}`)
     return response.json()
@@ -593,10 +611,10 @@ server.listen(3081, '0.0.0.0')
     }
   }
 
-  async teamState(repoId: string): Promise<TeamLiveState> {
+  async teamState(repoId: string, timeoutMs = 120_000): Promise<TeamLiveState> {
     const bridge = this.bridgeFor(repoId)
     const repo = this.store.getRepo(repoId)
-    const raw = await this.dsh(bridge.instance.bridge_port, bridge.token, 'state', {})
+    const raw = await this.dsh(bridge.instance.bridge_port, bridge.token, 'state', {}, timeoutMs)
     const value = ((raw as { value?: Record<string, unknown> }).value ?? raw) as Record<string, unknown>
     const bots = Array.isArray(value.bots) ? (value.bots as Array<Record<string, unknown>>) : []
     const activity = (value.activity ?? {}) as Record<string, unknown>
@@ -616,10 +634,12 @@ server.listen(3081, '0.0.0.0')
     ]
     const roleBySession = new Map(roleMap.map(([role, label, sessionId]) => [sessionId, { role, label }]))
     const lastEnded = (sessionId: string): Record<string, unknown> | undefined => ended
+      .filter((entry) => entry !== null && typeof entry === 'object')
       .filter((entry) => entry.sessionId === sessionId)
       .sort((a, b) => Number(b.at ?? 0) - Number(a.at ?? 0))[0]
     const timeline: TeamTimelineEntry[] = []
     for (const entry of ended) {
+      if (entry === null || typeof entry !== 'object') continue
       const sessionId = typeof entry.sessionId === 'string' ? entry.sessionId : ''
       const role = roleBySession.get(sessionId)
       if (role === undefined) continue
@@ -636,7 +656,7 @@ server.listen(3081, '0.0.0.0')
     }
     for (const [role, label, sessionId] of roleMap) {
       const current = work?.[sessionId]
-      if (current === undefined || typeof current.since !== 'number') continue
+      if (current === null || typeof current !== 'object' || typeof current.since !== 'number') continue
       timeline.push({
         role,
         label,
@@ -651,7 +671,7 @@ server.listen(3081, '0.0.0.0')
     timeline.sort((a, b) => b.at - a.at)
     return {
       bots: roleMap.map(([role, label, sessionId]) => {
-        const bot = bots.find((entry) => entry.sessionId === sessionId)
+        const bot = bots.find((entry) => entry !== null && typeof entry === 'object' && entry.sessionId === sessionId)
         const current = work?.[sessionId]
         const endedEntry = lastEnded(sessionId)
         return {
@@ -668,17 +688,22 @@ server.listen(3081, '0.0.0.0')
           disabled: role === 'reviewer' && repo?.reviewer_enabled !== 1,
         }
       }),
-      questions: Object.entries(questions).slice(0, 10).map(([sessionId, question]) => ({
-        id: typeof question.id === 'string' ? question.id : '',
-        sessionId,
-        question: typeof question.question === 'string' ? question.question.slice(0, 500) : '',
-        detail: typeof question.detail === 'string' ? question.detail.slice(0, 1000) : '',
-        options: Array.isArray(question.options) ? question.options.map((option) => {
-          const value = option as Record<string, unknown>
-          return typeof value.label === 'string' ? value.label : ''
-        }).filter((value) => value !== '') : [],
-        multiSelect: question.multiSelect === true,
-      })),
+      questions: Object.entries(questions).map(([sessionId, raw]) => {
+        const question = (raw !== null && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+        return {
+          id: typeof question.id === 'string' ? question.id : '',
+          sessionId,
+          question: typeof question.question === 'string' ? question.question.slice(0, 500) : '',
+          detail: typeof question.detail === 'string' ? question.detail.slice(0, 1000) : '',
+          options: Array.isArray(question.options) ? question.options.map((option) => {
+            if (typeof option === 'string') return option
+            const value = (option !== null && typeof option === 'object' ? option : {}) as Record<string, unknown>
+            if (typeof value.label === 'string') return value.label
+            return typeof value.value === 'string' ? value.value : ''
+          }).filter((value) => value !== '') : [],
+          multiSelect: question.multiSelect === true,
+        }
+      }).filter((question) => question.id !== '' && question.question !== '' && question.sessionId !== '').slice(0, 10),
       timeline: timeline.slice(0, 12),
       instance: { status: bridge.instance.status, container: bridge.instance.container },
     }
@@ -723,7 +748,7 @@ server.listen(3081, '0.0.0.0')
     const stopped: string[] = []
     const requested: string[] = []
     const text = 'Human stop request from Fledge. Stop the current work at the next safe point, do not start another step, and wait for further instructions. Do not merge.'
-    for (const sessionId of [...new Set(sessionIds.filter((value) => value !== ''))]) {
+    for (const sessionId of new Set(sessionIds.filter((value) => value !== ''))) {
       let roomId = ''
       let botId = ''
       for (const [id, room] of Object.entries(rooms)) {

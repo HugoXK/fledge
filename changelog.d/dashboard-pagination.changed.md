@@ -1,1 +1,0 @@
-Paginated the dashboard repositories and jobs, and repository/team job lists at ten per page, and reworked Add repository into a clear two-option flow: GitHub App (recommended) or a collapsed manual fine-grained token form.

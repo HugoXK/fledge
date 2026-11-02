@@ -15,12 +15,13 @@ test('workspace html is rebranded and keeps a workspace base', () => {
   try {
     const user = makeUser(store, { login: 'brand-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_brand', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
-    const html = rewriteWorkspaceHtml('<html><head><title>DeepSeek Harness</title><base href="./"></head><body></body></html>', repo, '/repos/repo_brand/workspace/app/')
+    const html = rewriteWorkspaceHtml('<html><head><title>DeepSeek Harness</title><meta http-equiv="Content-Security-Policy" content="script-src \'none\'"><base href="./"></head><body></body></html>', repo, '/repos/repo_brand/workspace/app/')
     assert.match(html, /<title>Fledge · r<\/title>/)
     assert.match(html, /<base href="\/repos\/repo_brand\/workspace\/app\/">/)
     assert.match(html, /workspace-brand\.js/)
     assert.match(html, /data-fledge-repo="o\/r"/)
     assert.doesNotMatch(html, /DeepSeek Harness/)
+    assert.doesNotMatch(html, /Content-Security-Policy/)
   } finally {
     store.close()
   }

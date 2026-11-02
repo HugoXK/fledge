@@ -114,3 +114,21 @@ test('events and product metrics are recorded', () => {
     store.close()
   }
 })
+
+test('a running job without started_at is still eligible for timeout cleanup', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'stale-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_stale', userId: user.id, owner: 'o', name: 'stale', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_stale', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob('job_stale', { status: 'running' })
+    assert.equal(store.getJob('job_stale')?.started_at, null)
+    const stale = store.staleRunningJobs(new Date(Date.now() + 60_000).toISOString())
+    assert.equal(stale.some((job) => job.id === 'job_stale'), true)
+    store.createJob({ id: 'job_stale_queued', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb2', platformTokenHash: '' })
+    const staleQueued = store.staleQueuedJobs(new Date(Date.now() + 60_000).toISOString())
+    assert.equal(staleQueued.some((job) => job.id === 'job_stale_queued'), true)
+  } finally {
+    store.close()
+  }
+})

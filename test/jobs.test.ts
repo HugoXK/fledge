@@ -64,6 +64,97 @@ test('a running callback unwraps a nested progress summary', async () => {
     assert.equal(result.ok, true)
     assert.equal(store.getJob('job_summary')?.summary, 'Round 4: one focused fix is in progress')
     assert.equal(store.getJob('job_summary')?.checkpoint, 'done A; next B')
+    assert.notEqual(store.getJob('job_summary')?.started_at, null)
+  } finally {
+    store.close()
+  }
+})
+
+test('a final callback keeps earlier branch, PR links and progress when it omits them', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'merge-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_merge', userId: user.id, owner: 'o', name: 'm', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const secret = 'callback-secret'
+    store.createJob({ id: 'job_merge', repoId: repo.id, userId: user.id, trigger: 'followup', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '' })
+    store.updateJob('job_merge', {
+      status: 'running',
+      branch: 'fledge/existing',
+      pr_url: 'https://github.com/o/m/pull/7',
+      issue_url: 'https://github.com/o/m/issues/3',
+      review_score: 88,
+      summary: 'progress: one test is red',
+    })
+    const result = await jobs.handleCallback('job_merge', secret, { status: 'succeeded' })
+    assert.equal(result.ok, true)
+    const job = store.getJob('job_merge')
+    assert.equal(job?.branch, 'fledge/existing')
+    assert.equal(job?.pr_url, 'https://github.com/o/m/pull/7')
+    assert.equal(job?.issue_url, 'https://github.com/o/m/issues/3')
+    assert.equal(job?.review_score, 88)
+    assert.equal(job?.summary, 'progress: one test is red')
+  } finally {
+    store.close()
+  }
+})
+
+test('follow-up retries are not blocked forever after a failed enqueue', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'capture', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'followup-retry-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_followup_retry', userId: user.id, owner: 'o', name: 'fr', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.updateRepo(repo.id, { enabled: 0 })
+    const first = await jobs.followUp(store.getRepo(repo.id)!, { prUrl: 'https://github.com/o/fr/pull/9', branch: 'fledge/fix', reason: 'check failed', headSha: 'sha1' })
+    assert.equal(first.ok, false)
+    assert.equal(first.code, 'REPO_DISABLED')
+    store.updateRepo(repo.id, { enabled: 1 })
+    const second = await jobs.followUp(store.getRepo(repo.id)!, { prUrl: 'https://github.com/o/fr/pull/9', branch: 'fledge/fix', reason: 'check failed', headSha: 'sha1' })
+    assert.equal(second.ok, true)
+  } finally {
+    store.close()
+  }
+})
+
+test('manual enqueue respects the global two-job limit', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'capture', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'limit-user', status: 'approved' })
+    for (const id of ['repo_limit_1', 'repo_limit_2', 'repo_limit_3']) {
+      store.createRepo({ id, userId: user.id, owner: 'o', name: id, defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    }
+    store.createJob({ id: 'job_limit_1', repoId: 'repo_limit_1', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h1', platformTokenHash: '' })
+    store.createJob({ id: 'job_limit_2', repoId: 'repo_limit_2', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
+    store.updateJob('job_limit_1', { status: 'running' })
+    store.updateJob('job_limit_2', { status: 'running' })
+    const result = await jobs.enqueue(store.getRepo('repo_limit_3')!, 'manual')
+    assert.equal(result.ok, false)
+    assert.equal(result.code, 'JOB_LIMIT')
+  } finally {
+    store.close()
+  }
+})
+
+test('daily digests still send while two jobs are active', async () => {
+  const config = testConfig({ digest: { hour: 0, timeZone: 'UTC' } })
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  const jobs = new Jobs(store, config, { name: 'capture', async run() { return { status: 'running' } } }, mailer)
+  try {
+    const user = makeUser(store, { login: 'digest-busy-user', status: 'approved' })
+    store.setEmailDailyDigest(user.id, true)
+    store.createRepo({ id: 'repo_digest_busy', userId: user.id, owner: 'o', name: 'dbusy', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_busy_1', repoId: 'repo_digest_busy', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h1', platformTokenHash: '' })
+    store.createJob({ id: 'job_busy_2', repoId: 'repo_digest_busy', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
+    store.updateJob('job_busy_1', { status: 'running' })
+    store.updateJob('job_busy_2', { status: 'running' })
+    await jobs.tick()
+    assert.equal(mailer.messages.filter((message) => /今日摘要/.test(message.subject)).length, 1)
   } finally {
     store.close()
   }

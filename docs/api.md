@@ -105,6 +105,13 @@ comment otherwise. The snapshot includes `bots` (with `tool`, `step`, `since`,
 { "sessionId": "session-…", "questionId": "q1", "selected": ["Fix the bug"], "custom": "" }
 ```
 
+The Fledge inbox uses the equivalent form endpoint `POST /repos/:id/team/answer`
+(owner + CSRF) with `sessionId`, `questionId`, `selected`, `custom` and a safe
+`returnTo` path; it redirects back with a localized notice or error.
+`POST /repos/:id/team/stop` is the form counterpart for the workspace shell: it
+takes `target` (empty for every working role) and `returnTo`, applies the same
+stop logic as the JSON API, and redirects with an honest hard-stop/request note.
+
 `POST /api/repos/:id/team/stop` takes `{ "target": "lead" }` or an empty target
 to stop every role that is currently thinking/working. The response distinguishes
 `stopped` (hard cancel) from `requested` (stop message delivered; it takes effect

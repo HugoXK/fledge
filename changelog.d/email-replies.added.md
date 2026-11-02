@@ -1,1 +1,0 @@
-Added inbound email replies: with INBOUND_EMAIL_SECRET set, the daily digest adds a Reply-To token address; a verified reply is cleaned, checked against the user's notification email, and sent to the Lead as guidance. Includes a Cloudflare Email Worker sample.

@@ -118,11 +118,18 @@ questions, jobs or quota changes, plus a heartbeat. The browser uses
 `EventSource` and falls back to the existing 5-second JSON poll on error.
 Questions render inline with their options and a custom field;
 `POST /api/repos/:id/team/answer` sends the DSH `answer-question` payload.
+The same open questions are collected server-side from every ready instance and
+shown as a Fledge inbox on `/console`, `/dashboard` and the repository page, so a
+human can see and answer FlyBot's pending questions without opening the team
+console. The inbox form posts to `POST /repos/:id/team/answer`, which uses the
+same DSH call and invalidates the short-lived inbox cache.
 `POST /api/repos/:id/team/stop` first tries DSH `stop-member-work` when the role
 is in a room, otherwise it sends a stop message that takes effect at the next
-safe point. The UI reports the difference honestly; it never claims a turn was
-paused when only a request was delivered. Every answer, guidance and stop is
-written to the audit log.
+safe point. The workspace shell uses the form equivalent
+`POST /repos/:id/team/stop`, with the same authorization, audit and honest
+hard-stop/request reporting. The UI reports the difference honestly; it never
+claims a turn was paused when only a request was delivered. Every answer,
+guidance and stop is written to the audit log.
 
 The native DSH UI is not exposed by the console. The planned v0.3 workspace uses
 a per-repository authenticated subdomain and a Fledge shell around the native UI
@@ -188,7 +195,7 @@ The workspace is path-based to avoid a wildcard certificate:
 and embeds an iframe on `/repos/:id/workspace/app/`. That path is a same-origin
 reverse proxy to the repo's DSH web port: Fledge checks the session and repo
 ownership, reads the latest DSH token from `dsh-web.log`, obtains the DSH cookie
-server-side and injects it, strips `Set-Cookie`/CSP/`X-Frame-Options`, rewrites
+server-side and injects it, strips `Set-Cookie`/CSP headers and CSP meta tags/`X-Frame-Options`, rewrites
 the document title/base, injects `workspace-brand.js`/`.css`, and proxies
 WebSocket upgrades with the same cookie. The browser sees only Fledge URLs and
 the Fledge brand ("powered by FlyBot"); the raw DSH token never leaves the

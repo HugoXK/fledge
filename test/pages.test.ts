@@ -7,6 +7,7 @@ import { MockRunner } from '../src/jobs/mock.js'
 import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
 import { appReposPage, dashboardPage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
+import { localizeMessage } from '../src/i18n.js'
 
 test('healthz reports the package version', async () => {
   const config = testConfig()
@@ -26,6 +27,14 @@ test('small quota changes are visible below one yuan', () => {
   assert.equal(quotaMoney(0.0001), '¥0.0001')
   assert.equal(quotaMoney(0.5), '¥0.5000')
   assert.equal(quotaMoney(1.234), '¥1.23')
+})
+
+test('redirect messages and dynamic counts are localized', () => {
+  assert.equal(localizeMessage('en', '已接入 2 个仓库。'), 'Connected 2 repositories.')
+  assert.equal(localizeMessage('en', '已接入 1 个仓库。'), 'Connected 1 repository.')
+  assert.equal(localizeMessage('en', '已创建 fork acme/demo。'), 'Created fork acme/demo.')
+  assert.equal(localizeMessage('en', '设置已保存；团队规则已按新目标更新。'), 'Settings saved; the team playbook now follows the new goal.')
+  assert.equal(localizeMessage('en', '计划任务已排队，不会写代码或开 PR。'), 'Plan queued. It will not write code or open a PR.')
 })
 
 test('unlimited quota is shown instead of a finite balance', () => {
@@ -121,6 +130,8 @@ test('the workspace stays focused and the UI switches language', async () => {
     const appJs = await built.app.inject({ method: 'GET', url: '/assets/app.js' })
     assert.equal(appJs.statusCode, 200)
     assert.match(appJs.body, /hugoxk-lang/)
+    assert.match(appJs.body, /dataset\.confirm/)
+    assert.match(appJs.body, /data-reload/)
 
     const switched = await built.app.inject({ method: 'GET', url: '/lang/en?next=%2Fconsole', headers: { cookie } })
     assert.equal(switched.statusCode, 302)
@@ -183,6 +194,8 @@ test('job detail shows evidence and can retry a failed job', async () => {
     assert.equal(repoPage.statusCode, 200)
     assert.match(repoPage.body, /data-goal-template/)
     assert.match(repoPage.body, /goal-settings/)
+    assert.match(repoPage.body, /data-confirm="删除这个仓库/)
+    assert.doesNotMatch(repoPage.body, /onsubmit=|onclick=/)
     const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${job.id}`, headers: { cookie } })
     assert.equal(page.statusCode, 200)
     assert.match(page.body, /unit tests: 4 pass \/ 1 fail/)
@@ -270,11 +283,42 @@ test('dashboard paginates repositories and jobs at ten per page', async () => {
     assert.match(first.body, /方式二：手动提供 fine-grained token/)
     assert.match(first.body, /add-manual/)
     assert.match(first.body, /info-tip/)
+    assert.match(first.body, /PR \/ Issue/)
+    assert.doesNotMatch(first.body, /onclick=|onsubmit=/)
     assert.doesNotMatch(first.body, /间隔是两次自动迭代之间的最小间隔/)
     const secondJobs = await built.app.inject({ method: 'GET', url: '/dashboard?jobsPage=2', headers: { cookie } })
     assert.equal((secondJobs.body.match(/data-job-id=/g) || []).length, 1)
     const secondRepos = await built.app.inject({ method: 'GET', url: '/dashboard?reposPage=2', headers: { cookie } })
     assert.equal((secondRepos.body.match(/data-repo-id=/g) || []).length, 1)
+  } finally {
+    await built.close()
+  }
+})
+
+test('the workspace shows ten recent jobs with repository labels and full PR/Issue links', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'console-jobs-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_console_jobs', userId: user.id, owner: 'acme', name: 'widgets', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    for (let i = 0; i < 12; i += 1) {
+      const job = store.createJob({ id: `job_console_${i}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: `cb${i}`, platformTokenHash: '' })
+      store.updateJob(job.id, {
+        status: 'succeeded',
+        summary: `job ${i} completed with a focused change`,
+        pr_url: `https://github.com/acme/widgets/pull/${i}`,
+        issue_url: `https://github.com/acme/widgets/issues/${i}`,
+      })
+    }
+    const { cookie } = sessionFor(built, user)
+    const page = await built.app.inject({ method: 'GET', url: '/console', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.equal((page.body.match(/data-job-id=/g) || []).length, 10)
+    assert.match(page.body, /acme\/widgets/)
+    assert.match(page.body, />PR<\/a>/)
+    assert.match(page.body, />Issue<\/a>/)
+    assert.match(page.body, /查看其余 2 个任务/)
   } finally {
     await built.close()
   }
@@ -323,5 +367,30 @@ test('app onboarding carries the repository settings and help is behind info ico
     assert.match(page, /info-tip/)
   } finally {
     store.close()
+  }
+})
+
+test('deleting a repository revokes its active job token', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'delete-token-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_delete_token', userId: user.id, owner: 'o', name: 'dt', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createApiToken({ id: 'tok_job_delete', userId: user.id, kind: 'job', name: 'job:job_delete_token', tokenHash: 'job-delete-hash', prefix: 'flg_dele', expiresAt: null })
+    store.createJob({ id: 'job_delete_token', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: 'job-delete-hash' })
+    store.updateJob('job_delete_token', { status: 'running' })
+    const { cookie, csrf } = sessionFor(built, user)
+    const deleted = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/delete`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf }),
+    })
+    assert.equal(deleted.statusCode, 302)
+    assert.equal(store.getRepo(repo.id), undefined)
+    assert.equal(store.findApiToken('job-delete-hash'), undefined)
+  } finally {
+    await built.close()
   }
 })

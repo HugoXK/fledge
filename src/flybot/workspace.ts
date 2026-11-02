@@ -37,7 +37,7 @@ export function workspacePrefix(repoId: string): string {
 
 export function rewriteWorkspaceHtml(html: string, repo: RepoRow, prefix: string): string {
   const title = `Fledge · ${repo.upstream_name || repo.name}`
-  let next = html
+  let next = html.replace(/<meta[^>]+http-equiv=["']Content-Security-Policy["'][^>]*>/gi, '')
   if (/<title>.*?<\/title>/i.test(next)) next = next.replace(/<title>.*?<\/title>/i, `<title>${title.replace(/[<>&]/g, '')}</title>`)
   else next = next.replace(/<head([^>]*)>/i, `<head$1><title>${title.replace(/[<>&]/g, '')}</title>`)
   if (/<base\s+href=/i.test(next)) next = next.replace(/<base\s+href=["'][^"']*["'][^>]*>/i, `<base href="${prefix}">`)

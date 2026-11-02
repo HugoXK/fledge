@@ -86,6 +86,16 @@ export class Jobs {
     }
   }
 
+  async cancelUserJobs(userId: string, reason: string): Promise<void> {
+    for (const job of this.store.listActiveJobsForUser(userId)) {
+      const revoke = (): void => {
+        const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
+        if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
+      }
+      this.finish(job.id, { status: 'failed', error: reason }, revoke)
+    }
+  }
+
   async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string } = {}): Promise<EnqueueResult> {
     if (repo.enabled !== 1) return { ok: false, error: '这个仓库已停用', code: 'REPO_DISABLED' }
     if (kind === 'review' && (repo.reviewer_enabled !== 1 || repo.can_review !== 1)) {
@@ -106,7 +116,9 @@ export class Jobs {
     if (platformFunded && quotaView(user, this.config).exhausted) {
       const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind })
       this.store.updateJob(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。', finished_at: nowIso() })
-      this.store.updateRepo(repo.id, { last_status: 'quota_exhausted', last_run_at: nowIso() })
+      if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'quota_exhausted' })
+      else if (kind === 'iterate') this.store.updateRepo(repo.id, { last_status: 'quota_exhausted', last_run_at: nowIso() })
+      else this.store.updateRepo(repo.id, { last_status: 'quota_exhausted' })
       await this.quotaNotifier.notify(user)
       return { ok: false, error: '平台额度已用完，请先配置自己的模型 API', code: 'QUOTA_EXHAUSTED', job: this.store.getJob(job.id) }
     }
@@ -126,6 +138,13 @@ export class Jobs {
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error), code: 'INSTANCE_NOT_READY' }
       }
+    }
+
+    if (this.store.activeJobForRepo(repo.id) !== undefined) {
+      return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
+    }
+    if (this.store.countActiveJobs() >= 2) {
+      return { ok: false, error: '平台当前已有 2 个任务在运行，请稍后再试。', code: 'JOB_LIMIT' }
     }
 
     const platformToken = `flg_${randomToken(32)}`
@@ -212,16 +231,20 @@ export class Jobs {
   private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }, revoke: () => void, attribution: Attribution | null = null, evidence: Evidence | null = null): void {
     const job = this.store.getJob(jobId)
     if (job === undefined) return
+    const branch = result.branch ?? job.branch
+    const prUrl = result.prUrl ?? job.pr_url
+    const issueUrl = result.issueUrl ?? job.issue_url
+    const reviewScore = result.reviewScore ?? job.review_score
     this.store.updateJob(jobId, {
       status: result.status,
-      branch: result.branch ?? null,
-      pr_url: result.prUrl ?? null,
-      issue_url: result.issueUrl ?? null,
-      review_score: result.reviewScore ?? null,
+      branch,
+      pr_url: prUrl,
+      issue_url: issueUrl,
+      review_score: reviewScore,
       attribution_json: attribution === null ? job.attribution_json : JSON.stringify(attribution),
       evidence_json: evidence === null ? job.evidence_json : JSON.stringify(evidence),
-      summary: (result.summary ?? '').slice(0, 4000),
-      error: (result.error ?? '').slice(0, 2000),
+      summary: (result.summary ?? job.summary ?? '').slice(0, 4000),
+      error: (result.error ?? job.error ?? '').slice(0, 2000),
       finished_at: nowIso(),
     })
     if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_at: nowIso(), last_review_status: result.status })
@@ -232,9 +255,9 @@ export class Jobs {
     revoke()
     this.store.audit(job.user_id, `job.${result.status}`, jobId)
     this.store.event(`job_${result.status}`, { userId: job.user_id, repoId: job.repo_id, jobId })
-    if (result.status === 'succeeded' && result.prUrl !== undefined) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
-    if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? '未知原因'}`)
-    if (result.status === 'succeeded') void this.postAutomationComment(job, result, attribution)
+    if (result.status === 'succeeded' && prUrl !== null) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
+    if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? job.error ?? '未知原因'}`)
+    if (result.status === 'succeeded') void this.postAutomationComment(job, { prUrl: prUrl ?? undefined, issueUrl: issueUrl ?? undefined }, attribution)
     if (result.status === 'succeeded' || result.status === 'failed') void this.sendJobEmail(job, result)
     void this.captureTeamStats(jobId)
   }
@@ -244,7 +267,7 @@ export class Jobs {
     const job = this.store.getJob(jobId)
     if (job === undefined) return
     try {
-      const state = await this.instances.teamState(job.repo_id)
+      const state = await this.instances.teamState(job.repo_id, 20_000)
       const stats = state.bots.map((bot) => ({
         role: bot.role,
         label: bot.label,
@@ -276,8 +299,8 @@ export class Jobs {
       teamUrl: `${this.config.baseUrl}/repos/${repo.id}/team`,
       issueUrl: result.issueUrl ?? job.issue_url,
       prUrl: result.prUrl ?? job.pr_url,
-      summary: result.summary ?? '',
-      error: result.error ?? '',
+      summary: result.summary ?? job.summary ?? '',
+      error: result.error ?? job.error ?? '',
       reviewScore: result.reviewScore ?? job.review_score,
     }
     try {
@@ -299,7 +322,9 @@ export class Jobs {
       'Continue on the same branch and update the existing PR. Do not open a second PR or create a new issue.',
       'Make the smallest correct fix, add or adjust tests, run the relevant checks, and callback with the branch and PR URL.',
     ].join('\n')
-    return this.enqueue(repo, 'followup', goal, 'iterate', { branch: input.branch, prUrl: input.prUrl })
+    const result = await this.enqueue(repo, 'followup', goal, 'iterate', { branch: input.branch, prUrl: input.prUrl })
+    if (!result.ok) this.store.deleteSetting(key)
+    return result
   }
 
   private async notifyQuestions(): Promise<void> {
@@ -313,7 +338,7 @@ export class Jobs {
         if (user === undefined || user.status !== 'approved') continue
         let state
         try {
-          state = await this.instances.teamState(repo.id)
+          state = await this.instances.teamState(repo.id, 10_000)
         } catch {
           continue
         }
@@ -389,7 +414,7 @@ export class Jobs {
       }
       if (this.instances === undefined || this.config.flybot.instanceImage === '') continue
       try {
-        const state = await this.instances.teamState(repo.id)
+        const state = await this.instances.teamState(repo.id, 15_000)
         for (const question of state.questions) {
           if (question.question !== '') questions.push({ repo: label, question: question.question })
         }
@@ -433,18 +458,22 @@ export class Jobs {
       const key = `digest_sent:${user.id}:${clock.date}`
       if (this.store.getSetting(key) !== undefined) continue
       this.store.setSetting(key, nowIso())
+      let replyKey: string | undefined
       try {
         const digest = await this.buildDigest(user, repos, clock.date)
         let replyAddress: string | undefined
         if (this.config.inboundEmailSecret !== '') {
           const token = randomToken(16)
-          this.store.setSetting(`email_reply:${token}`, `${user.id}:${repos[0]!.id}:${Date.now()}`)
+          replyKey = `email_reply:${token}`
+          this.store.setSetting(replyKey, `${user.id}:${repos[0]!.id}:${Date.now()}`)
           replyAddress = replyAddressFor(this.config.mail.from, token)
           digest.replyAddress = replyAddress
         }
         await this.mailer.send({ to: email, ...dailyDigestEmail(user, digest), ...(replyAddress === undefined ? {} : { replyTo: replyAddress }) })
         log.info('daily digest sent', { user: user.login, date: clock.date })
       } catch (error) {
+        this.store.deleteSetting(key)
+        if (replyKey !== undefined) this.store.deleteSetting(replyKey)
         log.warn('daily digest failed', { user: user.login, error: String(error) })
       }
     }
@@ -504,12 +533,20 @@ export class Jobs {
     if (status === 'running') {
       this.store.updateJob(jobId, {
         status: 'running',
+        started_at: job.started_at ?? nowIso(),
         ...(branch === undefined ? {} : { branch }),
+        ...(prUrl === undefined ? {} : { pr_url: prUrl }),
+        ...(issueUrl === undefined ? {} : { issue_url: issueUrl }),
+        ...(reviewScore === undefined ? {} : { review_score: reviewScore }),
         ...(summary === undefined ? {} : { summary }),
         ...(attribution === null ? {} : { attribution_json: JSON.stringify(attribution) }),
         ...(evidence === null ? {} : { evidence_json: JSON.stringify(evidence) }),
         ...(checkpoint === undefined ? {} : { checkpoint }),
       })
+      if (job.status === 'queued') {
+        if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_status: 'running' })
+        else this.store.updateRepo(job.repo_id, { last_status: 'running' })
+      }
       return { ok: true }
     }
     const revoke = (): void => {
@@ -576,13 +613,21 @@ export class Jobs {
 
   async tick(): Promise<void> {
     const staleBefore = addMinutes(-this.config.runner.timeoutMinutes)
-    for (const job of this.store.staleRunningJobs(staleBefore)) {
-      this.finish(job.id, { status: 'failed', error: '任务超时未回报' }, () => {})
+    const staleJobs = [...this.store.staleQueuedJobs(addMinutes(-10)), ...this.store.staleRunningJobs(staleBefore)]
+    for (const job of staleJobs) {
+      const revoke = (): void => {
+        const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
+        if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
+      }
+      this.finish(job.id, { status: 'failed', error: job.status === 'queued' ? '任务排队超时未启动' : '任务超时未回报' }, revoke)
     }
     this.store.deleteExpiredJobTokens()
+    await this.notifyQuestions().catch((error) => log.warn('question notification pass failed', { error: String(error) }))
+    await this.maybeSendDigests().catch((error) => log.warn('daily digest pass failed', { error: String(error) }))
     if (this.store.countActiveJobs() >= 2) return
     for (const repo of this.store.listReviewRepos()) {
       if (this.store.countActiveJobs() >= 2) break
+      if (!this.userReadyForScheduling(repo.user_id)) continue
       if (!this.instanceReady(repo.id)) continue
       if (this.store.activeJobForRepo(repo.id) !== undefined) continue
       if (!this.dueReview(repo)) continue
@@ -592,6 +637,7 @@ export class Jobs {
     }
     for (const repo of this.store.listAutoRepos()) {
       if (this.store.countActiveJobs() >= 2) break
+      if (!this.userReadyForScheduling(repo.user_id)) continue
       if (!this.instanceReady(repo.id)) continue
       if (this.store.activeJobForRepo(repo.id) !== undefined) continue
       if (!this.due(repo)) continue
@@ -599,8 +645,10 @@ export class Jobs {
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
       log.info('scheduled job', { repo: `${repo.owner}/${repo.name}`, ok: result.ok, job: result.job?.id })
     }
-    await this.notifyQuestions().catch((error) => log.warn('question notification pass failed', { error: String(error) }))
-    await this.maybeSendDigests().catch((error) => log.warn('daily digest pass failed', { error: String(error) }))
+  }
+
+  private userReadyForScheduling(userId: string): boolean {
+    return this.store.userById(userId)?.status === 'approved'
   }
 
   private instanceReady(repoId: string): boolean {

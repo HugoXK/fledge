@@ -213,6 +213,7 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     const statusPage = await built.app.inject({ method: 'GET', url: '/apply/status', headers: { cookie: tokenCookie } })
     assert.equal(statusPage.statusCode, 200)
     assert.match(statusPage.body, /排队/)
+    assert.match(statusPage.body, /<span data-queue-position>/)
 
     const application = await built.app.inject({ method: 'GET', url: '/api/application', headers: { cookie: tokenCookie } })
     assert.equal(application.statusCode, 200)

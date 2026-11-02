@@ -1,1 +1,0 @@
-Moved the task template, goal, auto-iterate interval and reviewer settings into the GitHub App repository picker so both onboarding paths configure repositories the same way, and replaced long inline help with compact hover/focus info icons.
