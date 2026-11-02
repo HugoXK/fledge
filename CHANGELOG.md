@@ -5,6 +5,13 @@ All notable changes to Fledge are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-11-02
+
+### Added
+
+- Added a live team control surface: the team console now receives Server-Sent Events for role activity, open questions, job progress and quota, answers questions inline without a refresh, and can request a stop. A hard stop is used where DSH exposes one; otherwise the stop is delivered as a message and reported as a request. Guidance, answers and stop actions are audited.
+
+
 ## [0.2.0] — 2026-10-31
 
 ### Added

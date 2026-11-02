@@ -562,18 +562,20 @@ export function teamPage(input: {
       </div>
       <div class="row">
         ${instanceActions}
+        ${ready ? `<button class="btn btn-ghost" type="button" data-team-stop>${escapeHtml(t('请求暂停', 'Request stop'))}</button>` : ''}
         <button class="btn btn-ghost" type="button" onclick="location.reload()">${escapeHtml(t('刷新', 'Refresh'))}</button>
       </div>
     </div>
   </section>
   ${stateErrorHtml}
-  <section class="card" id="team-live" data-team-api="/api/repos/${escapeHtml(repo.id)}/team" data-team-locale="${escapeHtml(locale)}">
-    <div class="row between"><h2>${escapeHtml(t('团队状态', 'Team status'))}</h2><span class="fine">${escapeHtml(t('上次更新', 'Updated'))} <span data-team-updated>—</span></span></div>
+  <p class="fine" data-team-control></p>
+  <section class="card" id="team-live" data-team-api="/api/repos/${escapeHtml(repo.id)}/team" data-team-events="/api/repos/${escapeHtml(repo.id)}/team/events" data-team-answer="/api/repos/${escapeHtml(repo.id)}/team/answer" data-team-stop-url="/api/repos/${escapeHtml(repo.id)}/team/stop" data-team-csrf="${escapeHtml(viewer.csrfToken)}" data-team-locale="${escapeHtml(locale)}">
+    <div class="row between"><h2>${escapeHtml(t('团队状态', 'Team status'))}</h2><span class="fine">${escapeHtml(t('实时更新', 'Live'))} · <span data-team-updated>—</span></span></div>
     <div class="team-grid">${roleCards}</div>
     ${sessionDetails}
   </section>
   <section class="cols">
-    <div class="card"><h2>${escapeHtml(t('待回答的问题', 'Open questions'))}</h2>${questionHtml}</div>
+    <div class="card"><h2>${escapeHtml(t('待回答的问题', 'Open questions'))}</h2><div id="team-questions">${questionHtml}</div></div>
     <div class="card"><h2>${escapeHtml(t('发送指导意见', 'Send guidance'))}</h2>${guidanceForm}</div>
   </section>
   <section class="card">
@@ -657,6 +659,9 @@ const AUDIT_ACTIONS: Record<string, [string, string]> = {
   'job.succeeded': ['任务成功', 'Job succeeded'],
   'job.failed': ['任务失败', 'Job failed'],
   'review.enqueued': ['审核入队', 'Review queued'],
+  'team.guidance': ['发送团队指导', 'Team guidance'],
+  'team.answer': ['回答团队问题', 'Team question answered'],
+  'team.stop': ['暂停团队', 'Team stop requested'],
   'flybot.instance.ready': ['FlyBot 实例就绪', 'FlyBot instance ready'],
   'flybot.instance.failed': ['FlyBot 实例失败', 'FlyBot instance failed'],
   'flybot.instance.stopped': ['FlyBot 实例停止', 'FlyBot instance stopped'],

@@ -28,6 +28,12 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/repos/:id/instance/stop` | owner + CSRF | Stop the per-repository FlyBot instance |
 | POST | `/repos/:id/refresh` | owner + CSRF | Re-check the upstream, fork and permissions |
 | POST | `/repos/:id/review` | owner + CSRF | Enqueue a manual review job |
+| GET | `/repos/:id/team` | owner | Team console |
+| GET | `/api/repos/:id/team` | owner | Team state JSON (polling fallback) |
+| GET | `/api/repos/:id/team/events` | owner | Server-Sent Events snapshot stream |
+| POST | `/repos/:id/team/guidance` | owner + CSRF | Send guidance to a role |
+| POST | `/api/repos/:id/team/answer` | owner + CSRF | Answer a team question |
+| POST | `/api/repos/:id/team/stop` | owner + CSRF | Stop the active roles (hard when possible, otherwise a stop request) |
 | POST | `/repos/:id/settings` | owner + CSRF | Goal, cadence, enabled, reviewer interval |
 | POST | `/repos/:id/delete` | owner + CSRF | Delete repo and jobs |
 | GET | `/settings` | approved | Account, model, API tokens |
@@ -41,6 +47,26 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/admin/users/:id/quota` | admin + CSRF | Set quota in CNY |
 | GET | `/approve/:token` | token | Confirmation page |
 | POST | `/approve/:token` | token | Apply approve/reject |
+
+## Team endpoints
+
+`GET /api/repos/:id/team/events` is an owner-only SSE stream. It emits a
+`snapshot` event when roles, questions, jobs or quota change, and a heartbeat
+comment otherwise. The snapshot includes `bots`, `questions` (with `id`,
+`sessionId`, `question`, `detail`, `options`, `multiSelect`), `jobs` (summary,
+status, issue/PR and attribution) and quota. Clients should fall back to the
+5-second JSON poll if the stream drops.
+
+`POST /api/repos/:id/team/answer` takes JSON:
+
+```json
+{ "sessionId": "session-…", "questionId": "q1", "selected": ["Fix the bug"], "custom": "" }
+```
+
+`POST /api/repos/:id/team/stop` takes `{ "target": "lead" }` or an empty target
+to stop every role that is currently thinking/working. The response distinguishes
+`stopped` (hard cancel) from `requested` (stop message delivered; it takes effect
+at the next safe point). Both endpoints require the `x-csrf-token` header.
 
 ## Job endpoints
 
@@ -150,7 +176,7 @@ Status code: `402`.
 
 ## Health
 
-`GET /healthz` → `{ "ok": true, "service": "fledge", "version": "0.2.0" }`.
+`GET /healthz` → `{ "ok": true, "service": "fledge", "version": "0.2.1" }`.
 
 ## Conventions
 

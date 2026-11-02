@@ -51,8 +51,23 @@ only that container.
 
 Every state-changing browser form includes a hidden `csrf` field derived from
 `HMAC(SESSION_SECRET, sessionHash)`. The server also accepts `X-CSRF-Token` for
-future JSON endpoints. Approval links and job endpoints use their own bearer
-secrets and do not use CSRF.
+JSON endpoints. Approval links and job endpoints use their own bearer secrets
+and do not use CSRF.
+
+### Team console and agent controls
+
+- `GET /api/repos/:id/team/events` is owner-only. It is read-only and streams
+  the same state the team console already shows; it never exposes the DSH token
+  or the bridge token.
+- Answering a question, sending guidance and requesting a stop require the
+  session, repository ownership and `X-CSRF-Token`, and are written to the audit
+  log. Answer text is not logged.
+- A stop request tries the DSH room cancel first; otherwise it delivers a stop
+  message. The UI and API distinguish a hard stop from a request. The native DSH
+  UI is not exposed until the v0.3 authenticated workspace proxy exists.
+- The v0.3 workspace must use a short-lived signed ticket, a server-side DSH
+  cookie, cookie isolation and an ownership check on every request; a raw DSH
+  token must never appear in a browser URL.
 
 ### OAuth
 

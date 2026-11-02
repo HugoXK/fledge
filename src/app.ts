@@ -12,6 +12,8 @@ import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, rejectedEmail } from './email/templates.js'
 import { registerGateway } from './gateway/gateway.js'
 import { assertSafeModelUrl } from './gateway/modelUrl.js'
+import { quotaView } from './gateway/quota.js'
+import { parseAttributionJson } from './lib/attribution.js'
 import { Jobs } from './jobs/service.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
@@ -164,7 +166,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     sessions.setCookies(reply, raw, { sessionHash, user, csrfToken: sessions.csrfFor(sessionHash) })
   }
 
-  app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: '0.2.0', time: new Date().toISOString() }))
+  app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: '0.2.1', time: new Date().toISOString() }))
 
   app.get('/lang/:locale', async (request, reply) => {
     const requested = String((request.params as Record<string, string>).locale)
@@ -556,6 +558,121 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return reply.redirect(`/repos/${repo.id}/team?error=${encodeURIComponent(message)}`)
+    }
+  })
+
+  app.get('/api/repos/:id/team/events', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const instance = store.getRepoInstance(repo.id)
+    if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
+    reply.hijack()
+    reply.raw.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    })
+    let closed = false
+    let busy = false
+    let last = ''
+    let heartbeat = 0
+    let timer: NodeJS.Timeout | undefined
+    const close = (): void => {
+      if (closed) return
+      closed = true
+      if (timer !== undefined) clearInterval(timer)
+      try { reply.raw.end() } catch {}
+    }
+    const send = (event: string, data: unknown): void => {
+      if (!closed) reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+    }
+    request.raw.on('close', close)
+    reply.raw.on('close', close)
+    const tick = async (): Promise<void> => {
+      if (closed || busy) return
+      busy = true
+      try {
+        const state = await instances.teamState(repo.id)
+        const user = store.userById(viewer.user.id) ?? viewer.user
+        const quota = quotaView(user, config)
+        const snapshot = {
+          ...state,
+          quota: {
+            unlimited: quota.unlimited,
+            initialCny: quota.initialCny,
+            usedCny: quota.usedCny,
+            remainingCny: quota.remainingCny,
+            exhausted: quota.exhausted,
+          },
+          jobs: store.listJobsForRepo(repo.id, 5).map((job) => ({
+            id: job.id,
+            kind: job.kind,
+            status: job.status,
+            summary: job.summary,
+            error: job.error,
+            issueUrl: job.issue_url,
+            prUrl: job.pr_url,
+            reviewScore: job.review_score,
+            attribution: parseAttributionJson(job.attribution_json),
+            createdAt: job.created_at,
+            finishedAt: job.finished_at,
+          })),
+        }
+        const text = JSON.stringify(snapshot)
+        if (text !== last) {
+          last = text
+          send('snapshot', { ...snapshot, updatedAt: new Date().toISOString() })
+        } else if (++heartbeat >= 15) {
+          heartbeat = 0
+          reply.raw.write(': ping\n\n')
+        }
+      } catch (error) {
+        send('error', { message: error instanceof Error ? error.message : String(error) })
+        close()
+      } finally {
+        busy = false
+      }
+    }
+    timer = setInterval(() => void tick(), 1_000)
+    await tick()
+  })
+
+  app.post('/api/repos/:id/team/answer', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+    const questionId = typeof body.questionId === 'string' ? body.questionId : ''
+    const selected = Array.isArray(body.selected) ? body.selected.filter((value): value is string => typeof value === 'string') : []
+    const custom = typeof body.custom === 'string' ? body.custom : ''
+    try {
+      await instances.answerQuestion(repo.id, sessionId, questionId, selected, custom)
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+    store.audit(viewer.user.id, 'team.answer', `${repo.owner}/${repo.name} question=${questionId.slice(0, 80)}`)
+    return { ok: true }
+  })
+
+  app.post('/api/repos/:id/team/stop', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const target = typeof body.target === 'string' ? body.target.trim() : ''
+    let state
+    try {
+      state = await instances.teamState(repo.id)
+    } catch (error) {
+      return reply.code(503).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+    const sessions = target === ''
+      ? state.bots.filter((bot) => bot.activity === 'thinking' || bot.activity === 'working').map((bot) => bot.sessionId)
+      : state.bots.filter((bot) => bot.role === target).map((bot) => bot.sessionId)
+    if (sessions.length === 0) return { ok: true, stopped: [], requested: [], message: '当前没有正在工作的角色。' }
+    try {
+      const result = await instances.stopSessions(repo.id, sessions)
+      store.audit(viewer.user.id, 'team.stop', `${repo.owner}/${repo.name} hard=${result.stopped.length} soft=${result.requested.length}`)
+      return { ok: true, ...result }
+    } catch (error) {
+      return reply.code(503).send({ error: error instanceof Error ? error.message : String(error) })
     }
   })
 

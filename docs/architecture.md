@@ -110,6 +110,25 @@ which must pass the job block to the Lead verbatim; review jobs go to the
 Reviewer only when the repository has enabled it. The Lead delegates to the
 member whose scope fits and posts the final callback exactly once.
 
+### Team console and live events
+
+The team console is owner-only. `GET /api/repos/:id/team/events` streams
+Server-Sent Events: a full snapshot when the DSH revision, role activity,
+questions, jobs or quota changes, plus a heartbeat. The browser uses
+`EventSource` and falls back to the existing 5-second JSON poll on error.
+Questions render inline with their options and a custom field;
+`POST /api/repos/:id/team/answer` sends the DSH `answer-question` payload.
+`POST /api/repos/:id/team/stop` first tries DSH `stop-member-work` when the role
+is in a room, otherwise it sends a stop message that takes effect at the next
+safe point. The UI reports the difference honestly; it never claims a turn was
+paused when only a request was delivered. Every answer, guidance and stop is
+written to the audit log.
+
+The native DSH UI is not exposed by the console. The planned v0.3 workspace uses
+a per-repository authenticated subdomain and a Fledge shell around the native UI
+(branded "Powered by FlyBot"), with a short-lived ticket and server-side cookie
+injection so the raw DSH token never reaches the browser.
+
 ### FlyBot bridge
 
 The bridge is a tiny HTTP service on the FlyBot host. Fledge POSTs a job

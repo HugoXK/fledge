@@ -39,9 +39,12 @@ export interface TeamBotState {
 }
 
 export interface TeamQuestionState {
+  id: string
   sessionId: string
   question: string
+  detail: string
   options: string[]
+  multiSelect: boolean
 }
 
 export interface TeamLiveState {
@@ -584,12 +587,15 @@ server.listen(3081, '0.0.0.0')
         }
       }),
       questions: Object.entries(questions).slice(0, 10).map(([sessionId, question]) => ({
+        id: typeof question.id === 'string' ? question.id : '',
         sessionId,
         question: typeof question.question === 'string' ? question.question.slice(0, 500) : '',
+        detail: typeof question.detail === 'string' ? question.detail.slice(0, 1000) : '',
         options: Array.isArray(question.options) ? question.options.map((option) => {
           const value = option as Record<string, unknown>
           return typeof value.label === 'string' ? value.label : ''
         }).filter((value) => value !== '') : [],
+        multiSelect: question.multiSelect === true,
       })),
       instance: { status: bridge.instance.status, container: bridge.instance.container },
     }
@@ -612,6 +618,51 @@ server.listen(3081, '0.0.0.0')
     const body = text.trim().slice(0, 4000)
     if (body === '') throw new Error('指导意见不能为空')
     await this.dsh(bridge.instance.bridge_port, bridge.token, 'send', { sessionId, text: body })
+  }
+
+  async answerQuestion(repoId: string, sessionId: string, questionId: string, selected: string[], custom: string): Promise<void> {
+    if (sessionId === '' || questionId === '') throw new Error('问题已失效，请刷新后重试')
+    const bridge = this.bridgeFor(repoId)
+    const answer: Record<string, unknown> = {}
+    const picked = [...new Set(selected.map((value) => value.trim()).filter((value) => value !== ''))].slice(0, 20)
+    if (picked.length > 0) answer.selected = picked.map((value) => value.slice(0, 200))
+    const text = custom.trim().slice(0, 2000)
+    if (text !== '') answer.custom = text
+    if (Object.keys(answer).length === 0) throw new Error('请选择或填写一个答案')
+    await this.dsh(bridge.instance.bridge_port, bridge.token, 'answer-question', { sessionId, questionId, answer })
+  }
+
+  async stopSessions(repoId: string, sessionIds: string[]): Promise<{ stopped: string[]; requested: string[] }> {
+    const bridge = this.bridgeFor(repoId)
+    const raw = await this.dsh(bridge.instance.bridge_port, bridge.token, 'state', {})
+    const value = ((raw as { value?: Record<string, unknown> }).value ?? raw) as Record<string, unknown>
+    const rooms = (value.rooms ?? {}) as Record<string, Record<string, unknown>>
+    const stopped: string[] = []
+    const requested: string[] = []
+    const text = 'Human stop request from Fledge. Stop the current work at the next safe point, do not start another step, and wait for further instructions. Do not merge.'
+    for (const sessionId of [...new Set(sessionIds.filter((value) => value !== ''))]) {
+      let roomId = ''
+      let botId = ''
+      for (const [id, room] of Object.entries(rooms)) {
+        const sessions = (room.sessions ?? {}) as Record<string, string>
+        const entry = Object.entries(sessions).find(([, value]) => value === sessionId)
+        if (entry !== undefined) {
+          roomId = id
+          botId = entry[0]
+          break
+        }
+      }
+      if (roomId !== '' && botId !== '') {
+        const result = await this.dsh(bridge.instance.bridge_port, bridge.token, 'stop-member-work', { roomId, botId }).catch(() => undefined)
+        if ((result as { ok?: boolean } | undefined)?.ok === true) {
+          stopped.push(sessionId)
+          continue
+        }
+      }
+      await this.dsh(bridge.instance.bridge_port, bridge.token, 'send', { sessionId, text })
+      requested.push(sessionId)
+    }
+    return { stopped, requested }
   }
 
   async stop(repoId: string, update = true): Promise<void> {
