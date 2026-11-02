@@ -165,7 +165,10 @@ The dashboard paginates repositories and jobs at ten per page; a repository page
 and the team console paginate their job tables at ten per page, with the page
 number clamped to the available pages. Add repository presents two explicit
 alternatives: the GitHub App installation path (recommended) and a collapsed
-fine-grained token form; users pick one, not both.
+fine-grained token form; users pick one, not both. The App repository picker
+carries the same task template, goal, auto-iterate interval and reviewer
+settings as the token form, so both paths configure repositories identically.
+Long help text is shown through compact `!` info icons on hover/focus.
 
 ### Team observation and effectiveness
 

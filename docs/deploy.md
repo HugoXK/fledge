@@ -70,7 +70,12 @@ For the hosted instance `MAIL_FROM=fledge@hugoxk.online`; job and digest
 notifications use the same sender. The standalone FlyBot service on
 `flybot.hugoxk.online` keeps `flybot@hugoxk.online`; they are separate projects.
 Set `DIGEST_HOUR` (default 9) and `DIGEST_TIMEZONE` (default `Asia/Shanghai`) for
-the daily summary. For email replies, set `INBOUND_EMAIL_SECRET` and route the `fledge@` mailbox to
+the daily summary. The GitHub App must be **public** for users other than its owner to install it:
+GitHub → Settings → Developer settings → GitHub Apps → Fledge Platform →
+Make public, with "Where can this app be installed?" set to **Any account**.
+Fledge's login/approval still gates who can use the platform.
+
+For email replies, set `INBOUND_EMAIL_SECRET` and route the `fledge@` mailbox to
 a Cloudflare Email Worker (sample: `deploy/cloudflare-email-worker.js`) or an
 equivalent inbound webhook. The worker must send the same secret in
 `X-Fledge-Email-Secret` and preserve plus addressing

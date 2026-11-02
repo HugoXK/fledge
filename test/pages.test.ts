@@ -5,7 +5,7 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
-import { dashboardPage } from '../src/views/pages.js'
+import { appReposPage, dashboardPage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
 
 test('healthz reports the package version', async () => {
@@ -269,6 +269,8 @@ test('dashboard paginates repositories and jobs at ten per page', async () => {
     assert.match(first.body, /方式一（推荐）：GitHub App/)
     assert.match(first.body, /方式二：手动提供 fine-grained token/)
     assert.match(first.body, /add-manual/)
+    assert.match(first.body, /info-tip/)
+    assert.doesNotMatch(first.body, /间隔是两次自动迭代之间的最小间隔/)
     const secondJobs = await built.app.inject({ method: 'GET', url: '/dashboard?jobsPage=2', headers: { cookie } })
     assert.equal((secondJobs.body.match(/data-job-id=/g) || []).length, 1)
     const secondRepos = await built.app.inject({ method: 'GET', url: '/dashboard?reposPage=2', headers: { cookie } })
@@ -295,5 +297,31 @@ test('a repository job table paginates at ten per page', async () => {
     assert.equal((second.body.match(/data-job-id=/g) || []).length, 1)
   } finally {
     await built.close()
+  }
+})
+
+
+test('app onboarding carries the repository settings and help is behind info icons', () => {
+  const config = testConfig({ githubApp: { ...testConfig().githubApp, id: '1', slug: 'fledge' } })
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'app-settings-user', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const page = appReposPage({
+      config,
+      locale: 'zh',
+      viewer,
+      installations: [{ installation_id: 1, account_login: 'acme', account_type: 'User' }],
+      installationId: 1,
+      repos: [{ fullName: 'acme/repo', owner: 'acme', name: 'repo', private: false, defaultBranch: 'main' }],
+    })
+    assert.match(page, /name="goal"/)
+    assert.match(page, /name="auto"/)
+    assert.match(page, /name="interval"/)
+    assert.match(page, /name="review"/)
+    assert.match(page, /name="reviewInterval"/)
+    assert.match(page, /info-tip/)
+  } finally {
+    store.close()
   }
 })

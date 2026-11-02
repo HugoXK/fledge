@@ -15,6 +15,10 @@ function csrf(viewer: Viewer): string {
   return `<input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />`
 }
 
+function infoTip(text: string): string {
+  return `<span class="info-tip" tabindex="0" role="img" aria-label="${escapeHtml(text)}" data-tip="${escapeHtml(text)}">!</span>`
+}
+
 function maskEmail(email: string): string {
   const at = email.lastIndexOf('@')
   if (at <= 0) return '***'
@@ -314,21 +318,18 @@ export function dashboardPage(input: {
         .join('')
   const manualForm = `      <form method="post" action="/repos" class="form">
         ${csrf(viewer)}
-        <label>${escapeHtml(t('上游仓库', 'Upstream repository'))} <input name="repo" placeholder="owner/name" required autocomplete="off" /></label>
-        <label>${escapeHtml(t('GitHub token', 'GitHub token'))} <input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required autocomplete="off" /></label>
+        <label>${escapeHtml(t('上游仓库', 'Upstream repository'))}${infoTip(t('Fledge 会检查并在需要时创建你的 fork；开发分支推到 fork，issue 和 PR 提到上游。若上游 owner 就是你，则直接在原仓库开分支。', 'Fledge checks and creates your fork when needed; branches go to the fork while issues and PRs target the upstream. If you own the upstream, work directly in it.'))} <input name="repo" placeholder="owner/name" required autocomplete="off" /></label>
+        <label>${escapeHtml(t('GitHub token', 'GitHub token'))}${infoTip(t('token 需要能读取上游、创建 fork、写入 fork，并在上游创建 issue/PR；建议只授权实际需要的仓库。token 会加密保存，页面不会回显。', 'The token must read the upstream, create and write the fork, and open issues/PRs on the upstream. Grant only the repositories you need. It is encrypted and never shown again.'))} <input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required autocomplete="off" /></label>
         ${goalTemplateSelect(t, 'goal-new')}
-        <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))} <textarea id="goal-new" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
+        <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定。模板会填入一个可执行的目标。', 'The more concrete the goal, the more stable the output. A template fills in a ready prompt.'))} <textarea id="goal-new" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
-          <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))} <select name="interval">${intervalOptions(t)}</select></label>
+          <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))}${infoTip(t('最小间隔，不是 PR/issue 总数上限；同一仓库同时最多一个任务，平台全局最多 2 个任务。手动运行会重置倒计时，审核任务不会。', 'Minimum gap, not a cap on PRs/issues; one job per repository and at most two platform-wide. A manual run resets the countdown; a review does not.'))} <select name="interval">${intervalOptions(t)}</select></label>
         </div>
         <div class="row" data-review-group>
-          <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}</label>
+          <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有你在上游有 maintain/write 权限时才可启用；审核任务独立于迭代任务。', 'Available only when you have maintain/write permission on the upstream; review jobs run separately from iterate jobs.'))}</label>
           <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval">${reviewIntervalOptions(t)}</select></label>
         </div>
-        <p class="fine">${escapeHtml(t('间隔是两次自动迭代之间的最小间隔，不是 PR/issue 总数上限。每次运行仍会创建一个 issue/PR，仓库可以持续积累多个；上一轮未结束时本轮会跳过。手动运行会重置迭代倒计时，审核任务不会。平台全局同时最多 2 个任务，多个仓库会排队。', 'The interval is the minimum gap between automatic runs, not a cap on issues or PRs. Each run can create one issue/PR and the repository can accumulate many; a run is skipped while the previous one is still active. A manual iterate run resets the countdown; a review run does not. The platform runs at most two jobs at a time, so extra repositories wait in the queue.'))}</p>
-        <p class="fine">${escapeHtml(t('填写上游仓库（例如 openJiuwen-ai/DigitalMate）。Fledge 会检查并在需要时创建你的 fork；开发分支推到 fork，issue 和 PR 提到上游。若上游 owner 就是你，则直接在原仓库开分支。审核角色只在上游给你 maintain/write 权限时启用。', 'Enter the upstream repository (for example openJiuwen-ai/DigitalMate). Fledge checks and creates your fork when needed; branches go to the fork, while issues and PRs target the upstream. If you own the upstream, work directly in it. The reviewer role is enabled only when the upstream grants you maintain/write permission.'))}</p>
-        <p class="fine">${escapeHtml(t('token 需要能读取上游、创建 fork、写入 fork，并在上游创建 issue/PR；建议使用 fine-grained token 并只授权实际需要的仓库。token 会加密保存，页面不会回显。', 'The token must read the upstream, create a fork, write to the fork, and create issues/PRs on the upstream. Use a fine-grained token limited to the repositories you actually need. It is encrypted at rest and never shown again.'))}</p>
         <button class="btn" type="submit">${escapeHtml(t('添加仓库', 'Add repository'))}</button>
       </form>`
   const body = `<section class="workspace-hero">
@@ -1283,6 +1284,19 @@ export function appReposPage(input: {
   const installationList = installations.length === 0
     ? `<p class="muted">${escapeHtml(t('还没有安装 GitHub App。安装并选择仓库后，可以直接在这里接入。', 'The GitHub App is not installed yet. Install it, choose repositories, then connect them here.'))}</p>`
     : `<div class="list">${installations.map((installation) => `<div class="list-row"><div class="list-main"><strong>@${escapeHtml(installation.account_login)}</strong><small>${escapeHtml(installation.account_type)} · installation ${installation.installation_id}</small></div><a class="link" href="/repos/new?installation=${installation.installation_id}">${escapeHtml(t('选择仓库', 'Choose repositories'))}</a></div>`).join('')}</div>`
+  const commonFields = `
+    <div class="card"><h3>${escapeHtml(t('仓库设置', 'Repository settings'))}</h3>
+      ${goalTemplateSelect(t, 'goal-app')}
+      <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定。模板会填入一个可执行的目标。', 'The more concrete the goal, the more stable the output. A template fills in a ready prompt.'))} <textarea id="goal-app" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
+      <div class="row">
+        <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
+        <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))}${infoTip(t('最小间隔，不是 PR/issue 总数上限；同一仓库同时最多一个任务，平台全局最多 2 个任务。', 'Minimum gap, not a cap on PRs/issues; one job per repository and at most two platform-wide.'))} <select name="interval">${intervalOptions(t)}</select></label>
+      </div>
+      <div class="row">
+        <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有你在上游有 maintain/write 权限时才可启用。', 'Available only when you have maintain/write permission on the upstream.'))}</label>
+        <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval">${reviewIntervalOptions(t)}</select></label>
+      </div>
+    </div>`
   const repoRows = (repos ?? []).map((repo) => `<tr>
     <td><label class="check"><input type="checkbox" name="repo" value="${escapeHtml(repo.fullName)}" /> <strong>${escapeHtml(repo.fullName)}</strong></label></td>
     <td>${repo.private ? escapeHtml(t('私有', 'Private')) : escapeHtml(t('公开', 'Public'))}</td>
@@ -1292,7 +1306,7 @@ export function appReposPage(input: {
     ? ''
     : `<section class="card">
         <h2>${escapeHtml(t('选择要接入的仓库', 'Choose repositories'))}</h2>
-        ${repoRows === '' ? `<p class="muted">${escapeHtml(t('这个安装没有可访问的仓库。', 'This installation has no accessible repositories.'))}</p>` : `<form method="post" action="/repos/app" class="form">${csrf(viewer)}<input type="hidden" name="installation" value="${installationId}" /><table><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('可见性', 'Visibility'))}</th><th>${escapeHtml(t('默认分支', 'Default branch'))}</th></tr></thead><tbody>${repoRows}</tbody></table><button class="btn" type="submit">${escapeHtml(t('接入选中的仓库', 'Connect selected repositories'))}</button></form>`}
+        ${repoRows === '' ? `<p class="muted">${escapeHtml(t('这个安装没有可访问的仓库。', 'This installation has no accessible repositories.'))}</p>` : `<form method="post" action="/repos/app" class="form">${csrf(viewer)}<input type="hidden" name="installation" value="${installationId}" /><table><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('可见性', 'Visibility'))}</th><th>${escapeHtml(t('默认分支', 'Default branch'))}</th></tr></thead><tbody>${repoRows}</tbody></table>${commonFields}<button class="btn" type="submit">${escapeHtml(t('接入选中的仓库', 'Connect selected repositories'))}</button></form>`}
       </section>`
   const body = `<section class="card">
     <div class="row between">

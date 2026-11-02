@@ -584,6 +584,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const rawSelected = body.repo
     const selected = (Array.isArray(rawSelected) ? rawSelected : [rawSelected]).filter((value): value is string => typeof value === 'string' && value.includes('/'))
     if (selected.length === 0) return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent('请选择至少一个仓库。')}`)
+    const goal = (typeof body.goal === 'string' ? body.goal : '').slice(0, 4000)
+    const autoIterate = body.auto === '1'
+    const interval = normalizeInterval(typeof body.interval === 'string' ? body.interval : undefined, 1440)
+    const review = body.review === '1'
+    const reviewInterval = normalizeInterval(typeof body.reviewInterval === 'string' ? body.reviewInterval : undefined, 1440)
     let available
     try {
       available = await githubApp.installationRepos(installationId)
@@ -607,9 +612,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
           defaultBranch: prepared.upstream.defaultBranch,
           tokenEnc: '',
           installationId,
-          goal: '',
-          autoIterate: false,
-          intervalMinutes: 1440,
+          goal,
+          autoIterate,
+          intervalMinutes: interval,
           upstreamOwner: prepared.upstream.owner,
           upstreamName: prepared.upstream.name,
           forkOwner: prepared.fork.owner,
@@ -621,8 +626,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
           permission: prepared.permission,
           canReview: prepared.canReview,
           canCreateIssue: prepared.canCreateIssue,
-          reviewerEnabled: false,
-          reviewIntervalMinutes: 1440,
+          reviewerEnabled: prepared.canReview && review,
+          reviewIntervalMinutes: reviewInterval,
           upstreamHtmlUrl: prepared.upstream.htmlUrl,
           forkHtmlUrl: prepared.fork.htmlUrl,
         })
