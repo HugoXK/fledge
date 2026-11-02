@@ -131,14 +131,20 @@ injection so the raw DSH token never reaches the browser.
 
 ### Email notifications
 
-Fledge sends job mail from the configured `MAIL_FROM` (production:
-`fledge@hugoxk.online`). It covers job success/failure and a new team question;
-the user-level `email_job_updates` switch controls these messages, while
-approval and quota mail always send. Question mails are deduped by
-`sessionId + questionId` in `settings`, so a restart or a slow browser does not
-spam the owner. Templates include the repo, job id, issue/PR links, summary or
-question, and a link to the team console; they never contain tokens or model
-keys.
+Fledge sends mail from the configured `MAIL_FROM` (production:
+`fledge@hugoxk.online`). The shared FlyBot service keeps its own
+`flybot@hugoxk.online` sender; the two projects do not share a mailbox.
+
+Each user can set `notify_email` (blank falls back to the GitHub email),
+`email_job_updates` and `email_daily_digest`. Job mail covers success/failure
+and a new team question; question mails are deduped by
+`sessionId + questionId` in `settings`. A server-side digest pass runs after
+`DIGEST_HOUR` in `DIGEST_TIMEZONE`, builds a 24-hour summary per approved user
+(jobs, PRs, spend, next scheduled runs, open questions) and sends it once per
+day (`digest_sent:<userId>:<date>`). Templates include the repo, job id,
+issue/PR links, summary or question, and a link to the team console; they never
+contain tokens or model keys. Approval and quota mail are transactional and are
+not controlled by the digest/job switches.
 
 ### FlyBot bridge
 

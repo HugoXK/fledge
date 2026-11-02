@@ -48,7 +48,8 @@ test('unlimited quota is shown instead of a finite balance', () => {
 test('email notification settings can be viewed and changed', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
-  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  const mailer = new MemoryMailer()
+  const built = await buildApp({ config, store, mailer, runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'mail-settings', status: 'approved' })
     const { cookie, csrf } = sessionFor(built, user)
@@ -56,14 +57,27 @@ test('email notification settings can be viewed and changed', async () => {
     assert.equal(page.statusCode, 200)
     assert.match(page.body, /邮件通知/)
     assert.match(page.body, /\/settings\/notifications/)
+    assert.match(page.body, /通知邮箱/)
     const changed = await built.app.inject({
       method: 'POST',
       url: '/settings/notifications',
       headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
-      payload: formBody({ csrf }),
+      payload: formBody({ csrf, email: 'me@example.com', jobUpdates: '1', dailyDigest: '1', action: 'save' }),
     })
     assert.equal(changed.statusCode, 302)
-    assert.equal(store.userById(user.id)?.email_job_updates, 0)
+    const updated = store.userById(user.id)
+    assert.equal(updated?.notify_email, 'me@example.com')
+    assert.equal(updated?.email_job_updates, 1)
+    assert.equal(updated?.email_daily_digest, 1)
+    const tested = await built.app.inject({
+      method: 'POST',
+      url: '/settings/notifications',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, email: 'me@example.com', jobUpdates: '1', dailyDigest: '1', action: 'test' }),
+    })
+    assert.equal(tested.statusCode, 302)
+    assert.equal(mailer.messages.length, 1)
+    assert.match(mailer.messages[0]!.subject, /测试邮件/)
   } finally {
     await built.close()
   }

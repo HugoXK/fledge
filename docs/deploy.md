@@ -66,8 +66,11 @@ stores the token. Configure OAuth before a public launch.
 
 Configure your operator SMTP account (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`,
 `SMTP_PASS`) and set `MAIL_FROM` / `ADMIN_EMAIL` to the addresses you control.
-For the hosted instance `MAIL_FROM=fledge@hugoxk.online`; job notifications use
-the same sender.
+For the hosted instance `MAIL_FROM=fledge@hugoxk.online`; job and digest
+notifications use the same sender. The standalone FlyBot service on
+`flybot.hugoxk.online` keeps `flybot@hugoxk.online`; they are separate projects.
+Set `DIGEST_HOUR` (default 9) and `DIGEST_TIMEZONE` (default `Asia/Shanghai`) for
+the daily summary.
 Use an app password if the provider requires one. The application sends:
 
 - the application email to `ADMIN_EMAIL` with approve/reject links;

@@ -47,6 +47,10 @@ export interface Config {
     bridgeToken: string
     timeoutMinutes: number
   }
+  digest: {
+    hour: number
+    timeZone: string
+  }
   flybot: {
     instanceImage: string
     instanceRoot: string
@@ -162,6 +166,10 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       bridgeUrl: text('FLYBOT_BRIDGE_URL', 'http://127.0.0.1:8787/run'),
       bridgeToken: text('FLYBOT_BRIDGE_TOKEN'),
       timeoutMinutes: number('JOB_TIMEOUT_MINUTES', 90),
+    },
+    digest: {
+      hour: Math.min(23, Math.max(0, number('DIGEST_HOUR', 9))),
+      timeZone: text('DIGEST_TIMEZONE', 'Asia/Shanghai'),
     },
     flybot: {
       instanceImage: text('FLYBOT_INSTANCE_IMAGE'),

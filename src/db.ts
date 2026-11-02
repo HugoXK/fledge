@@ -37,6 +37,8 @@ export interface UserRow {
   quota_unlimited: number
   quota_used_usd: number
   email_job_updates: number
+  email_daily_digest: number
+  notify_email: string | null
   github_token_enc: string | null
   own_llm_base_url: string | null
   own_llm_key_enc: string | null
@@ -207,6 +209,8 @@ CREATE TABLE IF NOT EXISTS users (
   quota_unlimited INTEGER NOT NULL DEFAULT 0,
   quota_used_usd REAL NOT NULL DEFAULT 0,
   email_job_updates INTEGER NOT NULL DEFAULT 1,
+  email_daily_digest INTEGER NOT NULL DEFAULT 1,
+  notify_email TEXT,
   github_token_enc TEXT,
   own_llm_base_url TEXT,
   own_llm_key_enc TEXT,
@@ -406,7 +410,7 @@ export class Store {
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
-    this.db.exec('PRAGMA user_version = 6;')
+    this.db.exec('PRAGMA user_version = 7;')
   }
 
   private migrateColumns(): void {
@@ -424,6 +428,8 @@ export class Store {
       ['reviewed_at', 'TEXT'],
       ['quota_unlimited', 'INTEGER NOT NULL DEFAULT 0'],
       ['email_job_updates', 'INTEGER NOT NULL DEFAULT 1'],
+      ['email_daily_digest', 'INTEGER NOT NULL DEFAULT 1'],
+      ['notify_email', 'TEXT'],
     ]
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE users ADD COLUMN ${name} ${type}`)
@@ -649,6 +655,14 @@ export class Store {
     this.run('UPDATE users SET email_job_updates = ? WHERE id = ?', enabled ? 1 : 0, id)
   }
 
+  setEmailDailyDigest(id: string, enabled: boolean): void {
+    this.run('UPDATE users SET email_daily_digest = ? WHERE id = ?', enabled ? 1 : 0, id)
+  }
+
+  setNotifyEmail(id: string, email: string | null): void {
+    this.run('UPDATE users SET notify_email = ? WHERE id = ?', email, id)
+  }
+
   addUserUsage(id: string, usd: number): void {
     this.run('UPDATE users SET quota_used_usd = quota_used_usd + ? WHERE id = ?', usd, id)
   }
@@ -872,6 +886,10 @@ export class Store {
     return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?', userId, limit)
   }
 
+  listJobsSince(userId: string, sinceIso: string): JobRow[] {
+    return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? AND (created_at >= ? OR finished_at >= ?) ORDER BY created_at DESC', userId, sinceIso, sinceIso)
+  }
+
   listJobsForRepo(repoId: string, limit = 20): JobRow[] {
     return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC LIMIT ?', repoId, limit)
   }
@@ -948,6 +966,11 @@ export class Store {
 
   usageTotal(userId: string): number {
     const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ?', userId)
+    return Number(row?.total ?? 0)
+  }
+
+  usageSince(userId: string, sinceIso: string): number {
+    const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ? AND at >= ?', userId, sinceIso)
     return Number(row?.total ?? 0)
   }
 

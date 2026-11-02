@@ -9,7 +9,8 @@ import { openStore, type Store, type UserRow } from './db.js'
 import { GithubOAuth } from './auth/github.js'
 import { requireAdmin, requireApproved, requireViewer, Sessions } from './auth/session.js'
 import { createMailer, type Mailer } from './email/mailer.js'
-import { approvedEmail, rejectedEmail } from './email/templates.js'
+import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
+import { notifyEmail } from './email/recipient.js'
 import { registerGateway } from './gateway/gateway.js'
 import { assertSafeModelUrl } from './gateway/modelUrl.js'
 import { quotaView } from './gateway/quota.js'
@@ -825,10 +826,36 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/settings/notifications', async (request, reply) => {
     const viewer = csrfGuard(request)
-    const enabled = form(request).enabled === '1'
-    store.setEmailJobUpdates(viewer.user.id, enabled)
-    store.audit(viewer.user.id, 'settings.email', enabled ? 'job updates on' : 'job updates off')
-    return reply.redirect(`/settings?notice=${encodeURIComponent(enabled ? '任务邮件通知已开启。' : '任务邮件通知已关闭。')}`)
+    const body = form(request)
+    const rawEmail = (body.email ?? '').trim().slice(0, 254)
+    if (rawEmail !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail)) {
+      return reply.redirect(`/settings?error=${encodeURIComponent('通知邮箱格式不正确。')}`)
+    }
+    const jobUpdates = body.jobUpdates === '1'
+    const dailyDigest = body.dailyDigest === '1'
+    store.setNotifyEmail(viewer.user.id, rawEmail === '' ? null : rawEmail)
+    store.setEmailJobUpdates(viewer.user.id, jobUpdates)
+    store.setEmailDailyDigest(viewer.user.id, dailyDigest)
+    store.audit(viewer.user.id, 'settings.email', `email=${rawEmail === '' ? 'github' : 'custom'} jobs=${jobUpdates ? 'on' : 'off'} digest=${dailyDigest ? 'on' : 'off'}`)
+    if (body.action === 'test') {
+      const updated = store.userById(viewer.user.id)
+      const to = updated === undefined ? '' : notifyEmail(updated)
+      if (to === '') return reply.redirect(`/settings?error=${encodeURIComponent('请先填写通知邮箱。')}`)
+      const key = `email_test:${viewer.user.id}`
+      const last = store.getSetting(key)
+      if (last !== undefined && Date.now() - Date.parse(last) < 60_000) {
+        return reply.redirect(`/settings?error=${encodeURIComponent('测试邮件每分钟最多发送一次。')}`)
+      }
+      store.setSetting(key, new Date().toISOString())
+      try {
+        await mailer.send({ to, ...testEmail(viewer.user, config.baseUrl) })
+        store.audit(viewer.user.id, 'settings.email.test')
+        return reply.redirect(`/settings?notice=${encodeURIComponent('测试邮件已发送。')}`)
+      } catch (error) {
+        return reply.redirect(`/settings?error=${encodeURIComponent(`测试邮件发送失败：${error instanceof Error ? error.message : String(error)}`)}`)
+      }
+    }
+    return reply.redirect(`/settings?notice=${encodeURIComponent('通知设置已保存。')}`)
   })
 
   app.post('/settings/tokens', async (request, reply) => {
@@ -920,9 +947,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     store.audit(user.id, `admin.${status}`, `by @${viewer.user.login}`)
     try {
-      if (user.email !== null && user.email !== '') {
-        await mailer.send({ to: user.email, ...(status === 'approved' ? approvedEmail(user, config.baseUrl) : rejectedEmail(user, '')) })
-      }
+      const to = notifyEmail(user)
+      if (to !== '') await mailer.send({ to, ...(status === 'approved' ? approvedEmail(user, config.baseUrl) : rejectedEmail(user, '')) })
     } catch (error) {
       log.warn('admin status mail failed', { user: user.login, error: String(error) })
     }

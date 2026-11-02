@@ -170,6 +170,7 @@ test('a new team question sends one attention email', async () => {
   const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer, instances)
   try {
     const user = makeUser(store, { login: 'question-user', status: 'approved' })
+    store.setEmailDailyDigest(user.id, false)
     const repo = store.createRepo({ id: 'repo_question', userId: user.id, owner: 'o', name: 'q', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.saveRepoInstance({
       repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/question', bridge_script: '/tmp/bridge',
@@ -214,6 +215,28 @@ test('job email follows the user preference', async () => {
     store.setEmailJobUpdates(user.id, true)
     await jobs.handleCallback('job_mail_2', secret, { status: 'succeeded', summary: 'done again' })
     assert.equal(mailer.messages.length, 1)
+  } finally {
+    store.close()
+  }
+})
+
+test('daily digest sends once and includes the day summary', async () => {
+  const config = testConfig({ digest: { hour: 0, timeZone: 'UTC' } })
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer)
+  try {
+    const user = makeUser(store, { login: 'digest-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_digest', userId: user.id, owner: 'o', name: 'digest', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_digest', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob('job_digest', { status: 'succeeded', summary: 'Fixed a digest bug', pr_url: 'https://github.com/o/digest/pull/1', finished_at: new Date().toISOString() })
+    await jobs.tick()
+    const digests = mailer.messages.filter((message) => /今日摘要/.test(message.subject))
+    assert.equal(digests.length, 1)
+    assert.match(digests[0]!.text, /Fixed a digest bug/)
+    assert.match(digests[0]!.text, /https:\/\/github.com\/o\/digest\/pull\/1/)
+    await jobs.tick()
+    assert.equal(mailer.messages.filter((message) => /今日摘要/.test(message.subject)).length, 1)
   } finally {
     store.close()
   }

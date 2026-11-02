@@ -56,12 +56,14 @@ and do not use CSRF.
 
 ### Job email notifications
 
-Job mail is sent from `MAIL_FROM` only to the repository owner's GitHub email.
-It contains the repo, job id, issue/PR links, a summary or question text, and a
-link to the team console; it never contains a GitHub token, model key, bridge
-token or full prompt. The owner can disable job mail in Settings; approval and
-quota mail stay transactional. A question is mailed at most once per
-`sessionId + questionId`.
+Job and digest mail is sent from `MAIL_FROM` only to the owner's configured
+`notify_email` (falling back to the GitHub email). It contains the repo, job id,
+issue/PR links, a summary or question text, daily spend and a link to the team
+console; it never contains a GitHub token, model key, bridge token or full
+prompt. The owner can set the address, disable job mail and disable the daily
+digest in Settings; approval and quota mail stay transactional. A question is
+mailed at most once per `sessionId + questionId`; a digest is sent once per user
+per day. Test mail is rate-limited to one per minute.
 
 ### Team console and agent controls
 

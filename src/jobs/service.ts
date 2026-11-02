@@ -3,7 +3,8 @@ import type { JobRow, RepoRow, Store, UserRow } from '../db.js'
 import type { Mailer } from '../email/mailer.js'
 import { QuotaNotifier } from '../gateway/notifier.js'
 import { quotaView } from '../gateway/quota.js'
-import { jobAttentionEmail, jobFailedEmail, jobSucceededEmail } from '../email/templates.js'
+import { dailyDigestEmail, jobAttentionEmail, jobFailedEmail, jobSucceededEmail, type DigestInput } from '../email/templates.js'
+import { notifyEmail } from '../email/recipient.js'
 import { log } from '../lib/log.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { decryptSecret, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
@@ -219,7 +220,9 @@ export class Jobs {
   private async sendJobEmail(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }): Promise<void> {
     if (result.status === 'quota_exhausted') return
     const user = this.store.userById(job.user_id)
-    if (user === undefined || user.email === null || user.email === '' || user.email_job_updates !== 1) return
+    if (user === undefined || user.email_job_updates !== 1) return
+    const email = notifyEmail(user)
+    if (email === '') return
     const repo = this.store.getRepo(job.repo_id)
     if (repo === undefined) return
     const context = {
@@ -235,7 +238,7 @@ export class Jobs {
     }
     try {
       const template = result.status === 'succeeded' ? jobSucceededEmail(user, context) : jobFailedEmail(user, context)
-      await this.mailer.send({ to: user.email, ...template })
+      await this.mailer.send({ to: email, ...template })
     } catch (error) {
       log.warn('job email failed', { job: job.id, error: String(error) })
     }
@@ -262,10 +265,12 @@ export class Jobs {
           if (this.store.getSetting(key) !== undefined) continue
           this.store.setSetting(key, nowIso())
           this.store.notify(user.id, 'job', `${repo.owner}/${repo.name} 团队提问：${question.question}`)
-          if (user.email === null || user.email === '' || user.email_job_updates !== 1) continue
+          if (user.email_job_updates !== 1) continue
+          const email = notifyEmail(user)
+          if (email === '') continue
           try {
             await this.mailer.send({
-              to: user.email,
+              to: email,
               ...jobAttentionEmail(user, {
                 repo: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`,
                 question: question.question,
@@ -281,6 +286,101 @@ export class Jobs {
       }
     } finally {
       this.questionBusy = false
+    }
+  }
+
+
+  private digestClock(): { date: string; hour: number } {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: this.config.digest.timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date())
+    const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? ''
+    return { date: `${get('year')}-${get('month')}-${get('day')}`, hour: Number(get('hour')) }
+  }
+
+  private digestTime(value: Date): string {
+    return new Intl.DateTimeFormat('zh-CN', {
+      timeZone: this.config.digest.timeZone,
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).format(value)
+  }
+
+  private async buildDigest(user: UserRow, repos: RepoRow[], date: string): Promise<DigestInput> {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString()
+    const jobs = this.store.listJobsSince(user.id, since)
+    const quota = quotaView(user, this.config)
+    const nextRuns: Array<{ repo: string; when: string }> = []
+    const questions: Array<{ repo: string; question: string }> = []
+    const teamLinks: Array<{ repo: string; url: string }> = []
+    for (const repo of repos) {
+      const label = `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`
+      teamLinks.push({ repo: label, url: `${this.config.baseUrl}/repos/${repo.id}/team` })
+      if (repo.auto_iterate === 1) {
+        const last = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
+        const next = Number.isFinite(last) ? new Date(last + repo.interval_minutes * 60_000) : new Date()
+        nextRuns.push({ repo: label, when: next.getTime() <= Date.now() ? '等待调度' : this.digestTime(next) })
+      }
+      if (this.instances === undefined || this.config.flybot.instanceImage === '') continue
+      try {
+        const state = await this.instances.teamState(repo.id)
+        for (const question of state.questions) {
+          if (question.question !== '') questions.push({ repo: label, question: question.question })
+        }
+      } catch {
+        // Instance may be stopped; the digest still reports the rest.
+      }
+    }
+    return {
+      date,
+      jobs: jobs.map((job) => {
+        const repo = repos.find((entry) => entry.id === job.repo_id)
+        return {
+          repo: repo === undefined ? job.repo_id : `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`,
+          kind: job.kind,
+          status: job.status,
+          summary: job.summary ?? job.error ?? '',
+          prUrl: job.pr_url,
+          issueUrl: job.issue_url,
+          reviewScore: job.review_score,
+        }
+      }),
+      usedCny: this.store.usageSince(user.id, since) * this.config.quota.usdCny,
+      unlimited: quota.unlimited,
+      remainingCny: quota.remainingCny,
+      nextRuns,
+      questions,
+      teamLinks,
+    }
+  }
+
+  private async maybeSendDigests(): Promise<void> {
+    const clock = this.digestClock()
+    if (clock.hour < this.config.digest.hour) return
+    for (const user of this.store.listUsers('approved')) {
+      if (user.email_daily_digest !== 1) continue
+      const email = notifyEmail(user)
+      if (email === '') continue
+      const repos = this.store.listRepos(user.id)
+      if (repos.length === 0) continue
+      const key = `digest_sent:${user.id}:${clock.date}`
+      if (this.store.getSetting(key) !== undefined) continue
+      this.store.setSetting(key, nowIso())
+      try {
+        const digest = await this.buildDigest(user, repos, clock.date)
+        await this.mailer.send({ to: email, ...dailyDigestEmail(user, digest) })
+        log.info('daily digest sent', { user: user.login, date: clock.date })
+      } catch (error) {
+        log.warn('daily digest failed', { user: user.login, error: String(error) })
+      }
     }
   }
 
@@ -429,6 +529,7 @@ export class Jobs {
       log.info('scheduled job', { repo: `${repo.owner}/${repo.name}`, ok: result.ok, job: result.job?.id })
     }
     await this.notifyQuestions().catch((error) => log.warn('question notification pass failed', { error: String(error) }))
+    await this.maybeSendDigests().catch((error) => log.warn('daily digest pass failed', { error: String(error) }))
   }
 
   private instanceReady(repoId: string): boolean {

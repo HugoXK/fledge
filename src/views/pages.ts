@@ -600,7 +600,9 @@ export function settingsPage(input: {
   const t = translator(locale)
   const user = viewer.user
   const quota = quotaView(user, config)
-  const hasEmail = user.email !== null && user.email !== ''
+  const customEmail = (user.notify_email ?? '').trim()
+  const resolvedEmail = customEmail !== '' ? customEmail : (user.email ?? '')
+  const hasEmail = resolvedEmail !== ''
   const tokenRows = tokens.length === 0
     ? `<tr><td colspan="4" class="muted">${escapeHtml(t('还没有 API token。', 'No API tokens yet.'))}</td></tr>`
     : tokens
@@ -634,14 +636,20 @@ export function settingsPage(input: {
 
   <section class="card" id="notifications">
     <h2>${escapeHtml(t('邮件通知', 'Email notifications'))}</h2>
-    <p class="muted">${escapeHtml(t(`任务需要你回答、完成或失败时，发送到 ${user.email ?? '（没有公开邮箱）'}；发件人是 ${config.mail.from}。`, `Send to ${user.email ?? '(no public email)'} when a job needs an answer, finishes or fails; the sender is ${config.mail.from}.`))}</p>
-    ${hasEmail ? '' : `<div class="banner bad">${escapeHtml(t('GitHub 没有提供公开邮箱，暂时无法发送任务通知。', 'GitHub did not provide a public email, so job notifications cannot be sent yet.'))}</div>`}
+    <p class="muted">${escapeHtml(t(`任务需要你回答、完成或失败时，发送到 ${resolvedEmail || '（未配置）'}；发件人是 ${config.mail.from}。`, `Send to ${resolvedEmail || '(not configured)'} when a job needs an answer, finishes or fails; the sender is ${config.mail.from}.`))}</p>
+    ${hasEmail ? '' : `<div class="banner bad">${escapeHtml(t('还没有可用的通知邮箱，请填写一个邮箱后再开启通知。', 'There is no notification email yet; add one before enabling notifications.'))}</div>`}
     <form method="post" action="/settings/notifications" class="form">
       ${csrf(viewer)}
-      <label class="check"><input type="checkbox" name="enabled" value="1" ${user.email_job_updates === 1 ? 'checked' : ''} ${hasEmail ? '' : 'disabled'} /> ${escapeHtml(t('任务需要回答、完成或失败时发邮件', 'Email me when a job needs an answer, finishes or fails'))}</label>
-      <button class="btn" type="submit" ${hasEmail ? '' : 'disabled'}>${escapeHtml(t('保存通知设置', 'Save notification settings'))}</button>
+      <label>${escapeHtml(t('通知邮箱', 'Notification email'))} <input name="email" type="email" value="${escapeHtml(customEmail)}" placeholder="${escapeHtml(user.email ?? 'you@example.com')}" autocomplete="email" /></label>
+      <p class="fine">${escapeHtml(t(`留空则使用 GitHub 邮箱（${user.email ?? '未提供'}）。`, `Leave blank to use the GitHub email (${user.email ?? 'not provided'}).`))}</p>
+      <label class="check"><input type="checkbox" name="jobUpdates" value="1" ${user.email_job_updates === 1 ? 'checked' : ''} /> ${escapeHtml(t('任务需要回答、完成或失败时发邮件', 'Email me when a job needs an answer, finishes or fails'))}</label>
+      <label class="check"><input type="checkbox" name="dailyDigest" value="1" ${user.email_daily_digest === 1 ? 'checked' : ''} /> ${escapeHtml(t('每天发送一封今日摘要', 'Send a daily summary email'))}</label>
+      <div class="row">
+        <button class="btn" name="action" value="save" type="submit">${escapeHtml(t('保存通知设置', 'Save notification settings'))}</button>
+        <button class="btn btn-ghost" name="action" value="test" type="submit">${escapeHtml(t('发送测试邮件', 'Send test email'))}</button>
+      </div>
     </form>
-    <p class="fine">${escapeHtml(t('审批和额度邮件不受这个开关影响。', 'Approval and quota mail are not affected by this switch.'))}</p>
+    <p class="fine">${escapeHtml(t(`审批和额度邮件不受这个开关影响。每日摘要默认在 ${config.digest.hour}:00（${config.digest.timeZone}）发送。`, `Approval and quota mail are not affected by these switches. The daily summary is sent at ${config.digest.hour}:00 (${config.digest.timeZone}).`))}</p>
   </section>
 
   <section class="card">

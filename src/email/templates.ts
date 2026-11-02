@@ -207,3 +207,86 @@ ${input.options.length === 0 ? '' : `<ul>${input.options.map((option) => `<li>${
 <p><small>${escapeHtml(mailFooter())}</small></p>`
   return { subject, text, html }
 }
+
+export interface DigestJob {
+  repo: string
+  kind: string
+  status: string
+  summary: string
+  prUrl: string | null
+  issueUrl: string | null
+  reviewScore: number | null
+}
+
+export interface DigestInput {
+  date: string
+  jobs: DigestJob[]
+  usedCny: number
+  unlimited: boolean
+  remainingCny: number
+  nextRuns: Array<{ repo: string; when: string }>
+  questions: Array<{ repo: string; question: string }>
+  teamLinks: Array<{ repo: string; url: string }>
+}
+
+export function dailyDigestEmail(user: UserRow, input: DigestInput): { subject: string; text: string; html: string } {
+  const succeeded = input.jobs.filter((job) => job.status === 'succeeded').length
+  const failed = input.jobs.filter((job) => job.status === 'failed').length
+  const running = input.jobs.filter((job) => job.status === 'running' || job.status === 'queued').length
+  const pullRequests = new Set(input.jobs.map((job) => job.prUrl).filter((url): url is string => url !== null)).size
+  const usage = input.unlimited ? `今日消耗 ¥${input.usedCny.toFixed(2)}（不限额）` : `今日消耗 ¥${input.usedCny.toFixed(2)}，剩余 ¥${input.remainingCny.toFixed(2)}`
+  const subject = `[Fledge] 今日摘要 · ${input.date}`
+  const jobLines = input.jobs.length === 0
+    ? ['今天没有新任务。']
+    : input.jobs.slice(0, 12).flatMap((job) => {
+      const links = [job.issueUrl === null ? '' : `Issue: ${job.issueUrl}`, job.prUrl === null ? '' : `PR: ${job.prUrl}`].filter((line) => line !== '')
+      return [
+        `· ${job.repo} · ${job.kind} · ${job.status}${job.reviewScore === null ? '' : ` · ${job.reviewScore}/100`}`,
+        job.summary === '' ? '' : `  ${job.summary.slice(0, 240)}`,
+        ...links.map((line) => `  ${line}`),
+      ].filter((line) => line !== '')
+    })
+  const text = [
+    `@${user.login}，这是 Fledge 今天为你托管仓库做的工作。`,
+    '',
+    `${input.jobs.length} 个任务（成功 ${succeeded} / 失败 ${failed} / 进行中 ${running}），打开 ${pullRequests} 个 PR；${usage}。`,
+    '',
+    '今天：',
+    ...jobLines,
+    '',
+    '明天：',
+    ...(input.nextRuns.length === 0 ? ['· 暂无自动迭代计划。'] : input.nextRuns.map((run) => `· 下次自动迭代：${run.repo} · ${run.when}`)),
+    ...(input.questions.length === 0 ? ['· 没有待回答的问题。'] : input.questions.map((question) => `· 待回答：${question.repo} · ${question.question}`)),
+    '',
+    '有新指示？到团队台发送：',
+    ...(input.teamLinks.length === 0 ? ['· 暂无仓库。'] : input.teamLinks.map((link) => `· ${link.repo}：${link.url}`)),
+    '',
+    'Fledge 不会自动合并；PR 需要你 review 后决定。',
+    '',
+    mailFooter(),
+  ].join('\n')
+  const html = `<p>@${escapeHtml(user.login)}，这是 Fledge 今天为你托管仓库做的工作。</p>
+<p>${input.jobs.length} 个任务（成功 ${succeeded} / 失败 ${failed} / 进行中 ${running}），打开 ${pullRequests} 个 PR；${escapeHtml(usage)}。</p>
+<h3>今天</h3>
+${input.jobs.length === 0 ? '<p>今天没有新任务。</p>' : `<ul>${input.jobs.slice(0, 12).map((job) => `<li><strong>${escapeHtml(job.repo)}</strong> · ${escapeHtml(job.kind)} · ${escapeHtml(job.status)}${job.reviewScore === null ? '' : ` · ${job.reviewScore}/100`}${job.summary === '' ? '' : `<br />${escapeHtml(job.summary.slice(0, 240))}`}${job.issueUrl === null ? '' : `<br />Issue: <a href="${escapeHtml(job.issueUrl)}">${escapeHtml(job.issueUrl)}</a>`}${job.prUrl === null ? '' : `<br />PR: <a href="${escapeHtml(job.prUrl)}">${escapeHtml(job.prUrl)}</a>`}</li>`).join('')}</ul>`}
+<h3>明天</h3>
+<ul>
+${input.nextRuns.length === 0 ? '<li>暂无自动迭代计划。</li>' : input.nextRuns.map((run) => `<li>下次自动迭代：${escapeHtml(run.repo)} · ${escapeHtml(run.when)}</li>`).join('')}
+${input.questions.length === 0 ? '<li>没有待回答的问题。</li>' : input.questions.map((question) => `<li>待回答：${escapeHtml(question.repo)} · ${escapeHtml(question.question)}</li>`).join('')}
+</ul>
+<p>有新指示？到团队台发送：</p>
+<ul>
+${input.teamLinks.length === 0 ? '<li>暂无仓库。</li>' : input.teamLinks.map((link) => `<li>${escapeHtml(link.repo)}：<a href="${escapeHtml(link.url)}">${escapeHtml(link.url)}</a></li>`).join('')}
+</ul>
+<p>Fledge 不会自动合并；PR 需要你 review 后决定。</p>
+<p><small>${escapeHtml(mailFooter())}</small></p>`
+  return { subject, text, html }
+}
+
+export function testEmail(user: UserRow, baseUrl: string): { subject: string; text: string; html: string } {
+  return {
+    subject: '[Fledge] 测试邮件',
+    text: [`@${user.login}，你好：`, '', '这是一封 Fledge 测试邮件。收到它说明你的通知邮箱和 SMTP 发信都正常。', '', mailFooter(), '', baseUrl].join('\n'),
+    html: `<p>@${escapeHtml(user.login)}，你好：</p><p>这是一封 Fledge 测试邮件。收到它说明你的通知邮箱和 SMTP 发信都正常。</p><p><small>${escapeHtml(mailFooter())}</small></p><p><a href="${escapeHtml(baseUrl)}">${escapeHtml(baseUrl)}</a></p>`,
+  }
+}
