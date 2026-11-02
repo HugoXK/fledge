@@ -70,6 +70,15 @@ mail, disable the daily digest, or send a test mail in Settings → Email
 notifications. Approval and quota mail are not affected. A question is mailed
 once per `sessionId + questionId`; the preference is stored on the user.
 
+## Inbound email
+
+`POST /api/inbound/email` accepts a JSON message from a mail worker:
+`{ "from": "...", "to": "...", "subject": "...", "text": "..." }`. It requires
+`X-Fledge-Email-Secret` to match `INBOUND_EMAIL_SECRET`, extracts the
+`+token` from the recipient, checks the sender against the user's notification
+email, and sends the cleaned text to the Lead as guidance. Tokens expire after
+7 days; a reply to the daily digest is the only supported input.
+
 ## Workspace
 
 `GET /repos/:id/workspace` renders the Fledge shell and embeds

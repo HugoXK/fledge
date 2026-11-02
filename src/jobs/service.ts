@@ -4,7 +4,7 @@ import type { Mailer } from '../email/mailer.js'
 import { QuotaNotifier } from '../gateway/notifier.js'
 import { quotaView } from '../gateway/quota.js'
 import { dailyDigestEmail, jobAttentionEmail, jobFailedEmail, jobSucceededEmail, type DigestInput } from '../email/templates.js'
-import { notifyEmail } from '../email/recipient.js'
+import { notifyEmail, replyAddressFor } from '../email/recipient.js'
 import { log } from '../lib/log.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, type Evidence } from '../lib/evidence.js'
@@ -409,7 +409,14 @@ export class Jobs {
       this.store.setSetting(key, nowIso())
       try {
         const digest = await this.buildDigest(user, repos, clock.date)
-        await this.mailer.send({ to: email, ...dailyDigestEmail(user, digest) })
+        let replyAddress: string | undefined
+        if (this.config.inboundEmailSecret !== '') {
+          const token = randomToken(16)
+          this.store.setSetting(`email_reply:${token}`, `${user.id}:${repos[0]!.id}:${Date.now()}`)
+          replyAddress = replyAddressFor(this.config.mail.from, token)
+          digest.replyAddress = replyAddress
+        }
+        await this.mailer.send({ to: email, ...dailyDigestEmail(user, digest), ...(replyAddress === undefined ? {} : { replyTo: replyAddress }) })
         log.info('daily digest sent', { user: user.login, date: clock.date })
       } catch (error) {
         log.warn('daily digest failed', { user: user.login, error: String(error) })

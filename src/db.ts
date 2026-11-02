@@ -1139,6 +1139,10 @@ export class Store {
   setSetting(key: string, value: string): void {
     this.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, value)
   }
+
+  deleteSetting(key: string): void {
+    this.run('DELETE FROM settings WHERE key = ?', key)
+  }
 }
 
 export function openStore(path: string): Store {

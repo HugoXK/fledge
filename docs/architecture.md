@@ -141,6 +141,16 @@ through the user's OAuth token or an individual account match). GitHub webhooks
 are verified with `X-Hub-Signature-256` before parsing; verified events are
 recorded in `events` for the follow-up loop. PAT onboarding stays available.
 
+### Inbound email replies
+
+When `INBOUND_EMAIL_SECRET` is set, the daily digest gets a
+`Reply-To: <local>+<token>@<domain>` address and a reply hint. The inbound
+endpoint verifies the shared secret, resolves the token to a user + repository,
+checks that the sender is the user's notification email, strips quoted lines and
+sends the remaining text to the Lead as guidance. Tokens live in `settings` with
+a 7-day expiry. Cloudflare Email Routing + an Email Worker can post to the
+endpoint; IMAP polling is not required.
+
 ### Agent workspace
 
 The workspace is path-based to avoid a wildcard certificate:

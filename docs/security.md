@@ -67,6 +67,15 @@ and do not use CSRF.
   before parsing. A bad signature is 401; an unconfigured webhook is 503.
   Verified event metadata is stored without payload secrets.
 
+### Inbound email
+
+`POST /api/inbound/email` is disabled unless `INBOUND_EMAIL_SECRET` is set. The
+caller must present the secret in `X-Fledge-Email-Secret`; the reply token is
+single-purpose, expires after 7 days, and resolves to one user + repository. The
+sender must match the user's notification email. Quoted lines are removed, the
+text is capped, and the action is audited. The endpoint does not expose the DSH
+or bridge tokens.
+
 ### Agent workspace proxy
 
 The workspace proxy is owner-only and same-origin. The session cookie and repo

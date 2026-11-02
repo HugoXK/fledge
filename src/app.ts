@@ -20,7 +20,7 @@ import { Jobs } from './jobs/service.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
 import { RateLimiter } from './lib/rateLimit.js'
-import { decryptSecret, encryptSecret, randomId, randomToken, sha256Hex } from './lib/secrets.js'
+import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes } from './lib/time.js'
 import { isLocale, LOCALE_COOKIE, resolveLocale, translator, type Locale } from './i18n.js'
@@ -474,9 +474,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/auth/github/app/install', async (request, reply) => {
-    requireApproved(request)
+    const viewer = requireApproved(request)
     if (config.githubApp.slug === '') return reply.redirect(`/repos/new?error=${encodeURIComponent('GitHub App 未配置。')}`)
-    return reply.redirect(`https://github.com/apps/${encodeURIComponent(config.githubApp.slug)}/installations/new`)
+    const state = randomToken(16)
+    store.setSetting(`github_app_state:${state}`, `${viewer.user.id}:${Date.now()}`)
+    return reply.redirect(`https://github.com/apps/${encodeURIComponent(config.githubApp.slug)}/installations/new?state=${encodeURIComponent(state)}`)
   })
 
   app.get('/auth/github/app/installed', async (request, reply) => {
@@ -492,7 +494,23 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     if (installation === undefined || installation === null) return reply.redirect(`/repos/new?error=${encodeURIComponent('找不到这个 GitHub App 安装。')}`)
     let owned = false
-    if (viewer.user.github_token_enc !== null) {
+    const state = queryText(request, 'state') ?? ''
+    if (state !== '') {
+      const value = store.getSetting(`github_app_state:${state}`)
+      if (value !== undefined) {
+        const [userId, at] = value.split(':')
+        if (userId === viewer.user.id && Date.now() - Number(at) < 10 * 60_000) owned = true
+        store.deleteSetting(`github_app_state:${state}`)
+      }
+    }
+    if (!owned) {
+      const sender = store.getSetting(`installation_sender:${installationId}`)
+      if (sender !== undefined) {
+        const [login = '', at = '0'] = sender.split(':')
+        if (login.toLowerCase() === viewer.user.login.toLowerCase() && Date.now() - Number(at) < 24 * 60 * 60_000) owned = true
+      }
+    }
+    if (!owned && viewer.user.github_token_enc !== null) {
       try {
         const token = decryptSecret(viewer.user.github_token_enc, config.tokenEncryptionKey)
         const installations = await new GithubClient(token, config.github.apiBase).listUserInstallations()
@@ -1369,9 +1387,52 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (event === 'installation') {
       const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
       const installationId = Number(installation.id)
+      if (action === 'created' && Number.isFinite(installationId)) {
+        const sender = typeof body.sender === 'object' && body.sender !== null ? (body.sender as Record<string, unknown>) : {}
+        const login = typeof sender.login === 'string' ? sender.login : ''
+        if (login !== '') store.setSetting(`installation_sender:${installationId}`, `${login}:${Date.now()}`)
+      }
       if (action === 'deleted' && Number.isFinite(installationId)) store.deleteInstallation(installationId)
     }
     await handleGithubFollowup(event, body).catch((error) => log.warn('github follow-up failed', { event, error: String(error) }))
+    return { ok: true }
+  })
+
+
+  app.post('/api/inbound/email', async (request, reply) => {
+    if (config.inboundEmailSecret === '') return reply.code(503).send({ error: 'inbound email is not configured' })
+    const provided = String(request.headers['x-fledge-email-secret'] ?? '')
+    if (!safeEqual(provided, config.inboundEmailSecret)) return reply.code(401).send({ error: 'bad inbound email secret' })
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const to = typeof body.to === 'string' ? body.to : ''
+    const from = typeof body.from === 'string' ? body.from : ''
+    const text = typeof body.text === 'string' ? body.text : ''
+    const token = /\+([A-Za-z0-9_-]+)@/.exec(to)?.[1]
+    if (token === undefined) return { ok: true, ignored: 'no reply token' }
+    const stored = store.getSetting(`email_reply:${token}`)
+    if (stored === undefined) return { ok: true, ignored: 'unknown reply token' }
+    const [userId = '', repoId = '', at = '0'] = stored.split(':')
+    if (Date.now() - Number(at) > 7 * 24 * 60 * 60_000) return reply.code(410).send({ error: 'reply token expired' })
+    const user = store.userById(userId)
+    const repo = user === undefined ? undefined : store.getRepo(repoId)
+    if (user === undefined || repo === undefined || repo.user_id !== user.id) return reply.code(404).send({ error: 'reply target not found' })
+    const sender = (/<([^>]+)>/.exec(from)?.[1] ?? from).trim().toLowerCase()
+    if (sender !== notifyEmail(user).toLowerCase()) return reply.code(403).send({ error: 'sender does not match the notification email' })
+    const cleaned = text
+      .split(/\r?\n/)
+      .filter((line) => !line.trim().startsWith('>'))
+      .join('\n')
+      .split(/^On .+ wrote:$/m)[0]!
+      .trim()
+      .slice(0, 4000)
+    if (cleaned === '') return reply.code(400).send({ error: 'empty reply' })
+    try {
+      await instances.sendGuidance(repo.id, 'lead', cleaned)
+    } catch (error) {
+      return reply.code(503).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+    store.audit(user.id, 'team.email_reply', `${repo.owner}/${repo.name} chars=${cleaned.length}`)
+    store.event('team_intervention', { userId: user.id, repoId: repo.id, meta: 'email' })
     return { ok: true }
   })
 

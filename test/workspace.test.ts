@@ -76,3 +76,4 @@ test('workspace shell and proxied html are owner-only and rebranded', async () =
     rmSync(dataDir, { recursive: true, force: true })
   }
 })
+

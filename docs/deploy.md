@@ -70,7 +70,13 @@ For the hosted instance `MAIL_FROM=fledge@hugoxk.online`; job and digest
 notifications use the same sender. The standalone FlyBot service on
 `flybot.hugoxk.online` keeps `flybot@hugoxk.online`; they are separate projects.
 Set `DIGEST_HOUR` (default 9) and `DIGEST_TIMEZONE` (default `Asia/Shanghai`) for
-the daily summary. The agent workspace is served at `/repos/:id/workspace/`; it needs no wildcard
+the daily summary. For email replies, set `INBOUND_EMAIL_SECRET` and route the `fledge@` mailbox to
+a Cloudflare Email Worker (sample: `deploy/cloudflare-email-worker.js`) or an
+equivalent inbound webhook. The worker must send the same secret in
+`X-Fledge-Email-Secret` and preserve plus addressing
+(`fledge+<token>@hugoxk.online`). The daily digest then adds a `Reply-To` header.
+
+The agent workspace is served at `/repos/:id/workspace/`; it needs no wildcard
 DNS or certificate. It proxies the per-repo DSH port over loopback, so keep that
 port bound to loopback. When the bridge code changes, restart each per-repository
 bridge (the Fledge service restart alone does not): `InstanceManager.restartBridge(repoId)`

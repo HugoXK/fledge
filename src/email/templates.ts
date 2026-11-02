@@ -228,6 +228,7 @@ export interface DigestInput {
   nextRuns: Array<{ repo: string; when: string }>
   questions: Array<{ repo: string; question: string }>
   teamLinks: Array<{ repo: string; url: string }>
+  replyAddress?: string
 }
 
 export function dailyDigestEmail(user: UserRow, input: DigestInput): { subject: string; text: string; html: string } {
@@ -264,6 +265,7 @@ export function dailyDigestEmail(user: UserRow, input: DigestInput): { subject: 
     '',
     'Fledge 不会自动合并；PR 需要你 review 后决定。',
     '',
+    ...(input.replyAddress === undefined ? [] : [`回复这封邮件也可以给团队下指示（保持 Reply-To 不变）：${input.replyAddress}`, '']),
     mailFooter(),
   ].join('\n')
   const html = `<p>@${escapeHtml(user.login)}，这是 Fledge 今天为你托管仓库做的工作。</p>
@@ -280,6 +282,7 @@ ${input.questions.length === 0 ? '<li>没有待回答的问题。</li>' : input.
 ${input.teamLinks.length === 0 ? '<li>暂无仓库。</li>' : input.teamLinks.map((link) => `<li>${escapeHtml(link.repo)}：<a href="${escapeHtml(link.url)}">${escapeHtml(link.url)}</a></li>`).join('')}
 </ul>
 <p>Fledge 不会自动合并；PR 需要你 review 后决定。</p>
+${input.replyAddress === undefined ? '' : `<p>回复这封邮件也可以给团队下指示（保持 Reply-To 不变）：<code>${escapeHtml(input.replyAddress)}</code></p>`}
 <p><small>${escapeHtml(mailFooter())}</small></p>`
   return { subject, text, html }
 }

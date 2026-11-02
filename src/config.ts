@@ -78,6 +78,7 @@ export interface Config {
   dataDir: string
   dbPath: string
   allowPrivateModelUrls: boolean
+  inboundEmailSecret: string
   allowTokenLoginOnly: boolean
   devLogin: {
     login: string
@@ -204,6 +205,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     dataDir,
     dbPath: resolve(text('DB_PATH', `${dataDir}/fledge.db`)),
     allowPrivateModelUrls: bool('ALLOW_PRIVATE_MODEL_URLS', false),
+    inboundEmailSecret: text('INBOUND_EMAIL_SECRET'),
     allowTokenLoginOnly: bool('ALLOW_TOKEN_LOGIN_ONLY', false),
     devLogin: {
       login: text('DEV_LOGIN_LOGIN'),

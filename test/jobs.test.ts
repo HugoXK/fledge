@@ -224,7 +224,7 @@ test('job email follows the user preference', async () => {
 })
 
 test('daily digest sends once and includes the day summary', async () => {
-  const config = testConfig({ digest: { hour: 0, timeZone: 'UTC' } })
+  const config = testConfig({ digest: { hour: 0, timeZone: 'UTC' }, inboundEmailSecret: 'secret' })
   const store = new Store(':memory:')
   const mailer = new MemoryMailer()
   const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer)
@@ -238,6 +238,8 @@ test('daily digest sends once and includes the day summary', async () => {
     assert.equal(digests.length, 1)
     assert.match(digests[0]!.text, /Fixed a digest bug/)
     assert.match(digests[0]!.text, /https:\/\/github.com\/o\/digest\/pull\/1/)
+    assert.match(digests[0]!.text, /回复这封邮件/)
+    assert.match(digests[0]!.replyTo ?? '', /\+[A-Za-z0-9_-]+@/)
     await jobs.tick()
     assert.equal(mailer.messages.filter((message) => /今日摘要/.test(message.subject)).length, 1)
   } finally {
