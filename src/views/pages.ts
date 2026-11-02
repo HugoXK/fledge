@@ -600,6 +600,7 @@ export function settingsPage(input: {
   const t = translator(locale)
   const user = viewer.user
   const quota = quotaView(user, config)
+  const hasEmail = user.email !== null && user.email !== ''
   const tokenRows = tokens.length === 0
     ? `<tr><td colspan="4" class="muted">${escapeHtml(t('还没有 API token。', 'No API tokens yet.'))}</td></tr>`
     : tokens
@@ -629,6 +630,18 @@ export function settingsPage(input: {
       </div>
     </form>
     <p class="fine">${escapeHtml(t('必须是 OpenAI 兼容的 /v1/chat/completions 服务；公网服务要求 https。保存时会发一个 1 token 的测试请求。', 'Must be an OpenAI-compatible /v1/chat/completions service; public endpoints must use https. Saving sends a 1-token test request.'))}</p>
+  </section>
+
+  <section class="card" id="notifications">
+    <h2>${escapeHtml(t('邮件通知', 'Email notifications'))}</h2>
+    <p class="muted">${escapeHtml(t(`任务需要你回答、完成或失败时，发送到 ${user.email ?? '（没有公开邮箱）'}；发件人是 ${config.mail.from}。`, `Send to ${user.email ?? '(no public email)'} when a job needs an answer, finishes or fails; the sender is ${config.mail.from}.`))}</p>
+    ${hasEmail ? '' : `<div class="banner bad">${escapeHtml(t('GitHub 没有提供公开邮箱，暂时无法发送任务通知。', 'GitHub did not provide a public email, so job notifications cannot be sent yet.'))}</div>`}
+    <form method="post" action="/settings/notifications" class="form">
+      ${csrf(viewer)}
+      <label class="check"><input type="checkbox" name="enabled" value="1" ${user.email_job_updates === 1 ? 'checked' : ''} ${hasEmail ? '' : 'disabled'} /> ${escapeHtml(t('任务需要回答、完成或失败时发邮件', 'Email me when a job needs an answer, finishes or fails'))}</label>
+      <button class="btn" type="submit" ${hasEmail ? '' : 'disabled'}>${escapeHtml(t('保存通知设置', 'Save notification settings'))}</button>
+    </form>
+    <p class="fine">${escapeHtml(t('审批和额度邮件不受这个开关影响。', 'Approval and quota mail are not affected by this switch.'))}</p>
   </section>
 
   <section class="card">
@@ -669,6 +682,7 @@ const AUDIT_ACTIONS: Record<string, [string, string]> = {
   'token.revoked': ['撤销 token', 'Token revoked'],
   'model.saved': ['保存模型', 'Model saved'],
   'model.cleared': ['清除模型', 'Model cleared'],
+  'settings.email': ['邮件通知设置', 'Email notification settings'],
 }
 
 function auditLabel(t: Translate, action: string): string {

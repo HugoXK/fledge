@@ -129,6 +129,17 @@ a per-repository authenticated subdomain and a Fledge shell around the native UI
 (branded "Powered by FlyBot"), with a short-lived ticket and server-side cookie
 injection so the raw DSH token never reaches the browser.
 
+### Email notifications
+
+Fledge sends job mail from the configured `MAIL_FROM` (production:
+`fledge@hugoxk.online`). It covers job success/failure and a new team question;
+the user-level `email_job_updates` switch controls these messages, while
+approval and quota mail always send. Question mails are deduped by
+`sessionId + questionId` in `settings`, so a restart or a slow browser does not
+spam the owner. Templates include the repo, job id, issue/PR links, summary or
+question, and a link to the team console; they never contain tokens or model
+keys.
+
 ### FlyBot bridge
 
 The bridge is a tiny HTTP service on the FlyBot host. Fledge POSTs a job

@@ -1,0 +1,1 @@
+Added job email notifications from fledge@hugoxk.online: the owner is emailed when a job succeeds, fails, or a team question is waiting, with repo/job/PR links and a team-console link. Settings has an email-notification switch; approval and quota mail are unaffected. Question mail is deduplicated per question.

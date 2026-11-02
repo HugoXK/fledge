@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
 import { dashboardPage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
 
@@ -42,6 +42,30 @@ test('unlimited quota is shown instead of a finite balance', () => {
     assert.match(zh, /不限额/)
   } finally {
     store.close()
+  }
+})
+
+test('email notification settings can be viewed and changed', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'mail-settings', status: 'approved' })
+    const { cookie, csrf } = sessionFor(built, user)
+    const page = await built.app.inject({ method: 'GET', url: '/settings', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /邮件通知/)
+    assert.match(page.body, /\/settings\/notifications/)
+    const changed = await built.app.inject({
+      method: 'POST',
+      url: '/settings/notifications',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf }),
+    })
+    assert.equal(changed.statusCode, 302)
+    assert.equal(store.userById(user.id)?.email_job_updates, 0)
+  } finally {
+    await built.close()
   }
 })
 

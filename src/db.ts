@@ -36,6 +36,7 @@ export interface UserRow {
   quota_cny: number
   quota_unlimited: number
   quota_used_usd: number
+  email_job_updates: number
   github_token_enc: string | null
   own_llm_base_url: string | null
   own_llm_key_enc: string | null
@@ -205,6 +206,7 @@ CREATE TABLE IF NOT EXISTS users (
   quota_cny REAL NOT NULL DEFAULT 1,
   quota_unlimited INTEGER NOT NULL DEFAULT 0,
   quota_used_usd REAL NOT NULL DEFAULT 0,
+  email_job_updates INTEGER NOT NULL DEFAULT 1,
   github_token_enc TEXT,
   own_llm_base_url TEXT,
   own_llm_key_enc TEXT,
@@ -404,7 +406,7 @@ export class Store {
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
-    this.db.exec('PRAGMA user_version = 5;')
+    this.db.exec('PRAGMA user_version = 6;')
   }
 
   private migrateColumns(): void {
@@ -421,6 +423,7 @@ export class Store {
       ['application_ua', 'TEXT'],
       ['reviewed_at', 'TEXT'],
       ['quota_unlimited', 'INTEGER NOT NULL DEFAULT 0'],
+      ['email_job_updates', 'INTEGER NOT NULL DEFAULT 1'],
     ]
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE users ADD COLUMN ${name} ${type}`)
@@ -640,6 +643,10 @@ export class Store {
 
   setUserQuotaUnlimited(id: string, unlimited: boolean): void {
     this.run('UPDATE users SET quota_unlimited = ? WHERE id = ?', unlimited ? 1 : 0, id)
+  }
+
+  setEmailJobUpdates(id: string, enabled: boolean): void {
+    this.run('UPDATE users SET email_job_updates = ? WHERE id = ?', enabled ? 1 : 0, id)
   }
 
   addUserUsage(id: string, usd: number): void {
@@ -875,6 +882,10 @@ export class Store {
 
   listActiveJobsForUser(userId: string): JobRow[] {
     return this.all<JobRow>("SELECT * FROM jobs WHERE user_id = ? AND status IN ('queued','running') ORDER BY created_at DESC", userId)
+  }
+
+  listActiveJobs(): JobRow[] {
+    return this.all<JobRow>("SELECT * FROM jobs WHERE status IN ('queued','running') ORDER BY created_at ASC")
   }
 
   updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at'>>): void {

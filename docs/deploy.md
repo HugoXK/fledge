@@ -34,7 +34,7 @@ Key settings:
 | `ADMIN_GITHUB_LOGIN` | Auto-approved bootstrap admin (default `HugoXK`) |
 | `MAIL_TRANSPORT` | `smtp` in production, `console` for a local demo |
 | `SMTP_HOST/PORT/SECURE/USER/PASS` | For yeah.net: `smtp.yeah.net`, 465, secure |
-| `MAIL_FROM` / `ADMIN_EMAIL` | `no-reply@example.com` / `admin@example.com` |
+| `MAIL_FROM` / `ADMIN_EMAIL` | `fledge@hugoxk.online` / `admin@example.com` |
 | `PLATFORM_LLM_BASE_URL` | OpenAI-compatible `/v1` endpoint |
 | `PLATFORM_LLM_KEY` | Platform key; never commit it |
 | `INITIAL_QUOTA_CNY` | Default 1 |
@@ -66,6 +66,8 @@ stores the token. Configure OAuth before a public launch.
 
 Configure your operator SMTP account (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`,
 `SMTP_PASS`) and set `MAIL_FROM` / `ADMIN_EMAIL` to the addresses you control.
+For the hosted instance `MAIL_FROM=fledge@hugoxk.online`; job notifications use
+the same sender.
 Use an app password if the provider requires one. The application sends:
 
 - the application email to `ADMIN_EMAIL` with approve/reject links;

@@ -38,6 +38,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/repos/:id/delete` | owner + CSRF | Delete repo and jobs |
 | GET | `/settings` | approved | Account, model, API tokens |
 | POST | `/settings/model` | approved + CSRF | Save/clear own model |
+| POST | `/settings/notifications` | approved + CSRF | Enable/disable job email notifications |
 | POST | `/settings/tokens` | approved + CSRF | Create a `flg_` token |
 | POST | `/settings/tokens/:id/revoke` | owner + CSRF | Revoke a token |
 | POST | `/notifications/read` | approved + CSRF | Mark notifications read |
@@ -47,6 +48,14 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/admin/users/:id/quota` | admin + CSRF | Set quota in CNY |
 | GET | `/approve/:token` | token | Confirmation page |
 | POST | `/approve/:token` | token | Apply approve/reject |
+
+## Email notifications
+
+Job lifecycle mail is sent from `MAIL_FROM` (production:
+`fledge@hugoxk.online`) when a job finishes, fails, or a team question is
+waiting. The user can disable job mail in Settings → Email notifications;
+approval and quota mail are not affected. A question is mailed once per
+`sessionId + questionId`; the preference is stored on the user.
 
 ## Team endpoints
 

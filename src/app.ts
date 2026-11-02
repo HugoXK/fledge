@@ -823,6 +823,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
   })
 
+  app.post('/settings/notifications', async (request, reply) => {
+    const viewer = csrfGuard(request)
+    const enabled = form(request).enabled === '1'
+    store.setEmailJobUpdates(viewer.user.id, enabled)
+    store.audit(viewer.user.id, 'settings.email', enabled ? 'job updates on' : 'job updates off')
+    return reply.redirect(`/settings?notice=${encodeURIComponent(enabled ? '任务邮件通知已开启。' : '任务邮件通知已关闭。')}`)
+  })
+
   app.post('/settings/tokens', async (request, reply) => {
     const viewer = csrfGuard(request)
     const name = (form(request).name ?? '').trim().slice(0, 80) || 'default'

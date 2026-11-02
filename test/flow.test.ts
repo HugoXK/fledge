@@ -154,8 +154,8 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     const approvals = new Approvals(store, config, mailer)
     const sent = await approvals.request(pending)
     assert.equal(sent.sent, true)
-    assert.equal(mailer.messages[0]?.to, config.mail.adminEmail)
-    assert.match(mailer.messages[0]?.subject ?? '', /权限申请/)
+    const approvalMail = mailer.messages.find((message) => message.to === config.mail.adminEmail && /权限申请/.test(message.subject))
+    assert.ok(approvalMail)
     const token = sent.approveUrl?.split('/approve/')[1]
     assert.ok(token)
     const confirm = await built.app.inject({ method: 'GET', url: `/approve/${token}` })

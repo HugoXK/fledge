@@ -54,6 +54,15 @@ Every state-changing browser form includes a hidden `csrf` field derived from
 JSON endpoints. Approval links and job endpoints use their own bearer secrets
 and do not use CSRF.
 
+### Job email notifications
+
+Job mail is sent from `MAIL_FROM` only to the repository owner's GitHub email.
+It contains the repo, job id, issue/PR links, a summary or question text, and a
+link to the team console; it never contains a GitHub token, model key, bridge
+token or full prompt. The owner can disable job mail in Settings; approval and
+quota mail stay transactional. A question is mailed at most once per
+`sessionId + questionId`.
+
 ### Team console and agent controls
 
 - `GET /api/repos/:id/team/events` is owner-only. It is read-only and streams

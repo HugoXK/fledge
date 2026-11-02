@@ -91,3 +91,119 @@ export function quotaExhaustedEmail(user: UserRow, baseUrl: string): { subject: 
     ].join('\n'),
   }
 }
+
+export interface JobMailContext {
+  repo: string
+  jobId: string
+  kind: string
+  teamUrl: string
+  issueUrl: string | null
+  prUrl: string | null
+  summary: string
+  error: string
+  reviewScore: number | null
+}
+
+function mailFooter(): string {
+  return 'Fledge · powered by FlyBot'
+}
+
+function linkLine(label: string, url: string | null): string {
+  return url === null || url === '' ? `${label}：—` : `${label}：${url}`
+}
+
+export function jobSucceededEmail(user: UserRow, context: JobMailContext): { subject: string; text: string; html: string } {
+  const review = context.kind === 'review'
+  const score = context.reviewScore === null ? '' : `评分：${context.reviewScore}/100`
+  const subject = review ? `[Fledge] 审核完成：${context.repo}` : `[Fledge] 任务完成：${context.repo}`
+  const text = [
+    `@${user.login}，你好：`,
+    '',
+    review ? `${context.repo} 的审核任务已完成。` : `${context.repo} 的任务已完成。`,
+    score,
+    '',
+    `任务：${context.jobId}`,
+    linkLine('Issue', context.issueUrl),
+    linkLine('PR', context.prUrl),
+    '',
+    context.summary === '' ? '' : `摘要：${context.summary}`,
+    '',
+    'Fledge 不会自动合并；请到 GitHub review 后由你决定是否 merge。',
+    '',
+    `团队工作台：${context.teamUrl}`,
+    '',
+    mailFooter(),
+  ].filter((line) => line !== '').join('\n')
+  const html = `<p>@${escapeHtml(user.login)}，你好：</p>
+<p>${escapeHtml(review ? `${context.repo} 的审核任务已完成。` : `${context.repo} 的任务已完成。`)}${score === '' ? '' : ` ${escapeHtml(score)}`}</p>
+<ul>
+  <li>任务：<code>${escapeHtml(context.jobId)}</code></li>
+  <li>Issue：${context.issueUrl === null ? '—' : `<a href="${escapeHtml(context.issueUrl)}">${escapeHtml(context.issueUrl)}</a>`}</li>
+  <li>PR：${context.prUrl === null ? '—' : `<a href="${escapeHtml(context.prUrl)}">${escapeHtml(context.prUrl)}</a>`}</li>
+</ul>
+${context.summary === '' ? '' : `<p>${escapeHtml(context.summary)}</p>`}
+<p>Fledge 不会自动合并；请到 GitHub review 后由你决定是否 merge。</p>
+<p><a href="${escapeHtml(context.teamUrl)}">打开团队工作台</a></p>
+<p><small>${escapeHtml(mailFooter())}</small></p>`
+  return { subject, text, html }
+}
+
+export function jobFailedEmail(user: UserRow, context: JobMailContext): { subject: string; text: string; html: string } {
+  const subject = context.kind === 'review' ? `[Fledge] 审核失败：${context.repo}` : `[Fledge] 任务失败：${context.repo}`
+  const text = [
+    `@${user.login}，你好：`,
+    '',
+    `${context.repo} 的${context.kind === 'review' ? '审核' : '任务'}没有完成。`,
+    '',
+    `任务：${context.jobId}`,
+    context.error === '' ? '' : `原因：${context.error}`,
+    linkLine('Issue', context.issueUrl),
+    linkLine('PR', context.prUrl),
+    '',
+    '可以在团队工作台查看最后进度，修正后重新运行；Fledge 不会自动合并。',
+    '',
+    `团队工作台：${context.teamUrl}`,
+    '',
+    mailFooter(),
+  ].filter((line) => line !== '').join('\n')
+  const html = `<p>@${escapeHtml(user.login)}，你好：</p>
+<p>${escapeHtml(context.repo)} 的${escapeHtml(context.kind === 'review' ? '审核' : '任务')}没有完成。</p>
+<ul>
+  <li>任务：<code>${escapeHtml(context.jobId)}</code></li>
+  ${context.error === '' ? '' : `<li>原因：${escapeHtml(context.error)}</li>`}
+  <li>Issue：${context.issueUrl === null ? '—' : `<a href="${escapeHtml(context.issueUrl)}">${escapeHtml(context.issueUrl)}</a>`}</li>
+  <li>PR：${context.prUrl === null ? '—' : `<a href="${escapeHtml(context.prUrl)}">${escapeHtml(context.prUrl)}</a>`}</li>
+</ul>
+<p>可以在团队工作台查看最后进度，修正后重新运行；Fledge 不会自动合并。</p>
+<p><a href="${escapeHtml(context.teamUrl)}">打开团队工作台</a></p>
+<p><small>${escapeHtml(mailFooter())}</small></p>`
+  return { subject, text, html }
+}
+
+export function jobAttentionEmail(user: UserRow, input: { repo: string; question: string; detail: string; options: string[]; teamUrl: string }): { subject: string; text: string; html: string } {
+  const subject = `[Fledge] 团队需要你回答：${input.repo}`
+  const options = input.options.length === 0 ? [] : ['可选答案：', ...input.options.map((option) => `· ${option}`)]
+  const text = [
+    `@${user.login}，你好：`,
+    '',
+    `${input.repo} 的团队在等你回答一个问题：`,
+    '',
+    input.question,
+    input.detail === '' ? '' : input.detail,
+    ...options,
+    '',
+    `在团队工作台回答：${input.teamUrl}`,
+    '',
+    '如果不回答，任务可能停在当前步骤。',
+    '',
+    mailFooter(),
+  ].filter((line) => line !== '').join('\n')
+  const html = `<p>@${escapeHtml(user.login)}，你好：</p>
+<p>${escapeHtml(input.repo)} 的团队在等你回答一个问题：</p>
+<blockquote>${escapeHtml(input.question)}${input.detail === '' ? '' : `<br /><small>${escapeHtml(input.detail)}</small>`}</blockquote>
+${input.options.length === 0 ? '' : `<ul>${input.options.map((option) => `<li>${escapeHtml(option)}</li>`).join('')}</ul>`}
+<p><a href="${escapeHtml(input.teamUrl)}">打开团队工作台回答</a></p>
+<p>如果不回答，任务可能停在当前步骤。</p>
+<p><small>${escapeHtml(mailFooter())}</small></p>`
+  return { subject, text, html }
+}

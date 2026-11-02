@@ -3,6 +3,7 @@ import type { JobRow, RepoRow, Store, UserRow } from '../db.js'
 import type { Mailer } from '../email/mailer.js'
 import { QuotaNotifier } from '../gateway/notifier.js'
 import { quotaView } from '../gateway/quota.js'
+import { jobAttentionEmail, jobFailedEmail, jobSucceededEmail } from '../email/templates.js'
 import { log } from '../lib/log.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { decryptSecret, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
@@ -50,6 +51,7 @@ export interface CallbackPayload {
 
 export class Jobs {
   private timer: NodeJS.Timeout | null = null
+  private questionBusy = false
   private readonly quotaNotifier: QuotaNotifier
 
   constructor(
@@ -211,6 +213,75 @@ export class Jobs {
     this.store.audit(job.user_id, `job.${result.status}`, jobId)
     if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? '未知原因'}`)
     if (result.status === 'succeeded') void this.postAutomationComment(job, result, attribution)
+    if (result.status === 'succeeded' || result.status === 'failed') void this.sendJobEmail(job, result)
+  }
+
+  private async sendJobEmail(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }): Promise<void> {
+    if (result.status === 'quota_exhausted') return
+    const user = this.store.userById(job.user_id)
+    if (user === undefined || user.email === null || user.email === '' || user.email_job_updates !== 1) return
+    const repo = this.store.getRepo(job.repo_id)
+    if (repo === undefined) return
+    const context = {
+      repo: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`,
+      jobId: job.id,
+      kind: job.kind,
+      teamUrl: `${this.config.baseUrl}/repos/${repo.id}/team`,
+      issueUrl: result.issueUrl ?? job.issue_url,
+      prUrl: result.prUrl ?? job.pr_url,
+      summary: result.summary ?? '',
+      error: result.error ?? '',
+      reviewScore: result.reviewScore ?? job.review_score,
+    }
+    try {
+      const template = result.status === 'succeeded' ? jobSucceededEmail(user, context) : jobFailedEmail(user, context)
+      await this.mailer.send({ to: user.email, ...template })
+    } catch (error) {
+      log.warn('job email failed', { job: job.id, error: String(error) })
+    }
+  }
+
+  private async notifyQuestions(): Promise<void> {
+    if (this.instances === undefined || this.config.flybot.instanceImage === '' || this.questionBusy) return
+    this.questionBusy = true
+    try {
+      for (const job of this.store.listActiveJobs()) {
+        const repo = this.store.getRepo(job.repo_id)
+        if (repo === undefined) continue
+        const user = this.store.userById(job.user_id)
+        if (user === undefined || user.status !== 'approved') continue
+        let state
+        try {
+          state = await this.instances.teamState(repo.id)
+        } catch {
+          continue
+        }
+        for (const question of state.questions) {
+          if (question.id === '' || question.question === '') continue
+          const key = `question_notified:${question.sessionId}:${question.id}`
+          if (this.store.getSetting(key) !== undefined) continue
+          this.store.setSetting(key, nowIso())
+          this.store.notify(user.id, 'job', `${repo.owner}/${repo.name} 团队提问：${question.question}`)
+          if (user.email === null || user.email === '' || user.email_job_updates !== 1) continue
+          try {
+            await this.mailer.send({
+              to: user.email,
+              ...jobAttentionEmail(user, {
+                repo: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`,
+                question: question.question,
+                detail: question.detail,
+                options: question.options,
+                teamUrl: `${this.config.baseUrl}/repos/${repo.id}/team`,
+              }),
+            })
+          } catch (error) {
+            log.warn('question email failed', { job: job.id, error: String(error) })
+          }
+        }
+      }
+    } finally {
+      this.questionBusy = false
+    }
   }
 
   private async postAutomationComment(job: JobRow, result: { prUrl?: string; issueUrl?: string }, attribution: Attribution | null): Promise<void> {
@@ -357,6 +428,7 @@ export class Jobs {
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
       log.info('scheduled job', { repo: `${repo.owner}/${repo.name}`, ok: result.ok, job: result.job?.id })
     }
+    await this.notifyQuestions().catch((error) => log.warn('question notification pass failed', { error: String(error) }))
   }
 
   private instanceReady(repoId: string): boolean {

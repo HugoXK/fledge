@@ -77,7 +77,8 @@ test('a successful callback stores attribution and posts a PR automation comment
   })
   const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
   const store = new Store(':memory:')
-  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  const mailer = new MemoryMailer()
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer)
   try {
     const user = makeUser(store, { login: 'attribution-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_attr', userId: user.id, owner: 'owner', name: 'repo', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), goal: '', autoIterate: false, intervalMinutes: 1440 })
@@ -105,6 +106,10 @@ test('a successful callback stores attribution and posts a PR automation comment
     assert.match(body.body, /Test tested/)
     assert.match(body.body, /Reviewer reviewed/)
     assert.doesNotMatch(body.body, /not recorded|pending/)
+    assert.equal(mailer.messages.length, 1)
+    const message = mailer.messages[0]!
+    assert.match(message.subject, /任务完成/)
+    assert.match(message.text, /https:\/\/github.com\/owner\/repo\/pull\/42/)
   } finally {
     store.close()
     await github.close()
@@ -134,6 +139,81 @@ test('quotaBlocked fails that user\'s active jobs and revokes their tokens', asy
     assert.equal(store.findApiToken(token.token_hash), undefined)
     assert.equal(store.getRepo(repoA.id)?.last_status, 'quota_exhausted')
     assert.equal(store.getJob('job_b')?.status, 'running')
+  } finally {
+    store.close()
+  }
+})
+
+test('a new team question sends one attention email', async () => {
+  const bridge = await startFakeServer((request, response) => {
+    let body = ''
+    request.on('data', (chunk) => { body += chunk })
+    request.on('end', () => {
+      const payload = JSON.parse(body || '{}') as { endpoint?: string }
+      if (payload.endpoint === 'state') {
+        json(response, 200, { value: {
+          bots: [{ name: 'Repo Lead', sessionId: 'lead-1', role: 'Lead' }],
+          activity: { 'lead-1': 'thinking' },
+          work: { bots: { 'lead-1': { calls: 2 } } },
+          rooms: {},
+          questions: { 'lead-1': { id: 'q1', question: 'Which path?', detail: '', options: ['A', 'B'], multiSelect: false } },
+        } })
+        return
+      }
+      json(response, 200, { ok: true })
+    })
+  })
+  const config = testConfig({ flybot: { ...testConfig().flybot, instanceImage: 'image' } })
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  const instances = new InstanceManager(store, config)
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer, instances)
+  try {
+    const user = makeUser(store, { login: 'question-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_question', userId: user.id, owner: 'o', name: 'q', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.saveRepoInstance({
+      repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/question', bridge_script: '/tmp/bridge',
+      dsh_port: 1, bridge_port: Number(new URL(bridge.url).port), model_port: 2, model_bind: '127.0.0.1', image: 'image',
+      status: 'ready', chief_session: 'chief-1',
+      team_json: JSON.stringify({ chief: 'chief-1', lead: 'lead-1', product: 'p', test: 't', security: 's', reviewer: 'r', dev1: 'd1', dev2: 'd2', reviewerScope: 'upstream', team: 'Repo' }),
+      bridge_token_enc: encryptSecret('bridge-token', config.tokenEncryptionKey), bridge_pid: null, log_pid: null,
+      last_error: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_health_at: null,
+    })
+    store.createJob({ id: 'job_question', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob('job_question', { status: 'running' })
+    await jobs.tick()
+    assert.equal(mailer.messages.length, 1)
+    const message = mailer.messages[0]!
+    assert.match(message.subject, /需要你回答/)
+    assert.match(message.text, /Which path\?/)
+    await jobs.tick()
+    assert.equal(mailer.messages.length, 1)
+  } finally {
+    store.close()
+    await bridge.close()
+  }
+})
+
+test('job email follows the user preference', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer)
+  try {
+    const user = makeUser(store, { login: 'mail-pref', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_mail', userId: user.id, owner: 'o', name: 'm', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const secret = 'mail-secret'
+    store.createJob({ id: 'job_mail', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '' })
+    store.updateJob('job_mail', { status: 'running' })
+    store.setEmailJobUpdates(user.id, false)
+    await jobs.handleCallback('job_mail', secret, { status: 'succeeded', summary: 'done without PR' })
+    assert.equal(mailer.messages.length, 0)
+
+    const second = store.createJob({ id: 'job_mail_2', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '' })
+    store.updateJob(second.id, { status: 'running' })
+    store.setEmailJobUpdates(user.id, true)
+    await jobs.handleCallback('job_mail_2', secret, { status: 'succeeded', summary: 'done again' })
+    assert.equal(mailer.messages.length, 1)
   } finally {
     store.close()
   }
