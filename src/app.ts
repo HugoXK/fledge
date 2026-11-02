@@ -1238,6 +1238,50 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return { ok: true }
   })
 
+
+  const handleGithubFollowup = async (event: string, body: Record<string, unknown>): Promise<void> => {
+    const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
+    const installationId = Number(installation.id)
+    if (!Number.isFinite(installationId)) return
+    const repository = typeof body.repository === 'object' && body.repository !== null ? (body.repository as Record<string, unknown>) : {}
+    const fullName = typeof repository.full_name === 'string' ? repository.full_name : ''
+    if (fullName === '') return
+    const repo = store.findRepoByInstallationAndFullName(installationId, fullName)
+    if (repo === undefined) return
+    const pulls: Array<{ number?: number; html_url?: string; head?: { ref?: string; sha?: string } }> = []
+    let reason = ''
+    if (event === 'check_run') {
+      const check = typeof body.check_run === 'object' && body.check_run !== null ? (body.check_run as Record<string, unknown>) : {}
+      if (check.conclusion !== 'failure' && check.conclusion !== 'timed_out' && check.conclusion !== 'cancelled') return
+      reason = `check ${String(check.name ?? 'check')} ${String(check.conclusion)}`
+      if (Array.isArray(check.pull_requests)) pulls.push(...(check.pull_requests as typeof pulls))
+    } else if (event === 'check_suite') {
+      const suite = typeof body.check_suite === 'object' && body.check_suite !== null ? (body.check_suite as Record<string, unknown>) : {}
+      if (suite.conclusion !== 'failure' && suite.conclusion !== 'timed_out' && suite.conclusion !== 'cancelled') return
+      reason = `check suite ${String(suite.conclusion)}`
+      if (Array.isArray(suite.pull_requests)) pulls.push(...(suite.pull_requests as typeof pulls))
+    } else if (event === 'pull_request_review') {
+      const review = typeof body.review === 'object' && body.review !== null ? (body.review as Record<string, unknown>) : {}
+      if (review.state !== 'changes_requested') return
+      reason = 'review requested changes'
+      const pull = typeof body.pull_request === 'object' && body.pull_request !== null ? (body.pull_request as typeof pulls[number]) : undefined
+      if (pull !== undefined) pulls.push(pull)
+    } else {
+      return
+    }
+    for (const pull of pulls) {
+      const number = Number(pull.number)
+      if (!Number.isFinite(number)) continue
+      const prUrl = typeof pull.html_url === 'string' ? pull.html_url : `https://github.com/${fullName}/pull/${number}`
+      const branch = typeof pull.head?.ref === 'string' ? pull.head.ref : ''
+      const headSha = typeof pull.head?.sha === 'string' ? pull.head.sha : ''
+      if (branch === '') continue
+      if (store.latestJobByPrUrl(repo.user_id, prUrl) === undefined) continue
+      const result = await jobs.followUp(repo, { prUrl, branch, reason, headSha })
+      log.info('github follow-up', { repo: `${repo.owner}/${repo.name}`, pr: number, ok: result.ok, code: result.code, job: result.job?.id })
+    }
+  }
+
   app.post('/api/github/webhook', async (request, reply) => {
     if (!githubApp.configured || config.githubApp.webhookSecret === '') return reply.code(503).send({ error: 'GitHub App webhook is not configured' })
     const signature = String(request.headers['x-hub-signature-256'] ?? '')
@@ -1249,12 +1293,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const action = typeof body.action === 'string' ? body.action : ''
     const repository = typeof body.repository === 'object' && body.repository !== null ? (body.repository as Record<string, unknown>) : {}
     const fullName = typeof repository.full_name === 'string' ? repository.full_name : ''
+    const deliveryKey = `webhook_delivery:${delivery}`
+    if (delivery !== '' && store.getSetting(deliveryKey) !== undefined) return { ok: true }
+    if (delivery !== '') store.setSetting(deliveryKey, new Date().toISOString())
     store.event('github_webhook', { meta: `${event}:${action}:${fullName}:${delivery}`.slice(0, 300) })
     if (event === 'installation') {
       const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
       const installationId = Number(installation.id)
       if (action === 'deleted' && Number.isFinite(installationId)) store.deleteInstallation(installationId)
     }
+    await handleGithubFollowup(event, body).catch((error) => log.warn('github follow-up failed', { event, error: String(error) }))
     return { ok: true }
   })
 

@@ -67,6 +67,14 @@ and do not use CSRF.
   before parsing. A bad signature is 401; an unconfigured webhook is 503.
   Verified event metadata is stored without payload secrets.
 
+### Webhook follow-up
+
+Webhook deliveries are deduped by `X-GitHub-Delivery` in `settings`; the same
+failure on the same head SHA is deduped again. Only PRs with an existing Fledge
+job are followed up, and a repo with an active job is skipped. Follow-up jobs
+reuse the original branch and PR; they never create a second PR or issue. The
+webhook signature is verified before any parsing or enqueue.
+
 ### Job cost, evidence and metrics
 
 `events` stores activation/intervention names, user/repo/job ids and a short

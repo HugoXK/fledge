@@ -141,6 +141,16 @@ through the user's OAuth token or an individual account match). GitHub webhooks
 are verified with `X-Hub-Signature-256` before parsing; verified events are
 recorded in `events` for the follow-up loop. PAT onboarding stays available.
 
+### PR follow-up
+
+Verified webhooks drive a small follow-up loop: a failed check run/suite or a
+review requesting changes on a PR that has a Fledge job enqueues an iterate job
+with the existing branch and PR URL. The bridge prompt tells the agent to push
+to the same branch and update the existing PR, never open a second PR. The
+follow-up is deduped by delivery id and by repo + PR + head SHA + reason, and is
+skipped while the repository has an active job. A follow-up does not receive a
+second automation comment; the job list labels it "Follow-up".
+
 ### Plan-first-lite, checkpoints and templates
 
 A manual "plan only" job uses the same team and repository context but the

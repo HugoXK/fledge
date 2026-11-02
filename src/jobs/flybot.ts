@@ -5,6 +5,8 @@ import type { Runner, RunnerContext, RunnerResult } from './runner.js'
 interface BridgePayload {
   jobId: string
   kind: 'iterate' | 'review' | 'plan'
+  branch?: string
+  prUrl?: string
   sessionId?: string
   dispatchRole?: 'chief' | 'lead' | 'reviewer'
   leadName?: string
@@ -38,7 +40,12 @@ function iterateInstructions(context: RunnerContext): string[] {
     context.canCreateIssue
       ? `Create one focused issue on the upstream repository ${upstream.owner}/${upstream.name} before opening the PR (or reuse an existing related issue). The PR body must reference it with "Fixes #<number>".`
       : `The token cannot create issues on the upstream repository; if an issue is required, report a clear error in the callback instead of inventing a PR.`,
-    'Create exactly one branch and one focused pull request. Never push to the upstream base branch.',
+    ...(context.job.pr_url === null || context.job.pr_url === ''
+      ? ['Create exactly one branch and one focused pull request. Never push to the upstream base branch.']
+      : [
+          `This is a follow-up on the existing pull request ${context.job.pr_url} and branch ${context.job.branch ?? ''}.`,
+          'Push to the same branch and update that PR. Do not open a second PR and do not create a new issue.',
+        ]),
     'Write a failing test first when a test is possible. Never force-push, merge or change repository settings.',
   ]
 }
@@ -79,6 +86,8 @@ export class FlyBotRunner implements Runner {
     const payload: BridgePayload = {
       jobId: context.job.id,
       kind: context.kind,
+      branch: context.job.branch ?? undefined,
+      prUrl: context.job.pr_url ?? undefined,
       sessionId: context.flybot?.sessionId,
       dispatchRole: context.flybot?.role,
       leadName: context.flybot?.leadName,

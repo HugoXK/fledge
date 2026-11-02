@@ -86,7 +86,7 @@ export class Jobs {
     }
   }
 
-  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule', goalOverride?: string, kind: JobKind = 'iterate'): Promise<EnqueueResult> {
+  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string } = {}): Promise<EnqueueResult> {
     if (repo.enabled !== 1) return { ok: false, error: '这个仓库已停用', code: 'REPO_DISABLED' }
     if (kind === 'review' && (repo.reviewer_enabled !== 1 || repo.can_review !== 1)) {
       return { ok: false, error: '这个仓库没有启用审核角色', code: 'REVIEW_DISABLED' }
@@ -140,6 +140,11 @@ export class Jobs {
     })
     const priorJobs = this.store.listJobs(user.id, 1).length
     const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind })
+    if (options.branch !== undefined || options.prUrl !== undefined) {
+      this.store.updateJob(job.id, { branch: options.branch ?? null, pr_url: options.prUrl ?? null })
+      job.branch = options.branch ?? null
+      job.pr_url = options.prUrl ?? null
+    }
     this.store.event('job_enqueued', { userId: user.id, repoId: repo.id, jobId: job.id, meta: `${kind}:${trigger}` })
     if (priorJobs === 0) this.store.event('first_job_start', { userId: user.id, repoId: repo.id, jobId: job.id })
     if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'queued' })
@@ -255,6 +260,20 @@ export class Jobs {
     } catch (error) {
       log.warn('job email failed', { job: job.id, error: String(error) })
     }
+  }
+
+  async followUp(repo: RepoRow, input: { prUrl: string; branch: string; reason: string; headSha: string }): Promise<EnqueueResult> {
+    const key = `followup:${repo.id}:${input.prUrl}:${input.headSha}:${input.reason}`.slice(0, 300)
+    if (this.store.getSetting(key) !== undefined) return { ok: false, error: '这个失败已经跟进过', code: 'DUPLICATE_FOLLOWUP' }
+    if (this.store.activeJobForRepo(repo.id) !== undefined) return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
+    this.store.setSetting(key, nowIso())
+    const goal = [
+      `Follow-up on the existing pull request ${input.prUrl} (branch ${input.branch}).`,
+      `Reason: ${input.reason}.`,
+      'Continue on the same branch and update the existing PR. Do not open a second PR or create a new issue.',
+      'Make the smallest correct fix, add or adjust tests, run the relevant checks, and callback with the branch and PR URL.',
+    ].join('\n')
+    return this.enqueue(repo, 'followup', goal, 'iterate', { branch: input.branch, prUrl: input.prUrl })
   }
 
   private async notifyQuestions(): Promise<void> {
@@ -399,7 +418,7 @@ export class Jobs {
   }
 
   private async postAutomationComment(job: JobRow, result: { prUrl?: string; issueUrl?: string }, attribution: Attribution | null): Promise<void> {
-    if (job.kind === 'review' || result.prUrl === undefined) return
+    if (job.kind === 'review' || job.trigger === 'followup' || result.prUrl === undefined) return
     const match = /\/pull\/(\d+)(?:[/?#]|$)/.exec(result.prUrl)
     if (match === null) return
     const repo = this.store.getRepo(job.repo_id)

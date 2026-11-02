@@ -17,7 +17,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/auth/github/app/installed` | approved | Bind an installation to the current user |
 | GET | `/repos/new` | approved | GitHub App installations and repository picker |
 | POST | `/repos/app` | approved + CSRF | Connect repositories through an installation |
-| POST | `/api/github/webhook` | GitHub signature | GitHub App webhook ingestion |
+| POST | `/api/github/webhook` | GitHub signature | GitHub App webhook ingestion and CI/review follow-up |
 | POST | `/auth/token` | public, rate-limited | Sign in with a GitHub token when OAuth is not configured |
 | POST | `/auth/logout` | session + CSRF | Sign out |
 | GET | `/apply` | session | Disclaimer and information-security signature |
@@ -87,6 +87,15 @@ status, issue/PR and attribution) and quota. Clients should fall back to the
 to stop every role that is currently thinking/working. The response distinguishes
 `stopped` (hard cancel) from `requested` (stop message delivered; it takes effect
 at the next safe point). Both endpoints require the `x-csrf-token` header.
+
+## GitHub webhook follow-up
+
+A verified `check_run`/`check_suite` failure or a `pull_request_review` with
+`changes_requested` can enqueue a follow-up job when the PR URL matches an
+existing Fledge job for a repository with the same installation. The follow-up
+reuses the original branch and PR URL, skips a second PR/issue, and is deduped by
+`repo + PR + head SHA + reason` and by `X-GitHub-Delivery`. A repo with an active
+job skips the follow-up; arbitrary PRs with no Fledge job are ignored.
 
 ## Job endpoints
 

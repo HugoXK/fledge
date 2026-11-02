@@ -51,6 +51,7 @@ function badge(t: Translate, status: string): string {
 function triggerLabel(t: Translate, trigger: string): string {
   if (trigger === 'manual') return t('手动', 'Manual')
   if (trigger === 'schedule') return t('定时', 'Scheduled')
+  if (trigger === 'followup') return t('跟进', 'Follow-up')
   return trigger
 }
 

@@ -146,7 +146,9 @@ function buildText(job) {
       : kind === 'provision'
       ? ['- This is a provisioning request. Do not write code, push, or open PRs.']
       : [
-          `- Push the branch to ${fork.owner}/${fork.name}; open one pull request against ${upstream.owner}/${upstream.name} (base ${upstream.defaultBranch}).`,
+          ...(job.prUrl
+            ? [`- This is a follow-up on the existing PR ${job.prUrl} and branch ${job.branch}. Push to the same branch and update that PR; do not open a second PR or a new issue.`]
+            : [`- Push the branch to ${fork.owner}/${fork.name}; open one pull request against ${upstream.owner}/${upstream.name} (base ${upstream.defaultBranch}).`]),
           job.canCreateIssue === false
             ? '- The token may not be able to create upstream issues; report a clear error instead of guessing.'
             : `- Create or reuse one issue on ${upstream.owner}/${upstream.name}; reference it from the PR.`,
@@ -160,6 +162,7 @@ function buildText(job) {
     `Mode: ${kind}`,
     `Upstream: ${upstream.owner}/${upstream.name} (base ${upstream.defaultBranch})`,
     `Fork: ${fork.owner}/${fork.name}${job.isFork ? ' (push here)' : ' (same as upstream)'}`,
+    `Branch: ${job.branch || '(new)'} · PR: ${job.prUrl || '(new)'}`,
     `Permission: ${job.permission || 'unknown'}${job.canReview ? ' · review enabled' : ''}`,
     `Time limit: ${job.timeoutMinutes ?? 90} minutes.`,
     `Goal: ${job.goal}`,

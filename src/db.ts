@@ -893,6 +893,13 @@ export class Store {
     return this.get<RepoRow>('SELECT * FROM repos WHERE id = ?', id)
   }
 
+  findRepoByInstallationAndFullName(installationId: number, fullName: string): RepoRow | undefined {
+    return this.get<RepoRow>(
+      "SELECT * FROM repos WHERE installation_id = ? AND (lower(upstream_owner || '/' || upstream_name) = lower(?) OR lower(fork_owner || '/' || fork_name) = lower(?)) LIMIT 1",
+      installationId, fullName, fullName,
+    )
+  }
+
   getRepoByOwnerName(userId: string, owner: string, name: string): RepoRow | undefined {
     return this.get<RepoRow>('SELECT * FROM repos WHERE user_id = ? AND lower(owner) = lower(?) AND lower(name) = lower(?)', userId, owner, name)
   }
@@ -996,6 +1003,10 @@ export class Store {
 
   listJobsForRepo(repoId: string, limit = 20): JobRow[] {
     return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC LIMIT ?', repoId, limit)
+  }
+
+  latestJobByPrUrl(userId: string, prUrl: string): JobRow | undefined {
+    return this.get<JobRow>('SELECT * FROM jobs WHERE user_id = ? AND pr_url = ? ORDER BY created_at DESC LIMIT 1', userId, prUrl)
   }
 
   activeJobForRepo(repoId: string): JobRow | undefined {

@@ -262,3 +262,27 @@ test('plan jobs dispatch as plan and keep a checkpoint', async () => {
     store.close()
   }
 })
+
+test('follow-up jobs reuse the branch and PR and are deduplicated', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'followup-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_followup', userId: user.id, owner: 'o', name: 'f', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const first = await jobs.followUp(repo, { prUrl: 'https://github.com/o/f/pull/7', branch: 'fledge/fix', reason: 'check failed', headSha: 'abc' })
+    assert.equal(first.ok, true)
+    assert.equal(first.job?.trigger, 'followup')
+    assert.equal(first.job?.branch, 'fledge/fix')
+    assert.equal(first.job?.pr_url, 'https://github.com/o/f/pull/7')
+    assert.match(first.job?.goal ?? '', /Continue on the same branch/)
+    assert.equal(contexts[0]?.job.branch, 'fledge/fix')
+    const duplicate = await jobs.followUp(repo, { prUrl: 'https://github.com/o/f/pull/7', branch: 'fledge/fix', reason: 'check failed', headSha: 'abc' })
+    assert.equal(duplicate.ok, false)
+    assert.equal(duplicate.code, 'DUPLICATE_FOLLOWUP')
+  } finally {
+    store.close()
+  }
+})

@@ -1,0 +1,1 @@
+Added automatic PR follow-up: a failed check run/suite or a review requesting changes on a Fledge PR enqueues a job on the same branch and PR, with delivery and head-SHA deduplication. Follow-up jobs never open a second PR or issue and are skipped while the repository has an active job.
