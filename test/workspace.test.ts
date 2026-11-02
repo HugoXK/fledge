@@ -29,7 +29,9 @@ test('workspace html is rebranded and keeps a workspace base', () => {
 test('workspace shell and proxied html are owner-only and rebranded', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'fledge-workspace-'))
   writeFileSync(join(dataDir, 'dsh-web.log'), 'dsh web: http://127.0.0.1:3080/?token=testtoken\n')
+  let proxyOrigin = ''
   const dsh = await startFakeServer((request, response) => {
+    if (request.url === '/') proxyOrigin = String(request.headers.origin ?? '')
     if (request.url?.startsWith('/?token=')) {
       response.writeHead(303, { location: './', 'set-cookie': 'dsh-auth-test=abc; Path=/; HttpOnly' })
       response.end()
@@ -68,6 +70,7 @@ test('workspace shell and proxied html are owner-only and rebranded', async () =
     assert.match(proxiedBody, /workspace/)
     assert.doesNotMatch(proxiedBody, /DeepSeek Harness/)
     assert.equal(proxied.headers.get('set-cookie'), null)
+    assert.equal(proxyOrigin, `http://127.0.0.1:${new URL(dsh.url).port}`)
     const anonymous = await fetch(`http://127.0.0.1:${port}/repos/${repo.id}/workspace`)
     assert.equal(anonymous.status, 401)
   } finally {

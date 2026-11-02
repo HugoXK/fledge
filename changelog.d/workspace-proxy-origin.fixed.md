@@ -1,0 +1,1 @@
+Fixed the workspace proxy returning HTTP 403 / reconnecting forever by rewriting the browser Origin and Referer headers to the per-repo loopback DSH origin; the DSH API and WebSocket now accept workspace requests.

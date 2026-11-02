@@ -79,10 +79,13 @@ export async function proxyWorkspaceHttp(request: FastifyRequest, reply: Fastify
   for (const [name, value] of Object.entries(request.headers)) {
     if (value === undefined) continue
     const lower = name.toLowerCase()
-    if (['host', 'cookie', 'content-length', 'connection', 'accept-encoding'].includes(lower)) continue
+    if (['host', 'cookie', 'content-length', 'connection', 'accept-encoding', 'origin', 'referer'].includes(lower)) continue
     headers[lower] = Array.isArray(value) ? value.join(', ') : value
   }
+  const upstreamOrigin = `http://127.0.0.1:${instance.dsh_port}`
   headers.cookie = cookie
+  headers.origin = upstreamOrigin
+  headers.referer = `${upstreamOrigin}/`
   headers['accept-encoding'] = 'identity'
   if (raw !== undefined && raw.length > 0) headers['content-length'] = String(raw.length)
   const path = `/${subpath}`
@@ -125,11 +128,13 @@ export function proxyWorkspaceUpgrade(request: http.IncomingMessage, socket: net
     for (const [name, value] of Object.entries(request.headers)) {
       if (value === undefined) continue
       const lower = name.toLowerCase()
-      if (['host', 'cookie'].includes(lower)) continue
+      if (['host', 'cookie', 'origin', 'referer'].includes(lower)) continue
       headers[lower] = Array.isArray(value) ? value.join(', ') : value
     }
     headers.host = `127.0.0.1:${instance.dsh_port}`
     headers.cookie = cookie
+    headers.origin = `http://127.0.0.1:${instance.dsh_port}`
+    headers.referer = `http://127.0.0.1:${instance.dsh_port}/`
     const lines = [
       `${request.method ?? 'GET'} /${subpath} HTTP/1.1`,
       ...Object.entries(headers).map(([name, value]) => `${name}: ${value}`),
