@@ -151,6 +151,14 @@ sends the remaining text to the Lead as guidance. Tokens live in `settings` with
 a 7-day expiry. Cloudflare Email Routing + an Email Worker can post to the
 endpoint; IMAP polling is not required.
 
+### Job model token lifecycle
+
+The bridge binds a job-scoped model token on `/run`. Fledge clears it on job
+finish via `POST /job-done` (bridge token auth), and the model proxy retries
+once with the instance token on a 401/403 from the gateway. This keeps per-job
+cost attribution while avoiding a stale/revoked job token breaking later Chief
+greetings, memory reviews or guidance turns.
+
 ### Team observation and effectiveness
 
 `teamState` now exposes each role's current tool/step, start time and last

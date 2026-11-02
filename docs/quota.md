@@ -36,7 +36,11 @@ stream ends. A request that is already in flight is allowed to finish; the
   `users.quota_used_usd`. While a job is running the bridge injects the
   job-scoped `flg_` token into the model proxy, so the row also carries
   `job_id`; the gateway adds the same cost to `jobs.cost_usd` for per-job
-  display. Outside a job the instance token is used and the row has no job id.
+  display. On job finish Fledge calls the bridge `/job-done` endpoint to drop
+  the job token immediately; the proxy also retries once with the instance
+  token if the gateway returns 401/403, so a revoked/expired job token cannot
+  leave the team with AUTH errors. Outside a job the instance token is used and
+  the row has no job id.
 - When the balance crosses zero: create one in-app notification and at most one
   email per user per day (deduped by `settings:quota_notified:<userId>`).
 - A failed job before it starts (quota already zero) is recorded as

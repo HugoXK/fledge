@@ -748,6 +748,19 @@ server.listen(3081, '0.0.0.0')
     return { stopped, requested }
   }
 
+  async clearJobToken(repoId: string, jobId: string): Promise<void> {
+    const instance = this.store.getRepoInstance(repoId)
+    if (instance === undefined || instance.status !== 'ready' || instance.bridge_token_enc === null) return
+    const token = decryptSecret(instance.bridge_token_enc, this.config.tokenEncryptionKey)
+    const response = await fetch(`http://127.0.0.1:${instance.bridge_port}/job-done`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ jobId }),
+      signal: AbortSignal.timeout(5_000),
+    })
+    if (!response.ok) throw new Error(`bridge /job-done ${response.status}`)
+  }
+
   async stop(repoId: string, update = true): Promise<void> {
     const instance = this.store.getRepoInstance(repoId)
     if (instance === undefined) return

@@ -226,6 +226,9 @@ export class Jobs {
     })
     if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_at: nowIso(), last_review_status: result.status })
     else this.store.updateRepo(job.repo_id, { last_status: result.status })
+    void this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => {
+      log.warn('clear job model token failed', { job: jobId, error: String(error) })
+    })
     revoke()
     this.store.audit(job.user_id, `job.${result.status}`, jobId)
     this.store.event(`job_${result.status}`, { userId: job.user_id, repoId: job.repo_id, jobId })

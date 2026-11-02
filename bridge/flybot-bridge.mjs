@@ -47,6 +47,7 @@ const GATEWAY_TOKEN = process.env.FLEDGE_GATEWAY_TOKEN ?? ''
 // gateway can attribute usage to that job. The instance token remains the fallback.
 let activeJobToken = ''
 let activeJobUntil = 0
+let activeJobId = ''
 
 function currentGatewayToken() {
   return activeJobToken !== '' && Date.now() < activeJobUntil ? activeJobToken : GATEWAY_TOKEN
@@ -249,6 +250,23 @@ const server = http.createServer(async (request, response) => {
       return json(response, 502, { error: redact(String(error)) })
     }
   }
+  if (request.method === 'POST' && request.url === '/job-done') {
+    if (!authorized(request)) return json(response, 401, { error: 'unauthorized' })
+    let body
+    try {
+      body = JSON.parse((await readBody(request, MAX_PROMPT)).toString('utf8'))
+    } catch {
+      return json(response, 400, { error: 'invalid JSON' })
+    }
+    if (typeof body.jobId === 'string' && activeJobId !== '' && body.jobId !== activeJobId) {
+      return json(response, 200, { ok: true, ignored: true })
+    }
+    activeJobToken = ''
+    activeJobUntil = 0
+    activeJobId = ''
+    logEvent('model-token-cleared', { jobId: typeof body.jobId === 'string' ? body.jobId : null })
+    return json(response, 200, { ok: true })
+  }
   if (request.method !== 'POST' || request.url !== '/run') {
     return json(response, 404, { error: 'not found' })
   }
@@ -266,6 +284,7 @@ const server = http.createServer(async (request, response) => {
     if (typeof job.platform?.token === 'string' && job.platform.token !== '') {
       activeJobToken = job.platform.token
       activeJobUntil = Date.now() + ((Number(job.timeoutMinutes) || 90) + 60) * 60_000
+      activeJobId = job.jobId
       logEvent('model-token-bound', { jobId: job.jobId })
     }
     const sessionId = typeof job.sessionId === 'string' && job.sessionId !== ''
@@ -304,25 +323,34 @@ function createModelProxy() {
       'content-length': String(body.length),
       'user-agent': 'fledge-instance-proxy/0.1',
     }
-    const upstream = mod.request(new URL(request.url, origin), { method: request.method, headers }, (upstreamResponse) => {
-      const out = {}
-      for (const [name, value] of Object.entries(upstreamResponse.headers)) {
-        const lower = name.toLowerCase()
-        if (lower === 'connection' || lower === 'transfer-encoding' || lower === 'keep-alive' || lower === 'content-length') continue
-        out[name] = value
-      }
-      response.writeHead(upstreamResponse.statusCode ?? 502, out)
-      upstreamResponse.pipe(response)
-    })
-    upstream.on('error', (error) => {
-      logEvent('model-proxy-failed', { error: redact(String(error)) })
-      if (!response.headersSent) json(response, 502, { error: 'gateway unavailable' })
-      else response.destroy()
-    })
-    upstream.setTimeout(10 * 60 * 1000, () => upstream.destroy(new Error('gateway timeout')))
-    if (body.length > 0) upstream.write(body)
-    upstream.end()
-    response.on('close', () => { if (!response.writableEnded) upstream.destroy() })
+    const send = (token, retried) => {
+      const upstream = mod.request(new URL(request.url, origin), { method: request.method, headers: { ...headers, authorization: `Bearer ${token}` } }, (upstreamResponse) => {
+        if (!retried && (upstreamResponse.statusCode === 401 || upstreamResponse.statusCode === 403) && token !== GATEWAY_TOKEN) {
+          upstreamResponse.resume()
+          logEvent('model-token-fallback', { status: upstreamResponse.statusCode })
+          send(GATEWAY_TOKEN, true)
+          return
+        }
+        const out = {}
+        for (const [name, value] of Object.entries(upstreamResponse.headers)) {
+          const lower = name.toLowerCase()
+          if (lower === 'connection' || lower === 'transfer-encoding' || lower === 'keep-alive' || lower === 'content-length') continue
+          out[name] = value
+        }
+        response.writeHead(upstreamResponse.statusCode ?? 502, out)
+        upstreamResponse.pipe(response)
+      })
+      upstream.on('error', (error) => {
+        logEvent('model-proxy-failed', { error: redact(String(error)) })
+        if (!response.headersSent) json(response, 502, { error: 'gateway unavailable' })
+        else response.destroy()
+      })
+      upstream.setTimeout(10 * 60 * 1000, () => upstream.destroy(new Error('gateway timeout')))
+      if (body.length > 0) upstream.write(body)
+      upstream.end()
+      response.on('close', () => { if (!response.writableEnded) upstream.destroy() })
+    }
+    send(currentGatewayToken(), false)
   })
   proxy.listen(MODEL_PROXY_PORT, MODEL_PROXY_BIND, () => {
     logEvent('model-proxy-start', { listen: `${MODEL_PROXY_BIND}:${MODEL_PROXY_PORT}` })
