@@ -125,6 +125,52 @@ test('a PR follow-up waits for the active review job and then queues', async () 
   }
 })
 
+
+test('a review callback queues a same-branch fix for each Fledge PR that needs changes', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'capture', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'review-callback-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_review_callback', userId: user.id, owner: 'o', name: 'rc', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const secret = 'review-callback-secret'
+    store.createJob({ id: 'job_review_callback', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review' })
+    store.updateJob('job_review_callback', { status: 'running', started_at: new Date().toISOString() })
+    const result = await jobs.handleCallback('job_review_callback', secret, {
+      status: 'succeeded',
+      summary: 'One PR needs changes',
+      reviewScore: 55,
+      followUps: [{ prUrl: 'https://github.com/o/rc/pull/9', branch: 'fledge/review-fix', headSha: 'sha9', baseBranch: 'main', reason: 'review requested changes' }],
+    })
+    assert.equal(result.ok, true)
+    const followup = store.listJobsForRepo(repo.id).find((job) => job.trigger === 'followup')
+    assert.ok(followup)
+    assert.equal(followup?.pr_url, 'https://github.com/o/rc/pull/9')
+    assert.equal(followup?.branch, 'fledge/review-fix')
+    assert.equal(followup?.base_branch, 'main')
+  } finally {
+    store.close()
+  }
+})
+
+
+test('scheduled jobs follow the repository automatic job mode', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'mode-user', status: 'approved' })
+    store.createRepo({ id: 'repo_mode', userId: user.id, owner: 'o', name: 'mode', defaultBranch: 'main', tokenEnc: 'x', goal: 'Analyze direction.', autoIterate: true, intervalMinutes: 1440, jobMode: 'research' })
+    await jobs.tick()
+    assert.equal(contexts[0]?.kind, 'research')
+  } finally {
+    store.close()
+  }
+})
+
 test('a running callback unwraps a nested progress summary', async () => {
   const config = testConfig()
   const store = new Store(':memory:')

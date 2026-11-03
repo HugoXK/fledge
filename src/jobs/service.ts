@@ -46,6 +46,14 @@ function progressSummary(value: unknown): string | undefined {
   return value.slice(0, 4000)
 }
 
+export interface ReviewFollowUp {
+  prUrl: string
+  branch: string
+  baseBranch?: string
+  headSha?: string
+  reason?: string
+}
+
 export interface CallbackPayload {
   status?: unknown
   branch?: unknown
@@ -57,6 +65,7 @@ export interface CallbackPayload {
   attribution?: unknown
   evidence?: unknown
   checkpoint?: unknown
+  followUps?: unknown
 }
 
 export class Jobs {
@@ -579,6 +588,22 @@ export class Jobs {
     const attribution = parseAttribution(payload.attribution)
     const evidence = parseEvidence(payload.evidence)
     const checkpoint = typeof payload.checkpoint === 'string' ? payload.checkpoint.trim().slice(0, 4000) : undefined
+    const followUps: ReviewFollowUp[] = job.kind === 'review' && Array.isArray(payload.followUps)
+      ? payload.followUps.flatMap((entry) => {
+          if (entry === null || typeof entry !== 'object') return []
+          const value = entry as Record<string, unknown>
+          const prUrl = typeof value.prUrl === 'string' && value.prUrl.startsWith('https://') ? value.prUrl.slice(0, 500) : ''
+          const branch = typeof value.branch === 'string' ? value.branch.trim().slice(0, 300) : ''
+          if (prUrl === '' || branch === '') return []
+          return [{
+            prUrl,
+            branch,
+            ...(typeof value.baseBranch === 'string' ? { baseBranch: value.baseBranch.slice(0, 300) } : {}),
+            ...(typeof value.headSha === 'string' ? { headSha: value.headSha.slice(0, 100) } : {}),
+            ...(typeof value.reason === 'string' ? { reason: value.reason.slice(0, 300) } : {}),
+          }]
+        }).slice(0, 10)
+      : []
     if (status === 'running') {
       this.store.updateJob(jobId, {
         status: 'running',
@@ -604,7 +629,26 @@ export class Jobs {
     }
     if (checkpoint !== undefined) this.store.updateJob(jobId, { checkpoint })
     this.finish(jobId, { status, branch, prUrl, issueUrl, reviewScore, summary, error }, revoke, attribution, evidence)
+    if (status === 'succeeded' && followUps.length > 0) await this.queueReviewFollowUps(job, followUps)
     return { ok: true }
+  }
+
+  private async queueReviewFollowUps(job: JobRow, followUps: ReviewFollowUp[]): Promise<void> {
+    const repo = this.store.getRepo(job.repo_id)
+    if (repo === undefined) return
+    for (const follow of followUps) {
+      const input = {
+        prUrl: follow.prUrl,
+        branch: follow.branch,
+        ...(follow.baseBranch === undefined ? {} : { baseBranch: follow.baseBranch }),
+        reason: follow.reason ?? 'review requested changes',
+        headSha: follow.headSha ?? '',
+      }
+      const result = await this.followUp(repo, input)
+      if (!result.ok && result.code !== 'DUPLICATE_FOLLOWUP') {
+        log.warn('review follow-up not queued', { repo: repo.id, prUrl: follow.prUrl, code: result.code, error: result.error })
+      }
+    }
   }
 
   async credential(jobId: string, secret: string): Promise<{

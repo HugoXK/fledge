@@ -46,6 +46,7 @@ function iterateInstructions(context: RunnerContext): string[] {
           `This is a follow-up on the existing pull request ${context.job.pr_url} and branch ${context.job.branch ?? ''}.`,
           'Push to the same branch and update that PR. Do not open a second PR and do not create a new issue.',
         ]),
+    'Team participation is mandatory: Product scopes the issue, Test writes/verifies the failing test, Dev-1 or Dev-2 implements, Security reviews material risk, and Reviewer reviews the PR. Do not let the Lead implement the whole change alone; if a role is unavailable, say so in the callback.',
     'Write a failing test first when a test is possible. Never force-push, merge or change repository settings.',
   ]
 }
@@ -79,7 +80,7 @@ function reviewInstructions(context: RunnerContext): string[] {
     'For each PR, inspect the diff and tests, assess correctness, scope, test coverage, security and regressions, then give an integer score from 0 to 100 with a short rationale.',
     'For a pull request created by Fledge that needs changes, post a REQUEST_CHANGES review with concrete findings so Fledge can schedule a same-branch fix; for other PRs use event "COMMENT". Never APPROVE, merge or push.',
     'Review all open PRs, including PRs not created by Fledge.',
-    'Finish by POSTing the callback with JSON {status, summary, reviewScore, error}; reviewScore should be the average score across reviewed PRs. Do not send branch or prUrl.',
+    'Finish by POSTing the callback with JSON {status, summary, reviewScore, error, followUps}; reviewScore is the average across reviewed PRs. For each Fledge PR that needs changes, include followUps: [{prUrl, branch, headSha, baseBranch, reason:"review requested changes"}] so Fledge queues a same-branch fix after this review. Do not send branch or prUrl for the review itself.',
   ]
 }
 

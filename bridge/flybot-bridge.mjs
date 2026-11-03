@@ -135,6 +135,7 @@ function buildText(job) {
     ? [
         '- Review every open pull request on the upstream, including PRs not created by Fledge.',
         '- Score each PR 0-100 with a short rationale. For a Fledge PR that needs changes, post REQUEST_CHANGES with concrete findings; otherwise COMMENT. Never approve, merge, push or change settings.',
+        '- Include followUps in the final callback for every Fledge PR that needs changes: [{prUrl, branch, headSha, baseBranch, reason:"review requested changes"}] so Fledge queues a same-branch fix.',
         '- Do not modify code in review mode.',
       ]
     : kind === 'plan'
@@ -162,6 +163,7 @@ function buildText(job) {
             : `- Create or reuse one issue on ${upstream.owner}/${upstream.name}; reference it from the PR.`,
           '- Never push to the upstream base branch. Do not force-push, merge or change repository settings.',
           '- Write a failing test first when a test is possible.',
+          '- Team participation is mandatory: Product scopes, Test writes/verifies the failing test, Dev-1/Dev-2 implement, Security reviews material risk, Reviewer reviews the PR. Do not let the Lead implement the whole change alone; if a role is unavailable, say so in the callback.',
         ]
   const lines = [
     'A Fledge job is ready. Work in your own workspace; do not touch the Fledge service.',
