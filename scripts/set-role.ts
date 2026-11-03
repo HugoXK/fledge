@@ -12,7 +12,7 @@ const store = openStore(config.dbPath)
 try {
   const user = store.userByLogin(login)
   if (user === undefined) throw new Error(`user not found: ${login}`)
-  if (user.role === 'superadmin') throw new Error('the owner role cannot be changed from this script')
+  if (user.role === 'superadmin') throw new Error('the super admin role cannot be changed from this script')
   store.setUserRole(user.id, role)
   store.audit(null, 'admin.role', `login=${user.login} role=${role} by cli`)
   console.log(`${user.login}: ${user.role} -> ${role}`)

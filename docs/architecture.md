@@ -54,10 +54,10 @@
   emails the administrator. The status page shows the live queue position and
   rejects a second submission. Approvals create two single-use random tokens
   (approve/reject), stored as hashes, valid for 7 days.
-- **Roles**: platform roles are `user`, `admin` and owner (`superadmin`). The
+- **Roles**: platform roles are `user`, `admin` and super admin (`superadmin`). The
   primary `GITHUB_ADMIN_LOGIN` is promoted to owner on startup. Admins get the
   normal product UI plus a scoped management page for themselves and normal
-  users; the owner sees everyone, can set admins and is the only role that can
+  users; the super admin sees everyone, can set admins and is the only role that can
   set unlimited quota. The owner can toggle a normal-user preview cookie that
   renders the simple UI while advanced routes stay blocked.
 - **No worker process**: a 60-second tick schedules due iterate jobs and, when

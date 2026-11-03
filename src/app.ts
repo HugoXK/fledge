@@ -208,7 +208,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   }))
 
   const requireAdvanced = (viewer: { user: UserRow; preview?: boolean }): void => {
-    if (viewer.user.role !== 'superadmin' || viewer.preview === true) throw httpError(403, '仅最高权限可访问实时团队页面。', 'SUPERADMIN_ONLY')
+    if (viewer.user.role !== 'superadmin' || viewer.preview === true) throw httpError(403, '仅超级管理员可访问实时团队页面。', 'SUPERADMIN_ONLY')
   }
 
   const startSession = (user: UserRow, request: FastifyRequest, reply: FastifyReply): void => {
@@ -929,6 +929,23 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     await tick()
   })
 
+  app.post('/api/repos/:id/chief/message', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const text = (typeof body.text === 'string' ? body.text : '').trim().slice(0, 4000)
+    const t = translator(request.locale ?? 'zh')
+    if (text === '') return reply.code(400).send({ error: t('留言不能为空。', 'The message cannot be empty.') })
+    try {
+      await instances.sendGuidance(repo.id, 'chief', `[Fledge owner message]\n${text}`)
+    } catch (error) {
+      return reply.code(503).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+    instances.clearChiefTranscript(repo.id)
+    store.audit(viewer.user.id, 'team.chief_message', `${repo.owner}/${repo.name} chars=${text.length}`)
+    store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: 'chief-message' })
+    return { ok: true }
+  })
+
   app.post('/repos/:id/chief/message', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const text = (form(request).text ?? '').trim().slice(0, 4000)
@@ -989,17 +1006,20 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const returnToRaw = text('returnTo')
     const returnPath = returnToRaw.split('?')[0] ?? ''
     const returnTo = returnPath.startsWith('/') && !returnPath.startsWith('//') ? returnPath : '/console'
+    const wantsJson = String(request.headers.accept ?? '').includes('application/json')
     const withMessage = (key: 'notice' | 'error', message: string): string =>
       `${returnTo}${returnTo.includes('?') ? '&' : '?'}${key}=${encodeURIComponent(message)}`
+    const fail = (message: string) => wantsJson ? reply.code(400).send({ error: message }) : reply.redirect(withMessage('error', message))
     const t = translator(request.locale ?? 'zh')
     try {
       await instances.answerQuestion(repo.id, text('sessionId'), text('questionId'), selected, text('custom'))
     } catch (error) {
-      return reply.redirect(withMessage('error', error instanceof Error ? error.message : String(error)))
+      return fail(error instanceof Error ? error.message : String(error))
     }
     store.audit(viewer.user.id, 'team.answer', `${repo.owner}/${repo.name} question=${text('questionId').slice(0, 80)}`)
     store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: 'answer' })
     inboxCache.delete(viewer.user.id)
+    if (wantsJson) return { ok: true }
     return reply.redirect(withMessage('notice', t('答案已发送。', 'Answer sent.')))
   })
 
@@ -1577,7 +1597,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (user.role === 'superadmin' && !superadmin) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
     const body = form(request)
     const unlimited = body.unlimited === '1'
-    if (unlimited && !superadmin) return reply.redirect(`/admin?error=${encodeURIComponent('只有最高权限可以设置不限额。')}`)
+    if (unlimited && !superadmin) return reply.redirect(`/admin?error=${encodeURIComponent('只有超级管理员可以设置不限额。')}`)
     const quota = Number(body.quota)
     if (!unlimited && (!Number.isFinite(quota) || quota < 0 || quota > 10_000)) throw httpError(400, '额度必须是 0–10000 之间的数字。', 'BAD_QUOTA')
     if (!unlimited) store.setUserQuota(id, quota)
@@ -1588,7 +1608,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/admin/users/:id/role', async (request, reply) => {
     const viewer = csrfGuard(request)
-    if (viewer.user.role !== 'superadmin') throw httpError(403, '仅最高权限可访问。', 'SUPERADMIN_ONLY')
+    if (viewer.user.role !== 'superadmin') throw httpError(403, '仅超级管理员可访问。', 'SUPERADMIN_ONLY')
     const id = String((request.params as Record<string, string>).id)
     const user = store.userById(id)
     if (user === undefined || user.id === viewer.user.id || user.role === 'superadmin') throw httpError(403, '不能修改这个账号。', 'ROLE_PROTECTED')
@@ -1596,12 +1616,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (role !== 'admin' && role !== 'user') throw httpError(400, '角色无效。', 'BAD_ROLE')
     store.setUserRole(id, role)
     store.audit(id, 'admin.role', `role=${role} by @${viewer.user.login}`)
-    return reply.redirect(`/admin?notice=${encodeURIComponent(role === 'admin' ? '已设为管理员。' : '已设为普通用户。')}`)
+    return reply.redirect(`/admin?notice=${encodeURIComponent(role === 'admin' ? '已设为管理员。' : '已设为用户。')}`)
   })
 
   app.post('/admin/simulation', async (request, reply) => {
     const viewer = csrfGuard(request)
-    if (viewer.user.role !== 'superadmin') throw httpError(403, '仅最高权限可访问。', 'SUPERADMIN_ONLY')
+    if (viewer.user.role !== 'superadmin') throw httpError(403, '仅超级管理员可访问。', 'SUPERADMIN_ONLY')
     const body = form(request)
     sessions.setPreview(reply, body.enable === '1')
     const returnPath = (body.returnTo ?? '/admin').split('?')[0] ?? '/admin'

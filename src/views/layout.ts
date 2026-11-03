@@ -112,13 +112,14 @@ export function layout(options: LayoutOptions): string {
     </div>
   </header>
   <main class="wrap" id="main">
-    ${preview && viewer !== undefined && viewer !== null ? `<div class="banner ok preview-banner"><span>${escapeHtml(t('正在模拟普通用户视图。', 'Previewing the normal user view.'))}</span><form method="post" action="/admin/simulation">${`<input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />`}<input type="hidden" name="enable" value="0" /><input type="hidden" name="returnTo" value="${escapeHtml(path)}" /><button class="link" type="submit">${escapeHtml(t('退出模拟', 'Exit preview'))}</button></form></div>` : ''}
+    ${preview && viewer !== undefined && viewer !== null ? `<div class="banner ok preview-banner"><span>${escapeHtml(t('正在预览用户视图。', 'Previewing the user view.'))}</span><form method="post" action="/admin/simulation">${`<input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />`}<input type="hidden" name="enable" value="0" /><input type="hidden" name="returnTo" value="${escapeHtml(path)}" /><button class="link" type="submit">${escapeHtml(t('退出模拟', 'Exit preview'))}</button></form></div>` : ''}
     ${notice === undefined || notice === '' ? '' : `<div class="banner ok" role="status">${escapeHtml(notice)}</div>`}
     ${error === undefined || error === '' ? '' : `<div class="banner bad" role="alert">${escapeHtml(error)}</div>`}
     ${body}
   </main>
   ${footer}
   <script src="/assets/app.js" defer></script>
+  <script src="/assets/questions.js" defer></script>
 </body>
 </html>`
 }

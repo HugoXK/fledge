@@ -78,7 +78,7 @@ function triggerLabel(t: Translate, trigger: string): string {
 }
 
 function roleLabel(t: Translate, role: string): string {
-  if (role === 'superadmin') return t('最高权限', 'Owner')
+  if (role === 'superadmin') return t('超级管理员', 'Super admin')
   if (role === 'admin') return t('管理员', 'Admin')
   if (role === 'user') return t('用户', 'User')
   return role
@@ -237,7 +237,7 @@ function questionsBlock(locale: Locale, viewer: Viewer, questions: InboxQuestion
   const cards = questions
     .map((question) => {
       const options = question.options
-        .map((option) => `<label class="check"><input type="${question.multiSelect ? 'checkbox' : 'radio'}" name="selected" value="${escapeHtml(option)}" /> ${escapeHtml(option)}</label>`)
+        .map((option) => `<label class="option-card"><input type="${question.multiSelect ? 'checkbox' : 'radio'}" name="selected" value="${escapeHtml(option)}" /><span>${escapeHtml(option)}</span></label>`)
         .join('')
       return `<div class="question-card" data-question="${escapeHtml(question.id)}">
         <div class="question-head">
@@ -245,14 +245,17 @@ function questionsBlock(locale: Locale, viewer: Viewer, questions: InboxQuestion
           <a class="badge" href="/repos/${escapeHtml(question.repoId)}${advancedViewer(viewer) ? '/team' : '#inbox'}">${escapeHtml(question.repoLabel)}</a>
         </div>
         ${question.detail === '' ? '' : `<p class="fine">${escapeHtml(question.detail)}</p>`}
-        <form method="post" action="/repos/${escapeHtml(question.repoId)}/team/answer" class="form">
+        <form method="post" action="/repos/${escapeHtml(question.repoId)}/team/answer" class="form question-form" data-answer-form>
           ${csrf(viewer)}
           <input type="hidden" name="sessionId" value="${escapeHtml(question.sessionId)}" />
           <input type="hidden" name="questionId" value="${escapeHtml(question.id)}" />
           <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}" />
           ${options === '' ? '' : `<div class="question-options">${options}</div>`}
-          <input name="custom" placeholder="${escapeHtml(t('其他答案（可选）', 'Other answer (optional)'))}" autocomplete="off" />
-          <button class="btn btn-small" type="submit">${escapeHtml(t('发送回答', 'Send answer'))}</button>
+          <div class="question-answer-row">
+            <input class="question-custom" name="custom" placeholder="${escapeHtml(t('也可以填写自己的答案…', 'Or type your own answer…'))}" autocomplete="off" />
+            <button class="btn btn-small" type="submit">${escapeHtml(t('发送回答', 'Send answer'))}</button>
+          </div>
+          <p class="fine bad question-error" data-question-error hidden></p>
         </form>
       </div>`
     })
@@ -261,7 +264,7 @@ function questionsBlock(locale: Locale, viewer: Viewer, questions: InboxQuestion
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('需要你处理', 'NEEDS YOUR INPUT'))}</div>
-        <h2>${escapeHtml(t('FlyBot 在等你回答', 'FlyBot is waiting for you'))} <span class="count">${questions.length}</span></h2>
+        <h2>${escapeHtml(t('FlyBot 在等你回答', 'FlyBot is waiting for you'))} <span class="count" data-inbox-count>${questions.length}</span></h2>
         <p class="muted">${escapeHtml(t('回答会直接发送给正在运行的团队，不需要进入仓库工作台。', 'Answers go straight to the running team; you do not need to open the repository console.'))}</p>
       </div>
       ${returnTo === '/dashboard' ? '' : `<a class="link" href="/dashboard">${escapeHtml(t('查看仓库', 'View repositories'))}</a>`}
@@ -545,20 +548,25 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <div class="chief-role">${escapeHtml(message.role === 'user' ? t('你', 'You') : 'Chief')}${message.at > 0 ? ` · ${escapeHtml(humanTimeShort(new Date(message.at).toISOString()))}` : ''}</div>
       <div class="chief-text">${escapeHtml(message.text)}</div>
     </div>`).join('')}</div>`
-  const chiefCard = advanced ? '' : `<section class="card chief-card" id="chief" data-chief-api="${instanceReady ? `/api/repos/${escapeHtml(repo.id)}/chief/messages` : ''}" data-chief-events="${instanceReady ? `/api/repos/${escapeHtml(repo.id)}/chief/events` : ''}">
+  const chiefCard = advanced ? '' : `<section class="card chief-card" id="chief" data-chief-api="${instanceReady ? `/api/repos/${escapeHtml(repo.id)}/chief/messages` : ''}" data-chief-events="${instanceReady ? `/api/repos/${escapeHtml(repo.id)}/chief/events` : ''}" data-chief-message="${instanceReady ? `/api/repos/${escapeHtml(repo.id)}/chief/message` : ''}" data-chief-csrf="${escapeHtml(viewer.csrfToken)}">
     <div class="row between">
       <div>
         <h2>${escapeHtml(t('和 Chief 沟通', 'Talk to the Chief'))}</h2>
-        <p class="muted">${escapeHtml(t('普通用户只需要和 Chief 沟通；团队内部由 Chief 分派。对话会写入审计。', 'Normal users only talk to the Chief; the Chief routes work inside the team. The conversation is audited.'))}</p>
+        <p class="muted">${escapeHtml(t('你只需要和 Chief 沟通；团队内部由 Chief 分派。对话会写入审计。', 'You only need to talk to the Chief; the Chief routes work inside the team. The conversation is audited.'))}</p>
       </div>
       <div class="row"><a class="link" href="#inbox">${escapeHtml(t('待回答的问题', 'Open questions'))}</a><a class="link" href="/repos/${escapeHtml(repo.id)}#chief">${escapeHtml(t('刷新回复', 'Refresh replies'))}</a></div>
     </div>
     ${chiefThread}
-    ${instanceReady ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/chief/message" class="form">
+    ${instanceReady ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/chief/message" class="form chief-form" data-chief-form>
       ${csrf(viewer)}
-      <label>${escapeHtml(t('留言', 'Message'))}<textarea name="text" rows="3" maxlength="4000" required placeholder="${escapeHtml(t('例如：先汇报当前进度和风险，不要改代码。', 'For example: report current progress and risks first; do not change code.'))}"></textarea></label>
-      <button class="btn" type="submit">${escapeHtml(t('发送给 Chief', 'Send to Chief'))}</button>
-    </form>` : `<p class="muted">${escapeHtml(t('FlyBot 实例就绪后可以给 Chief 留言。', 'You can message the Chief after the FlyBot instance is ready.'))}</p>`}
+      <div class="chief-quick">
+        <button type="button" class="chip" data-chief-prompt="${escapeHtml(t('请汇报当前进度和下一步。', 'Report the current progress and next step.'))}">${escapeHtml(t('汇报进度', 'Progress'))}</button>
+        <button type="button" class="chip" data-chief-prompt="${escapeHtml(t('下一步你准备做什么？', 'What will you do next?'))}">${escapeHtml(t('下一步', 'Next step'))}</button>
+        <button type="button" class="chip" data-chief-prompt="${escapeHtml(t('先不要改代码，说明当前风险。', 'Do not change code yet; explain the current risks.'))}">${escapeHtml(t('先别改代码', 'Do not change code'))}</button>
+      </div>
+      <label>${escapeHtml(t('留言', 'Message'))}<textarea class="chief-input" name="text" rows="3" maxlength="4000" required placeholder="${escapeHtml(t('例如：先汇报当前进度和风险，不要改代码。', 'For example: report current progress and risks first; do not change code.'))}"></textarea></label>
+      <div class="chief-compose-row"><p class="chief-status" data-chief-status role="status" aria-live="polite"></p><button class="btn" type="submit">${escapeHtml(t('发送给 Chief', 'Send to Chief'))}</button></div>
+    </form>` : `<p class="muted">${escapeHtml(t('FlyBot 实例就绪后可以和 Chief 沟通。', 'You can talk to the Chief after the FlyBot instance is ready.'))}</p>`}
   </section>`
   const body = `${repoHeader}${questionsBlock(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}
   <section class="cols">
@@ -1003,7 +1011,7 @@ export function adminPage(input: {
     <div class="eyebrow">${escapeHtml(t('管理', 'ADMIN'))}</div>
     <h1>${escapeHtml(t('审批与额度', 'Approvals & quota'))}</h1>
     <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}${superadmin ? ` · <a class="link" href="/admin/metrics">${escapeHtml(t('产品指标', 'Product metrics'))}</a>` : ''}</p>
-    ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出普通用户模拟', 'Exit user preview') : t('模拟普通用户视图', 'Preview the normal user view'))}</button></form>` : ''}
+    ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出用户视图预览', 'Exit user preview') : t('预览用户视图', 'Preview the user view'))}</button></form>` : ''}
   </section>
   <section class="card">
     <h2>${escapeHtml(t('待审批', 'Pending'))} <small class="count">${pending.length}</small></h2>

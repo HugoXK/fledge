@@ -163,7 +163,7 @@ test('the owner can preview the normal user UI and exit it', async () => {
     const previewCookie = `${session.cookie}; fledge_preview=user`
     const repoPage = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie: previewCookie } })
     assert.equal(repoPage.statusCode, 200)
-    assert.match(repoPage.body, /正在模拟普通用户视图/)
+    assert.match(repoPage.body, /正在预览用户视图/)
     assert.match(repoPage.body, /和 Chief 沟通/)
     assert.doesNotMatch(repoPage.body, new RegExp(`/repos/${repo.id}/team`))
     assert.doesNotMatch(repoPage.body, new RegExp(`/repos/${repo.id}/workspace`))

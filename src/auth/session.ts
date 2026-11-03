@@ -127,7 +127,7 @@ export function requireAdmin(request: FastifyRequest): Viewer {
 
 export function requireSuperAdmin(request: FastifyRequest): Viewer {
   const viewer = requireApproved(request)
-  if (viewer.user.role !== 'superadmin') throw Object.assign(new Error('仅最高权限可访问。'), { statusCode: 403, code: 'SUPERADMIN_ONLY' })
+  if (viewer.user.role !== 'superadmin') throw Object.assign(new Error('仅超级管理员可访问。'), { statusCode: 403, code: 'SUPERADMIN_ONLY' })
   return viewer
 }
 

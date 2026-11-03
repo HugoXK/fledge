@@ -118,6 +118,9 @@ test('team console reads live state and sends guidance', async () => {
     assert.match(consolePage.body, /Which path should the next job take\?/)
     assert.match(consolePage.body, new RegExp(`/repos/${repo.id}/team/answer`))
     assert.match(consolePage.body, /openJiuwen-ai\/DigitalMate/)
+    assert.match(consolePage.body, /data-answer-form/)
+    assert.match(consolePage.body, /option-card/)
+    assert.match(consolePage.body, /question-answer-row/)
 
     const dashboardPage = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
     assert.equal(dashboardPage.statusCode, 200)
@@ -164,6 +167,15 @@ test('team console reads live state and sends guidance', async () => {
     assert.match(String(formAnswered.headers.location), new RegExp(`^/repos/${repo.id}\\?notice=`))
     const formAnswerCall = received.filter((entry) => entry.endpoint === 'answer-question').at(-1)
     assert.deepEqual(formAnswerCall?.payload, { sessionId: 'lead-1', questionId: 'q1', answer: { selected: ['Write docs'] } })
+
+    const jsonAnswered = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/team/answer`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+      payload: formBody({ csrf, sessionId: 'lead-1', questionId: 'q1', selected: 'Fix the bug', custom: '' }),
+    })
+    assert.equal(jsonAnswered.statusCode, 200)
+    assert.deepEqual(jsonAnswered.json(), { ok: true })
 
     const stopped = await built.app.inject({
       method: 'POST',
@@ -295,6 +307,16 @@ test('a normal repository owner can message the Chief without the team console',
     const call = received.find((entry) => entry.endpoint === 'send')
     assert.equal((call?.payload as { sessionId?: string })?.sessionId, 'chief-1')
     assert.match(String((call?.payload as { text?: string })?.text), /Report progress first, do not change code\./)
+    const apiSent = await built.app.inject({
+      method: 'POST',
+      url: `/api/repos/${repo.id}/chief/message`,
+      headers: { cookie, 'content-type': 'application/json', 'x-csrf-token': csrf },
+      payload: { text: 'What changed today?' },
+    })
+    assert.equal(apiSent.statusCode, 200)
+    assert.deepEqual(apiSent.json(), { ok: true })
+    const apiCall = received.filter((entry) => entry.endpoint === 'send').at(-1)
+    assert.match(String((apiCall?.payload as { text?: string })?.text), /What changed today\?/)
   } finally {
     await built.close()
     await bridge.close()

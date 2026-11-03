@@ -56,11 +56,11 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/settings/tokens` | approved + CSRF | Create a `flg_` token |
 | POST | `/settings/tokens/:id/revoke` | owner + CSRF | Revoke a token |
 | POST | `/notifications/read` | approved + CSRF | Mark notifications read |
-| GET | `/admin` | admin / owner | Scoped pending users, quotas, jobs and audit (admins see themselves and normal users only) |
+| GET | `/admin` | admin / super admin | Scoped pending users, quotas, jobs and audit (admins see themselves and normal users only) |
 | GET | `/admin/metrics` | owner | Product funnel, success rate, job cost, team participation, events |
 | POST | `/admin/users/:id/approve` | admin + CSRF | Approve |
 | POST | `/admin/users/:id/reject` | admin + CSRF | Reject |
-| POST | `/admin/users/:id/quota` | admin / owner + CSRF | Set quota in CNY; unlimited is owner-only |
+| POST | `/admin/users/:id/quota` | admin / super admin + CSRF | Set quota in CNY; unlimited is super-admin-only |
 | POST | `/admin/users/:id/role` | owner + CSRF | Promote a normal user to admin or demote an admin |
 | POST | `/admin/simulation` | owner + CSRF | Toggle the normal-user UI preview |
 | GET | `/approve/:token` | token | Confirmation page |
@@ -201,7 +201,7 @@ progress heartbeat: it updates `summary`, `checkpoint` and optionally `branch`,
 `attribution` or `evidence` without finishing the job or extending
 `JOB_TIMEOUT_MINUTES`. `checkpoint` is shown on the job page and is injected
 into the goal when a failed job is retried. A `plan` job writes the plan to
-`summary` and must not create a branch, issue or PR; the owner can execute it
+`summary` and must not create a branch, issue or PR; the super admin can execute it
 later as an iterate job. `evidence` is stored structurally and shown on the job
 detail page; the Fledge automation comment stays compact. On
 success, Fledge adds a collapsible automation block to the PR with the job,
