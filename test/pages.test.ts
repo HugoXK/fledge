@@ -203,6 +203,7 @@ test('job detail shows evidence and can retry a failed job', async () => {
     assert.match(page.body, /done A; next B/)
     assert.match(page.body, /从断点继续/)
     assert.match(page.body, /Dev-1/)
+    assert.doesNotMatch(page.body, /团队参与/)
     const retried = await built.app.inject({
       method: 'POST',
       url: `/repos/${repo.id}/jobs/${job.id}/retry`,

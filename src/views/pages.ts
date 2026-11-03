@@ -1253,10 +1253,10 @@ export function jobPage(input: {
       ${evidenceRows}
     </div>
   </section>
-  <section class="card">
+  ${advanced ? `<section class="card">
     <h2>${escapeHtml(t('团队参与', 'Team participation'))}</h2>
     ${teamRows}
-  </section>`
+  </section>` : ''}`
   return layout({ title: `${t('任务', 'Job')} ${job.id}`, viewer, body, config, locale, path: `/repos/${repo.id}/jobs/${job.id}`, active: 'dashboard', notice, error })
 }
 
