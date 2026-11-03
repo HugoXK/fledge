@@ -245,8 +245,9 @@ const server = http.createServer(async (request, response) => {
   if (request.method === 'GET' && request.url === '/healthz') {
     return json(response, 200, { ok: true, service: 'fledge-flybot-bridge', modelProxy: MODEL_PROXY_PORT > 0 })
   }
-  if (request.method === 'POST' && request.url === '/dsh') {
-    if (!authorized(request)) return json(response, 401, { error: 'unauthorized' })
+  if (request.method !== 'POST') return json(response, 404, { error: 'not found' })
+  if (!authorized(request)) return json(response, 401, { error: 'unauthorized' })
+  if (request.url === '/dsh') {
     let body
     try {
       body = JSON.parse((await readBody(request, MAX_PROMPT)).toString('utf8'))
@@ -262,8 +263,7 @@ const server = http.createServer(async (request, response) => {
       return json(response, 502, { error: redact(message) })
     }
   }
-  if (request.method === 'POST' && request.url === '/job-done') {
-    if (!authorized(request)) return json(response, 401, { error: 'unauthorized' })
+  if (request.url === '/job-done') {
     let body
     try {
       body = JSON.parse((await readBody(request, MAX_PROMPT)).toString('utf8'))
@@ -279,10 +279,7 @@ const server = http.createServer(async (request, response) => {
     logEvent('model-token-cleared', { jobId: typeof body.jobId === 'string' ? body.jobId : null })
     return json(response, 200, { ok: true })
   }
-  if (request.method !== 'POST' || request.url !== '/run') {
-    return json(response, 404, { error: 'not found' })
-  }
-  if (!authorized(request)) return json(response, 401, { error: 'unauthorized' })
+  if (request.url !== '/run') return json(response, 404, { error: 'not found' })
   let job
   try {
     job = JSON.parse((await readBody(request, MAX_PROMPT)).toString('utf8'))

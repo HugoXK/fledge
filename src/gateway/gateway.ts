@@ -115,9 +115,9 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
   }
 
   app.get('/v1/models', async (request, reply) => {
+    if (!limiter.take(`gateway-ip:${request.ip}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many gateway requests' } })
     const auth = authenticate(request)
     if (auth === null) return reply.code(401).send({ error: { type: 'invalid_api_key', message: 'Missing or invalid Fledge API token' } })
-    if (!limiter.take(`v1:${auth.token.id}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many gateway requests' } })
     const model = auth.user.own_llm_model ?? config.llm.model
     return {
       object: 'list',
@@ -126,9 +126,9 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
   })
 
   app.post('/v1/chat/completions', { bodyLimit: MAX_BODY }, async (request, reply) => {
+    if (!limiter.take(`gateway-chat:${request.ip}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many gateway requests' } })
     const auth = authenticate(request)
     if (auth === null) return reply.code(401).send({ error: { type: 'invalid_api_key', message: 'Missing or invalid Fledge API token' } })
-    if (!limiter.take(`v1:${auth.token.id}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many gateway requests' } })
     const body = (request.body ?? {}) as ChatBody
     const target = targetFor(auth.user, config, body)
     if ('error' in target) return reply.code(503).send({ error: { type: 'platform_model_unavailable', message: target.error } })

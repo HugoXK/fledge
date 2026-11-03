@@ -164,7 +164,7 @@ injection so the raw DSH token never reaches the browser.
 The optional GitHub App removes the PAT from the common path. Fledge generates a
 short-lived App JWT (with a clock-skew correction from GitHub's `Date` header),
 exchanges it for an installation token, lists the installation repositories and
-stores only `repos.installation_id`; `repoGithubToken()` uses a fresh installation
+stores only `repos.installation_id`; `repoGithubToken()` prefers a user OAuth token authorized with `repo` scope for human attribution and otherwise uses a fresh installation
 token when that column is set and falls back to the encrypted PAT otherwise. The
 installation callback binds the installation to the logged-in user (verified
 through the user's OAuth token or an individual account match). GitHub webhooks

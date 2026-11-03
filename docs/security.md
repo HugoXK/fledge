@@ -68,8 +68,11 @@ an installation bound to another user.
 - The private key lives outside the repository (`GITHUB_APP_PRIVATE_KEY_PATH`,
   mode 0600). The App JWT is held in memory and never logged.
 - Installation tokens are cached in memory only until shortly before expiry and
-  are never stored in SQLite. Repositories with `installation_id` use a fresh
-  token; PAT repositories keep the encrypted token path.
+  are never stored in SQLite. Repositories with `installation_id` prefer the
+  signed-in user's OAuth token when it was authorized with `repo` scope, so
+  issues/PRs/commits are attributed to the user; otherwise they use a fresh
+  installation token and the UI shows a re-authorize notice. PAT repositories
+  keep the encrypted token path.
 - The setup callback only binds an installation to a user after checking the
   user's OAuth installations (or an individual account match).
 - `POST /api/github/webhook` verifies `X-Hub-Signature-256` on the raw body
