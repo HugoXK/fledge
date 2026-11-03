@@ -332,15 +332,10 @@ function createModelProxy() {
       'content-length': String(body.length),
       'user-agent': 'fledge-instance-proxy/0.1',
     }
-    let target
-    try {
-      const requestUrl = new URL(request.url ?? '/', 'http://bridge.local')
-      if (requestUrl.origin !== 'http://bridge.local') return json(response, 400, { error: 'invalid proxy path' })
-      target = new URL(`${requestUrl.pathname}${requestUrl.search}`, origin)
-      if (target.origin !== origin) return json(response, 400, { error: 'invalid proxy target' })
-    } catch {
-      return json(response, 400, { error: 'invalid proxy target' })
-    }
+    const rawPath = String(request.url ?? '').split('?')[0]
+    const path = rawPath === '/v1/chat/completions' || rawPath === '/v1/models' ? rawPath : ''
+    if (path === '') return json(response, 400, { error: 'invalid proxy path' })
+    const target = new URL(path, origin)
     const send = (token, retried) => {
       const upstream = mod.request(target, { method: request.method, headers: { ...headers, authorization: `Bearer ${token}` } }, (upstreamResponse) => {
         if (!retried && (upstreamResponse.statusCode === 401 || upstreamResponse.statusCode === 403) && token !== GATEWAY_TOKEN) {
