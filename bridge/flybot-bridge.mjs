@@ -29,7 +29,7 @@
 
 import http from 'node:http'
 import https from 'node:https'
-import { readFileSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 
 const PORT = Number(process.env.BRIDGE_PORT ?? 8787)
 const HOST = process.env.BRIDGE_HOST ?? '127.0.0.1'
@@ -42,6 +42,16 @@ const MAX_PROMPT = Number(process.env.MAX_PROMPT_BYTES ?? 32768)
 const MAX_PROXY_BODY = Number(process.env.MAX_PROXY_BODY ?? 64 * 1024 * 1024)
 const GATEWAY_ORIGIN = (process.env.FLEDGE_GATEWAY_ORIGIN ?? '').replace(/\/$/, '')
 const GATEWAY_TOKEN = process.env.FLEDGE_GATEWAY_TOKEN ?? ''
+
+// The model proxy uses the current job token while a job is running, so the
+// gateway can attribute usage to that job. The instance token remains the fallback.
+let activeJobToken = ''
+let activeJobUntil = 0
+let activeJobId = ''
+
+function currentGatewayToken() {
+  return activeJobToken !== '' && Date.now() < activeJobUntil ? activeJobToken : GATEWAY_TOKEN
+}
 const MODEL_PROXY_BIND = process.env.MODEL_PROXY_BIND ?? '127.0.0.1'
 const MODEL_PROXY_PORT = Number(process.env.MODEL_PROXY_PORT ?? 0)
 const MODEL_PROXY_KEY = process.env.MODEL_PROXY_KEY ?? ''
@@ -73,10 +83,8 @@ function logEvent(event, fields = {}) {
 }
 
 function lastDshToken() {
-  const size = statSync(LOG).size
-  const start = Math.max(0, size - 4 * 1024 * 1024)
-  const fd = readFileSync(LOG, { encoding: 'utf8' })
-  const slice = fd.slice(start)
+  const text = readFileSync(LOG, { encoding: 'utf8' })
+  const slice = text.slice(Math.max(0, text.length - 4 * 1024 * 1024))
   const matches = [...slice.matchAll(/token=([A-Za-z0-9_-]+)/g)]
   return matches.at(-1)?.[1] ?? ''
 }
@@ -118,24 +126,46 @@ async function sendToBot(text, sessionId) {
 }
 
 function buildText(job) {
-  const kind = job.kind === 'review' ? 'review' : job.kind === 'provision' ? 'provision' : 'iterate'
+  const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : job.kind === 'research' ? 'research' : job.kind === 'provision' ? 'provision' : 'iterate'
   const upstream = job.upstream || job.repo || {}
   const fork = job.fork || job.repo || upstream
   const rules = kind === 'review'
     ? [
         '- Review every open pull request on the upstream, including PRs not created by Fledge.',
-        '- Score each PR 0-100 with a short rationale and post a COMMENT review; never approve, merge, push or change settings.',
+        '- Score each PR 0-100 with a short rationale. For a Fledge PR that needs changes, post REQUEST_CHANGES with concrete findings; otherwise COMMENT. Never approve, merge, push or change settings.',
+        '- Include followUps in the final callback for every Fledge PR that needs changes: [{prUrl, branch, headSha, baseBranch, reason:"review requested changes"}] so Fledge queues a same-branch fix.',
         '- Do not modify code in review mode.',
       ]
-    : kind === 'provision'
+    : kind === 'plan'
+      ? [
+          '- Do not write code, create a branch, push, open a PR/issue or change settings.',
+          '- Inspect the repository, docs, issues/PRs and tests; produce one concrete plan.',
+          '- Include problem/evidence, files, ordered steps, tests, acceptance criteria, risks, rollback and size.',
+          '- Finish with status succeeded and the plan in summary; no branch, prUrl or issueUrl.',
+        ]
+      : kind === 'research'
+      ? [
+          '- Do not write code, create branches, push, open issues/PRs, comment on GitHub or change settings.',
+          '- Read the repository, docs, goal, issues, PRs and tests; return one evidence-backed report for the human.',
+          '- Include product value, current state, options, recommendation, risks and the next work direction.',
+          '- Finish with status succeeded and the report in summary; no branch, prUrl or issueUrl.',
+        ]
+      : kind === 'provision'
       ? ['- This is a provisioning request. Do not write code, push, or open PRs.']
       : [
-          `- Push the branch to ${fork.owner}/${fork.name}; open one pull request against ${upstream.owner}/${upstream.name} (base ${upstream.defaultBranch}).`,
+          ...(job.prUrl
+            ? [`- This is a follow-up on the existing PR ${job.prUrl} and branch ${job.branch}. Push to the same branch and update that PR; do not open a second PR or a new issue.`]
+            : [
+                `- Before starting, read the latest upstream ${upstream.defaultBranch} and open issues/PRs. If the defect is already fixed or an open PR covers it, report the existing link and finish without a duplicate branch/PR.`,
+                `- If the fork ${fork.owner}/${fork.name} is behind upstream, sync the fork target branch first; never open a PR from a stale fork.`,
+                `- Push the branch to ${fork.owner}/${fork.name}; open one pull request against ${upstream.owner}/${upstream.name} (base ${upstream.defaultBranch}).`,
+              ]),
           job.canCreateIssue === false
             ? '- The token may not be able to create upstream issues; report a clear error instead of guessing.'
             : `- Create or reuse one issue on ${upstream.owner}/${upstream.name}; reference it from the PR.`,
           '- Never push to the upstream base branch. Do not force-push, merge or change repository settings.',
           '- Write a failing test first when a test is possible.',
+          '- Team participation is mandatory: Product scopes, Test writes/verifies the failing test, Dev-1/Dev-2 implement, Security reviews material risk, Reviewer reviews the PR. Do not let the Lead implement the whole change alone; if a role is unavailable, say so in the callback.',
         ]
   const lines = [
     'A Fledge job is ready. Work in your own workspace; do not touch the Fledge service.',
@@ -144,6 +174,7 @@ function buildText(job) {
     `Mode: ${kind}`,
     `Upstream: ${upstream.owner}/${upstream.name} (base ${upstream.defaultBranch})`,
     `Fork: ${fork.owner}/${fork.name}${job.isFork ? ' (push here)' : ' (same as upstream)'}`,
+    `Branch: ${job.branch || '(new)'} · PR: ${job.prUrl || '(new)'}`,
     `Permission: ${job.permission || 'unknown'}${job.canReview ? ' · review enabled' : ''}`,
     `Time limit: ${job.timeoutMinutes ?? 90} minutes.`,
     `Goal: ${job.goal}`,
@@ -157,8 +188,9 @@ function buildText(job) {
     ...rules,
     '- Do not print the GitHub token or the job token.',
     '- End every GitHub issue, PR and comment with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',
-    '- The final callback must include "attribution": {"writtenBy":"...","claimedBy":"...","implementedBy":"...","testedBy":"...","reviewedBy":"..."} using the roles that actually did each step; use "not run" for skipped steps.',
-    `- After each major step and at least every 10 minutes, POST ${job.callbackUrl} with JSON {"status":"running","summary":"<one line progress>"}`,
+    '- The final callback must include "attribution": {"writtenBy":"...","claimedBy":"...","implementedBy":"...","testedBy":"...","reviewedBy":"..."} with role names only (Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2). Omit a key for a step that did not happen; never write "not run", "pending" or "(Team)".',
+    '- Also include "evidence": {"tests":"<command and pass/fail>","checks":"<CI/check status>","files":<changed files>,"risk":"low|medium|high","rollback":"<one line>"}; use only what you actually ran.',
+    `- After each major step and at least every 10 minutes, POST ${job.callbackUrl} with JSON {"status":"running","summary":"<one line progress>","checkpoint":"<done + next>"}`,
     `  and "Authorization: Bearer ${job.callbackSecret}". This is a heartbeat, not a finish.`,
     `- Finish by POSTing ${job.callbackUrl} with JSON {status, branch, prUrl, issueUrl, reviewScore, summary, error}`,
     `  and "Authorization: Bearer ${job.callbackSecret}".`,
@@ -213,8 +245,9 @@ const server = http.createServer(async (request, response) => {
   if (request.method === 'GET' && request.url === '/healthz') {
     return json(response, 200, { ok: true, service: 'fledge-flybot-bridge', modelProxy: MODEL_PROXY_PORT > 0 })
   }
-  if (request.method === 'POST' && request.url === '/dsh') {
-    if (!authorized(request)) return json(response, 401, { error: 'unauthorized' })
+  if (request.method !== 'POST') return json(response, 404, { error: 'not found' })
+  if (!authorized(request)) return json(response, 401, { error: 'unauthorized' })
+  if (request.url === '/dsh') {
     let body
     try {
       body = JSON.parse((await readBody(request, MAX_PROMPT)).toString('utf8'))
@@ -225,14 +258,28 @@ const server = http.createServer(async (request, response) => {
     try {
       return json(response, 200, await dshApi(body.endpoint, body.payload ?? {}))
     } catch (error) {
-      logEvent('dsh-failed', { endpoint: body.endpoint, error: redact(String(error)) })
-      return json(response, 502, { error: redact(String(error)) })
+      const message = error instanceof Error ? error.message : String(error)
+      logEvent('dsh-failed', { endpoint: body.endpoint, error: redact(message) })
+      return json(response, 502, { error: redact(message) })
     }
   }
-  if (request.method !== 'POST' || request.url !== '/run') {
-    return json(response, 404, { error: 'not found' })
+  if (request.url === '/job-done') {
+    let body
+    try {
+      body = JSON.parse((await readBody(request, MAX_PROMPT)).toString('utf8'))
+    } catch {
+      return json(response, 400, { error: 'invalid JSON' })
+    }
+    if (typeof body.jobId === 'string' && activeJobId !== '' && body.jobId !== activeJobId) {
+      return json(response, 200, { ok: true, ignored: true })
+    }
+    activeJobToken = ''
+    activeJobUntil = 0
+    activeJobId = ''
+    logEvent('model-token-cleared', { jobId: typeof body.jobId === 'string' ? body.jobId : null })
+    return json(response, 200, { ok: true })
   }
-  if (!authorized(request)) return json(response, 401, { error: 'unauthorized' })
+  if (request.url !== '/run') return json(response, 404, { error: 'not found' })
   let job
   try {
     job = JSON.parse((await readBody(request, MAX_PROMPT)).toString('utf8'))
@@ -243,6 +290,12 @@ const server = http.createServer(async (request, response) => {
     return json(response, 400, { error: 'jobId, credentialUrl and callbackUrl are required' })
   }
   try {
+    if (typeof job.platform?.token === 'string' && job.platform.token !== '') {
+      activeJobToken = job.platform.token
+      activeJobUntil = Date.now() + ((Number(job.timeoutMinutes) || 90) + 60) * 60_000
+      activeJobId = job.jobId
+      logEvent('model-token-bound', { jobId: job.jobId })
+    }
     const sessionId = typeof job.sessionId === 'string' && job.sessionId !== ''
       ? job.sessionId
       : job.kind === 'review' ? REVIEW_SESSION_ID : SESSION_ID
@@ -275,29 +328,47 @@ function createModelProxy() {
     const headers = {
       'content-type': request.headers['content-type'] ?? 'application/json',
       accept: request.headers.accept ?? '*/*',
-      authorization: `Bearer ${GATEWAY_TOKEN}`,
+      authorization: `Bearer ${currentGatewayToken()}`,
       'content-length': String(body.length),
       'user-agent': 'fledge-instance-proxy/0.1',
     }
-    const upstream = mod.request(new URL(request.url, origin), { method: request.method, headers }, (upstreamResponse) => {
-      const out = {}
-      for (const [name, value] of Object.entries(upstreamResponse.headers)) {
-        const lower = name.toLowerCase()
-        if (lower === 'connection' || lower === 'transfer-encoding' || lower === 'keep-alive' || lower === 'content-length') continue
-        out[name] = value
-      }
-      response.writeHead(upstreamResponse.statusCode ?? 502, out)
-      upstreamResponse.pipe(response)
-    })
-    upstream.on('error', (error) => {
-      logEvent('model-proxy-failed', { error: redact(String(error)) })
-      if (!response.headersSent) json(response, 502, { error: 'gateway unavailable' })
-      else response.destroy()
-    })
-    upstream.setTimeout(10 * 60 * 1000, () => upstream.destroy(new Error('gateway timeout')))
-    if (body.length > 0) upstream.write(body)
-    upstream.end()
-    response.on('close', () => { if (!response.writableEnded) upstream.destroy() })
+    let target
+    try {
+      const requestUrl = new URL(request.url ?? '/', 'http://bridge.local')
+      if (requestUrl.origin !== 'http://bridge.local') return json(response, 400, { error: 'invalid proxy path' })
+      target = new URL(`${requestUrl.pathname}${requestUrl.search}`, origin)
+      if (target.origin !== origin) return json(response, 400, { error: 'invalid proxy target' })
+    } catch {
+      return json(response, 400, { error: 'invalid proxy target' })
+    }
+    const send = (token, retried) => {
+      const upstream = mod.request(target, { method: request.method, headers: { ...headers, authorization: `Bearer ${token}` } }, (upstreamResponse) => {
+        if (!retried && (upstreamResponse.statusCode === 401 || upstreamResponse.statusCode === 403) && token !== GATEWAY_TOKEN) {
+          upstreamResponse.resume()
+          logEvent('model-token-fallback', { status: upstreamResponse.statusCode })
+          send(GATEWAY_TOKEN, true)
+          return
+        }
+        const out = {}
+        for (const [name, value] of Object.entries(upstreamResponse.headers)) {
+          const lower = name.toLowerCase()
+          if (lower === 'connection' || lower === 'transfer-encoding' || lower === 'keep-alive' || lower === 'content-length') continue
+          out[name] = value
+        }
+        response.writeHead(upstreamResponse.statusCode ?? 502, out)
+        upstreamResponse.pipe(response)
+      })
+      upstream.on('error', (error) => {
+        logEvent('model-proxy-failed', { error: redact(error instanceof Error ? error.message : String(error)) })
+        if (!response.headersSent) json(response, 502, { error: 'gateway unavailable' })
+        else response.destroy()
+      })
+      upstream.setTimeout(10 * 60 * 1000, () => upstream.destroy(new Error('gateway timeout')))
+      if (body.length > 0) upstream.write(body)
+      upstream.end()
+      response.on('close', () => { if (!response.writableEnded) upstream.destroy() })
+    }
+    send(currentGatewayToken(), false)
   })
   proxy.listen(MODEL_PROXY_PORT, MODEL_PROXY_BIND, () => {
     logEvent('model-proxy-start', { listen: `${MODEL_PROXY_BIND}:${MODEL_PROXY_PORT}` })

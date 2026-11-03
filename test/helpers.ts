@@ -49,7 +49,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
   }
 }
 
-export function makeUser(store: Store, options: { login?: string; admin?: boolean; status?: 'pending' | 'approved' | 'rejected'; quota?: number } = {}): UserRow {
+export function makeUser(store: Store, options: { login?: string; admin?: boolean; superadmin?: boolean; status?: 'pending' | 'approved' | 'rejected'; quota?: number } = {}): UserRow {
   const login = options.login ?? `user${Math.random().toString(36).slice(2, 8)}`
   const user = store.upsertGithubUser({
     id: randomId('usr'),
@@ -59,6 +59,7 @@ export function makeUser(store: Store, options: { login?: string; admin?: boolea
     email: `${login}@example.com`,
     avatarUrl: null,
     isAdmin: options.admin === true,
+    isSuperAdmin: options.superadmin === true,
     initialQuotaCny: options.quota ?? 1,
   })
   if (options.status !== undefined && options.status !== user.status) store.setUserStatus(user.id, options.status, 'test')

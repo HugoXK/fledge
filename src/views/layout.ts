@@ -22,6 +22,7 @@ export function quotaAmount(quota: QuotaView, t: Translate): string {
 export interface Viewer {
   user: UserRow
   csrfToken: string
+  preview?: boolean
 }
 
 export interface LayoutOptions {
@@ -50,6 +51,10 @@ export function quotaPill(user: UserRow, config: Config, locale: Locale = 'zh'):
   return `<span class="${cls}" title="${escapeHtml(t('平台额度', 'Platform quota'))}">${quota.exhausted ? t('额度已用完', 'Quota used up') : quotaAmount(quota, t)}</span>`
 }
 
+function withSlash(value: string): string {
+  return value === '' || value.endsWith('/') ? value : `${value}/`
+}
+
 export function layout(options: LayoutOptions): string {
   const { title, viewer, body, config, active } = options
   const locale = options.locale ?? 'zh'
@@ -57,13 +62,14 @@ export function layout(options: LayoutOptions): string {
   const t = translator(locale)
   const notice = localizeMessage(locale, options.notice)
   const error = localizeMessage(locale, options.error)
+  const preview = viewer !== undefined && viewer !== null && viewer.preview === true
   const nav = viewer === undefined || viewer === null
     ? ''
     : `<nav class="nav" aria-label="${escapeHtml(t('主导航', 'Main navigation'))}">
         <a class="${active === 'console' ? 'on' : ''}" href="/console">${escapeHtml(t('工作区', 'Workspace'))}</a>
         <a class="${active === 'dashboard' ? 'on' : ''}" href="/dashboard">${escapeHtml(t('仓库', 'Repositories'))}</a>
         <a class="${active === 'settings' ? 'on' : ''}" href="/settings">${escapeHtml(t('设置', 'Settings'))}</a>
-        ${viewer.user.role === 'admin' ? `<a class="${active === 'admin' ? 'on' : ''}" href="/admin">${escapeHtml(t('管理', 'Admin'))}</a>` : ''}
+        ${!preview && (viewer.user.role === 'admin' || viewer.user.role === 'superadmin') ? `<a class="${active === 'admin' ? 'on' : ''}" href="/admin">${escapeHtml(t('管理', 'Admin'))}</a>` : ''}
       </nav>`
   const accountAvatar = viewer !== undefined && viewer !== null && viewer.user.avatar_url !== null && viewer.user.avatar_url !== ''
     ? `<img src="${escapeHtml(viewer.user.avatar_url)}" alt="" width="24" height="24" />`
@@ -82,9 +88,9 @@ export function layout(options: LayoutOptions): string {
   const footer = `<footer class="foot">
     <div>${escapeHtml(t('Fledge · 让托管的仓库自己长大 · 由 FlyBot 驱动', 'Fledge · hosted repositories that grow themselves · powered by FlyBot'))}</div>
     <nav class="foot-links" aria-label="${escapeHtml(t('页脚导航', 'Footer navigation'))}">
-      <a href="${escapeHtml(config.services.docs)}" target="_blank" rel="noreferrer">${escapeHtml(t('文档', 'Docs'))}</a>
+      <a href="${escapeHtml(withSlash(config.services.docs))}" target="_blank" rel="noreferrer">${escapeHtml(t('文档', 'Docs'))}</a>
       <a href="${escapeHtml(config.services.portal)}" target="_blank" rel="noreferrer">Portal</a>
-      <a href="${escapeHtml(config.services.status)}" target="_blank" rel="noreferrer">${escapeHtml(t('平台状态', 'Status'))}</a>
+      <a href="${escapeHtml(withSlash(config.services.status))}" target="_blank" rel="noreferrer">${escapeHtml(t('平台状态', 'Status'))}</a>
       <a href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">GitHub</a>
     </nav>
   </footer>`
@@ -99,6 +105,7 @@ export function layout(options: LayoutOptions): string {
   <link rel="stylesheet" href="/assets/app.css" />
 </head>
 <body>
+  <a class="skip-link" href="#main">${escapeHtml(t('跳到主要内容', 'Skip to main content'))}</a>
   <header class="top">
     <div class="top-inner">
       <a class="brand" href="/"><span class="mark">F</span><span>Fledge${brandSmall}</span></a>
@@ -109,12 +116,14 @@ export function layout(options: LayoutOptions): string {
     </div>
   </header>
   <main class="wrap" id="main">
-    ${notice === undefined ? '' : `<div class="banner ok" role="status">${escapeHtml(notice)}</div>`}
-    ${error === undefined ? '' : `<div class="banner bad" role="alert">${escapeHtml(error)}</div>`}
+    ${preview && viewer !== undefined && viewer !== null ? `<div class="banner ok preview-banner"><span>${escapeHtml(t('正在预览用户视图。', 'Previewing the user view.'))}</span><form method="post" action="/admin/simulation">${`<input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />`}<input type="hidden" name="enable" value="0" /><input type="hidden" name="returnTo" value="${escapeHtml(path)}" /><button class="link" type="submit">${escapeHtml(t('退出模拟', 'Exit preview'))}</button></form></div>` : ''}
+    ${notice === undefined || notice === '' ? '' : `<div class="banner ok" role="status">${escapeHtml(notice)}</div>`}
+    ${error === undefined || error === '' ? '' : `<div class="banner bad" role="alert">${escapeHtml(error)}</div>`}
     ${body}
   </main>
   ${footer}
   <script src="/assets/app.js" defer></script>
+  <script src="/assets/questions.js" defer></script>
 </body>
 </html>`
 }

@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, openSync, writeFileSync, chmodSync, rmSync, existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { createServer } from 'node:net'
 import { promisify } from 'node:util'
 import type { Config } from '../config.js'
@@ -9,6 +9,9 @@ import { log } from '../lib/log.js'
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from '../lib/secrets.js'
 import { nowIso } from '../lib/time.js'
 import { PLAYBOOK_VERSION, TEAM_ROLES, playbookFingerprint, playbookFor } from './playbook.js'
+import { dshCookie } from './workspace.js'
+import { readZipText } from '../lib/zip.js'
+import { parseChiefTranscript, type ChiefMessage } from '../lib/chiefTranscript.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -35,18 +38,36 @@ export interface TeamBotState {
   activity: string
   calls: number
   since: number | null
+  tool: string
+  step: string
+  lastActivityAt: number | null
   disabled: boolean
 }
 
 export interface TeamQuestionState {
+  id: string
   sessionId: string
   question: string
+  detail: string
   options: string[]
+  multiSelect: boolean
+}
+
+export interface TeamTimelineEntry {
+  role: string
+  label: string
+  at: number
+  calls: number
+  kind: 'active' | 'ended'
+  activity: string
+  tool: string
+  step: string
 }
 
 export interface TeamLiveState {
   bots: TeamBotState[]
   questions: TeamQuestionState[]
+  timeline: TeamTimelineEntry[]
   instance: { status: string; container: string }
 }
 
@@ -117,6 +138,9 @@ export class InstanceManager {
     private readonly config: Config,
   ) {}
 
+  private readonly provisioning = new Set<string>()
+  private readonly transcriptCache = new Map<string, { at: number; messages: ChiefMessage[] }>()
+
   userDir(userId: string): string {
     return join(this.config.flybot.instanceRoot, 'users', safe(userId))
   }
@@ -154,7 +178,21 @@ export class InstanceManager {
     }
   }
 
+  isProvisioning(repoId: string): boolean {
+    return this.provisioning.has(repoId)
+  }
+
   async provision(repo: RepoRow): Promise<void> {
+    if (this.provisioning.has(repo.id)) return
+    this.provisioning.add(repo.id)
+    try {
+      await this.provisionUnlocked(repo)
+    } finally {
+      this.provisioning.delete(repo.id)
+    }
+  }
+
+  private async provisionUnlocked(repo: RepoRow): Promise<void> {
     if (this.config.flybot.instanceImage === '') throw new Error('FLYBOT_INSTANCE_IMAGE 未配置')
     const existing = this.store.getRepoInstance(repo.id)
     if (existing !== undefined && (existing.status === 'ready' || existing.status === 'provisioning' || existing.status === 'starting')) return
@@ -302,6 +340,7 @@ server.listen(3081, '0.0.0.0')
       ], 180_000)
 
       await this.waitForDsh(dshPort, row)
+      if (this.store.getRepo(repo.id) === undefined) throw new Error('仓库已删除，停止初始化')
       const bridge = this.startBridge(row, bridgeEnv, join(dataDir, 'bridge.log'))
       this.store.updateRepoInstance(repo.id, { bridge_pid: bridge.pid ?? null })
       await this.waitForBridge(bridgePort)
@@ -333,13 +372,39 @@ server.listen(3081, '0.0.0.0')
 
   private startBridge(row: RepoInstanceRow, env: Record<string, string>, logPath: string): ChildProcess {
     const fd = openSync(logPath, 'a', 0o600)
-    const child = spawn(process.execPath, [this.config.flybot.bridgeScript], {
+    const script = row.bridge_script !== '' ? row.bridge_script : this.config.flybot.bridgeScript
+    const child = spawn(process.execPath, [script], {
       env: { ...process.env, ...env },
       detached: true,
       stdio: ['ignore', fd, fd],
     })
     child.unref()
+    try { closeSync(fd) } catch {}
     return child
+  }
+
+
+  async restartBridge(repoId: string): Promise<void> {
+    const instance = this.store.getRepoInstance(repoId)
+    if (instance === undefined) return
+    if (instance.bridge_pid !== null) {
+      try { process.kill(instance.bridge_pid, 'SIGTERM') } catch {}
+      await sleep(300)
+    }
+    const env: Record<string, string> = {}
+    const envPath = join(dirname(instance.data_dir), 'bridge.env')
+    for (const line of readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (trimmed === '' || trimmed.startsWith('#')) continue
+      const index = trimmed.indexOf('=')
+      if (index <= 0) continue
+      env[trimmed.slice(0, index)] = trimmed.slice(index + 1)
+    }
+    const child = this.startBridge(instance, env, join(instance.data_dir, 'bridge.log'))
+    this.store.updateRepoInstance(repoId, { bridge_pid: child.pid ?? null, updated_at: nowIso() })
+    await this.waitForBridge(instance.bridge_port)
+    this.store.audit(instance.user_id, 'flybot.bridge.restarted', `${repoId} pid=${child.pid ?? '?'}`)
+    log.info('bridge restarted', { repo: repoId, pid: child.pid ?? null })
   }
 
   private async waitForDsh(_port: number, row: RepoInstanceRow): Promise<void> {
@@ -369,12 +434,12 @@ server.listen(3081, '0.0.0.0')
     throw new Error('FlyBot bridge 没有就绪')
   }
 
-  private async dsh(port: number, token: string, endpoint: string, payload: unknown = {}): Promise<unknown> {
+  private async dsh(port: number, token: string, endpoint: string, payload: unknown = {}, timeoutMs = 120_000): Promise<unknown> {
     const response = await fetch(`http://127.0.0.1:${port}/dsh`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
       body: JSON.stringify({ endpoint, payload }),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(timeoutMs),
     })
     if (!response.ok) throw new Error(`bridge /dsh ${response.status}: ${(await response.text()).slice(0, 300)}`)
     return response.json()
@@ -550,14 +615,16 @@ server.listen(3081, '0.0.0.0')
     }
   }
 
-  async teamState(repoId: string): Promise<TeamLiveState> {
+  async teamState(repoId: string, timeoutMs = 120_000): Promise<TeamLiveState> {
     const bridge = this.bridgeFor(repoId)
     const repo = this.store.getRepo(repoId)
-    const raw = await this.dsh(bridge.instance.bridge_port, bridge.token, 'state', {})
+    const raw = await this.dsh(bridge.instance.bridge_port, bridge.token, 'state', {}, timeoutMs)
     const value = ((raw as { value?: Record<string, unknown> }).value ?? raw) as Record<string, unknown>
     const bots = Array.isArray(value.bots) ? (value.bots as Array<Record<string, unknown>>) : []
     const activity = (value.activity ?? {}) as Record<string, unknown>
-    const work = ((value.work ?? {}) as Record<string, unknown>).bots as Record<string, { calls?: number; since?: number }> | undefined
+    const workRoot = (value.work ?? {}) as Record<string, unknown>
+    const work = workRoot.bots as Record<string, { calls?: number; since?: number; tool?: string; step?: string }> | undefined
+    const ended = Array.isArray(workRoot.ended) ? workRoot.ended as Array<Record<string, unknown>> : []
     const questions = (value.questions ?? {}) as Record<string, Record<string, unknown>>
     const roleMap: Array<[string, string, string]> = [
       ['chief', 'Chief', bridge.team.chief],
@@ -569,30 +636,113 @@ server.listen(3081, '0.0.0.0')
       ['dev1', 'Dev-1', bridge.team.dev1],
       ['dev2', 'Dev-2', bridge.team.dev2],
     ]
+    const roleBySession = new Map(roleMap.map(([role, label, sessionId]) => [sessionId, { role, label }]))
+    const lastEnded = (sessionId: string): Record<string, unknown> | undefined => ended
+      .filter((entry) => entry !== null && typeof entry === 'object')
+      .filter((entry) => entry.sessionId === sessionId)
+      .sort((a, b) => Number(b.at ?? 0) - Number(a.at ?? 0))[0]
+    const timeline: TeamTimelineEntry[] = []
+    for (const entry of ended) {
+      if (entry === null || typeof entry !== 'object') continue
+      const sessionId = typeof entry.sessionId === 'string' ? entry.sessionId : ''
+      const role = roleBySession.get(sessionId)
+      if (role === undefined) continue
+      timeline.push({
+        role: role.role,
+        label: role.label,
+        at: Number(entry.at ?? 0),
+        calls: Number(entry.calls ?? 0),
+        kind: 'ended',
+        activity: 'ended',
+        tool: '',
+        step: '',
+      })
+    }
+    for (const [role, label, sessionId] of roleMap) {
+      const current = work?.[sessionId]
+      if (current === null || typeof current !== 'object' || typeof current.since !== 'number') continue
+      timeline.push({
+        role,
+        label,
+        at: current.since,
+        calls: Number(current.calls ?? 0),
+        kind: 'active',
+        activity: typeof activity[sessionId] === 'string' ? String(activity[sessionId]) : 'idle',
+        tool: typeof current.tool === 'string' ? current.tool.slice(0, 160) : '',
+        step: typeof current.step === 'string' ? current.step.slice(0, 300) : '',
+      })
+    }
+    timeline.sort((a, b) => b.at - a.at)
     return {
       bots: roleMap.map(([role, label, sessionId]) => {
-        const bot = bots.find((entry) => entry.sessionId === sessionId)
+        const bot = bots.find((entry) => entry !== null && typeof entry === 'object' && entry.sessionId === sessionId)
+        const current = work?.[sessionId]
+        const endedEntry = lastEnded(sessionId)
         return {
           role,
           label,
           sessionId,
           name: typeof bot?.name === 'string' ? bot.name : label,
           activity: typeof activity[sessionId] === 'string' ? String(activity[sessionId]) : 'idle',
-          calls: Number(work?.[sessionId]?.calls ?? 0),
-          since: typeof work?.[sessionId]?.since === 'number' ? Number(work[sessionId].since) : null,
+          calls: Number(current?.calls ?? 0),
+          since: typeof current?.since === 'number' ? Number(current.since) : null,
+          tool: typeof current?.tool === 'string' ? current.tool.slice(0, 160) : '',
+          step: typeof current?.step === 'string' ? current.step.slice(0, 300) : '',
+          lastActivityAt: typeof current?.since === 'number' ? Number(current.since) : endedEntry === undefined ? null : Number(endedEntry.at ?? 0),
           disabled: role === 'reviewer' && repo?.reviewer_enabled !== 1,
         }
       }),
-      questions: Object.entries(questions).slice(0, 10).map(([sessionId, question]) => ({
-        sessionId,
-        question: typeof question.question === 'string' ? question.question.slice(0, 500) : '',
-        options: Array.isArray(question.options) ? question.options.map((option) => {
-          const value = option as Record<string, unknown>
-          return typeof value.label === 'string' ? value.label : ''
-        }).filter((value) => value !== '') : [],
-      })),
+      questions: Object.entries(questions).map(([sessionId, raw]) => {
+        const question = (raw !== null && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+        return {
+          id: typeof question.id === 'string' ? question.id : '',
+          sessionId,
+          question: typeof question.question === 'string' ? question.question.slice(0, 500) : '',
+          detail: typeof question.detail === 'string' ? question.detail.slice(0, 1000) : '',
+          options: Array.isArray(question.options) ? question.options.map((option) => {
+            if (typeof option === 'string') return option
+            const value = (option !== null && typeof option === 'object' ? option : {}) as Record<string, unknown>
+            if (typeof value.label === 'string') return value.label
+            return typeof value.value === 'string' ? value.value : ''
+          }).filter((value) => value !== '') : [],
+          multiSelect: question.multiSelect === true,
+        }
+      }).filter((question) => question.id !== '' && question.question !== '' && question.sessionId !== '').slice(0, 10),
+      timeline: timeline.slice(0, 12),
       instance: { status: bridge.instance.status, container: bridge.instance.container },
     }
+  }
+
+  async chiefTranscript(repoId: string, limit = 20): Promise<ChiefMessage[]> {
+    const cached = this.transcriptCache.get(repoId)
+    if (cached !== undefined && Date.now() - cached.at < 5_000) return cached.messages.slice(-Math.max(1, limit))
+    const instance = this.store.getRepoInstance(repoId)
+    if (instance === undefined || instance.status !== 'ready') return []
+    const team = parseTeam(instance.team_json)
+    if (team === null || team.chief === '') return []
+    try {
+      const cookie = await dshCookie(instance)
+      const url = `http://127.0.0.1:${instance.dsh_port}/api/session.export?sessionId=${encodeURIComponent(team.chief)}&includeDescendants=false`
+      const response = await fetch(url, { headers: { cookie }, signal: AbortSignal.timeout(8_000) })
+      if (!response.ok) throw new Error(`DSH session export ${response.status}`)
+      const buffer = Buffer.from(await response.arrayBuffer())
+      if (buffer.length > 20 * 1024 * 1024) throw new Error('DSH session export is too large')
+      const jsonl = readZipText(buffer, /^session(?:\.v\d+)?\.jsonl$/)
+      if (jsonl === null) {
+        this.transcriptCache.set(repoId, { at: Date.now(), messages: [] })
+        return []
+      }
+      const messages = parseChiefTranscript(jsonl, 30)
+      this.transcriptCache.set(repoId, { at: Date.now(), messages })
+      return messages.slice(-Math.max(1, limit))
+    } catch (error) {
+      this.transcriptCache.set(repoId, { at: Date.now(), messages: [] })
+      throw error
+    }
+  }
+
+  clearChiefTranscript(repoId: string): void {
+    this.transcriptCache.delete(repoId)
   }
 
   async sendGuidance(repoId: string, target: string, text: string): Promise<void> {
@@ -612,6 +762,64 @@ server.listen(3081, '0.0.0.0')
     const body = text.trim().slice(0, 4000)
     if (body === '') throw new Error('指导意见不能为空')
     await this.dsh(bridge.instance.bridge_port, bridge.token, 'send', { sessionId, text: body })
+  }
+
+  async answerQuestion(repoId: string, sessionId: string, questionId: string, selected: string[], custom: string): Promise<void> {
+    if (sessionId === '' || questionId === '') throw new Error('问题已失效，请刷新后重试')
+    const bridge = this.bridgeFor(repoId)
+    const answer: Record<string, unknown> = {}
+    const picked = [...new Set(selected.map((value) => value.trim()).filter((value) => value !== ''))].slice(0, 20)
+    if (picked.length > 0) answer.selected = picked.map((value) => value.slice(0, 200))
+    const text = custom.trim().slice(0, 2000)
+    if (text !== '') answer.custom = text
+    if (Object.keys(answer).length === 0) throw new Error('请选择或填写一个答案')
+    await this.dsh(bridge.instance.bridge_port, bridge.token, 'answer-question', { sessionId, questionId, answer })
+  }
+
+  async stopSessions(repoId: string, sessionIds: string[]): Promise<{ stopped: string[]; requested: string[] }> {
+    const bridge = this.bridgeFor(repoId)
+    const raw = await this.dsh(bridge.instance.bridge_port, bridge.token, 'state', {})
+    const value = ((raw as { value?: Record<string, unknown> }).value ?? raw) as Record<string, unknown>
+    const rooms = (value.rooms ?? {}) as Record<string, Record<string, unknown>>
+    const stopped: string[] = []
+    const requested: string[] = []
+    const text = 'Human stop request from Fledge. Stop the current work at the next safe point, do not start another step, and wait for further instructions. Do not merge.'
+    for (const sessionId of new Set(sessionIds.filter((value) => value !== ''))) {
+      let roomId = ''
+      let botId = ''
+      for (const [id, room] of Object.entries(rooms)) {
+        const sessions = (room.sessions ?? {}) as Record<string, string>
+        const entry = Object.entries(sessions).find(([, value]) => value === sessionId)
+        if (entry !== undefined) {
+          roomId = id
+          botId = entry[0]
+          break
+        }
+      }
+      if (roomId !== '' && botId !== '') {
+        const result = await this.dsh(bridge.instance.bridge_port, bridge.token, 'stop-member-work', { roomId, botId }).catch(() => undefined)
+        if ((result as { ok?: boolean } | undefined)?.ok === true) {
+          stopped.push(sessionId)
+          continue
+        }
+      }
+      await this.dsh(bridge.instance.bridge_port, bridge.token, 'send', { sessionId, text })
+      requested.push(sessionId)
+    }
+    return { stopped, requested }
+  }
+
+  async clearJobToken(repoId: string, jobId: string): Promise<void> {
+    const instance = this.store.getRepoInstance(repoId)
+    if (instance === undefined || instance.status !== 'ready' || instance.bridge_token_enc === null) return
+    const token = decryptSecret(instance.bridge_token_enc, this.config.tokenEncryptionKey)
+    const response = await fetch(`http://127.0.0.1:${instance.bridge_port}/job-done`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ jobId }),
+      signal: AbortSignal.timeout(5_000),
+    })
+    if (!response.ok) throw new Error(`bridge /job-done ${response.status}`)
   }
 
   async stop(repoId: string, update = true): Promise<void> {

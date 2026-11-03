@@ -19,6 +19,12 @@ export interface Config {
     adminLogin: string
     apiBase: string
   }
+  githubApp: {
+    id: string
+    slug: string
+    privateKeyPath: string
+    webhookSecret: string
+  }
   mail: {
     transport: MailTransport
     from: string
@@ -47,6 +53,10 @@ export interface Config {
     bridgeToken: string
     timeoutMinutes: number
   }
+  digest: {
+    hour: number
+    timeZone: string
+  }
   flybot: {
     instanceImage: string
     instanceRoot: string
@@ -68,6 +78,7 @@ export interface Config {
   dataDir: string
   dbPath: string
   allowPrivateModelUrls: boolean
+  inboundEmailSecret: string
   allowTokenLoginOnly: boolean
   devLogin: {
     login: string
@@ -90,6 +101,11 @@ function loadDotEnv(file = '.env'): void {
     }
     if (process.env[key] === undefined) process.env[key] = value
   }
+}
+
+function withTrailingSlash(value: string): string {
+  if (value === '') return ''
+  return value.endsWith('/') ? value : `${value}/`
 }
 
 function text(name: string, fallback = ''): string {
@@ -135,6 +151,12 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       adminLogin: text('ADMIN_GITHUB_LOGIN', 'HugoXK'),
       apiBase: text('GITHUB_API_BASE', 'https://api.github.com').replace(/\/$/, ''),
     },
+    githubApp: {
+      id: text('GITHUB_APP_ID'),
+      slug: text('GITHUB_APP_SLUG'),
+      privateKeyPath: text('GITHUB_APP_PRIVATE_KEY_PATH'),
+      webhookSecret: text('GITHUB_APP_WEBHOOK_SECRET'),
+    },
     mail: {
       transport: (text('MAIL_TRANSPORT', 'console') as MailTransport) || 'console',
       from: text('MAIL_FROM', 'no-reply@example.com'),
@@ -163,6 +185,10 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       bridgeToken: text('FLYBOT_BRIDGE_TOKEN'),
       timeoutMinutes: number('JOB_TIMEOUT_MINUTES', 90),
     },
+    digest: {
+      hour: Math.min(23, Math.max(0, number('DIGEST_HOUR', 9))),
+      timeZone: text('DIGEST_TIMEZONE', 'Asia/Shanghai'),
+    },
     flybot: {
       instanceImage: text('FLYBOT_INSTANCE_IMAGE'),
       instanceRoot: resolve(text('FLYBOT_INSTANCE_ROOT', `${dataDir}/flybot-users`)),
@@ -178,12 +204,13 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     services: {
       portal: text('PORTAL_URL', 'https://portal.hugoxk.online').replace(/\/$/, ''),
-      docs: text('FLEDGE_DOCS_URL', 'https://fledge-docs.hugoxk.online/docs/').replace(/\/$/, ''),
-      status: text('STATUS_URL', 'https://hugoxk.online/status/').replace(/\/$/, ''),
+      docs: withTrailingSlash(text('FLEDGE_DOCS_URL', 'https://fledge-docs.hugoxk.online/docs/')),
+      status: withTrailingSlash(text('STATUS_URL', 'https://hugoxk.online/status/')),
     },
     dataDir,
     dbPath: resolve(text('DB_PATH', `${dataDir}/fledge.db`)),
     allowPrivateModelUrls: bool('ALLOW_PRIVATE_MODEL_URLS', false),
+    inboundEmailSecret: text('INBOUND_EMAIL_SECRET'),
     allowTokenLoginOnly: bool('ALLOW_TOKEN_LOGIN_ONLY', false),
     devLogin: {
       login: text('DEV_LOGIN_LOGIN'),

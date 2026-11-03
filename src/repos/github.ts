@@ -161,6 +161,11 @@ export class GithubClient {
     return { login: user.login, id: user.id }
   }
 
+  async listUserInstallations(): Promise<Array<{ id: number }>> {
+    const list = await this.request<Array<{ id: number }>>('GET', '/user/installations?per_page=100')
+    return Array.isArray(list) ? list.map((entry) => ({ id: entry.id })) : []
+  }
+
   async getRepo(owner: string, name: string): Promise<RepoInfo> {
     const repo = await this.request<GithubRepoPayload>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`)
     return this.mapRepo(repo)
@@ -193,6 +198,19 @@ export class GithubClient {
       }
     }
     throw new Error(`等待 fork ${owner}/${name} 创建超时${lastError instanceof Error ? `：${lastError.message}` : ''}`)
+  }
+
+  async getBranch(owner: string, name: string, branch: string): Promise<{ name: string; sha: string } | null> {
+    try {
+      const data = await this.request<{ name: string; commit: { sha: string } }>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branches/${encodeURIComponent(branch)}`,
+      )
+      return { name: data.name, sha: data.commit.sha }
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return null
+      throw error
+    }
   }
 
   async createPullRequest(
@@ -300,4 +318,29 @@ export async function prepareRepo(
 export async function validateRepoToken(token: string, owner: string, name: string, apiBase?: string): Promise<RepoInfo> {
   const prepared = await prepareRepo(token, owner, name, undefined, apiBase)
   return prepared.upstream
+}
+
+export async function prepareRepoWithInstallation(
+  token: string,
+  owner: string,
+  name: string,
+  installationLogin: string,
+  apiBase?: string,
+): Promise<PreparedRepo> {
+  const client = new GithubClient(token, apiBase)
+  const upstream = await client.getRepo(owner, name)
+  const permission = permissionOf(upstream)
+  if (!canReview(permission)) {
+    throw new Error(`GitHub App 对 ${upstream.fullName} 没有写权限，请重新安装并授予 Contents / Pull requests / Issues 写权限`)
+  }
+  return {
+    viewer: { login: installationLogin, id: 0 },
+    upstream,
+    fork: upstream,
+    isFork: false,
+    forkCreated: false,
+    permission,
+    canReview: canReview(permission),
+    canCreateIssue: canCreateIssue(upstream, permission),
+  }
 }

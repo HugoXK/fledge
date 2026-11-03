@@ -34,7 +34,7 @@ Key settings:
 | `ADMIN_GITHUB_LOGIN` | Auto-approved bootstrap admin (default `HugoXK`) |
 | `MAIL_TRANSPORT` | `smtp` in production, `console` for a local demo |
 | `SMTP_HOST/PORT/SECURE/USER/PASS` | For yeah.net: `smtp.yeah.net`, 465, secure |
-| `MAIL_FROM` / `ADMIN_EMAIL` | `no-reply@example.com` / `admin@example.com` |
+| `MAIL_FROM` / `ADMIN_EMAIL` | `fledge@hugoxk.online` / `admin@example.com` |
 | `PLATFORM_LLM_BASE_URL` | OpenAI-compatible `/v1` endpoint |
 | `PLATFORM_LLM_KEY` | Platform key; never commit it |
 | `INITIAL_QUOTA_CNY` | Default 1 |
@@ -66,6 +66,27 @@ stores the token. Configure OAuth before a public launch.
 
 Configure your operator SMTP account (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`,
 `SMTP_PASS`) and set `MAIL_FROM` / `ADMIN_EMAIL` to the addresses you control.
+For the hosted instance `MAIL_FROM=fledge@hugoxk.online`; job and digest
+notifications use the same sender. The standalone FlyBot service on
+`flybot.hugoxk.online` keeps `flybot@hugoxk.online`; they are separate projects.
+Set `DIGEST_HOUR` (default 9) and `DIGEST_TIMEZONE` (default `Asia/Shanghai`) for
+the daily summary. The GitHub App must be **public** for users other than its owner to install it:
+GitHub → Settings → Developer settings → GitHub Apps → Fledge Platform →
+Make public, with "Where can this app be installed?" set to **Any account**.
+Fledge's login/approval still gates who can use the platform.
+
+For email replies, set `INBOUND_EMAIL_SECRET` and route the `fledge@` mailbox to
+a Cloudflare Email Worker (sample: `deploy/cloudflare-email-worker.js`) or an
+equivalent inbound webhook. The worker must send the same secret in
+`X-Fledge-Email-Secret` and preserve plus addressing
+(`fledge+<token>@hugoxk.online`). The daily digest then adds a `Reply-To` header.
+
+The agent workspace is served at `/repos/:id/workspace/`; it needs no wildcard
+DNS or certificate. It proxies the per-repo DSH port over loopback, so keep that
+port bound to loopback. When the bridge code changes, restart each per-repository
+bridge (the Fledge service restart alone does not): `InstanceManager.restartBridge(repoId)`
+stops the old bridge, starts the current `bridge/flybot-bridge.mjs` with the
+same `bridge.env`, updates `bridge_pid` and waits for `/healthz`.
 Use an app password if the provider requires one. The application sends:
 
 - the application email to `ADMIN_EMAIL` with approve/reject links;

@@ -21,7 +21,7 @@ interface Database {
 const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: string) => Database }
 
 export type UserStatus = 'onboarding' | 'pending' | 'approved' | 'rejected'
-export type UserRole = 'user' | 'admin'
+export type UserRole = 'user' | 'admin' | 'superadmin'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'quota_exhausted'
 
 export interface UserRow {
@@ -36,7 +36,11 @@ export interface UserRow {
   quota_cny: number
   quota_unlimited: number
   quota_used_usd: number
+  email_job_updates: number
+  email_daily_digest: number
+  notify_email: string | null
   github_token_enc: string | null
+  github_token_scopes: string | null
   own_llm_base_url: string | null
   own_llm_key_enc: string | null
   own_llm_model: string | null
@@ -64,8 +68,10 @@ export interface RepoRow {
   name: string
   default_branch: string
   token_enc: string
+  installation_id: number | null
   goal: string
   enabled: number
+  job_mode: string
   auto_iterate: number
   interval_minutes: number
   last_run_at: string | null
@@ -77,6 +83,7 @@ export interface RepoRow {
   fork_name: string
   upstream_default_branch: string
   fork_default_branch: string
+  target_branch: string
   is_fork: number
   fork_created: number
   permission: string
@@ -122,6 +129,7 @@ export interface JobRow {
   trigger: string
   goal: string
   branch: string | null
+  base_branch: string | null
   pr_url: string | null
   summary: string | null
   error: string | null
@@ -132,6 +140,9 @@ export interface JobRow {
   issue_url: string | null
   review_score: number | null
   attribution_json: string | null
+  evidence_json: string | null
+  checkpoint: string | null
+  team_stats_json: string | null
   created_at: string
   started_at: string | null
   finished_at: string | null
@@ -205,7 +216,11 @@ CREATE TABLE IF NOT EXISTS users (
   quota_cny REAL NOT NULL DEFAULT 1,
   quota_unlimited INTEGER NOT NULL DEFAULT 0,
   quota_used_usd REAL NOT NULL DEFAULT 0,
+  email_job_updates INTEGER NOT NULL DEFAULT 1,
+  email_daily_digest INTEGER NOT NULL DEFAULT 1,
+  notify_email TEXT,
   github_token_enc TEXT,
+  github_token_scopes TEXT,
   own_llm_base_url TEXT,
   own_llm_key_enc TEXT,
   own_llm_model TEXT,
@@ -262,8 +277,10 @@ CREATE TABLE IF NOT EXISTS repos (
   name TEXT NOT NULL,
   default_branch TEXT NOT NULL DEFAULT 'main',
   token_enc TEXT NOT NULL,
+  installation_id INTEGER,
   goal TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
+  job_mode TEXT NOT NULL DEFAULT 'iterate',
   auto_iterate INTEGER NOT NULL DEFAULT 0,
   interval_minutes INTEGER NOT NULL DEFAULT 1440,
   last_run_at TEXT,
@@ -275,6 +292,7 @@ CREATE TABLE IF NOT EXISTS repos (
   fork_name TEXT NOT NULL DEFAULT '',
   upstream_default_branch TEXT NOT NULL DEFAULT 'main',
   fork_default_branch TEXT NOT NULL DEFAULT 'main',
+  target_branch TEXT NOT NULL DEFAULT '',
   is_fork INTEGER NOT NULL DEFAULT 0,
   fork_created INTEGER NOT NULL DEFAULT 0,
   permission TEXT NOT NULL DEFAULT 'write',
@@ -323,6 +341,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   trigger TEXT NOT NULL,
   goal TEXT NOT NULL,
   branch TEXT,
+  base_branch TEXT,
   pr_url TEXT,
   summary TEXT,
   error TEXT,
@@ -333,6 +352,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   issue_url TEXT,
   review_score INTEGER,
   attribution_json TEXT,
+  evidence_json TEXT,
+  checkpoint TEXT,
+  team_stats_json TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   finished_at TEXT
@@ -383,6 +405,28 @@ CREATE TABLE IF NOT EXISTS audit_log (
   detail TEXT
 );
 
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  user_id TEXT,
+  name TEXT NOT NULL,
+  repo_id TEXT,
+  job_id TEXT,
+  meta TEXT
+);
+CREATE INDEX IF NOT EXISTS events_name_at_idx ON events(name, at DESC);
+CREATE INDEX IF NOT EXISTS events_user_at_idx ON events(user_id, at DESC);
+
+CREATE TABLE IF NOT EXISTS github_installations (
+  installation_id INTEGER PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  account_login TEXT NOT NULL,
+  account_type TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS github_installations_user_idx ON github_installations(user_id);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -404,7 +448,7 @@ export class Store {
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
-    this.db.exec('PRAGMA user_version = 5;')
+    this.db.exec('PRAGMA user_version = 13;')
   }
 
   private migrateColumns(): void {
@@ -421,6 +465,10 @@ export class Store {
       ['application_ua', 'TEXT'],
       ['reviewed_at', 'TEXT'],
       ['quota_unlimited', 'INTEGER NOT NULL DEFAULT 0'],
+      ['email_job_updates', 'INTEGER NOT NULL DEFAULT 1'],
+      ['email_daily_digest', 'INTEGER NOT NULL DEFAULT 1'],
+      ['notify_email', 'TEXT'],
+      ['github_token_scopes', 'TEXT'],
     ]
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE users ADD COLUMN ${name} ${type}`)
@@ -430,12 +478,15 @@ export class Store {
   private migrateRepoColumns(): void {
     const repoColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(repos)').map((row) => row.name))
     const repoAdditions: Array<[string, string]> = [
+      ['installation_id', 'INTEGER'],
+      ['job_mode', "TEXT NOT NULL DEFAULT 'iterate'"],
       ['upstream_owner', "TEXT NOT NULL DEFAULT ''"],
       ['upstream_name', "TEXT NOT NULL DEFAULT ''"],
       ['fork_owner', "TEXT NOT NULL DEFAULT ''"],
       ['fork_name', "TEXT NOT NULL DEFAULT ''"],
       ['upstream_default_branch', "TEXT NOT NULL DEFAULT 'main'"],
       ['fork_default_branch', "TEXT NOT NULL DEFAULT 'main'"],
+      ['target_branch', "TEXT NOT NULL DEFAULT ''"],
       ['is_fork', 'INTEGER NOT NULL DEFAULT 0'],
       ['fork_created', 'INTEGER NOT NULL DEFAULT 0'],
       ['permission', "TEXT NOT NULL DEFAULT 'write'"],
@@ -457,11 +508,17 @@ export class Store {
     this.run("UPDATE repos SET fork_name = name WHERE fork_name = ''")
     this.run("UPDATE repos SET upstream_default_branch = default_branch WHERE upstream_default_branch = 'main'")
     this.run("UPDATE repos SET fork_default_branch = default_branch WHERE fork_default_branch = 'main'")
+    this.run("UPDATE repos SET target_branch = upstream_default_branch WHERE target_branch = ''")
     const jobColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(jobs)').map((row) => row.name))
     if (!jobColumns.has('kind')) this.run("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'iterate'")
     if (!jobColumns.has('issue_url')) this.run('ALTER TABLE jobs ADD COLUMN issue_url TEXT')
     if (!jobColumns.has('review_score')) this.run('ALTER TABLE jobs ADD COLUMN review_score INTEGER')
     if (!jobColumns.has('attribution_json')) this.run('ALTER TABLE jobs ADD COLUMN attribution_json TEXT')
+    if (!jobColumns.has('evidence_json')) this.run('ALTER TABLE jobs ADD COLUMN evidence_json TEXT')
+    if (!jobColumns.has('checkpoint')) this.run('ALTER TABLE jobs ADD COLUMN checkpoint TEXT')
+    if (!jobColumns.has('team_stats_json')) this.run('ALTER TABLE jobs ADD COLUMN team_stats_json TEXT')
+    if (!jobColumns.has('base_branch')) this.run('ALTER TABLE jobs ADD COLUMN base_branch TEXT')
+    this.run("UPDATE jobs SET base_branch = (SELECT upstream_default_branch FROM repos WHERE repos.id = jobs.repo_id) WHERE base_branch IS NULL")
   }
 
   close(): void {
@@ -500,10 +557,12 @@ export class Store {
     email: string | null
     avatarUrl: string | null
     isAdmin: boolean
+    isSuperAdmin?: boolean
     initialQuotaCny: number
   }): UserRow {
     const existing = this.userByGithubId(input.githubId)
     const at = nowIso()
+    const role = input.isSuperAdmin === true ? 'superadmin' : input.isAdmin ? 'admin' : undefined
     if (existing !== undefined) {
       this.run(
         'UPDATE users SET login=?, name=?, email=?, avatar_url=?, last_login_at=?, role=? WHERE id=?',
@@ -512,11 +571,12 @@ export class Store {
         input.email,
         input.avatarUrl,
         at,
-        input.isAdmin ? 'admin' : existing.role,
+        role ?? existing.role,
         existing.id,
       )
       return this.userById(existing.id)!
     }
+    const privileged = role !== undefined
     this.run(
       `INSERT INTO users (id, github_id, login, name, email, avatar_url, status, role, quota_cny, quota_used_usd, created_at, approved_at, approved_by, last_login_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
@@ -526,12 +586,12 @@ export class Store {
       input.name,
       input.email,
       input.avatarUrl,
-      input.isAdmin ? 'approved' : 'onboarding',
-      input.isAdmin ? 'admin' : 'user',
+      privileged ? 'approved' : 'onboarding',
+      role ?? 'user',
       input.initialQuotaCny,
       at,
-      input.isAdmin ? at : null,
-      input.isAdmin ? 'system' : null,
+      privileged ? at : null,
+      privileged ? 'system' : null,
       at,
     )
     return this.userById(input.id)!
@@ -634,6 +694,11 @@ export class Store {
     this.run('UPDATE users SET role = ? WHERE id = ?', role, id)
   }
 
+  ensureSuperadmin(login: string): void {
+    if (login === '') return
+    this.run("UPDATE users SET role = 'superadmin' WHERE lower(login) = lower(?) AND role != 'superadmin'", login)
+  }
+
   setUserQuota(id: string, quotaCny: number): void {
     this.run('UPDATE users SET quota_cny = ? WHERE id = ?', quotaCny, id)
   }
@@ -642,12 +707,131 @@ export class Store {
     this.run('UPDATE users SET quota_unlimited = ? WHERE id = ?', unlimited ? 1 : 0, id)
   }
 
+  setEmailJobUpdates(id: string, enabled: boolean): void {
+    this.run('UPDATE users SET email_job_updates = ? WHERE id = ?', enabled ? 1 : 0, id)
+  }
+
+  setEmailDailyDigest(id: string, enabled: boolean): void {
+    this.run('UPDATE users SET email_daily_digest = ? WHERE id = ?', enabled ? 1 : 0, id)
+  }
+
+  setNotifyEmail(id: string, email: string | null): void {
+    this.run('UPDATE users SET notify_email = ? WHERE id = ?', email, id)
+  }
+
+  saveInstallation(input: { installationId: number; userId: string; accountLogin: string; accountType: string }): void {
+    this.run(
+      `INSERT INTO github_installations (installation_id, user_id, account_login, account_type, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(installation_id) DO UPDATE SET user_id = excluded.user_id, account_login = excluded.account_login, account_type = excluded.account_type, updated_at = excluded.updated_at`,
+      input.installationId, input.userId, input.accountLogin, input.accountType, nowIso(), nowIso(),
+    )
+  }
+
+  listInstallations(userId: string): Array<{ installation_id: number; user_id: string; account_login: string; account_type: string }> {
+    return this.all('SELECT installation_id, user_id, account_login, account_type FROM github_installations WHERE user_id = ? ORDER BY created_at DESC', userId)
+  }
+
+  getInstallation(installationId: number): { installation_id: number; user_id: string; account_login: string; account_type: string } | undefined {
+    return this.get('SELECT installation_id, user_id, account_login, account_type FROM github_installations WHERE installation_id = ?', installationId)
+  }
+
+  deleteInstallation(installationId: number): void {
+    this.run('DELETE FROM github_installations WHERE installation_id = ?', installationId)
+  }
+
   addUserUsage(id: string, usd: number): void {
     this.run('UPDATE users SET quota_used_usd = quota_used_usd + ? WHERE id = ?', usd, id)
   }
 
-  setUserGithubToken(id: string, encrypted: string | null): void {
-    this.run('UPDATE users SET github_token_enc = ? WHERE id = ?', encrypted, id)
+  addJobCost(id: string, usd: number): void {
+    this.run('UPDATE jobs SET cost_usd = cost_usd + ? WHERE id = ?', usd, id)
+  }
+
+  event(name: string, input: { userId?: string | null; repoId?: string | null; jobId?: string | null; meta?: string | null } = {}): void {
+    this.run(
+      'INSERT INTO events (at, user_id, name, repo_id, job_id, meta) VALUES (?, ?, ?, ?, ?, ?)',
+      nowIso(),
+      input.userId ?? null,
+      name,
+      input.repoId ?? null,
+      input.jobId ?? null,
+      input.meta ?? null,
+    )
+  }
+
+  countEvents(name: string, sinceIso?: string): number {
+    const row = sinceIso === undefined
+      ? this.get<{ n: number }>('SELECT COUNT(*) AS n FROM events WHERE name = ?', name)
+      : this.get<{ n: number }>('SELECT COUNT(*) AS n FROM events WHERE name = ? AND at >= ?', name, sinceIso)
+    return Number(row?.n ?? 0)
+  }
+
+  teamMetrics(sinceIso: string): {
+    jobs: number
+    avgRoles: number
+    leadOnly: number
+    roles: Array<{ role: string; calls: number; jobs: number }>
+  } {
+    const rows = this.all<{ team_stats_json: string }>('SELECT team_stats_json FROM jobs WHERE created_at >= ? AND team_stats_json IS NOT NULL', sinceIso)
+    const perRole = new Map<string, { calls: number; jobs: number }>()
+    let jobs = 0
+    let rolesTotal = 0
+    let leadOnly = 0
+    for (const row of rows) {
+      let stats: Array<{ role?: unknown; calls?: unknown }>
+      try { stats = JSON.parse(row.team_stats_json) as Array<{ role?: unknown; calls?: unknown }> } catch { continue }
+      if (!Array.isArray(stats)) continue
+      const active = stats.filter((entry) => typeof entry.calls === 'number' && entry.calls > 0 && typeof entry.role === 'string')
+      if (active.length === 0) continue
+      jobs += 1
+      rolesTotal += active.length
+      if (active.length === 1 && active[0]?.role === 'lead') leadOnly += 1
+      for (const entry of active) {
+        const role = String(entry.role)
+        const current = perRole.get(role) ?? { calls: 0, jobs: 0 }
+        current.calls += Number(entry.calls ?? 0)
+        current.jobs += 1
+        perRole.set(role, current)
+      }
+    }
+    return {
+      jobs,
+      avgRoles: jobs === 0 ? 0 : Math.round((rolesTotal / jobs) * 10) / 10,
+      leadOnly,
+      roles: [...perRole.entries()].map(([role, value]) => ({ role, ...value })).sort((a, b) => b.calls - a.calls),
+    }
+  }
+
+  productMetrics(sinceIso: string): {
+    users: number
+    approved: number
+    repos: number
+    jobs: number
+    succeeded: number
+    failed: number
+    usersWithJobs: number
+    usersWithPr: number
+    costUsd: number
+    events: Array<{ name: string; n: number }>
+  } {
+    const count = (sql: string, ...params: Array<string | number>): number => Number(this.get<{ n: number }>(sql, ...params)?.n ?? 0)
+    return {
+      users: count('SELECT COUNT(*) AS n FROM users'),
+      approved: count("SELECT COUNT(*) AS n FROM users WHERE status = 'approved'"),
+      repos: count('SELECT COUNT(*) AS n FROM repos'),
+      jobs: count('SELECT COUNT(*) AS n FROM jobs'),
+      succeeded: count("SELECT COUNT(*) AS n FROM jobs WHERE status = 'succeeded'"),
+      failed: count("SELECT COUNT(*) AS n FROM jobs WHERE status = 'failed'"),
+      usersWithJobs: count('SELECT COUNT(DISTINCT user_id) AS n FROM jobs'),
+      usersWithPr: count("SELECT COUNT(DISTINCT user_id) AS n FROM jobs WHERE pr_url IS NOT NULL"),
+      costUsd: Number(this.get<{ n: number | null }>("SELECT SUM(cost_usd) AS n FROM jobs WHERE created_at >= ?", sinceIso)?.n ?? 0),
+      events: this.all<{ name: string; n: number }>('SELECT name, COUNT(*) AS n FROM events WHERE at >= ? GROUP BY name ORDER BY n DESC', sinceIso),
+    }
+  }
+
+  setUserGithubToken(id: string, encrypted: string | null, scopes = ''): void {
+    this.run('UPDATE users SET github_token_enc = ?, github_token_scopes = ? WHERE id = ?', encrypted, scopes, id)
   }
 
   setUserOwnModel(id: string, baseUrl: string | null, keyEnc: string | null, model: string | null): void {
@@ -707,7 +891,9 @@ export class Store {
     name: string
     defaultBranch: string
     tokenEnc: string
+    installationId?: number | null
     goal: string
+    jobMode?: string
     autoIterate: boolean
     intervalMinutes: number
     upstreamOwner?: string
@@ -716,6 +902,7 @@ export class Store {
     forkName?: string
     upstreamDefaultBranch?: string
     forkDefaultBranch?: string
+    targetBranch?: string
     isFork?: boolean
     forkCreated?: boolean
     permission?: string
@@ -727,16 +914,17 @@ export class Store {
     forkHtmlUrl?: string | null
   }): RepoRow {
     this.run(
-      `INSERT INTO repos (id, user_id, owner, name, default_branch, token_enc, goal, enabled, auto_iterate, interval_minutes, created_at,
-         upstream_owner, upstream_name, fork_owner, fork_name, upstream_default_branch, fork_default_branch,
+      `INSERT INTO repos (id, user_id, owner, name, default_branch, token_enc, installation_id, goal, enabled, auto_iterate, interval_minutes, created_at,
+         upstream_owner, upstream_name, fork_owner, fork_name, upstream_default_branch, fork_default_branch, target_branch, job_mode,
          is_fork, fork_created, permission, can_review, can_create_issue, reviewer_enabled, review_interval_minutes, upstream_html_url, fork_html_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.userId,
       input.owner,
       input.name,
       input.defaultBranch,
       input.tokenEnc,
+      input.installationId ?? null,
       input.goal,
       input.autoIterate ? 1 : 0,
       input.intervalMinutes,
@@ -747,6 +935,8 @@ export class Store {
       input.forkName ?? input.name,
       input.upstreamDefaultBranch ?? input.defaultBranch,
       input.forkDefaultBranch ?? input.defaultBranch,
+      input.targetBranch ?? input.upstreamDefaultBranch ?? input.defaultBranch,
+      input.jobMode === 'research' ? 'research' : 'iterate',
       input.isFork === true ? 1 : 0,
       input.forkCreated === true ? 1 : 0,
       input.permission ?? 'write',
@@ -764,15 +954,30 @@ export class Store {
     return this.all<RepoRow>('SELECT * FROM repos WHERE user_id = ? ORDER BY created_at DESC', userId)
   }
 
+  listReposPage(userId: string, limit: number, offset: number): RepoRow[] {
+    return this.all<RepoRow>('SELECT * FROM repos WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?', userId, limit, offset)
+  }
+
+  countReposForUser(userId: string): number {
+    return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM repos WHERE user_id = ?', userId)?.n ?? 0)
+  }
+
   getRepo(id: string): RepoRow | undefined {
     return this.get<RepoRow>('SELECT * FROM repos WHERE id = ?', id)
+  }
+
+  findRepoByInstallationAndFullName(installationId: number, fullName: string): RepoRow | undefined {
+    return this.get<RepoRow>(
+      "SELECT * FROM repos WHERE installation_id = ? AND (lower(upstream_owner || '/' || upstream_name) = lower(?) OR lower(fork_owner || '/' || fork_name) = lower(?)) LIMIT 1",
+      installationId, fullName, fullName,
+    )
   }
 
   getRepoByOwnerName(userId: string, owner: string, name: string): RepoRow | undefined {
     return this.get<RepoRow>('SELECT * FROM repos WHERE user_id = ? AND lower(owner) = lower(?) AND lower(name) = lower(?)', userId, owner, name)
   }
 
-  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
+  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'job_mode' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -840,10 +1045,10 @@ export class Store {
     this.run('DELETE FROM repo_instances WHERE repo_id = ?', repoId)
   }
 
-  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string }): JobRow {
+  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; baseBranch?: string | null }): JobRow {
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, base_branch, created_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -852,6 +1057,7 @@ export class Store {
       input.callbackHash,
       input.platformTokenHash,
       input.kind ?? 'iterate',
+      input.baseBranch ?? null,
       nowIso(),
     )
     return this.getJob(input.id)!
@@ -865,8 +1071,32 @@ export class Store {
     return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?', userId, limit)
   }
 
+  listJobsPageForUser(userId: string, limit: number, offset: number): JobRow[] {
+    return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?', userId, limit, offset)
+  }
+
+  countJobsForUser(userId: string): number {
+    return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM jobs WHERE user_id = ?', userId)?.n ?? 0)
+  }
+
+  listJobsSince(userId: string, sinceIso: string): JobRow[] {
+    return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? AND (created_at >= ? OR finished_at >= ?) ORDER BY created_at DESC', userId, sinceIso, sinceIso)
+  }
+
   listJobsForRepo(repoId: string, limit = 20): JobRow[] {
     return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC LIMIT ?', repoId, limit)
+  }
+
+  listJobsPageForRepo(repoId: string, limit: number, offset: number): JobRow[] {
+    return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?', repoId, limit, offset)
+  }
+
+  countJobsForRepo(repoId: string): number {
+    return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM jobs WHERE repo_id = ?', repoId)?.n ?? 0)
+  }
+
+  latestJobByPrUrl(userId: string, prUrl: string): JobRow | undefined {
+    return this.get<JobRow>('SELECT * FROM jobs WHERE user_id = ? AND pr_url = ? ORDER BY created_at DESC LIMIT 1', userId, prUrl)
   }
 
   activeJobForRepo(repoId: string): JobRow | undefined {
@@ -877,7 +1107,11 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE user_id = ? AND status IN ('queued','running') ORDER BY created_at DESC", userId)
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at'>>): void {
+  listActiveJobs(): JobRow[] {
+    return this.all<JobRow>("SELECT * FROM jobs WHERE status IN ('queued','running') ORDER BY created_at ASC")
+  }
+
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at' | 'base_branch'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -890,7 +1124,11 @@ export class Store {
   }
 
   staleRunningJobs(beforeIso: string): JobRow[] {
-    return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'running' AND started_at < ?", beforeIso)
+    return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'running' AND COALESCE(started_at, created_at) < ?", beforeIso)
+  }
+
+  staleQueuedJobs(beforeIso: string): JobRow[] {
+    return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' AND created_at < ?", beforeIso)
   }
 
   createApiToken(input: { id: string; userId: string; kind: string; name: string; tokenHash: string; prefix: string; expiresAt: string | null }): ApiTokenRow {
@@ -940,6 +1178,16 @@ export class Store {
     return Number(row?.total ?? 0)
   }
 
+  usageSince(userId: string, sinceIso: string): number {
+    const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ? AND at >= ?', userId, sinceIso)
+    return Number(row?.total ?? 0)
+  }
+
+  usageForJob(jobId: string): number {
+    const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE job_id = ?', jobId)
+    return Number(row?.total ?? 0)
+  }
+
   notify(userId: string, kind: string, message: string): void {
     this.run('INSERT INTO notifications (id, user_id, kind, message, created_at) VALUES (?, ?, ?, ?, ?)', `ntf_${Math.random().toString(36).slice(2, 12)}`, userId, kind, message, nowIso())
   }
@@ -969,6 +1217,20 @@ export class Store {
     return Number(row?.n ?? 0)
   }
 
+  listAuditPageForUsers(userIds: string[] | null, limit: number, offset: number): AuditRow[] {
+    if (userIds === null) return this.listAuditPage(limit, offset)
+    if (userIds.length === 0) return []
+    const marks = userIds.map(() => '?').join(', ')
+    return this.all<AuditRow>(`SELECT * FROM audit_log WHERE user_id IN (${marks}) ORDER BY id DESC LIMIT ? OFFSET ?`, ...userIds, limit, offset)
+  }
+
+  countAuditForUsers(userIds: string[] | null): number {
+    if (userIds === null) return this.countAudit()
+    if (userIds.length === 0) return 0
+    const marks = userIds.map(() => '?').join(', ')
+    return Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM audit_log WHERE user_id IN (${marks})`, ...userIds)?.n ?? 0)
+  }
+
   listJobsPage(limit: number, offset: number): JobRow[] {
     return this.all<JobRow>('SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?', limit, offset)
   }
@@ -978,12 +1240,34 @@ export class Store {
     return Number(row?.n ?? 0)
   }
 
+  listJobsPageForUsers(userIds: string[] | null, limit: number, offset: number): JobRow[] {
+    if (userIds === null) return this.listJobsPage(limit, offset)
+    if (userIds.length === 0) return []
+    const marks = userIds.map(() => '?').join(', ')
+    return this.all<JobRow>(`SELECT * FROM jobs WHERE user_id IN (${marks}) ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, ...userIds, limit, offset)
+  }
+
+  countJobsForUsers(userIds: string[] | null): number {
+    if (userIds === null) return this.countJobs()
+    if (userIds.length === 0) return 0
+    const marks = userIds.map(() => '?').join(', ')
+    return Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM jobs WHERE user_id IN (${marks})`, ...userIds)?.n ?? 0)
+  }
+
   getSetting(key: string): string | undefined {
     return this.get<{ value: string }>('SELECT value FROM settings WHERE key = ?', key)?.value
   }
 
   setSetting(key: string, value: string): void {
     this.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, value)
+  }
+
+  deleteSetting(key: string): void {
+    this.run('DELETE FROM settings WHERE key = ?', key)
+  }
+
+  listSettings(prefix: string): Array<{ key: string; value: string }> {
+    return this.all<{ key: string; value: string }>('SELECT key, value FROM settings WHERE key LIKE ? ORDER BY key', `${prefix}%`)
   }
 }
 

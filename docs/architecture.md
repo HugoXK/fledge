@@ -54,6 +54,12 @@
   emails the administrator. The status page shows the live queue position and
   rejects a second submission. Approvals create two single-use random tokens
   (approve/reject), stored as hashes, valid for 7 days.
+- **Roles**: platform roles are `user`, `admin` and super admin (`superadmin`). The
+  primary `GITHUB_ADMIN_LOGIN` is promoted to owner on startup. Admins get the
+  normal product UI plus a scoped management page for themselves and normal
+  users; the super admin sees everyone, can set admins and is the only role that can
+  set unlimited quota. The owner can toggle a normal-user preview cookie that
+  renders the simple UI while advanced routes stay blocked.
 - **No worker process**: a 60-second tick schedules due iterate jobs and, when
   the upstream grants maintain/write permission, review jobs for all open PRs.
   The interval is the minimum gap between runs, not a cap on PRs or issues; a
@@ -67,6 +73,16 @@
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
   against the upstream; issues are created on the upstream. If the token user
   owns the upstream, no fork is created and the branch/PR stay in that repo.
+- **Job type**: a repository's scheduled work can be `iterate` (issue + PR) or
+  `research` (read-only report). Research jobs return the team's findings and
+  recommendation in the job summary and never write GitHub. The primary run
+  button follows this setting; a separate action can still run the other mode.
+- **Target branch**: each repository stores a `target_branch` that defaults to
+  the upstream default but can be `develop` or a release branch. Jobs snapshot
+  it as `base_branch`; the agent still creates a new head branch and opens the
+  PR against that base. Follow-ups keep the existing PR base. Invalid target branch names are rejected when
+  saved; if a verified branch disappears later, the job fails clearly instead
+  of silently falling back to the repository default.
 - **Reviewer role**: a user with maintain/write permission on the upstream (or
   ownership) can enable a scheduled reviewer. Review jobs list every open
   upstream PR, score each one, and post a COMMENT review; they never merge or
@@ -110,6 +126,158 @@ which must pass the job block to the Lead verbatim; review jobs go to the
 Reviewer only when the repository has enabled it. The Lead delegates to the
 member whose scope fits and posts the final callback exactly once.
 
+### Team console and live events
+
+The team console is admin-only. `GET /api/repos/:id/team/events` streams
+Server-Sent Events: a full snapshot when the DSH revision, role activity,
+questions, jobs or quota changes, plus a heartbeat. The browser uses
+`EventSource` and falls back to the existing 5-second JSON poll on error.
+Questions render inline with their options and a custom field;
+`POST /api/repos/:id/team/answer` sends the DSH `answer-question` payload.
+Normal users can talk to the Chief from the repository page without opening the
+team console. Fledge sends the message and reads the Chief session transcript
+from the DSH session export, keeping only human/Chief text, dropping Fledge job
+prompts and masking tokens. `GET /api/repos/:id/chief/events` polls the Chief
+session-turn signature and pushes new snapshots over SSE, with a 5-second JSON
+polling fallback. The Chief remains responsible for routing work inside the
+team, and every message is audited.
+The same open questions are collected server-side from every ready instance and
+shown as a Fledge inbox on `/console`, `/dashboard` and the repository page, so a
+human can see and answer FlyBot's pending questions without opening the team
+console. The inbox form posts to `POST /repos/:id/team/answer`, which uses the
+same DSH call and invalidates the short-lived inbox cache.
+`POST /api/repos/:id/team/stop` first tries DSH `stop-member-work` when the role
+is in a room, otherwise it sends a stop message that takes effect at the next
+safe point. The workspace shell uses the form equivalent
+`POST /repos/:id/team/stop`, with the same authorization, audit and honest
+hard-stop/request reporting. The UI reports the difference honestly; it never
+claims a turn was paused when only a request was delivered. Every answer,
+guidance and stop is written to the audit log.
+
+The native DSH UI is only exposed through the admin-only workspace. Normal users keep the repository page and the Fledge inbox. The workspace uses
+a per-repository authenticated subdomain and a Fledge shell around the native UI
+(branded "Powered by FlyBot"), with a short-lived ticket and server-side cookie
+injection so the raw DSH token never reaches the browser.
+
+### GitHub App onboarding and webhooks
+
+The optional GitHub App removes the PAT from the common path. Fledge generates a
+short-lived App JWT (with a clock-skew correction from GitHub's `Date` header),
+exchanges it for an installation token, lists the installation repositories and
+stores only `repos.installation_id`; `repoGithubToken()` prefers a user OAuth token authorized with `repo` scope for human attribution and otherwise uses a fresh installation
+token when that column is set and falls back to the encrypted PAT otherwise. The
+installation callback binds the installation to the logged-in user (verified
+through the user's OAuth token or an individual account match). GitHub webhooks
+are verified with `X-Hub-Signature-256` before parsing; verified events are
+recorded in `events` for the follow-up loop. PAT onboarding stays available.
+
+### Inbound email replies
+
+When `INBOUND_EMAIL_SECRET` is set, the daily digest gets a
+`Reply-To: <local>+<token>@<domain>` address and a reply hint. The inbound
+endpoint verifies the shared secret, resolves the token to a user + repository,
+checks that the sender is the user's notification email, strips quoted lines and
+sends the remaining text to the Lead as guidance. Tokens live in `settings` with
+a 7-day expiry. Cloudflare Email Routing + an Email Worker can post to the
+endpoint; IMAP polling is not required.
+
+### Job model token lifecycle
+
+The bridge binds a job-scoped model token on `/run`. Fledge clears it on job
+finish via `POST /job-done` (bridge token auth), and the model proxy retries
+once with the instance token on a 401/403 from the gateway. This keeps per-job
+cost attribution while avoiding a stale/revoked job token breaking later Chief
+greetings, memory reviews or guidance turns.
+
+### Dashboard lists and onboarding
+
+The dashboard paginates repositories and jobs at ten per page; a repository page
+and the team console paginate their job tables at ten per page, with the page
+number clamped to the available pages. Add repository presents two explicit
+alternatives: the GitHub App installation path (recommended) and a collapsed
+fine-grained token form; users pick one, not both. The App repository picker
+carries the same task template, goal, auto-iterate interval and reviewer
+settings as the token form, so both paths configure repositories identically.
+Long help text is shown through compact `!` info icons on hover/focus.
+
+### Team observation and effectiveness
+
+`teamState` now exposes each role's current tool/step, start time and last
+activity, plus a recent active/ended timeline. The team console renders the
+tool, elapsed time, a stale warning when an active job has no role activity for
+five minutes, and a recent-activity list; SSE updates it every second. When a
+job finishes, Fledge captures a per-role call snapshot into
+`jobs.team_stats_json`. The admin metrics page aggregates those snapshots into
+jobs with stats, average participating roles, Lead-only jobs and calls per role,
+and the job page shows the same per-role table.
+
+### Agent workspace
+
+The admin-only workspace is path-based to avoid a wildcard certificate:
+`https://fledge.hugoxk.online/repos/:id/workspace/`. The shell is Fledge-branded
+and embeds an iframe on `/repos/:id/workspace/app/`. That path is a same-origin
+reverse proxy to the repo's DSH web port: Fledge checks the session and repo
+ownership, reads the latest DSH token from `dsh-web.log`, obtains the DSH cookie
+server-side and injects it, strips `Set-Cookie`/CSP headers and CSP meta tags/`X-Frame-Options`, rewrites
+the document title/base, injects `workspace-brand.js`/`.css`, and proxies
+WebSocket upgrades with the same cookie. The browser sees only Fledge URLs and
+the Fledge brand ("powered by FlyBot"); the raw DSH token never leaves the
+server. A wildcard subdomain remains a future option if a certificate covers it.
+
+### PR follow-up
+
+Verified webhooks drive a small follow-up loop: a failed check run/suite or a
+review requesting changes on a PR that has a Fledge job enqueues an iterate job
+with the existing branch and PR URL. The bridge prompt tells the agent to push
+to the same branch and update the existing PR, never open a second PR. The
+follow-up is deduped by delivery id and by repo + PR + head SHA + reason, and is
+skipped while the repository has an active job. A follow-up does not receive a
+second automation comment; the job list labels it "Follow-up".
+
+### Plan-first-lite, checkpoints and templates
+
+A manual "plan only" job uses the same team and repository context but the
+bridge gives it plan rules: inspect, propose files/steps/tests/acceptance,
+risks and rollback, and never write code, branch or open a PR. The plan is
+returned in `summary`; a completed plan shows an **Execute this plan** action
+that enqueues an iterate job with the plan appended to the goal. This is the
+safe, small step before a full pause-and-approve protocol.
+
+Every heartbeat can carry a `checkpoint` (what is done and what is next). It is
+stored on the job, shown on the job page, and appended to the goal when a failed
+job is retried, so a new job can continue from the last known point instead of
+starting from scratch. The add/settings goal forms also offer four task
+templates (bug, tests, docs, dependency) that fill the goal text.
+
+### Per-job cost, evidence and metrics
+
+The bridge's model proxy normally uses the per-repository instance token. While
+a job is running it uses that job's short-lived `flg_` token instead (the
+`/run` payload carries it), so the gateway can write `job_id` into
+`quota_ledger` and add `jobs.cost_usd`. The job page shows cost, attribution and
+structured evidence (`tests`, `checks`, `files`, `risk`, `rollback`); failed
+jobs have a one-click retry. Admins get a read-only `/admin/metrics` funnel:
+users, approved, repos, users with jobs/PRs, success rate, job cost and recent
+events. The `events` table records activation and intervention events only; no
+prompt or token data.
+
+### Email notifications
+
+Fledge sends mail from the configured `MAIL_FROM` (production:
+`fledge@hugoxk.online`). The shared FlyBot service keeps its own
+`flybot@hugoxk.online` sender; the two projects do not share a mailbox.
+
+Each user can set `notify_email` (blank falls back to the GitHub email),
+`email_job_updates` and `email_daily_digest`. Job mail covers success/failure
+and a new team question; question mails are deduped by
+`sessionId + questionId` in `settings`. A server-side digest pass runs after
+`DIGEST_HOUR` in `DIGEST_TIMEZONE`, builds a 24-hour summary per approved user
+(jobs, PRs, spend, next scheduled runs, open questions) and sends it once per
+day (`digest_sent:<userId>:<date>`). Templates include the repo, job id,
+issue/PR links, summary or question, and a link to the repository inbox or job page; they never
+contain tokens or model keys. Approval and quota mail are transactional and are
+not controlled by the digest/job switches.
+
 ### FlyBot bridge
 
 The bridge is a tiny HTTP service on the FlyBot host. Fledge POSTs a job
@@ -129,7 +297,7 @@ The playbook asks every role to end its GitHub issues, PRs and comments with one
 small line: `<sub>Fledge · team · role · step</sub>`, where step is claimed,
 implemented, tested or reviewed. On a successful iterate job Fledge also adds a
 collapsible automation block to the PR. It lists only the steps that actually
-happened (a single role is grouped once), links the issue and team console, and
+happened (a single role is grouped once), links the issue and job page, and
 repeats that Fledge never merges. A missing step is omitted rather than shown as
 "pending", so the block stays truthful and quiet even when attribution is thin.
 

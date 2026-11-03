@@ -1,0 +1,1 @@
+Hardened redirects, form parsing, bearer parsing, rate limits, inbound sender parsing and the FlyBot bridge proxy against the CodeQL findings: validated local redirect paths, constrained form keys, added gateway and callback rate limits, removed regex backtracking, limited bridge proxy URLs to the configured origin and stopped returning stack traces.

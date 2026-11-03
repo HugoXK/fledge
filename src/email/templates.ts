@@ -91,3 +91,206 @@ export function quotaExhaustedEmail(user: UserRow, baseUrl: string): { subject: 
     ].join('\n'),
   }
 }
+
+export interface JobMailContext {
+  repo: string
+  jobId: string
+  kind: string
+  teamUrl: string
+  issueUrl: string | null
+  prUrl: string | null
+  summary: string
+  error: string
+  reviewScore: number | null
+}
+
+function mailFooter(): string {
+  return 'Fledge · powered by FlyBot'
+}
+
+function linkLine(label: string, url: string | null): string {
+  return url === null || url === '' ? `${label}：—` : `${label}：${url}`
+}
+
+export function jobSucceededEmail(user: UserRow, context: JobMailContext): { subject: string; text: string; html: string } {
+  const review = context.kind === 'review'
+  const score = context.reviewScore === null ? '' : `评分：${context.reviewScore}/100`
+  const subject = review ? `[Fledge] 审核完成：${context.repo}` : `[Fledge] 任务完成：${context.repo}`
+  const text = [
+    `@${user.login}，你好：`,
+    '',
+    review ? `${context.repo} 的审核任务已完成。` : `${context.repo} 的任务已完成。`,
+    score,
+    '',
+    `任务：${context.jobId}`,
+    linkLine('Issue', context.issueUrl),
+    linkLine('PR', context.prUrl),
+    '',
+    context.summary === '' ? '' : `摘要：${context.summary}`,
+    '',
+    'Fledge 不会自动合并；请到 GitHub review 后由你决定是否 merge。',
+    '',
+    `查看任务：${context.teamUrl}`,
+    '',
+    mailFooter(),
+  ].filter((line) => line !== '').join('\n')
+  const html = `<p>@${escapeHtml(user.login)}，你好：</p>
+<p>${escapeHtml(review ? `${context.repo} 的审核任务已完成。` : `${context.repo} 的任务已完成。`)}${score === '' ? '' : ` ${escapeHtml(score)}`}</p>
+<ul>
+  <li>任务：<code>${escapeHtml(context.jobId)}</code></li>
+  <li>Issue：${context.issueUrl === null ? '—' : `<a href="${escapeHtml(context.issueUrl)}">${escapeHtml(context.issueUrl)}</a>`}</li>
+  <li>PR：${context.prUrl === null ? '—' : `<a href="${escapeHtml(context.prUrl)}">${escapeHtml(context.prUrl)}</a>`}</li>
+</ul>
+${context.summary === '' ? '' : `<p style="white-space:pre-wrap">${escapeHtml(context.summary)}</p>`}
+<p>Fledge 不会自动合并；请到 GitHub review 后由你决定是否 merge。</p>
+<p><a href="${escapeHtml(context.teamUrl)}">打开任务</a></p>
+<p><small>${escapeHtml(mailFooter())}</small></p>`
+  return { subject, text, html }
+}
+
+export function jobFailedEmail(user: UserRow, context: JobMailContext): { subject: string; text: string; html: string } {
+  const subject = context.kind === 'review' ? `[Fledge] 审核失败：${context.repo}` : `[Fledge] 任务失败：${context.repo}`
+  const text = [
+    `@${user.login}，你好：`,
+    '',
+    `${context.repo} 的${context.kind === 'review' ? '审核' : '任务'}没有完成。`,
+    '',
+    `任务：${context.jobId}`,
+    context.error === '' ? '' : `原因：${context.error}`,
+    linkLine('Issue', context.issueUrl),
+    linkLine('PR', context.prUrl),
+    '',
+    '可以在任务页查看最后进度，修正后重新运行；Fledge 不会自动合并。',
+    '',
+    `查看任务：${context.teamUrl}`,
+    '',
+    mailFooter(),
+  ].filter((line) => line !== '').join('\n')
+  const html = `<p>@${escapeHtml(user.login)}，你好：</p>
+<p>${escapeHtml(context.repo)} 的${escapeHtml(context.kind === 'review' ? '审核' : '任务')}没有完成。</p>
+<ul>
+  <li>任务：<code>${escapeHtml(context.jobId)}</code></li>
+  ${context.error === '' ? '' : `<li>原因：${escapeHtml(context.error)}</li>`}
+  <li>Issue：${context.issueUrl === null ? '—' : `<a href="${escapeHtml(context.issueUrl)}">${escapeHtml(context.issueUrl)}</a>`}</li>
+  <li>PR：${context.prUrl === null ? '—' : `<a href="${escapeHtml(context.prUrl)}">${escapeHtml(context.prUrl)}</a>`}</li>
+</ul>
+<p>可以在任务页查看最后进度，修正后重新运行；Fledge 不会自动合并。</p>
+<p><a href="${escapeHtml(context.teamUrl)}">打开任务</a></p>
+<p><small>${escapeHtml(mailFooter())}</small></p>`
+  return { subject, text, html }
+}
+
+export function jobAttentionEmail(user: UserRow, input: { repo: string; question: string; detail: string; options: string[]; teamUrl: string }): { subject: string; text: string; html: string } {
+  const subject = `[Fledge] 团队需要你回答：${input.repo}`
+  const options = input.options.length === 0 ? [] : ['可选答案：', ...input.options.map((option) => `· ${option}`)]
+  const text = [
+    `@${user.login}，你好：`,
+    '',
+    `${input.repo} 的团队在等你回答一个问题：`,
+    '',
+    input.question,
+    input.detail === '' ? '' : input.detail,
+    ...options,
+    '',
+    `打开仓库收件箱回答：${input.teamUrl}`,
+    '',
+    '如果不回答，任务可能停在当前步骤。',
+    '',
+    mailFooter(),
+  ].filter((line) => line !== '').join('\n')
+  const html = `<p>@${escapeHtml(user.login)}，你好：</p>
+<p>${escapeHtml(input.repo)} 的团队在等你回答一个问题：</p>
+<blockquote>${escapeHtml(input.question)}${input.detail === '' ? '' : `<br /><small>${escapeHtml(input.detail)}</small>`}</blockquote>
+${input.options.length === 0 ? '' : `<ul>${input.options.map((option) => `<li>${escapeHtml(option)}</li>`).join('')}</ul>`}
+<p><a href="${escapeHtml(input.teamUrl)}">打开仓库收件箱回答</a></p>
+<p>如果不回答，任务可能停在当前步骤。</p>
+<p><small>${escapeHtml(mailFooter())}</small></p>`
+  return { subject, text, html }
+}
+
+export interface DigestJob {
+  repo: string
+  kind: string
+  status: string
+  summary: string
+  prUrl: string | null
+  issueUrl: string | null
+  reviewScore: number | null
+  costUsd: number
+}
+
+export interface DigestInput {
+  date: string
+  jobs: DigestJob[]
+  usedCny: number
+  unlimited: boolean
+  remainingCny: number
+  nextRuns: Array<{ repo: string; when: string }>
+  questions: Array<{ repo: string; question: string }>
+  teamLinks: Array<{ repo: string; url: string }>
+  replyAddress?: string
+}
+
+export function dailyDigestEmail(user: UserRow, input: DigestInput): { subject: string; text: string; html: string } {
+  const succeeded = input.jobs.filter((job) => job.status === 'succeeded').length
+  const failed = input.jobs.filter((job) => job.status === 'failed').length
+  const running = input.jobs.filter((job) => job.status === 'running' || job.status === 'queued').length
+  const pullRequests = new Set(input.jobs.map((job) => job.prUrl).filter((url): url is string => url !== null)).size
+  const usage = input.unlimited ? `今日消耗 ¥${input.usedCny.toFixed(2)}（不限额）` : `今日消耗 ¥${input.usedCny.toFixed(2)}，剩余 ¥${input.remainingCny.toFixed(2)}`
+  const subject = `[Fledge] 今日摘要 · ${input.date}`
+  const jobLines = input.jobs.length === 0
+    ? ['今天没有新任务。']
+    : input.jobs.slice(0, 12).flatMap((job) => {
+      const links = [job.issueUrl === null ? '' : `Issue: ${job.issueUrl}`, job.prUrl === null ? '' : `PR: ${job.prUrl}`].filter((line) => line !== '')
+      return [
+        `· ${job.repo} · ${job.kind} · ${job.status}${job.reviewScore === null ? '' : ` · ${job.reviewScore}/100`}${job.costUsd > 0 ? ` · $${job.costUsd.toFixed(4)}` : ''}`,
+        job.summary === '' ? '' : `  ${job.summary.slice(0, 240)}`,
+        ...links.map((line) => `  ${line}`),
+      ].filter((line) => line !== '')
+    })
+  const text = [
+    `@${user.login}，这是 Fledge 今天为你托管仓库做的工作。`,
+    '',
+    `${input.jobs.length} 个任务（成功 ${succeeded} / 失败 ${failed} / 进行中 ${running}），打开 ${pullRequests} 个 PR；${usage}。`,
+    '',
+    '今天：',
+    ...jobLines,
+    '',
+    '明天：',
+    ...(input.nextRuns.length === 0 ? ['· 暂无自动迭代计划。'] : input.nextRuns.map((run) => `· 下次自动迭代：${run.repo} · ${run.when}`)),
+    ...(input.questions.length === 0 ? ['· 没有待回答的问题。'] : input.questions.map((question) => `· 待回答：${question.repo} · ${question.question}`)),
+    '',
+    '有新指示？到仓库页查看或回复：',
+    ...(input.teamLinks.length === 0 ? ['· 暂无仓库。'] : input.teamLinks.map((link) => `· ${link.repo}：${link.url}`)),
+    '',
+    'Fledge 不会自动合并；PR 需要你 review 后决定。',
+    '',
+    ...(input.replyAddress === undefined ? [] : [`回复这封邮件也可以给团队下指示（保持 Reply-To 不变）：${input.replyAddress}`, '']),
+    mailFooter(),
+  ].join('\n')
+  const html = `<p>@${escapeHtml(user.login)}，这是 Fledge 今天为你托管仓库做的工作。</p>
+<p>${input.jobs.length} 个任务（成功 ${succeeded} / 失败 ${failed} / 进行中 ${running}），打开 ${pullRequests} 个 PR；${escapeHtml(usage)}。</p>
+<h3>今天</h3>
+${input.jobs.length === 0 ? '<p>今天没有新任务。</p>' : `<ul>${input.jobs.slice(0, 12).map((job) => `<li><strong>${escapeHtml(job.repo)}</strong> · ${escapeHtml(job.kind)} · ${escapeHtml(job.status)}${job.reviewScore === null ? '' : ` · ${job.reviewScore}/100`}${job.costUsd > 0 ? ` · $${job.costUsd.toFixed(4)}` : ''}${job.summary === '' ? '' : `<br />${escapeHtml(job.summary.slice(0, 240))}`}${job.issueUrl === null ? '' : `<br />Issue: <a href="${escapeHtml(job.issueUrl)}">${escapeHtml(job.issueUrl)}</a>`}${job.prUrl === null ? '' : `<br />PR: <a href="${escapeHtml(job.prUrl)}">${escapeHtml(job.prUrl)}</a>`}</li>`).join('')}</ul>`}
+<h3>明天</h3>
+<ul>
+${input.nextRuns.length === 0 ? '<li>暂无自动迭代计划。</li>' : input.nextRuns.map((run) => `<li>下次自动迭代：${escapeHtml(run.repo)} · ${escapeHtml(run.when)}</li>`).join('')}
+${input.questions.length === 0 ? '<li>没有待回答的问题。</li>' : input.questions.map((question) => `<li>待回答：${escapeHtml(question.repo)} · ${escapeHtml(question.question)}</li>`).join('')}
+</ul>
+<p>有新指示？到仓库页查看或回复：</p>
+<ul>
+${input.teamLinks.length === 0 ? '<li>暂无仓库。</li>' : input.teamLinks.map((link) => `<li>${escapeHtml(link.repo)}：<a href="${escapeHtml(link.url)}">${escapeHtml(link.url)}</a></li>`).join('')}
+</ul>
+<p>Fledge 不会自动合并；PR 需要你 review 后决定。</p>
+${input.replyAddress === undefined ? '' : `<p>回复这封邮件也可以给团队下指示（保持 Reply-To 不变）：<code>${escapeHtml(input.replyAddress)}</code></p>`}
+<p><small>${escapeHtml(mailFooter())}</small></p>`
+  return { subject, text, html }
+}
+
+export function testEmail(user: UserRow, baseUrl: string): { subject: string; text: string; html: string } {
+  return {
+    subject: '[Fledge] 测试邮件',
+    text: [`@${user.login}，你好：`, '', '这是一封 Fledge 测试邮件。收到它说明你的通知邮箱和 SMTP 发信都正常。', '', mailFooter(), '', baseUrl].join('\n'),
+    html: `<p>@${escapeHtml(user.login)}，你好：</p><p>这是一封 Fledge 测试邮件。收到它说明你的通知邮箱和 SMTP 发信都正常。</p><p><small>${escapeHtml(mailFooter())}</small></p><p><a href="${escapeHtml(baseUrl)}">${escapeHtml(baseUrl)}</a></p>`,
+  }
+}

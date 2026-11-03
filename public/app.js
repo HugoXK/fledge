@@ -8,7 +8,7 @@
     if ((saved === 'en' || saved === 'zh') && saved !== current) {
       if (sessionStorage.getItem(syncKey) !== '1') {
         sessionStorage.setItem(syncKey, '1')
-        location.replace(`/lang/${saved}?next=${encodeURIComponent(location.pathname + location.search)}`)
+        location.replace(`/lang/${saved}?next=${encodeURIComponent(location.pathname + location.search + location.hash)}`)
         return
       }
     } else {
@@ -38,15 +38,39 @@
   })
 
   document.querySelectorAll('[data-lang-btn]').forEach((el) => {
-    el.addEventListener('click', () => {
+    el.addEventListener('click', (event) => {
       const next = el.getAttribute('data-lang-btn')
       if (next !== 'zh' && next !== 'en') return
+      event.preventDefault()
       try {
         localStorage.setItem('hugoxk-lang', next)
         sessionStorage.removeItem(syncKey)
       } catch {
         // The link still changes the server-rendered locale through the cookie.
       }
+      location.href = `/lang/${next}?next=${encodeURIComponent(location.pathname + location.search + location.hash)}`
+    })
+  })
+
+  document.querySelectorAll('[data-reload]').forEach((button) => {
+    button.addEventListener('click', () => location.reload())
+  })
+
+  document.addEventListener('submit', (event) => {
+    const form = event.target
+    if (!(form instanceof HTMLFormElement)) return
+    const message = form.dataset.confirm
+    if (message && !window.confirm(message)) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }
+  }, true)
+
+  document.querySelectorAll('[data-goal-template]').forEach((select) => {
+    select.addEventListener('change', () => {
+      const target = document.getElementById(select.getAttribute('data-goal-target') || '')
+      const option = select.selectedOptions[0]
+      if (target && option) target.value = option.getAttribute('data-text') || ''
     })
   })
 

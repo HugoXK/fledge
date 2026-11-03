@@ -78,3 +78,33 @@ test('ensurePlaybook updates every existing role once and records the version', 
     store.close()
   }
 })
+
+test('clearJobToken tells the per-repo bridge to drop the job model token', async () => {
+  const hits: Array<{ path?: string; body: string; auth: string }> = []
+  const bridge = await startFakeServer(async (request, response) => {
+    hits.push({ path: request.url, body: (await readBody(request)).toString('utf8'), auth: String(request.headers.authorization ?? '') })
+    json(response, 200, { ok: true })
+  })
+  const config = testConfig({ flybot: { ...testConfig().flybot, instanceImage: 'image' } })
+  const store = new Store(':memory:')
+  const manager = new InstanceManager(store, config)
+  try {
+    const user = makeUser(store, { login: 'clear-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_clear', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.saveRepoInstance({
+      repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/clear', bridge_script: '/tmp/bridge',
+      dsh_port: 1, bridge_port: Number(new URL(bridge.url).port), model_port: 2, model_bind: '127.0.0.1', image: 'image',
+      status: 'ready', chief_session: 'chief-1', team_json: null,
+      bridge_token_enc: encryptSecret('bridge-token', config.tokenEncryptionKey), bridge_pid: null, log_pid: null,
+      last_error: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_health_at: null,
+    })
+    await manager.clearJobToken(repo.id, 'job_1')
+    assert.equal(hits.length, 1)
+    assert.equal(hits[0]?.path, '/job-done')
+    assert.deepEqual(JSON.parse(hits[0]!.body), { jobId: 'job_1' })
+    assert.match(hits[0]!.auth, /^Bearer /)
+  } finally {
+    store.close()
+    await bridge.close()
+  }
+})

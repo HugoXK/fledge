@@ -1,0 +1,1 @@
+Added a Research report job and a per-repository automatic job type. Research jobs read the repository, docs, issues and PRs and return a team report in Fledge without writing code, opening issues/PRs, commenting on GitHub or changing settings. Repositories can schedule research instead of iteration, and the primary run button follows the configured mode.

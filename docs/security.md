@@ -51,8 +51,131 @@ only that container.
 
 Every state-changing browser form includes a hidden `csrf` field derived from
 `HMAC(SESSION_SECRET, sessionHash)`. The server also accepts `X-CSRF-Token` for
-future JSON endpoints. Approval links and job endpoints use their own bearer
-secrets and do not use CSRF.
+JSON endpoints. Approval links and job endpoints use their own bearer secrets
+and do not use CSRF.
+
+### GitHub App installation isolation
+
+The install `state` is a CSRF marker only; it does not prove ownership. The
+setup callback binds an installation only after a verified webhook sender, the
+user's OAuth installation list, or an individual-account login match; an
+existing binding cannot be moved to a different Fledge user. Installation
+tokens stay in memory and are never stored in SQLite. A user cannot list or use
+an installation bound to another user.
+
+### GitHub App
+
+- The private key lives outside the repository (`GITHUB_APP_PRIVATE_KEY_PATH`,
+  mode 0600). The App JWT is held in memory and never logged.
+- Installation tokens are cached in memory only until shortly before expiry and
+  are never stored in SQLite. Repositories with `installation_id` prefer the
+  signed-in user's OAuth token when it was authorized with `repo` scope, so
+  issues/PRs/commits are attributed to the user; otherwise they use a fresh
+  installation token and the UI shows a re-authorize notice. PAT repositories
+  keep the encrypted token path.
+- The setup callback only binds an installation to a user after checking the
+  user's OAuth installations (or an individual account match).
+- `POST /api/github/webhook` verifies `X-Hub-Signature-256` on the raw body
+  before parsing. A bad signature is 401; an unconfigured webhook is 503.
+  Verified event metadata is stored without payload secrets.
+
+### Notification email display
+
+The settings page masks the notification and GitHub email (for example
+`k***@zju.edu.cn`); the full address is not rendered in the HTML, and leaving the
+field blank keeps the current address instead of silently clearing it. The
+admin panel still shows the contact email to administrators for account
+management, and approval mail includes it as required. The address is used only
+for job/digest mail and is never shown on a public page.
+
+### Inbound email
+
+`POST /api/inbound/email` is disabled unless `INBOUND_EMAIL_SECRET` is set. The
+caller must present the secret in `X-Fledge-Email-Secret`; the reply token is
+single-purpose, expires after 7 days, and resolves to one user + repository. The
+sender must match the user's notification email. Quoted lines are removed, the
+text is capped, and the action is audited. The endpoint does not expose the DSH
+or bridge tokens.
+
+### Agent workspace proxy
+
+The workspace proxy is admin-only and same-origin. The session cookie and repo
+ownership are checked on every HTTP request; WebSocket upgrades check the same
+session hash, user status and repo owner. The DSH token is read from the
+instance log and exchanged for a DSH cookie server-side; that cookie and the
+token are never sent to the browser. Upstream `Set-Cookie`, CSP and
+`X-Frame-Options` headers are stripped; the proxied document is scoped to the
+workspace path and carries the Fledge brand assets. The DSH loopback port is
+never exposed.
+
+### Team observation
+
+Tool/step strings and per-role call counts are operational metadata; they are
+shown only to the repository owner and admins. They never include prompts,
+tokens or full command output (the step is capped and the DSH UI remains the
+place for details). No new public surface is added.
+
+### Webhook follow-up
+
+Webhook deliveries are deduped by `X-GitHub-Delivery` in `settings`; the same
+failure on the same head SHA is deduped again. Only PRs with an existing Fledge
+job are followed up, and a repo with an active job is skipped. Follow-up jobs
+reuse the original branch and PR; they never create a second PR or issue. The
+webhook signature is verified before any parsing or enqueue.
+
+### Job cost, evidence and metrics
+
+`events` stores activation/intervention names, user/repo/job ids and a short
+meta string (for example `guidance:lead`); it never stores prompts, tokens or
+full answers. Evidence strings (`tests`, `checks`, `rollback`) are written by
+the agent and rendered on an super-admin-only job page; they must not contain
+secrets. `/admin/metrics` is admin-only and read-only.
+
+### Job email notifications
+
+Job and digest mail is sent from `MAIL_FROM` only to the super admin's configured
+`notify_email` (falling back to the GitHub email). It contains the repo, job id,
+issue/PR links, a summary or question text, daily spend and a link to the team
+console; it never contains a GitHub token, model key, bridge token or full
+prompt. The owner can set the address, disable job mail and disable the daily
+digest in Settings; approval and quota mail stay transactional. A question is
+mailed at most once per `sessionId + questionId`; a digest is sent once per user
+per day. Test mail is rate-limited to one per minute.
+
+### Roles, admin scope and preview
+
+- `user`, `admin` and super admin (`superadmin`) are platform roles. The configured
+  primary login is promoted to owner on startup; only the super admin can promote or
+  demote admins and set unlimited quota. The one-off CLI is
+  `npm run role:set -- <github-login> <admin|user>`; it refuses to change the
+  owner role.
+- Admin management is scoped: an admin sees themselves and normal users, never
+  another admin or the super admin. Admin jobs and audit rows are filtered to that
+  visible set and actor names are masked in the admin audit view. The owner sees
+  all users and actions.
+- The super-admin-only preview cookie renders the normal-user UI while leaving the
+  actual session owner-scoped behind the scenes. Advanced team/workspace routes
+  remain blocked until preview is exited.
+
+### Team console and agent controls
+
+- `GET /api/repos/:id/team/events` is admin-only. It is read-only and streams
+  the same state the team console already shows; it never exposes the DSH token
+  or the bridge token.
+- The simplified Chief conversation reads the DSH session export server-side on
+  the super admin's behalf. It keeps only human/Chief text, drops known Fledge job
+  prompts, ignores tool calls/results and attachments, and masks token/secret
+  patterns before rendering; the raw DSH token and archive stay server-side.
+- Answering a question, sending guidance and requesting a stop require the
+  session, repository ownership and `X-CSRF-Token`, and are written to the audit
+  log. Answer text is not logged.
+- A stop request tries the DSH room cancel first; otherwise it delivers a stop
+  message. The UI and API distinguish a hard stop from a request. The native DSH
+  UI is only exposed through the admin-only authenticated workspace proxy; normal
+  users use the repository page and the Fledge inbox.
+- The v0.3 workspace must use a short-lived signed ticket, a server-side DSH
+  cookie, cookie isolation and an ownership check on every request; a raw DSH
+  token must never appear in a browser URL.
 
 ### OAuth
 

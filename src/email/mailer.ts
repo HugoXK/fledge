@@ -10,6 +10,7 @@ export interface MailMessage {
   subject: string
   text: string
   html?: string
+  replyTo?: string
 }
 
 export interface Mailer {
@@ -31,6 +32,7 @@ export class ConsoleMailer implements Mailer {
       `From: Fledge <${this.from}>`,
       `To: ${message.to}`,
       `Subject: ${message.subject}`,
+      ...(message.replyTo === undefined ? [] : [`Reply-To: ${message.replyTo}`]),
       'MIME-Version: 1.0',
       'Content-Type: text/plain; charset=utf-8',
       '',
@@ -67,6 +69,7 @@ export class SmtpMailer implements Mailer {
         to: message.to,
         subject: message.subject,
         text: message.text,
+        ...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }),
         ...(message.html === undefined ? {} : { html: message.html }),
       })
       log.info('mail sent', { to: message.to, subject: message.subject })

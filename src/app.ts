@@ -3,24 +3,29 @@ import fastifyCookie from '@fastify/cookie'
 import fastifyFormbody from '@fastify/formbody'
 import fastifyStatic from '@fastify/static'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
-import { openStore, type Store, type UserRow } from './db.js'
+import { openStore, type JobRow, type RepoRow, type Store, type UserRow } from './db.js'
 import { GithubOAuth } from './auth/github.js'
-import { requireAdmin, requireApproved, requireViewer, Sessions } from './auth/session.js'
+import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions } from './auth/session.js'
 import { createMailer, type Mailer } from './email/mailer.js'
-import { approvedEmail, rejectedEmail } from './email/templates.js'
+import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
+import { notifyEmail } from './email/recipient.js'
 import { registerGateway } from './gateway/gateway.js'
 import { assertSafeModelUrl } from './gateway/modelUrl.js'
+import { quotaView } from './gateway/quota.js'
+import { parseAttributionJson } from './lib/attribution.js'
 import { Jobs } from './jobs/service.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
 import { RateLimiter } from './lib/rateLimit.js'
-import { decryptSecret, encryptSecret, randomId, randomToken, sha256Hex } from './lib/secrets.js'
+import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes } from './lib/time.js'
-import { isLocale, LOCALE_COOKIE, resolveLocale, translator, type Locale } from './i18n.js'
+import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale } from './i18n.js'
 import { normalizeInterval } from './lib/intervals.js'
+import { isValidBranchName } from './lib/branches.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -32,12 +37,20 @@ import {
   applicationStatusPage,
   repoPage,
   teamPage,
+  jobPage,
+  metricsPage,
+  appReposPage,
   workspacePage,
+  agentWorkspacePage,
   settingsPage,
   errorPage,
+  type InboxQuestion,
 } from './views/pages.js'
-import { parseRepoInput, prepareRepo } from './repos/github.js'
+import { GithubClient, parseRepoInput, prepareRepo, prepareRepoWithInstallation } from './repos/github.js'
+import { GithubApp } from './repos/app.js'
+import { repoGithubToken } from './repos/token.js'
 import { InstanceManager } from './flybot/instances.js'
+import { dshCookie, proxyWorkspaceHttp, proxyWorkspaceUpgrade } from './flybot/workspace.js'
 
 export interface BuildOptions {
   config: Config
@@ -65,17 +78,36 @@ function queryText(request: FastifyRequest, name: string): string | undefined {
   return typeof value === 'string' && value !== '' ? value.slice(0, 500) : undefined
 }
 
+const FORM_KEY = /^[A-Za-z0-9_-]{1,80}$/
+
 function form(request: FastifyRequest): Record<string, string> {
   const body = (request.body ?? {}) as Record<string, unknown>
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(body)) {
-    if (typeof value === 'string') out[key] = value
+    if (FORM_KEY.test(key) && typeof value === 'string') out[key] = value
   }
   return out
 }
 
-function viewOf(viewer: { user: UserRow; csrfToken: string }): { user: UserRow; csrfToken: string } {
-  return { user: viewer.user, csrfToken: viewer.csrfToken }
+function safeLocalPath(value: string | undefined, fallback: string): string {
+  if (value === undefined || !value.startsWith('/') || value.startsWith('//')) return fallback
+  try {
+    const url = new URL(value, 'http://fledge.local')
+    if (url.origin !== 'http://fledge.local') return fallback
+    return `${url.pathname}${url.search}${url.hash}`
+  } catch {
+    return fallback
+  }
+}
+
+function bearerSecret(request: FastifyRequest): string {
+  const header = String(request.headers.authorization ?? '')
+  if (header.slice(0, 7).toLowerCase() !== 'bearer ') return ''
+  return header.slice(7).trim().slice(0, 512)
+}
+
+function viewOf(viewer: { user: UserRow; csrfToken: string; preview?: boolean }): { user: UserRow; csrfToken: string; preview?: boolean } {
+  return { user: viewer.user, csrfToken: viewer.csrfToken, preview: viewer.preview }
 }
 
 function htmlPage(reply: FastifyReply, status: number, page: string): FastifyReply {
@@ -104,13 +136,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const { config } = options
   assertProductionConfig(config)
   const store = options.store ?? openStore(config.dbPath)
+  store.ensureSuperadmin(config.github.adminLogin)
   const mailer = options.mailer ?? createMailer(config)
   const runner = options.runner ?? createRunner(config)
   const oauth = new GithubOAuth(config)
   const sessions = new Sessions(store, config)
   const approvals = new Approvals(store, config, mailer)
   const instances = new InstanceManager(store, config)
-  const jobs = new Jobs(store, config, runner, mailer, instances)
+  const githubApp = new GithubApp(config)
+  const jobs = new Jobs(store, config, runner, mailer, instances, githubApp)
   const loginLimiter = new RateLimiter(30, 60_000)
   const apiLimiter = new RateLimiter(120, 60_000)
 
@@ -127,6 +161,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.addHook('onRequest', async (request) => {
     request.viewer = sessions.read(request) ?? undefined
     request.locale = resolveLocale(request)
+  })
+
+  app.addHook('preParsing', async (request, _reply, payload) => {
+    const path = request.url.split('?')[0] ?? ''
+    if (path !== '/api/github/webhook' && !(path.startsWith('/repos/') && path.includes('/workspace/app/'))) return payload
+    const chunks: Buffer[] = []
+    for await (const chunk of payload) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    const raw = Buffer.concat(chunks)
+    ;(request as FastifyRequest & { rawBody?: Buffer }).rawBody = raw
+    return Readable.from(raw)
   })
 
   app.addHook('onSend', async (request, reply, payload) => {
@@ -157,20 +201,73 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return { viewer, repo }
   }
 
+  const inboxCache = new Map<string, { at: number; questions: InboxQuestion[] }>()
+  const inboxForUser = async (userId: string, repos: RepoRow[]): Promise<InboxQuestion[]> => {
+    const cached = inboxCache.get(userId)
+    if (cached !== undefined && Date.now() - cached.at < 5_000) return cached.questions
+    const ready = repos.filter((repo) => store.getRepoInstance(repo.id)?.status === 'ready')
+    const settled = await Promise.allSettled(ready.map(async (repo) => {
+      const state = await instances.teamState(repo.id, 4_000)
+      const repoLabel = `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`
+      return state.questions
+        .filter((question) => question.id !== '' && question.question !== '')
+        .map((question) => ({ repoId: repo.id, repoLabel, ...question }))
+    }))
+    const questions = settled
+      .flatMap((result) => result.status === 'fulfilled' ? result.value : [])
+      .slice(0, 20)
+    inboxCache.set(userId, { at: Date.now(), questions })
+    return questions
+  }
+
+  const localizedJobs = (jobs: JobRow[], locale: Locale): JobRow[] => jobs.map((job) => ({
+    ...job,
+    summary: job.summary === null ? null : localizeMessage(locale, job.summary) ?? job.summary,
+    error: job.error === null ? null : localizeMessage(locale, job.error) ?? job.error,
+  }))
+
+  const requireAdvanced = (viewer: { user: UserRow; preview?: boolean }): void => {
+    if (viewer.user.role !== 'superadmin' || viewer.preview === true) throw httpError(403, '仅超级管理员可访问实时团队页面。', 'SUPERADMIN_ONLY')
+  }
+
   const startSession = (user: UserRow, request: FastifyRequest, reply: FastifyReply): void => {
     if (user.status === 'approved') instances.ensureUserDir(user.id)
     const raw = sessions.start(user.id, request)
     const sessionHash = sha256Hex(raw)
     sessions.setCookies(reply, raw, { sessionHash, user, csrfToken: sessions.csrfFor(sessionHash) })
+    sessions.setPreview(reply, false)
   }
 
-  app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: '0.2.0', time: new Date().toISOString() }))
+
+  app.server.on('upgrade', (request, socket, head) => {
+    const match = /^\/repos\/([^/]+)\/workspace\/app\/(.*)$/.exec(request.url ?? '')
+    if (match === null) return
+    const fail = (status: string): void => {
+      try { socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`) } catch {}
+      socket.destroy()
+    }
+    const raw = /(?:^|; )fledge_session=([^;]+)/.exec(String(request.headers.cookie ?? ''))?.[1]
+    if (raw === undefined) return fail('401 Unauthorized')
+    const session = store.getSession(sha256Hex(decodeURIComponent(raw)))
+    if (session === undefined) return fail('401 Unauthorized')
+    const user = store.userById(session.user_id)
+    const repo = store.getRepo(decodeURIComponent(match[1] ?? ''))
+    const preview = /(?:^|; )fledge_preview=user(?:;|$)/.test(String(request.headers.cookie ?? ''))
+    if (user === undefined || user.status !== 'approved' || user.role !== 'superadmin' || preview || repo === undefined || repo.user_id !== user.id) return fail('403 Forbidden')
+    const instance = store.getRepoInstance(repo.id)
+    if (instance === undefined || instance.status !== 'ready') return fail('409 Conflict')
+    void dshCookie(instance).then((cookie) => {
+      proxyWorkspaceUpgrade(request, socket as import('node:net').Socket, head, instance, match[2] ?? '', cookie)
+    }).catch(() => fail('502 Bad Gateway'))
+  })
+
+  app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: '0.2.1', time: new Date().toISOString() }))
 
   app.get('/lang/:locale', async (request, reply) => {
     const requested = String((request.params as Record<string, string>).locale)
     if (!isLocale(requested)) return htmlPage(reply, 404, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。', request.locale))
     const next = queryText(request, 'next')
-    const safeNext = next !== undefined && next.startsWith('/') && !next.startsWith('//') ? next : '/'
+    const safeNext = safeLocalPath(next, '/')
     reply.setCookie(LOCALE_COOKIE, requested, {
       path: '/',
       httpOnly: true,
@@ -203,12 +300,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       name: 'Dev Login',
       email: 'dev@example.com',
       avatarUrl: null,
-      isAdmin: config.devLogin.admin,
+      isAdmin: false,
+      isSuperAdmin: config.devLogin.admin,
       initialQuotaCny: config.quota.initialCny,
     })
     if (user.status !== 'approved') store.setUserStatus(user.id, 'approved', 'dev-login')
     startSession(store.userById(user.id)!, request, reply)
     store.audit(user.id, 'login.dev', 'DEV_LOGIN_LOGIN')
+    store.event('login', { userId: user.id, meta: 'dev' })
     return reply.redirect('/dashboard')
   })
 
@@ -227,7 +326,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       log.warn('github token login failed', { error: String(error) })
       return htmlPage(reply, 401, messagePage(config, 'GitHub token 无效', '无法用这个 token 读取 GitHub 身份，请检查权限或重新生成。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
     }
-    const isAdmin = profile.login.toLowerCase() === config.github.adminLogin.toLowerCase()
+    const isSuperAdmin = profile.login.toLowerCase() === config.github.adminLogin.toLowerCase()
     const user = store.upsertGithubUser({
       id: randomId('usr'),
       githubId: profile.id,
@@ -235,10 +334,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       name: profile.name,
       email: profile.email,
       avatarUrl: profile.avatarUrl,
-      isAdmin,
+      isAdmin: false,
+      isSuperAdmin,
       initialQuotaCny: config.quota.initialCny,
     })
     store.audit(user.id, 'login.github-token', `@${profile.login}`)
+    store.event('login', { userId: user.id, meta: 'github-token' })
     startSession(user, request, reply)
     if (user.status === 'approved') return reply.redirect('/dashboard')
     if (user.status === 'onboarding') return reply.redirect('/apply')
@@ -255,7 +356,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(oauth.authorizeUrl(state))
   })
 
+  app.get('/auth/github/reauthorize', async (request, reply) => {
+    const viewer = requireApproved(request)
+    if (!loginLimiter.take(`reauth:${viewer.user.id}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (config.github.clientId === '' || config.github.clientSecret === '') return reply.redirect('/settings?error=' + encodeURIComponent('GitHub OAuth 未配置。'))
+    const state = randomToken(32)
+    store.createOAuthState(sha256Hex(state), addMinutes(20), null)
+    const scopes = [...new Set(`${config.github.scopes} repo`.split(/\s+/).filter(Boolean))].join(' ')
+    return reply.redirect(oauth.authorizeUrl(state, scopes))
+  })
+
   app.get('/auth/github/callback', async (request, reply) => {
+    if (!loginLimiter.take(`callback:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const query = request.query as Record<string, string | undefined>
     const code = query.code ?? ''
     const state = query.state ?? ''
@@ -272,15 +384,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     let profile
     let token
+    let oauthScopes = ''
     try {
-      token = await oauth.exchangeCode(code)
+      const exchanged = await oauth.exchangeCode(code)
+      token = exchanged.token
+      oauthScopes = exchanged.scopes
       profile = await oauth.profile(token)
     } catch (error) {
       log.warn('github login failed', { error: String(error) })
       const t = translator(request.locale ?? 'zh')
       return htmlPage(reply, 400, errorPage(config, request.viewer ?? null, 'GitHub 登录失败', '无法完成 GitHub 登录，请重试。', request.locale, { href: '/auth/github', label: t('重新登录', 'Sign in again') }))
     }
-    const isAdmin = profile.login.toLowerCase() === config.github.adminLogin.toLowerCase()
+    const isSuperAdmin = profile.login.toLowerCase() === config.github.adminLogin.toLowerCase()
     const user = store.upsertGithubUser({
       id: randomId('usr'),
       githubId: profile.id,
@@ -288,11 +403,13 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       name: profile.name,
       email: profile.email,
       avatarUrl: profile.avatarUrl,
-      isAdmin,
+      isAdmin: false,
+      isSuperAdmin,
       initialQuotaCny: config.quota.initialCny,
     })
-    store.setUserGithubToken(user.id, encryptSecret(token, config.tokenEncryptionKey))
+    store.setUserGithubToken(user.id, encryptSecret(token, config.tokenEncryptionKey), oauthScopes)
     store.audit(user.id, 'login.github', `@${profile.login}`)
+    store.event('login', { userId: user.id, meta: 'github' })
     startSession(user, request, reply)
     if (user.status === 'approved') return reply.redirect('/dashboard')
     if (user.status === 'onboarding') return reply.redirect('/apply')
@@ -345,6 +462,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!submitted) return reply.redirect('/apply/status')
     const updated = store.userById(viewer.user.id)!
     store.audit(viewer.user.id, 'application.submitted', `queue #${store.queuePosition(viewer.user.id) ?? '?'}`)
+    store.event('application_submitted', { userId: viewer.user.id })
     const position = store.queuePosition(updated.id)
     try {
       await approvals.request(updated)
@@ -363,6 +481,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const viewer = requireViewer(request)
     if (viewer.user.status === 'approved') return reply.redirect('/dashboard')
     if (viewer.user.status === 'onboarding') return reply.redirect('/apply')
+    if (viewer.user.status === 'pending' && viewer.user.approval_sent_at === null) {
+      void approvals.request(viewer.user).catch((error) => log.warn('approval mail retry failed', { user: viewer.user.login, error: String(error) }))
+    }
     return reply.type('text/html').send(
       applicationStatusPage({
         config,
@@ -392,13 +513,30 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.get('/dashboard', async (request, reply) => {
     const viewer = requireApproved(request)
     const view = viewOf(viewer)
+    const perPage = 10
+    const reposTotal = store.countReposForUser(viewer.user.id)
+    const jobsTotal = store.countJobsForUser(viewer.user.id)
+    const pageNumber = (name: string, total: number): number => {
+      const pages = Math.max(1, Math.ceil(total / perPage))
+      const n = Number(queryText(request, name))
+      return Number.isFinite(n) && n >= 1 ? Math.min(Math.floor(n), pages) : 1
+    }
+    const reposPage = pageNumber('reposPage', reposTotal)
+    const jobsPage = pageNumber('jobsPage', jobsTotal)
+    const repos = store.listReposPage(viewer.user.id, perPage, (reposPage - 1) * perPage)
+    const questions = await inboxForUser(viewer.user.id, store.listRepos(viewer.user.id))
     return reply.type('text/html').send(
       dashboardPage({
         config,
         locale: request.locale ?? 'zh',
         viewer: view,
-        repos: store.listRepos(viewer.user.id),
-        jobs: store.listJobs(viewer.user.id),
+        repos,
+        jobs: store.listJobsPageForUser(viewer.user.id, perPage, (jobsPage - 1) * perPage),
+        reposPage,
+        reposTotal,
+        jobsPage,
+        jobsTotal,
+        questions,
         notifications: store.listNotifications(viewer.user.id),
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
@@ -408,13 +546,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/console', async (request, reply) => {
     const viewer = requireApproved(request)
+    const repos = store.listRepos(viewer.user.id)
+    const questions = await inboxForUser(viewer.user.id, repos)
     return reply.type('text/html').send(
       workspacePage({
         config,
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
-        repos: store.listRepos(viewer.user.id),
+        repos,
         jobs: store.listJobs(viewer.user.id),
+        jobsTotal: store.countJobsForUser(viewer.user.id),
+        activeJobs: store.listActiveJobsForUser(viewer.user.id).length,
+        questions,
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
       }),
@@ -423,6 +566,199 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/repos', async (_request, reply) => {
     return reply.redirect('/dashboard#add-repo')
+  })
+
+  app.get('/auth/github/app/install', async (request, reply) => {
+    const viewer = requireApproved(request)
+    if (config.githubApp.slug === '') return reply.redirect(`/repos/new?error=${encodeURIComponent('GitHub App 未配置。')}`)
+    const state = randomToken(16)
+    store.setSetting(`github_app_state:${state}`, `${viewer.user.id}:${Date.now()}`)
+    return reply.redirect(`https://github.com/apps/${encodeURIComponent(config.githubApp.slug)}/installations/new?state=${encodeURIComponent(state)}`)
+  })
+
+  app.get('/auth/github/app/callback', async (request, reply) => {
+    const query = request.query as Record<string, unknown>
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) {
+      if (typeof value === 'string') params.set(key, value)
+    }
+    return reply.redirect(`/auth/github/app/installed${params.size === 0 ? '' : `?${params.toString()}`}`)
+  })
+
+  app.get('/auth/github/app/installed', async (request, reply) => {
+    const viewer = requireApproved(request)
+    if (!githubApp.configured) return reply.redirect(`/repos/new?error=${encodeURIComponent('GitHub App 未配置。')}`)
+    let installationId = Number(queryText(request, 'installation_id'))
+    if (!Number.isFinite(installationId) || installationId <= 0) {
+      const bound = store.listInstallations(viewer.user.id)
+      if (bound.length === 1) return reply.redirect(`/repos/new?installation=${bound[0]!.installation_id}`)
+      if (bound.length > 1) return reply.redirect('/repos/new')
+      try {
+        const all = await githubApp.listInstallations()
+        const now = Date.now()
+        const candidates = all.filter((candidate) => {
+          const existing = store.getInstallation(candidate.id)
+          if (existing !== undefined && existing.user_id !== viewer.user.id) return false
+          if (candidate.account.type === 'User' && candidate.account.login.toLowerCase() === viewer.user.login.toLowerCase()) return true
+          const sender = store.getSetting(`installation_sender:${candidate.id}`)
+          if (sender === undefined) return false
+          const [login = '', at = '0'] = sender.split(':')
+          return login.toLowerCase() === viewer.user.login.toLowerCase() && now - Number(at) < 24 * 60 * 60_000
+        })
+        if (candidates.length === 1) {
+          const candidate = candidates[0]!
+          store.saveInstallation({ installationId: candidate.id, userId: viewer.user.id, accountLogin: candidate.account.login, accountType: candidate.account.type })
+          return reply.redirect(`/repos/new?installation=${candidate.id}`)
+        }
+      } catch (error) {
+        log.warn('github app install fallback failed', { user: viewer.user.login, error: String(error) })
+      }
+      return reply.redirect(`/repos/new?error=${encodeURIComponent('安装回调缺少 installation_id；请在 GitHub App 设置的 Setup URL 指向 /auth/github/app/installed，或从已安装列表重新选择仓库。')}`)
+    }
+    let installation
+    try {
+      installation = await githubApp.getInstallation(installationId)
+    } catch (error) {
+      log.warn('github app installation lookup failed', { installationId, error: String(error) })
+    }
+    if (installation === undefined || installation === null) return reply.redirect(`/repos/new?error=${encodeURIComponent('找不到这个 GitHub App 安装。')}`)
+    let stateOk = true
+    const state = queryText(request, 'state') ?? ''
+    if (state !== '') {
+      const value = store.getSetting(`github_app_state:${state}`)
+      const [userId = '', at = '0'] = value === undefined ? [] : value.split(':')
+      stateOk = userId === viewer.user.id && Date.now() - Number(at) < 10 * 60_000
+      store.deleteSetting(`github_app_state:${state}`)
+    }
+    if (!stateOk) return reply.redirect(`/repos/new?error=${encodeURIComponent('安装状态已过期，请重新从工作区发起安装。')}`)
+    const existing = store.getInstallation(installationId)
+    if (existing !== undefined && existing.user_id !== viewer.user.id) {
+      return reply.redirect(`/repos/new?error=${encodeURIComponent('这个安装已经绑定到另一个 Fledge 用户。')}`)
+    }
+    let owned = false
+    {
+      const sender = store.getSetting(`installation_sender:${installationId}`)
+      if (sender !== undefined) {
+        const [login = '', at = '0'] = sender.split(':')
+        if (login.toLowerCase() === viewer.user.login.toLowerCase() && Date.now() - Number(at) < 24 * 60 * 60_000) owned = true
+      }
+    }
+    if (!owned && viewer.user.github_token_enc !== null) {
+      try {
+        const token = decryptSecret(viewer.user.github_token_enc, config.tokenEncryptionKey)
+        const installations = await new GithubClient(token, config.github.apiBase).listUserInstallations()
+        owned = installations.some((entry) => entry.id === installationId)
+      } catch (error) {
+        log.warn('github app user installation check failed', { user: viewer.user.login, error: String(error) })
+      }
+    }
+    if (!owned) owned = installation.account.type === 'User' && installation.account.login.toLowerCase() === viewer.user.login.toLowerCase()
+    if (!owned) return reply.redirect(`/repos/new?error=${encodeURIComponent('这个安装不属于当前 GitHub 用户；请用安装它的账号登录。')}`)
+    store.saveInstallation({ installationId, userId: viewer.user.id, accountLogin: installation.account.login, accountType: installation.account.type })
+    store.audit(viewer.user.id, 'github_app.installed', `${installationId} @${installation.account.login}`)
+    store.event('github_app_installed', { userId: viewer.user.id, meta: `@${installation.account.login}` })
+    return reply.redirect(`/repos/new?installation=${installationId}`)
+  })
+
+  app.get('/repos/new', async (request, reply) => {
+    const viewer = requireApproved(request)
+    if (!githubApp.configured) return reply.redirect(`/dashboard?error=${encodeURIComponent('GitHub App 未配置；仍可使用 PAT 接入。')}`)
+    const installations = store.listInstallations(viewer.user.id)
+    const raw = Number(queryText(request, 'installation'))
+    const installationId = Number.isFinite(raw) && raw > 0 ? raw : undefined
+    let repos
+    let error = queryText(request, 'error')
+    if (installationId !== undefined) {
+      const owned = store.getInstallation(installationId)
+      if (owned === undefined || owned.user_id !== viewer.user.id) throw httpError(404, '安装不存在。', 'INSTALLATION_NOT_FOUND')
+      try {
+        repos = await githubApp.installationRepos(installationId)
+      } catch (cause) {
+        error = cause instanceof Error ? cause.message : String(cause)
+      }
+    }
+    return reply.type('text/html').send(appReposPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      installations,
+      installationId,
+      repos,
+      notice: queryText(request, 'notice'),
+      error,
+    }))
+  })
+
+  app.post('/repos/app', async (request, reply) => {
+    const viewer = csrfGuard(request)
+    if (!githubApp.configured) return reply.redirect(`/dashboard?error=${encodeURIComponent('GitHub App 未配置。')}`)
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const installationId = Number(body.installation)
+    const installation = store.getInstallation(installationId)
+    if (installation === undefined || installation.user_id !== viewer.user.id) throw httpError(404, '安装不存在。', 'INSTALLATION_NOT_FOUND')
+    const rawSelected = body.repo
+    const selected = (Array.isArray(rawSelected) ? rawSelected : [rawSelected]).filter((value): value is string => typeof value === 'string' && value.includes('/'))
+    if (selected.length === 0) return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent('请选择至少一个仓库。')}`)
+    const goal = (typeof body.goal === 'string' ? body.goal : '').slice(0, 4000)
+    const autoIterate = body.auto === '1'
+    const interval = normalizeInterval(typeof body.interval === 'string' ? body.interval : undefined, 1440)
+    const review = body.review === '1'
+    const reviewInterval = normalizeInterval(typeof body.reviewInterval === 'string' ? body.reviewInterval : undefined, 1440)
+    let available
+    try {
+      available = await githubApp.installationRepos(installationId)
+    } catch (error) {
+      return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`)
+    }
+    const byName = new Map(available.map((repo) => [repo.fullName.toLowerCase(), repo]))
+    const added: string[] = []
+    for (const fullName of selected) {
+      const repoInfo = byName.get(fullName.toLowerCase())
+      if (repoInfo === undefined) continue
+      if (store.getRepoByOwnerName(viewer.user.id, repoInfo.owner, repoInfo.name) !== undefined) continue
+      try {
+        const token = await githubApp.installationToken(installationId)
+        const prepared = await prepareRepoWithInstallation(token, repoInfo.owner, repoInfo.name, installation.account_login, config.github.apiBase)
+        const repo = store.createRepo({
+          id: randomId('repo'),
+          userId: viewer.user.id,
+          owner: prepared.upstream.owner,
+          name: prepared.upstream.name,
+          defaultBranch: prepared.upstream.defaultBranch,
+          tokenEnc: '',
+          installationId,
+          goal,
+          autoIterate,
+          intervalMinutes: interval,
+          upstreamOwner: prepared.upstream.owner,
+          upstreamName: prepared.upstream.name,
+          forkOwner: prepared.fork.owner,
+          forkName: prepared.fork.name,
+          upstreamDefaultBranch: prepared.upstream.defaultBranch,
+          forkDefaultBranch: prepared.fork.defaultBranch,
+          isFork: prepared.isFork,
+          forkCreated: prepared.forkCreated,
+          permission: prepared.permission,
+          canReview: prepared.canReview,
+          canCreateIssue: prepared.canCreateIssue,
+          reviewerEnabled: prepared.canReview && review,
+          reviewIntervalMinutes: reviewInterval,
+          upstreamHtmlUrl: prepared.upstream.htmlUrl,
+          forkHtmlUrl: prepared.fork.htmlUrl,
+        })
+        store.audit(viewer.user.id, 'repo.added', `${repo.owner}/${repo.name} app=${installationId} permission=${repo.permission}`)
+        store.event('repo_connect_success', { userId: viewer.user.id, repoId: repo.id, meta: 'github-app' })
+        if (config.flybot.instanceImage !== '') {
+          instances.ensureUserDir(viewer.user.id)
+          void instances.provision(repo).catch((error) => log.error('flybot provisioning failed', { repo: repo.id, error: String(error) }))
+        }
+        added.push(`${repo.owner}/${repo.name}`)
+      } catch (error) {
+        log.warn('github app repo add failed', { repo: repoInfo.fullName, error: String(error) })
+      }
+    }
+    if (added.length === 0) return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent('没有新增仓库；可能已经添加过，或 App 权限不足。')}`)
+    return reply.redirect(`/dashboard?notice=${encodeURIComponent(`已接入 ${added.length} 个仓库。`)}`)
   })
 
   app.post('/repos', async (request, reply) => {
@@ -434,6 +770,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (existing !== undefined) {
         return reply.redirect(`/repos/${existing.id}?notice=${encodeURIComponent('这个仓库已经添加过了。')}`)
       }
+      store.event('repo_connect_start', { userId: viewer.user.id, meta: `${owner}/${name}` })
       const token = (body.token ?? '').trim()
       if (token === '') throw new Error('请填写 GitHub token')
       const prepared = await prepareRepo(token, owner, name, viewer.user.login, config.github.apiBase)
@@ -467,6 +804,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         forkHtmlUrl: prepared.fork.htmlUrl,
       })
       store.audit(viewer.user.id, 'repo.added', `${repo.owner}/${repo.name} fork=${repo.fork_owner}/${repo.fork_name} permission=${repo.permission} reviewer=${reviewerEnabled ? 'on' : 'off'}`)
+      store.event('repo_connect_success', { userId: viewer.user.id, repoId: repo.id })
       const t = translator(request.locale ?? 'zh')
       const bits = [t('仓库已添加。', 'Repository added.')]
       if (prepared.forkCreated) bits.push(t(`已创建 fork ${prepared.fork.fullName}。`, `Created fork ${prepared.fork.fullName}.`))
@@ -488,14 +826,30 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/repos/:id', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const jobsTotal = store.countJobsForRepo(repo.id)
+    const jobsPage = Math.min(Math.max(1, Math.floor(Number(queryText(request, 'jobsPage')) || 1)), Math.max(1, Math.ceil(jobsTotal / 10)))
+    const questions = (await inboxForUser(viewer.user.id, store.listRepos(viewer.user.id))).filter((question) => question.repoId === repo.id)
+    const instance = store.getRepoInstance(repo.id)
+    let chiefMessages
+    if ((viewer.user.role !== 'superadmin' || viewer.preview === true) && instance?.status === 'ready') {
+      chiefMessages = await instances.chiefTranscript(repo.id).catch((error) => {
+        log.warn('chief transcript failed', { repo: repo.id, error: String(error) })
+        return []
+      })
+    }
     return reply.type('text/html').send(
       repoPage({
         config,
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         repo,
-        instance: store.getRepoInstance(repo.id),
-        jobs: store.listJobsForRepo(repo.id),
+        instance,
+        jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
+        questions,
+        chiefMessages,
+        activeJob: store.activeJobForRepo(repo.id) !== undefined,
+        jobsPage,
+        jobsTotal,
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
       }),
@@ -509,16 +863,20 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/repos/:id/team', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    requireAdvanced(viewer)
     const instance = store.getRepoInstance(repo.id)
     let state
     let stateError: string | undefined
     if (instance !== undefined && instance.status === 'ready') {
       try {
-        state = await instances.teamState(repo.id)
+        state = await instances.teamState(repo.id, 20_000)
       } catch (error) {
-        stateError = error instanceof Error ? error.message : String(error)
+        const message = error instanceof Error ? error.message : String(error)
+        stateError = localizeMessage(request.locale ?? 'zh', message) ?? message
       }
     }
+    const jobsTotal = store.countJobsForRepo(repo.id)
+    const jobsPage = Math.min(Math.max(1, Math.floor(Number(queryText(request, 'jobsPage')) || 1)), Math.max(1, Math.ceil(jobsTotal / 10)))
     return reply.type('text/html').send(teamPage({
       config,
       locale: request.locale ?? 'zh',
@@ -527,17 +885,20 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       instance,
       state,
       stateError,
-      jobs: store.listJobsForRepo(repo.id),
+      jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
+      jobsPage,
+      jobsTotal,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
   })
 
   app.get('/api/repos/:id/team', async (request, reply) => {
-    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    requireAdvanced(viewer)
     try {
-      const state = await instances.teamState(repo.id)
-      return { ...state, jobs: store.listJobsForRepo(repo.id).slice(0, 5) }
+      const state = await instances.teamState(repo.id, 15_000)
+      return { ...state, jobs: localizedJobs(store.listJobsForRepo(repo.id).slice(0, 5), request.locale ?? 'zh') }
     } catch (error) {
       return reply.code(503).send({ error: error instanceof Error ? error.message : String(error) })
     }
@@ -545,17 +906,397 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/repos/:id/team/guidance', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    requireAdvanced(viewer)
     const body = form(request)
     const target = (body.target ?? '').trim()
     const text = (body.text ?? '').trim()
     try {
       await instances.sendGuidance(repo.id, target, text)
       store.audit(viewer.user.id, 'team.guidance', `${repo.owner}/${repo.name} target=${target} chars=${text.length}`)
+      store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: `guidance:${target}` })
       const t = translator(request.locale ?? 'zh')
       return reply.redirect(`/repos/${repo.id}/team?notice=${encodeURIComponent(t('指导意见已发送给团队。', 'Guidance sent to the team.'))}`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return reply.redirect(`/repos/${repo.id}/team?error=${encodeURIComponent(message)}`)
+    }
+  })
+
+  app.get('/api/repos/:id/chief/messages', async (request, reply) => {
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const instance = store.getRepoInstance(repo.id)
+    if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
+    try {
+      return { messages: await instances.chiefTranscript(repo.id, 30) }
+    } catch (error) {
+      return reply.code(503).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
+
+  app.get('/api/repos/:id/chief/events', async (request, reply) => {
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const instance = store.getRepoInstance(repo.id)
+    if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
+    reply.hijack()
+    reply.raw.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    })
+    let closed = false
+    let busy = false
+    let last = ''
+    let lastSignature = ''
+    let heartbeat = 0
+    let timer: NodeJS.Timeout | undefined
+    const close = (): void => {
+      if (closed) return
+      closed = true
+      if (timer !== undefined) clearInterval(timer)
+      try { reply.raw.end() } catch {}
+    }
+    const send = (event: string, data: unknown): void => {
+      if (!closed) reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+    }
+    request.raw.on('close', close)
+    reply.raw.on('close', close)
+    const tick = async (): Promise<void> => {
+      if (closed || busy) return
+      busy = true
+      try {
+        let signature = lastSignature
+        try {
+          const state = await instances.teamState(repo.id, 3_000)
+          const chief = state.bots.find((bot) => bot.role === 'chief')
+          signature = `${chief?.activity ?? ''}:${chief?.lastActivityAt ?? ''}:${chief?.since ?? ''}`
+        } catch {
+          // Fall through to the last known signature; the transcript read reports errors.
+        }
+        if (signature !== lastSignature || last === '') {
+          lastSignature = signature
+          const messages = await instances.chiefTranscript(repo.id, 30)
+          const text = JSON.stringify(messages)
+          if (text !== last) {
+            last = text
+            send('snapshot', { messages, updatedAt: new Date().toISOString() })
+          }
+        } else if (++heartbeat >= 15) {
+          heartbeat = 0
+          reply.raw.write(': ping\n\n')
+        }
+      } catch (error) {
+        send('error', { message: error instanceof Error ? error.message : String(error) })
+        close()
+      } finally {
+        busy = false
+      }
+    }
+    timer = setInterval(() => void tick(), 2_000)
+    await tick()
+  })
+
+  app.post('/api/repos/:id/chief/message', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const text = (typeof body.text === 'string' ? body.text : '').trim().slice(0, 4000)
+    const t = translator(request.locale ?? 'zh')
+    if (text === '') return reply.code(400).send({ error: t('留言不能为空。', 'The message cannot be empty.') })
+    try {
+      await instances.sendGuidance(repo.id, 'chief', `[Fledge owner message]\n${text}`)
+    } catch (error) {
+      return reply.code(503).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+    instances.clearChiefTranscript(repo.id)
+    store.audit(viewer.user.id, 'team.chief_message', `${repo.owner}/${repo.name} chars=${text.length}`)
+    store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: 'chief-message' })
+    return { ok: true }
+  })
+
+  app.post('/repos/:id/chief/message', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const text = (form(request).text ?? '').trim().slice(0, 4000)
+    const t = translator(request.locale ?? 'zh')
+    if (text === '') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('留言不能为空。', 'The message cannot be empty.'))}`)
+    try {
+      await instances.sendGuidance(repo.id, 'chief', `[Fledge owner message]\n${text}`)
+    } catch (error) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`)
+    }
+    instances.clearChiefTranscript(repo.id)
+    store.audit(viewer.user.id, 'team.chief_message', `${repo.owner}/${repo.name} chars=${text.length}`)
+    store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: 'chief-message' })
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(t('已发送给 Chief。', 'Sent to the Chief.'))}`)
+  })
+
+  app.post('/repos/:id/team/stop', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    requireAdvanced(viewer)
+    const body = form(request)
+    const target = (body.target ?? '').trim()
+    const returnTo = safeLocalPath(body.returnTo, `/repos/${repo.id}/team`)
+    const withMessage = (key: 'notice' | 'error', message: string): string =>
+      `${returnTo}${returnTo.includes('?') ? '&' : '?'}${key}=${encodeURIComponent(message)}`
+    const t = translator(request.locale ?? 'zh')
+    let state
+    try {
+      state = await instances.teamState(repo.id, 15_000)
+    } catch (error) {
+      return reply.redirect(withMessage('error', error instanceof Error ? error.message : String(error)))
+    }
+    const sessions = target === ''
+      ? state.bots.filter((bot) => bot.activity === 'thinking' || bot.activity === 'working').map((bot) => bot.sessionId)
+      : state.bots.filter((bot) => bot.role === target).map((bot) => bot.sessionId)
+    if (sessions.length === 0) return reply.redirect(withMessage('notice', t('当前没有正在工作的角色。', 'No role is working right now.')))
+    try {
+      const result = await instances.stopSessions(repo.id, sessions)
+      store.audit(viewer.user.id, 'team.stop', `${repo.owner}/${repo.name} hard=${result.stopped.length} soft=${result.requested.length}`)
+      store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: 'stop' })
+      return reply.redirect(withMessage('notice', result.stopped.length > 0
+        ? t(`已停止 ${result.stopped.length} 个角色；${result.requested.length} 个角色收到暂停请求。`, `Stopped ${result.stopped.length} role(s); requested a stop for ${result.requested.length}.`)
+        : t(`已发送暂停请求给 ${result.requested.length} 个角色，将在下一个安全点生效。`, `Requested a stop for ${result.requested.length} role(s); it takes effect at the next safe point.`)))
+    } catch (error) {
+      return reply.redirect(withMessage('error', error instanceof Error ? error.message : String(error)))
+    }
+  })
+
+  app.post('/repos/:id/team/answer', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const text = (key: string): string => typeof body[key] === 'string' ? String(body[key]) : ''
+    const rawSelected = body.selected
+    const selected = Array.isArray(rawSelected)
+      ? rawSelected.filter((value): value is string => typeof value === 'string')
+      : typeof rawSelected === 'string' ? [rawSelected] : []
+    const returnTo = safeLocalPath(text('returnTo'), '/console')
+    const wantsJson = String(request.headers.accept ?? '').includes('application/json')
+    const withMessage = (key: 'notice' | 'error', message: string): string =>
+      `${returnTo}${returnTo.includes('?') ? '&' : '?'}${key}=${encodeURIComponent(message)}`
+    const fail = (message: string) => wantsJson ? reply.code(400).send({ error: message }) : reply.redirect(withMessage('error', message))
+    const t = translator(request.locale ?? 'zh')
+    try {
+      await instances.answerQuestion(repo.id, text('sessionId'), text('questionId'), selected, text('custom'))
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : String(error))
+    }
+    store.audit(viewer.user.id, 'team.answer', `${repo.owner}/${repo.name} question=${text('questionId').slice(0, 80)}`)
+    store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: 'answer' })
+    inboxCache.delete(viewer.user.id)
+    if (wantsJson) return { ok: true }
+    return reply.redirect(withMessage('notice', t('答案已发送。', 'Answer sent.')))
+  })
+
+  app.get('/api/repos/:id/team/events', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    requireAdvanced(viewer)
+    const instance = store.getRepoInstance(repo.id)
+    if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
+    reply.hijack()
+    reply.raw.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    })
+    let closed = false
+    let busy = false
+    let last = ''
+    let heartbeat = 0
+    let timer: NodeJS.Timeout | undefined
+    const close = (): void => {
+      if (closed) return
+      closed = true
+      if (timer !== undefined) clearInterval(timer)
+      try { reply.raw.end() } catch {}
+    }
+    const send = (event: string, data: unknown): void => {
+      if (!closed) reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+    }
+    request.raw.on('close', close)
+    reply.raw.on('close', close)
+    const tick = async (): Promise<void> => {
+      if (closed || busy) return
+      busy = true
+      try {
+        const state = await instances.teamState(repo.id, 10_000)
+        const user = store.userById(viewer.user.id) ?? viewer.user
+        const quota = quotaView(user, config)
+        const snapshot = {
+          ...state,
+          quota: {
+            unlimited: quota.unlimited,
+            initialCny: quota.initialCny,
+            usedCny: quota.usedCny,
+            remainingCny: quota.remainingCny,
+            exhausted: quota.exhausted,
+          },
+          jobs: localizedJobs(store.listJobsForRepo(repo.id, 5), request.locale ?? 'zh').map((job) => ({
+            id: job.id,
+            kind: job.kind,
+            status: job.status,
+            summary: job.summary,
+            error: job.error,
+            issueUrl: job.issue_url,
+            prUrl: job.pr_url,
+            reviewScore: job.review_score,
+            attribution: parseAttributionJson(job.attribution_json),
+            createdAt: job.created_at,
+            finishedAt: job.finished_at,
+          })),
+        }
+        const text = JSON.stringify(snapshot)
+        if (text !== last) {
+          last = text
+          send('snapshot', { ...snapshot, updatedAt: new Date().toISOString() })
+        } else if (++heartbeat >= 15) {
+          heartbeat = 0
+          reply.raw.write(': ping\n\n')
+        }
+      } catch (error) {
+        send('error', { message: error instanceof Error ? error.message : String(error) })
+        close()
+      } finally {
+        busy = false
+      }
+    }
+    timer = setInterval(() => void tick(), 1_000)
+    await tick()
+  })
+
+  app.post('/api/repos/:id/team/answer', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    requireAdvanced(viewer)
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+    const questionId = typeof body.questionId === 'string' ? body.questionId : ''
+    const selected = Array.isArray(body.selected) ? body.selected.filter((value): value is string => typeof value === 'string') : []
+    const custom = typeof body.custom === 'string' ? body.custom : ''
+    try {
+      await instances.answerQuestion(repo.id, sessionId, questionId, selected, custom)
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+    store.audit(viewer.user.id, 'team.answer', `${repo.owner}/${repo.name} question=${questionId.slice(0, 80)}`)
+    store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: 'answer' })
+    inboxCache.delete(viewer.user.id)
+    return { ok: true }
+  })
+
+  app.post('/api/repos/:id/team/stop', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    requireAdvanced(viewer)
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const target = typeof body.target === 'string' ? body.target.trim() : ''
+    let state
+    try {
+      state = await instances.teamState(repo.id, 15_000)
+    } catch (error) {
+      return reply.code(503).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+    const sessions = target === ''
+      ? state.bots.filter((bot) => bot.activity === 'thinking' || bot.activity === 'working').map((bot) => bot.sessionId)
+      : state.bots.filter((bot) => bot.role === target).map((bot) => bot.sessionId)
+    if (sessions.length === 0) return { ok: true, stopped: [], requested: [], message: '当前没有正在工作的角色。' }
+    try {
+      const result = await instances.stopSessions(repo.id, sessions)
+      store.audit(viewer.user.id, 'team.stop', `${repo.owner}/${repo.name} hard=${result.stopped.length} soft=${result.requested.length}`)
+      store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: 'stop' })
+      return { ok: true, ...result }
+    } catch (error) {
+      return reply.code(503).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
+
+  app.get('/repos/:id/jobs/:jobId', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    return reply.type('text/html').send(jobPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      repo,
+      job,
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
+  })
+
+  app.post('/repos/:id/jobs/:jobId/retry', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const active = store.activeJobForRepo(repo.id)
+    if (active !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}`)
+    const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : job.kind === 'research' ? 'research' : 'iterate'
+    const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
+    const result = await jobs.enqueue(repo, 'manual', goal, kind)
+    store.audit(viewer.user.id, 'job.retried', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
+    if (!result.ok || result.job === undefined) {
+      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(result.error ?? '重试失败。')}`)
+    }
+    return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已重新排队。')}`)
+  })
+
+  app.post('/repos/:id/jobs/:jobId/execute', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id || job.kind !== 'plan' || job.status !== 'succeeded') throw httpError(404, '计划任务不存在或尚未完成。', 'PLAN_NOT_READY')
+    const active = store.activeJobForRepo(repo.id)
+    if (active !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}`)
+    const goal = `${job.goal}\n\nApproved plan:\n${job.summary ?? ''}`
+    const result = await jobs.enqueue(repo, 'manual', goal, 'iterate')
+    store.audit(viewer.user.id, 'job.executed', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
+    if (!result.ok || result.job === undefined) {
+      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(result.error ?? '执行计划失败。')}`)
+    }
+    return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已按计划开始执行。')}`)
+  })
+
+  app.get('/repos/:id/workspace', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    requireAdvanced(viewer)
+    const instance = store.getRepoInstance(repo.id)
+    return reply.type('text/html').send(agentWorkspacePage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      repo,
+      instance,
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
+  })
+
+  app.all('/repos/:id/workspace/app', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    requireAdvanced(viewer)
+    const url = request.raw.url ?? ''
+    const query = url.includes('?') ? url.slice(url.indexOf('?')) : ''
+    if (!url.split('?')[0]?.endsWith('/')) return reply.redirect(`/repos/${repo.id}/workspace/app/${query}`)
+    const instance = store.getRepoInstance(repo.id)
+    if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
+    try {
+      await proxyWorkspaceHttp(request, reply, instance, repo, '')
+    } catch (error) {
+      log.warn('workspace root request failed', { repo: repo.id, error: String(error) })
+      if (!reply.raw.headersSent) reply.code(502).send({ error: 'Workspace proxy failed' })
+    }
+  })
+
+  app.all('/repos/:id/workspace/app/*', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    requireAdvanced(viewer)
+    const instance = store.getRepoInstance(repo.id)
+    if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
+    const prefix = `/repos/${repo.id}/workspace/app/`
+    const index = request.url.indexOf(prefix)
+    const subpath = index === -1 ? '' : request.url.slice(index + prefix.length)
+    try {
+      await proxyWorkspaceHttp(request, reply, instance, repo, subpath)
+    } catch (error) {
+      log.warn('workspace request failed', { repo: repo.id, error: String(error) })
+      if (!reply.raw.headersSent) reply.code(502).send({ error: 'Workspace proxy failed' })
     }
   })
 
@@ -574,10 +1315,29 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
   })
 
+  app.post('/repos/:id/plan', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const result = await jobs.enqueue(repo, 'manual', undefined, 'plan')
+    store.audit(viewer.user.id, 'plan.enqueued', `${repo.owner}/${repo.name} ${result.ok ? 'ok' : result.error ?? 'failed'}`)
+    const key = result.ok ? 'notice' : 'error'
+    const message = result.ok ? '计划任务已排队，不会写代码或开 PR。' : result.error ?? '计划任务启动失败。'
+    return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
+  })
+
+  app.post('/repos/:id/research', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const result = await jobs.enqueue(repo, 'manual', undefined, 'research')
+    store.audit(viewer.user.id, 'research.enqueued', `${repo.owner}/${repo.name} ${result.ok ? 'ok' : result.error ?? 'failed'}`)
+    const key = result.ok ? 'notice' : 'error'
+    const t = translator(request.locale ?? 'zh')
+    const message = result.ok ? t('分析任务已排队，只会汇报，不会写仓库。', 'Research queued; it reports only and makes no repository writes.') : result.error ?? t('分析任务启动失败。', 'Could not start the research job.')
+    return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
+  })
+
   app.post('/repos/:id/refresh', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     try {
-      const token = decryptSecret(repo.token_enc, config.tokenEncryptionKey)
+      const token = await repoGithubToken(repo, config, githubApp, store)
       const prepared = await prepareRepo(token, repo.upstream_owner || repo.owner, repo.upstream_name || repo.name, viewer.user.login, config.github.apiBase)
       const enableReviewer = prepared.canReview && (repo.can_review !== 1 || repo.reviewer_enabled === 1)
       store.updateRepo(repo.id, {
@@ -610,7 +1370,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (config.flybot.instanceImage === '') throw httpError(400, 'FlyBot 实例未配置', 'INSTANCE_DISABLED')
     instances.ensureUserDir(viewer.user.id)
     const existing = store.getRepoInstance(repo.id)
-    if (existing !== undefined && existing.status !== 'ready') await instances.stop(repo.id)
+    if (existing !== undefined && existing.status !== 'ready' && !instances.isProvisioning(repo.id)) await instances.stop(repo.id)
     void instances.provision(repo).catch((error) => log.error('flybot provisioning failed', { repo: repo.id, error: String(error) }))
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例初始化中。')}`)
   })
@@ -638,8 +1398,27 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const reviewInterval = normalizeInterval(body.reviewInterval, repo.review_interval_minutes)
     const goal = (body.goal ?? '').slice(0, 4000)
     const goalChanged = goal !== repo.goal
+    const requestedBranch = (body.targetBranch ?? '').trim()
+    const targetBranch = requestedBranch === '' ? (repo.upstream_default_branch || repo.default_branch) : requestedBranch
+    if (!isValidBranchName(targetBranch)) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('目标分支格式不正确。')}#repo-settings`)
+    }
+    if (targetBranch !== repo.target_branch) {
+      try {
+        const token = await repoGithubToken(repo, config, githubApp, store)
+        const branch = await new GithubClient(token, config.github.apiBase).getBranch(repo.upstream_owner || repo.owner, repo.upstream_name || repo.name, targetBranch)
+        if (branch === null) {
+          return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('目标分支不存在或不可访问。')}#repo-settings`)
+        }
+      } catch (error) {
+        return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}#repo-settings`)
+      }
+    }
+    const jobMode = body.jobMode === 'research' ? 'research' : 'iterate'
     store.updateRepo(repo.id, {
       goal,
+      target_branch: targetBranch,
+      job_mode: jobMode,
       auto_iterate: body.auto === '1' ? 1 : 0,
       enabled: body.enabled === '1' ? 1 : 0,
       interval_minutes: interval,
@@ -651,12 +1430,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         log.warn('team playbook not updated after goal change', { repo: repo.id, error: String(error) })
       })
     }
-    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} reviewer=${repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''}`)
-    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(goalChanged ? '设置已保存；团队规则已按新目标更新。' : '设置已保存。')}`)
+    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} reviewer=${repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch} mode=${jobMode}`)
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(goalChanged ? '设置已保存；团队规则已按新目标更新。' : '设置已保存。')}#repo-settings`)
   })
 
   app.post('/repos/:id/delete', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    for (const job of store.listActiveJobs().filter((entry) => entry.repo_id === repo.id)) {
+      const token = job.platform_token_hash === null ? undefined : store.findApiToken(job.platform_token_hash)
+      if (token !== undefined) store.revokeApiToken(token.id, token.user_id)
+    }
     await instances.remove(repo.id)
     store.deleteRepo(repo.id)
     store.audit(viewer.user.id, 'repo.deleted', `${repo.owner}/${repo.name}`)
@@ -706,6 +1489,44 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
   })
 
+  app.post('/settings/notifications', async (request, reply) => {
+    const viewer = csrfGuard(request)
+    const body = form(request)
+    const rawEmail = (body.email ?? '').trim().slice(0, 254)
+    const clear = body.clear === '1'
+    if (!clear && rawEmail !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail)) {
+      return reply.redirect(`/settings?error=${encodeURIComponent('通知邮箱格式不正确。')}`)
+    }
+    const jobUpdates = body.jobUpdates === '1'
+    const dailyDigest = body.dailyDigest === '1'
+    if (clear) store.setNotifyEmail(viewer.user.id, null)
+    else if (rawEmail !== '') store.setNotifyEmail(viewer.user.id, rawEmail)
+    store.setEmailJobUpdates(viewer.user.id, jobUpdates)
+    store.setEmailDailyDigest(viewer.user.id, dailyDigest)
+    const saved = store.userById(viewer.user.id)
+    store.audit(viewer.user.id, 'settings.email', `email=${saved?.notify_email === null || saved?.notify_email === undefined ? 'github' : 'custom'} jobs=${jobUpdates ? 'on' : 'off'} digest=${dailyDigest ? 'on' : 'off'}`)
+    if (body.action === 'test') {
+      const updated = saved
+      const to = updated === undefined ? '' : notifyEmail(updated)
+      if (to === '') return reply.redirect(`/settings?error=${encodeURIComponent('请先填写通知邮箱。')}`)
+      const key = `email_test:${viewer.user.id}`
+      const last = store.getSetting(key)
+      if (last !== undefined && Date.now() - Date.parse(last) < 60_000) {
+        return reply.redirect(`/settings?error=${encodeURIComponent('测试邮件每分钟最多发送一次。')}`)
+      }
+      store.setSetting(key, new Date().toISOString())
+      try {
+        await mailer.send({ to, ...testEmail(viewer.user, config.baseUrl) })
+        store.audit(viewer.user.id, 'settings.email.test')
+        return reply.redirect(`/settings?notice=${encodeURIComponent('测试邮件已发送。')}`)
+      } catch (error) {
+        store.deleteSetting(key)
+        return reply.redirect(`/settings?error=${encodeURIComponent(`测试邮件发送失败：${error instanceof Error ? error.message : String(error)}`)}`)
+      }
+    }
+    return reply.redirect(`/settings?notice=${encodeURIComponent('通知设置已保存。')}`)
+  })
+
   app.post('/settings/tokens', async (request, reply) => {
     const viewer = csrfGuard(request)
     const name = (form(request).name ?? '').trim().slice(0, 80) || 'default'
@@ -745,17 +1566,37 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect('/dashboard')
   })
 
+  app.get('/admin/metrics', async (request, reply) => {
+    const viewer = requireSuperAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000).toISOString()
+    return reply.type('text/html').send(metricsPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      metrics: store.productMetrics(since),
+      team: store.teamMetrics(since),
+      since,
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
+  })
+
   app.get('/admin', async (request, reply) => {
     const viewer = requireAdmin(request)
-    const users = store.listUsers()
+    if (viewer.preview === true) return reply.redirect('/console')
+    const superadmin = viewer.user.role === 'superadmin'
+    const allUsers = store.listUsers()
+    const users = superadmin ? allUsers : allUsers.filter((user) => user.id === viewer.user.id || user.role === 'user')
+    const userIds = superadmin ? null : users.map((user) => user.id)
     const activity = new Map(users.map((user) => [user.id, store.userActivity(user.id)]))
     const perPage = 10
     const pageNumber = (name: string): number => {
       const n = Number(queryText(request, name))
       return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1
     }
-    const jobsTotal = store.countJobs()
-    const auditTotal = store.countAudit()
+    const jobsTotal = store.countJobsForUsers(userIds)
+    const auditTotal = store.countAuditForUsers(userIds)
     const jobsPages = Math.max(1, Math.ceil(jobsTotal / perPage))
     const auditPages = Math.max(1, Math.ceil(auditTotal / perPage))
     const jobsPage = Math.min(pageNumber('jobsPage'), jobsPages)
@@ -767,13 +1608,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         viewer: viewOf(viewer),
         users,
         activity,
-        jobs: store.listJobsPage(perPage, (jobsPage - 1) * perPage),
+        jobs: store.listJobsPageForUsers(userIds, perPage, (jobsPage - 1) * perPage),
         jobsPage,
         jobsTotal,
-        audit: store.listAuditPage(perPage, (auditPage - 1) * perPage),
+        audit: store.listAuditPageForUsers(userIds, perPage, (auditPage - 1) * perPage),
         auditPage,
         auditTotal,
         perPage,
+        superadmin,
+        preview: false,
+        showAudit: true,
+        hideActor: !superadmin,
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
       }),
@@ -782,22 +1627,24 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   const adminStatus = async (request: FastifyRequest, status: 'approved' | 'rejected') => {
     const viewer = csrfGuard(request)
-    if (viewer.user.role !== 'admin') throw httpError(403, 'Admin only', 'ADMIN_ONLY')
+    if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
     const id = String((request.params as Record<string, string>).id)
     const user = store.userById(id)
     if (user === undefined) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
+    if (user.id === viewer.user.id || user.role === 'superadmin') throw httpError(403, '不能修改这个账号。', 'ROLE_PROTECTED')
+    if (viewer.user.role !== 'superadmin' && user.role !== 'user') throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
     store.setUserStatus(user.id, status, `admin:${viewer.user.login}`)
     if (status === 'approved') instances.ensureUserDir(user.id)
     if (status === 'rejected') {
+      await jobs.cancelUserJobs(user.id, '账号已被管理员停用')
       for (const instance of store.listRepoInstances().filter((entry) => entry.user_id === user.id)) {
         await instances.stop(instance.repo_id)
       }
     }
     store.audit(user.id, `admin.${status}`, `by @${viewer.user.login}`)
     try {
-      if (user.email !== null && user.email !== '') {
-        await mailer.send({ to: user.email, ...(status === 'approved' ? approvedEmail(user, config.baseUrl) : rejectedEmail(user, '')) })
-      }
+      const to = notifyEmail(user)
+      if (to !== '') await mailer.send({ to, ...(status === 'approved' ? approvedEmail(user, config.baseUrl) : rejectedEmail(user, '')) })
     } catch (error) {
       log.warn('admin status mail failed', { user: user.login, error: String(error) })
     }
@@ -816,16 +1663,44 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/admin/users/:id/quota', async (request, reply) => {
     const viewer = csrfGuard(request)
-    if (viewer.user.role !== 'admin') throw httpError(403, 'Admin only', 'ADMIN_ONLY')
+    if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
     const id = String((request.params as Record<string, string>).id)
+    const user = store.userById(id)
+    if (user === undefined) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
+    const superadmin = viewer.user.role === 'superadmin'
+    if (!superadmin && user.id !== viewer.user.id && user.role !== 'user') throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
+    if (user.role === 'superadmin' && !superadmin) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
     const body = form(request)
     const unlimited = body.unlimited === '1'
+    if (unlimited && !superadmin) return reply.redirect(`/admin?error=${encodeURIComponent('只有超级管理员可以设置不限额。')}`)
     const quota = Number(body.quota)
     if (!unlimited && (!Number.isFinite(quota) || quota < 0 || quota > 10_000)) throw httpError(400, '额度必须是 0–10000 之间的数字。', 'BAD_QUOTA')
     if (!unlimited) store.setUserQuota(id, quota)
     store.setUserQuotaUnlimited(id, unlimited)
     store.audit(id, 'admin.quota', `${unlimited ? 'unlimited' : `${quota} CNY`} by @${viewer.user.login}`)
     return reply.redirect(`/admin?notice=${encodeURIComponent(unlimited ? '额度已设为不限额。' : '额度已更新。')}`)
+  })
+
+  app.post('/admin/users/:id/role', async (request, reply) => {
+    const viewer = csrfGuard(request)
+    if (viewer.user.role !== 'superadmin') throw httpError(403, '仅超级管理员可访问。', 'SUPERADMIN_ONLY')
+    const id = String((request.params as Record<string, string>).id)
+    const user = store.userById(id)
+    if (user === undefined || user.id === viewer.user.id || user.role === 'superadmin') throw httpError(403, '不能修改这个账号。', 'ROLE_PROTECTED')
+    const role = form(request).role
+    if (role !== 'admin' && role !== 'user') throw httpError(400, '角色无效。', 'BAD_ROLE')
+    store.setUserRole(id, role)
+    store.audit(id, 'admin.role', `role=${role} by @${viewer.user.login}`)
+    return reply.redirect(`/admin?notice=${encodeURIComponent(role === 'admin' ? '已设为管理员。' : '已设为用户。')}`)
+  })
+
+  app.post('/admin/simulation', async (request, reply) => {
+    const viewer = csrfGuard(request)
+    if (viewer.user.role !== 'superadmin') throw httpError(403, '仅超级管理员可访问。', 'SUPERADMIN_ONLY')
+    const body = form(request)
+    sessions.setPreview(reply, body.enable === '1')
+    const returnTo = safeLocalPath(body.returnTo, '/admin')
+    return reply.redirect(returnTo)
   })
 
   app.get('/approve/:token', async (request, reply) => {
@@ -837,6 +1712,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/approve/:token', async (request, reply) => {
+    if (!loginLimiter.take(`approve:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const token = String((request.params as Record<string, string>).token)
     const result = await approvals.apply(token, 'email-link')
     if (!result.ok) return htmlPage(reply, 400, messagePage(config, '无法处理', result.reason, request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
@@ -844,20 +1720,135 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/api/jobs/:id/credential', async (request, reply) => {
-    const header = String(request.headers.authorization ?? '')
-    const secret = /^Bearer\s+(.+)$/i.exec(header)?.[1] ?? ''
-    const result = jobs.credential(String((request.params as Record<string, string>).id), secret)
+    if (!apiLimiter.take(`credential:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
+    const secret = bearerSecret(request)
+    const result = await jobs.credential(String((request.params as Record<string, string>).id), secret)
     if (!result.ok) return reply.code(result.status ?? 400).send({ error: result.error ?? 'unauthorized' })
     return { token: result.token, owner: result.owner, name: result.name, defaultBranch: result.defaultBranch }
   })
 
   app.post('/api/jobs/:id/callback', async (request, reply) => {
     if (!apiLimiter.take(`callback:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
-    const header = String(request.headers.authorization ?? '')
-    const secret = /^Bearer\s+(.+)$/i.exec(header)?.[1] ?? ''
+    const secret = bearerSecret(request)
     const body = (request.body ?? {}) as Record<string, unknown>
     const result = await jobs.handleCallback(String((request.params as Record<string, string>).id), secret, body)
     if (!result.ok) return reply.code(result.status ?? 400).send({ error: result.error ?? 'callback rejected' })
+    return { ok: true }
+  })
+
+
+  const handleGithubFollowup = async (event: string, body: Record<string, unknown>): Promise<void> => {
+    const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
+    const installationId = Number(installation.id)
+    if (!Number.isFinite(installationId)) return
+    const repository = typeof body.repository === 'object' && body.repository !== null ? (body.repository as Record<string, unknown>) : {}
+    const fullName = typeof repository.full_name === 'string' ? repository.full_name : ''
+    if (fullName === '') return
+    const repo = store.findRepoByInstallationAndFullName(installationId, fullName)
+    if (repo === undefined) return
+    const pulls: Array<{ number?: number; html_url?: string; head?: { ref?: string; sha?: string }; base?: { ref?: string } }> = []
+    let reason = ''
+    if (event === 'check_run') {
+      const check = typeof body.check_run === 'object' && body.check_run !== null ? (body.check_run as Record<string, unknown>) : {}
+      if (check.conclusion !== 'failure' && check.conclusion !== 'timed_out' && check.conclusion !== 'cancelled') return
+      reason = `check ${String(check.name ?? 'check')} ${String(check.conclusion)}`
+      if (Array.isArray(check.pull_requests)) pulls.push(...(check.pull_requests as typeof pulls))
+    } else if (event === 'check_suite') {
+      const suite = typeof body.check_suite === 'object' && body.check_suite !== null ? (body.check_suite as Record<string, unknown>) : {}
+      if (suite.conclusion !== 'failure' && suite.conclusion !== 'timed_out' && suite.conclusion !== 'cancelled') return
+      reason = `check suite ${String(suite.conclusion)}`
+      if (Array.isArray(suite.pull_requests)) pulls.push(...(suite.pull_requests as typeof pulls))
+    } else if (event === 'pull_request_review') {
+      const review = typeof body.review === 'object' && body.review !== null ? (body.review as Record<string, unknown>) : {}
+      if (review.state !== 'changes_requested') return
+      reason = 'review requested changes'
+      const pull = typeof body.pull_request === 'object' && body.pull_request !== null ? (body.pull_request as typeof pulls[number]) : undefined
+      if (pull !== undefined) pulls.push(pull)
+    } else {
+      return
+    }
+    for (const pull of pulls) {
+      const number = Number(pull.number)
+      if (!Number.isFinite(number)) continue
+      const prUrl = typeof pull.html_url === 'string' ? pull.html_url : `https://github.com/${fullName}/pull/${number}`
+      const branch = typeof pull.head?.ref === 'string' ? pull.head.ref : ''
+      const baseBranch = typeof pull.base?.ref === 'string' ? pull.base.ref : undefined
+      const headSha = typeof pull.head?.sha === 'string' ? pull.head.sha : ''
+      if (branch === '') continue
+      if (store.latestJobByPrUrl(repo.user_id, prUrl) === undefined) continue
+      const result = await jobs.followUp(repo, { prUrl, branch, baseBranch, reason, headSha })
+      log.info('github follow-up', { repo: `${repo.owner}/${repo.name}`, pr: number, ok: result.ok, code: result.code, job: result.job?.id })
+    }
+  }
+
+  app.post('/api/github/webhook', async (request, reply) => {
+    if (!apiLimiter.take(`webhook:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
+    if (!githubApp.configured || config.githubApp.webhookSecret === '') return reply.code(503).send({ error: 'GitHub App webhook is not configured' })
+    const signature = String(request.headers['x-hub-signature-256'] ?? '')
+    const raw = (request as FastifyRequest & { rawBody?: Buffer }).rawBody
+    if (raw === undefined || !githubApp.verifyWebhook(raw, signature)) return reply.code(401).send({ error: 'bad webhook signature' })
+    const event = String(request.headers['x-github-event'] ?? '')
+    const delivery = String(request.headers['x-github-delivery'] ?? '')
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const action = typeof body.action === 'string' ? body.action : ''
+    const repository = typeof body.repository === 'object' && body.repository !== null ? (body.repository as Record<string, unknown>) : {}
+    const fullName = typeof repository.full_name === 'string' ? repository.full_name : ''
+    const deliveryKey = `webhook_delivery:${delivery}`
+    if (delivery !== '' && store.getSetting(deliveryKey) !== undefined) return { ok: true }
+    if (delivery !== '') store.setSetting(deliveryKey, new Date().toISOString())
+    store.event('github_webhook', { meta: `${event}:${action}:${fullName}:${delivery}`.slice(0, 300) })
+    if (event === 'installation') {
+      const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
+      const installationId = Number(installation.id)
+      if (action === 'created' && Number.isFinite(installationId)) {
+        const sender = typeof body.sender === 'object' && body.sender !== null ? (body.sender as Record<string, unknown>) : {}
+        const login = typeof sender.login === 'string' ? sender.login : ''
+        if (login !== '') store.setSetting(`installation_sender:${installationId}`, `${login}:${Date.now()}`)
+      }
+      if (action === 'deleted' && Number.isFinite(installationId)) store.deleteInstallation(installationId)
+    }
+    await handleGithubFollowup(event, body).catch((error) => log.warn('github follow-up failed', { event, error: String(error) }))
+    return { ok: true }
+  })
+
+
+  app.post('/api/inbound/email', async (request, reply) => {
+    if (!apiLimiter.take(`inbound:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
+    if (config.inboundEmailSecret === '') return reply.code(503).send({ error: 'inbound email is not configured' })
+    const provided = String(request.headers['x-fledge-email-secret'] ?? '')
+    if (!safeEqual(provided, config.inboundEmailSecret)) return reply.code(401).send({ error: 'bad inbound email secret' })
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const to = typeof body.to === 'string' ? body.to : ''
+    const from = typeof body.from === 'string' ? body.from : ''
+    const text = typeof body.text === 'string' ? body.text : ''
+    const token = /\+([A-Za-z0-9_-]+)@/.exec(to)?.[1]
+    if (token === undefined) return { ok: true, ignored: 'no reply token' }
+    const stored = store.getSetting(`email_reply:${token}`)
+    if (stored === undefined) return { ok: true, ignored: 'unknown reply token' }
+    const [userId = '', repoId = '', at = '0'] = stored.split(':')
+    if (Date.now() - Number(at) > 7 * 24 * 60 * 60_000) return reply.code(410).send({ error: 'reply token expired' })
+    const user = store.userById(userId)
+    const repo = user === undefined ? undefined : store.getRepo(repoId)
+    if (user === undefined || repo === undefined || repo.user_id !== user.id) return reply.code(404).send({ error: 'reply target not found' })
+    const open = from.lastIndexOf('<')
+    const close = from.lastIndexOf('>')
+    const sender = (open >= 0 && close > open ? from.slice(open + 1, close) : from).trim().toLowerCase()
+    if (sender !== notifyEmail(user).toLowerCase()) return reply.code(403).send({ error: 'sender does not match the notification email' })
+    const cleaned = text
+      .split(/\r?\n/)
+      .filter((line) => !line.trim().startsWith('>'))
+      .join('\n')
+      .split(/^On .+ wrote:$/m)[0]!
+      .trim()
+      .slice(0, 4000)
+    if (cleaned === '') return reply.code(400).send({ error: 'empty reply' })
+    try {
+      await instances.sendGuidance(repo.id, 'lead', cleaned)
+    } catch (error) {
+      return reply.code(503).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+    store.audit(user.id, 'team.email_reply', `${repo.owner}/${repo.name} chars=${cleaned.length}`)
+    store.event('team_intervention', { userId: user.id, repoId: repo.id, meta: 'email' })
     return { ok: true }
   })
 

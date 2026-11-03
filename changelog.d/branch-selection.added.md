@@ -1,0 +1,1 @@
+Added a repository target branch: owners and maintainers can send PRs to `develop`, a release branch, or another valid upstream branch while Fledge still creates a new working branch. Jobs snapshot the target as their base branch, follow-ups keep the existing PR base, invalid branch names are rejected when saved, and job details show the base branch.

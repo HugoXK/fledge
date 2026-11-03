@@ -1,6 +1,6 @@
 {
   "name": "fledge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Hosted repositories that grow themselves, powered by FlyBot.",
   "license": "Apache-2.0",
@@ -17,7 +17,8 @@
     "test": "tsx --test test/*.test.ts",
     "check": "npm run lint && npm run typecheck && npm test && npm run build",
     "mail:outbox": "node scripts/outbox.mjs",
-    "db:backup": "node scripts/backup.mjs"
+    "db:backup": "node scripts/backup.mjs",
+    "role:set": "tsx scripts/set-role.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.5",
