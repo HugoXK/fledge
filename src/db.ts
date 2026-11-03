@@ -81,6 +81,7 @@ export interface RepoRow {
   fork_name: string
   upstream_default_branch: string
   fork_default_branch: string
+  target_branch: string
   is_fork: number
   fork_created: number
   permission: string
@@ -126,6 +127,7 @@ export interface JobRow {
   trigger: string
   goal: string
   branch: string | null
+  base_branch: string | null
   pr_url: string | null
   summary: string | null
   error: string | null
@@ -286,6 +288,7 @@ CREATE TABLE IF NOT EXISTS repos (
   fork_name TEXT NOT NULL DEFAULT '',
   upstream_default_branch TEXT NOT NULL DEFAULT 'main',
   fork_default_branch TEXT NOT NULL DEFAULT 'main',
+  target_branch TEXT NOT NULL DEFAULT '',
   is_fork INTEGER NOT NULL DEFAULT 0,
   fork_created INTEGER NOT NULL DEFAULT 0,
   permission TEXT NOT NULL DEFAULT 'write',
@@ -334,6 +337,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   trigger TEXT NOT NULL,
   goal TEXT NOT NULL,
   branch TEXT,
+  base_branch TEXT,
   pr_url TEXT,
   summary TEXT,
   error TEXT,
@@ -440,7 +444,7 @@ export class Store {
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
-    this.db.exec('PRAGMA user_version = 11;')
+    this.db.exec('PRAGMA user_version = 12;')
   }
 
   private migrateColumns(): void {
@@ -476,6 +480,7 @@ export class Store {
       ['fork_name', "TEXT NOT NULL DEFAULT ''"],
       ['upstream_default_branch', "TEXT NOT NULL DEFAULT 'main'"],
       ['fork_default_branch', "TEXT NOT NULL DEFAULT 'main'"],
+      ['target_branch', "TEXT NOT NULL DEFAULT ''"],
       ['is_fork', 'INTEGER NOT NULL DEFAULT 0'],
       ['fork_created', 'INTEGER NOT NULL DEFAULT 0'],
       ['permission', "TEXT NOT NULL DEFAULT 'write'"],
@@ -497,6 +502,7 @@ export class Store {
     this.run("UPDATE repos SET fork_name = name WHERE fork_name = ''")
     this.run("UPDATE repos SET upstream_default_branch = default_branch WHERE upstream_default_branch = 'main'")
     this.run("UPDATE repos SET fork_default_branch = default_branch WHERE fork_default_branch = 'main'")
+    this.run("UPDATE repos SET target_branch = upstream_default_branch WHERE target_branch = ''")
     const jobColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(jobs)').map((row) => row.name))
     if (!jobColumns.has('kind')) this.run("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'iterate'")
     if (!jobColumns.has('issue_url')) this.run('ALTER TABLE jobs ADD COLUMN issue_url TEXT')
@@ -505,6 +511,8 @@ export class Store {
     if (!jobColumns.has('evidence_json')) this.run('ALTER TABLE jobs ADD COLUMN evidence_json TEXT')
     if (!jobColumns.has('checkpoint')) this.run('ALTER TABLE jobs ADD COLUMN checkpoint TEXT')
     if (!jobColumns.has('team_stats_json')) this.run('ALTER TABLE jobs ADD COLUMN team_stats_json TEXT')
+    if (!jobColumns.has('base_branch')) this.run('ALTER TABLE jobs ADD COLUMN base_branch TEXT')
+    this.run("UPDATE jobs SET base_branch = (SELECT upstream_default_branch FROM repos WHERE repos.id = jobs.repo_id) WHERE base_branch IS NULL")
   }
 
   close(): void {
@@ -879,6 +887,7 @@ export class Store {
     forkName?: string
     upstreamDefaultBranch?: string
     forkDefaultBranch?: string
+    targetBranch?: string
     isFork?: boolean
     forkCreated?: boolean
     permission?: string
@@ -891,9 +900,9 @@ export class Store {
   }): RepoRow {
     this.run(
       `INSERT INTO repos (id, user_id, owner, name, default_branch, token_enc, installation_id, goal, enabled, auto_iterate, interval_minutes, created_at,
-         upstream_owner, upstream_name, fork_owner, fork_name, upstream_default_branch, fork_default_branch,
+         upstream_owner, upstream_name, fork_owner, fork_name, upstream_default_branch, fork_default_branch, target_branch,
          is_fork, fork_created, permission, can_review, can_create_issue, reviewer_enabled, review_interval_minutes, upstream_html_url, fork_html_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.userId,
       input.owner,
@@ -911,6 +920,7 @@ export class Store {
       input.forkName ?? input.name,
       input.upstreamDefaultBranch ?? input.defaultBranch,
       input.forkDefaultBranch ?? input.defaultBranch,
+      input.targetBranch ?? input.upstreamDefaultBranch ?? input.defaultBranch,
       input.isFork === true ? 1 : 0,
       input.forkCreated === true ? 1 : 0,
       input.permission ?? 'write',
@@ -951,7 +961,7 @@ export class Store {
     return this.get<RepoRow>('SELECT * FROM repos WHERE user_id = ? AND lower(owner) = lower(?) AND lower(name) = lower(?)', userId, owner, name)
   }
 
-  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
+  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -1019,10 +1029,10 @@ export class Store {
     this.run('DELETE FROM repo_instances WHERE repo_id = ?', repoId)
   }
 
-  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string }): JobRow {
+  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; baseBranch?: string | null }): JobRow {
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, base_branch, created_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -1031,6 +1041,7 @@ export class Store {
       input.callbackHash,
       input.platformTokenHash,
       input.kind ?? 'iterate',
+      input.baseBranch ?? null,
       nowIso(),
     )
     return this.getJob(input.id)!
@@ -1084,7 +1095,7 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE status IN ('queued','running') ORDER BY created_at ASC")
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at' | 'base_branch'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')

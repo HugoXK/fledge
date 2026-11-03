@@ -4,10 +4,11 @@ import { readFileSync } from 'node:fs'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
 import { appReposPage, dashboardPage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
 import { localizeMessage } from '../src/i18n.js'
+import { encryptSecret } from '../src/lib/secrets.js'
 
 test('healthz reports the package version', async () => {
   const config = testConfig()
@@ -232,6 +233,49 @@ test('admin product metrics page renders the funnel', async () => {
     assert.match(page.body, /成功率/)
   } finally {
     await built.close()
+  }
+})
+
+
+test('repository settings can change the target branch', async () => {
+  const github = await startFakeServer((request, response) => {
+    if (request.url === '/repos/o/b/branches/develop') {
+      json(response, 200, { name: 'develop', commit: { sha: 'abc' } })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'branch-settings-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_branch_settings', userId: user.id, owner: 'o', name: 'b', defaultBranch: 'main', tokenEnc: encryptSecret('token', config.tokenEncryptionKey), goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const { cookie, csrf } = sessionFor(built, user)
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
+    assert.match(page.body, /name="targetBranch"/)
+    assert.match(page.body, /目标分支/)
+    const saved = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/settings`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, goal: '', targetBranch: 'develop', enabled: '1', interval: '1440', reviewInterval: '1440' }),
+    })
+    assert.equal(saved.statusCode, 302)
+    assert.equal(store.getRepo(repo.id)?.target_branch, 'develop')
+    const rejected = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/settings`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, goal: '', targetBranch: 'missing', enabled: '1', interval: '1440', reviewInterval: '1440' }),
+    })
+    assert.equal(rejected.statusCode, 302)
+    assert.match(String(rejected.headers.location), /error=/)
+    assert.equal(store.getRepo(repo.id)?.target_branch, 'develop')
+  } finally {
+    await built.close()
+    await github.close()
   }
 })
 

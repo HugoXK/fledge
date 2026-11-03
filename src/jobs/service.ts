@@ -6,6 +6,7 @@ import { quotaView } from '../gateway/quota.js'
 import { dailyDigestEmail, jobAttentionEmail, jobFailedEmail, jobSucceededEmail, type DigestInput } from '../email/templates.js'
 import { notifyEmail, replyAddressFor } from '../email/recipient.js'
 import { log } from '../lib/log.js'
+import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, type Evidence } from '../lib/evidence.js'
 import { randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
@@ -96,7 +97,7 @@ export class Jobs {
     }
   }
 
-  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string } = {}): Promise<EnqueueResult> {
+  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string } = {}): Promise<EnqueueResult> {
     if (repo.enabled !== 1) return { ok: false, error: '这个仓库已停用', code: 'REPO_DISABLED' }
     if (kind === 'review' && (repo.reviewer_enabled !== 1 || repo.can_review !== 1)) {
       return { ok: false, error: '这个仓库没有启用审核角色', code: 'REVIEW_DISABLED' }
@@ -106,6 +107,9 @@ export class Jobs {
     const user = this.store.userById(repo.user_id)
     if (user === undefined || user.status !== 'approved') return { ok: false, error: '用户不可用', code: 'USER_UNAVAILABLE' }
 
+    const repoBaseBranch = repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)
+    const baseBranch = (options.baseBranch ?? repoBaseBranch).trim()
+    if (!isValidBranchName(baseBranch)) return { ok: false, error: '目标分支格式不正确。', code: 'BRANCH_INVALID' }
     const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
     const goal = (goalOverride ?? baseGoal).slice(0, 4000)
     const jobId = `job_${randomToken(10)}`
@@ -158,7 +162,7 @@ export class Jobs {
       expiresAt: addMinutes(this.config.runner.timeoutMinutes + 60),
     })
     const priorJobs = this.store.listJobs(user.id, 1).length
-    const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind })
+    const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch })
     if (options.branch !== undefined || options.prUrl !== undefined) {
       this.store.updateJob(job.id, { branch: options.branch ?? null, pr_url: options.prUrl ?? null })
       job.branch = options.branch ?? null
@@ -179,7 +183,7 @@ export class Jobs {
     const upstream: RepoRef = {
       owner: repo.upstream_owner || repo.owner,
       name: repo.upstream_name || repo.name,
-      defaultBranch: repo.upstream_default_branch || repo.default_branch,
+      defaultBranch: baseBranch,
       htmlUrl: repo.upstream_html_url ?? `https://github.com/${repo.owner}/${repo.name}`,
     }
     const fork: RepoRef = {
@@ -311,7 +315,7 @@ export class Jobs {
     }
   }
 
-  async followUp(repo: RepoRow, input: { prUrl: string; branch: string; reason: string; headSha: string }): Promise<EnqueueResult> {
+  async followUp(repo: RepoRow, input: { prUrl: string; branch: string; baseBranch?: string; reason: string; headSha: string }): Promise<EnqueueResult> {
     const key = `followup:${repo.id}:${input.prUrl}:${input.headSha}:${input.reason}`.slice(0, 300)
     if (this.store.getSetting(key) !== undefined) return { ok: false, error: '这个失败已经跟进过', code: 'DUPLICATE_FOLLOWUP' }
     if (this.store.activeJobForRepo(repo.id) !== undefined) return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
@@ -322,7 +326,7 @@ export class Jobs {
       'Continue on the same branch and update the existing PR. Do not open a second PR or create a new issue.',
       'Make the smallest correct fix, add or adjust tests, run the relevant checks, and callback with the branch and PR URL.',
     ].join('\n')
-    const result = await this.enqueue(repo, 'followup', goal, 'iterate', { branch: input.branch, prUrl: input.prUrl })
+    const result = await this.enqueue(repo, 'followup', goal, 'iterate', { branch: input.branch, prUrl: input.prUrl, baseBranch: input.baseBranch })
     if (!result.ok) this.store.deleteSetting(key)
     return result
   }

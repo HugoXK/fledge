@@ -200,6 +200,19 @@ export class GithubClient {
     throw new Error(`等待 fork ${owner}/${name} 创建超时${lastError instanceof Error ? `：${lastError.message}` : ''}`)
   }
 
+  async getBranch(owner: string, name: string, branch: string): Promise<{ name: string; sha: string } | null> {
+    try {
+      const data = await this.request<{ name: string; commit: { sha: string } }>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branches/${encodeURIComponent(branch)}`,
+      )
+      return { name: data.name, sha: data.commit.sha }
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return null
+      throw error
+    }
+  }
+
   async createPullRequest(
     owner: string,
     name: string,

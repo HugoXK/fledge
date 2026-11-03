@@ -67,6 +67,12 @@
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
   against the upstream; issues are created on the upstream. If the token user
   owns the upstream, no fork is created and the branch/PR stay in that repo.
+- **Target branch**: each repository stores a `target_branch` that defaults to
+  the upstream default but can be `develop` or a release branch. Jobs snapshot
+  it as `base_branch`; the agent still creates a new head branch and opens the
+  PR against that base. Follow-ups keep the existing PR base. Invalid target branch names are rejected when
+  saved; if a verified branch disappears later, the job fails clearly instead
+  of silently falling back to the repository default.
 - **Reviewer role**: a user with maintain/write permission on the upstream (or
   ownership) can enable a scheduled reviewer. Review jobs list every open
   upstream PR, score each one, and post a COMMENT review; they never merge or

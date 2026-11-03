@@ -49,6 +49,30 @@ test('iterate dispatches to the Chief and review to the Reviewer', async () => {
   }
 })
 
+
+test('jobs use the repository target branch and reject invalid branch names', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'branch-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_branch', userId: user.id, owner: 'o', name: 'branch', defaultBranch: 'main', targetBranch: 'develop', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const result = await jobs.enqueue(repo, 'manual')
+    assert.equal(result.ok, true)
+    assert.equal(result.job?.base_branch, 'develop')
+    assert.equal(contexts[0]?.upstream.defaultBranch, 'develop')
+    store.updateJob(result.job!.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    const invalid = store.createRepo({ id: 'repo_branch_invalid', userId: user.id, owner: 'o', name: 'branch-invalid', defaultBranch: 'main', targetBranch: 'bad..branch', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const rejected = await jobs.enqueue(invalid, 'manual')
+    assert.equal(rejected.ok, false)
+    assert.equal(rejected.code, 'BRANCH_INVALID')
+  } finally {
+    store.close()
+  }
+})
+
 test('a running callback unwraps a nested progress summary', async () => {
   const config = testConfig()
   const store = new Store(':memory:')

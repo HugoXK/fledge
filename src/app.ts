@@ -25,6 +25,7 @@ import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes } from './lib/time.js'
 import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale } from './i18n.js'
 import { normalizeInterval } from './lib/intervals.js'
+import { isValidBranchName } from './lib/branches.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -1185,8 +1186,25 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const reviewInterval = normalizeInterval(body.reviewInterval, repo.review_interval_minutes)
     const goal = (body.goal ?? '').slice(0, 4000)
     const goalChanged = goal !== repo.goal
+    const requestedBranch = (body.targetBranch ?? '').trim()
+    const targetBranch = requestedBranch === '' ? (repo.upstream_default_branch || repo.default_branch) : requestedBranch
+    if (!isValidBranchName(targetBranch)) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('目标分支格式不正确。')}#repo-settings`)
+    }
+    if (targetBranch !== repo.target_branch) {
+      try {
+        const token = await repoGithubToken(repo, config, githubApp)
+        const branch = await new GithubClient(token, config.github.apiBase).getBranch(repo.upstream_owner || repo.owner, repo.upstream_name || repo.name, targetBranch)
+        if (branch === null) {
+          return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('目标分支不存在或不可访问。')}#repo-settings`)
+        }
+      } catch (error) {
+        return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}#repo-settings`)
+      }
+    }
     store.updateRepo(repo.id, {
       goal,
+      target_branch: targetBranch,
       auto_iterate: body.auto === '1' ? 1 : 0,
       enabled: body.enabled === '1' ? 1 : 0,
       interval_minutes: interval,
@@ -1198,7 +1216,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         log.warn('team playbook not updated after goal change', { repo: repo.id, error: String(error) })
       })
     }
-    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} reviewer=${repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''}`)
+    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} reviewer=${repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(goalChanged ? '设置已保存；团队规则已按新目标更新。' : '设置已保存。')}#repo-settings`)
   })
 
@@ -1475,7 +1493,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (fullName === '') return
     const repo = store.findRepoByInstallationAndFullName(installationId, fullName)
     if (repo === undefined) return
-    const pulls: Array<{ number?: number; html_url?: string; head?: { ref?: string; sha?: string } }> = []
+    const pulls: Array<{ number?: number; html_url?: string; head?: { ref?: string; sha?: string }; base?: { ref?: string } }> = []
     let reason = ''
     if (event === 'check_run') {
       const check = typeof body.check_run === 'object' && body.check_run !== null ? (body.check_run as Record<string, unknown>) : {}
@@ -1501,10 +1519,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (!Number.isFinite(number)) continue
       const prUrl = typeof pull.html_url === 'string' ? pull.html_url : `https://github.com/${fullName}/pull/${number}`
       const branch = typeof pull.head?.ref === 'string' ? pull.head.ref : ''
+      const baseBranch = typeof pull.base?.ref === 'string' ? pull.base.ref : undefined
       const headSha = typeof pull.head?.sha === 'string' ? pull.head.sha : ''
       if (branch === '') continue
       if (store.latestJobByPrUrl(repo.user_id, prUrl) === undefined) continue
-      const result = await jobs.followUp(repo, { prUrl, branch, reason, headSha })
+      const result = await jobs.followUp(repo, { prUrl, branch, baseBranch, reason, headSha })
       log.info('github follow-up', { repo: `${repo.owner}/${repo.name}`, pr: number, ok: result.ok, code: result.code, job: result.job?.id })
     }
   }

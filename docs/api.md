@@ -45,7 +45,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/repos/:id/team/guidance` | owner + CSRF | Send guidance to a role |
 | POST | `/api/repos/:id/team/answer` | owner + CSRF | Answer a team question |
 | POST | `/api/repos/:id/team/stop` | owner + CSRF | Stop the active roles (hard when possible, otherwise a stop request) |
-| POST | `/repos/:id/settings` | owner + CSRF | Goal, cadence, enabled, reviewer interval |
+| POST | `/repos/:id/settings` | owner + CSRF | Goal, target branch, cadence, enabled, reviewer interval |
 | POST | `/repos/:id/delete` | owner + CSRF | Delete repo and jobs |
 | GET | `/settings` | approved | Account, model, API tokens |
 | POST | `/settings/model` | approved + CSRF | Save/clear own model |
