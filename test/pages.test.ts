@@ -237,6 +237,29 @@ test('admin product metrics page renders the funnel', async () => {
 })
 
 
+
+test('normal users get a simplified repository page without the live team console', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'simple-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_simple', userId: user.id, owner: 'o', name: 'simple', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const { cookie } = sessionFor(built, user)
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.doesNotMatch(page.body, new RegExp(`/repos/${repo.id}/team`))
+    assert.doesNotMatch(page.body, new RegExp(`/repos/${repo.id}/workspace`))
+    assert.doesNotMatch(page.body, /团队与调度规则/)
+    const team = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/team`, headers: { cookie } })
+    assert.equal(team.statusCode, 403)
+    const workspace = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/workspace`, headers: { cookie } })
+    assert.equal(workspace.statusCode, 403)
+  } finally {
+    await built.close()
+  }
+})
+
 test('repository settings can change the target branch', async () => {
   const github = await startFakeServer((request, response) => {
     if (request.url === '/repos/o/b/branches/develop') {

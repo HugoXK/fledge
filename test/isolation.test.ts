@@ -10,7 +10,7 @@ test('a user cannot read another user\'s repositories, team or workspace', async
   const store = new Store(':memory:')
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
-    const alice = makeUser(store, { login: 'alice', status: 'approved' })
+    const alice = makeUser(store, { login: 'alice', status: 'approved', admin: true })
     const bob = makeUser(store, { login: 'bob', status: 'approved' })
     const aliceRepo = store.createRepo({ id: 'repo_alice', userId: alice.id, owner: 'alice', name: 'one', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const bobRepo = store.createRepo({ id: 'repo_bob', userId: bob.id, owner: 'bob', name: 'two', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })

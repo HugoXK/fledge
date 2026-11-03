@@ -96,7 +96,7 @@ or bridge tokens.
 
 ### Agent workspace proxy
 
-The workspace proxy is owner-only and same-origin. The session cookie and repo
+The workspace proxy is admin-only and same-origin. The session cookie and repo
 ownership are checked on every HTTP request; WebSocket upgrades check the same
 session hash, user status and repo owner. The DSH token is read from the
 instance log and exchanged for a DSH cookie server-side; that cookie and the
@@ -141,7 +141,7 @@ per day. Test mail is rate-limited to one per minute.
 
 ### Team console and agent controls
 
-- `GET /api/repos/:id/team/events` is owner-only. It is read-only and streams
+- `GET /api/repos/:id/team/events` is admin-only. It is read-only and streams
   the same state the team console already shows; it never exposes the DSH token
   or the bridge token.
 - Answering a question, sending guidance and requesting a stop require the
@@ -149,7 +149,8 @@ per day. Test mail is rate-limited to one per minute.
   log. Answer text is not logged.
 - A stop request tries the DSH room cancel first; otherwise it delivers a stop
   message. The UI and API distinguish a hard stop from a request. The native DSH
-  UI is not exposed until the v0.3 authenticated workspace proxy exists.
+  UI is only exposed through the admin-only authenticated workspace proxy; normal
+  users use the repository page and the Fledge inbox.
 - The v0.3 workspace must use a short-lived signed ticket, a server-side DSH
   cookie, cookie isolation and an ownership check on every request; a raw DSH
   token must never appear in a browser URL.

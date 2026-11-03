@@ -118,7 +118,7 @@ member whose scope fits and posts the final callback exactly once.
 
 ### Team console and live events
 
-The team console is owner-only. `GET /api/repos/:id/team/events` streams
+The team console is admin-only. `GET /api/repos/:id/team/events` streams
 Server-Sent Events: a full snapshot when the DSH revision, role activity,
 questions, jobs or quota changes, plus a heartbeat. The browser uses
 `EventSource` and falls back to the existing 5-second JSON poll on error.
@@ -137,7 +137,7 @@ hard-stop/request reporting. The UI reports the difference honestly; it never
 claims a turn was paused when only a request was delivered. Every answer,
 guidance and stop is written to the audit log.
 
-The native DSH UI is not exposed by the console. The planned v0.3 workspace uses
+The native DSH UI is only exposed through the admin-only workspace. Normal users keep the repository page and the Fledge inbox. The workspace uses
 a per-repository authenticated subdomain and a Fledge shell around the native UI
 (branded "Powered by FlyBot"), with a short-lived ticket and server-side cookie
 injection so the raw DSH token never reaches the browser.
@@ -196,7 +196,7 @@ and the job page shows the same per-role table.
 
 ### Agent workspace
 
-The workspace is path-based to avoid a wildcard certificate:
+The admin-only workspace is path-based to avoid a wildcard certificate:
 `https://fledge.hugoxk.online/repos/:id/workspace/`. The shell is Fledge-branded
 and embeds an iframe on `/repos/:id/workspace/app/`. That path is a same-origin
 reverse proxy to the repo's DSH web port: Fledge checks the session and repo

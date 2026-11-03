@@ -120,6 +120,7 @@ const MESSAGES: Record<string, string> = {
   '请先登录。': 'Sign in first.',
   '账号正在等待审批。': 'Your account is awaiting approval.',
   '仅管理员可访问。': 'Administrators only.',
+  '仅管理员可访问实时团队页面。': 'Only administrators can open the live team page.',
   '出错了': 'Something went wrong',
   '服务器出了点问题，请稍后再试。': 'The server had a problem. Try again later.',
   '新 token 只显示这一次，请现在复制保存。': 'This token is shown only once. Copy it now.',

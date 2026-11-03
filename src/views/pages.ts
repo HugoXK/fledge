@@ -440,6 +440,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const jobsPage = input.jobsPage ?? 1
   const jobsTotal = input.jobsTotal ?? jobs.length
   const t = translator(locale)
+  const advanced = viewer.user.role === 'admin'
   const upstreamOwner = repo.upstream_owner || repo.owner
   const upstreamName = repo.upstream_name || repo.name
   const forkOwner = repo.fork_owner || repo.owner
@@ -512,8 +513,8 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <p class="fine">${escapeHtml(t('上游', 'Upstream'))} <a href="${escapeHtml(upstreamUrl)}" target="_blank" rel="noreferrer">${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</a> · ${repo.is_fork === 1 ? `${escapeHtml(t('Fork', 'Fork'))} <a href="${escapeHtml(forkUrl)}" target="_blank" rel="noreferrer">${escapeHtml(forkOwner)}/${escapeHtml(forkName)}</a>` : escapeHtml(t('自有仓库，无需 fork', 'Own repository, no fork'))} · ${escapeHtml(t('角色', 'Role'))} <code>${escapeHtml(permission)}</code> · ${escapeHtml(reviewerLabel)}</p>
       </div>
       <div class="row">
-        <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
-        <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>
+        ${advanced ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
+        <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
         <form method="post" action="/repos/${escapeHtml(repo.id)}/plan">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('只出计划', 'Plan only'))}</button></form>
         <form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button></form>
         ${canReview && reviewerEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/review">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('立即审核', 'Review now'))}</button></form>` : ''}
@@ -524,12 +525,12 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('每仓库 FlyBot', 'PER-REPOSITORY FLYBOT'))}</div>
-        <h2>${escapeHtml(t('实例与团队', 'Instance & team'))}</h2>
-        <p class="muted">${instance === undefined ? escapeHtml(t('未创建', 'Not created')) : `${badge(t, instance.status)} <span class="muted">${escapeHtml(instance.container)}</span>`}${instanceReady ? ` · ${escapeHtml(t('任务先发给总控，再由负责人执行', 'jobs go to the Chief, then the Lead'))}` : ''}</p>
+        <h2>${escapeHtml(advanced ? t('实例与团队', 'Instance & team') : t('FlyBot 状态', 'FlyBot status'))}</h2>
+        <p class="muted">${instance === undefined ? escapeHtml(t('未创建', 'Not created')) : `${badge(t, instance.status)}${advanced ? ` <span class="muted">${escapeHtml(instance.container)}</span>` : ''}`}${instanceReady && advanced ? ` · ${escapeHtml(t('任务先发给总控，再由负责人执行', 'jobs go to the Chief, then the Lead'))}` : ''}</p>
       </div>
-      ${instanceActions}
+      ${advanced ? instanceActions : ''}
     </div>
-    ${teamGrid}
+    ${advanced ? teamGrid : ''}
   </section>`
   const body = `${repoHeader}${questionsBlock(locale, viewer, questions, `/repos/${repo.id}`)}${instanceNotice}${instanceCard}
   <section class="cols">
@@ -550,10 +551,10 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval" ${canReview ? '' : 'disabled'}>${reviewIntervalOptions(t, repo.review_interval_minutes)}</select></label>
         </div>
         ${canReview ? '' : `<p class="fine">${escapeHtml(t('你在这个上游没有 maintain/write 权限，审核角色不可用。', 'You do not have maintain/write permission on this upstream, so the reviewer role is unavailable.'))}</p>`}
-        <details class="fine advanced-help"><summary>${escapeHtml(t('团队与调度规则', 'Team and scheduling rules'))}</summary>
+        ${advanced ? `<details class="fine advanced-help"><summary>${escapeHtml(t('团队与调度规则', 'Team and scheduling rules'))}</summary>
           <p>${escapeHtml(t('保存目标后，团队 playbook 会按新目标更新：总控 → 负责人 → 产品/测试/安全/审核/开发。审核角色只有勾选“启用 PR 审核”后才会参与。', 'Saving the goal updates the team playbook: Chief -> Lead -> Product/Test/Security/Reviewer/Dev. The Reviewer takes part only when "Enable PR reviewer" is checked.'))}</p>
           <p>${escapeHtml(t('间隔是最小运行间隔；上一轮未结束时本轮会跳过。手动运行会重置迭代倒计时，审核任务不会。平台全局同时最多 2 个任务。', 'The interval is a minimum gap; a run is skipped while the previous one is active. A manual run resets the countdown; a review does not. The platform runs at most two jobs at a time.'))}</p>
-        </details>
+        </details>` : ''}
         <button class="btn" type="submit">${escapeHtml(t('保存', 'Save'))}</button>
       </form>
     </div>
@@ -1197,6 +1198,7 @@ export function jobPage(input: {
 }): string {
   const { config, locale, viewer, repo, job, notice, error } = input
   const t = translator(locale)
+  const advanced = viewer.user.role === 'admin'
   const evidence = parseEvidenceJson(job.evidence_json)
   const attribution = jobAttribution(t, job)
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
@@ -1229,8 +1231,8 @@ export function jobPage(input: {
       </div>
       <div class="row">
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a>
-        <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
-        <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>
+        ${advanced ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
+        <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
         ${execute}
         ${retry}
       </div>

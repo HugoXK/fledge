@@ -227,7 +227,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (session === undefined) return fail('401 Unauthorized')
     const user = store.userById(session.user_id)
     const repo = store.getRepo(decodeURIComponent(match[1] ?? ''))
-    if (user === undefined || user.status !== 'approved' || repo === undefined || repo.user_id !== user.id) return fail('403 Forbidden')
+    if (user === undefined || user.status !== 'approved' || user.role !== 'admin' || repo === undefined || repo.user_id !== user.id) return fail('403 Forbidden')
     const instance = store.getRepoInstance(repo.id)
     if (instance === undefined || instance.status !== 'ready') return fail('409 Conflict')
     void dshCookie(instance).then((cookie) => {
@@ -777,6 +777,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/repos/:id/team', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
     const instance = store.getRepoInstance(repo.id)
     let state
     let stateError: string | undefined
@@ -807,7 +808,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/api/repos/:id/team', async (request, reply) => {
-    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
     try {
       const state = await instances.teamState(repo.id, 15_000)
       return { ...state, jobs: localizedJobs(store.listJobsForRepo(repo.id).slice(0, 5), request.locale ?? 'zh') }
@@ -818,6 +820,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/repos/:id/team/guidance', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
     const body = form(request)
     const target = (body.target ?? '').trim()
     const text = (body.text ?? '').trim()
@@ -835,6 +838,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/repos/:id/team/stop', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
     const body = form(request)
     const target = (body.target ?? '').trim()
     const returnToRaw = body.returnTo ?? `/repos/${repo.id}/team`
@@ -892,6 +896,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/api/repos/:id/team/events', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
     const instance = store.getRepoInstance(repo.id)
     if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
     reply.hijack()
@@ -968,6 +973,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/api/repos/:id/team/answer', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
     const body = (request.body ?? {}) as Record<string, unknown>
     const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
     const questionId = typeof body.questionId === 'string' ? body.questionId : ''
@@ -986,6 +992,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/api/repos/:id/team/stop', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
     const body = (request.body ?? {}) as Record<string, unknown>
     const target = typeof body.target === 'string' ? body.target.trim() : ''
     let state
@@ -1056,6 +1063,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/repos/:id/workspace', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
     const instance = store.getRepoInstance(repo.id)
     return reply.type('text/html').send(agentWorkspacePage({
       config,
@@ -1069,7 +1077,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.all('/repos/:id/workspace/app', async (request, reply) => {
-    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
     const url = request.raw.url ?? ''
     const query = url.includes('?') ? url.slice(url.indexOf('?')) : ''
     if (!url.split('?')[0]?.endsWith('/')) return reply.redirect(`/repos/${repo.id}/workspace/app/${query}`)
@@ -1084,7 +1093,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.all('/repos/:id/workspace/app/*', async (request, reply) => {
-    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
     const instance = store.getRepoInstance(repo.id)
     if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
     const prefix = `/repos/${repo.id}/workspace/app/`

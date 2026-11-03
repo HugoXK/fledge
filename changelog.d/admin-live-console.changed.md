@@ -1,0 +1,1 @@
+Simplified the default repository experience: the live team console and FlyBot workspace are now admin-only, while normal repository owners keep the repository status, target branch, run/plan controls and the answerable question inbox. Normal users no longer see team roles, session IDs, the full SSE console or the workspace shortcut.

@@ -37,14 +37,14 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/repos/:id/jobs/:jobId` | owner | Job detail: evidence, cost, attribution, retry |
 | POST | `/repos/:id/jobs/:jobId/retry` | owner + CSRF | Retry a failed job, including its checkpoint |
 | POST | `/repos/:id/jobs/:jobId/execute` | owner + CSRF | Execute a completed plan as an iterate job |
-| GET | `/repos/:id/workspace` | owner | Fledge-branded agent workspace shell |
-| `*` | `/repos/:id/workspace/app/*` | owner | Authenticated reverse proxy to the per-repo DSH UI |
-| GET | `/repos/:id/team` | owner | Team console |
-| GET | `/api/repos/:id/team` | owner | Team state JSON (polling fallback) |
-| GET | `/api/repos/:id/team/events` | owner | Server-Sent Events snapshot stream |
-| POST | `/repos/:id/team/guidance` | owner + CSRF | Send guidance to a role |
-| POST | `/api/repos/:id/team/answer` | owner + CSRF | Answer a team question |
-| POST | `/api/repos/:id/team/stop` | owner + CSRF | Stop the active roles (hard when possible, otherwise a stop request) |
+| GET | `/repos/:id/workspace` | admin | Fledge-branded agent workspace shell |
+| `*` | `/repos/:id/workspace/app/*` | admin | Authenticated reverse proxy to the per-repo DSH UI |
+| GET | `/repos/:id/team` | admin | Team console |
+| GET | `/api/repos/:id/team` | admin | Team state JSON (polling fallback) |
+| GET | `/api/repos/:id/team/events` | admin | Server-Sent Events snapshot stream |
+| POST | `/repos/:id/team/guidance` | admin + CSRF | Send guidance to a role |
+| POST | `/api/repos/:id/team/answer` | admin + CSRF | Answer a team question |
+| POST | `/api/repos/:id/team/stop` | admin + CSRF | Stop the active roles (hard when possible, otherwise a stop request) |
 | POST | `/repos/:id/settings` | owner + CSRF | Goal, target branch, cadence, enabled, reviewer interval |
 | POST | `/repos/:id/delete` | owner + CSRF | Delete repo and jobs |
 | GET | `/settings` | approved | Account, model, API tokens |
@@ -91,7 +91,7 @@ the browser.
 
 ## Team endpoints
 
-`GET /api/repos/:id/team/events` is an owner-only SSE stream. It emits a
+`GET /api/repos/:id/team/events` is an admin-only SSE stream. It emits a
 `snapshot` event when roles, questions, jobs or quota change, and a heartbeat
 comment otherwise. The snapshot includes `bots` (with `tool`, `step`, `since`,
 `lastActivityAt`), `questions` (with `id`, `sessionId`, `question`, `detail`,
@@ -108,7 +108,7 @@ comment otherwise. The snapshot includes `bots` (with `tool`, `step`, `since`,
 The Fledge inbox uses the equivalent form endpoint `POST /repos/:id/team/answer`
 (owner + CSRF) with `sessionId`, `questionId`, `selected`, `custom` and a safe
 `returnTo` path; it redirects back with a localized notice or error.
-`POST /repos/:id/team/stop` is the form counterpart for the workspace shell: it
+`POST /repos/:id/team/stop` is the admin-only form counterpart for the workspace shell: it
 takes `target` (empty for every working role) and `returnTo`, applies the same
 stop logic as the JSON API, and redirects with an honest hard-stop/request note.
 
