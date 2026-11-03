@@ -1231,7 +1231,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const active = store.activeJobForRepo(repo.id)
     if (active !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}`)
-    const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : job.kind === 'research' ? 'research' : 'iterate'
+    const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : 'iterate'
     const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
     const result = await jobs.enqueue(repo, 'manual', goal, kind)
     store.audit(viewer.user.id, 'job.retried', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
@@ -1327,16 +1327,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
   })
 
-  app.post('/repos/:id/research', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    const result = await jobs.enqueue(repo, 'manual', undefined, 'research')
-    store.audit(viewer.user.id, 'research.enqueued', `${repo.owner}/${repo.name} ${result.ok ? 'ok' : result.error ?? 'failed'}`)
-    const key = result.ok ? 'notice' : 'error'
-    const t = translator(request.locale ?? 'zh')
-    const message = result.ok ? t('分析任务已排队，只会汇报，不会写仓库。', 'Research queued; it reports only and makes no repository writes.') : result.error ?? t('分析任务启动失败。', 'Could not start the research job.')
-    return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
-  })
-
   app.post('/repos/:id/refresh', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     try {
@@ -1417,11 +1407,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}#repo-settings`)
       }
     }
-    const jobMode = body.jobMode === 'research' ? 'research' : 'iterate'
     store.updateRepo(repo.id, {
       goal,
       target_branch: targetBranch,
-      job_mode: jobMode,
       auto_iterate: body.auto === '1' ? 1 : 0,
       enabled: body.enabled === '1' ? 1 : 0,
       interval_minutes: interval,
@@ -1433,7 +1421,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         log.warn('team playbook not updated after goal change', { repo: repo.id, error: String(error) })
       })
     }
-    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} reviewer=${repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch} mode=${jobMode}`)
+    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} reviewer=${repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(goalChanged ? '设置已保存；团队规则已按新目标更新。' : '设置已保存。')}#repo-settings`)
   })
 

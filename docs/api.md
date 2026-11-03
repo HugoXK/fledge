@@ -32,7 +32,6 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/repos/:id` | owner | Repo detail |
 | POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job |
 | POST | `/repos/:id/plan` | owner + CSRF | Enqueue a plan-only job (no code, branch or PR) |
-| POST | `/repos/:id/research` | owner + CSRF | Enqueue a research/report job (no GitHub writes) |
 | POST | `/repos/:id/instance` | owner + CSRF | Start the per-repository FlyBot instance |
 | POST | `/repos/:id/instance/stop` | owner + CSRF | Stop the per-repository FlyBot instance |
 | POST | `/repos/:id/refresh` | owner + CSRF | Re-check the upstream, fork and permissions |
@@ -51,7 +50,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/api/repos/:id/chief/events` | owner | Server-Sent Events for new Chief messages |
 | POST | `/api/repos/:id/team/answer` | admin + CSRF | Answer a team question |
 | POST | `/api/repos/:id/team/stop` | admin + CSRF | Stop the active roles (hard when possible, otherwise a stop request) |
-| POST | `/repos/:id/settings` | owner + CSRF | Goal, target branch, automatic job type, cadence, enabled, reviewer interval |
+| POST | `/repos/:id/settings` | owner + CSRF | Goal, target branch, cadence, enabled, reviewer interval |
 | POST | `/repos/:id/delete` | owner + CSRF | Delete repo and jobs |
 | GET | `/settings` | approved | Account, model, API tokens |
 | POST | `/settings/model` | approved + CSRF | Save/clear own model |

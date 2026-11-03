@@ -380,7 +380,7 @@ export function dashboardPage(input: {
         .map(
           (repo) => `<tr data-repo-id="${escapeHtml(repo.id)}">
             <td><a href="/repos/${escapeHtml(repo.id)}"><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></a>${repo.is_fork === 1 ? `<br /><small class="muted">${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}</small>` : ''}${repo.reviewer_enabled === 1 ? ' <span class="badge">reviewer</span>' : ''}</td>
-            <td>${repo.auto_iterate === 1 ? `<span class="badge good">${escapeHtml(t('自动', 'Auto'))}</span><br /><small class="muted">${escapeHtml(intervalLabel(repo.interval_minutes, t))}</small>` : `<span class="badge">${escapeHtml(t('手动', 'Manual'))}</span>`}${repo.job_mode === 'research' ? `<br /><small class="muted">${escapeHtml(t('分析报告', 'Research'))}</small>` : ''}</td>
+            <td>${repo.auto_iterate === 1 ? `<span class="badge good">${escapeHtml(t('自动', 'Auto'))}</span><br /><small class="muted">${escapeHtml(intervalLabel(repo.interval_minutes, t))}</small>` : `<span class="badge">${escapeHtml(t('手动', 'Manual'))}</span>`}</td>
             <td>${badge(t, repo.last_status ?? 'idle')}</td>
             <td>${escapeHtml(humanTimeShort(repo.last_run_at))}</td>
             <td><a class="link" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('打开', 'Open'))}</a></td>
@@ -527,11 +527,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <div class="row">
         ${advanced ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
-        ${repo.job_mode === 'research'
-          ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/research">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('运行分析', 'Run research'))}</button></form>
-             <form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('迭代一次', 'Iterate once'))}</button></form>`
-          : `<form method="post" action="/repos/${escapeHtml(repo.id)}/research">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('分析报告', 'Research report'))}</button></form>
-             <form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button></form>`}
+        <form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button></form>
         <form method="post" action="/repos/${escapeHtml(repo.id)}/plan">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('只出计划', 'Plan only'))}</button></form>
         ${canReview && reviewerEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/review">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('立即审核', 'Review now'))}</button></form>` : ''}
       </div>
@@ -588,7 +584,6 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           <label class="check"><input type="checkbox" name="enabled" value="1" ${repo.enabled === 1 ? 'checked' : ''} /> ${escapeHtml(t('启用', 'Enabled'))}</label>
           <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))} <select name="interval">${intervalOptions(t, repo.interval_minutes)}</select></label>
         </div>
-        <label>${escapeHtml(t('自动任务类型', 'Automatic job type'))}${infoTip(t('选择“分析报告”后，定时任务只读取仓库并在 Fledge 汇报，不创建 issue、PR 或评论；手动运行仍可单独选择。', 'With Research report, scheduled jobs only read the repository and report in Fledge; they do not create issues, PRs or comments. Manual actions stay separate.'))} <select name="jobMode"><option value="iterate"${repo.job_mode !== 'research' ? ' selected' : ''}>${escapeHtml(t('迭代（issue + PR）', 'Iterate (issue + PR)'))}</option><option value="research"${repo.job_mode === 'research' ? ' selected' : ''}>${escapeHtml(t('分析报告（不写仓库）', 'Research report (no repository writes)'))}</option></select></label>
         <div class="row" data-review-group>
           <label class="check"><input type="checkbox" name="review" value="1" ${reviewerEnabled ? 'checked' : ''} ${canReview ? '' : 'disabled'} /> ${escapeHtml(t('启用 PR 审核', 'Enable PR reviewer'))}</label>
           <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval" ${canReview ? '' : 'disabled'}>${reviewIntervalOptions(t, repo.review_interval_minutes)}</select></label>

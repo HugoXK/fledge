@@ -73,10 +73,6 @@
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
   against the upstream; issues are created on the upstream. If the token user
   owns the upstream, no fork is created and the branch/PR stay in that repo.
-- **Job type**: a repository's scheduled work can be `iterate` (issue + PR) or
-  `research` (read-only report). Research jobs return the team's findings and
-  recommendation in the job summary and never write GitHub. The primary run
-  button follows this setting; a separate action can still run the other mode.
 - **Target branch**: each repository stores a `target_branch` that defaults to
   the upstream default but can be `develop` or a release branch. Jobs snapshot
   it as `base_branch`; the agent still creates a new head branch and opens the

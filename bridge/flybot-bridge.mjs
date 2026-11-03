@@ -126,7 +126,7 @@ async function sendToBot(text, sessionId) {
 }
 
 function buildText(job) {
-  const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : job.kind === 'research' ? 'research' : job.kind === 'provision' ? 'provision' : 'iterate'
+  const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : job.kind === 'provision' ? 'provision' : 'iterate'
   const upstream = job.upstream || job.repo || {}
   const fork = job.fork || job.repo || upstream
   const rules = kind === 'review'
@@ -142,13 +142,6 @@ function buildText(job) {
           '- Inspect the repository, docs, issues/PRs and tests; produce one concrete plan.',
           '- Include problem/evidence, files, ordered steps, tests, acceptance criteria, risks, rollback and size.',
           '- Finish with status succeeded and the plan in summary; no branch, prUrl or issueUrl.',
-        ]
-      : kind === 'research'
-      ? [
-          '- Do not write code, create branches, push, open issues/PRs, comment on GitHub or change settings.',
-          '- Read the repository, docs, goal, issues, PRs and tests; return one evidence-backed report for the human.',
-          '- Include product value, current state, options, recommendation, risks and the next work direction.',
-          '- Finish with status succeeded and the report in summary; no branch, prUrl or issueUrl.',
         ]
       : kind === 'provision'
       ? ['- This is a provisioning request. Do not write code, push, or open PRs.']

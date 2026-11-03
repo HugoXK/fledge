@@ -84,13 +84,11 @@ The agent prompt includes:
 2. use the model at `platform.baseUrl` with `platform.token`;
 3. for `kind=iterate`: push to `fork`, create/reuse an issue on `upstream`, open
    one focused PR against `upstream`, no force-push, no merge;
-4. for `kind=research`: return one evidence-backed report in `summary`; do not
-   write code, create issues/PRs, comment on GitHub or change settings;
-5. for `kind=review`: review every open PR, score each 0–100; use
+4. for `kind=review`: review every open PR, score each 0–100; use
    REQUEST_CHANGES for Fledge PRs that need fixes, COMMENT for others, never
    approve/merge, and report `reviewScore` plus a `followUps` array for each
    Fledge PR that needs a same-branch fix;
-6. POST the result to `callbackUrl` with
+5. POST the result to `callbackUrl` with
    `{status, branch, prUrl, issueUrl, reviewScore, summary, error}`.
 
 ## Security

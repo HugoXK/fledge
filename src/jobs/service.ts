@@ -21,9 +21,6 @@ import type { InstanceManager } from '../flybot/instances.js'
 export const DEFAULT_GOAL =
   'Review this repository for one high-value defect or improvement. Write a failing test first, implement the smallest correct fix, run the relevant tests, and open a pull request. Do not refactor unrelated code.'
 
-export const DEFAULT_RESEARCH_GOAL =
-  'Analyze this repository and return one evidence-backed report for the human: product value, current state, risks, options, a recommendation and the next work direction. Do not write code, create branches, open issues or PRs, comment on GitHub or change settings.'
-
 export const DEFAULT_REVIEW_GOAL =
   'Review every open pull request on the upstream repository. For each PR, inspect the diff, tests and risk, give a score from 0 to 100 with a short rationale, and post a review comment. Do not approve, merge, push or change repository settings. Summarize the scores and the most important issues.'
 
@@ -122,11 +119,7 @@ export class Jobs {
     const repoBaseBranch = repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)
     const baseBranch = (options.baseBranch ?? repoBaseBranch).trim()
     if (!isValidBranchName(baseBranch)) return { ok: false, error: '目标分支格式不正确。', code: 'BRANCH_INVALID' }
-    const baseGoal = kind === 'review'
-      ? DEFAULT_REVIEW_GOAL
-      : kind === 'research'
-        ? (repo.goal !== '' ? repo.goal : DEFAULT_RESEARCH_GOAL)
-        : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
+    const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
     const goal = (goalOverride ?? baseGoal).slice(0, 4000)
     const jobId = `job_${randomToken(10)}`
     const callbackSecret = randomToken(24)
@@ -137,7 +130,7 @@ export class Jobs {
       const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind })
       this.store.updateJob(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。', finished_at: nowIso() })
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'quota_exhausted' })
-      else if (kind === 'iterate' || kind === 'research') this.store.updateRepo(repo.id, { last_status: 'quota_exhausted', last_run_at: nowIso() })
+      else if (kind === 'iterate') this.store.updateRepo(repo.id, { last_status: 'quota_exhausted', last_run_at: nowIso() })
       else this.store.updateRepo(repo.id, { last_status: 'quota_exhausted' })
       await this.quotaNotifier.notify(user)
       return { ok: false, error: '平台额度已用完，请先配置自己的模型 API', code: 'QUOTA_EXHAUSTED', job: this.store.getJob(job.id) }
@@ -187,7 +180,7 @@ export class Jobs {
     this.store.event('job_enqueued', { userId: user.id, repoId: repo.id, jobId: job.id, meta: `${kind}:${trigger}` })
     if (priorJobs === 0) this.store.event('first_job_start', { userId: user.id, repoId: repo.id, jobId: job.id })
     if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'queued' })
-    else if (kind === 'iterate' || kind === 'research') this.store.updateRepo(repo.id, { last_run_at: nowIso(), last_status: 'queued' })
+    else if (kind === 'iterate') this.store.updateRepo(repo.id, { last_run_at: nowIso(), last_status: 'queued' })
     else this.store.updateRepo(repo.id, { last_status: 'queued' })
     this.store.audit(user.id, 'job.enqueued', `${job.id} ${repo.owner}/${repo.name} (${kind}, ${trigger})`)
 
@@ -319,7 +312,7 @@ export class Jobs {
       }))
       this.store.updateJob(jobId, { team_stats_json: JSON.stringify(stats) })
       this.store.event('team_stats', { userId: job.user_id, repoId: job.repo_id, jobId })
-      if (job.kind === 'iterate' || job.kind === 'research') {
+      if (job.kind === 'iterate') {
         const active = stats.filter((entry) => entry.calls > 0).map((entry) => entry.role)
         if (active.length === 1 && active[0] === 'lead') {
           const repo = this.store.getRepo(job.repo_id)
@@ -734,10 +727,9 @@ export class Jobs {
       if (!this.instanceReady(repo.id)) continue
       if (this.store.activeJobForRepo(repo.id) !== undefined) continue
       if (!this.due(repo)) continue
-      const kind = repo.job_mode === 'research' ? 'research' : 'iterate'
-      const result = await this.enqueue(repo, 'schedule', undefined, kind)
+      const result = await this.enqueue(repo, 'schedule', undefined, 'iterate')
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
-      log.info('scheduled job', { repo: `${repo.owner}/${repo.name}`, kind, ok: result.ok, job: result.job?.id })
+      log.info('scheduled job', { repo: `${repo.owner}/${repo.name}`, ok: result.ok, job: result.job?.id })
     }
   }
 
