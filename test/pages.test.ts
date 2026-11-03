@@ -5,7 +5,7 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
-import { appReposPage, dashboardPage } from '../src/views/pages.js'
+import { appReposPage, dashboardPage, repoPage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
 import { localizeMessage } from '../src/i18n.js'
 import { encryptSecret } from '../src/lib/secrets.js'
@@ -36,6 +36,34 @@ test('redirect messages and dynamic counts are localized', () => {
   assert.equal(localizeMessage('en', '已创建 fork acme/demo。'), 'Created fork acme/demo.')
   assert.equal(localizeMessage('en', '设置已保存；团队规则已按新目标更新。'), 'Settings saved; the team playbook now follows the new goal.')
   assert.equal(localizeMessage('en', '计划任务已排队，不会写代码或开 PR。'), 'Plan queued. It will not write code or open a PR.')
+})
+
+
+test('the simple repo page renders the Chief conversation', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'conversation-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_conversation', userId: user.id, owner: 'o', name: 'talk', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const page = repoPage({
+      config,
+      locale: 'zh',
+      viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
+      repo,
+      jobs: [],
+      chiefMessages: [
+        { role: 'user', text: '进度如何？', at: 1 },
+        { role: 'chief', text: '还有一个测试没通过。', at: 2 },
+      ],
+    })
+    assert.match(page, /和 Chief 沟通/)
+    assert.match(page, /进度如何？/)
+    assert.match(page, /还有一个测试没通过。/)
+    assert.match(page, /chief-msg user/)
+    assert.match(page, /chief-msg chief/)
+  } finally {
+    store.close()
+  }
 })
 
 test('unlimited quota is shown instead of a finite balance', () => {

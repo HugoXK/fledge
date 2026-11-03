@@ -9,6 +9,9 @@ import { log } from '../lib/log.js'
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from '../lib/secrets.js'
 import { nowIso } from '../lib/time.js'
 import { PLAYBOOK_VERSION, TEAM_ROLES, playbookFingerprint, playbookFor } from './playbook.js'
+import { dshCookie } from './workspace.js'
+import { readZipText } from '../lib/zip.js'
+import { parseChiefTranscript, type ChiefMessage } from '../lib/chiefTranscript.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -136,6 +139,7 @@ export class InstanceManager {
   ) {}
 
   private readonly provisioning = new Set<string>()
+  private readonly transcriptCache = new Map<string, { at: number; messages: ChiefMessage[] }>()
 
   userDir(userId: string): string {
     return join(this.config.flybot.instanceRoot, 'users', safe(userId))
@@ -707,6 +711,38 @@ server.listen(3081, '0.0.0.0')
       timeline: timeline.slice(0, 12),
       instance: { status: bridge.instance.status, container: bridge.instance.container },
     }
+  }
+
+  async chiefTranscript(repoId: string, limit = 20): Promise<ChiefMessage[]> {
+    const cached = this.transcriptCache.get(repoId)
+    if (cached !== undefined && Date.now() - cached.at < 10_000) return cached.messages.slice(-Math.max(1, limit))
+    const instance = this.store.getRepoInstance(repoId)
+    if (instance === undefined || instance.status !== 'ready') return []
+    const team = parseTeam(instance.team_json)
+    if (team === null || team.chief === '') return []
+    try {
+      const cookie = await dshCookie(instance)
+      const url = `http://127.0.0.1:${instance.dsh_port}/api/session.export?sessionId=${encodeURIComponent(team.chief)}&includeDescendants=false`
+      const response = await fetch(url, { headers: { cookie }, signal: AbortSignal.timeout(8_000) })
+      if (!response.ok) throw new Error(`DSH session export ${response.status}`)
+      const buffer = Buffer.from(await response.arrayBuffer())
+      if (buffer.length > 20 * 1024 * 1024) throw new Error('DSH session export is too large')
+      const jsonl = readZipText(buffer, /^session(?:\.v\d+)?\.jsonl$/)
+      if (jsonl === null) {
+        this.transcriptCache.set(repoId, { at: Date.now(), messages: [] })
+        return []
+      }
+      const messages = parseChiefTranscript(jsonl, 30)
+      this.transcriptCache.set(repoId, { at: Date.now(), messages })
+      return messages.slice(-Math.max(1, limit))
+    } catch (error) {
+      this.transcriptCache.set(repoId, { at: Date.now(), messages: [] })
+      throw error
+    }
+  }
+
+  clearChiefTranscript(repoId: string): void {
+    this.transcriptCache.delete(repoId)
   }
 
   async sendGuidance(repoId: string, target: string, text: string): Promise<void> {

@@ -10,6 +10,7 @@ import { parseEvidenceJson } from '../lib/evidence.js'
 import type { InstallationRepo } from '../repos/app.js'
 import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
 import { parseTeam, type TeamLiveState, type TeamQuestionState } from '../flybot/instances.js'
+import type { ChiefMessage } from '../lib/chiefTranscript.js'
 
 export interface InboxQuestion extends TeamQuestionState {
   repoId: string
@@ -434,9 +435,10 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; questions?: InboxQuestion[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const questions = input.questions ?? []
+  const chiefMessages = input.chiefMessages ?? []
   const jobsPage = input.jobsPage ?? 1
   const jobsTotal = input.jobsTotal ?? jobs.length
   const t = translator(locale)
@@ -532,14 +534,21 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     </div>
     ${advanced ? teamGrid : ''}
   </section>`
+  const chiefThread = chiefMessages.length === 0
+    ? `<p class="muted">${escapeHtml(t('还没有对话。给 Chief 发第一句。', 'No conversation yet. Send the Chief the first message.'))}</p>`
+    : `<div class="chief-thread">${chiefMessages.map((message) => `<div class="chief-msg ${message.role}">
+      <div class="chief-role">${escapeHtml(message.role === 'user' ? t('你', 'You') : 'Chief')}${message.at > 0 ? ` · ${escapeHtml(humanTimeShort(new Date(message.at).toISOString()))}` : ''}</div>
+      <div class="chief-text">${escapeHtml(message.text)}</div>
+    </div>`).join('')}</div>`
   const chiefCard = advanced ? '' : `<section class="card chief-card" id="chief">
     <div class="row between">
       <div>
-        <h2>${escapeHtml(t('给 Chief 留言', 'Message the Chief'))}</h2>
-        <p class="muted">${escapeHtml(t('普通用户只需要和 Chief 沟通；团队内部由 Chief 分派。留言会写入审计。', 'Normal users only talk to the Chief; the Chief routes work inside the team. Messages are audited.'))}</p>
+        <h2>${escapeHtml(t('和 Chief 沟通', 'Talk to the Chief'))}</h2>
+        <p class="muted">${escapeHtml(t('普通用户只需要和 Chief 沟通；团队内部由 Chief 分派。对话会写入审计。', 'Normal users only talk to the Chief; the Chief routes work inside the team. The conversation is audited.'))}</p>
       </div>
-      <a class="link" href="#inbox">${escapeHtml(t('查看待回答的问题', 'View open questions'))}</a>
+      <div class="row"><a class="link" href="#inbox">${escapeHtml(t('待回答的问题', 'Open questions'))}</a><a class="link" href="/repos/${escapeHtml(repo.id)}#chief">${escapeHtml(t('刷新回复', 'Refresh replies'))}</a></div>
     </div>
+    ${chiefThread}
     ${instanceReady ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/chief/message" class="form">
       ${csrf(viewer)}
       <label>${escapeHtml(t('留言', 'Message'))}<textarea name="text" rows="3" maxlength="4000" required placeholder="${escapeHtml(t('例如：先汇报当前进度和风险，不要改代码。', 'For example: report current progress and risks first; do not change code.'))}"></textarea></label>

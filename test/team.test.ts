@@ -252,7 +252,7 @@ test('a normal repository owner can message the Chief without the team console',
     const { cookie, csrf } = sessionFor(built, user)
     const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
     assert.equal(page.statusCode, 200)
-    assert.match(page.body, /给 Chief 留言/)
+    assert.match(page.body, /和 Chief 沟通/)
     assert.doesNotMatch(page.body, new RegExp(`/repos/${repo.id}/team`))
     const sent = await built.app.inject({
       method: 'POST',
@@ -263,7 +263,7 @@ test('a normal repository owner can message the Chief without the team console',
     assert.equal(sent.statusCode, 302)
     const call = received.find((entry) => entry.endpoint === 'send')
     assert.equal((call?.payload as { sessionId?: string })?.sessionId, 'chief-1')
-    assert.equal((call?.payload as { text?: string })?.text, 'Report progress first, do not change code.')
+    assert.match(String((call?.payload as { text?: string })?.text), /Report progress first, do not change code\./)
   } finally {
     await built.close()
     await bridge.close()

@@ -59,6 +59,12 @@ p { margin: 0 0 12px; }
 .question-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .question-options { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 .chief-card { border-color: rgba(184, 243, 74, 0.22); }
+.chief-thread { display: grid; gap: 10px; margin: 14px 0; }
+.chief-msg { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: #090e14; }
+.chief-msg.user { border-color: rgba(123, 149, 255, 0.28); }
+.chief-msg.chief { border-color: rgba(184, 243, 74, 0.25); }
+.chief-role { color: var(--muted-2); font-size: 11px; font-weight: 650; margin-bottom: 4px; }
+.chief-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.65; }
 .inbox { border-color: rgba(240, 198, 116, 0.3); background: linear-gradient(120deg, rgba(240, 198, 116, 0.08), transparent 60%), var(--panel); }
 .inbox .count { color: var(--warn); }
 .inbox-list { margin-top: 12px; }

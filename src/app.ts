@@ -752,15 +752,24 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const jobsTotal = store.countJobsForRepo(repo.id)
     const jobsPage = Math.min(Math.max(1, Math.floor(Number(queryText(request, 'jobsPage')) || 1)), Math.max(1, Math.ceil(jobsTotal / 10)))
     const questions = (await inboxForUser(viewer.user.id, store.listRepos(viewer.user.id))).filter((question) => question.repoId === repo.id)
+    const instance = store.getRepoInstance(repo.id)
+    let chiefMessages
+    if (viewer.user.role !== 'admin' && instance?.status === 'ready') {
+      chiefMessages = await instances.chiefTranscript(repo.id).catch((error) => {
+        log.warn('chief transcript failed', { repo: repo.id, error: String(error) })
+        return []
+      })
+    }
     return reply.type('text/html').send(
       repoPage({
         config,
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         repo,
-        instance: store.getRepoInstance(repo.id),
+        instance,
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
         questions,
+        chiefMessages,
         activeJob: store.activeJobForRepo(repo.id) !== undefined,
         jobsPage,
         jobsTotal,
@@ -842,10 +851,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const t = translator(request.locale ?? 'zh')
     if (text === '') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('留言不能为空。', 'The message cannot be empty.'))}`)
     try {
-      await instances.sendGuidance(repo.id, 'chief', text)
+      await instances.sendGuidance(repo.id, 'chief', `[Fledge owner message]\n${text}`)
     } catch (error) {
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`)
     }
+    instances.clearChiefTranscript(repo.id)
     store.audit(viewer.user.id, 'team.chief_message', `${repo.owner}/${repo.name} chars=${text.length}`)
     store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: 'chief-message' })
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(t('已发送给 Chief。', 'Sent to the Chief.'))}`)
