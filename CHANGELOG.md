@@ -5,6 +5,37 @@ All notable changes to Fledge are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-11-03
+
+### Added
+
+- Added a repository target branch: maintainers can send PRs to `develop`, a release branch, or another valid upstream branch while Fledge still creates a new working branch. Jobs snapshot the target as their base branch, follow-ups keep the existing PR base, invalid branch names are rejected when saved, and job details show the base branch.
+- Added a simplified "talk to the Chief" surface on the repository page. Normal repository owners can send guidance without opening the admin-only team console or choosing an internal role, and the page now shows the Chief's replies, pushed over SSE (with a polling fallback) after reading the DSH session export. Fledge drops internal job prompts, keeps only human/Chief text, masks tokens and audits the message; the composer supports quick prompts, Enter-to-send and optimistic messages, and the question inbox remains the place to answer FlyBot's decisions.
+- Added self-selected repository roles. When hosting a repository, Fledge reads the user's GitHub permission and lets the user explicitly choose `maintainer` or `developer`: `admin`/`maintain` may choose either, and every other permission can only choose `developer`. Maintainer enables review/triage maintenance actions and an opt-in auto-merge switch that is off by default; developer runs iterate and plan jobs only. Roles are per repository, never assigned by a platform admin, and a lost GitHub permission downgrades a maintainer to developer on refresh.
+- Added a three-level platform role model: normal user, administrator, and owner. The configured primary login becomes the super admin, admins see themselves plus normal users in a scoped management page, only the super admin can promote admins or set unlimited quota, and the super admin keeps the live team console and workspace. The super admin also gets a preview switch that renders the user UI without changing the underlying session permissions.
+
+### Changed
+
+- Tightened the admin user table controls: quota input, unlimited switch and Set quota now stay on one row, role select and Set role stay on one row, and approve/disable actions are grouped below. Wider controls scroll inside the table instead of stretching the page.
+- Simplified the default repository experience: the live team console and FlyBot workspace are now admin-only, while normal repository owners keep the repository status, target branch, run/plan controls and the answerable question inbox. Normal users no longer see team roles, session IDs, the full SSE console or the workspace shortcut, and question/job email links and the PR automation block now point to the repository inbox or task/job page instead of the admin-only team console.
+- Reworked the question inbox: choices are now large selectable cards, custom answers sit next to the send button, and answers are submitted without a page reload with inline progress and error feedback.
+
+### Fixed
+
+- Improved GitHub App repository attribution: when the user has re-authorized with repo scope, Fledge uses that user token for App-repository writes so issues, PRs and commits are created as the user instead of Fledge-Platform. Repositories without that authorization show a re-authorize notice.
+- Fixed GitHub App installation callbacks without installation_id: the installed route now reuses a single bound installation, or finds one unbound installation owned by the signed-in user, and the App callback URL is accepted as an alias. Missing callbacks show an actionable Setup URL message instead of a dead end.
+- Fixed the Footer Docs and Status links by preserving their trailing slash, which previously redirected to the server's internal port and failed publicly.
+- Kept recent-job summaries inside the layout: the workspace list now truncates visible summary text with an ellipsis, the job table clamps summaries to two lines, and long values stay inside the scroll container instead of stretching to the right.
+- Fixed the review loop: the reviewer now posts REQUEST_CHANGES for Fledge PRs that need work, and a follow-up on the same branch is queued after the active review finishes instead of being dropped. Review jobs no longer leave actionable PRs with comments only.
+- Strengthened the team playbook so iterate jobs cannot be implemented by the Lead alone: Product scopes, Test owns failing tests and verification, Dev-1/Dev-2 implement, and Reviewer reviews. If a job still reports only Lead activity, Fledge now sends an in-app warning instead of silently accepting it.
+- Clarified upstream freshness: iterate jobs now check the latest upstream branch and open issues/PRs before working, skip duplicate work when a fix or PR already exists, and sync a stale fork before creating a working branch.
+
+### Security
+
+- Hardened redirects, form parsing, bearer parsing, rate limits, inbound sender parsing and the FlyBot bridge proxy against the CodeQL findings: validated local redirect paths, constrained form keys, added gateway and callback rate limits, removed regex backtracking, limited bridge proxy URLs to the configured origin and stopped returning stack traces.
+- Updated the static-file dependency chain to glob 14.0.3 and minimatch 11.0.4, resolving two medium-severity Dependabot alerts: the glob AbortSignal cancellation bypass and the minimatch globparts amplification denial of service.
+
+
 ## [0.2.1] — 2026-11-02
 
 ### Added

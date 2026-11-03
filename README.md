@@ -29,7 +29,7 @@ through a signed bridge; the agent writes a failing test, makes the smallest
 correct fix, opens one pull request, and reports back. Fledge never pushes to the
 default branch, does not merge by default, and never runs a user repository itself.
 
-> **Status:** `v0.2.1` is the latest release at <https://fledge.hugoxk.online/>.
+> **Status:** `v0.2.2` is the latest release at <https://fledge.hugoxk.online/>.
 > The GitHub token login fallback is active (the OAuth App is not configured yet). Documentation is at
 > <https://fledge-docs.hugoxk.online/docs/>; the project homepage and guide are at
 > <https://hugoxk.online/fledge/>.
@@ -378,6 +378,7 @@ PASS at the same tip, with a real `Ran:` command.
 | `v0.1` | OAuth + approval mail, multi-repo, encrypted tokens, quota gateway, own model, mock/FlyBot runners, admin/audit |
 | `v0.2` | Per-repo FlyBot teams, goal-specific playbook, team console, fork/reviewer, quota/attribution |
 | `v0.2.1` | Live SSE console, inline questions, stop/steer, job progress and cost |
+| `v0.2.2` | Self-selected repository roles, maintainer-gated review and opt-in auto-merge |
 | `v0.3` | Branded per-repo agent workspace (Fledge shell, powered by FlyBot), interactive takeover |
 | `v0.4` | Plan-first gates, durable checkpoints, per-repo budgets, automatic attribution/audit |
 | `v1.0` | Postgres, worker pool, tracing/metrics, backup restore drill, external security review |

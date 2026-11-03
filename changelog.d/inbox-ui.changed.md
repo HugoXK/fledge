@@ -1,1 +1,0 @@
-Reworked the question inbox: choices are now large selectable cards, custom answers sit next to the send button, and answers are submitted without a page reload with inline progress and error feedback.
