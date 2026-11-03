@@ -361,7 +361,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!loginLimiter.take(`reauth:${viewer.user.id}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     if (config.github.clientId === '' || config.github.clientSecret === '') return reply.redirect('/settings?error=' + encodeURIComponent('GitHub OAuth 未配置。'))
     const state = randomToken(32)
-    store.createOAuthState(sha256Hex(state), addMinutes(20), null)
+    store.createOAuthState(sha256Hex(state), addMinutes(20), safeLocalPath(queryText(request, 'next'), '/dashboard'))
     const scopes = [...new Set(`${config.github.scopes} repo`.split(/\s+/).filter(Boolean))].join(' ')
     return reply.redirect(oauth.authorizeUrl(state, scopes))
   })
@@ -371,7 +371,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const query = request.query as Record<string, string | undefined>
     const code = query.code ?? ''
     const state = query.state ?? ''
-    if (code === '' || state === '' || store.consumeOAuthState(sha256Hex(state)) === undefined) {
+    const oauthState = state === '' ? undefined : store.consumeOAuthState(sha256Hex(state))
+    if (code === '' || state === '' || oauthState === undefined) {
       const t = translator(request.locale ?? 'zh')
       return htmlPage(reply, 400, errorPage(
         config,
@@ -411,7 +412,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.audit(user.id, 'login.github', `@${profile.login}`)
     store.event('login', { userId: user.id, meta: 'github' })
     startSession(user, request, reply)
-    if (user.status === 'approved') return reply.redirect('/dashboard')
+    if (user.status === 'approved') return reply.redirect(oauthState.redirect_to === null ? '/dashboard' : safeLocalPath(oauthState.redirect_to, '/dashboard'))
     if (user.status === 'onboarding') return reply.redirect('/apply')
     return reply.redirect('/apply/status')
   })

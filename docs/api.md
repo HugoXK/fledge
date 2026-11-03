@@ -14,7 +14,9 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/auth/github` | public | Start OAuth |
 | GET | `/auth/github/callback` | public | OAuth callback |
 | GET | `/auth/github/app/install` | approved | Redirect to the GitHub App installation page |
-| GET | `/auth/github/app/installed` | approved | Bind an installation to the current user |
+| GET | `/auth/github/app/installed` | approved | Bind an installation to the current user (falls back to a matching unbound installation) |
+| GET | `/auth/github/app/callback` | approved | Alias for the installed callback |
+| GET | `/auth/github/reauthorize` | approved | Re-authorize with repo scope for user-attributed App writes |
 | GET | `/repos/new` | approved | GitHub App installations and repository picker |
 | POST | `/repos/app` | approved + CSRF | Connect repositories through an installation |
 | POST | `/api/github/webhook` | GitHub signature | GitHub App webhook ingestion and CI/review follow-up |
