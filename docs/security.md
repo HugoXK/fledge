@@ -144,6 +144,10 @@ per day. Test mail is rate-limited to one per minute.
 - `GET /api/repos/:id/team/events` is admin-only. It is read-only and streams
   the same state the team console already shows; it never exposes the DSH token
   or the bridge token.
+- The simplified Chief conversation reads the DSH session export server-side on
+  the owner's behalf. It keeps only human/Chief text, drops known Fledge job
+  prompts, ignores tool calls/results and attachments, and masks token/secret
+  patterns before rendering; the raw DSH token and archive stay server-side.
 - Answering a question, sending guidance and requesting a stop require the
   session, repository ownership and `X-CSRF-Token`, and are written to the audit
   log. Answer text is not logged.
