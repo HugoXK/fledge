@@ -223,3 +223,49 @@ test('team events stream pushes a live snapshot', async () => {
     await bridge.close()
   }
 })
+
+test('a normal repository owner can message the Chief without the team console', async () => {
+  const received: Array<Record<string, unknown>> = []
+  const bridge = await startFakeServer((request, response) => {
+    let body = ''
+    request.on('data', (chunk) => { body += chunk })
+    request.on('end', () => {
+      const payload = JSON.parse(body || '{}') as { endpoint?: string; payload?: unknown }
+      received.push(payload)
+      json(response, 200, { ok: true })
+    })
+  })
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'chief-message-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_chief_message', userId: user.id, owner: 'o', name: 'chief', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.saveRepoInstance({
+      repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/chief-message', bridge_script: '/tmp/bridge',
+      dsh_port: 1, bridge_port: Number(new URL(bridge.url).port), model_port: 2, model_bind: '127.0.0.1', image: 'image',
+      status: 'ready', chief_session: 'chief-1',
+      team_json: JSON.stringify({ chief: 'chief-1', lead: 'lead-1', product: 'p', test: 't', security: 's', reviewer: 'r', dev1: 'd1', dev2: 'd2', reviewerScope: 'upstream', team: 'Repo' }),
+      bridge_token_enc: encryptSecret('bridge-token', config.tokenEncryptionKey), bridge_pid: null, log_pid: null,
+      last_error: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_health_at: null,
+    })
+    const { cookie, csrf } = sessionFor(built, user)
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /给 Chief 留言/)
+    assert.doesNotMatch(page.body, new RegExp(`/repos/${repo.id}/team`))
+    const sent = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/chief/message`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, text: 'Report progress first, do not change code.' }),
+    })
+    assert.equal(sent.statusCode, 302)
+    const call = received.find((entry) => entry.endpoint === 'send')
+    assert.equal((call?.payload as { sessionId?: string })?.sessionId, 'chief-1')
+    assert.equal((call?.payload as { text?: string })?.text, 'Report progress first, do not change code.')
+  } finally {
+    await built.close()
+    await bridge.close()
+  }
+})

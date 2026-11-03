@@ -124,6 +124,9 @@ questions, jobs or quota changes, plus a heartbeat. The browser uses
 `EventSource` and falls back to the existing 5-second JSON poll on error.
 Questions render inline with their options and a custom field;
 `POST /api/repos/:id/team/answer` sends the DSH `answer-question` payload.
+Normal users can also send a one-way message to the Chief from the repository
+page without opening the team console; the Chief remains responsible for
+routing it inside the team, and every message is audited.
 The same open questions are collected server-side from every ready instance and
 shown as a Fledge inbox on `/console`, `/dashboard` and the repository page, so a
 human can see and answer FlyBot's pending questions without opening the team

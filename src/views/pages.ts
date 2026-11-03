@@ -532,7 +532,21 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     </div>
     ${advanced ? teamGrid : ''}
   </section>`
-  const body = `${repoHeader}${questionsBlock(locale, viewer, questions, `/repos/${repo.id}`)}${instanceNotice}${instanceCard}
+  const chiefCard = advanced ? '' : `<section class="card chief-card" id="chief">
+    <div class="row between">
+      <div>
+        <h2>${escapeHtml(t('给 Chief 留言', 'Message the Chief'))}</h2>
+        <p class="muted">${escapeHtml(t('普通用户只需要和 Chief 沟通；团队内部由 Chief 分派。留言会写入审计。', 'Normal users only talk to the Chief; the Chief routes work inside the team. Messages are audited.'))}</p>
+      </div>
+      <a class="link" href="#inbox">${escapeHtml(t('查看待回答的问题', 'View open questions'))}</a>
+    </div>
+    ${instanceReady ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/chief/message" class="form">
+      ${csrf(viewer)}
+      <label>${escapeHtml(t('留言', 'Message'))}<textarea name="text" rows="3" maxlength="4000" required placeholder="${escapeHtml(t('例如：先汇报当前进度和风险，不要改代码。', 'For example: report current progress and risks first; do not change code.'))}"></textarea></label>
+      <button class="btn" type="submit">${escapeHtml(t('发送给 Chief', 'Send to Chief'))}</button>
+    </form>` : `<p class="muted">${escapeHtml(t('FlyBot 实例就绪后可以给 Chief 留言。', 'You can message the Chief after the FlyBot instance is ready.'))}</p>`}
+  </section>`
+  const body = `${repoHeader}${questionsBlock(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}
   <section class="cols">
     <div class="card" id="repo-settings">
       <h2>${escapeHtml(t('迭代目标', 'Iteration goal'))}</h2>

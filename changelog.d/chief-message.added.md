@@ -1,0 +1,1 @@
+Added a simplified "message the Chief" action on the repository page. Normal repository owners can send guidance to the Chief without opening the admin-only team console or choosing an internal role; the action is audited and the existing question inbox remains the place to answer FlyBot's decisions.

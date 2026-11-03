@@ -58,6 +58,7 @@ p { margin: 0 0 12px; }
 .question-card form { margin-top: 10px; }
 .question-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .question-options { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.chief-card { border-color: rgba(184, 243, 74, 0.22); }
 .inbox { border-color: rgba(240, 198, 116, 0.3); background: linear-gradient(120deg, rgba(240, 198, 116, 0.08), transparent 60%), var(--panel); }
 .inbox .count { color: var(--warn); }
 .inbox-list { margin-top: 12px; }

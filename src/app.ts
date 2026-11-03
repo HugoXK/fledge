@@ -836,6 +836,21 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
   })
 
+  app.post('/repos/:id/chief/message', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const text = (form(request).text ?? '').trim().slice(0, 4000)
+    const t = translator(request.locale ?? 'zh')
+    if (text === '') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('留言不能为空。', 'The message cannot be empty.'))}`)
+    try {
+      await instances.sendGuidance(repo.id, 'chief', text)
+    } catch (error) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`)
+    }
+    store.audit(viewer.user.id, 'team.chief_message', `${repo.owner}/${repo.name} chars=${text.length}`)
+    store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: 'chief-message' })
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(t('已发送给 Chief。', 'Sent to the Chief.'))}`)
+  })
+
   app.post('/repos/:id/team/stop', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
