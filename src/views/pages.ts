@@ -5,6 +5,7 @@ import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
+import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
 import type { InstallationRepo } from '../repos/app.js'
@@ -75,6 +76,14 @@ function triggerLabel(t: Translate, trigger: string): string {
   if (trigger === 'schedule') return t('定时', 'Scheduled')
   if (trigger === 'followup') return t('跟进', 'Follow-up')
   return trigger
+}
+
+function repoRoleLabel(t: Translate, role: string | null): string {
+  if (role === 'maintainer' || role === 'developer') {
+    const [zh, en] = REPO_ROLE_LABELS[role]
+    return t(zh, en)
+  }
+  return t('未选择', 'Not selected')
 }
 
 function roleLabel(t: Translate, role: string): string {
@@ -323,7 +332,7 @@ export function landingPage(config: Config, viewer?: Viewer | null, devLogin = f
   </section>
   <section class="grid3">
     <article class="card feature"><span class="feature-num">01 / REPOS</span><h3>${escapeHtml(t('多仓库', 'Many repositories'))}</h3><p>${escapeHtml(t('一个账号绑定多个仓库，每个仓库有自己的目标、节奏和状态。', 'One account can connect several repositories, each with its own goal, cadence and state.'))}</p></article>
-    <article class="card feature"><span class="feature-num">02 / PR</span><h3>${escapeHtml(t('可审查', 'Reviewable'))}</h3><p>${escapeHtml(t('每个任务只产出一个聚焦的 PR。不直接推 main，不自动合并，不隐藏改动。', 'Every job produces one focused pull request. No direct pushes to main, no automatic merges, no hidden changes.'))}</p></article>
+    <article class="card feature"><span class="feature-num">02 / PR</span><h3>${escapeHtml(t('可审查', 'Reviewable'))}</h3><p>${escapeHtml(t('每个任务只产出一个聚焦的 PR。不直接推 main，默认不自动合并；只有 maintainer 显式开启后才会自动合并。', 'Every job produces one focused pull request. No direct pushes to main and no auto-merge by default; only a maintainer can opt in.'))}</p></article>
     <article class="card feature"><span class="feature-num">03 / MODEL</span><h3>${escapeHtml(t('自己的模型', 'Bring your own model'))}</h3><p>${escapeHtml(t('平台额度用完不会停摆：填入任意 OpenAI 兼容服务，任务继续跑。', 'Running out of platform quota does not stop you: connect any OpenAI-compatible service and jobs keep running.'))}</p></article>
   </section>`
   return layout({ title: t('让仓库自己长大', 'Let your repositories grow'), viewer, body, config, locale, path: '/' })
@@ -379,7 +388,7 @@ export function dashboardPage(input: {
     : repos
         .map(
           (repo) => `<tr data-repo-id="${escapeHtml(repo.id)}">
-            <td><a href="/repos/${escapeHtml(repo.id)}"><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></a>${repo.is_fork === 1 ? `<br /><small class="muted">${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}</small>` : ''}${repo.reviewer_enabled === 1 ? ' <span class="badge">reviewer</span>' : ''}</td>
+            <td><a href="/repos/${escapeHtml(repo.id)}"><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></a>${repo.is_fork === 1 ? `<br /><small class="muted">${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}</small>` : ''} <span class="badge kind">${escapeHtml(repoRoleLabel(t, repo.repo_role))}</span>${repo.reviewer_enabled === 1 ? ' <span class="badge">reviewer</span>' : ''}${repo.repo_role === null ? `<br /><small class="muted">${escapeHtml(t('打开仓库选择角色', 'Open the repository to choose a role'))}</small>` : ''}</td>
             <td>${repo.auto_iterate === 1 ? `<span class="badge good">${escapeHtml(t('自动', 'Auto'))}</span><br /><small class="muted">${escapeHtml(intervalLabel(repo.interval_minutes, t))}</small>` : `<span class="badge">${escapeHtml(t('手动', 'Manual'))}</span>`}</td>
             <td>${badge(t, repo.last_status ?? 'idle')}</td>
             <td>${escapeHtml(humanTimeShort(repo.last_run_at))}</td>
@@ -398,9 +407,10 @@ export function dashboardPage(input: {
           <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))}${infoTip(t('最小间隔，不是 PR/issue 总数上限；同一仓库同时最多一个任务，平台全局最多 2 个任务。手动运行会重置倒计时，审核任务不会。', 'Minimum gap, not a cap on PRs/issues; one job per repository and at most two platform-wide. A manual run resets the countdown; a review does not.'))} <select name="interval">${intervalOptions(t)}</select></label>
         </div>
         <div class="row" data-review-group>
-          <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有你在上游有 maintain/write 权限时才可启用；审核任务独立于迭代任务。', 'Available only when you have maintain/write permission on the upstream; review jobs run separately from iterate jobs.'))}</label>
+          <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时才可启用；审核任务独立于迭代任务。', 'Available only with the maintainer role and GitHub admin/maintain permission; review jobs run separately from iterate jobs.'))}</label>
           <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval">${reviewIntervalOptions(t)}</select></label>
         </div>
+        <p class="fine">${escapeHtml(t('添加后请选择你的角色；未选择前不会启动任务。', 'Choose your role after adding; jobs stay paused until you do.'))}</p>
         <button class="btn" type="submit">${escapeHtml(t('添加仓库', 'Add repository'))}</button>
       </form>`
   const body = `<section class="workspace-hero">
@@ -461,13 +471,20 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const targetBranch = repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)
   const appAttribution = repo.installation_id !== null && !(viewer.user.github_token_scopes ?? '').split(/[ ,]+/).includes('repo')
   const defaultBranch = repo.upstream_default_branch || repo.default_branch
-  const canReview = repo.can_review === 1
+  const repoRole: RepoRole | null = repo.repo_role === 'maintainer' || repo.repo_role === 'developer' ? repo.repo_role : null
+  const allowedRoles = allowedRepoRoles(repo.permission)
+  const githubCanReview = repo.can_review === 1
+  const canMaintain = repoRole === 'maintainer'
+  const canReview = githubCanReview && canMaintain
   const reviewerEnabled = repo.reviewer_enabled === 1
-  const reviewerLabel = reviewerEnabled
-    ? t('审核已启用', 'Reviewer on')
-    : canReview
-      ? t('审核可用但未启用', 'Reviewer available')
-      : t('审核不可用', 'Reviewer unavailable')
+  const reviewerLabel = repoRole !== 'maintainer'
+    ? t('审核需要 maintainer 角色', 'Reviewer needs the maintainer role')
+    : !githubCanReview
+      ? t('审核不可用', 'Reviewer unavailable')
+      : reviewerEnabled
+        ? t('审核已启用', 'Reviewer on')
+        : t('审核可用但未启用', 'Reviewer available')
+  const roleMissing = repoRole === null
   const reviewStatus = repo.last_review_status === null ? '' : ` · ${badge(t, repo.last_review_status)}`
   const activeJob = input.activeJob ?? jobs.some((job) => job.status === 'queued' || job.status === 'running')
   const lastRun = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
@@ -522,14 +539,14 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <div class="eyebrow">${escapeHtml(t('仓库', 'REPOSITORY'))}</div>
         <h1>${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</h1>
         <p class="muted">${escapeHtml(t('目标分支', 'Target branch'))} <code>${escapeHtml(targetBranch)}</code>${targetBranch === defaultBranch ? '' : ` · ${escapeHtml(t('默认分支', 'Default branch'))} <code>${escapeHtml(defaultBranch)}</code>`} · ${escapeHtml(repo.auto_iterate === 1 ? t('自动迭代已开启', 'Auto-iteration on') : t('仅手动运行', 'Manual runs only'))} · ${escapeHtml(t('自动间隔', 'Auto every'))} <b>${escapeHtml(intervalLabel(repo.interval_minutes, t))}</b> · ${escapeHtml(t('下次约', 'Next'))} ${escapeHtml(nextRunText)} · ${badge(t, repo.last_status ?? 'idle')}</p>
-        <p class="fine">${escapeHtml(t('上游', 'Upstream'))} <a href="${escapeHtml(upstreamUrl)}" target="_blank" rel="noreferrer">${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</a> · ${repo.is_fork === 1 ? `${escapeHtml(t('Fork', 'Fork'))} <a href="${escapeHtml(forkUrl)}" target="_blank" rel="noreferrer">${escapeHtml(forkOwner)}/${escapeHtml(forkName)}</a>` : escapeHtml(t('自有仓库，无需 fork', 'Own repository, no fork'))} · ${escapeHtml(t('角色', 'Role'))} <code>${escapeHtml(permission)}</code> · ${escapeHtml(reviewerLabel)}</p>
+        <p class="fine">${escapeHtml(t('上游', 'Upstream'))} <a href="${escapeHtml(upstreamUrl)}" target="_blank" rel="noreferrer">${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</a> · ${repo.is_fork === 1 ? `${escapeHtml(t('Fork', 'Fork'))} <a href="${escapeHtml(forkUrl)}" target="_blank" rel="noreferrer">${escapeHtml(forkOwner)}/${escapeHtml(forkName)}</a>` : escapeHtml(t('自有仓库，无需 fork', 'Own repository, no fork'))} · ${escapeHtml(t('GitHub 权限', 'GitHub permission'))} <code>${escapeHtml(permission)}</code> · ${escapeHtml(t('你的角色', 'Your role'))} <code>${escapeHtml(repoRoleLabel(t, repoRole))}</code> · ${escapeHtml(reviewerLabel)}</p>
       </div>
       <div class="row">
         ${advanced ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
-        <form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button></form>
-        <form method="post" action="/repos/${escapeHtml(repo.id)}/plan">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('只出计划', 'Plan only'))}</button></form>
-        ${canReview && reviewerEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/review">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('立即审核', 'Review now'))}</button></form>` : ''}
+        ${roleMissing ? `<span class="badge busy">${escapeHtml(t('先选择角色', 'Choose a role first'))}</span>` : `<form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button></form>
+        <form method="post" action="/repos/${escapeHtml(repo.id)}/plan">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('只出计划', 'Plan only'))}</button></form>`}
+        ${!roleMissing && canReview && reviewerEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/review">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('立即审核', 'Review now'))}</button></form>` : ''}
       </div>
     </div>
   </section>`
@@ -570,7 +587,28 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <div class="chief-compose-row"><p class="chief-status" data-chief-status role="status" aria-live="polite"></p><button class="btn" type="submit">${escapeHtml(t('发送给 Chief', 'Send to Chief'))}</button></div>
     </form>` : `<p class="muted">${escapeHtml(t('FlyBot 实例就绪后可以和 Chief 沟通。', 'You can talk to the Chief after the FlyBot instance is ready.'))}</p>`}
   </section>`
-  const body = `${repoHeader}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${questionsBlock(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}
+  const roleDescriptions: Record<RepoRole, string> = {
+    maintainer: t('可以运行 review / triage / 维护类任务；需要 GitHub admin 或 maintain 权限。', 'Can run review/triage/maintenance jobs; requires GitHub admin or maintain permission.'),
+    developer: t('只运行迭代和计划任务；不运行 review/triage，也不能启用自动合并。', 'Runs iterate and plan jobs only; no review/triage and no auto-merge.'),
+  }
+  const roleCard = roleMissing
+    ? `<section class="card" id="role">
+        <div class="eyebrow">${escapeHtml(t('你的角色', 'YOUR ROLE'))}</div>
+        <h2>${escapeHtml(t('选择你在这个仓库的角色', 'Choose your role for this repository'))}</h2>
+        <p class="muted">${escapeHtml(t('角色来自你在这个 GitHub 仓库的权限，Fledge 不会自动替你选择。未选择前不会启动定时或手动任务。', 'The role comes from your permission on this GitHub repository; Fledge will not choose it for you. Scheduled and manual jobs stay paused until you choose.'))}</p>
+        <form method="post" action="/repos/${escapeHtml(repo.id)}/role" class="form">
+          ${csrf(viewer)}
+          <div class="row">
+            ${allowedRoles.map((role) => `<button class="btn" type="submit" name="role" value="${role}">${escapeHtml(repoRoleLabel(t, role))}</button>`).join('')}
+          </div>
+        </form>
+        <div class="list">
+          ${allowedRoles.map((role) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(repoRoleLabel(t, role))}</strong><small>${escapeHtml(roleDescriptions[role])}</small></div></div>`).join('')}
+        </div>
+        <p class="fine">${escapeHtml(t('GitHub 权限是 admin/maintain 时才能选 maintainer；其他权限只能选 developer。平台管理员不能替你改这个角色。', 'Maintainer is available only with GitHub admin/maintain permission; every other permission can only be developer. Platform admins cannot change this role for you.'))}</p>
+      </section>`
+    : ''
+  const body = `${repoHeader}${roleCard}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${questionsBlock(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}
   <section class="cols">
     <div class="card" id="repo-settings">
       <h2>${escapeHtml(t('迭代目标', 'Iteration goal'))}</h2>
@@ -579,6 +617,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         ${goalTemplateSelect(t, 'goal-settings')}
         <textarea id="goal-settings" name="goal" rows="5" placeholder="${escapeHtml(t('这个仓库每次迭代应该关注什么？', 'What should each iteration focus on for this repository?'))}">${escapeHtml(repo.goal)}</textarea>
         <label>${escapeHtml(t('目标分支', 'Target branch'))}${infoTip(t('PR 会合入这个分支；Fledge 仍会新建工作分支，不会直接 push 目标分支。留空使用仓库默认分支。', 'Pull requests target this branch; Fledge still creates a working branch and never pushes to the target branch. Leave blank for the repository default.'))} <input name="targetBranch" value="${escapeHtml(targetBranch)}" placeholder="main / develop / release/2.x" autocomplete="off" /></label>
+        <label>${escapeHtml(t('你的角色', 'Your role'))}${infoTip(t('角色来自你在这个 GitHub 仓库的权限。admin/maintain 可选 maintainer 或 developer；其他权限只能选 developer。平台管理员不能替你改。', 'The role comes from your permission on this GitHub repository. admin/maintain can choose maintainer or developer; every other permission can only be developer. Platform admins cannot change it for you.'))} <select name="repoRole" required>${repoRole === null ? `<option value="" selected disabled>${escapeHtml(t('请选择…', 'Choose…'))}</option>` : ''}${allowedRoles.map((role) => `<option value="${role}"${repoRole === role ? ' selected' : ''}>${escapeHtml(repoRoleLabel(t, role))}</option>`).join('')}</select></label>
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" ${repo.auto_iterate === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
           <label class="check"><input type="checkbox" name="enabled" value="1" ${repo.enabled === 1 ? 'checked' : ''} /> ${escapeHtml(t('启用', 'Enabled'))}</label>
@@ -588,7 +627,10 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           <label class="check"><input type="checkbox" name="review" value="1" ${reviewerEnabled ? 'checked' : ''} ${canReview ? '' : 'disabled'} /> ${escapeHtml(t('启用 PR 审核', 'Enable PR reviewer'))}</label>
           <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval" ${canReview ? '' : 'disabled'}>${reviewIntervalOptions(t, repo.review_interval_minutes)}</select></label>
         </div>
-        ${canReview ? '' : `<p class="fine">${escapeHtml(t('你在这个上游没有 maintain/write 权限，审核角色不可用。', 'You do not have maintain/write permission on this upstream, so the reviewer role is unavailable.'))}</p>`}
+        <div class="row" data-merge-group>
+          <label class="check"><input type="checkbox" name="autoMerge" value="1" ${canMaintain && repo.auto_merge === 1 ? 'checked' : ''} ${canMaintain ? '' : 'disabled'} /> ${escapeHtml(t('允许 maintainer 自动合并 PR', 'Allow maintainer auto-merge'))}${infoTip(t('默认关闭。只有 maintainer 能开启；开启后 agent 仅在 PR 检查通过且没有 changes requested 时做 squash merge。developer 不能开启。', 'Off by default. Only a maintainer can enable it. When on, the agent may squash-merge a PR only after checks are green and no changes are requested. Developers cannot enable it.'))}</label>
+        </div>
+        ${roleMissing ? `<p class="fine">${escapeHtml(t('先选择你的角色，审核和自动合并才会生效。', 'Choose your role before review or auto-merge can take effect.'))}</p>` : !githubCanReview ? `<p class="fine">${escapeHtml(t('你在这个上游没有 admin/maintain 权限，审核角色不可用。', 'You do not have admin/maintain permission on this upstream, so the reviewer role is unavailable.'))}</p>` : !canMaintain ? `<p class="fine">${escapeHtml(t('developer 不能启用 PR 审核或自动合并；切换为 maintainer 后才可用。', 'A developer cannot enable PR review or auto-merge; switch to maintainer first.'))}</p>` : ''}
         ${advanced ? `<details class="fine advanced-help"><summary>${escapeHtml(t('团队与调度规则', 'Team and scheduling rules'))}</summary>
           <p>${escapeHtml(t('保存目标后，团队 playbook 会按新目标更新：总控 → 负责人 → 产品/测试/安全/审核/开发。审核角色只有勾选“启用 PR 审核”后才会参与。', 'Saving the goal updates the team playbook: Chief -> Lead -> Product/Test/Security/Reviewer/Dev. The Reviewer takes part only when "Enable PR reviewer" is checked.'))}</p>
           <p>${escapeHtml(t('间隔是最小运行间隔；上一轮未结束时本轮会跳过。手动运行会重置迭代倒计时，审核任务不会。平台全局同时最多 2 个任务。', 'The interval is a minimum gap; a run is skipped while the previous one is active. A manual run resets the countdown; a review does not. The platform runs at most two jobs at a time.'))}</p>
@@ -1416,9 +1458,10 @@ export function appReposPage(input: {
         <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))}${infoTip(t('最小间隔，不是 PR/issue 总数上限；同一仓库同时最多一个任务，平台全局最多 2 个任务。', 'Minimum gap, not a cap on PRs/issues; one job per repository and at most two platform-wide.'))} <select name="interval">${intervalOptions(t)}</select></label>
       </div>
       <div class="row">
-        <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有你在上游有 maintain/write 权限时才可启用。', 'Available only when you have maintain/write permission on the upstream.'))}</label>
+        <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时才可启用。', 'Available only with the maintainer role and GitHub admin/maintain permission.'))}</label>
         <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval">${reviewIntervalOptions(t)}</select></label>
       </div>
+      <p class="fine">${escapeHtml(t('添加后请为每个仓库选择 maintainer 或 developer；角色来自你的 GitHub 权限，Fledge 不会自动选择。', 'After adding, choose maintainer or developer for each repository. The role comes from your GitHub permission; Fledge will not choose it for you.'))}</p>
     </div>`
   const repoRows = (repos ?? []).map((repo) => `<tr>
     <td><label class="check"><input type="checkbox" name="repo" value="${escapeHtml(repo.fullName)}" /> <strong>${escapeHtml(repo.fullName)}</strong></label></td>

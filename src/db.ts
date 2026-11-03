@@ -72,6 +72,9 @@ export interface RepoRow {
   goal: string
   enabled: number
   job_mode: string
+  repo_role: string | null
+  auto_merge: number
+  role_checked_at: string | null
   auto_iterate: number
   interval_minutes: number
   last_run_at: string | null
@@ -281,6 +284,9 @@ CREATE TABLE IF NOT EXISTS repos (
   goal TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
   job_mode TEXT NOT NULL DEFAULT 'iterate',
+  repo_role TEXT,
+  auto_merge INTEGER NOT NULL DEFAULT 0,
+  role_checked_at TEXT,
   auto_iterate INTEGER NOT NULL DEFAULT 0,
   interval_minutes INTEGER NOT NULL DEFAULT 1440,
   last_run_at TEXT,
@@ -448,8 +454,12 @@ export class Store {
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
+    const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
     this.run("UPDATE repos SET job_mode = 'iterate' WHERE job_mode != 'iterate'")
-    this.db.exec('PRAGMA user_version = 14;')
+    if (previousVersion < 15) {
+      this.run("UPDATE repos SET repo_role = CASE WHEN permission IN ('admin', 'maintain') THEN 'maintainer' ELSE 'developer' END WHERE repo_role IS NULL")
+    }
+    this.db.exec('PRAGMA user_version = 15;')
   }
 
   private migrateColumns(): void {
@@ -481,6 +491,9 @@ export class Store {
     const repoAdditions: Array<[string, string]> = [
       ['installation_id', 'INTEGER'],
       ['job_mode', "TEXT NOT NULL DEFAULT 'iterate'"],
+      ['repo_role', 'TEXT'],
+      ['auto_merge', 'INTEGER NOT NULL DEFAULT 0'],
+      ['role_checked_at', 'TEXT'],
       ['upstream_owner', "TEXT NOT NULL DEFAULT ''"],
       ['upstream_name', "TEXT NOT NULL DEFAULT ''"],
       ['fork_owner', "TEXT NOT NULL DEFAULT ''"],
@@ -896,6 +909,9 @@ export class Store {
     goal: string
     autoIterate: boolean
     intervalMinutes: number
+    repoRole?: string | null
+    autoMerge?: boolean
+    roleCheckedAt?: string | null
     upstreamOwner?: string
     upstreamName?: string
     forkOwner?: string
@@ -916,8 +932,9 @@ export class Store {
     this.run(
       `INSERT INTO repos (id, user_id, owner, name, default_branch, token_enc, installation_id, goal, enabled, auto_iterate, interval_minutes, created_at,
          upstream_owner, upstream_name, fork_owner, fork_name, upstream_default_branch, fork_default_branch, target_branch, job_mode,
+         repo_role, auto_merge, role_checked_at,
          is_fork, fork_created, permission, can_review, can_create_issue, reviewer_enabled, review_interval_minutes, upstream_html_url, fork_html_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.userId,
       input.owner,
@@ -937,6 +954,9 @@ export class Store {
       input.forkDefaultBranch ?? input.defaultBranch,
       input.targetBranch ?? input.upstreamDefaultBranch ?? input.defaultBranch,
       'iterate',
+      input.repoRole ?? null,
+      input.autoMerge === true ? 1 : 0,
+      input.roleCheckedAt ?? null,
       input.isFork === true ? 1 : 0,
       input.forkCreated === true ? 1 : 0,
       input.permission ?? 'write',
@@ -977,7 +997,7 @@ export class Store {
     return this.get<RepoRow>('SELECT * FROM repos WHERE user_id = ? AND lower(owner) = lower(?) AND lower(name) = lower(?)', userId, owner, name)
   }
 
-  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
+  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -993,7 +1013,7 @@ export class Store {
   }
 
   listReviewRepos(): RepoRow[] {
-    return this.all<RepoRow>('SELECT * FROM repos WHERE enabled = 1 AND reviewer_enabled = 1 AND can_review = 1')
+    return this.all<RepoRow>("SELECT * FROM repos WHERE enabled = 1 AND reviewer_enabled = 1 AND can_review = 1 AND repo_role = 'maintainer'")
   }
 
   getRepoInstance(repoId: string): RepoInstanceRow | undefined {

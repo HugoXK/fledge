@@ -90,6 +90,16 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     assert.equal(repo.permission, 'write')
     assert.equal(repo.can_review, 1)
     assert.equal(repo.reviewer_enabled, 0)
+    assert.equal(repo.repo_role, null)
+
+    const role = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/role`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, role: 'developer' }),
+    })
+    assert.equal(role.statusCode, 302)
+    assert.equal(store.getRepo(repo.id)?.repo_role, 'developer')
 
     const duplicateRepo = await built.app.inject({
       method: 'POST',

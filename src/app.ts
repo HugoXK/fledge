@@ -22,10 +22,11 @@ import { log } from './lib/log.js'
 import { RateLimiter } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
-import { addMinutes } from './lib/time.js'
+import { addMinutes, nowIso } from './lib/time.js'
 import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale } from './i18n.js'
 import { normalizeInterval } from './lib/intervals.js'
 import { isValidBranchName } from './lib/branches.js'
+import { allowedRepoRoles, parseRepoRole, roleAllowed } from './lib/repoRole.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -722,6 +723,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       try {
         const token = await githubApp.installationToken(installationId)
         const prepared = await prepareRepoWithInstallation(token, repoInfo.owner, repoInfo.name, installation.account_login, config.github.apiBase)
+        const canMaintainPermission = prepared.permission === 'admin' || prepared.permission === 'maintain'
         const repo = store.createRepo({
           id: randomId('repo'),
           userId: viewer.user.id,
@@ -744,7 +746,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
           permission: prepared.permission,
           canReview: prepared.canReview,
           canCreateIssue: prepared.canCreateIssue,
-          reviewerEnabled: prepared.canReview && review,
+          reviewerEnabled: canMaintainPermission && review,
           reviewIntervalMinutes: reviewInterval,
           upstreamHtmlUrl: prepared.upstream.htmlUrl,
           forkHtmlUrl: prepared.fork.htmlUrl,
@@ -779,7 +781,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const prepared = await prepareRepo(token, owner, name, viewer.user.login, config.github.apiBase)
       const interval = normalizeInterval(body.interval, 1440)
       const reviewInterval = normalizeInterval(body.reviewInterval, 1440)
-      const reviewerEnabled = prepared.canReview && body.review === '1'
+      const canMaintainPermission = prepared.permission === 'admin' || prepared.permission === 'maintain'
+      const reviewerEnabled = canMaintainPermission && body.review === '1'
       const repo = store.createRepo({
         id: randomId('repo'),
         userId: viewer.user.id,
@@ -813,8 +816,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (prepared.forkCreated) bits.push(t(`已创建 fork ${prepared.fork.fullName}。`, `Created fork ${prepared.fork.fullName}.`))
       else if (prepared.isFork) bits.push(t(`使用你的 fork ${prepared.fork.fullName}。`, `Using your fork ${prepared.fork.fullName}.`))
       else bits.push(t('这是你自己的仓库，无需 fork。', 'You own this repository; no fork is needed.'))
-      if (!prepared.canReview) bits.push(t('你不是上游维护者/写权限成员，审核角色未启用。', 'You are not an upstream maintainer/write member; the reviewer role is not enabled.'))
-      else bits.push(reviewerEnabled ? t('已启用 PR 审核角色。', 'PR reviewer role enabled.') : t('审核角色已关闭。', 'Reviewer role disabled.'))
+      if (!canMaintainPermission) bits.push(t('你在上游没有 admin/maintain 权限，只能选择 developer。', 'You do not have admin/maintain permission on the upstream, so you can only choose developer.'))
+      else bits.push(t('你在这个上游可以选择 maintainer 或 developer；审核角色可在设置里启用。', 'You can choose maintainer or developer for this upstream; enable the reviewer role in settings.'))
       if (config.flybot.instanceImage !== '') {
         instances.ensureUserDir(viewer.user.id)
         void instances.provision(repo).catch((error) => log.error('flybot provisioning failed', { repo: repo.id, error: String(error) }))
@@ -1332,7 +1335,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     try {
       const token = await repoGithubToken(repo, config, githubApp, store)
       const prepared = await prepareRepo(token, repo.upstream_owner || repo.owner, repo.upstream_name || repo.name, viewer.user.login, config.github.apiBase)
-      const enableReviewer = prepared.canReview && (repo.can_review !== 1 || repo.reviewer_enabled === 1)
+      const allowed = allowedRepoRoles(prepared.permission)
+      const currentRole = parseRepoRole(repo.repo_role)
+      const downgraded = currentRole === 'maintainer' && !allowed.includes('maintainer')
+      const nextRole = downgraded ? 'developer' : repo.repo_role
+      const enableReviewer = nextRole === 'maintainer' && prepared.canReview && repo.reviewer_enabled === 1
       store.updateRepo(repo.id, {
         upstream_owner: prepared.upstream.owner,
         upstream_name: prepared.upstream.name,
@@ -1343,15 +1350,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         is_fork: prepared.isFork ? 1 : 0,
         fork_created: prepared.forkCreated ? 1 : 0,
         permission: prepared.permission,
+        repo_role: nextRole,
+        auto_merge: downgraded ? 0 : repo.auto_merge,
+        role_checked_at: nowIso(),
         can_review: prepared.canReview ? 1 : 0,
         can_create_issue: prepared.canCreateIssue ? 1 : 0,
         reviewer_enabled: enableReviewer ? 1 : 0,
         upstream_html_url: prepared.upstream.htmlUrl,
         fork_html_url: prepared.fork.htmlUrl,
       })
-      store.audit(viewer.user.id, 'repo.refreshed', `${repo.owner}/${repo.name} fork=${prepared.fork.owner}/${prepared.fork.name} permission=${prepared.permission}`)
+      store.audit(viewer.user.id, 'repo.refreshed', `${repo.owner}/${repo.name} fork=${prepared.fork.owner}/${prepared.fork.name} permission=${prepared.permission} role=${nextRole ?? 'none'}${downgraded ? ' downgraded' : ''}`)
       const t = translator(request.locale ?? 'zh')
-      return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(prepared.forkCreated ? t(`已创建 fork ${prepared.fork.fullName}。`, `Created fork ${prepared.fork.fullName}.`) : t('上游 / fork / 权限已重新检测。', 'Upstream, fork and permissions refreshed.'))}`)
+      const notice = [
+        prepared.forkCreated ? t(`已创建 fork ${prepared.fork.fullName}。`, `Created fork ${prepared.fork.fullName}.`) : t('上游 / fork / 权限已重新检测。', 'Upstream, fork and permissions refreshed.'),
+        downgraded ? t('GitHub 权限已变更，角色已降级为 developer，自动合并已关闭。', 'GitHub permission changed; the role was downgraded to developer and auto-merge is off.') : '',
+      ].filter((line) => line !== '').join(' ')
+      return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(notice)}`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(message)}`)
@@ -1384,11 +1398,37 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
   })
 
+  app.post('/repos/:id/role', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const body = form(request)
+    const role = parseRepoRole(body.role)
+    if (role === null) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请选择 maintainer 或 developer。')}#role`)
+    }
+    if (!roleAllowed(repo.permission, role)) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('你的 GitHub 权限不允许选择这个角色。')}#role`)
+    }
+    store.updateRepo(repo.id, { repo_role: role, auto_merge: 0, reviewer_enabled: role === 'maintainer' ? repo.reviewer_enabled : 0, role_checked_at: nowIso() })
+    store.audit(viewer.user.id, 'repo.role', `${repo.owner}/${repo.name} role=${role} previous=${repo.repo_role ?? 'none'}`)
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(`已选择角色：${role === 'maintainer' ? 'Maintainer' : 'Developer'}。`)}`)
+  })
+
   app.post('/repos/:id/settings', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const body = form(request)
     const interval = normalizeInterval(body.interval, repo.interval_minutes)
     const reviewInterval = normalizeInterval(body.reviewInterval, repo.review_interval_minutes)
+    const currentRole = parseRepoRole(repo.repo_role)
+    const requestedRole = parseRepoRole(body.repoRole)
+    const repoRole = requestedRole ?? currentRole
+    if (repoRole === null) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请先选择你的角色。')}#repo-settings`)
+    }
+    if (!roleAllowed(repo.permission, repoRole)) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('你的 GitHub 权限不允许选择这个角色。')}#repo-settings`)
+    }
+    const canMaintain = repoRole === 'maintainer'
+    const roleChanged = repoRole !== currentRole
     const goal = (body.goal ?? '').slice(0, 4000)
     const goalChanged = goal !== repo.goal
     const requestedBranch = (body.targetBranch ?? '').trim()
@@ -1410,10 +1450,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.updateRepo(repo.id, {
       goal,
       target_branch: targetBranch,
+      repo_role: repoRole,
+      auto_merge: canMaintain && body.autoMerge === '1' ? 1 : 0,
       auto_iterate: body.auto === '1' ? 1 : 0,
       enabled: body.enabled === '1' ? 1 : 0,
       interval_minutes: interval,
-      reviewer_enabled: repo.can_review === 1 && body.review === '1' ? 1 : 0,
+      reviewer_enabled: canMaintain && repo.can_review === 1 && body.review === '1' ? 1 : 0,
       review_interval_minutes: reviewInterval,
     })
     if (goalChanged) {
@@ -1421,7 +1463,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         log.warn('team playbook not updated after goal change', { repo: repo.id, error: String(error) })
       })
     }
-    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} reviewer=${repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
+    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} role=${repoRole}${roleChanged ? ' role=changed' : ''} autoMerge=${canMaintain && body.autoMerge === '1' ? 'on' : 'off'} reviewer=${canMaintain && repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(goalChanged ? '设置已保存；团队规则已按新目标更新。' : '设置已保存。')}#repo-settings`)
   })
 

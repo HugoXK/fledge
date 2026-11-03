@@ -74,7 +74,7 @@ test('team console reads live state and sends guidance', async () => {
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'team-user', status: 'approved', superadmin: true })
-    const repo = store.createRepo({ id: 'repo_team', userId: user.id, owner: 'openJiuwen-ai', name: 'DigitalMate', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_team', userId: user.id, owner: 'openJiuwen-ai', name: 'DigitalMate', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.saveRepoInstance({
       repo_id: repo.id,
       user_id: user.id,
@@ -229,7 +229,7 @@ test('team events stream pushes a live snapshot', async () => {
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'stream-team-user', status: 'approved', superadmin: true })
-    const repo = store.createRepo({ id: 'repo_stream', userId: user.id, owner: 'openJiuwen-ai', name: 'DigitalMate', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_stream', userId: user.id, owner: 'openJiuwen-ai', name: 'DigitalMate', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.saveRepoInstance({
       repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/stream', bridge_script: '/tmp/bridge',
       dsh_port: 1, bridge_port: Number(new URL(bridge.url).port), model_port: 2, model_bind: '127.0.0.1', image: 'image',
@@ -283,7 +283,7 @@ test('a normal repository owner can message the Chief without the team console',
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'chief-message-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_chief_message', userId: user.id, owner: 'o', name: 'chief', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_chief_message', userId: user.id, owner: 'o', name: 'chief', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.saveRepoInstance({
       repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/chief-message', bridge_script: '/tmp/bridge',
       dsh_port: 1, bridge_port: Number(new URL(bridge.url).port), model_port: 2, model_bind: '127.0.0.1', image: 'image',
@@ -365,7 +365,7 @@ test('the Chief conversation reads the DSH export and streams a snapshot', async
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'chief-export-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_chief_export', userId: user.id, owner: 'o', name: 'ce', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_chief_export', userId: user.id, owner: 'o', name: 'ce', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const port = Number(new URL(fake.url).port)
     store.saveRepoInstance({
       repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: dataDir, bridge_script: '/tmp/bridge',

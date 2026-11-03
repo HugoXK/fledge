@@ -29,7 +29,7 @@ const PROTOCOL = [
   'Job rules:',
   '- One focused issue and one pull request per job. Do not expand scope or start a second feature.',
   '- Before working, check the latest upstream target branch and existing issues/PRs. If the work is already fixed or covered, report the existing link instead of duplicating it. Sync a stale fork before creating the branch.',
-  '- Never push to the upstream base branch, never force-push, never merge, never change repository settings.',
+  '- Never push to the upstream base branch, never force-push, never change repository settings, and never merge unless the job rules explicitly enable maintainer auto-merge.',
   '- Fetch the GitHub token only from the credential URL in the job; never print or store the token value.',
   '- Send a progress heartbeat by POSTing the job callback with {"status":"running","summary":"<one line progress>","checkpoint":"<done + next>"} after each major step and at least every 10 minutes.',
   '- Finish with the final callback before the time limit. If blocked, POST {"status":"failed","error":"<concrete blocker>"} instead of running silently.',

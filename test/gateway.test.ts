@@ -139,7 +139,7 @@ test('a job-scoped token records usage and cost on the job', async () => {
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'job-cost-user', status: 'approved', quota: 10 })
-    const repo = store.createRepo({ id: 'repo_cost', userId: user.id, owner: 'o', name: 'c', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_cost', userId: user.id, owner: 'o', name: 'c', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.createJob({ id: 'job_cost', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
     const raw = `flg_${randomToken(32)}`
     store.createApiToken({ id: 'tok_job_cost', userId: user.id, kind: 'job', name: 'job:job_cost', tokenHash: sha256Hex(raw), prefix: raw.slice(0, 8), expiresAt: null })

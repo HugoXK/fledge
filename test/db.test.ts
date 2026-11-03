@@ -90,7 +90,7 @@ test('events and product metrics are recorded', () => {
   const store = new Store(':memory:')
   try {
     const user = makeUser(store, { login: 'metrics-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_metrics', userId: user.id, owner: 'o', name: 'm', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_metrics', userId: user.id, owner: 'o', name: 'm', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const job = store.createJob({ id: 'job_metrics', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
     store.updateJob(job.id, { status: 'succeeded', pr_url: 'https://github.com/o/m/pull/1', finished_at: new Date().toISOString() })
     store.event('job_enqueued', { userId: user.id, repoId: repo.id, jobId: job.id })
@@ -119,7 +119,7 @@ test('a running job without started_at is still eligible for timeout cleanup', (
   const store = new Store(':memory:')
   try {
     const user = makeUser(store, { login: 'stale-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_stale', userId: user.id, owner: 'o', name: 'stale', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_stale', userId: user.id, owner: 'o', name: 'stale', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.createJob({ id: 'job_stale', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
     store.updateJob('job_stale', { status: 'running' })
     assert.equal(store.getJob('job_stale')?.started_at, null)

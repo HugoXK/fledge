@@ -23,7 +23,7 @@ test('iterate dispatches to the Chief and review to the Reviewer', async () => {
   const jobs = new Jobs(store, config, runner, new MemoryMailer(), manager)
   try {
     const user = makeUser(store, { login: 'dispatch-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_dispatch', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440, canReview: true, reviewerEnabled: true })
+    const repo = store.createRepo({ id: 'repo_dispatch', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440, canReview: true, reviewerEnabled: true })
     store.saveRepoInstance({
       repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/dispatch', bridge_script: '/tmp/bridge',
       dsh_port: 1, bridge_port: 2, model_port: 3, model_bind: '127.0.0.1', image: 'image',
@@ -58,13 +58,13 @@ test('jobs use the repository target branch and reject invalid branch names', as
   const jobs = new Jobs(store, config, runner, new MemoryMailer())
   try {
     const user = makeUser(store, { login: 'branch-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_branch', userId: user.id, owner: 'o', name: 'branch', defaultBranch: 'main', targetBranch: 'develop', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_branch', userId: user.id, owner: 'o', name: 'branch', defaultBranch: 'main', targetBranch: 'develop', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const result = await jobs.enqueue(repo, 'manual')
     assert.equal(result.ok, true)
     assert.equal(result.job?.base_branch, 'develop')
     assert.equal(contexts[0]?.upstream.defaultBranch, 'develop')
     store.updateJob(result.job!.id, { status: 'succeeded', finished_at: new Date().toISOString() })
-    const invalid = store.createRepo({ id: 'repo_branch_invalid', userId: user.id, owner: 'o', name: 'branch-invalid', defaultBranch: 'main', targetBranch: 'bad..branch', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const invalid = store.createRepo({ id: 'repo_branch_invalid', userId: user.id, owner: 'o', name: 'branch-invalid', defaultBranch: 'main', targetBranch: 'bad..branch', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const rejected = await jobs.enqueue(invalid, 'manual')
     assert.equal(rejected.ok, false)
     assert.equal(rejected.code, 'BRANCH_INVALID')
@@ -80,7 +80,7 @@ test('a running callback unwraps a nested progress summary', async () => {
   const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
   try {
     const user = makeUser(store, { login: 'summary-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_summary', userId: user.id, owner: 'o', name: 's', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_summary', userId: user.id, owner: 'o', name: 's', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const secret = 'callback-secret'
     store.createJob({ id: 'job_summary', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '' })
     store.updateJob('job_summary', { status: 'running' })
@@ -101,7 +101,7 @@ test('a final callback keeps earlier branch, PR links and progress when it omits
   const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
   try {
     const user = makeUser(store, { login: 'merge-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_merge', userId: user.id, owner: 'o', name: 'm', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_merge', userId: user.id, owner: 'o', name: 'm', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const secret = 'callback-secret'
     store.createJob({ id: 'job_merge', repoId: repo.id, userId: user.id, trigger: 'followup', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '' })
     store.updateJob('job_merge', {
@@ -131,7 +131,7 @@ test('follow-up retries are not blocked forever after a failed enqueue', async (
   const jobs = new Jobs(store, config, { name: 'capture', async run() { return { status: 'running' } } }, new MemoryMailer())
   try {
     const user = makeUser(store, { login: 'followup-retry-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_followup_retry', userId: user.id, owner: 'o', name: 'fr', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_followup_retry', userId: user.id, owner: 'o', name: 'fr', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.updateRepo(repo.id, { enabled: 0 })
     const first = await jobs.followUp(store.getRepo(repo.id)!, { prUrl: 'https://github.com/o/fr/pull/9', branch: 'fledge/fix', reason: 'check failed', headSha: 'sha1' })
     assert.equal(first.ok, false)
@@ -151,7 +151,7 @@ test('manual enqueue respects the global two-job limit', async () => {
   try {
     const user = makeUser(store, { login: 'limit-user', status: 'approved' })
     for (const id of ['repo_limit_1', 'repo_limit_2', 'repo_limit_3']) {
-      store.createRepo({ id, userId: user.id, owner: 'o', name: id, defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+      store.createRepo({ id, userId: user.id, owner: 'o', name: id, defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     }
     store.createJob({ id: 'job_limit_1', repoId: 'repo_limit_1', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h1', platformTokenHash: '' })
     store.createJob({ id: 'job_limit_2', repoId: 'repo_limit_2', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
@@ -173,7 +173,7 @@ test('daily digests still send while two jobs are active', async () => {
   try {
     const user = makeUser(store, { login: 'digest-busy-user', status: 'approved' })
     store.setEmailDailyDigest(user.id, true)
-    store.createRepo({ id: 'repo_digest_busy', userId: user.id, owner: 'o', name: 'dbusy', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createRepo({ id: 'repo_digest_busy', userId: user.id, owner: 'o', name: 'dbusy', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.createJob({ id: 'job_busy_1', repoId: 'repo_digest_busy', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h1', platformTokenHash: '' })
     store.createJob({ id: 'job_busy_2', repoId: 'repo_digest_busy', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
     store.updateJob('job_busy_1', { status: 'running' })
@@ -198,7 +198,7 @@ test('a successful callback stores attribution and posts a PR automation comment
   const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer)
   try {
     const user = makeUser(store, { login: 'attribution-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_attr', userId: user.id, owner: 'owner', name: 'repo', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_attr', userId: user.id, owner: 'owner', name: 'repo', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const secret = 'callback-secret'
     store.createJob({ id: 'job_attr', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '' })
     store.updateJob('job_attr', { status: 'running' })
@@ -245,8 +245,8 @@ test('quotaBlocked fails that user\'s active jobs and revokes their tokens', asy
   try {
     const user = makeUser(store, { login: 'quota-a', status: 'approved' })
     const other = makeUser(store, { login: 'quota-b', status: 'approved' })
-    const repoA = store.createRepo({ id: 'repo_a', userId: user.id, owner: 'o', name: 'a', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
-    const repoB = store.createRepo({ id: 'repo_b', userId: other.id, owner: 'o', name: 'b', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repoA = store.createRepo({ id: 'repo_a', userId: user.id, owner: 'o', name: 'a', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repoB = store.createRepo({ id: 'repo_b', userId: other.id, owner: 'o', name: 'b', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const token = store.createApiToken({ id: 'tok_a', userId: user.id, kind: 'job', name: 'job:a', tokenHash: 'hash-a', prefix: 'flg_a', expiresAt: null })
     store.createJob({ id: 'job_a', repoId: repoA.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: token.token_hash })
     store.updateJob('job_a', { status: 'running' })
@@ -292,7 +292,7 @@ test('a new team question sends one attention email', async () => {
   try {
     const user = makeUser(store, { login: 'question-user', status: 'approved' })
     store.setEmailDailyDigest(user.id, false)
-    const repo = store.createRepo({ id: 'repo_question', userId: user.id, owner: 'o', name: 'q', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_question', userId: user.id, owner: 'o', name: 'q', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.saveRepoInstance({
       repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/question', bridge_script: '/tmp/bridge',
       dsh_port: 1, bridge_port: Number(new URL(bridge.url).port), model_port: 2, model_bind: '127.0.0.1', image: 'image',
@@ -324,7 +324,7 @@ test('job email follows the user preference', async () => {
   const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer)
   try {
     const user = makeUser(store, { login: 'mail-pref', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_mail', userId: user.id, owner: 'o', name: 'm', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_mail', userId: user.id, owner: 'o', name: 'm', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const secret = 'mail-secret'
     store.createJob({ id: 'job_mail', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '' })
     store.updateJob('job_mail', { status: 'running' })
@@ -349,7 +349,7 @@ test('daily digest sends once and includes the day summary', async () => {
   const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer)
   try {
     const user = makeUser(store, { login: 'digest-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_digest', userId: user.id, owner: 'o', name: 'digest', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_digest', userId: user.id, owner: 'o', name: 'digest', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.createJob({ id: 'job_digest', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
     store.updateJob('job_digest', { status: 'succeeded', summary: 'Fixed a digest bug', pr_url: 'https://github.com/o/digest/pull/1', finished_at: new Date().toISOString() })
     await jobs.tick()
@@ -374,7 +374,7 @@ test('plan jobs dispatch as plan and keep a checkpoint', async () => {
   const jobs = new Jobs(store, config, runner, new MemoryMailer())
   try {
     const user = makeUser(store, { login: 'plan-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_plan', userId: user.id, owner: 'o', name: 'p', defaultBranch: 'main', tokenEnc: 'x', goal: 'plan goal', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_plan', userId: user.id, owner: 'o', name: 'p', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'plan goal', autoIterate: false, intervalMinutes: 1440 })
     const result = await jobs.enqueue(repo, 'manual', undefined, 'plan')
     assert.equal(result.ok, true)
     assert.equal(contexts[0]?.kind, 'plan')
@@ -392,7 +392,7 @@ test('follow-up jobs reuse the branch and PR and are deduplicated', async () => 
   const jobs = new Jobs(store, config, runner, new MemoryMailer())
   try {
     const user = makeUser(store, { login: 'followup-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_followup', userId: user.id, owner: 'o', name: 'f', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_followup', userId: user.id, owner: 'o', name: 'f', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const first = await jobs.followUp(repo, { prUrl: 'https://github.com/o/f/pull/7', branch: 'fledge/fix', reason: 'check failed', headSha: 'abc' })
     assert.equal(first.ok, true)
     assert.equal(first.job?.trigger, 'followup')
@@ -403,6 +403,66 @@ test('follow-up jobs reuse the branch and PR and are deduplicated', async () => 
     const duplicate = await jobs.followUp(repo, { prUrl: 'https://github.com/o/f/pull/7', branch: 'fledge/fix', reason: 'check failed', headSha: 'abc' })
     assert.equal(duplicate.ok, false)
     assert.equal(duplicate.code, 'DUPLICATE_FOLLOWUP')
+  } finally {
+    store.close()
+  }
+})
+
+test('a repository without a selected role cannot enqueue jobs', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'role-required-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_role_required', userId: user.id, owner: 'o', name: 'rr', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: null, goal: '', autoIterate: true, intervalMinutes: 1440 })
+    const result = await jobs.enqueue(repo, 'manual')
+    assert.equal(result.ok, false)
+    assert.equal(result.code, 'ROLE_REQUIRED')
+    await jobs.tick()
+    assert.equal(contexts.length, 0)
+  } finally {
+    store.close()
+  }
+})
+
+test('a developer cannot run review jobs', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'capture', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'developer-review-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_developer_review', userId: user.id, owner: 'o', name: 'dr', defaultBranch: 'main', tokenEnc: 'x', permission: 'write', repoRole: 'developer', canReview: true, reviewerEnabled: true, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const result = await jobs.enqueue(repo, 'manual', undefined, 'review')
+    assert.equal(result.ok, false)
+    assert.equal(result.code, 'ROLE_FORBIDDEN')
+  } finally {
+    store.close()
+  }
+})
+
+test('maintainer auto-merge reaches the runner only when enabled', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'auto-merge-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_auto_merge', userId: user.id, owner: 'o', name: 'am', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', autoMerge: true, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const result = await jobs.enqueue(repo, 'manual')
+    assert.equal(result.ok, true)
+    assert.equal(contexts[0]?.repoRole, 'maintainer')
+    assert.equal(contexts[0]?.autoMerge, true)
+
+    store.updateJob(result.job!.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    const developer = store.createRepo({ id: 'repo_auto_merge_dev', userId: user.id, owner: 'o', name: 'amd', defaultBranch: 'main', tokenEnc: 'x', permission: 'write', repoRole: 'developer', autoMerge: true, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const devResult = await jobs.enqueue(developer, 'manual')
+    assert.equal(devResult.ok, true)
+    assert.equal(contexts[1]?.repoRole, 'developer')
+    assert.equal(contexts[1]?.autoMerge, false)
   } finally {
     store.close()
   }

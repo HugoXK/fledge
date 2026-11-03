@@ -50,7 +50,7 @@ test('a failed check on a Fledge PR enqueues a follow-up job', async () => {
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner, startScheduler: false })
   try {
     const user = makeUser(store, { login: 'followup-webhook', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_webhook', userId: user.id, owner: 'HugoXK', name: 'system1-agents', defaultBranch: 'main', tokenEnc: '', installationId: 177732813, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_webhook', userId: user.id, owner: 'HugoXK', name: 'system1-agents', defaultBranch: 'main', tokenEnc: '', permission: 'admin', repoRole: 'maintainer', installationId: 177732813, goal: '', autoIterate: false, intervalMinutes: 1440 })
     const original = store.createJob({ id: 'job_original', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex('cb'), platformTokenHash: '' })
     store.updateJob(original.id, { status: 'succeeded', pr_url: 'https://github.com/HugoXK/system1-agents/pull/7', branch: 'fledge/fix', finished_at: new Date().toISOString() })
     const payload = {

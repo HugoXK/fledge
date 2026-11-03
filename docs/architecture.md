@@ -61,7 +61,7 @@
   set unlimited quota. The owner can toggle a normal-user preview cookie that
   renders the simple UI while advanced routes stay blocked.
 - **No worker process**: a 60-second tick schedules due iterate jobs and, when
-  the upstream grants maintain/write permission, review jobs for all open PRs.
+  the user selected the maintainer role and the upstream grants admin/maintain permission, review jobs for all open PRs.
   The interval is the minimum gap between runs, not a cap on PRs or issues; a
   repository can accumulate many PRs/issues over time. A run is skipped while
   another job for that repository is active. The global concurrency cap is 2.
@@ -73,16 +73,29 @@
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
   against the upstream; issues are created on the upstream. If the token user
   owns the upstream, no fork is created and the branch/PR stay in that repo.
+- **Repository role**: each user-repository connection stores `repo_role` as
+  `maintainer` or `developer`. Fledge derives the allowed roles from the user's
+  GitHub permission on that repository: `admin`/`maintain` may choose either,
+  and every other permission can only choose `developer`. The user must choose
+  explicitly; the platform never auto-selects and an admin cannot assign the
+  role. A user can be a maintainer in one repository and a developer in another.
+  Maintainer enables review/triage maintenance actions and the opt-in
+  auto-merge switch; developer runs iterate/plan jobs only. There is no separate
+  owner or viewer role.
 - **Target branch**: each repository stores a `target_branch` that defaults to
   the upstream default but can be `develop` or a release branch. Jobs snapshot
   it as `base_branch`; the agent still creates a new head branch and opens the
   PR against that base. Follow-ups keep the existing PR base. Invalid target branch names are rejected when
   saved; if a verified branch disappears later, the job fails clearly instead
   of silently falling back to the repository default.
-- **Reviewer role**: a user with maintain/write permission on the upstream (or
-  ownership) can enable a scheduled reviewer. Review jobs list every open
-  upstream PR, score each one, and post a COMMENT review; they never merge or
-  modify code.
+- **Reviewer role**: a maintainer with GitHub admin/maintain permission on the
+  upstream can enable a scheduled reviewer. Review jobs list every open upstream
+  PR, score each one, and post a COMMENT review; they never merge or modify
+  code. A developer cannot run review jobs even when GitHub grants write access.
+- **Auto-merge switch**: off by default. Only a maintainer can enable it. When
+  it is on, an iterate job may squash-merge its own green PR after checks pass
+  and no review requests changes; otherwise the prompt forbids merging. The
+  switch is stored on the repository and passed to the bridge with the job.
 
 ### Model gateway
 
@@ -294,7 +307,7 @@ small line: `<sub>Fledge · team · role · step</sub>`, where step is claimed,
 implemented, tested or reviewed. On a successful iterate job Fledge also adds a
 collapsible automation block to the PR. It lists only the steps that actually
 happened (a single role is grouped once), links the issue and job page, and
-repeats that Fledge never merges. A missing step is omitted rather than shown as
+states whether the maintainer enabled auto-merge. A missing step is omitted rather than shown as
 "pending", so the block stays truthful and quiet even when attribution is thin.
 
 Both endpoints require `Authorization: Bearer <callbackSecret>`. The secret is

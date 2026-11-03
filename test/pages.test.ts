@@ -44,7 +44,7 @@ test('the simple repo page renders the Chief conversation', () => {
   const store = new Store(':memory:')
   try {
     const user = makeUser(store, { login: 'conversation-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_conversation', userId: user.id, owner: 'o', name: 'talk', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_conversation', userId: user.id, owner: 'o', name: 'talk', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const page = repoPage({
       config,
       locale: 'zh',
@@ -215,7 +215,7 @@ test('job detail shows evidence and can retry a failed job', async () => {
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'retry-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_retry', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', goal: 'keep it small', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_retry', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'keep it small', autoIterate: false, intervalMinutes: 1440 })
     const job = store.createJob({ id: 'job_retry', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'keep it small', callbackHash: 'cb', platformTokenHash: '' })
     store.updateJob(job.id, {
       status: 'failed',
@@ -281,7 +281,7 @@ test('normal users get a simplified repository page without the live team consol
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'simple-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_simple', userId: user.id, owner: 'o', name: 'simple', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_simple', userId: user.id, owner: 'o', name: 'simple', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const { cookie } = sessionFor(built, user)
     const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
     assert.equal(page.statusCode, 200)
@@ -312,7 +312,7 @@ test('repository settings can change the target branch', async () => {
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'branch-settings-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_branch_settings', userId: user.id, owner: 'o', name: 'b', defaultBranch: 'main', tokenEnc: encryptSecret('token', config.tokenEncryptionKey), goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_branch_settings', userId: user.id, owner: 'o', name: 'b', defaultBranch: 'main', tokenEnc: encryptSecret('token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const { cookie, csrf } = sessionFor(built, user)
     const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
     assert.match(page.body, /name="targetBranch"/)
@@ -346,7 +346,7 @@ test('a plan job can be executed after approval', async () => {
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'plan-exec-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_plan_exec', userId: user.id, owner: 'o', name: 'p', defaultBranch: 'main', tokenEnc: 'x', goal: 'goal', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_plan_exec', userId: user.id, owner: 'o', name: 'p', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'goal', autoIterate: false, intervalMinutes: 1440 })
     const job = store.createJob({ id: 'job_plan_exec', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'goal', callbackHash: 'cb', platformTokenHash: '', kind: 'plan' })
     store.updateJob(job.id, { status: 'succeeded', summary: 'Plan: change one file and add one test', finished_at: new Date().toISOString() })
     const { cookie, csrf } = sessionFor(built, user)
@@ -376,7 +376,7 @@ test('dashboard paginates repositories and jobs at ten per page', async () => {
   try {
     const user = makeUser(store, { login: 'page-user', status: 'approved' })
     for (let i = 0; i < 11; i += 1) {
-      const repo = store.createRepo({ id: `repo_page_${i}`, userId: user.id, owner: 'o', name: `r${i}`, defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+      const repo = store.createRepo({ id: `repo_page_${i}`, userId: user.id, owner: 'o', name: `r${i}`, defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
       store.createJob({ id: `job_page_${i}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
     }
     const { cookie } = sessionFor(built, user)
@@ -406,7 +406,7 @@ test('the workspace shows ten recent jobs with repository labels and full PR/Iss
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'console-jobs-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_console_jobs', userId: user.id, owner: 'acme', name: 'widgets', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_console_jobs', userId: user.id, owner: 'acme', name: 'widgets', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     for (let i = 0; i < 12; i += 1) {
       const job = store.createJob({ id: `job_console_${i}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: `cb${i}`, platformTokenHash: '' })
       store.updateJob(job.id, {
@@ -435,7 +435,7 @@ test('a repository job table paginates at ten per page', async () => {
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'repo-page-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_jobs_page', userId: user.id, owner: 'o', name: 'jobs', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_jobs_page', userId: user.id, owner: 'o', name: 'jobs', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     for (let i = 0; i < 11; i += 1) {
       store.createJob({ id: `job_repo_page_${i}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
     }
@@ -481,7 +481,7 @@ test('deleting a repository revokes its active job token', async () => {
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'delete-token-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_delete_token', userId: user.id, owner: 'o', name: 'dt', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_delete_token', userId: user.id, owner: 'o', name: 'dt', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.createApiToken({ id: 'tok_job_delete', userId: user.id, kind: 'job', name: 'job:job_delete_token', tokenHash: 'job-delete-hash', prefix: 'flg_dele', expiresAt: null })
     store.createJob({ id: 'job_delete_token', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: 'job-delete-hash' })
     store.updateJob('job_delete_token', { status: 'running' })
@@ -497,5 +497,170 @@ test('deleting a repository revokes its active job token', async () => {
     assert.equal(store.findApiToken('job-delete-hash'), undefined)
   } finally {
     await built.close()
+  }
+})
+
+test('a repository asks the user to choose a role and only offers allowed roles', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'role-page-user', status: 'approved' })
+    const adminRepo = store.createRepo({ id: 'repo_role_admin', userId: user.id, owner: 'o', name: 'ra', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: null, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const readRepo = store.createRepo({ id: 'repo_role_read', userId: user.id, owner: 'o', name: 'rr', defaultBranch: 'main', tokenEnc: 'x', permission: 'read', repoRole: null, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const { cookie, csrf } = sessionFor(built, user)
+
+    const adminPage = await built.app.inject({ method: 'GET', url: `/repos/${adminRepo.id}`, headers: { cookie } })
+    assert.match(adminPage.body, /选择你在这个仓库的角色/)
+    assert.match(adminPage.body, /value="maintainer"/)
+    assert.match(adminPage.body, /value="developer"/)
+
+    const readPage = await built.app.inject({ method: 'GET', url: `/repos/${readRepo.id}`, headers: { cookie } })
+    assert.match(readPage.body, /选择你在这个仓库的角色/)
+    assert.doesNotMatch(readPage.body, /value="maintainer"/)
+
+    const rejected = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${readRepo.id}/role`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, role: 'maintainer' }),
+    })
+    assert.equal(rejected.statusCode, 302)
+    assert.match(String(rejected.headers.location), /error=/)
+    assert.equal(store.getRepo(readRepo.id)?.repo_role, null)
+
+    const accepted = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${adminRepo.id}/role`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, role: 'developer' }),
+    })
+    assert.equal(accepted.statusCode, 302)
+    assert.equal(store.getRepo(adminRepo.id)?.repo_role, 'developer')
+  } finally {
+    await built.close()
+  }
+})
+
+test('settings gate auto-merge and review on the maintainer role', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'role-settings-user', status: 'approved' })
+    const adminRepo = store.createRepo({ id: 'repo_role_settings_admin', userId: user.id, owner: 'o', name: 'rsa', defaultBranch: 'main', targetBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: null, canReview: true, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const devRepo = store.createRepo({ id: 'repo_role_settings_dev', userId: user.id, owner: 'o', name: 'rsd', defaultBranch: 'main', targetBranch: 'main', tokenEnc: 'x', permission: 'write', repoRole: 'developer', canReview: true, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const { cookie, csrf } = sessionFor(built, user)
+
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${adminRepo.id}`, headers: { cookie } })
+    assert.match(page.body, /name="repoRole"/)
+    assert.match(page.body, /name="autoMerge"/)
+    assert.match(page.body, /允许 maintainer 自动合并 PR/)
+
+    const saved = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${adminRepo.id}/settings`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, goal: '', targetBranch: 'main', repoRole: 'maintainer', autoMerge: '1', review: '1', enabled: '1', interval: '1440', reviewInterval: '1440' }),
+    })
+    assert.equal(saved.statusCode, 302)
+    const updated = store.getRepo(adminRepo.id)!
+    assert.equal(updated.repo_role, 'maintainer')
+    assert.equal(updated.auto_merge, 1)
+    assert.equal(updated.reviewer_enabled, 1)
+
+    const developerSaved = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${devRepo.id}/settings`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, goal: '', targetBranch: 'main', repoRole: 'developer', autoMerge: '1', review: '1', enabled: '1', interval: '1440', reviewInterval: '1440' }),
+    })
+    assert.equal(developerSaved.statusCode, 302)
+    const developer = store.getRepo(devRepo.id)!
+    assert.equal(developer.repo_role, 'developer')
+    assert.equal(developer.auto_merge, 0)
+    assert.equal(developer.reviewer_enabled, 0)
+  } finally {
+    await built.close()
+  }
+})
+
+test('refresh downgrades a maintainer when the GitHub permission is lost', async () => {
+  const github = await startFakeServer((request, response) => {
+    if (request.url === '/user') {
+      json(response, 200, { login: 'role-refresh-user', id: 1 })
+      return
+    }
+    if (request.url === '/repos/openJiuwen-ai/DigitalMate') {
+      json(response, 200, {
+        name: 'DigitalMate',
+        full_name: 'openJiuwen-ai/DigitalMate',
+        default_branch: 'main',
+        private: false,
+        html_url: 'https://github.com/openJiuwen-ai/DigitalMate',
+        owner: { login: 'openJiuwen-ai' },
+        permissions: { admin: false, maintain: false, push: false, triage: false, pull: true },
+      })
+      return
+    }
+    if (request.url === '/repos/role-refresh-user/DigitalMate') {
+      json(response, 200, {
+        name: 'DigitalMate',
+        full_name: 'role-refresh-user/DigitalMate',
+        default_branch: 'main',
+        private: false,
+        html_url: 'https://github.com/role-refresh-user/DigitalMate',
+        fork: true,
+        parent: { full_name: 'openJiuwen-ai/DigitalMate' },
+        owner: { login: 'role-refresh-user' },
+        permissions: { admin: true, maintain: true, push: true, triage: true, pull: true },
+      })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'role-refresh-user', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_role_refresh',
+      userId: user.id,
+      owner: 'openJiuwen-ai',
+      name: 'DigitalMate',
+      defaultBranch: 'main',
+      tokenEnc: encryptSecret('token', config.tokenEncryptionKey),
+      permission: 'admin',
+      repoRole: 'maintainer',
+      autoMerge: true,
+      goal: '',
+      autoIterate: false,
+      intervalMinutes: 1440,
+      upstreamOwner: 'openJiuwen-ai',
+      upstreamName: 'DigitalMate',
+      forkOwner: 'role-refresh-user',
+      forkName: 'DigitalMate',
+      isFork: true,
+    })
+    const { cookie, csrf } = sessionFor(built, user)
+    const refreshed = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/refresh`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf }),
+    })
+    assert.equal(refreshed.statusCode, 302)
+    assert.match(String(refreshed.headers.location), /notice=/)
+    assert.match(decodeURIComponent(String(refreshed.headers.location)), /降级/)
+    const updated = store.getRepo(repo.id)!
+    assert.equal(updated.permission, 'read')
+    assert.equal(updated.repo_role, 'developer')
+    assert.equal(updated.auto_merge, 0)
+    assert.equal(updated.reviewer_enabled, 0)
+  } finally {
+    await built.close()
+    await github.close()
   }
 })

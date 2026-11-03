@@ -16,7 +16,7 @@ Read first, in this order:
 Fledge is a self-hosted platform where a user connects GitHub repositories and a
 FlyBot agent iterates on them: it writes a failing test, makes the smallest
 correct fix, opens one reviewable PR, and stops. Fledge orchestrates, meters and
-audits; it never runs a user repository and never merges a PR.
+audits; it never runs a user repository and does not merge a PR unless a maintainer explicitly enables auto-merge for that repository.
 
 Core paths:
 

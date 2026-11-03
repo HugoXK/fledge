@@ -129,6 +129,7 @@ function buildText(job) {
   const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : job.kind === 'provision' ? 'provision' : 'iterate'
   const upstream = job.upstream || job.repo || {}
   const fork = job.fork || job.repo || upstream
+  const mergeAllowed = kind === 'iterate' && job.autoMerge === true && job.repoRole === 'maintainer'
   const rules = kind === 'review'
     ? [
         '- Review every open pull request on the upstream, including PRs not created by Fledge.',
@@ -156,7 +157,10 @@ function buildText(job) {
           job.canCreateIssue === false
             ? '- The token may not be able to create upstream issues; report a clear error instead of guessing.'
             : `- Create or reuse one issue on ${upstream.owner}/${upstream.name}; reference it from the PR.`,
-          '- Never push to the upstream base branch. Do not force-push, merge or change repository settings.',
+          '- Never push to the upstream base branch. Do not force-push or change repository settings.',
+          mergeAllowed
+            ? '- Maintainer auto-merge is enabled: after the PR is open, checks are green and no review requests changes, merge it with a squash merge. Do not merge if checks fail, changes are requested or the PR is not mergeable.'
+            : '- Never merge. Leave the PR open for the maintainer to decide.',
           '- Write a failing test first when a test is possible.',
           '- Team participation is mandatory: Product scopes, Test writes/verifies the failing test, Dev-1/Dev-2 implement, Security reviews material risk, Reviewer reviews the PR. Do not let the Lead implement the whole change alone; if a role is unavailable, say so in the callback.',
         ]
@@ -168,7 +172,7 @@ function buildText(job) {
     `Upstream: ${upstream.owner}/${upstream.name} (base ${upstream.defaultBranch})`,
     `Fork: ${fork.owner}/${fork.name}${job.isFork ? ' (push here)' : ' (same as upstream)'}`,
     `Branch: ${job.branch || '(new)'} · PR: ${job.prUrl || '(new)'}`,
-    `Permission: ${job.permission || 'unknown'}${job.canReview ? ' · review enabled' : ''}`,
+    `Permission: ${job.permission || 'unknown'} · role: ${job.repoRole || 'not selected'}${job.canReview ? ' · review enabled' : ''}`,
     `Time limit: ${job.timeoutMinutes ?? 90} minutes.`,
     `Goal: ${job.goal}`,
     '',
@@ -180,6 +184,9 @@ function buildText(job) {
     'Rules:',
     ...rules,
     '- Do not print the GitHub token or the job token.',
+    mergeAllowed
+      ? '- Merge only under the maintainer auto-merge rule above; never force-push.'
+      : '- Do not merge.',
     '- End every GitHub issue, PR and comment with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',
     '- The final callback must include "attribution": {"writtenBy":"...","claimedBy":"...","implementedBy":"...","testedBy":"...","reviewedBy":"..."} with role names only (Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2). Omit a key for a step that did not happen; never write "not run", "pending" or "(Team)".',
     '- Also include "evidence": {"tests":"<command and pass/fail>","checks":"<CI/check status>","files":<changed files>,"risk":"low|medium|high","rollback":"<one line>"}; use only what you actually ran.',

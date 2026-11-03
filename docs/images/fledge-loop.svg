@@ -36,7 +36,7 @@
     <g transform="translate(640 510)">
       <rect width="250" height="86" rx="16" fill="#10151b" stroke="#222b35"/>
       <text x="20" y="34" fill="#b8f34a">03 / REVIEW</text>
-      <text x="20" y="62" fill="#9aa6b8">you decide, never auto-merge</text>
+      <text x="20" y="62" fill="#9aa6b8">you decide, auto-merge opt-in</text>
     </g>
     <g transform="translate(920 510)">
       <rect width="200" height="86" rx="16" fill="#0f1a10" stroke="#3c5a1f"/>
