@@ -78,13 +78,32 @@ function queryText(request: FastifyRequest, name: string): string | undefined {
   return typeof value === 'string' && value !== '' ? value.slice(0, 500) : undefined
 }
 
+const FORM_KEY = /^[A-Za-z0-9_-]{1,80}$/
+
 function form(request: FastifyRequest): Record<string, string> {
   const body = (request.body ?? {}) as Record<string, unknown>
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(body)) {
-    if (typeof value === 'string') out[key] = value
+    if (FORM_KEY.test(key) && typeof value === 'string') out[key] = value
   }
   return out
+}
+
+function safeLocalPath(value: string | undefined, fallback: string): string {
+  if (value === undefined || !value.startsWith('/') || value.startsWith('//')) return fallback
+  try {
+    const url = new URL(value, 'http://fledge.local')
+    if (url.origin !== 'http://fledge.local') return fallback
+    return `${url.pathname}${url.search}${url.hash}`
+  } catch {
+    return fallback
+  }
+}
+
+function bearerSecret(request: FastifyRequest): string {
+  const header = String(request.headers.authorization ?? '')
+  if (header.slice(0, 7).toLowerCase() !== 'bearer ') return ''
+  return header.slice(7).trim().slice(0, 512)
 }
 
 function viewOf(viewer: { user: UserRow; csrfToken: string; preview?: boolean }): { user: UserRow; csrfToken: string; preview?: boolean } {
@@ -248,7 +267,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const requested = String((request.params as Record<string, string>).locale)
     if (!isLocale(requested)) return htmlPage(reply, 404, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。', request.locale))
     const next = queryText(request, 'next')
-    const safeNext = next !== undefined && next.startsWith('/') && !next.startsWith('//') ? next : '/'
+    const safeNext = safeLocalPath(next, '/')
     reply.setCookie(LOCALE_COOKIE, requested, {
       path: '/',
       httpOnly: true,
@@ -337,7 +356,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(oauth.authorizeUrl(state))
   })
 
+  app.get('/auth/github/reauthorize', async (request, reply) => {
+    const viewer = requireApproved(request)
+    if (!loginLimiter.take(`reauth:${viewer.user.id}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (config.github.clientId === '' || config.github.clientSecret === '') return reply.redirect('/settings?error=' + encodeURIComponent('GitHub OAuth 未配置。'))
+    const state = randomToken(32)
+    store.createOAuthState(sha256Hex(state), addMinutes(20), null)
+    const scopes = [...new Set(`${config.github.scopes} repo`.split(/\s+/).filter(Boolean))].join(' ')
+    return reply.redirect(oauth.authorizeUrl(state, scopes))
+  })
+
   app.get('/auth/github/callback', async (request, reply) => {
+    if (!loginLimiter.take(`callback:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const query = request.query as Record<string, string | undefined>
     const code = query.code ?? ''
     const state = query.state ?? ''
@@ -354,8 +384,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     let profile
     let token
+    let oauthScopes = ''
     try {
-      token = await oauth.exchangeCode(code)
+      const exchanged = await oauth.exchangeCode(code)
+      token = exchanged.token
+      oauthScopes = exchanged.scopes
       profile = await oauth.profile(token)
     } catch (error) {
       log.warn('github login failed', { error: String(error) })
@@ -374,7 +407,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       isSuperAdmin,
       initialQuotaCny: config.quota.initialCny,
     })
-    store.setUserGithubToken(user.id, encryptSecret(token, config.tokenEncryptionKey))
+    store.setUserGithubToken(user.id, encryptSecret(token, config.tokenEncryptionKey), oauthScopes)
     store.audit(user.id, 'login.github', `@${profile.login}`)
     store.event('login', { userId: user.id, meta: 'github' })
     startSession(user, request, reply)
@@ -543,11 +576,45 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`https://github.com/apps/${encodeURIComponent(config.githubApp.slug)}/installations/new?state=${encodeURIComponent(state)}`)
   })
 
+  app.get('/auth/github/app/callback', async (request, reply) => {
+    const query = request.query as Record<string, unknown>
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) {
+      if (typeof value === 'string') params.set(key, value)
+    }
+    return reply.redirect(`/auth/github/app/installed${params.size === 0 ? '' : `?${params.toString()}`}`)
+  })
+
   app.get('/auth/github/app/installed', async (request, reply) => {
     const viewer = requireApproved(request)
     if (!githubApp.configured) return reply.redirect(`/repos/new?error=${encodeURIComponent('GitHub App 未配置。')}`)
-    const installationId = Number(queryText(request, 'installation_id'))
-    if (!Number.isFinite(installationId) || installationId <= 0) return reply.redirect(`/repos/new?error=${encodeURIComponent('安装回调缺少 installation_id。')}`)
+    let installationId = Number(queryText(request, 'installation_id'))
+    if (!Number.isFinite(installationId) || installationId <= 0) {
+      const bound = store.listInstallations(viewer.user.id)
+      if (bound.length === 1) return reply.redirect(`/repos/new?installation=${bound[0]!.installation_id}`)
+      if (bound.length > 1) return reply.redirect('/repos/new')
+      try {
+        const all = await githubApp.listInstallations()
+        const now = Date.now()
+        const candidates = all.filter((candidate) => {
+          const existing = store.getInstallation(candidate.id)
+          if (existing !== undefined && existing.user_id !== viewer.user.id) return false
+          if (candidate.account.type === 'User' && candidate.account.login.toLowerCase() === viewer.user.login.toLowerCase()) return true
+          const sender = store.getSetting(`installation_sender:${candidate.id}`)
+          if (sender === undefined) return false
+          const [login = '', at = '0'] = sender.split(':')
+          return login.toLowerCase() === viewer.user.login.toLowerCase() && now - Number(at) < 24 * 60 * 60_000
+        })
+        if (candidates.length === 1) {
+          const candidate = candidates[0]!
+          store.saveInstallation({ installationId: candidate.id, userId: viewer.user.id, accountLogin: candidate.account.login, accountType: candidate.account.type })
+          return reply.redirect(`/repos/new?installation=${candidate.id}`)
+        }
+      } catch (error) {
+        log.warn('github app install fallback failed', { user: viewer.user.login, error: String(error) })
+      }
+      return reply.redirect(`/repos/new?error=${encodeURIComponent('安装回调缺少 installation_id；请在 GitHub App 设置的 Setup URL 指向 /auth/github/app/installed，或从已安装列表重新选择仓库。')}`)
+    }
     let installation
     try {
       installation = await githubApp.getInstallation(installationId)
@@ -967,9 +1034,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     requireAdvanced(viewer)
     const body = form(request)
     const target = (body.target ?? '').trim()
-    const returnToRaw = body.returnTo ?? `/repos/${repo.id}/team`
-    const returnPath = returnToRaw.split('?')[0] ?? ''
-    const returnTo = returnPath.startsWith('/') && !returnPath.startsWith('//') ? returnPath : `/repos/${repo.id}/team`
+    const returnTo = safeLocalPath(body.returnTo, `/repos/${repo.id}/team`)
     const withMessage = (key: 'notice' | 'error', message: string): string =>
       `${returnTo}${returnTo.includes('?') ? '&' : '?'}${key}=${encodeURIComponent(message)}`
     const t = translator(request.locale ?? 'zh')
@@ -1003,9 +1068,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const selected = Array.isArray(rawSelected)
       ? rawSelected.filter((value): value is string => typeof value === 'string')
       : typeof rawSelected === 'string' ? [rawSelected] : []
-    const returnToRaw = text('returnTo')
-    const returnPath = returnToRaw.split('?')[0] ?? ''
-    const returnTo = returnPath.startsWith('/') && !returnPath.startsWith('//') ? returnPath : '/console'
+    const returnTo = safeLocalPath(text('returnTo'), '/console')
     const wantsJson = String(request.headers.accept ?? '').includes('application/json')
     const withMessage = (key: 'notice' | 'error', message: string): string =>
       `${returnTo}${returnTo.includes('?') ? '&' : '?'}${key}=${encodeURIComponent(message)}`
@@ -1274,7 +1337,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/refresh', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     try {
-      const token = await repoGithubToken(repo, config, githubApp)
+      const token = await repoGithubToken(repo, config, githubApp, store)
       const prepared = await prepareRepo(token, repo.upstream_owner || repo.owner, repo.upstream_name || repo.name, viewer.user.login, config.github.apiBase)
       const enableReviewer = prepared.canReview && (repo.can_review !== 1 || repo.reviewer_enabled === 1)
       store.updateRepo(repo.id, {
@@ -1342,7 +1405,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     if (targetBranch !== repo.target_branch) {
       try {
-        const token = await repoGithubToken(repo, config, githubApp)
+        const token = await repoGithubToken(repo, config, githubApp, store)
         const branch = await new GithubClient(token, config.github.apiBase).getBranch(repo.upstream_owner || repo.owner, repo.upstream_name || repo.name, targetBranch)
         if (branch === null) {
           return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('目标分支不存在或不可访问。')}#repo-settings`)
@@ -1636,8 +1699,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (viewer.user.role !== 'superadmin') throw httpError(403, '仅超级管理员可访问。', 'SUPERADMIN_ONLY')
     const body = form(request)
     sessions.setPreview(reply, body.enable === '1')
-    const returnPath = (body.returnTo ?? '/admin').split('?')[0] ?? '/admin'
-    const returnTo = returnPath.startsWith('/') && !returnPath.startsWith('//') ? returnPath : '/admin'
+    const returnTo = safeLocalPath(body.returnTo, '/admin')
     return reply.redirect(returnTo)
   })
 
@@ -1650,6 +1712,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/approve/:token', async (request, reply) => {
+    if (!loginLimiter.take(`approve:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const token = String((request.params as Record<string, string>).token)
     const result = await approvals.apply(token, 'email-link')
     if (!result.ok) return htmlPage(reply, 400, messagePage(config, '无法处理', result.reason, request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
@@ -1657,8 +1720,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/api/jobs/:id/credential', async (request, reply) => {
-    const header = String(request.headers.authorization ?? '')
-    const secret = /^Bearer\s+(.+)$/i.exec(header)?.[1] ?? ''
+    if (!apiLimiter.take(`credential:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
+    const secret = bearerSecret(request)
     const result = await jobs.credential(String((request.params as Record<string, string>).id), secret)
     if (!result.ok) return reply.code(result.status ?? 400).send({ error: result.error ?? 'unauthorized' })
     return { token: result.token, owner: result.owner, name: result.name, defaultBranch: result.defaultBranch }
@@ -1666,8 +1729,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/api/jobs/:id/callback', async (request, reply) => {
     if (!apiLimiter.take(`callback:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
-    const header = String(request.headers.authorization ?? '')
-    const secret = /^Bearer\s+(.+)$/i.exec(header)?.[1] ?? ''
+    const secret = bearerSecret(request)
     const body = (request.body ?? {}) as Record<string, unknown>
     const result = await jobs.handleCallback(String((request.params as Record<string, string>).id), secret, body)
     if (!result.ok) return reply.code(result.status ?? 400).send({ error: result.error ?? 'callback rejected' })
@@ -1720,6 +1782,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   }
 
   app.post('/api/github/webhook', async (request, reply) => {
+    if (!apiLimiter.take(`webhook:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
     if (!githubApp.configured || config.githubApp.webhookSecret === '') return reply.code(503).send({ error: 'GitHub App webhook is not configured' })
     const signature = String(request.headers['x-hub-signature-256'] ?? '')
     const raw = (request as FastifyRequest & { rawBody?: Buffer }).rawBody
@@ -1750,6 +1813,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
 
   app.post('/api/inbound/email', async (request, reply) => {
+    if (!apiLimiter.take(`inbound:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
     if (config.inboundEmailSecret === '') return reply.code(503).send({ error: 'inbound email is not configured' })
     const provided = String(request.headers['x-fledge-email-secret'] ?? '')
     if (!safeEqual(provided, config.inboundEmailSecret)) return reply.code(401).send({ error: 'bad inbound email secret' })
@@ -1766,7 +1830,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const user = store.userById(userId)
     const repo = user === undefined ? undefined : store.getRepo(repoId)
     if (user === undefined || repo === undefined || repo.user_id !== user.id) return reply.code(404).send({ error: 'reply target not found' })
-    const sender = (/<([^>]+)>/.exec(from)?.[1] ?? from).trim().toLowerCase()
+    const open = from.lastIndexOf('<')
+    const close = from.lastIndexOf('>')
+    const sender = (open >= 0 && close > open ? from.slice(open + 1, close) : from).trim().toLowerCase()
     if (sender !== notifyEmail(user).toLowerCase()) return reply.code(403).send({ error: 'sender does not match the notification email' })
     const cleaned = text
       .split(/\r?\n/)

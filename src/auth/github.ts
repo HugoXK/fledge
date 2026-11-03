@@ -1,6 +1,11 @@
 import type { Config } from '../config.js'
 import { log } from '../lib/log.js'
 
+export interface GithubToken {
+  token: string
+  scopes: string
+}
+
 export interface GithubProfile {
   id: number
   login: string
@@ -44,17 +49,17 @@ async function httpJson<T>(url: string, init: RequestInit = {}, timeoutMs = 15_0
 export class GithubOAuth {
   constructor(private readonly config: Config) {}
 
-  authorizeUrl(state: string): string {
+  authorizeUrl(state: string, scopes = this.config.github.scopes): string {
     const url = new URL('https://github.com/login/oauth/authorize')
     url.searchParams.set('client_id', this.config.github.clientId)
     url.searchParams.set('redirect_uri', `${this.config.baseUrl}/auth/github/callback`)
-    url.searchParams.set('scope', this.config.github.scopes)
+    url.searchParams.set('scope', scopes)
     url.searchParams.set('state', state)
     url.searchParams.set('allow_signup', 'true')
     return url.toString()
   }
 
-  async exchangeCode(code: string): Promise<string> {
+  async exchangeCode(code: string): Promise<GithubToken> {
     const response = await fetch('https://github.com/login/oauth/access_token', {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
@@ -71,7 +76,7 @@ export class GithubOAuth {
     if (body.error !== undefined || body.access_token === undefined) {
       throw new Error(`GitHub OAuth: ${body.error ?? 'no access token'} ${body.error_description ?? ''}`.trim())
     }
-    return body.access_token
+    return { token: body.access_token, scopes: typeof body.scope === 'string' ? body.scope : '' }
   }
 
   async profile(token: string): Promise<GithubProfile> {

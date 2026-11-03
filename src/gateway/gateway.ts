@@ -7,6 +7,7 @@ import type { ApiTokenRow, Store, UserRow } from '../db.js'
 import { log } from '../lib/log.js'
 import { decryptSecret, sha256Hex } from '../lib/secrets.js'
 import { costUsdFromUsage, headerCost, quotaView } from './quota.js'
+import { RateLimiter } from '../lib/rateLimit.js'
 
 interface GatewayDeps {
   config: Config
@@ -27,8 +28,8 @@ const MAX_BODY = 20 * 1024 * 1024
 
 function bearer(request: FastifyRequest): string {
   const header = String(request.headers.authorization ?? '')
-  const match = /^Bearer\s+(.+)$/i.exec(header)
-  return match?.[1]?.trim() ?? ''
+  if (header.slice(0, 7).toLowerCase() !== 'bearer ') return ''
+  return header.slice(7).trim().slice(0, 512)
 }
 
 function quotaError(reply: FastifyReply, user: UserRow, config: Config): void {
@@ -100,6 +101,7 @@ function sseUsage(line: string): unknown {
 
 export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
   const { config, store } = deps
+  const limiter = new RateLimiter(240, 60_000)
 
   const authenticate = (request: FastifyRequest): { token: ApiTokenRow; user: UserRow } | null => {
     const raw = bearer(request)
@@ -115,6 +117,7 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
   app.get('/v1/models', async (request, reply) => {
     const auth = authenticate(request)
     if (auth === null) return reply.code(401).send({ error: { type: 'invalid_api_key', message: 'Missing or invalid Fledge API token' } })
+    if (!limiter.take(`v1:${auth.token.id}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many gateway requests' } })
     const model = auth.user.own_llm_model ?? config.llm.model
     return {
       object: 'list',
@@ -125,6 +128,7 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
   app.post('/v1/chat/completions', { bodyLimit: MAX_BODY }, async (request, reply) => {
     const auth = authenticate(request)
     if (auth === null) return reply.code(401).send({ error: { type: 'invalid_api_key', message: 'Missing or invalid Fledge API token' } })
+    if (!limiter.take(`v1:${auth.token.id}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many gateway requests' } })
     const body = (request.body ?? {}) as ChatBody
     const target = targetFor(auth.user, config, body)
     if ('error' in target) return reply.code(503).send({ error: { type: 'platform_model_unavailable', message: target.error } })

@@ -103,6 +103,11 @@ function loadDotEnv(file = '.env'): void {
   }
 }
 
+function withTrailingSlash(value: string): string {
+  if (value === '') return ''
+  return value.endsWith('/') ? value : `${value}/`
+}
+
 function text(name: string, fallback = ''): string {
   return (process.env[name] ?? fallback).trim()
 }
@@ -199,8 +204,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     services: {
       portal: text('PORTAL_URL', 'https://portal.hugoxk.online').replace(/\/$/, ''),
-      docs: text('FLEDGE_DOCS_URL', 'https://fledge-docs.hugoxk.online/docs/').replace(/\/$/, ''),
-      status: text('STATUS_URL', 'https://hugoxk.online/status/').replace(/\/$/, ''),
+      docs: withTrailingSlash(text('FLEDGE_DOCS_URL', 'https://fledge-docs.hugoxk.online/docs/')),
+      status: withTrailingSlash(text('STATUS_URL', 'https://hugoxk.online/status/')),
     },
     dataDir,
     dbPath: resolve(text('DB_PATH', `${dataDir}/fledge.db`)),

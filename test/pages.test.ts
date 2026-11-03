@@ -5,7 +5,7 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
-import { appReposPage, dashboardPage, repoPage } from '../src/views/pages.js'
+import { appReposPage, dashboardPage, landingPage, repoPage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
 import { localizeMessage } from '../src/i18n.js'
 import { encryptSecret } from '../src/lib/secrets.js'
@@ -64,6 +64,14 @@ test('the simple repo page renders the Chief conversation', () => {
   } finally {
     store.close()
   }
+})
+
+
+test('docs and status links keep the trailing slash', () => {
+  const config = testConfig({ services: { portal: 'https://portal.example', docs: 'https://docs.example/docs', status: 'https://status.example/status' } })
+  const page = landingPage(config)
+  assert.match(page, /https:\/\/docs\.example\/docs\//)
+  assert.match(page, /https:\/\/status\.example\/status\//)
 })
 
 test('unlimited quota is shown instead of a finite balance', () => {

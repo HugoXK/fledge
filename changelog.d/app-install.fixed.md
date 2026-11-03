@@ -1,0 +1,1 @@
+Fixed GitHub App installation callbacks without installation_id: the installed route now reuses a single bound installation, or finds one unbound installation owned by the signed-in user, and the App callback URL is accepted as an alias. Missing callbacks show an actionable Setup URL message instead of a dead end.

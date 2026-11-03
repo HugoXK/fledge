@@ -35,6 +35,8 @@ function iterateInstructions(context: RunnerContext): string[] {
     : `This is the user's own repository. Push your branch to ${upstream.owner}/${upstream.name} and open the pull request with base "${upstream.defaultBranch}".`
   return [
     `Mode: iterate. Repository: ${upstream.owner}/${upstream.name} (base ${upstream.defaultBranch}).`,
+    `Before doing any work, read the latest upstream branch ${upstream.defaultBranch} and the open issues/PRs. If the defect is already fixed or an open PR already covers it, do not duplicate it: report the existing link and finish successfully without creating a branch or PR.`,
+    context.isFork ? `If the fork ${fork.owner}/${fork.name} is behind upstream, sync the fork target branch from upstream before creating the working branch. Never open a PR from a stale fork.` : 'Work from the latest upstream target branch; do not start from a stale local branch.',
     `Fork: ${fork.owner}/${fork.name}${context.isFork ? ' (Fledge will use this fork)' : ' (same as upstream)'}.`,
     target,
     context.canCreateIssue

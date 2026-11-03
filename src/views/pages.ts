@@ -459,6 +459,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const upstreamUrl = repo.upstream_html_url ?? `https://github.com/${upstreamOwner}/${upstreamName}`
   const forkUrl = repo.fork_html_url ?? `https://github.com/${forkOwner}/${forkName}`
   const targetBranch = repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)
+  const appAttribution = repo.installation_id !== null && !(viewer.user.github_token_scopes ?? '').split(/[ ,]+/).includes('repo')
   const defaultBranch = repo.upstream_default_branch || repo.default_branch
   const canReview = repo.can_review === 1
   const reviewerEnabled = repo.reviewer_enabled === 1
@@ -573,7 +574,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <div class="chief-compose-row"><p class="chief-status" data-chief-status role="status" aria-live="polite"></p><button class="btn" type="submit">${escapeHtml(t('发送给 Chief', 'Send to Chief'))}</button></div>
     </form>` : `<p class="muted">${escapeHtml(t('FlyBot 实例就绪后可以和 Chief 沟通。', 'You can talk to the Chief after the FlyBot instance is ready.'))}</p>`}
   </section>`
-  const body = `${repoHeader}${questionsBlock(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}
+  const body = `${repoHeader}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${questionsBlock(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}
   <section class="cols">
     <div class="card" id="repo-settings">
       <h2>${escapeHtml(t('迭代目标', 'Iteration goal'))}</h2>

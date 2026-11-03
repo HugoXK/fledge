@@ -40,6 +40,7 @@ export interface UserRow {
   email_daily_digest: number
   notify_email: string | null
   github_token_enc: string | null
+  github_token_scopes: string | null
   own_llm_base_url: string | null
   own_llm_key_enc: string | null
   own_llm_model: string | null
@@ -219,6 +220,7 @@ CREATE TABLE IF NOT EXISTS users (
   email_daily_digest INTEGER NOT NULL DEFAULT 1,
   notify_email TEXT,
   github_token_enc TEXT,
+  github_token_scopes TEXT,
   own_llm_base_url TEXT,
   own_llm_key_enc TEXT,
   own_llm_model TEXT,
@@ -466,6 +468,7 @@ export class Store {
       ['email_job_updates', 'INTEGER NOT NULL DEFAULT 1'],
       ['email_daily_digest', 'INTEGER NOT NULL DEFAULT 1'],
       ['notify_email', 'TEXT'],
+      ['github_token_scopes', 'TEXT'],
     ]
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE users ADD COLUMN ${name} ${type}`)
@@ -827,8 +830,8 @@ export class Store {
     }
   }
 
-  setUserGithubToken(id: string, encrypted: string | null): void {
-    this.run('UPDATE users SET github_token_enc = ? WHERE id = ?', encrypted, id)
+  setUserGithubToken(id: string, encrypted: string | null, scopes = ''): void {
+    this.run('UPDATE users SET github_token_enc = ?, github_token_scopes = ? WHERE id = ?', encrypted, scopes, id)
   }
 
   setUserOwnModel(id: string, baseUrl: string | null, keyEnc: string | null, model: string | null): void {

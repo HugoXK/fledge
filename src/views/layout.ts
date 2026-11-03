@@ -51,6 +51,10 @@ export function quotaPill(user: UserRow, config: Config, locale: Locale = 'zh'):
   return `<span class="${cls}" title="${escapeHtml(t('平台额度', 'Platform quota'))}">${quota.exhausted ? t('额度已用完', 'Quota used up') : quotaAmount(quota, t)}</span>`
 }
 
+function withSlash(value: string): string {
+  return value === '' || value.endsWith('/') ? value : `${value}/`
+}
+
 export function layout(options: LayoutOptions): string {
   const { title, viewer, body, config, active } = options
   const locale = options.locale ?? 'zh'
@@ -84,9 +88,9 @@ export function layout(options: LayoutOptions): string {
   const footer = `<footer class="foot">
     <div>${escapeHtml(t('Fledge · 让托管的仓库自己长大 · 由 FlyBot 驱动', 'Fledge · hosted repositories that grow themselves · powered by FlyBot'))}</div>
     <nav class="foot-links" aria-label="${escapeHtml(t('页脚导航', 'Footer navigation'))}">
-      <a href="${escapeHtml(config.services.docs)}" target="_blank" rel="noreferrer">${escapeHtml(t('文档', 'Docs'))}</a>
+      <a href="${escapeHtml(withSlash(config.services.docs))}" target="_blank" rel="noreferrer">${escapeHtml(t('文档', 'Docs'))}</a>
       <a href="${escapeHtml(config.services.portal)}" target="_blank" rel="noreferrer">Portal</a>
-      <a href="${escapeHtml(config.services.status)}" target="_blank" rel="noreferrer">${escapeHtml(t('平台状态', 'Status'))}</a>
+      <a href="${escapeHtml(withSlash(config.services.status))}" target="_blank" rel="noreferrer">${escapeHtml(t('平台状态', 'Status'))}</a>
       <a href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">GitHub</a>
     </nav>
   </footer>`

@@ -29,7 +29,7 @@
 
 import http from 'node:http'
 import https from 'node:https'
-import { readFileSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 
 const PORT = Number(process.env.BRIDGE_PORT ?? 8787)
 const HOST = process.env.BRIDGE_HOST ?? '127.0.0.1'
@@ -83,10 +83,8 @@ function logEvent(event, fields = {}) {
 }
 
 function lastDshToken() {
-  const size = statSync(LOG).size
-  const start = Math.max(0, size - 4 * 1024 * 1024)
-  const fd = readFileSync(LOG, { encoding: 'utf8' })
-  const slice = fd.slice(start)
+  const text = readFileSync(LOG, { encoding: 'utf8' })
+  const slice = text.slice(Math.max(0, text.length - 4 * 1024 * 1024))
   const matches = [...slice.matchAll(/token=([A-Za-z0-9_-]+)/g)]
   return matches.at(-1)?.[1] ?? ''
 }
@@ -157,7 +155,11 @@ function buildText(job) {
       : [
           ...(job.prUrl
             ? [`- This is a follow-up on the existing PR ${job.prUrl} and branch ${job.branch}. Push to the same branch and update that PR; do not open a second PR or a new issue.`]
-            : [`- Push the branch to ${fork.owner}/${fork.name}; open one pull request against ${upstream.owner}/${upstream.name} (base ${upstream.defaultBranch}).`]),
+            : [
+                `- Before starting, read the latest upstream ${upstream.defaultBranch} and open issues/PRs. If the defect is already fixed or an open PR covers it, report the existing link and finish without a duplicate branch/PR.`,
+                `- If the fork ${fork.owner}/${fork.name} is behind upstream, sync the fork target branch first; never open a PR from a stale fork.`,
+                `- Push the branch to ${fork.owner}/${fork.name}; open one pull request against ${upstream.owner}/${upstream.name} (base ${upstream.defaultBranch}).`,
+              ]),
           job.canCreateIssue === false
             ? '- The token may not be able to create upstream issues; report a clear error instead of guessing.'
             : `- Create or reuse one issue on ${upstream.owner}/${upstream.name}; reference it from the PR.`,
@@ -255,8 +257,9 @@ const server = http.createServer(async (request, response) => {
     try {
       return json(response, 200, await dshApi(body.endpoint, body.payload ?? {}))
     } catch (error) {
-      logEvent('dsh-failed', { endpoint: body.endpoint, error: redact(String(error)) })
-      return json(response, 502, { error: redact(String(error)) })
+      const message = error instanceof Error ? error.message : String(error)
+      logEvent('dsh-failed', { endpoint: body.endpoint, error: redact(message) })
+      return json(response, 502, { error: redact(message) })
     }
   }
   if (request.method === 'POST' && request.url === '/job-done') {
@@ -332,8 +335,17 @@ function createModelProxy() {
       'content-length': String(body.length),
       'user-agent': 'fledge-instance-proxy/0.1',
     }
+    let target
+    try {
+      const requestUrl = new URL(request.url ?? '/', 'http://bridge.local')
+      if (requestUrl.origin !== 'http://bridge.local') return json(response, 400, { error: 'invalid proxy path' })
+      target = new URL(`${requestUrl.pathname}${requestUrl.search}`, origin)
+      if (target.origin !== origin) return json(response, 400, { error: 'invalid proxy target' })
+    } catch {
+      return json(response, 400, { error: 'invalid proxy target' })
+    }
     const send = (token, retried) => {
-      const upstream = mod.request(new URL(request.url, origin), { method: request.method, headers: { ...headers, authorization: `Bearer ${token}` } }, (upstreamResponse) => {
+      const upstream = mod.request(target, { method: request.method, headers: { ...headers, authorization: `Bearer ${token}` } }, (upstreamResponse) => {
         if (!retried && (upstreamResponse.statusCode === 401 || upstreamResponse.statusCode === 403) && token !== GATEWAY_TOKEN) {
           upstreamResponse.resume()
           logEvent('model-token-fallback', { status: upstreamResponse.statusCode })
@@ -350,7 +362,7 @@ function createModelProxy() {
         upstreamResponse.pipe(response)
       })
       upstream.on('error', (error) => {
-        logEvent('model-proxy-failed', { error: redact(String(error)) })
+        logEvent('model-proxy-failed', { error: redact(error instanceof Error ? error.message : String(error)) })
         if (!response.headersSent) json(response, 502, { error: 'gateway unavailable' })
         else response.destroy()
       })

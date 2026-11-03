@@ -12,7 +12,14 @@ export type Attribution = Partial<Record<AttributionKey, string>>
 const EMPTY = new Set(['not run', 'not recorded', 'none', 'n/a', 'na', 'pending', 'unknown', '-', '—', ''])
 
 function cleanRole(value: string): string {
-  return value.trim().replace(/\s*\((?:team|automation|自动化)\)$/i, '').trim().slice(0, 80)
+  let text = value.trim()
+  for (const suffix of ['(team)', '(automation)', '(自动化)']) {
+    if (text.toLowerCase().endsWith(suffix)) {
+      text = text.slice(0, -suffix.length).trim()
+      break
+    }
+  }
+  return text.slice(0, 80)
 }
 
 export function parseAttribution(value: unknown): Attribution | null {

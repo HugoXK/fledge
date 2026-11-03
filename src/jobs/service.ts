@@ -563,7 +563,7 @@ export class Jobs {
       '</details>',
     ]
     try {
-      const token = await repoGithubToken(repo, this.config, this.githubApp)
+      const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
       const client = new GithubClient(token, this.config.github.apiBase)
       await client.comment(owner, name, number, body.join('\n'))
       log.info('automation comment posted', { job: job.id, pr: number })
@@ -673,7 +673,7 @@ export class Jobs {
     const repo = this.store.getRepo(job.repo_id)
     if (repo === undefined) return { ok: false, status: 404, error: 'repo not found' }
     try {
-      const token = await repoGithubToken(repo, this.config, this.githubApp)
+      const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
       const upstream: RepoRef = {
         owner: repo.upstream_owner || repo.owner,
         name: repo.upstream_name || repo.name,
