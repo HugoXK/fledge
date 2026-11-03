@@ -22,7 +22,7 @@ test('an inbound email reply becomes Lead guidance', async () => {
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'reply-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_reply', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_reply', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.saveRepoInstance({
       repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/reply', bridge_script: '/tmp/bridge',
       dsh_port: 1, bridge_port: Number(new URL(bridge.url).port), model_port: 2, model_bind: '127.0.0.1', image: 'image',

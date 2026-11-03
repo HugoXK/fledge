@@ -27,7 +27,7 @@ user signs in with GitHub, connects one or more repositories with a fine-grained
 token, and gives each repository a goal. Fledge hands the work to a FlyBot agent
 through a signed bridge; the agent writes a failing test, makes the smallest
 correct fix, opens one pull request, and reports back. Fledge never pushes to the
-default branch, never merges, and never runs a user repository itself.
+default branch, does not merge by default, and never runs a user repository itself.
 
 > **Status:** `v0.2.1` is the latest release at <https://fledge.hugoxk.online/>.
 > The GitHub token login fallback is active (the OAuth App is not configured yet). Documentation is at
@@ -71,13 +71,13 @@ own improvements. See [docs/decisions/0001-name.md](docs/decisions/0001-name.md)
 
 - A **multi-repository** control plane for a FlyBot agent.
 - A **per-user quota gateway** (1 CNY by default) with an own-model fallback.
-- A **review-first** delivery loop: one PR per job, no auto-merge, full audit.
+- A **review-first** delivery loop: one PR per job, no auto-merge by default, full audit.
 
 ### What it is not
 
 - Not a code runner: Fledge never clones or executes a user repository.
 - Not a CI system: it uses the repository's own tests and CI.
-- Not an auto-merge bot: a human (or the repository's own review gate) decides.
+- Not an unconditional auto-merge bot: a human (or the repository's own review gate) decides unless a maintainer explicitly enables auto-merge.
 - Not a GitHub replacement: it is a thin, auditable layer on top of GitHub.
 
 ## Features
@@ -97,9 +97,15 @@ own improvements. See [docs/decisions/0001-name.md](docs/decisions/0001-name.md)
 - **Fork-aware onboarding**: enter the upstream repository; Fledge checks for a
   same-name fork, creates it when needed, keeps issues and PRs on the upstream,
   and pushes branches to the fork. If you own the upstream, no fork is created.
-- **Reviewer role** for upstream maintainers/write members: a scheduled FlyBot
+- **Self-selected repository roles**: when hosting a repository, choose
+  `maintainer` or `developer` based on your GitHub permission. `admin`/`maintain`
+  may choose either; every other permission can only choose `developer`.
+  Maintainer unlocks review/maintenance actions and an opt-in auto-merge switch;
+  developer runs iterate/plan jobs only. Roles are per repository and never
+  assigned by a platform admin.
+- **Reviewer role** for repository maintainers (`admin`/`maintain`): a scheduled FlyBot
   reviewer scores every open upstream PR and posts a COMMENT review. It never
-  merges or changes code.
+  merges unless the maintainer enabled the auto-merge switch for an iterate job.
 - **Fine-grained GitHub tokens**, validated for write access on add, encrypted
   with AES-256-GCM, and only decrypted for a running job.
 - **Sessions and CSRF** on every browser form; approval links are single-use and
@@ -288,7 +294,7 @@ The full rules, edge cases and the 402 body are in [docs/quota.md](docs/quota.md
   job finishes or times out.
 - Logs are redacted; request bodies are never logged.
 - Security headers (CSP, nosniff, frame deny, HSTS in production).
-- No admin merge, no bypass of a required check, no auto-merge of user PRs.
+- No admin merge, no bypass of a required check, and no auto-merge of user PRs unless a maintainer explicitly enables it.
 
 Report a vulnerability privately: see [SECURITY.md](SECURITY.md). The full model
 is in [docs/security.md](docs/security.md).
@@ -382,7 +388,7 @@ Full list and open questions: [docs/roadmap.md](docs/roadmap.md).
 
 **Does Fledge push to my default branch?**
 No. A job creates a branch and one pull request. Fledge never pushes `main` and
-never merges.
+does not merge by default; only a maintainer can opt in to auto-merge.
 
 **Where is my GitHub token stored?**
 Encrypted with AES-256-GCM using `TOKEN_ENCRYPTION_KEY`; it is decrypted only for

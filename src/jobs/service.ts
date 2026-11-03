@@ -108,6 +108,12 @@ export class Jobs {
 
   async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string } = {}): Promise<EnqueueResult> {
     if (repo.enabled !== 1) return { ok: false, error: '这个仓库已停用', code: 'REPO_DISABLED' }
+    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
+      return { ok: false, error: '请先选择你在这个仓库的角色。', code: 'ROLE_REQUIRED' }
+    }
+    if (kind === 'review' && repo.repo_role !== 'maintainer') {
+      return { ok: false, error: '只有 maintainer 可以运行审核任务。', code: 'ROLE_FORBIDDEN' }
+    }
     if (kind === 'review' && (repo.reviewer_enabled !== 1 || repo.can_review !== 1)) {
       return { ok: false, error: '这个仓库没有启用审核角色', code: 'REVIEW_DISABLED' }
     }
@@ -212,6 +218,8 @@ export class Jobs {
         fork,
         isFork: repo.is_fork === 1,
         permission: repo.permission,
+        repoRole: repo.repo_role === 'maintainer' || repo.repo_role === 'developer' ? repo.repo_role : null,
+        autoMerge: kind === 'iterate' && repo.repo_role === 'maintainer' && repo.auto_merge === 1,
         canReview: repo.can_review === 1,
         canCreateIssue: repo.can_create_issue === 1,
         callback: { url: `${this.config.baseUrl}/api/jobs/${job.id}/callback`, secret: callbackSecret },
@@ -543,13 +551,14 @@ export class Jobs {
     const number = Number(match[1])
     const teamLabel = team ?? `${owner}/${name}`
     const journey = attributionSentence(attribution)
+    const autoMergeEnabled = repo.repo_role === 'maintainer' && repo.auto_merge === 1 && job.kind === 'iterate'
     const body = [
       '<details>',
       `<summary>Fledge automation · ${teamLabel} · job <code>${job.id}</code> (${job.trigger}, ${job.kind})</summary>`,
       '',
       journey === '' ? `Produced by the ${teamLabel} team.` : `Automated run: ${journey}.`,
       '',
-      'Fledge never merges; a human must review and merge.',
+      autoMergeEnabled ? 'The maintainer enabled auto-merge for this repository; Fledge may merge only after checks pass and no changes are requested.' : 'Fledge does not merge by default; a human must review and merge.',
       '',
       `- Issue: ${result.issueUrl ?? 'none'}`,
       `- Fledge job: ${this.config.baseUrl}/repos/${job.repo_id}/jobs/${job.id}`,
@@ -655,6 +664,8 @@ export class Jobs {
     fork?: RepoRef
     isFork?: boolean
     permission?: string
+    repoRole?: string | null
+    autoMerge?: boolean
     canReview?: boolean
     canCreateIssue?: boolean
     error?: string
@@ -689,6 +700,8 @@ export class Jobs {
         fork,
         isFork: repo.is_fork === 1,
         permission: repo.permission,
+        repoRole: repo.repo_role,
+        autoMerge: job.kind === 'iterate' && repo.repo_role === 'maintainer' && repo.auto_merge === 1,
         canReview: repo.can_review === 1,
         canCreateIssue: repo.can_create_issue === 1,
       }
@@ -713,6 +726,7 @@ export class Jobs {
     if (this.store.countActiveJobs() >= 2) return
     for (const repo of this.store.listReviewRepos()) {
       if (this.store.countActiveJobs() >= 2) break
+      if (repo.repo_role !== 'maintainer') continue
       if (!this.userReadyForScheduling(repo.user_id)) continue
       if (!this.instanceReady(repo.id)) continue
       if (this.store.activeJobForRepo(repo.id) !== undefined) continue
@@ -723,6 +737,7 @@ export class Jobs {
     }
     for (const repo of this.store.listAutoRepos()) {
       if (this.store.countActiveJobs() >= 2) break
+      if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') continue
       if (!this.userReadyForScheduling(repo.user_id)) continue
       if (!this.instanceReady(repo.id)) continue
       if (this.store.activeJobForRepo(repo.id) !== undefined) continue

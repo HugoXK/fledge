@@ -156,6 +156,14 @@ per day. Test mail is rate-limited to one per minute.
 - The super-admin-only preview cookie renders the normal-user UI while leaving the
   actual session owner-scoped behind the scenes. Advanced team/workspace routes
   remain blocked until preview is exited.
+- Repository roles are per user-repository connection: `maintainer` or
+  `developer`. The allowed roles come from the user's GitHub permission
+  (`admin`/`maintain` may choose either; all other permissions may only choose
+  `developer`). The server validates the choice against the GitHub permission
+  recorded from the last add/refresh, never trusts a hidden form value, and does
+  not let platform admins assign the role. A refresh re-checks GitHub and
+  downgrades a maintainer to developer when the permission is lost. Auto-merge
+  is an explicit maintainer-only switch and is off by default.
 
 ### Team console and agent controls
 

@@ -15,6 +15,8 @@ interface BridgePayload {
   fork: { owner: string; name: string; defaultBranch: string; htmlUrl: string }
   isFork: boolean
   permission: string
+  repoRole: 'maintainer' | 'developer' | null
+  autoMerge: boolean
   canReview: boolean
   canCreateIssue: boolean
   goal: string
@@ -30,6 +32,7 @@ interface BridgePayload {
 function iterateInstructions(context: RunnerContext): string[] {
   const upstream = context.upstream
   const fork = context.fork
+  const mergeAllowed = context.kind === 'iterate' && context.autoMerge && context.repoRole === 'maintainer'
   const target = context.isFork
     ? `Push your branch to the fork ${fork.owner}/${fork.name} and open the pull request against ${upstream.owner}/${upstream.name} with base "${upstream.defaultBranch}" and head "${fork.owner}:<branch>".`
     : `This is the user's own repository. Push your branch to ${upstream.owner}/${upstream.name} and open the pull request with base "${upstream.defaultBranch}".`
@@ -49,7 +52,10 @@ function iterateInstructions(context: RunnerContext): string[] {
           'Push to the same branch and update that PR. Do not open a second PR and do not create a new issue.',
         ]),
     'Team participation is mandatory: Product scopes the issue, Test writes/verifies the failing test, Dev-1 or Dev-2 implements, Security reviews material risk, and Reviewer reviews the PR. Do not let the Lead implement the whole change alone; if a role is unavailable, say so in the callback.',
-    'Write a failing test first when a test is possible. Never force-push, merge or change repository settings.',
+    'Write a failing test first when a test is possible. Never force-push or change repository settings.',
+    mergeAllowed
+      ? 'Maintainer auto-merge is enabled: after the PR is open, checks are green and no review requests changes, merge it with a squash merge. Do not merge if checks fail, changes are requested or the PR is not mergeable.'
+      : 'Never merge. Leave the PR open for the maintainer to decide.',
   ]
 }
 
@@ -99,6 +105,8 @@ export class FlyBotRunner implements Runner {
       fork: context.fork,
       isFork: context.isFork,
       permission: context.permission,
+      repoRole: context.repoRole,
+      autoMerge: context.autoMerge,
       canReview: context.canReview,
       canCreateIssue: context.canCreateIssue,
       goal: context.goal,
@@ -119,7 +127,9 @@ export class FlyBotRunner implements Runner {
         'Also include "evidence": {"tests":"<command and pass/fail>","checks":"<CI/check status>","files":<changed files>,"risk":"low|medium|high","rollback":"<one line>"}; use only what you actually ran.',
         `The job is failed after ${context.timeoutMinutes} minutes without a final callback; finish one focused change before then or report the concrete blocker.`,
         `When done, POST ${context.callback.url} with JSON {status, branch, prUrl, issueUrl, reviewScore, summary, error} and "Authorization: Bearer ${context.callback.secret}".`,
-        'Do not print the GitHub token or the job token. Do not force-push. Do not merge.',
+        context.kind === 'iterate' && context.autoMerge && context.repoRole === 'maintainer'
+          ? 'Do not print the GitHub token or the job token. Do not force-push. Merge only under the maintainer auto-merge rule above.'
+          : 'Do not print the GitHub token or the job token. Do not force-push. Do not merge.',
       ].join('\n'),
     }
     const response = await fetch(bridgeUrl, {

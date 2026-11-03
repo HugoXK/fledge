@@ -14,7 +14,7 @@ test('workspace html is rebranded and keeps a workspace base', () => {
   const store = new Store(':memory:')
   try {
     const user = makeUser(store, { login: 'brand-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_brand', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_brand', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const html = rewriteWorkspaceHtml('<html><head><title>DeepSeek Harness</title><meta http-equiv="Content-Security-Policy" content="script-src \'none\'"><base href="./"></head><body></body></html>', repo, '/repos/repo_brand/workspace/app/')
     assert.match(html, /<title>Fledge · r<\/title>/)
     assert.match(html, /<base href="\/repos\/repo_brand\/workspace\/app\/">/)
@@ -46,7 +46,7 @@ test('workspace shell and proxied html are owner-only and rebranded', async () =
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'workspace-user', status: 'approved', superadmin: true })
-    const repo = store.createRepo({ id: 'repo_workspace', userId: user.id, owner: 'o', name: 'w', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_workspace', userId: user.id, owner: 'o', name: 'w', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.saveRepoInstance({
       repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: dataDir, bridge_script: '/tmp/bridge',
       dsh_port: Number(new URL(dsh.url).port), bridge_port: 2, model_port: 3, model_bind: '127.0.0.1', image: 'image',

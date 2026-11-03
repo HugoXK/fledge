@@ -12,8 +12,8 @@ test('a user cannot read another user\'s repositories, team or workspace', async
   try {
     const alice = makeUser(store, { login: 'alice', status: 'approved', superadmin: true })
     const bob = makeUser(store, { login: 'bob', status: 'approved' })
-    const aliceRepo = store.createRepo({ id: 'repo_alice', userId: alice.id, owner: 'alice', name: 'one', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
-    const bobRepo = store.createRepo({ id: 'repo_bob', userId: bob.id, owner: 'bob', name: 'two', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const aliceRepo = store.createRepo({ id: 'repo_alice', userId: alice.id, owner: 'alice', name: 'one', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const bobRepo = store.createRepo({ id: 'repo_bob', userId: bob.id, owner: 'bob', name: 'two', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const aliceSession = sessionFor(built, alice)
     const bobSession = sessionFor(built, bob)
 

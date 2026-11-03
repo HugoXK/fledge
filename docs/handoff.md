@@ -50,7 +50,7 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 - Upstream/fork onboarding: Fledge detects or creates the user's fork, pushes
   work to the fork, and targets issues/PRs at the upstream. If the user owns the
   upstream, work stays in that repository.
-- Reviewer role for upstream maintainers/write members: scheduled review jobs
+- Reviewer role for repository maintainers with GitHub admin/maintain permission: scheduled review jobs
   list all open upstream PRs, score them, and post COMMENT reviews without
   merging.
 - Repo goals, manual/hourly/daily/weekly cadence, enabled flag.

@@ -26,7 +26,7 @@ test('review jobs use the review kind and update review state', async () => {
       forkOwner: 'reviewer',
       forkName: 'DigitalMate',
       isFork: true,
-      permission: 'maintain',
+      permission: 'maintain', repoRole: 'maintainer',
       canReview: true,
       reviewerEnabled: true,
       reviewIntervalMinutes: 1440,

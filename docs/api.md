@@ -29,8 +29,9 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/dashboard` | approved + session | Repos, quota, jobs |
 | GET | `/console` | approved + session | Workspace overview (repos, jobs, quota) |
 | POST | `/repos` | approved + CSRF | Add an upstream repository; Fledge checks or creates the user's fork |
-| GET | `/repos/:id` | owner | Repo detail |
+| GET | `/repos/:id` | owner | Repo detail, including the selected role and allowed roles |
 | POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job |
+| POST | `/repos/:id/role` | owner + CSRF | Select `maintainer` or `developer` for this user-repository connection |
 | POST | `/repos/:id/plan` | owner + CSRF | Enqueue a plan-only job (no code, branch or PR) |
 | POST | `/repos/:id/instance` | owner + CSRF | Start the per-repository FlyBot instance |
 | POST | `/repos/:id/instance/stop` | owner + CSRF | Stop the per-repository FlyBot instance |
@@ -50,7 +51,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/api/repos/:id/chief/events` | owner | Server-Sent Events for new Chief messages |
 | POST | `/api/repos/:id/team/answer` | admin + CSRF | Answer a team question |
 | POST | `/api/repos/:id/team/stop` | admin + CSRF | Stop the active roles (hard when possible, otherwise a stop request) |
-| POST | `/repos/:id/settings` | owner + CSRF | Goal, target branch, cadence, enabled, reviewer interval |
+| POST | `/repos/:id/settings` | owner + CSRF | Goal, target branch, role, auto-merge switch, cadence, enabled, reviewer interval |
 | POST | `/repos/:id/delete` | owner + CSRF | Delete repo and jobs |
 | GET | `/settings` | approved | Account, model, API tokens |
 | POST | `/settings/model` | approved + CSRF | Save/clear own model |
@@ -151,6 +152,8 @@ Headers: `Authorization: Bearer <callbackSecret>`
   "fork": { "owner": "alice", "name": "demo", "defaultBranch": "main", "htmlUrl": "https://github.com/alice/demo" },
   "isFork": true,
   "permission": "write",
+  "repoRole": "maintainer",
+  "autoMerge": true,
   "canReview": true,
   "canCreateIssue": true
 }
@@ -158,8 +161,10 @@ Headers: `Authorization: Bearer <callbackSecret>`
 
 `owner/name` is always the upstream. When the token belongs to the upstream
 owner, `fork` equals `upstream` and `isFork` is false. Otherwise the agent must
-push to `fork` and open the PR against `upstream`. Only while the job is
-`queued` or `running`.
+push to `fork` and open the PR against `upstream`. `repoRole` is the role the
+user selected for this repository; `autoMerge` is true only for an iterate job
+when that role is `maintainer` and the repository auto-merge switch is on. Only
+while the job is `queued` or `running`.
 
 ### `POST /api/jobs/:id/callback`
 

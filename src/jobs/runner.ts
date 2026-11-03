@@ -1,5 +1,6 @@
 import type { Config } from '../config.js'
 import type { JobRow, RepoRow, UserRow } from '../db.js'
+import type { RepoRole } from '../lib/repoRole.js'
 import { FlyBotRunner } from './flybot.js'
 import { MockRunner } from './mock.js'
 
@@ -33,6 +34,8 @@ export interface RunnerContext {
   fork: RepoRef
   isFork: boolean
   permission: string
+  repoRole: RepoRole | null
+  autoMerge: boolean
   canReview: boolean
   canCreateIssue: boolean
   callback: JobCredential

@@ -67,7 +67,7 @@ Fledge 是幼鸟长齐飞羽、离巢试飞的那一刻——不是因为被推�
 
 - FlyBot 代理的**多仓库控制面**。
 - 按用户计量的**额度网关**（默认 1 元），用完可以接自己的模型。
-- **审查优先**的交付闭环：一个任务一个 PR，不自动合并，全程审计。
+- **审查优先**的交付闭环：一个任务一个 PR，默认不自动合并，全程审计。
 
 ### 它不是什么
 
@@ -90,8 +90,12 @@ Fledge 是幼鸟长齐飞羽、离巢试飞的那一刻——不是因为被推�
   Fledge 审批不会自动开通其他服务。
 - **上游 / fork 自动识别**：填写上游仓库后，Fledge 会检查同名 fork，不存在就创建；
   issue 和 PR 提到上游，开发分支推到 fork。若上游 owner 就是你，则直接在原仓库开发。
-- **审核角色**：上游 maintain/write 成员可以启用定时审核，FlyBot 会审核上游所有
-  open PR、打分并发表 COMMENT review，不合并、不改代码。
+- **自选仓库角色**：托管仓库时，根据你在该 GitHub 仓库的权限选择 `maintainer`
+  或 `developer`。`admin`/`maintain` 两个都能选，其他权限只能选 `developer`。
+  maintainer 解锁审核/维护动作和可选的自动合并开关；developer 只跑迭代/计划任务。
+  角色按仓库计算，平台管理员不能替你分配。
+- **审核角色**：仓库 maintainer（GitHub `admin`/`maintain`）可以启用定时审核，FlyBot 会审核上游所有
+  open PR、打分并发表 COMMENT review；只有 maintainer 为迭代任务开启自动合并开关时才会合并。
 - **fine-grained GitHub token**：添加时验证写权限，AES-256-GCM 加密保存，
   只在任务运行时解密。
 - **Session + CSRF**：所有表单都有 CSRF；审批链接一次性、7 天过期。
@@ -264,7 +268,7 @@ SMTP 密码会拒绝启动。
 - `flg_` token 哈希保存、可撤销；任务结束/超时撤销任务 token。
 - 日志脱敏；不记录请求体。
 - 安全头（CSP、nosniff、frame deny、生产 HSTS）。
-- 不 admin-merge、不绕 required check、不自动合并用户 PR。
+- 不 admin-merge、不绕 required check；用户 PR 默认不自动合并，只有 maintainer 显式开启后才允许。
 
 漏洞请私信，见 [SECURITY.md](SECURITY.md)；完整模型见 [docs/security.md](docs/security.md)。
 
@@ -350,7 +354,7 @@ issue → claim → worktree → 红测试 → 修 → gates → PR
 ## FAQ
 
 **会直接推默认分支吗？**
-不会。任务只创建分支和一个 PR；Fledge 不推 `main`，不合并。
+不会。任务只创建分支和一个 PR；Fledge 不推 `main`，默认不合并；只有 maintainer 显式开启自动合并后才可能合并。
 
 **GitHub token 存在哪？**
 AES-256-GCM 加密，密钥是 `TOKEN_ENCRYPTION_KEY`；只在任务运行时解密，页面不回显。

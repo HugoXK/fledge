@@ -17,7 +17,7 @@ test('admin jobs and audit paginate at ten rows with friendly audit labels', asy
       owner: 'octo',
       name: 'demo',
       defaultBranch: 'main',
-      tokenEnc: 'x',
+      tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer',
       goal: '',
       autoIterate: false,
       intervalMinutes: 1440,
@@ -48,7 +48,7 @@ test('rejecting a user cancels active jobs and frees the global slot', async () 
   try {
     const admin = makeUser(store, { login: 'reject-admin', admin: true, status: 'approved' })
     const target = makeUser(store, { login: 'reject-target', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_reject_target', userId: target.id, owner: 'o', name: 'rt', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_reject_target', userId: target.id, owner: 'o', name: 'rt', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.createApiToken({ id: 'tok_reject', userId: target.id, kind: 'job', name: 'job:job_reject', tokenHash: 'reject-hash', prefix: 'flg_reje', expiresAt: null })
     store.createJob({ id: 'job_reject', repoId: repo.id, userId: target.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: 'reject-hash' })
     store.updateJob('job_reject', { status: 'running' })
@@ -150,7 +150,7 @@ test('the owner can preview the normal user UI and exit it', async () => {
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const owner = makeUser(store, { login: 'preview-owner', superadmin: true, status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_preview', userId: owner.id, owner: 'o', name: 'preview', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_preview', userId: owner.id, owner: 'o', name: 'preview', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const session = sessionFor(built, owner)
     const enabled = await built.app.inject({
       method: 'POST',

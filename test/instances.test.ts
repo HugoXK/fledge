@@ -51,7 +51,7 @@ test('ensurePlaybook updates every existing role once and records the version', 
   const manager = new InstanceManager(store, config)
   try {
     const user = makeUser(store, { login: 'playbook-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_playbook', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_playbook', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.saveRepoInstance({
       repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/playbook', bridge_script: '/tmp/bridge',
       dsh_port: 1, bridge_port: Number(new URL(bridge.url).port), model_port: 2, model_bind: '127.0.0.1', image: 'image',
@@ -90,7 +90,7 @@ test('clearJobToken tells the per-repo bridge to drop the job model token', asyn
   const manager = new InstanceManager(store, config)
   try {
     const user = makeUser(store, { login: 'clear-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_clear', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_clear', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.saveRepoInstance({
       repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/clear', bridge_script: '/tmp/bridge',
       dsh_port: 1, bridge_port: Number(new URL(bridge.url).port), model_port: 2, model_bind: '127.0.0.1', image: 'image',
