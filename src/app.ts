@@ -371,8 +371,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const query = request.query as Record<string, string | undefined>
     const code = query.code ?? ''
     const state = query.state ?? ''
-    const oauthState = state === '' ? undefined : store.consumeOAuthState(sha256Hex(state))
-    if (code === '' || state === '' || oauthState === undefined) {
+    const invalidLink = () => {
       const t = translator(request.locale ?? 'zh')
       return htmlPage(reply, 400, errorPage(
         config,
@@ -383,6 +382,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         { href: '/auth/github', label: t('重新登录', 'Sign in again') },
       ))
     }
+    if (code === '' || state === '') return invalidLink()
+    const oauthState = store.consumeOAuthState(sha256Hex(state))
+    if (oauthState === undefined) return invalidLink()
     let profile
     let token
     let oauthScopes = ''
