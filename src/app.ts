@@ -845,6 +845,80 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
   })
 
+  app.get('/api/repos/:id/chief/messages', async (request, reply) => {
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const instance = store.getRepoInstance(repo.id)
+    if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
+    try {
+      return { messages: await instances.chiefTranscript(repo.id, 30) }
+    } catch (error) {
+      return reply.code(503).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
+
+  app.get('/api/repos/:id/chief/events', async (request, reply) => {
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const instance = store.getRepoInstance(repo.id)
+    if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
+    reply.hijack()
+    reply.raw.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    })
+    let closed = false
+    let busy = false
+    let last = ''
+    let lastSignature = ''
+    let heartbeat = 0
+    let timer: NodeJS.Timeout | undefined
+    const close = (): void => {
+      if (closed) return
+      closed = true
+      if (timer !== undefined) clearInterval(timer)
+      try { reply.raw.end() } catch {}
+    }
+    const send = (event: string, data: unknown): void => {
+      if (!closed) reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+    }
+    request.raw.on('close', close)
+    reply.raw.on('close', close)
+    const tick = async (): Promise<void> => {
+      if (closed || busy) return
+      busy = true
+      try {
+        let signature = lastSignature
+        try {
+          const state = await instances.teamState(repo.id, 3_000)
+          const chief = state.bots.find((bot) => bot.role === 'chief')
+          signature = `${chief?.activity ?? ''}:${chief?.lastActivityAt ?? ''}:${chief?.since ?? ''}`
+        } catch {
+          // Fall through to the last known signature; the transcript read reports errors.
+        }
+        if (signature !== lastSignature || last === '') {
+          lastSignature = signature
+          const messages = await instances.chiefTranscript(repo.id, 30)
+          const text = JSON.stringify(messages)
+          if (text !== last) {
+            last = text
+            send('snapshot', { messages, updatedAt: new Date().toISOString() })
+          }
+        } else if (++heartbeat >= 15) {
+          heartbeat = 0
+          reply.raw.write(': ping\n\n')
+        }
+      } catch (error) {
+        send('error', { message: error instanceof Error ? error.message : String(error) })
+        close()
+      } finally {
+        busy = false
+      }
+    }
+    timer = setInterval(() => void tick(), 2_000)
+    await tick()
+  })
+
   app.post('/repos/:id/chief/message', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const text = (form(request).text ?? '').trim().slice(0, 4000)

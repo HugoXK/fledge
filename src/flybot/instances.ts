@@ -715,7 +715,7 @@ server.listen(3081, '0.0.0.0')
 
   async chiefTranscript(repoId: string, limit = 20): Promise<ChiefMessage[]> {
     const cached = this.transcriptCache.get(repoId)
-    if (cached !== undefined && Date.now() - cached.at < 10_000) return cached.messages.slice(-Math.max(1, limit))
+    if (cached !== undefined && Date.now() - cached.at < 5_000) return cached.messages.slice(-Math.max(1, limit))
     const instance = this.store.getRepoInstance(repoId)
     if (instance === undefined || instance.status !== 'ready') return []
     const team = parseTeam(instance.team_json)

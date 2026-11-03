@@ -178,9 +178,9 @@ function jobAttribution(t: Translate, job: JobRow): string {
     .join(' · ')
 }
 
-function jobPlainSummary(locale: Locale, t: Translate, job: JobRow): { full: string; short: string } {
+function jobPlainSummary(locale: Locale, t: Translate, job: JobRow, max = 160): { full: string; short: string } {
   const full = jobSummary(locale, t, job)
-  return { full, short: full.length > 160 ? `${full.slice(0, 160)}…` : full }
+  return { full, short: full.length > max ? `${full.slice(0, max)}…` : full }
 }
 
 function jobRows(locale: Locale, jobs: JobRow[]): string {
@@ -213,7 +213,7 @@ function jobList(locale: Locale, jobs: JobRow[], repoLabels: Map<string, string>
   if (jobs.length === 0) return `<p class="muted">${escapeHtml(t('还没有任务。', 'No jobs yet.'))}</p>`
   return `<div class="list">${jobs
     .map((job) => {
-      const summary = jobPlainSummary(locale, t, job)
+      const summary = jobPlainSummary(locale, t, job, 100)
       const label = repoLabels.get(job.repo_id)
       const links = jobLinks(job)
       return `<div class="list-row" data-job-id="${escapeHtml(job.id)}">
@@ -534,13 +534,13 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     </div>
     ${advanced ? teamGrid : ''}
   </section>`
-  const chiefThread = chiefMessages.length === 0
+  const chiefThread = `<div class="chief-thread" id="chief-thread">${chiefMessages.length === 0
     ? `<p class="muted">${escapeHtml(t('还没有对话。给 Chief 发第一句。', 'No conversation yet. Send the Chief the first message.'))}</p>`
-    : `<div class="chief-thread">${chiefMessages.map((message) => `<div class="chief-msg ${message.role}">
+    : chiefMessages.map((message) => `<div class="chief-msg ${message.role}">
       <div class="chief-role">${escapeHtml(message.role === 'user' ? t('你', 'You') : 'Chief')}${message.at > 0 ? ` · ${escapeHtml(humanTimeShort(new Date(message.at).toISOString()))}` : ''}</div>
       <div class="chief-text">${escapeHtml(message.text)}</div>
     </div>`).join('')}</div>`
-  const chiefCard = advanced ? '' : `<section class="card chief-card" id="chief">
+  const chiefCard = advanced ? '' : `<section class="card chief-card" id="chief" data-chief-api="${instanceReady ? `/api/repos/${escapeHtml(repo.id)}/chief/messages` : ''}" data-chief-events="${instanceReady ? `/api/repos/${escapeHtml(repo.id)}/chief/events` : ''}">
     <div class="row between">
       <div>
         <h2>${escapeHtml(t('和 Chief 沟通', 'Talk to the Chief'))}</h2>
@@ -597,7 +597,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     ${jobTable(locale, jobs)}
     ${pager(`/repos/${repo.id}`, 'jobsPage', jobsPage, jobsTotal, 10, t, {}, '#jobs')}
   </section>`
-  return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
+  return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : '<script src="/assets/chief.js" defer></script>'}`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
 }
 
 function teamRoleLabel(t: Translate, role: string): string {

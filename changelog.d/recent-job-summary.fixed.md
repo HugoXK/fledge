@@ -1,0 +1,1 @@
+Kept recent-job summaries inside the layout: the workspace list now truncates visible summary text with an ellipsis, the job table clamps summaries to two lines, and long values stay inside the scroll container instead of stretching to the right.

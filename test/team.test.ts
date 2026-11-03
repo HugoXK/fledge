@@ -1,10 +1,41 @@
 import test from 'node:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { encryptSecret } from '../src/lib/secrets.js'
 import { formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
+
+
+function makeZip(name: string, text: string): Buffer {
+  const filename = Buffer.from(name)
+  const data = Buffer.from(text)
+  const local = Buffer.alloc(30)
+  local.writeUInt32LE(0x04034b50, 0)
+  local.writeUInt16LE(20, 4)
+  local.writeUInt32LE(data.length, 18)
+  local.writeUInt32LE(data.length, 22)
+  local.writeUInt16LE(filename.length, 26)
+  const central = Buffer.alloc(46)
+  central.writeUInt32LE(0x02014b50, 0)
+  central.writeUInt16LE(20, 4)
+  central.writeUInt16LE(20, 6)
+  central.writeUInt32LE(data.length, 20)
+  central.writeUInt32LE(data.length, 24)
+  central.writeUInt16LE(filename.length, 28)
+  central.writeUInt32LE(0, 42)
+  const cdOffset = local.length + filename.length + data.length
+  const eocd = Buffer.alloc(22)
+  eocd.writeUInt32LE(0x06054b50, 0)
+  eocd.writeUInt16LE(1, 8)
+  eocd.writeUInt16LE(1, 10)
+  eocd.writeUInt32LE(central.length + filename.length, 12)
+  eocd.writeUInt32LE(cdOffset, 16)
+  return Buffer.concat([local, filename, data, central, filename, eocd])
+}
 
 test('team console reads live state and sends guidance', async () => {
   const received: Array<Record<string, unknown>> = []
@@ -267,5 +298,91 @@ test('a normal repository owner can message the Chief without the team console',
   } finally {
     await built.close()
     await bridge.close()
+  }
+})
+
+test('the Chief conversation reads the DSH export and streams a snapshot', async () => {
+  const events = [
+    { type: 'session', id: 's1' },
+    { type: 'user/message', time: 1, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '[Fledge owner message]\nPlease report progress.' }] } },
+    { type: 'assistant/message', time: 2, data: { message: { content: [{ type: 'text', text: 'One test is still red.' }] } } },
+  ]
+  const zip = makeZip('session.v4.jsonl', events.map((event) => JSON.stringify(event)).join('\n'))
+  const fake = await startFakeServer((request, response) => {
+    if ((request.url ?? '').startsWith('/?token=')) {
+      response.writeHead(303, { location: './', 'set-cookie': 'dsh-auth=abc; Path=/' })
+      response.end()
+      return
+    }
+    if ((request.url ?? '').startsWith('/api/session.export')) {
+      response.writeHead(200, { 'content-type': 'application/zip' })
+      response.end(zip)
+      return
+    }
+    let body = ''
+    request.on('data', (chunk) => { body += chunk })
+    request.on('end', () => {
+      const payload = JSON.parse(body || '{}') as { endpoint?: string }
+      if (payload.endpoint === 'state') {
+        json(response, 200, { value: {
+          bots: [{ name: 'Chief', sessionId: 'chief-1', role: 'Chief' }],
+          activity: { 'chief-1': 'idle' },
+          work: { bots: { 'chief-1': { calls: 1, since: Date.now() } }, ended: [] },
+          rooms: {},
+          questions: {},
+        } })
+        return
+      }
+      json(response, 200, { ok: true })
+    })
+  })
+  const dataDir = mkdtempSync(join(tmpdir(), 'fledge-chief-transcript-'))
+  writeFileSync(join(dataDir, 'dsh-web.log'), 'dsh web: http://127.0.0.1:3080/?token=testtoken\n')
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'chief-export-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_chief_export', userId: user.id, owner: 'o', name: 'ce', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const port = Number(new URL(fake.url).port)
+    store.saveRepoInstance({
+      repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: dataDir, bridge_script: '/tmp/bridge',
+      dsh_port: port, bridge_port: port, model_port: 2, model_bind: '127.0.0.1', image: 'image',
+      status: 'ready', chief_session: 'chief-1',
+      team_json: JSON.stringify({ chief: 'chief-1', lead: 'lead-1', product: 'p', test: 't', security: 's', reviewer: 'r', dev1: 'd1', dev2: 'd2', reviewerScope: 'upstream', team: 'Repo' }),
+      bridge_token_enc: encryptSecret('bridge-token', config.tokenEncryptionKey), bridge_pid: null, log_pid: null,
+      last_error: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_health_at: null,
+    })
+    const { cookie } = sessionFor(built, user)
+    const api = await built.app.inject({ method: 'GET', url: `/api/repos/${repo.id}/chief/messages`, headers: { cookie } })
+    assert.equal(api.statusCode, 200)
+    const data = api.json() as { messages: Array<{ role: string; text: string }> }
+    assert.deepEqual(data.messages.map((message) => message.role), ['user', 'chief'])
+    assert.equal(data.messages[0]?.text, 'Please report progress.')
+    assert.equal(data.messages[1]?.text, 'One test is still red.')
+
+    await built.app.listen({ port: 0, host: '127.0.0.1' })
+    const address = built.app.server.address()
+    const appPort = typeof address === 'object' && address !== null ? address.port : 0
+    const controller = new AbortController()
+    const response = await fetch(`http://127.0.0.1:${appPort}/api/repos/${repo.id}/chief/events`, { headers: { cookie }, signal: controller.signal })
+    assert.equal(response.status, 200)
+    assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/)
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let text = ''
+    while (!text.includes('event: snapshot') && text.length < 16_384) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      text += decoder.decode(chunk.value, { stream: true })
+    }
+    controller.abort()
+    await reader.cancel().catch(() => {})
+    assert.match(text, /event: snapshot/)
+    assert.match(text, /One test is still red/)
+  } finally {
+    await built.close()
+    await fake.close()
+    rmSync(dataDir, { recursive: true, force: true })
   }
 })

@@ -43,7 +43,9 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/api/repos/:id/team` | admin | Team state JSON (polling fallback) |
 | GET | `/api/repos/:id/team/events` | admin | Server-Sent Events snapshot stream |
 | POST | `/repos/:id/team/guidance` | admin + CSRF | Send guidance to a role |
-| POST | `/repos/:id/chief/message` | owner + CSRF | Send guidance to the Chief from the simplified UI; the repo page renders replies from the Chief session |
+| POST | `/repos/:id/chief/message` | owner + CSRF | Send guidance to the Chief from the simplified UI |
+| GET | `/api/repos/:id/chief/messages` | owner | Chief conversation snapshot (filtered/redacted) |
+| GET | `/api/repos/:id/chief/events` | owner | Server-Sent Events for new Chief messages |
 | POST | `/api/repos/:id/team/answer` | admin + CSRF | Answer a team question |
 | POST | `/api/repos/:id/team/stop` | admin + CSRF | Stop the active roles (hard when possible, otherwise a stop request) |
 | POST | `/repos/:id/settings` | owner + CSRF | Goal, target branch, cadence, enabled, reviewer interval |
