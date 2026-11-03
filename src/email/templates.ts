@@ -130,7 +130,7 @@ export function jobSucceededEmail(user: UserRow, context: JobMailContext): { sub
     '',
     'Fledge 不会自动合并；请到 GitHub review 后由你决定是否 merge。',
     '',
-    `团队工作台：${context.teamUrl}`,
+    `查看任务：${context.teamUrl}`,
     '',
     mailFooter(),
   ].filter((line) => line !== '').join('\n')
@@ -143,7 +143,7 @@ export function jobSucceededEmail(user: UserRow, context: JobMailContext): { sub
 </ul>
 ${context.summary === '' ? '' : `<p>${escapeHtml(context.summary)}</p>`}
 <p>Fledge 不会自动合并；请到 GitHub review 后由你决定是否 merge。</p>
-<p><a href="${escapeHtml(context.teamUrl)}">打开团队工作台</a></p>
+<p><a href="${escapeHtml(context.teamUrl)}">打开任务</a></p>
 <p><small>${escapeHtml(mailFooter())}</small></p>`
   return { subject, text, html }
 }
@@ -160,9 +160,9 @@ export function jobFailedEmail(user: UserRow, context: JobMailContext): { subjec
     linkLine('Issue', context.issueUrl),
     linkLine('PR', context.prUrl),
     '',
-    '可以在团队工作台查看最后进度，修正后重新运行；Fledge 不会自动合并。',
+    '可以在任务页查看最后进度，修正后重新运行；Fledge 不会自动合并。',
     '',
-    `团队工作台：${context.teamUrl}`,
+    `查看任务：${context.teamUrl}`,
     '',
     mailFooter(),
   ].filter((line) => line !== '').join('\n')
@@ -174,8 +174,8 @@ export function jobFailedEmail(user: UserRow, context: JobMailContext): { subjec
   <li>Issue：${context.issueUrl === null ? '—' : `<a href="${escapeHtml(context.issueUrl)}">${escapeHtml(context.issueUrl)}</a>`}</li>
   <li>PR：${context.prUrl === null ? '—' : `<a href="${escapeHtml(context.prUrl)}">${escapeHtml(context.prUrl)}</a>`}</li>
 </ul>
-<p>可以在团队工作台查看最后进度，修正后重新运行；Fledge 不会自动合并。</p>
-<p><a href="${escapeHtml(context.teamUrl)}">打开团队工作台</a></p>
+<p>可以在任务页查看最后进度，修正后重新运行；Fledge 不会自动合并。</p>
+<p><a href="${escapeHtml(context.teamUrl)}">打开任务</a></p>
 <p><small>${escapeHtml(mailFooter())}</small></p>`
   return { subject, text, html }
 }
@@ -192,7 +192,7 @@ export function jobAttentionEmail(user: UserRow, input: { repo: string; question
     input.detail === '' ? '' : input.detail,
     ...options,
     '',
-    `在团队工作台回答：${input.teamUrl}`,
+    `打开仓库收件箱回答：${input.teamUrl}`,
     '',
     '如果不回答，任务可能停在当前步骤。',
     '',
@@ -202,7 +202,7 @@ export function jobAttentionEmail(user: UserRow, input: { repo: string; question
 <p>${escapeHtml(input.repo)} 的团队在等你回答一个问题：</p>
 <blockquote>${escapeHtml(input.question)}${input.detail === '' ? '' : `<br /><small>${escapeHtml(input.detail)}</small>`}</blockquote>
 ${input.options.length === 0 ? '' : `<ul>${input.options.map((option) => `<li>${escapeHtml(option)}</li>`).join('')}</ul>`}
-<p><a href="${escapeHtml(input.teamUrl)}">打开团队工作台回答</a></p>
+<p><a href="${escapeHtml(input.teamUrl)}">打开仓库收件箱回答</a></p>
 <p>如果不回答，任务可能停在当前步骤。</p>
 <p><small>${escapeHtml(mailFooter())}</small></p>`
   return { subject, text, html }
@@ -260,7 +260,7 @@ export function dailyDigestEmail(user: UserRow, input: DigestInput): { subject: 
     ...(input.nextRuns.length === 0 ? ['· 暂无自动迭代计划。'] : input.nextRuns.map((run) => `· 下次自动迭代：${run.repo} · ${run.when}`)),
     ...(input.questions.length === 0 ? ['· 没有待回答的问题。'] : input.questions.map((question) => `· 待回答：${question.repo} · ${question.question}`)),
     '',
-    '有新指示？到团队台发送：',
+    '有新指示？到仓库页查看或回复：',
     ...(input.teamLinks.length === 0 ? ['· 暂无仓库。'] : input.teamLinks.map((link) => `· ${link.repo}：${link.url}`)),
     '',
     'Fledge 不会自动合并；PR 需要你 review 后决定。',
@@ -277,7 +277,7 @@ ${input.jobs.length === 0 ? '<p>今天没有新任务。</p>' : `<ul>${input.job
 ${input.nextRuns.length === 0 ? '<li>暂无自动迭代计划。</li>' : input.nextRuns.map((run) => `<li>下次自动迭代：${escapeHtml(run.repo)} · ${escapeHtml(run.when)}</li>`).join('')}
 ${input.questions.length === 0 ? '<li>没有待回答的问题。</li>' : input.questions.map((question) => `<li>待回答：${escapeHtml(question.repo)} · ${escapeHtml(question.question)}</li>`).join('')}
 </ul>
-<p>有新指示？到团队台发送：</p>
+<p>有新指示？到仓库页查看或回复：</p>
 <ul>
 ${input.teamLinks.length === 0 ? '<li>暂无仓库。</li>' : input.teamLinks.map((link) => `<li>${escapeHtml(link.repo)}：<a href="${escapeHtml(link.url)}">${escapeHtml(link.url)}</a></li>`).join('')}
 </ul>

@@ -300,7 +300,7 @@ export class Jobs {
       repo: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`,
       jobId: job.id,
       kind: job.kind,
-      teamUrl: `${this.config.baseUrl}/repos/${repo.id}/team`,
+      teamUrl: `${this.config.baseUrl}/repos/${repo.id}/jobs/${job.id}`,
       issueUrl: result.issueUrl ?? job.issue_url,
       prUrl: result.prUrl ?? job.pr_url,
       summary: result.summary ?? job.summary ?? '',
@@ -363,7 +363,7 @@ export class Jobs {
                 question: question.question,
                 detail: question.detail,
                 options: question.options,
-                teamUrl: `${this.config.baseUrl}/repos/${repo.id}/team`,
+                teamUrl: `${this.config.baseUrl}/repos/${repo.id}#inbox`,
               }),
             })
           } catch (error) {
@@ -410,7 +410,7 @@ export class Jobs {
     const teamLinks: Array<{ repo: string; url: string }> = []
     for (const repo of repos) {
       const label = `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`
-      teamLinks.push({ repo: label, url: `${this.config.baseUrl}/repos/${repo.id}/team` })
+      teamLinks.push({ repo: label, url: `${this.config.baseUrl}/repos/${repo.id}#inbox` })
       if (repo.auto_iterate === 1) {
         const last = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
         const next = Number.isFinite(last) ? new Date(last + repo.interval_minutes * 60_000) : new Date()

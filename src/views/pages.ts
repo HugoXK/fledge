@@ -236,7 +236,7 @@ function questionsBlock(locale: Locale, viewer: Viewer, questions: InboxQuestion
       return `<div class="question-card" data-question="${escapeHtml(question.id)}">
         <div class="question-head">
           <strong>${escapeHtml(question.question || t('团队提问', 'Team question'))}</strong>
-          <a class="badge" href="/repos/${escapeHtml(question.repoId)}/team">${escapeHtml(question.repoLabel)}</a>
+          <a class="badge" href="/repos/${escapeHtml(question.repoId)}${viewer.user.role === 'admin' ? '/team' : '#inbox'}">${escapeHtml(question.repoLabel)}</a>
         </div>
         ${question.detail === '' ? '' : `<p class="fine">${escapeHtml(question.detail)}</p>`}
         <form method="post" action="/repos/${escapeHtml(question.repoId)}/team/answer" class="form">

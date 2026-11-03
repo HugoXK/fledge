@@ -228,6 +228,7 @@ test('a successful callback stores attribution and posts a PR automation comment
     const message = mailer.messages[0]!
     assert.match(message.subject, /任务完成/)
     assert.match(message.text, /https:\/\/github.com\/owner\/repo\/pull\/42/)
+    assert.match(message.text, /\/repos\/repo_attr\/jobs\/job_attr/)
   } finally {
     store.close()
     await github.close()
@@ -305,6 +306,7 @@ test('a new team question sends one attention email', async () => {
     const message = mailer.messages[0]!
     assert.match(message.subject, /需要你回答/)
     assert.match(message.text, /Which path\?/)
+    assert.match(message.text, /#inbox/)
     await jobs.tick()
     assert.equal(mailer.messages.length, 1)
   } finally {
