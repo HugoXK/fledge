@@ -1,7 +1,7 @@
-# Handoff — Fledge v0.2.1
+# Handoff — Fledge v0.2.2
 
-Status: **v0.2.1 is the latest release (`fledge.hugoxk.online`, GitHub token login; OAuth App pending); docs are live; CI green.**
-Last updated: 2026-11-02.
+Status: **v0.2.2 is the latest release (`fledge.hugoxk.online`, GitHub token login; OAuth App pending); docs are live; CI green.**
+Last updated: 2026-11-03.
 
 This page is the public handoff for a new development session. The operator's
 private handoff (server paths, env locations, non-public URLs) is not committed;
@@ -21,7 +21,7 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 ## What exists
 
 - **Repository:** <https://github.com/HugoXK/fledge>
-- **Release:** <https://github.com/HugoXK/fledge/releases/tag/v0.2.1>
+- **Release:** <https://github.com/HugoXK/fledge/releases/tag/v0.2.2>
 - **CI:** `ci.yml` (Node 22 + 24, lint, typecheck, tests, build, Docker, audit,
   changelog, risk), `codeql.yml`, `dependency-review.yml`, `release.yml`; the
   aggregate check is `ci-ok`.

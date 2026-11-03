@@ -1,1 +1,0 @@
-Clarified upstream freshness: iterate jobs now check the latest upstream branch and open issues/PRs before working, skip duplicate work when a fix or PR already exists, and sync a stale fork before creating a working branch.

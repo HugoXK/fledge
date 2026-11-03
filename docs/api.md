@@ -259,7 +259,7 @@ Status code: `402`.
 
 ## Health
 
-`GET /healthz` → `{ "ok": true, "service": "fledge", "version": "0.2.1" }`.
+`GET /healthz` → `{ "ok": true, "service": "fledge", "version": "0.2.2" }`.
 
 ## Conventions
 

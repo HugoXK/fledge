@@ -262,7 +262,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }).catch(() => fail('502 Bad Gateway'))
   })
 
-  app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: '0.2.1', time: new Date().toISOString() }))
+  app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: '0.2.2', time: new Date().toISOString() }))
 
   app.get('/lang/:locale', async (request, reply) => {
     const requested = String((request.params as Record<string, string>).locale)

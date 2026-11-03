@@ -1,1 +1,0 @@
-Updated the static-file dependency chain to glob 14.0.3 and minimatch 11.0.4, resolving two medium-severity Dependabot alerts: the glob AbortSignal cancellation bypass and the minimatch globparts amplification denial of service.

@@ -46,6 +46,12 @@ execution (LangSmith/Langfuse, OpenTelemetry, Temporal/DBOS):
 - [x] Guidance and stop actions are audited and visible to the job.
 - [x] Job detail shows the current step, last heartbeat, cost and attribution.
 
+## v0.2.2 — repository roles (shipped)
+
+- [x] Self-selected `maintainer` / `developer` role from GitHub permission.
+- [x] Maintainer-only review and an opt-in auto-merge switch (off by default).
+- [x] Refresh downgrades a maintainer when the GitHub permission is lost.
+
 ## v0.3 — branded agent workspace (path workspace shipped)
 
 - [ ] Per-repository authenticated workspace on a subdomain, e.g.

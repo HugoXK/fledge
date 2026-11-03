@@ -1,1 +1,0 @@
-Improved GitHub App repository attribution: when the user has re-authorized with repo scope, Fledge uses that user token for App-repository writes so issues, PRs and commits are created as the user instead of Fledge-Platform. Repositories without that authorization show a re-authorize notice.

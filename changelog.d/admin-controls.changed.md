@@ -1,1 +1,0 @@
-Tightened the admin user table controls: quota input, unlimited switch and Set quota now stay on one row, role select and Set role stay on one row, and approve/disable actions are grouped below. Wider controls scroll inside the table instead of stretching the page.
