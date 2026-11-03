@@ -326,7 +326,7 @@ test('a successful callback stores attribution and posts a PR automation comment
     assert.equal(mailer.messages.length, 1)
     const message = mailer.messages[0]!
     assert.match(message.subject, /任务完成/)
-    assert.ok(message.text.includes('https://github.com/owner/repo/pull/42'))
+    assert.ok(new Set(message.text.split('\n')).has('PR：https://github.com/owner/repo/pull/42'))
     assert.match(message.text, /\/repos\/repo_attr\/jobs\/job_attr/)
   } finally {
     store.close()
@@ -453,7 +453,7 @@ test('daily digest sends once and includes the day summary', async () => {
     const digests = mailer.messages.filter((message) => /今日摘要/.test(message.subject))
     assert.equal(digests.length, 1)
     assert.match(digests[0]!.text, /Fixed a digest bug/)
-    assert.ok(digests[0]!.text.includes('https://github.com/o/digest/pull/1'))
+    assert.ok(new Set(digests[0]!.text.split('\n')).has('  PR: https://github.com/o/digest/pull/1'))
     assert.match(digests[0]!.text, /回复这封邮件/)
     assert.match(digests[0]!.replyTo ?? '', /\+[A-Za-z0-9_-]+@/)
     await jobs.tick()
