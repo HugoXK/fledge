@@ -36,13 +36,14 @@
 
   const render = (messages) => {
     if (!thread) return
+    const stick = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 80
     thread.replaceChildren()
     if (!Array.isArray(messages) || messages.length === 0) {
       thread.append(empty())
       return
     }
     for (const message of messages) thread.append(messageNode(message))
-    thread.scrollTop = thread.scrollHeight
+    if (stick) thread.scrollTop = thread.scrollHeight
   }
 
   const append = (message) => {
