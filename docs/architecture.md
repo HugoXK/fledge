@@ -257,7 +257,7 @@ and a new team question; question mails are deduped by
 `DIGEST_HOUR` in `DIGEST_TIMEZONE`, builds a 24-hour summary per approved user
 (jobs, PRs, spend, next scheduled runs, open questions) and sends it once per
 day (`digest_sent:<userId>:<date>`). Templates include the repo, job id,
-issue/PR links, summary or question, and a link to the team console; they never
+issue/PR links, summary or question, and a link to the repository inbox or job page; they never
 contain tokens or model keys. Approval and quota mail are transactional and are
 not controlled by the digest/job switches.
 
@@ -280,7 +280,7 @@ The playbook asks every role to end its GitHub issues, PRs and comments with one
 small line: `<sub>Fledge · team · role · step</sub>`, where step is claimed,
 implemented, tested or reviewed. On a successful iterate job Fledge also adds a
 collapsible automation block to the PR. It lists only the steps that actually
-happened (a single role is grouped once), links the issue and team console, and
+happened (a single role is grouped once), links the issue and job page, and
 repeats that Fledge never merges. A missing step is omitted rather than shown as
 "pending", so the block stays truthful and quiet even when attribution is thin.
 

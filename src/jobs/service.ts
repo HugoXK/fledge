@@ -505,7 +505,7 @@ export class Jobs {
       'Fledge never merges; a human must review and merge.',
       '',
       `- Issue: ${result.issueUrl ?? 'none'}`,
-      `- Team console: ${this.config.baseUrl}/repos/${job.repo_id}/team`,
+      `- Fledge job: ${this.config.baseUrl}/repos/${job.repo_id}/jobs/${job.id}`,
       '</details>',
     ]
     try {

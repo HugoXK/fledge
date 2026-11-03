@@ -223,6 +223,7 @@ test('a successful callback stores attribution and posts a PR automation comment
     assert.match(body.body, /Dev-1 implemented/)
     assert.match(body.body, /Test tested/)
     assert.match(body.body, /Reviewer reviewed/)
+    assert.match(body.body, /\/repos\/repo_attr\/jobs\/job_attr/)
     assert.doesNotMatch(body.body, /not recorded|pending/)
     assert.equal(mailer.messages.length, 1)
     const message = mailer.messages[0]!
