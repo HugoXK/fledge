@@ -66,6 +66,7 @@ p { margin: 0 0 12px; }
 .option-card span { min-width: 0; font-size: 13px; }
 .option-card:hover { border-color: var(--line-strong); }
 .option-card:has(input:checked) { border-color: var(--accent); background: rgba(123, 149, 255, 0.12); }
+.job-report { white-space: pre-wrap; }
 .chief-card { border-color: rgba(184, 243, 74, 0.22); }
 .chief-thread { display: grid; gap: 10px; margin: 14px 0; max-height: 420px; overflow-y: auto; padding-right: 4px; }
 .chief-msg { max-width: 88%; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: #0b121b; }

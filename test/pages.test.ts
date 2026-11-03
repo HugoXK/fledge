@@ -308,6 +308,9 @@ test('repository settings can change the target branch', async () => {
     const { cookie, csrf } = sessionFor(built, user)
     const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
     assert.match(page.body, /name="targetBranch"/)
+    assert.match(page.body, /name="jobMode"/)
+    assert.match(page.body, /分析报告/)
+    assert.match(page.body, /\/research/)
     assert.match(page.body, /目标分支/)
     const saved = await built.app.inject({
       method: 'POST',

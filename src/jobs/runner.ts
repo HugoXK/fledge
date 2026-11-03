@@ -3,7 +3,7 @@ import type { JobRow, RepoRow, UserRow } from '../db.js'
 import { FlyBotRunner } from './flybot.js'
 import { MockRunner } from './mock.js'
 
-export type JobKind = 'iterate' | 'review' | 'plan'
+export type JobKind = 'iterate' | 'review' | 'plan' | 'research'
 
 export interface JobCredential {
   url: string

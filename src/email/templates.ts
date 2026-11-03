@@ -141,7 +141,7 @@ export function jobSucceededEmail(user: UserRow, context: JobMailContext): { sub
   <li>Issue：${context.issueUrl === null ? '—' : `<a href="${escapeHtml(context.issueUrl)}">${escapeHtml(context.issueUrl)}</a>`}</li>
   <li>PR：${context.prUrl === null ? '—' : `<a href="${escapeHtml(context.prUrl)}">${escapeHtml(context.prUrl)}</a>`}</li>
 </ul>
-${context.summary === '' ? '' : `<p>${escapeHtml(context.summary)}</p>`}
+${context.summary === '' ? '' : `<p style="white-space:pre-wrap">${escapeHtml(context.summary)}</p>`}
 <p>Fledge 不会自动合并；请到 GitHub review 后由你决定是否 merge。</p>
 <p><a href="${escapeHtml(context.teamUrl)}">打开任务</a></p>
 <p><small>${escapeHtml(mailFooter())}</small></p>`

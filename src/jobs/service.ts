@@ -21,6 +21,9 @@ import type { InstanceManager } from '../flybot/instances.js'
 export const DEFAULT_GOAL =
   'Review this repository for one high-value defect or improvement. Write a failing test first, implement the smallest correct fix, run the relevant tests, and open a pull request. Do not refactor unrelated code.'
 
+export const DEFAULT_RESEARCH_GOAL =
+  'Analyze this repository and return one evidence-backed report for the human: product value, current state, risks, options, a recommendation and the next work direction. Do not write code, create branches, open issues or PRs, comment on GitHub or change settings.'
+
 export const DEFAULT_REVIEW_GOAL =
   'Review every open pull request on the upstream repository. For each PR, inspect the diff, tests and risk, give a score from 0 to 100 with a short rationale, and post a review comment. Do not approve, merge, push or change repository settings. Summarize the scores and the most important issues.'
 
@@ -110,7 +113,11 @@ export class Jobs {
     const repoBaseBranch = repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)
     const baseBranch = (options.baseBranch ?? repoBaseBranch).trim()
     if (!isValidBranchName(baseBranch)) return { ok: false, error: '目标分支格式不正确。', code: 'BRANCH_INVALID' }
-    const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
+    const baseGoal = kind === 'review'
+      ? DEFAULT_REVIEW_GOAL
+      : kind === 'research'
+        ? (repo.goal !== '' ? repo.goal : DEFAULT_RESEARCH_GOAL)
+        : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
     const goal = (goalOverride ?? baseGoal).slice(0, 4000)
     const jobId = `job_${randomToken(10)}`
     const callbackSecret = randomToken(24)
@@ -121,7 +128,7 @@ export class Jobs {
       const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind })
       this.store.updateJob(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。', finished_at: nowIso() })
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'quota_exhausted' })
-      else if (kind === 'iterate') this.store.updateRepo(repo.id, { last_status: 'quota_exhausted', last_run_at: nowIso() })
+      else if (kind === 'iterate' || kind === 'research') this.store.updateRepo(repo.id, { last_status: 'quota_exhausted', last_run_at: nowIso() })
       else this.store.updateRepo(repo.id, { last_status: 'quota_exhausted' })
       await this.quotaNotifier.notify(user)
       return { ok: false, error: '平台额度已用完，请先配置自己的模型 API', code: 'QUOTA_EXHAUSTED', job: this.store.getJob(job.id) }
@@ -171,7 +178,7 @@ export class Jobs {
     this.store.event('job_enqueued', { userId: user.id, repoId: repo.id, jobId: job.id, meta: `${kind}:${trigger}` })
     if (priorJobs === 0) this.store.event('first_job_start', { userId: user.id, repoId: repo.id, jobId: job.id })
     if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'queued' })
-    else if (kind === 'iterate') this.store.updateRepo(repo.id, { last_run_at: nowIso(), last_status: 'queued' })
+    else if (kind === 'iterate' || kind === 'research') this.store.updateRepo(repo.id, { last_run_at: nowIso(), last_status: 'queued' })
     else this.store.updateRepo(repo.id, { last_status: 'queued' })
     this.store.audit(user.id, 'job.enqueued', `${job.id} ${repo.owner}/${repo.name} (${kind}, ${trigger})`)
 
@@ -257,6 +264,7 @@ export class Jobs {
       log.warn('clear job model token failed', { job: jobId, error: String(error) })
     })
     revoke()
+    void this.releasePendingFollowups(job.repo_id)
     this.store.audit(job.user_id, `job.${result.status}`, jobId)
     this.store.event(`job_${result.status}`, { userId: job.user_id, repoId: job.repo_id, jobId })
     if (result.status === 'succeeded' && prUrl !== null) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
@@ -264,6 +272,25 @@ export class Jobs {
     if (result.status === 'succeeded') void this.postAutomationComment(job, { prUrl: prUrl ?? undefined, issueUrl: issueUrl ?? undefined }, attribution)
     if (result.status === 'succeeded' || result.status === 'failed') void this.sendJobEmail(job, result)
     void this.captureTeamStats(jobId)
+  }
+
+  private async releasePendingFollowups(repoId: string): Promise<void> {
+    const prefix = `pending_followup:${repoId}:`
+    for (const row of this.store.listSettings(prefix)) {
+      this.store.deleteSetting(row.key)
+      let input: { prUrl: string; branch: string; baseBranch?: string; reason: string; headSha: string }
+      try {
+        input = JSON.parse(row.value) as typeof input
+      } catch {
+        continue
+      }
+      const repo = this.store.getRepo(repoId)
+      if (repo === undefined) continue
+      const result = await this.followUp(repo, input)
+      if (!result.ok && result.code === 'JOB_ACTIVE') this.store.setSetting(row.key, row.value)
+      if (!result.ok) log.warn('pending follow-up not queued', { repo: repoId, code: result.code, error: result.error })
+      else log.info('pending follow-up queued', { repo: repoId, job: result.job?.id })
+    }
   }
 
   private async captureTeamStats(jobId: string): Promise<void> {
@@ -283,6 +310,16 @@ export class Jobs {
       }))
       this.store.updateJob(jobId, { team_stats_json: JSON.stringify(stats) })
       this.store.event('team_stats', { userId: job.user_id, repoId: job.repo_id, jobId })
+      if (job.kind === 'iterate' || job.kind === 'research') {
+        const active = stats.filter((entry) => entry.calls > 0).map((entry) => entry.role)
+        if (active.length === 1 && active[0] === 'lead') {
+          const repo = this.store.getRepo(job.repo_id)
+          const label = repo === undefined ? job.repo_id : `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`
+          this.store.notify(job.user_id, 'team', `${label} 的本次任务只有 Lead 参与，其他团队角色没有实际介入。`)
+          this.store.event('team_participation_low', { userId: job.user_id, repoId: job.repo_id, jobId, meta: 'lead-only' })
+          log.warn('team participation low', { job: jobId, repo: job.repo_id, roles: active })
+        }
+      }
     } catch (error) {
       log.warn('team stats capture failed', { job: jobId, error: String(error) })
     }
@@ -318,7 +355,15 @@ export class Jobs {
   async followUp(repo: RepoRow, input: { prUrl: string; branch: string; baseBranch?: string; reason: string; headSha: string }): Promise<EnqueueResult> {
     const key = `followup:${repo.id}:${input.prUrl}:${input.headSha}:${input.reason}`.slice(0, 300)
     if (this.store.getSetting(key) !== undefined) return { ok: false, error: '这个失败已经跟进过', code: 'DUPLICATE_FOLLOWUP' }
-    if (this.store.activeJobForRepo(repo.id) !== undefined) return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
+    const activeJob = this.store.activeJobForRepo(repo.id)
+    if (activeJob !== undefined) {
+      if (activeJob.kind === 'review') {
+        const pendingKey = `pending_followup:${repo.id}:${input.prUrl}:${input.headSha}:${input.reason}`.slice(0, 300)
+        this.store.setSetting(pendingKey, JSON.stringify(input))
+        return { ok: false, error: '审核结束后会自动跟进', code: 'JOB_ACTIVE' }
+      }
+      return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
+    }
     this.store.setSetting(key, nowIso())
     const goal = [
       `Follow-up on the existing pull request ${input.prUrl} (branch ${input.branch}).`,
@@ -645,9 +690,10 @@ export class Jobs {
       if (!this.instanceReady(repo.id)) continue
       if (this.store.activeJobForRepo(repo.id) !== undefined) continue
       if (!this.due(repo)) continue
-      const result = await this.enqueue(repo, 'schedule')
+      const kind = repo.job_mode === 'research' ? 'research' : 'iterate'
+      const result = await this.enqueue(repo, 'schedule', undefined, kind)
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
-      log.info('scheduled job', { repo: `${repo.owner}/${repo.name}`, ok: result.ok, job: result.job?.id })
+      log.info('scheduled job', { repo: `${repo.owner}/${repo.name}`, kind, ok: result.ok, job: result.job?.id })
     }
   }
 

@@ -70,6 +70,7 @@ export interface RepoRow {
   installation_id: number | null
   goal: string
   enabled: number
+  job_mode: string
   auto_iterate: number
   interval_minutes: number
   last_run_at: string | null
@@ -277,6 +278,7 @@ CREATE TABLE IF NOT EXISTS repos (
   installation_id INTEGER,
   goal TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
+  job_mode TEXT NOT NULL DEFAULT 'iterate',
   auto_iterate INTEGER NOT NULL DEFAULT 0,
   interval_minutes INTEGER NOT NULL DEFAULT 1440,
   last_run_at TEXT,
@@ -444,7 +446,7 @@ export class Store {
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
-    this.db.exec('PRAGMA user_version = 12;')
+    this.db.exec('PRAGMA user_version = 13;')
   }
 
   private migrateColumns(): void {
@@ -474,6 +476,7 @@ export class Store {
     const repoColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(repos)').map((row) => row.name))
     const repoAdditions: Array<[string, string]> = [
       ['installation_id', 'INTEGER'],
+      ['job_mode', "TEXT NOT NULL DEFAULT 'iterate'"],
       ['upstream_owner', "TEXT NOT NULL DEFAULT ''"],
       ['upstream_name', "TEXT NOT NULL DEFAULT ''"],
       ['fork_owner', "TEXT NOT NULL DEFAULT ''"],
@@ -887,6 +890,7 @@ export class Store {
     tokenEnc: string
     installationId?: number | null
     goal: string
+    jobMode?: string
     autoIterate: boolean
     intervalMinutes: number
     upstreamOwner?: string
@@ -908,9 +912,9 @@ export class Store {
   }): RepoRow {
     this.run(
       `INSERT INTO repos (id, user_id, owner, name, default_branch, token_enc, installation_id, goal, enabled, auto_iterate, interval_minutes, created_at,
-         upstream_owner, upstream_name, fork_owner, fork_name, upstream_default_branch, fork_default_branch, target_branch,
+         upstream_owner, upstream_name, fork_owner, fork_name, upstream_default_branch, fork_default_branch, target_branch, job_mode,
          is_fork, fork_created, permission, can_review, can_create_issue, reviewer_enabled, review_interval_minutes, upstream_html_url, fork_html_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.userId,
       input.owner,
@@ -929,6 +933,7 @@ export class Store {
       input.upstreamDefaultBranch ?? input.defaultBranch,
       input.forkDefaultBranch ?? input.defaultBranch,
       input.targetBranch ?? input.upstreamDefaultBranch ?? input.defaultBranch,
+      input.jobMode === 'research' ? 'research' : 'iterate',
       input.isFork === true ? 1 : 0,
       input.forkCreated === true ? 1 : 0,
       input.permission ?? 'write',
@@ -969,7 +974,7 @@ export class Store {
     return this.get<RepoRow>('SELECT * FROM repos WHERE user_id = ? AND lower(owner) = lower(?) AND lower(name) = lower(?)', userId, owner, name)
   }
 
-  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
+  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'job_mode' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -1256,6 +1261,10 @@ export class Store {
 
   deleteSetting(key: string): void {
     this.run('DELETE FROM settings WHERE key = ?', key)
+  }
+
+  listSettings(prefix: string): Array<{ key: string; value: string }> {
+    return this.all<{ key: string; value: string }>('SELECT key, value FROM settings WHERE key LIKE ? ORDER BY key', `${prefix}%`)
   }
 }
 

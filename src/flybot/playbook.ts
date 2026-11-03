@@ -1,6 +1,6 @@
 import { sha256Hex } from '../lib/secrets.js'
 
-export const PLAYBOOK_VERSION = 7
+export const PLAYBOOK_VERSION = 8
 
 export type TeamRole = 'chief' | 'lead' | 'product' | 'test' | 'security' | 'reviewer' | 'dev1' | 'dev2'
 
@@ -39,9 +39,10 @@ const PROTOCOL = [
   '',
   'Handoff protocol:',
   '1. Every delegation is self-contained: goal, repo and fork, branch, acceptance criteria and what to return. Never paste token values.',
-  '2. The Lead delegates: Product for positioning and issue quality, Dev-1/Dev-2 for implementation, Test for failing tests and verification, Security for risk review, Reviewer for PR review. If a child cannot act, do that step yourself and say why.',
-  '3. The Reviewer only reviews: score 0-100, post a COMMENT review, never approve or merge.',
-  '4. Escalate irreversible product or security decisions to the human instead of guessing.',
+  '2. The Lead delegates: Product for positioning and issue quality, Dev-1/Dev-2 for implementation, Test for failing tests and verification, Security for risk review, Reviewer for PR review. If a child cannot act, do that step yourself and say why in the final callback.',
+  '3. For iterate jobs, the Lead must not implement alone. Use Product to scope the issue, Test to write/verify the failing test, Dev-1 or Dev-2 to implement, Security for material risk, and Reviewer for the final PR review. Do not claim a role that did not act.',
+  '4. The Reviewer only reviews: score 0-100. For a Fledge PR that needs changes, post REQUEST_CHANGES with concrete findings so Fledge can schedule the same-branch fix; otherwise COMMENT. Never approve, merge or push.',
+  '5. Escalate irreversible product or security decisions to the human instead of guessing.',
 ].join('\n')
 
 const ROLE_TEXT: Record<TeamRole, string> = {
@@ -53,6 +54,7 @@ const ROLE_TEXT: Record<TeamRole, string> = {
   lead: [
     'You are the Lead and the job owner.',
     'First pick one concrete, evidence-backed issue (or reuse one), then delegate research to Product, implementation to Dev-1 or Dev-2, verification to Test, risk review to Security, and final PR review to Reviewer.',
+    'Do not implement the change yourself when Dev-1 or Dev-2 is available. Your job is to split, delegate, integrate and verify, not to do every step alone.',
     'Keep the change small: one issue, one branch, one PR. Integrate the children\'s answers, verify the result yourself, and post the final callback exactly once.',
   ].join(' '),
   product: [
@@ -72,7 +74,8 @@ const ROLE_TEXT: Record<TeamRole, string> = {
   ].join(' '),
   reviewer: [
     'You are the dedicated reviewer.',
-    'Review the pull request diff and tests, then score it 0-100 with a short rationale and post a COMMENT review.',
+    'Review the pull request diff and tests, then score it 0-100 with a short rationale.',
+    'For a Fledge PR that needs changes, post a REQUEST_CHANGES review with concrete findings; otherwise post COMMENT.',
     'Never approve, merge, push or change repository settings.',
   ].join(' '),
   dev1: [

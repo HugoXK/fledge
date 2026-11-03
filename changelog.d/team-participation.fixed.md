@@ -1,0 +1,1 @@
+Strengthened the team playbook so iterate jobs cannot be implemented by the Lead alone: Product scopes, Test owns failing tests and verification, Dev-1/Dev-2 implement, and Reviewer reviews. If a job still reports only Lead activity, Fledge now sends an in-app warning instead of silently accepting it.

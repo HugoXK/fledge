@@ -4,7 +4,7 @@ import type { Runner, RunnerContext, RunnerResult } from './runner.js'
 
 interface BridgePayload {
   jobId: string
-  kind: 'iterate' | 'review' | 'plan'
+  kind: 'iterate' | 'review' | 'plan' | 'research'
   branch?: string
   prUrl?: string
   sessionId?: string
@@ -60,13 +60,24 @@ function planInstructions(context: RunnerContext): string[] {
   ]
 }
 
+function researchInstructions(context: RunnerContext): string[] {
+  const upstream = context.upstream
+  return [
+    `Mode: research. Repository: ${upstream.owner}/${upstream.name}. Do not write code, create a branch, push, open a PR/issue, comment on GitHub or change settings.`,
+    'Read the repository, README, docs, current goal, issues, PRs, tests and recent releases.',
+    'Lead a short team analysis: Product for user value and scope, Test for test coverage and regressions, Security for privacy and permission risk, Reviewer for quality and maintainability.',
+    'Return one structured report for the human: evidence, current state, options, recommendation, risks, and the next work direction. Do not turn the report into GitHub issues or PRs.',
+    'Finish by POSTing the callback with status succeeded and the full report in summary; no branch, prUrl or issueUrl.',
+  ]
+}
+
 function reviewInstructions(context: RunnerContext): string[] {
   const upstream = context.upstream
   return [
     `Mode: review. You are a dedicated reviewer for ${upstream.owner}/${upstream.name}. Do not modify code, push branches or open pull requests.`,
     `List all open pull requests on the upstream repository with GET /repos/${upstream.owner}/${upstream.name}/pulls?state=open&per_page=100.`,
     'For each PR, inspect the diff and tests, assess correctness, scope, test coverage, security and regressions, then give an integer score from 0 to 100 with a short rationale.',
-    'Post the score and rationale as a review comment. Use event "COMMENT"; never APPROVE, never merge, never request changes as a blocking action.',
+    'For a pull request created by Fledge that needs changes, post a REQUEST_CHANGES review with concrete findings so Fledge can schedule a same-branch fix; for other PRs use event "COMMENT". Never APPROVE, merge or push.',
     'Review all open PRs, including PRs not created by Fledge.',
     'Finish by POSTing the callback with JSON {status, summary, reviewScore, error}; reviewScore should be the average score across reviewed PRs. Do not send branch or prUrl.',
   ]
@@ -109,7 +120,7 @@ export class FlyBotRunner implements Runner {
         'You are the Fledge repository worker.',
         `Get the GitHub token with GET ${context.credential.url} and header "Authorization: Bearer ${context.credential.secret}".`,
         `Use the platform model at ${context.platform.baseUrl} with the job token as the API key; the model is ${context.platform.model}.`,
-        ...(context.kind === 'review' ? reviewInstructions(context) : context.kind === 'plan' ? planInstructions(context) : iterateInstructions(context)),
+        ...(context.kind === 'review' ? reviewInstructions(context) : context.kind === 'plan' ? planInstructions(context) : context.kind === 'research' ? researchInstructions(context) : iterateInstructions(context)),
         `Send a progress heartbeat after each major step and at least every 10 minutes: POST ${context.callback.url} with JSON {"status":"running","summary":"<one line progress>","checkpoint":"<done + next>"} and "Authorization: Bearer ${context.callback.secret}".`,
         'GitHub attribution: end every issue, PR and comment you create with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',
         'Final callback: include "attribution": {"writtenBy":"...","claimedBy":"...","implementedBy":"...","testedBy":"...","reviewedBy":"..."} with role names only (Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2). Omit a key for a step that did not happen; never write "not run", "pending" or "(Team)".',
