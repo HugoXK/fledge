@@ -73,7 +73,7 @@ test('team console reads live state and sends guidance', async () => {
   const store = new Store(':memory:')
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
-    const user = makeUser(store, { login: 'team-user', status: 'approved', admin: true })
+    const user = makeUser(store, { login: 'team-user', status: 'approved', superadmin: true })
     const repo = store.createRepo({ id: 'repo_team', userId: user.id, owner: 'openJiuwen-ai', name: 'DigitalMate', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.saveRepoInstance({
       repo_id: repo.id,
@@ -216,7 +216,7 @@ test('team events stream pushes a live snapshot', async () => {
   const store = new Store(':memory:')
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
-    const user = makeUser(store, { login: 'stream-team-user', status: 'approved', admin: true })
+    const user = makeUser(store, { login: 'stream-team-user', status: 'approved', superadmin: true })
     const repo = store.createRepo({ id: 'repo_stream', userId: user.id, owner: 'openJiuwen-ai', name: 'DigitalMate', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.saveRepoInstance({
       repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/stream', bridge_script: '/tmp/bridge',

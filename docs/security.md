@@ -139,6 +139,21 @@ digest in Settings; approval and quota mail stay transactional. A question is
 mailed at most once per `sessionId + questionId`; a digest is sent once per user
 per day. Test mail is rate-limited to one per minute.
 
+### Roles, admin scope and preview
+
+- `user`, `admin` and owner (`superadmin`) are platform roles. The configured
+  primary login is promoted to owner on startup; only the owner can promote or
+  demote admins and set unlimited quota. The one-off CLI is
+  `npm run role:set -- <github-login> <admin|user>`; it refuses to change the
+  owner role.
+- Admin management is scoped: an admin sees themselves and normal users, never
+  another admin or the owner. Admin jobs and audit rows are filtered to that
+  visible set and actor names are masked in the admin audit view. The owner sees
+  all users and actions.
+- The owner-only preview cookie renders the normal-user UI while leaving the
+  actual session owner-scoped behind the scenes. Advanced team/workspace routes
+  remain blocked until preview is exited.
+
 ### Team console and agent controls
 
 - `GET /api/repos/:id/team/events` is admin-only. It is read-only and streams

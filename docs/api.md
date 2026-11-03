@@ -56,11 +56,13 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/settings/tokens` | approved + CSRF | Create a `flg_` token |
 | POST | `/settings/tokens/:id/revoke` | owner + CSRF | Revoke a token |
 | POST | `/notifications/read` | approved + CSRF | Mark notifications read |
-| GET | `/admin` | admin | Pending users, quotas, audit |
-| GET | `/admin/metrics` | admin | Product funnel, success rate, job cost, team participation, events |
+| GET | `/admin` | admin / owner | Scoped pending users, quotas, jobs and audit (admins see themselves and normal users only) |
+| GET | `/admin/metrics` | owner | Product funnel, success rate, job cost, team participation, events |
 | POST | `/admin/users/:id/approve` | admin + CSRF | Approve |
 | POST | `/admin/users/:id/reject` | admin + CSRF | Reject |
-| POST | `/admin/users/:id/quota` | admin + CSRF | Set quota in CNY |
+| POST | `/admin/users/:id/quota` | admin / owner + CSRF | Set quota in CNY; unlimited is owner-only |
+| POST | `/admin/users/:id/role` | owner + CSRF | Promote a normal user to admin or demote an admin |
+| POST | `/admin/simulation` | owner + CSRF | Toggle the normal-user UI preview |
 | GET | `/approve/:token` | token | Confirmation page |
 | POST | `/approve/:token` | token | Apply approve/reject |
 

@@ -8,7 +8,7 @@ import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
 import { openStore, type JobRow, type RepoRow, type Store, type UserRow } from './db.js'
 import { GithubOAuth } from './auth/github.js'
-import { requireAdmin, requireApproved, requireViewer, Sessions } from './auth/session.js'
+import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions } from './auth/session.js'
 import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
 import { notifyEmail } from './email/recipient.js'
@@ -87,8 +87,8 @@ function form(request: FastifyRequest): Record<string, string> {
   return out
 }
 
-function viewOf(viewer: { user: UserRow; csrfToken: string }): { user: UserRow; csrfToken: string } {
-  return { user: viewer.user, csrfToken: viewer.csrfToken }
+function viewOf(viewer: { user: UserRow; csrfToken: string; preview?: boolean }): { user: UserRow; csrfToken: string; preview?: boolean } {
+  return { user: viewer.user, csrfToken: viewer.csrfToken, preview: viewer.preview }
 }
 
 function htmlPage(reply: FastifyReply, status: number, page: string): FastifyReply {
@@ -117,6 +117,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const { config } = options
   assertProductionConfig(config)
   const store = options.store ?? openStore(config.dbPath)
+  store.ensureSuperadmin(config.github.adminLogin)
   const mailer = options.mailer ?? createMailer(config)
   const runner = options.runner ?? createRunner(config)
   const oauth = new GithubOAuth(config)
@@ -206,11 +207,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     error: job.error === null ? null : localizeMessage(locale, job.error) ?? job.error,
   }))
 
+  const requireAdvanced = (viewer: { user: UserRow; preview?: boolean }): void => {
+    if (viewer.user.role !== 'superadmin' || viewer.preview === true) throw httpError(403, '仅最高权限可访问实时团队页面。', 'SUPERADMIN_ONLY')
+  }
+
   const startSession = (user: UserRow, request: FastifyRequest, reply: FastifyReply): void => {
     if (user.status === 'approved') instances.ensureUserDir(user.id)
     const raw = sessions.start(user.id, request)
     const sessionHash = sha256Hex(raw)
     sessions.setCookies(reply, raw, { sessionHash, user, csrfToken: sessions.csrfFor(sessionHash) })
+    sessions.setPreview(reply, false)
   }
 
 
@@ -227,7 +233,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (session === undefined) return fail('401 Unauthorized')
     const user = store.userById(session.user_id)
     const repo = store.getRepo(decodeURIComponent(match[1] ?? ''))
-    if (user === undefined || user.status !== 'approved' || user.role !== 'admin' || repo === undefined || repo.user_id !== user.id) return fail('403 Forbidden')
+    const preview = /(?:^|; )fledge_preview=user(?:;|$)/.test(String(request.headers.cookie ?? ''))
+    if (user === undefined || user.status !== 'approved' || user.role !== 'superadmin' || preview || repo === undefined || repo.user_id !== user.id) return fail('403 Forbidden')
     const instance = store.getRepoInstance(repo.id)
     if (instance === undefined || instance.status !== 'ready') return fail('409 Conflict')
     void dshCookie(instance).then((cookie) => {
@@ -274,7 +281,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       name: 'Dev Login',
       email: 'dev@example.com',
       avatarUrl: null,
-      isAdmin: config.devLogin.admin,
+      isAdmin: false,
+      isSuperAdmin: config.devLogin.admin,
       initialQuotaCny: config.quota.initialCny,
     })
     if (user.status !== 'approved') store.setUserStatus(user.id, 'approved', 'dev-login')
@@ -299,7 +307,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       log.warn('github token login failed', { error: String(error) })
       return htmlPage(reply, 401, messagePage(config, 'GitHub token 无效', '无法用这个 token 读取 GitHub 身份，请检查权限或重新生成。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
     }
-    const isAdmin = profile.login.toLowerCase() === config.github.adminLogin.toLowerCase()
+    const isSuperAdmin = profile.login.toLowerCase() === config.github.adminLogin.toLowerCase()
     const user = store.upsertGithubUser({
       id: randomId('usr'),
       githubId: profile.id,
@@ -307,7 +315,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       name: profile.name,
       email: profile.email,
       avatarUrl: profile.avatarUrl,
-      isAdmin,
+      isAdmin: false,
+      isSuperAdmin,
       initialQuotaCny: config.quota.initialCny,
     })
     store.audit(user.id, 'login.github-token', `@${profile.login}`)
@@ -353,7 +362,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const t = translator(request.locale ?? 'zh')
       return htmlPage(reply, 400, errorPage(config, request.viewer ?? null, 'GitHub 登录失败', '无法完成 GitHub 登录，请重试。', request.locale, { href: '/auth/github', label: t('重新登录', 'Sign in again') }))
     }
-    const isAdmin = profile.login.toLowerCase() === config.github.adminLogin.toLowerCase()
+    const isSuperAdmin = profile.login.toLowerCase() === config.github.adminLogin.toLowerCase()
     const user = store.upsertGithubUser({
       id: randomId('usr'),
       githubId: profile.id,
@@ -361,7 +370,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       name: profile.name,
       email: profile.email,
       avatarUrl: profile.avatarUrl,
-      isAdmin,
+      isAdmin: false,
+      isSuperAdmin,
       initialQuotaCny: config.quota.initialCny,
     })
     store.setUserGithubToken(user.id, encryptSecret(token, config.tokenEncryptionKey))
@@ -754,7 +764,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const questions = (await inboxForUser(viewer.user.id, store.listRepos(viewer.user.id))).filter((question) => question.repoId === repo.id)
     const instance = store.getRepoInstance(repo.id)
     let chiefMessages
-    if (viewer.user.role !== 'admin' && instance?.status === 'ready') {
+    if ((viewer.user.role !== 'superadmin' || viewer.preview === true) && instance?.status === 'ready') {
       chiefMessages = await instances.chiefTranscript(repo.id).catch((error) => {
         log.warn('chief transcript failed', { repo: repo.id, error: String(error) })
         return []
@@ -786,7 +796,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/repos/:id/team', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
-    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
+    requireAdvanced(viewer)
     const instance = store.getRepoInstance(repo.id)
     let state
     let stateError: string | undefined
@@ -818,7 +828,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/api/repos/:id/team', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
-    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
+    requireAdvanced(viewer)
     try {
       const state = await instances.teamState(repo.id, 15_000)
       return { ...state, jobs: localizedJobs(store.listJobsForRepo(repo.id).slice(0, 5), request.locale ?? 'zh') }
@@ -829,7 +839,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/repos/:id/team/guidance', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
+    requireAdvanced(viewer)
     const body = form(request)
     const target = (body.target ?? '').trim()
     const text = (body.text ?? '').trim()
@@ -937,7 +947,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/repos/:id/team/stop', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
+    requireAdvanced(viewer)
     const body = form(request)
     const target = (body.target ?? '').trim()
     const returnToRaw = body.returnTo ?? `/repos/${repo.id}/team`
@@ -995,7 +1005,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/api/repos/:id/team/events', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
-    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
+    requireAdvanced(viewer)
     const instance = store.getRepoInstance(repo.id)
     if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
     reply.hijack()
@@ -1072,7 +1082,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/api/repos/:id/team/answer', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
+    requireAdvanced(viewer)
     const body = (request.body ?? {}) as Record<string, unknown>
     const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
     const questionId = typeof body.questionId === 'string' ? body.questionId : ''
@@ -1091,7 +1101,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/api/repos/:id/team/stop', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
+    requireAdvanced(viewer)
     const body = (request.body ?? {}) as Record<string, unknown>
     const target = typeof body.target === 'string' ? body.target.trim() : ''
     let state
@@ -1162,7 +1172,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/repos/:id/workspace', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
-    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
+    requireAdvanced(viewer)
     const instance = store.getRepoInstance(repo.id)
     return reply.type('text/html').send(agentWorkspacePage({
       config,
@@ -1177,7 +1187,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.all('/repos/:id/workspace/app', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
-    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
+    requireAdvanced(viewer)
     const url = request.raw.url ?? ''
     const query = url.includes('?') ? url.slice(url.indexOf('?')) : ''
     if (!url.split('?')[0]?.endsWith('/')) return reply.redirect(`/repos/${repo.id}/workspace/app/${query}`)
@@ -1193,7 +1203,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.all('/repos/:id/workspace/app/*', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
-    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问实时团队页面。', 'ADMIN_ONLY')
+    requireAdvanced(viewer)
     const instance = store.getRepoInstance(repo.id)
     if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
     const prefix = `/repos/${repo.id}/workspace/app/`
@@ -1462,7 +1472,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/admin/metrics', async (request, reply) => {
-    const viewer = requireAdmin(request)
+    const viewer = requireSuperAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000).toISOString()
     return reply.type('text/html').send(metricsPage({
       config,
@@ -1478,15 +1489,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/admin', async (request, reply) => {
     const viewer = requireAdmin(request)
-    const users = store.listUsers()
+    if (viewer.preview === true) return reply.redirect('/console')
+    const superadmin = viewer.user.role === 'superadmin'
+    const allUsers = store.listUsers()
+    const users = superadmin ? allUsers : allUsers.filter((user) => user.id === viewer.user.id || user.role === 'user')
+    const userIds = superadmin ? null : users.map((user) => user.id)
     const activity = new Map(users.map((user) => [user.id, store.userActivity(user.id)]))
     const perPage = 10
     const pageNumber = (name: string): number => {
       const n = Number(queryText(request, name))
       return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1
     }
-    const jobsTotal = store.countJobs()
-    const auditTotal = store.countAudit()
+    const jobsTotal = store.countJobsForUsers(userIds)
+    const auditTotal = store.countAuditForUsers(userIds)
     const jobsPages = Math.max(1, Math.ceil(jobsTotal / perPage))
     const auditPages = Math.max(1, Math.ceil(auditTotal / perPage))
     const jobsPage = Math.min(pageNumber('jobsPage'), jobsPages)
@@ -1498,13 +1513,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         viewer: viewOf(viewer),
         users,
         activity,
-        jobs: store.listJobsPage(perPage, (jobsPage - 1) * perPage),
+        jobs: store.listJobsPageForUsers(userIds, perPage, (jobsPage - 1) * perPage),
         jobsPage,
         jobsTotal,
-        audit: store.listAuditPage(perPage, (auditPage - 1) * perPage),
+        audit: store.listAuditPageForUsers(userIds, perPage, (auditPage - 1) * perPage),
         auditPage,
         auditTotal,
         perPage,
+        superadmin,
+        preview: false,
+        showAudit: true,
+        hideActor: !superadmin,
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
       }),
@@ -1513,10 +1532,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   const adminStatus = async (request: FastifyRequest, status: 'approved' | 'rejected') => {
     const viewer = csrfGuard(request)
-    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
+    if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
     const id = String((request.params as Record<string, string>).id)
     const user = store.userById(id)
     if (user === undefined) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
+    if (user.id === viewer.user.id || user.role === 'superadmin') throw httpError(403, '不能修改这个账号。', 'ROLE_PROTECTED')
+    if (viewer.user.role !== 'superadmin' && user.role !== 'user') throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
     store.setUserStatus(user.id, status, `admin:${viewer.user.login}`)
     if (status === 'approved') instances.ensureUserDir(user.id)
     if (status === 'rejected') {
@@ -1547,16 +1568,45 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/admin/users/:id/quota', async (request, reply) => {
     const viewer = csrfGuard(request)
-    if (viewer.user.role !== 'admin') throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
+    if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
     const id = String((request.params as Record<string, string>).id)
+    const user = store.userById(id)
+    if (user === undefined) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
+    const superadmin = viewer.user.role === 'superadmin'
+    if (!superadmin && user.id !== viewer.user.id && user.role !== 'user') throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
+    if (user.role === 'superadmin' && !superadmin) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
     const body = form(request)
     const unlimited = body.unlimited === '1'
+    if (unlimited && !superadmin) return reply.redirect(`/admin?error=${encodeURIComponent('只有最高权限可以设置不限额。')}`)
     const quota = Number(body.quota)
     if (!unlimited && (!Number.isFinite(quota) || quota < 0 || quota > 10_000)) throw httpError(400, '额度必须是 0–10000 之间的数字。', 'BAD_QUOTA')
     if (!unlimited) store.setUserQuota(id, quota)
     store.setUserQuotaUnlimited(id, unlimited)
     store.audit(id, 'admin.quota', `${unlimited ? 'unlimited' : `${quota} CNY`} by @${viewer.user.login}`)
     return reply.redirect(`/admin?notice=${encodeURIComponent(unlimited ? '额度已设为不限额。' : '额度已更新。')}`)
+  })
+
+  app.post('/admin/users/:id/role', async (request, reply) => {
+    const viewer = csrfGuard(request)
+    if (viewer.user.role !== 'superadmin') throw httpError(403, '仅最高权限可访问。', 'SUPERADMIN_ONLY')
+    const id = String((request.params as Record<string, string>).id)
+    const user = store.userById(id)
+    if (user === undefined || user.id === viewer.user.id || user.role === 'superadmin') throw httpError(403, '不能修改这个账号。', 'ROLE_PROTECTED')
+    const role = form(request).role
+    if (role !== 'admin' && role !== 'user') throw httpError(400, '角色无效。', 'BAD_ROLE')
+    store.setUserRole(id, role)
+    store.audit(id, 'admin.role', `role=${role} by @${viewer.user.login}`)
+    return reply.redirect(`/admin?notice=${encodeURIComponent(role === 'admin' ? '已设为管理员。' : '已设为普通用户。')}`)
+  })
+
+  app.post('/admin/simulation', async (request, reply) => {
+    const viewer = csrfGuard(request)
+    if (viewer.user.role !== 'superadmin') throw httpError(403, '仅最高权限可访问。', 'SUPERADMIN_ONLY')
+    const body = form(request)
+    sessions.setPreview(reply, body.enable === '1')
+    const returnPath = (body.returnTo ?? '/admin').split('?')[0] ?? '/admin'
+    const returnTo = returnPath.startsWith('/') && !returnPath.startsWith('//') ? returnPath : '/admin'
+    return reply.redirect(returnTo)
   })
 
   app.get('/approve/:token', async (request, reply) => {

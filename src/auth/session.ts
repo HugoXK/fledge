@@ -6,12 +6,18 @@ import { addDays } from '../lib/time.js'
 
 export const SESSION_COOKIE = 'fledge_session'
 export const CSRF_COOKIE = 'fledge_csrf'
+export const PREVIEW_COOKIE = 'fledge_preview'
 const SESSION_DAYS = 30
 
 export interface Viewer {
   sessionHash: string
   user: UserRow
   csrfToken: string
+  preview?: boolean
+}
+
+export function isAdminRole(role: string): boolean {
+  return role === 'admin' || role === 'superadmin'
 }
 
 export class Sessions {
@@ -40,7 +46,8 @@ export class Sessions {
     if (session === undefined) return null
     const user = this.store.userById(session.user_id)
     if (user === undefined) return null
-    return { sessionHash: hash, user, csrfToken: this.csrfFor(hash) }
+    const preview = user.role === 'superadmin' && request.cookies[PREVIEW_COOKIE] === 'user'
+    return { sessionHash: hash, user, csrfToken: this.csrfFor(hash), preview }
   }
 
   destroy(request: FastifyRequest): void {
@@ -69,6 +76,21 @@ export class Sessions {
   clearCookies(reply: FastifyReply): void {
     reply.clearCookie(SESSION_COOKIE, { path: '/' })
     reply.clearCookie(CSRF_COOKIE, { path: '/' })
+    reply.clearCookie(PREVIEW_COOKIE, { path: '/' })
+  }
+
+  setPreview(reply: FastifyReply, enabled: boolean): void {
+    if (!enabled) {
+      reply.clearCookie(PREVIEW_COOKIE, { path: '/' })
+      return
+    }
+    reply.setCookie(PREVIEW_COOKIE, 'user', {
+      path: '/',
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: this.config.baseUrl.startsWith('https://'),
+      maxAge: 8 * 60 * 60,
+    })
   }
 
   csrfFor(sessionHash: string): string {
@@ -99,7 +121,13 @@ export function requireApproved(request: FastifyRequest): Viewer {
 
 export function requireAdmin(request: FastifyRequest): Viewer {
   const viewer = requireApproved(request)
-  if (viewer.user.role !== 'admin') throw Object.assign(new Error('仅管理员可访问。'), { statusCode: 403, code: 'ADMIN_ONLY' })
+  if (!isAdminRole(viewer.user.role)) throw Object.assign(new Error('仅管理员可访问。'), { statusCode: 403, code: 'ADMIN_ONLY' })
+  return viewer
+}
+
+export function requireSuperAdmin(request: FastifyRequest): Viewer {
+  const viewer = requireApproved(request)
+  if (viewer.user.role !== 'superadmin') throw Object.assign(new Error('仅最高权限可访问。'), { statusCode: 403, code: 'SUPERADMIN_ONLY' })
   return viewer
 }
 

@@ -22,6 +22,7 @@ export function quotaAmount(quota: QuotaView, t: Translate): string {
 export interface Viewer {
   user: UserRow
   csrfToken: string
+  preview?: boolean
 }
 
 export interface LayoutOptions {
@@ -57,13 +58,14 @@ export function layout(options: LayoutOptions): string {
   const t = translator(locale)
   const notice = localizeMessage(locale, options.notice)
   const error = localizeMessage(locale, options.error)
+  const preview = viewer !== undefined && viewer !== null && viewer.preview === true
   const nav = viewer === undefined || viewer === null
     ? ''
     : `<nav class="nav" aria-label="${escapeHtml(t('主导航', 'Main navigation'))}">
         <a class="${active === 'console' ? 'on' : ''}" href="/console">${escapeHtml(t('工作区', 'Workspace'))}</a>
         <a class="${active === 'dashboard' ? 'on' : ''}" href="/dashboard">${escapeHtml(t('仓库', 'Repositories'))}</a>
         <a class="${active === 'settings' ? 'on' : ''}" href="/settings">${escapeHtml(t('设置', 'Settings'))}</a>
-        ${viewer.user.role === 'admin' ? `<a class="${active === 'admin' ? 'on' : ''}" href="/admin">${escapeHtml(t('管理', 'Admin'))}</a>` : ''}
+        ${!preview && (viewer.user.role === 'admin' || viewer.user.role === 'superadmin') ? `<a class="${active === 'admin' ? 'on' : ''}" href="/admin">${escapeHtml(t('管理', 'Admin'))}</a>` : ''}
       </nav>`
   const accountAvatar = viewer !== undefined && viewer !== null && viewer.user.avatar_url !== null && viewer.user.avatar_url !== ''
     ? `<img src="${escapeHtml(viewer.user.avatar_url)}" alt="" width="24" height="24" />`
@@ -110,6 +112,7 @@ export function layout(options: LayoutOptions): string {
     </div>
   </header>
   <main class="wrap" id="main">
+    ${preview && viewer !== undefined && viewer !== null ? `<div class="banner ok preview-banner"><span>${escapeHtml(t('正在模拟普通用户视图。', 'Previewing the normal user view.'))}</span><form method="post" action="/admin/simulation">${`<input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />`}<input type="hidden" name="enable" value="0" /><input type="hidden" name="returnTo" value="${escapeHtml(path)}" /><button class="link" type="submit">${escapeHtml(t('退出模拟', 'Exit preview'))}</button></form></div>` : ''}
     ${notice === undefined || notice === '' ? '' : `<div class="banner ok" role="status">${escapeHtml(notice)}</div>`}
     ${error === undefined || error === '' ? '' : `<div class="banner bad" role="alert">${escapeHtml(error)}</div>`}
     ${body}

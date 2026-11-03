@@ -17,6 +17,10 @@ export interface InboxQuestion extends TeamQuestionState {
   repoLabel: string
 }
 
+function advancedViewer(viewer: Viewer): boolean {
+  return viewer.user.role === 'superadmin' && viewer.preview !== true
+}
+
 function csrf(viewer: Viewer): string {
   return `<input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />`
 }
@@ -74,6 +78,7 @@ function triggerLabel(t: Translate, trigger: string): string {
 }
 
 function roleLabel(t: Translate, role: string): string {
+  if (role === 'superadmin') return t('最高权限', 'Owner')
   if (role === 'admin') return t('管理员', 'Admin')
   if (role === 'user') return t('用户', 'User')
   return role
@@ -237,7 +242,7 @@ function questionsBlock(locale: Locale, viewer: Viewer, questions: InboxQuestion
       return `<div class="question-card" data-question="${escapeHtml(question.id)}">
         <div class="question-head">
           <strong>${escapeHtml(question.question || t('团队提问', 'Team question'))}</strong>
-          <a class="badge" href="/repos/${escapeHtml(question.repoId)}${viewer.user.role === 'admin' ? '/team' : '#inbox'}">${escapeHtml(question.repoLabel)}</a>
+          <a class="badge" href="/repos/${escapeHtml(question.repoId)}${advancedViewer(viewer) ? '/team' : '#inbox'}">${escapeHtml(question.repoLabel)}</a>
         </div>
         ${question.detail === '' ? '' : `<p class="fine">${escapeHtml(question.detail)}</p>`}
         <form method="post" action="/repos/${escapeHtml(question.repoId)}/team/answer" class="form">
@@ -442,7 +447,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const jobsPage = input.jobsPage ?? 1
   const jobsTotal = input.jobsTotal ?? jobs.length
   const t = translator(locale)
-  const advanced = viewer.user.role === 'admin'
+  const advanced = advancedViewer(viewer)
   const upstreamOwner = repo.upstream_owner || repo.owner
   const upstreamName = repo.upstream_name || repo.name
   const forkOwner = repo.fork_owner || repo.owner
@@ -879,28 +884,31 @@ function auditTone(action: string): string {
   return ''
 }
 
-function auditRows(locale: Locale, audit: AuditRow[], usersById: Map<string, string>): string {
+function auditRows(locale: Locale, audit: AuditRow[], usersById: Map<string, string>, hideActor = false): string {
   const t = translator(locale)
   if (audit.length === 0) return `<tr><td colspan="4" class="muted">${escapeHtml(t('暂无记录。', 'No records yet.'))}</td></tr>`
   return audit
     .map((row) => {
       const rawDetail = row.detail ?? ''
-      const by = /\bby @([A-Za-z0-9-]+)\b/.exec(rawDetail)?.[1]
+      const by = hideActor ? undefined : /\bby @([A-Za-z0-9-]+)\b/.exec(rawDetail)?.[1]
       const targetLogin = row.user_id === null ? undefined : usersById.get(row.user_id)
       const actor = by ?? targetLogin
       const target = by !== undefined && targetLogin !== undefined && by.toLowerCase() !== targetLogin.toLowerCase() ? targetLogin : undefined
       let detail = rawDetail.replace(/^by @[A-Za-z0-9-]+\s*/, '').trim()
       if (detail === `@${actor}`) detail = ''
+      if (hideActor) detail = detail.replace(/\bby @[A-Za-z0-9-]+\b/g, t('由管理员操作', 'by an administrator'))
       const tone = auditTone(row.action)
       const rawAction = AUDIT_ACTIONS[row.action] === undefined ? '' : row.action
-      const actorHtml = actor === undefined
-        ? escapeHtml(t('系统', 'System'))
-        : `@${escapeHtml(actor)}${target === undefined ? '' : ` <span class="muted">→ @${escapeHtml(target)}</span>`}`
+      const actorHtml = hideActor
+        ? escapeHtml(t('管理员 / 系统', 'Admin / System'))
+        : actor === undefined
+          ? escapeHtml(t('系统', 'System'))
+          : `@${escapeHtml(actor)}${target === undefined ? '' : ` <span class="muted">→ @${escapeHtml(target)}</span>`}`
       return `<tr>
         <td class="nowrap"><span title="${escapeHtml(row.at)}">${escapeHtml(humanTimeShort(row.at))}</span></td>
         <td><span class="badge ${tone}">${escapeHtml(auditLabel(t, row.action))}</span>${rawAction === '' ? '' : `<br /><small class="muted">${escapeHtml(rawAction)}</small>`}</td>
         <td class="nowrap">${actorHtml}</td>
-        <td>${detail === '' ? '—' : `<span title="${escapeHtml(rawDetail)}">${escapeHtml(detail.slice(0, 160))}</span>`}</td>
+        <td>${detail === '' ? '—' : `<span title="${escapeHtml(hideActor ? detail : rawDetail)}">${escapeHtml(detail.slice(0, 160))}</span>`}</td>
       </tr>`
     })
     .join('')
@@ -937,10 +945,18 @@ export function adminPage(input: {
   auditTotal: number
   perPage: number
   activity?: Map<string, { repos: number; jobs: number; lastJobAt: string | null }>
+  superadmin?: boolean
+  preview?: boolean
+  showAudit?: boolean
+  hideActor?: boolean
   notice?: string
   error?: string
 }): string {
   const { config, locale, viewer, users, jobs, jobsPage, jobsTotal, audit, auditPage, auditTotal, perPage, activity, notice, error } = input
+  const superadmin = input.superadmin === true
+  const preview = input.preview === true
+  const showAudit = input.showAudit !== false
+  const hideActor = input.hideActor === true
   const t = translator(locale)
   const usersById = new Map(users.map((user) => [user.id, user.login]))
   const pending = users
@@ -970,9 +986,10 @@ export function adminPage(input: {
         <td>${user.quota_unlimited === 1 ? escapeHtml(t('不限额', 'Unlimited')) : money(user.quota_cny)}</td>
         <td>${quotaMoney(quotaView(user, config).usedCny)}</td>
         <td><small class="muted">${escapeHtml(t('最近登录', 'Last sign-in'))} ${escapeHtml(humanTimeShort(user.last_login_at))}<br />${escapeHtml(t('仓库', 'Repos'))} ${activity?.get(user.id)?.repos ?? 0} · ${escapeHtml(t('任务', 'Jobs'))} ${activity?.get(user.id)?.jobs ?? 0}<br />${escapeHtml(t('最近任务', 'Last job'))} ${escapeHtml(humanTimeShort(activity?.get(user.id)?.lastJobAt))}</small></td>
-        <td><form method="post" action="/admin/users/${escapeHtml(user.id)}/quota" class="row">${csrf(viewer)}<input name="quota" type="number" step="0.1" min="0" value="${user.quota_cny}" /><label class="check"><input type="checkbox" name="unlimited" value="1"${user.quota_unlimited === 1 ? ' checked' : ''} /> ${escapeHtml(t('不限额', 'Unlimited'))}</label><button class="link" type="submit">${escapeHtml(t('改额度', 'Set quota'))}</button></form>
-          ${user.status === 'rejected' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/approve">${csrf(viewer)}<button class="link good" type="submit">${escapeHtml(t('重新批准', 'Re-approve'))}</button></form>` : ''}
-          ${user.status === 'approved' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/reject" data-confirm="${escapeHtml(t('停用这个用户并停止其所有 FlyBot 实例？', 'Disable this user and stop all their FlyBot instances?'))}">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('停用', 'Disable'))}</button></form>` : ''}
+        <td><form method="post" action="/admin/users/${escapeHtml(user.id)}/quota" class="row">${csrf(viewer)}<input name="quota" type="number" step="0.1" min="0" value="${user.quota_cny}" />${superadmin ? `<label class="check"><input type="checkbox" name="unlimited" value="1"${user.quota_unlimited === 1 ? ' checked' : ''} /> ${escapeHtml(t('不限额', 'Unlimited'))}</label>` : ''}<button class="link" type="submit">${escapeHtml(t('改额度', 'Set quota'))}</button></form>
+          ${superadmin && user.role !== 'superadmin' && user.id !== viewer.user.id ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/role" class="row">${csrf(viewer)}<select name="role"><option value="user"${user.role === 'user' ? ' selected' : ''}>${escapeHtml(t('用户', 'User'))}</option><option value="admin"${user.role === 'admin' ? ' selected' : ''}>${escapeHtml(t('管理员', 'Admin'))}</option></select><button class="link" type="submit">${escapeHtml(t('改角色', 'Set role'))}</button></form>` : ''}
+          ${user.role !== 'superadmin' && user.id !== viewer.user.id && user.status === 'rejected' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/approve">${csrf(viewer)}<button class="link good" type="submit">${escapeHtml(t('重新批准', 'Re-approve'))}</button></form>` : ''}
+          ${user.role !== 'superadmin' && user.id !== viewer.user.id && user.status === 'approved' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/reject" data-confirm="${escapeHtml(t('停用这个用户并停止其所有 FlyBot 实例？', 'Disable this user and stop all their FlyBot instances?'))}">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('停用', 'Disable'))}</button></form>` : ''}
         </td>
       </tr>`,
     )
@@ -980,7 +997,8 @@ export function adminPage(input: {
   const body = `<section class="card">
     <div class="eyebrow">${escapeHtml(t('管理', 'ADMIN'))}</div>
     <h1>${escapeHtml(t('审批与额度', 'Approvals & quota'))}</h1>
-    <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · <a class="link" href="/admin/metrics">${escapeHtml(t('产品指标', 'Product metrics'))}</a></p>
+    <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}${superadmin ? ` · <a class="link" href="/admin/metrics">${escapeHtml(t('产品指标', 'Product metrics'))}</a>` : ''}</p>
+    ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出普通用户模拟', 'Exit user preview') : t('模拟普通用户视图', 'Preview the normal user view'))}</button></form>` : ''}
   </section>
   <section class="card">
     <h2>${escapeHtml(t('待审批', 'Pending'))} <small class="count">${pending.length}</small></h2>
@@ -993,13 +1011,13 @@ export function adminPage(input: {
   <section class="card">
     <div class="row between"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))} <small class="count">${jobsTotal}</small></h2><span class="fine">${escapeHtml(t('每页 10 条', '10 per page'))}</span></div>
     ${jobTable(locale, jobs)}
-    ${pager('/admin', 'jobsPage', jobsPage, jobsTotal, perPage, t, { auditPage })}
+    ${pager('/admin', 'jobsPage', jobsPage, jobsTotal, perPage, t, showAudit ? { auditPage } : {})}
   </section>
-  <section class="card">
+  ${showAudit ? `<section class="card">
     <div class="row between"><h2>${escapeHtml(t('审计', 'Audit'))} <small class="count">${auditTotal}</small></h2><span class="fine">${escapeHtml(t('每页 10 条', '10 per page'))}</span></div>
-    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('时间', 'Time'))}</th><th>${escapeHtml(t('动作', 'Action'))}</th><th>${escapeHtml(t('操作者', 'Actor'))}</th><th>${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${auditRows(locale, audit, usersById)}</tbody></table></div>
+    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('时间', 'Time'))}</th><th>${escapeHtml(t('动作', 'Action'))}</th><th>${escapeHtml(t('操作者', 'Actor'))}</th><th>${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${auditRows(locale, audit, usersById, hideActor)}</tbody></table></div>
     ${pager('/admin', 'auditPage', auditPage, auditTotal, perPage, t, { jobsPage })}
-  </section>`
+  </section>` : ''}`
   return layout({ title: t('管理', 'Admin'), viewer, body, config, locale, path: '/admin', active: 'admin', notice, error })
 }
 
@@ -1221,7 +1239,7 @@ export function jobPage(input: {
 }): string {
   const { config, locale, viewer, repo, job, notice, error } = input
   const t = translator(locale)
-  const advanced = viewer.user.role === 'admin'
+  const advanced = advancedViewer(viewer)
   const evidence = parseEvidenceJson(job.evidence_json)
   const attribution = jobAttribution(t, job)
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)

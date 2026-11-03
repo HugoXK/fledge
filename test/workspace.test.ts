@@ -45,7 +45,7 @@ test('workspace shell and proxied html are owner-only and rebranded', async () =
   const store = new Store(':memory:')
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
-    const user = makeUser(store, { login: 'workspace-user', status: 'approved', admin: true })
+    const user = makeUser(store, { login: 'workspace-user', status: 'approved', superadmin: true })
     const repo = store.createRepo({ id: 'repo_workspace', userId: user.id, owner: 'o', name: 'w', defaultBranch: 'main', tokenEnc: 'x', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.saveRepoInstance({
       repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: dataDir, bridge_script: '/tmp/bridge',

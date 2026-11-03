@@ -199,6 +199,8 @@ p { margin: 0 0 12px; }
 .meter span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-strong), var(--mint)); }
 
 .banner { padding: 12px 15px; border-radius: 11px; margin-bottom: 16px; border: 1px solid var(--line); font-size: 13.5px; }
+.preview-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; border-style: dashed; }
+.preview-banner form { margin: 0; }
 .banner.ok { background: rgba(103, 232, 199, 0.08); border-color: rgba(103, 232, 199, 0.35); }
 .banner.bad { background: rgba(255, 138, 138, 0.08); border-color: rgba(255, 138, 138, 0.35); }
 .notices .notice { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px dashed var(--line); font-size: 13.5px; }

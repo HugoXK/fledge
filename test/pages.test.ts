@@ -253,7 +253,7 @@ test('admin product metrics page renders the funnel', async () => {
   const store = new Store(':memory:')
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
-    const admin = makeUser(store, { login: 'metrics-admin', admin: true, status: 'approved' })
+    const admin = makeUser(store, { login: 'metrics-admin', superadmin: true, status: 'approved' })
     const { cookie } = sessionFor(built, admin)
     const page = await built.app.inject({ method: 'GET', url: '/admin/metrics', headers: { cookie } })
     assert.equal(page.statusCode, 200)

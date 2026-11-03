@@ -21,7 +21,7 @@ interface Database {
 const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: string) => Database }
 
 export type UserStatus = 'onboarding' | 'pending' | 'approved' | 'rejected'
-export type UserRole = 'user' | 'admin'
+export type UserRole = 'user' | 'admin' | 'superadmin'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'quota_exhausted'
 
 export interface UserRow {
@@ -551,10 +551,12 @@ export class Store {
     email: string | null
     avatarUrl: string | null
     isAdmin: boolean
+    isSuperAdmin?: boolean
     initialQuotaCny: number
   }): UserRow {
     const existing = this.userByGithubId(input.githubId)
     const at = nowIso()
+    const role = input.isSuperAdmin === true ? 'superadmin' : input.isAdmin ? 'admin' : undefined
     if (existing !== undefined) {
       this.run(
         'UPDATE users SET login=?, name=?, email=?, avatar_url=?, last_login_at=?, role=? WHERE id=?',
@@ -563,11 +565,12 @@ export class Store {
         input.email,
         input.avatarUrl,
         at,
-        input.isAdmin ? 'admin' : existing.role,
+        role ?? existing.role,
         existing.id,
       )
       return this.userById(existing.id)!
     }
+    const privileged = role !== undefined
     this.run(
       `INSERT INTO users (id, github_id, login, name, email, avatar_url, status, role, quota_cny, quota_used_usd, created_at, approved_at, approved_by, last_login_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
@@ -577,12 +580,12 @@ export class Store {
       input.name,
       input.email,
       input.avatarUrl,
-      input.isAdmin ? 'approved' : 'onboarding',
-      input.isAdmin ? 'admin' : 'user',
+      privileged ? 'approved' : 'onboarding',
+      role ?? 'user',
       input.initialQuotaCny,
       at,
-      input.isAdmin ? at : null,
-      input.isAdmin ? 'system' : null,
+      privileged ? at : null,
+      privileged ? 'system' : null,
       at,
     )
     return this.userById(input.id)!
@@ -683,6 +686,11 @@ export class Store {
 
   setUserRole(id: string, role: UserRole): void {
     this.run('UPDATE users SET role = ? WHERE id = ?', role, id)
+  }
+
+  ensureSuperadmin(login: string): void {
+    if (login === '') return
+    this.run("UPDATE users SET role = 'superadmin' WHERE lower(login) = lower(?) AND role != 'superadmin'", login)
   }
 
   setUserQuota(id: string, quotaCny: number): void {
@@ -1201,6 +1209,20 @@ export class Store {
     return Number(row?.n ?? 0)
   }
 
+  listAuditPageForUsers(userIds: string[] | null, limit: number, offset: number): AuditRow[] {
+    if (userIds === null) return this.listAuditPage(limit, offset)
+    if (userIds.length === 0) return []
+    const marks = userIds.map(() => '?').join(', ')
+    return this.all<AuditRow>(`SELECT * FROM audit_log WHERE user_id IN (${marks}) ORDER BY id DESC LIMIT ? OFFSET ?`, ...userIds, limit, offset)
+  }
+
+  countAuditForUsers(userIds: string[] | null): number {
+    if (userIds === null) return this.countAudit()
+    if (userIds.length === 0) return 0
+    const marks = userIds.map(() => '?').join(', ')
+    return Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM audit_log WHERE user_id IN (${marks})`, ...userIds)?.n ?? 0)
+  }
+
   listJobsPage(limit: number, offset: number): JobRow[] {
     return this.all<JobRow>('SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?', limit, offset)
   }
@@ -1208,6 +1230,20 @@ export class Store {
   countJobs(): number {
     const row = this.get<{ n: number }>('SELECT COUNT(*) AS n FROM jobs')
     return Number(row?.n ?? 0)
+  }
+
+  listJobsPageForUsers(userIds: string[] | null, limit: number, offset: number): JobRow[] {
+    if (userIds === null) return this.listJobsPage(limit, offset)
+    if (userIds.length === 0) return []
+    const marks = userIds.map(() => '?').join(', ')
+    return this.all<JobRow>(`SELECT * FROM jobs WHERE user_id IN (${marks}) ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, ...userIds, limit, offset)
+  }
+
+  countJobsForUsers(userIds: string[] | null): number {
+    if (userIds === null) return this.countJobs()
+    if (userIds.length === 0) return 0
+    const marks = userIds.map(() => '?').join(', ')
+    return Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM jobs WHERE user_id IN (${marks})`, ...userIds)?.n ?? 0)
   }
 
   getSetting(key: string): string | undefined {
