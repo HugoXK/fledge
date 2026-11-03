@@ -986,10 +986,15 @@ export function adminPage(input: {
         <td>${user.quota_unlimited === 1 ? escapeHtml(t('不限额', 'Unlimited')) : money(user.quota_cny)}</td>
         <td>${quotaMoney(quotaView(user, config).usedCny)}</td>
         <td><small class="muted">${escapeHtml(t('最近登录', 'Last sign-in'))} ${escapeHtml(humanTimeShort(user.last_login_at))}<br />${escapeHtml(t('仓库', 'Repos'))} ${activity?.get(user.id)?.repos ?? 0} · ${escapeHtml(t('任务', 'Jobs'))} ${activity?.get(user.id)?.jobs ?? 0}<br />${escapeHtml(t('最近任务', 'Last job'))} ${escapeHtml(humanTimeShort(activity?.get(user.id)?.lastJobAt))}</small></td>
-        <td><form method="post" action="/admin/users/${escapeHtml(user.id)}/quota" class="row">${csrf(viewer)}<input name="quota" type="number" step="0.1" min="0" value="${user.quota_cny}" />${superadmin ? `<label class="check"><input type="checkbox" name="unlimited" value="1"${user.quota_unlimited === 1 ? ' checked' : ''} /> ${escapeHtml(t('不限额', 'Unlimited'))}</label>` : ''}<button class="link" type="submit">${escapeHtml(t('改额度', 'Set quota'))}</button></form>
-          ${superadmin && user.role !== 'superadmin' && user.id !== viewer.user.id ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/role" class="row">${csrf(viewer)}<select name="role"><option value="user"${user.role === 'user' ? ' selected' : ''}>${escapeHtml(t('用户', 'User'))}</option><option value="admin"${user.role === 'admin' ? ' selected' : ''}>${escapeHtml(t('管理员', 'Admin'))}</option></select><button class="link" type="submit">${escapeHtml(t('改角色', 'Set role'))}</button></form>` : ''}
-          ${user.role !== 'superadmin' && user.id !== viewer.user.id && user.status === 'rejected' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/approve">${csrf(viewer)}<button class="link good" type="submit">${escapeHtml(t('重新批准', 'Re-approve'))}</button></form>` : ''}
-          ${user.role !== 'superadmin' && user.id !== viewer.user.id && user.status === 'approved' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/reject" data-confirm="${escapeHtml(t('停用这个用户并停止其所有 FlyBot 实例？', 'Disable this user and stop all their FlyBot instances?'))}">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('停用', 'Disable'))}</button></form>` : ''}
+        <td class="admin-adjust">
+          <div class="admin-control-row">
+            <form method="post" action="/admin/users/${escapeHtml(user.id)}/quota" class="admin-inline-form">${csrf(viewer)}<input class="admin-quota" name="quota" type="number" step="0.1" min="0" value="${user.quota_cny}" aria-label="${escapeHtml(t('额度', 'Quota'))}" />${superadmin ? `<label class="check admin-check"><input type="checkbox" name="unlimited" value="1"${user.quota_unlimited === 1 ? ' checked' : ''} /> ${escapeHtml(t('不限额', 'Unlimited'))}</label>` : ''}<button class="link" type="submit">${escapeHtml(t('改额度', 'Set quota'))}</button></form>
+          </div>
+          ${superadmin && user.role !== 'superadmin' && user.id !== viewer.user.id ? `<div class="admin-control-row"><form method="post" action="/admin/users/${escapeHtml(user.id)}/role" class="admin-inline-form">${csrf(viewer)}<select class="admin-role" name="role" aria-label="${escapeHtml(t('角色', 'Role'))}"><option value="user"${user.role === 'user' ? ' selected' : ''}>${escapeHtml(t('用户', 'User'))}</option><option value="admin"${user.role === 'admin' ? ' selected' : ''}>${escapeHtml(t('管理员', 'Admin'))}</option></select><button class="link" type="submit">${escapeHtml(t('改角色', 'Set role'))}</button></form></div>` : ''}
+          <div class="admin-control-row admin-actions">
+            ${user.role !== 'superadmin' && user.id !== viewer.user.id && user.status === 'rejected' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/approve">${csrf(viewer)}<button class="link good" type="submit">${escapeHtml(t('重新批准', 'Re-approve'))}</button></form>` : ''}
+            ${user.role !== 'superadmin' && user.id !== viewer.user.id && user.status === 'approved' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/reject" data-confirm="${escapeHtml(t('停用这个用户并停止其所有 FlyBot 实例？', 'Disable this user and stop all their FlyBot instances?'))}">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('停用', 'Disable'))}</button></form>` : ''}
+          </div>
         </td>
       </tr>`,
     )
@@ -1006,7 +1011,7 @@ export function adminPage(input: {
   </section>
   <section class="card">
     <h2>${escapeHtml(t('用户', 'Users'))} <small class="count">${users.length}</small></h2>
-    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('登录名', 'Login'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('角色', 'Role'))}</th><th>${escapeHtml(t('额度', 'Quota'))}</th><th>${escapeHtml(t('已用', 'Used'))}</th><th>${escapeHtml(t('活动', 'Activity'))}</th><th>${escapeHtml(t('调整', 'Adjust'))}</th></tr></thead><tbody>${userRows}</tbody></table></div>
+    <div class="table-scroll"><table class="admin-users-table"><thead><tr><th>${escapeHtml(t('登录名', 'Login'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('角色', 'Role'))}</th><th>${escapeHtml(t('额度', 'Quota'))}</th><th>${escapeHtml(t('已用', 'Used'))}</th><th>${escapeHtml(t('活动', 'Activity'))}</th><th>${escapeHtml(t('调整', 'Adjust'))}</th></tr></thead><tbody>${userRows}</tbody></table></div>
   </section>
   <section class="card">
     <div class="row between"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))} <small class="count">${jobsTotal}</small></h2><span class="fine">${escapeHtml(t('每页 10 条', '10 per page'))}</span></div>

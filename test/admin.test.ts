@@ -91,12 +91,15 @@ test('admin management is scoped and only the owner can promote admins or set un
     assert.doesNotMatch(adminPage.body, /name="role"/)
     assert.doesNotMatch(adminPage.body, /\/admin\/metrics/)
     assert.match(adminPage.body, /data-confirm=/)
+    assert.match(adminPage.body, /admin-control-row/)
+    assert.match(adminPage.body, /admin-quota/)
 
     const ownerPage = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: ownerSession.cookie } })
     assert.equal(ownerPage.statusCode, 200)
     for (const login of ['@owner', '@admin-a', '@admin-b', '@normal-user']) assert.match(ownerPage.body, new RegExp(login))
     assert.match(ownerPage.body, /name="unlimited"/)
     assert.match(ownerPage.body, /name="role"/)
+    assert.match(ownerPage.body, /admin-role/)
     assert.match(ownerPage.body, /\/admin\/metrics/)
 
     const adminUnlimited = await built.app.inject({
