@@ -677,3 +677,47 @@ test('refresh downgrades a maintainer when the GitHub permission is lost', async
     await github.close()
   }
 })
+
+test('work items can be created, triaged and started', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner, startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'work-item-page-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_work_item_page', userId: user.id, owner: 'o', name: 'wip', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const { cookie, csrf } = sessionFor(built, user)
+    const created = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/work`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, title: 'Fix parser', detail: 'User problem', issueUrl: 'https://github.com/o/wip/issues/1', priority: '30' }),
+    })
+    assert.equal(created.statusCode, 302)
+    const item = store.listWorkItems(repo.id)[0]
+    assert.ok(item)
+    assert.equal(item.state, 'proposed')
+    assert.equal(item.priority, 30)
+    const triaged = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/work/${item.id}/state`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, state: 'triaged' }),
+    })
+    assert.equal(triaged.statusCode, 302)
+    assert.equal(store.getWorkItem(item.id)?.state, 'triaged')
+    const started = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/work/${item.id}/run`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf }),
+    })
+    assert.equal(started.statusCode, 302)
+    assert.equal(contexts.length, 1)
+    assert.equal(contexts[0]?.job.work_item_id, item.id)
+    assert.equal(store.getWorkItem(item.id)?.state, 'in_progress')
+  } finally {
+    await built.close()
+  }
+})

@@ -1,11 +1,12 @@
 import type { Config } from '../config.js'
-import type { AuditRow, JobRow, NotificationRow, RepoInstanceRow, RepoRow, UserRow, ApiTokenRow } from '../db.js'
+import type { AuditRow, JobRow, NotificationRow, RepoInstanceRow, RepoRow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
+import { WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
 import type { InstallationRepo } from '../repos/app.js'
@@ -454,8 +455,9 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; workItems?: WorkItemRow[]; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
+  const workItems = input.workItems ?? []
   const questions = input.questions ?? []
   const chiefMessages = input.chiefMessages ?? []
   const jobsPage = input.jobsPage ?? 1
@@ -608,7 +610,40 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <p class="fine">${escapeHtml(t('GitHub 权限是 admin/maintain 时才能选 maintainer；其他权限只能选 developer。平台管理员不能替你改这个角色。', 'Maintainer is available only with GitHub admin/maintain permission; every other permission can only be developer. Platform admins cannot change this role for you.'))}</p>
       </section>`
     : ''
-  const body = `${repoHeader}${roleCard}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${questionsBlock(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}
+  const workRows = workItems.length === 0
+    ? `<tr><td colspan="6" class="muted">${escapeHtml(t('还没有工作项。创建一个，或让任务自动生成。', 'No work items yet. Create one, or let a job create it.'))}</td></tr>`
+    : workItems.map((item) => {
+        const nextStates = WORK_ITEM_TRANSITIONS[item.state as WorkItemState] ?? []
+        const stateOptions = nextStates.map((state) => `<option value="${state}">${escapeHtml(workItemStateLabel(t, state))}</option>`).join('')
+        return `<tr>
+          <td><strong>${escapeHtml(item.title)}</strong>${item.detail === '' ? '' : `<br /><small class="muted">${escapeHtml(item.detail.slice(0, 180))}</small>`}</td>
+          <td><span class="badge kind">${escapeHtml(workItemStateLabel(t, item.state))}</span></td>
+          <td>${item.priority}</td>
+          <td>${item.issue_url === null ? '' : `<a href="${escapeHtml(item.issue_url)}" target="_blank" rel="noreferrer">Issue</a>`}${item.issue_url !== null && item.pr_url !== null ? ' · ' : ''}${item.pr_url === null ? '' : `<a href="${escapeHtml(item.pr_url)}" target="_blank" rel="noreferrer">PR</a>`}</td>
+          <td>${item.job_id === null ? '—' : `<a href="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(item.job_id)}"><code>${escapeHtml(item.job_id)}</code></a>`}</td>
+          <td><div class="row">
+            ${item.state === 'merged' || item.state === 'closed' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/run">${csrf(viewer)}<button class="btn btn-small" type="submit">${escapeHtml(t('开始工作', 'Start work'))}</button></form>`}
+            ${stateOptions === '' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/state" class="row">${csrf(viewer)}<select name="state" aria-label="${escapeHtml(t('新状态', 'New state'))}">${stateOptions}</select><button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('更新状态', 'Update state'))}</button></form>`}
+          </div></td>
+        </tr>`
+      }).join('')
+  const workCard = `<section class="card" id="work">
+    <div class="row between"><h2>${escapeHtml(t('工作项', 'Work items'))}</h2><span class="fine">${escapeHtml(t('Issue / PR / 状态 / 优先级', 'Issue / PR / state / priority'))}</span></div>
+    <form method="post" action="/repos/${escapeHtml(repo.id)}/work" class="form">
+      ${csrf(viewer)}
+      <div class="row">
+        <label style="flex:1">${escapeHtml(t('标题', 'Title'))} <input name="title" required maxlength="200" /></label>
+        <label>${escapeHtml(t('优先级', 'Priority'))} <input name="priority" type="number" min="0" max="100" value="0" style="width:90px" /></label>
+      </div>
+      <div class="row">
+        <label style="flex:1">${escapeHtml(t('Issue URL（可选）', 'Issue URL (optional)'))} <input name="issueUrl" placeholder="https://github.com/owner/repo/issues/1" /></label>
+      </div>
+      <label>${escapeHtml(t('说明', 'Detail'))} <textarea name="detail" rows="3" placeholder="${escapeHtml(t('用户问题、现状、验收标准。', 'User problem, current state, acceptance criteria.'))}"></textarea></label>
+      <button class="btn" type="submit">${escapeHtml(t('创建工作项', 'Create work item'))}</button>
+    </form>
+    <div class="table-scroll" style="margin-top:14px"><table><thead><tr><th>${escapeHtml(t('工作项', 'Work item'))}</th><th>${escapeHtml(t('状态', 'State'))}</th><th>${escapeHtml(t('优先级', 'Priority'))}</th><th>Issue / PR</th><th>${escapeHtml(t('任务', 'Job'))}</th><th></th></tr></thead><tbody>${workRows}</tbody></table></div>
+  </section>`;
+  const body = `${repoHeader}${roleCard}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${questionsBlock(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}${workCard}
   <section class="cols">
     <div class="card" id="repo-settings">
       <h2>${escapeHtml(t('迭代目标', 'Iteration goal'))}</h2>
@@ -1391,11 +1426,12 @@ export function metricsPage(input: {
     events: Array<{ name: string; n: number }>
   }
   team: { jobs: number; avgRoles: number; leadOnly: number; roles: Array<{ role: string; calls: number; jobs: number }> }
+  workItems: { total: number; open: number; merged: number; closed: number }
   since: string
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, metrics, team, since, notice, error } = input
+  const { config, locale, viewer, metrics, team, workItems, since, notice, error } = input
   const t = translator(locale)
   const successRate = metrics.jobs === 0 ? 0 : Math.round((metrics.succeeded / metrics.jobs) * 1000) / 10
   const cost = quotaMoney(metrics.costUsd * config.quota.usdCny)
@@ -1441,6 +1477,15 @@ export function metricsPage(input: {
       <div class="list-row"><div class="list-main"><strong>${team.leadOnly}</strong><small>${escapeHtml(t('只有 Lead 干活的任务', 'Lead-only jobs'))}</small></div></div>
     </div>
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('角色', 'Role'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('参与任务', 'Jobs'))}</th></tr></thead><tbody>${team.roles.length === 0 ? `<tr><td colspan="3" class="muted">${escapeHtml(t('还没有团队统计。', 'No team stats yet.'))}</td></tr>` : team.roles.map((entry) => `<tr><td>${escapeHtml(teamRoleLabel(t, entry.role))}</td><td>${entry.calls}</td><td>${entry.jobs}</td></tr>`).join('')}</tbody></table></div>
+  </section>
+  <section class="card">
+    <h2>${escapeHtml(t('工作项结果', 'Work item outcomes'))}</h2>
+    <div class="list">
+      <div class="list-row"><div class="list-main"><strong>${workItems.total}</strong><small>${escapeHtml(t('工作项总数', 'Work items'))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${workItems.open}</strong><small>${escapeHtml(t('仍在进行', 'Still open'))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${workItems.merged}</strong><small>${escapeHtml(t('已合并', 'Merged'))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${workItems.closed}</strong><small>${escapeHtml(t('已关闭未合并', 'Closed unmerged'))}</small></div></div>
+    </div>
   </section>
   <section class="card">
     <h2>${escapeHtml(t('事件', 'Events'))}</h2>

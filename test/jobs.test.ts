@@ -671,3 +671,28 @@ test('a stale review role is refreshed before enqueue', async () => {
     await github.close()
   }
 })
+
+test('a work item follows its job to PR ready', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'work-item-job-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_work_item_job', userId: user.id, owner: 'o', name: 'wij', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_job', repoId: repo.id, userId: user.id, title: 'Fix parser', state: 'triaged' })
+    const result = await jobs.enqueue(repo, 'manual', 'work goal', 'iterate', { workItemId: item.id })
+    assert.equal(result.ok, true)
+    assert.equal(store.getWorkItem(item.id)?.state, 'in_progress')
+    assert.equal(store.getWorkItem(item.id)?.job_id, result.job?.id)
+    const secret = contexts[0]!.callback.secret
+    await jobs.handleCallback(result.job!.id, secret, { status: 'succeeded', prUrl: 'https://github.com/o/wij/pull/3', issueUrl: 'https://github.com/o/wij/issues/2', summary: 'done' })
+    const updated = store.getWorkItem(item.id)!
+    assert.equal(updated.state, 'pr_ready')
+    assert.equal(updated.pr_url, 'https://github.com/o/wij/pull/3')
+    assert.equal(updated.pr_state, 'open')
+  } finally {
+    store.close()
+  }
+})
