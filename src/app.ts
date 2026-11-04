@@ -1264,7 +1264,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/jobs/:jobId/cancel', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const result = await jobs.cancelJob(job.id, '用户取消任务')
@@ -1272,7 +1272,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/jobs/:jobId/pause', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const result = await jobs.pauseJob(job.id)
@@ -1280,7 +1280,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/jobs/:jobId/resume', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const result = await jobs.resumeJob(job.id)
@@ -1357,7 +1357,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (title === '') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请填写工作项标题。')}#work`)
     const detail = (body.detail ?? '').trim().slice(0, 4000)
     const rawIssue = (body.issueUrl ?? '').trim()
-    const issueUrl = /^https:\/\/github\.com\//.test(rawIssue) ? rawIssue.slice(0, 500) : null
+    const issueUrl = rawIssue.startsWith('https://github.com/') ? rawIssue.slice(0, 500) : null
     const priority = Math.max(0, Math.min(100, Math.floor(Number(body.priority) || 0)))
     const item = store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: viewer.user.id, title, detail, issueUrl, priority, state: 'proposed' })
     store.audit(viewer.user.id, 'work_item.created', `${item.id} ${repo.owner}/${repo.name} priority=${priority}`)
