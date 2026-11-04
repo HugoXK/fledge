@@ -150,7 +150,7 @@ test('the role backfill runs once and future schema versions are refused', () =>
     const reopened = new Store(path)
     assert.equal(reopened.getRepo(repo.id)?.repo_role, 'maintainer')
     assert.notEqual(reopened.getRepo(repo.id)?.role_checked_at, null)
-    reopened.db.exec('PRAGMA user_version = 17;')
+    reopened.db.exec('PRAGMA user_version = 19;')
     reopened.close()
 
     assert.throws(() => new Store(path), /newer than this build/)
@@ -178,6 +178,25 @@ test('pruneOldData removes old jobs, notifications and settings keys', () => {
     assert.equal(store.listNotifications(user.id).length, 0)
     assert.equal(store.getSetting('followup:old'), undefined)
     assert.notEqual(store.getSetting('followup:recent'), undefined)
+  } finally {
+    store.close()
+  }
+})
+
+test('work items persist, update and are found by issue or PR', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'work-item-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_work_items', userId: user.id, owner: 'o', name: 'wi', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_1', repoId: repo.id, userId: user.id, title: 'Fix parser', detail: 'Details', issueUrl: 'https://github.com/o/wi/issues/1', priority: 20 })
+    assert.equal(item.state, 'proposed')
+    assert.equal(store.findWorkItemByIssueUrl(repo.id, 'https://github.com/o/wi/issues/1')?.id, 'work_1')
+    store.updateWorkItem(item.id, { state: 'pr_ready', pr_url: 'https://github.com/o/wi/pull/2', pr_state: 'open' })
+    assert.equal(store.findWorkItemByPrUrl(repo.id, 'https://github.com/o/wi/pull/2')?.state, 'pr_ready')
+    assert.equal(store.listWorkItems(repo.id).length, 1)
+    assert.equal(store.workItemMetrics('2000-01-01T00:00:00.000Z').open, 1)
+    store.updateWorkItem(item.id, { state: 'merged', merged_at: new Date().toISOString() })
+    assert.equal(store.workItemMetrics('2000-01-01T00:00:00.000Z').merged, 1)
   } finally {
     store.close()
   }

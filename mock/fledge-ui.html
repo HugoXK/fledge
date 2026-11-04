@@ -229,8 +229,19 @@ const state = {
       ],
       jobs: [
         { id: 'job_o6mO', kind: 'iterate', status: 'succeeded', trigger: 'schedule', summary: '修 #499 上评审 F1：balancedParenTail() 回接括号组后直接 return，带括号段的地址被截断；补 6 行组间扫描 + 回归测试。', pr: '#499', issue: '#498', cost: '$0.42', created: '2026-11-03 10:22', evidence: { tests: '36/36 pass', checks: 'CI 两绿', files: 6, risk: 'low', rollback: 'revert commit' }, attribution: 'Lead · Dev-1 · Test · Reviewer' },
-        { id: 'job_7c2a', kind: 'plan', status: 'succeeded', trigger: 'manual', summary: '计划：把地址解析的括号处理抽成独立函数，补 3 个回归用例，不改变现有输出。', pr: '—', issue: '—', cost: '$0.03', created: '2026-11-02 18:10', evidence: { tests: 'not run', checks: 'not run', files: 0, risk: 'low', rollback: 'no change' }, attribution: 'Product · Test' }
-      ]
+        { id: 'job_7c2a', kind: 'plan', status: 'succeeded', trigger: 'manual', summary: '计划：把地址解析的括号处理抽成独立函数，补 3 个回归用例，不改变现有输出。', pr: '—', issue: '—', cost: '$0.03', created: '2026-11-02 18:10', evidence: { tests: 'not run', checks: 'not run', files: 0, risk: 'low', rollback: 'no change' }, attribution: 'Product · Test', planApproved: false }
+      ],
+      workItems: [
+        { id: 'work_dm1', title: '修复地址括号回接', state: 'pr_ready', priority: 30, pr: '#499', issue: '#498', job: 'job_o6mO' },
+        { id: 'work_dm2', title: '对比竞品记忆能力并提需求', state: 'proposed', priority: 20, pr: '—', issue: '—', job: '—' }
+      ],
+      planRequired: false,
+      allowPaths: 'src/',
+      denyPaths: '.github/',
+      mergeMethod: 'squash',
+      requireProtection: true,
+      protectionState: 'protected',
+      protectedAt: '2026-11-04 09:10'
     },
     fledge: {
       id: 'fledge',
@@ -253,8 +264,20 @@ const state = {
       questions: [],
       jobs: [
         { id: 'job_rel10', kind: 'review', status: 'succeeded', trigger: 'schedule', summary: 'Reviewed 6 PRs; average 82. Two Fledge PRs need changes; follow-ups queued on the same branches.', pr: '—', issue: '—', cost: '$0.18', created: '2026-11-03 09:40', evidence: { tests: 'not run', checks: 'CI green', files: 0, risk: 'low', rollback: 'no change' }, attribution: 'Reviewer' },
-        { id: 'job_v022', kind: 'iterate', status: 'succeeded', trigger: 'manual', summary: 'release: v0.2.2 — assembled 16 changelog fragments, bumped package/healthz version and updated release references.', pr: '#11', issue: '—', cost: '$0.09', created: '2026-11-03 10:18', evidence: { tests: '86/86 pass', checks: 'CI green', files: 27, risk: 'low', rollback: 'revert release commit' }, attribution: 'Release' }
-      ]
+        { id: 'job_v022', kind: 'iterate', status: 'succeeded', trigger: 'manual', summary: 'release: v0.2.2 — assembled 16 changelog fragments, bumped package/healthz version and updated release references.', pr: '#11', issue: '—', cost: '$0.09', created: '2026-11-03 10:18', evidence: { tests: '86/86 pass', checks: 'CI green', files: 27, risk: 'low', rollback: 'revert release commit' }, attribution: 'Release' },
+        { id: 'job_plan_p0', kind: 'plan', status: 'succeeded', trigger: 'manual', summary: 'Plan: add work-item state transitions, a plan approval gate and branch-protection verification. Touch src/ and docs/ only.', pr: '—', issue: '—', cost: '$0.02', created: '2026-11-04 09:30', evidence: { tests: 'not run', checks: 'not run', files: 0, risk: 'low', rollback: 'no change' }, attribution: 'Product · Test', planApproved: false }
+      ],
+      workItems: [
+        { id: 'work_fl1', title: 'P0: work items 与状态机', state: 'merged', priority: 50, pr: '#12', issue: '—', job: 'job_v022' },
+        { id: 'work_fl2', title: '补充 branch protection 校验', state: 'in_review', priority: 40, pr: '#13', issue: '—', job: 'job_rel10' }
+      ],
+      planRequired: true,
+      allowPaths: 'src/, docs/',
+      denyPaths: '.github/',
+      mergeMethod: 'squash',
+      requireProtection: true,
+      protectionState: 'protected',
+      protectedAt: '2026-11-04 09:20'
     },
     widgets: {
       id: 'widgets',
@@ -272,7 +295,15 @@ const state = {
       instance: 'starting',
       chief: [],
       questions: [],
-      jobs: []
+      jobs: [],
+      workItems: [],
+      planRequired: false,
+      allowPaths: '',
+      denyPaths: '',
+      mergeMethod: 'squash',
+      requireProtection: true,
+      protectionState: 'unknown',
+      protectedAt: null
     }
   },
 };
@@ -284,10 +315,13 @@ const rid = (prefix) => prefix + '_' + Math.random().toString(36).slice(2, 7);
 const allowedRoles = (permission) => permission === 'admin' || permission === 'maintain' ? ['maintainer', 'developer'] : ['developer'];
 const roleLabel = (role) => role === 'maintainer' ? t('维护者', 'Maintainer') : role === 'developer' ? t('开发者', 'Developer') : t('未选择', 'Not selected');
 const roleClass = (role) => role === 'maintainer' ? 'role-m' : role === 'developer' ? 'role-d' : '';
+const workStateLabel = (state) => ({ proposed: t('待分诊', 'Proposed'), triaged: t('已分诊', 'Triaged'), assigned: t('已分配', 'Assigned'), in_progress: t('进行中', 'In progress'), pr_ready: t('PR 已就绪', 'PR ready'), in_review: t('审核中', 'In review'), changes_requested: t('需要修改', 'Changes requested'), approved: t('已批准', 'Approved'), merged: t('已合并', 'Merged'), closed: t('已关闭', 'Closed') }[state] || state);
+const workStateClass = (state) => state === 'merged' || state === 'approved' ? 'good' : state === 'closed' ? 'bad' : state === 'in_progress' || state === 'in_review' || state === 'pr_ready' || state === 'changes_requested' ? 'busy' : 'kind';
+const workNextStates = (state) => ({ proposed: ['triaged', 'closed'], triaged: ['assigned', 'closed'], assigned: ['in_progress', 'triaged', 'closed'], in_progress: ['pr_ready', 'changes_requested', 'closed'], pr_ready: ['in_review', 'changes_requested', 'merged', 'closed'], in_review: ['changes_requested', 'approved', 'merged', 'closed'], changes_requested: ['in_progress', 'closed'], approved: ['merged', 'closed'], merged: [], closed: ['triaged'] }[state] || []);
 const permLabel = (permission) => ({ admin: 'admin', maintain: 'maintain', write: 'write', triage: 'triage', read: 'read' }[permission] || permission);
 const statusBadge = (status) => {
-  const cls = status === 'succeeded' || status === 'approved' ? 'good' : status === 'failed' || status === 'rejected' ? 'bad' : status === 'running' || status === 'queued' || status === 'pending' ? 'busy' : '';
-  const label = { succeeded: t('成功', 'Succeeded'), failed: t('失败', 'Failed'), running: t('运行中', 'Running'), queued: t('排队中', 'Queued'), approved: t('已批准', 'Approved'), pending: t('待审批', 'Pending'), idle: t('空闲', 'Idle') }[status] || status;
+  const cls = status === 'succeeded' || status === 'approved' ? 'good' : status === 'failed' || status === 'rejected' || status === 'cancelled' ? 'bad' : status === 'running' || status === 'queued' || status === 'pending' || status === 'paused' ? 'busy' : '';
+  const label = { succeeded: t('成功', 'Succeeded'), failed: t('失败', 'Failed'), running: t('运行中', 'Running'), queued: t('排队中', 'Queued'), paused: t('已暂停', 'Paused'), cancelled: t('已取消', 'Cancelled'), approved: t('已批准', 'Approved'), pending: t('待审批', 'Pending'), idle: t('空闲', 'Idle') }[status] || status;
   return `<span class="badge ${cls}">${esc(label)}</span>`;
 };
 const kindLabel = (kind) => kind === 'review' ? t('审核', 'Review') : kind === 'plan' ? t('计划', 'Plan') : t('迭代', 'Iterate');
@@ -491,6 +525,25 @@ function repoScreen() {
     <div class="row between"><div><div class="eyebrow">${esc(t('每仓库 FlyBot', 'PER-REPOSITORY FLYBOT'))}</div><h2>${esc(t('FlyBot 状态', 'FlyBot status'))}</h2><p class="muted">${repo.instance === 'ready' ? statusBadge('ready') : statusBadge('pending')} ${esc(t('实例', 'Instance'))} <span class="fine">repo-${esc(repo.id)}</span></p></div></div>
     <p class="fine">${esc(t('任务先发给 Chief，再由负责人执行。', 'Jobs go to the Chief, then the Lead.'))}</p>
   </section>`;
+  const workItems = repo.workItems || [];
+  const workRows = workItems.length === 0
+    ? `<tr><td colspan="5" class="muted">${esc(t('还没有工作项。', 'No work items yet.'))}</td></tr>`
+    : workItems.map((item) => `<tr>
+        <td><strong>${esc(item.title)}</strong></td>
+        <td><span class="badge ${workStateClass(item.state)}">${esc(workStateLabel(item.state))}</span></td>
+        <td>${item.priority}</td>
+        <td>${item.issue === '—' ? '' : `<a data-action="toast" data-message="${esc(t('打开 issue（mock）。', 'Open issue (mock).'))}">${esc(item.issue)}</a>`}${item.pr === '—' ? '' : ` <a data-action="toast" data-message="${esc(t('打开 PR（mock）。', 'Open PR (mock).'))}">${esc(item.pr)}</a>`}</td>
+        <td><div class="row">${item.state === 'merged' || item.state === 'closed' ? '' : `<button class="btn btn-small" data-action="work-run" data-work="${esc(item.id)}">${esc(t('开始工作', 'Start work'))}</button>`}${workNextStates(item.state).length === 0 ? '' : `<select data-work-state="${esc(item.id)}">${workNextStates(item.state).map((state) => `<option value="${state}">${esc(workStateLabel(state))}</option>`).join('')}</select><button class="btn ghost btn-small" data-action="work-state" data-work="${esc(item.id)}">${esc(t('更新', 'Update'))}</button>`}</div></td>
+      </tr>`).join('');
+  const workCard = `<section class="card" id="work">
+    <div class="row between"><h2>${esc(t('工作项', 'Work items'))}</h2><span class="fine">${esc(t('Issue / PR / 状态 / 优先级', 'Issue / PR / state / priority'))}</span></div>
+    <form data-form="work-create" data-repo="${repo.id}" class="form">
+      <div class="row"><label style="flex:1">${esc(t('标题', 'Title'))} <input name="title" required maxlength="200" /></label><label>${esc(t('优先级', 'Priority'))} <input name="priority" type="number" min="0" max="100" value="0" style="width:90px" /></label></div>
+      <label>${esc(t('说明', 'Detail'))} <textarea name="detail" rows="3"></textarea></label>
+      <button class="btn" type="submit">${esc(t('创建工作项', 'Create work item'))}</button>
+    </form>
+    <div class="table-scroll" style="margin-top:14px"><table><thead><tr><th>${esc(t('工作项', 'Work item'))}</th><th>${esc(t('状态', 'State'))}</th><th>${esc(t('优先级', 'Priority'))}</th><th>Issue / PR</th><th></th></tr></thead><tbody>${workRows}</tbody></table></div>
+  </section>`;
   const settingsCard = `<section class="card" id="repo-settings">
     <div class="row between"><h2>${esc(t('迭代目标', 'Iteration goal'))}</h2><span class="badge ${roleClass(repo.role)}">${esc(roleLabel(repo.role))}</span></div>
     <form data-form="settings" data-repo="${repo.id}">
@@ -502,6 +555,10 @@ function repoScreen() {
         <label class="check"><input type="checkbox" name="enabled" ${repo.enabled !== false ? 'checked' : ''}> ${esc(t('启用', 'Enabled'))}</label>
         <label>${esc(t('自动迭代间隔', 'Auto-iterate interval'))} <select name="interval">${[15, 60, 360, 1440].map((value) => `<option value="${value}" ${Number(repo.interval || 1440) === value ? 'selected' : ''}>${value >= 1440 ? '24h' : value + 'm'}</option>`).join('')}</select></label>
       </div>
+      <label class="check"><input type="checkbox" name="planRequired" ${repo.planRequired ? 'checked' : ''}> ${esc(t('先出计划，批准后执行', 'Plan first; execute only after approval'))}</label>
+      <div class="row"><label style="flex:1">${esc(t('允许修改路径', 'Allowed paths'))} <input name="allowPaths" value="${esc(repo.allowPaths || '')}" placeholder="src/, docs/" /></label><label style="flex:1">${esc(t('禁止修改路径', 'Forbidden paths'))} <input name="denyPaths" value="${esc(repo.denyPaths || '')}" placeholder=".github/, deploy/" /></label></div>
+      <div class="row"><label>${esc(t('合并方式', 'Merge method'))} <select name="mergeMethod">${['squash', 'merge', 'rebase'].map((method) => `<option value="${method}" ${(repo.mergeMethod || 'squash') === method ? 'selected' : ''}>${method}</option>`).join('')}</select></label><label class="check"><input type="checkbox" name="requireProtection" ${repo.requireProtection !== false ? 'checked' : ''}> ${esc(t('自动合并前要求 branch protection', 'Require branch protection before auto-merge'))}</label></div>
+      <p class="fine">${esc(t('Branch protection', 'Branch protection'))}: <code>${esc(repo.protectionState || 'unknown')}</code>${repo.protectedAt ? ` · ${esc(repo.protectedAt)}` : ''}</p>
       <label class="check ${canMaintain ? '' : 'disabled'}"><input type="checkbox" name="autoMerge" ${repo.autoMerge ? 'checked' : ''} ${canMaintain ? '' : 'disabled'}> ${esc(t('允许 maintainer 自动合并 PR', 'Allow maintainer auto-merge'))}</label>
       <label class="check ${canReview ? '' : 'disabled'}"><input type="checkbox" name="review" ${repo.review ? 'checked' : ''} ${canReview ? '' : 'disabled'}> ${esc(t('启用 PR 审核', 'Enable PR reviewer'))}</label>
       <p class="fine">${repo.role === null ? esc(t('先选择你的角色，审核和自动合并才会生效。', 'Choose your role before review or auto-merge can take effect.')) : !canMaintain ? esc(t('developer 不能启用 PR 审核或自动合并；切换为 maintainer 后才可用。', 'A developer cannot enable PR review or auto-merge; switch to maintainer first.')) : !canReview ? esc(t('你在这个上游没有 admin/maintain 权限，审核角色不可用。', 'You do not have admin/maintain permission on this upstream, so the reviewer role is unavailable.')) : esc(t('自动合并默认关闭；开启后由 Fledge 在 checks 通过且没有 changes requested 时执行 squash merge。', 'Auto-merge is off by default; when on, Fledge squash-merges after checks pass and no changes are requested.'))}</p>
@@ -520,7 +577,7 @@ function repoScreen() {
     <h2>${esc(t('任务', 'Jobs'))}</h2>
     <div class="table-scroll"><table><thead><tr><th>${esc(t('任务', 'Job'))}</th><th>${esc(t('状态', 'Status'))}</th><th>PR / Issue</th><th>${esc(t('摘要', 'Summary'))}</th></tr></thead><tbody>${jobRows}</tbody></table></div>
   </section>`;
-  return `${repoHeader(repo)}${roleCard(repo)}${qHtml}${chiefCard}${instanceCard}<div class="grid2">${settingsCard}${connectionCard}</div>${jobsCard}`;
+  return `${repoHeader(repo)}${roleCard(repo)}${qHtml}${chiefCard}${instanceCard}${workCard}<div class="grid2">${settingsCard}${connectionCard}</div>${jobsCard}`;
 }
 
 function newRepoScreen() {
@@ -546,11 +603,20 @@ function jobScreen() {
   const job = repo.jobs.find((entry) => entry.id === state.activeJob) || repo.jobs[0];
   if (!job) return `<div class="card"><p class="muted">${esc(t('任务不存在。', 'Job not found.'))}</p></div>`;
   const retry = job.status === 'failed' ? `<button class="btn" data-action="retry" data-repo="${repo.id}" data-job="${job.id}">${esc(t('重试', 'Retry'))}</button>` : '';
-  const execute = job.kind === 'plan' && job.status === 'succeeded' ? `<button class="btn" data-action="execute-plan" data-repo="${repo.id}" data-job="${job.id}">${esc(t('执行这个计划', 'Execute this plan'))}</button>` : '';
+  const execute = job.kind === 'plan' && job.status === 'succeeded' && job.planApproved ? `<button class="btn" data-action="execute-plan" data-repo="${repo.id}" data-job="${job.id}">${esc(t('执行这个计划', 'Execute this plan'))}</button>` : '';
+  const control = job.status === 'queued' || job.status === 'running'
+    ? `<button class="btn ghost" data-action="job-control" data-repo="${repo.id}" data-job="${job.id}" data-status="paused">${esc(t('暂停', 'Pause'))}</button><button class="btn danger" data-action="job-control" data-repo="${repo.id}" data-job="${job.id}" data-status="cancelled">${esc(t('取消', 'Cancel'))}</button>`
+    : job.status === 'paused'
+      ? `<button class="btn" data-action="job-control" data-repo="${repo.id}" data-job="${job.id}" data-status="running">${esc(t('恢复', 'Resume'))}</button>`
+      : '';
+  const planCard = job.kind === 'plan' && job.status === 'succeeded'
+    ? `<section class="card"><div class="row between"><div><h2>${esc(t('计划审批', 'Plan approval'))}</h2><p class="muted">${job.planApproved ? esc(t('计划已批准，可以执行。', 'Plan approved; ready to execute.')) : job.planRejected ? esc(t('计划已被拒绝。', 'Plan rejected.')) : esc(t('等待 maintainer 批准计划。', 'Waiting for maintainer approval.'))}</p></div><span class="badge ${job.planApproved ? 'good' : job.planRejected ? 'bad' : 'busy'}">${job.planApproved ? esc(t('已批准', 'Approved')) : job.planRejected ? esc(t('已拒绝', 'Rejected')) : esc(t('待批准', 'Pending'))}</span></div>${repo.role === 'maintainer' && !job.planApproved && !job.planRejected ? `<div class="row"><button class="btn" data-action="approve-plan" data-repo="${repo.id}" data-job="${job.id}">${esc(t('批准计划', 'Approve plan'))}</button><button class="btn danger" data-action="reject-plan" data-repo="${repo.id}" data-job="${job.id}">${esc(t('拒绝', 'Reject'))}</button></div>` : ''}</section>`
+    : '';
   return `<a class="back" data-action="open-repo" data-repo="${repo.id}">← ${esc(t('返回仓库', 'Back to repository'))}</a>
     <section class="card">
-      <div class="row between"><div><div class="eyebrow">${esc(t('任务', 'JOB'))}</div><h1><code>${esc(job.id)}</code></h1><p class="muted">${esc(repo.owner)}/${esc(repo.name)} · ${statusBadge(job.status)} · ${esc(kindLabel(job.kind))} · ${esc(triggerLabel(job.trigger))} · ${esc(t('创建', 'Created'))} ${esc(job.created)}</p></div><div class="row">${execute}${retry}<button class="btn ghost" data-action="open-repo" data-repo="${repo.id}">${esc(t('返回仓库', 'Back'))}</button></div></div>
+      <div class="row between"><div><div class="eyebrow">${esc(t('任务', 'JOB'))}</div><h1><code>${esc(job.id)}</code></h1><p class="muted">${esc(repo.owner)}/${esc(repo.name)} · ${statusBadge(job.status)} · ${esc(kindLabel(job.kind))} · ${esc(triggerLabel(job.trigger))} · ${esc(t('创建', 'Created'))} ${esc(job.created)}</p></div><div class="row">${control}${execute}${retry}<button class="btn ghost" data-action="open-repo" data-repo="${repo.id}">${esc(t('返回仓库', 'Back'))}</button></div></div>
     </section>
+    ${planCard}
     <div class="grid2">
       <div class="card"><h2>${esc(t('结果', 'Result'))}</h2><p class="job-report">${esc(job.summary)}</p><p class="fine">${esc(t('成本', 'Cost'))} ${esc(job.cost)} · ${esc(t('归因', 'Attribution'))} ${esc(job.attribution)}</p><p class="fine">PR ${esc(job.pr)} · Issue ${esc(job.issue)}</p></div>
       <div class="card"><h2>${esc(t('证据', 'Evidence'))}</h2><div class="evidence">
@@ -691,6 +757,37 @@ document.addEventListener('click', (event) => {
     toast(t(`已接入 ${selected.length} 个仓库；请为每个仓库选择角色。`, `Connected ${selected.length} repositories; choose a role for each.`), 'good');
     return;
   }
+  if (action === 'work-run') {
+    const repo = activeRepo();
+    const item = (repo.workItems || []).find((entry) => entry.id === el.dataset.work);
+    if (item) { item.state = 'in_progress'; render(); toast(t('工作项已开始（mock）。', 'Work item started (mock).'), 'good'); }
+    return;
+  }
+  if (action === 'work-state') {
+    const repo = activeRepo();
+    const item = (repo.workItems || []).find((entry) => entry.id === el.dataset.work);
+    const select = document.querySelector(`[data-work-state="${el.dataset.work}"]`);
+    if (item && select) { item.state = select.value; render(); toast(t('工作项状态已更新（mock）。', 'Work item state updated (mock).'), 'good'); }
+    return;
+  }
+  if (action === 'approve-plan') {
+    const repo = repoById(el.dataset.repo);
+    const job = repo.jobs.find((entry) => entry.id === el.dataset.job);
+    if (job) { job.planApproved = true; job.planRejected = false; render(); toast(t('计划已批准（mock）。', 'Plan approved (mock).'), 'good'); }
+    return;
+  }
+  if (action === 'reject-plan') {
+    const repo = repoById(el.dataset.repo);
+    const job = repo.jobs.find((entry) => entry.id === el.dataset.job);
+    if (job) { job.planApproved = false; job.planRejected = true; render(); toast(t('计划已拒绝（mock）。', 'Plan rejected (mock).'), 'good'); }
+    return;
+  }
+  if (action === 'job-control') {
+    const repo = repoById(el.dataset.repo);
+    const job = repo.jobs.find((entry) => entry.id === el.dataset.job);
+    if (job) { job.status = el.dataset.status; render(); toast(t('任务状态已更新（mock）。', 'Job state updated (mock).'), 'good'); }
+    return;
+  }
   if (action === 'execute-plan') {
     const repo = repoById(el.dataset.repo);
     const job = { id: rid('job'), kind: 'iterate', status: 'queued', trigger: 'manual', summary: t('已按计划开始执行。', 'Plan execution queued.'), pr: '—', issue: '—', cost: '$0.00', created: now(), evidence: { tests: t('未运行', 'not run'), checks: t('等待', 'waiting'), files: 0, risk: 'low', rollback: '—' }, attribution: '—' };
@@ -770,6 +867,17 @@ document.addEventListener('submit', (event) => {
     toast(t('仓库已添加；请选择你的角色。', 'Repository added; choose your role.'), 'good');
     return;
   }
+  if (form.dataset.form === 'work-create') {
+    const repo = repoById(form.dataset.repo);
+    const data = new FormData(form);
+    const title = String(data.get('title') || '').trim();
+    if (title === '') return;
+    repo.workItems = repo.workItems || [];
+    repo.workItems.unshift({ id: rid('work'), title, state: 'proposed', priority: Number(data.get('priority') || 0), pr: '—', issue: '—', job: '—' });
+    render();
+    toast(t('工作项已创建（mock）。', 'Work item created (mock).'), 'good');
+    return;
+  }
   if (form.dataset.form === 'settings') {
     const repo = repoById(form.dataset.repo);
     const data = new FormData(form);
@@ -778,6 +886,11 @@ document.addEventListener('submit', (event) => {
     repo.enabled = data.get('enabled') === 'on';
     repo.autoIterate = data.get('autoIterate') === 'on';
     repo.interval = Number(data.get('interval') || 1440);
+    repo.planRequired = data.get('planRequired') === 'on';
+    repo.allowPaths = String(data.get('allowPaths') || '');
+    repo.denyPaths = String(data.get('denyPaths') || '');
+    repo.mergeMethod = String(data.get('mergeMethod') || 'squash');
+    repo.requireProtection = data.get('requireProtection') === 'on';
     repo.autoMerge = data.get('autoMerge') === 'on' && repo.role === 'maintainer';
     repo.review = data.get('review') === 'on' && repo.role === 'maintainer' && (repo.permission === 'admin' || repo.permission === 'maintain');
     toast(t('设置已保存（mock）。', 'Settings saved (mock).'), 'good');

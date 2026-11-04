@@ -548,6 +548,10 @@ test('maintainer auto-merge merges only after checks pass and no changes are req
       json(response, 200, reviews)
       return
     }
+    if (method === 'GET' && url === '/repos/o/r/branches/main/protection') {
+      json(response, 200, { required_status_checks: { contexts: ['ci'] }, required_pull_request_reviews: { required_approving_review_count: 0 } })
+      return
+    }
     if (method === 'PUT' && url === '/repos/o/r/pulls/1/merge') {
       merges.push('merge')
       json(response, 200, { merged: true, sha: 'def' })
@@ -666,6 +670,148 @@ test('a stale review role is refreshed before enqueue', async () => {
     assert.equal(refreshed.repo_role, 'maintainer')
     assert.notEqual(refreshed.role_checked_at, '2020-01-01T00:00:00.000Z')
     assert.equal(refreshed.permission, 'admin')
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
+
+test('a work item follows its job to PR ready', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'work-item-job-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_work_item_job', userId: user.id, owner: 'o', name: 'wij', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_job', repoId: repo.id, userId: user.id, title: 'Fix parser', state: 'triaged' })
+    const result = await jobs.enqueue(repo, 'manual', 'work goal', 'iterate', { workItemId: item.id })
+    assert.equal(result.ok, true)
+    assert.equal(store.getWorkItem(item.id)?.state, 'in_progress')
+    assert.equal(store.getWorkItem(item.id)?.job_id, result.job?.id)
+    const secret = contexts[0]!.callback.secret
+    await jobs.handleCallback(result.job!.id, secret, { status: 'succeeded', prUrl: 'https://github.com/o/wij/pull/3', issueUrl: 'https://github.com/o/wij/issues/2', summary: 'done' })
+    const updated = store.getWorkItem(item.id)!
+    assert.equal(updated.state, 'pr_ready')
+    assert.equal(updated.pr_url, 'https://github.com/o/wij/pull/3')
+    assert.equal(updated.pr_state, 'open')
+  } finally {
+    store.close()
+  }
+})
+
+test('flybot preflight records the base SHA and skips scheduled work while a work item is active', async () => {
+  const github = await startFakeServer((request, response) => {
+    if (request.url === '/repos/o/preflight/branches/main') {
+      json(response, 200, { name: 'main', commit: { sha: 'abc123' } })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'flybot', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'preflight-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_preflight', userId: user.id, owner: 'o', name: 'preflight', defaultBranch: 'main', targetBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const first = await jobs.enqueue(repo, 'manual')
+    assert.equal(first.ok, true)
+    assert.equal(first.job?.base_sha, 'abc123')
+    store.updateJob(first.job!.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    store.createWorkItem({ id: 'work_preflight', repoId: repo.id, userId: user.id, title: 'Active work', state: 'in_progress' })
+    const scheduled = await jobs.enqueue(repo, 'schedule')
+    assert.equal(scheduled.ok, false)
+    assert.equal(scheduled.code, 'WORK_ITEM_OPEN')
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
+
+test('a running job can be cancelled and a paused job can be resumed', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'job-control-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_job_control', userId: user.id, owner: 'o', name: 'jc', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_cancel', repoId: repo.id, userId: user.id, title: 'Cancel me', state: 'in_progress' })
+    store.createJob({ id: 'job_cancel', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', workItemId: item.id })
+    store.updateJob('job_cancel', { status: 'running', started_at: new Date().toISOString() })
+    const cancelled = await jobs.cancelJob('job_cancel', 'user cancelled')
+    assert.equal(cancelled.ok, true)
+    assert.equal(store.getJob('job_cancel')?.status, 'cancelled')
+    assert.equal(store.getWorkItem(item.id)?.state, 'closed')
+
+    store.createJob({ id: 'job_pause', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g2', callbackHash: 'cb2', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob('job_pause', { status: 'running', started_at: new Date().toISOString() })
+    const paused = await jobs.pauseJob('job_pause')
+    assert.equal(paused.ok, true)
+    assert.equal(store.getJob('job_pause')?.status, 'paused')
+    const resumed = await jobs.resumeJob('job_pause')
+    assert.equal(resumed.ok, true)
+    assert.ok(resumed.job)
+    assert.equal(store.getJob('job_pause')?.status, 'cancelled')
+    assert.equal(contexts.length, 1)
+    assert.equal(resumed.job?.status, 'running')
+  } finally {
+    store.close()
+  }
+})
+
+test('auto-merge is skipped when branch protection is unavailable', async () => {
+  const merges: string[] = []
+  const github = await startFakeServer((request, response) => {
+    const method = request.method ?? 'GET'
+    const url = request.url ?? ''
+    if (method === 'GET' && url === '/repos/o/r/pulls/4') {
+      json(response, 200, { number: 4, html_url: 'https://github.com/o/r/pull/4', title: 'fix', state: 'open', head: { ref: 'fledge/fix', sha: 'abc' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/abc/check-runs?per_page=100') {
+      json(response, 200, { check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/abc/status') {
+      json(response, 200, { state: 'success', statuses: [] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/pulls/4/reviews?per_page=100') {
+      json(response, 200, [])
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/branches/main/protection') {
+      json(response, 404, { message: 'Not Found' })
+      return
+    }
+    if (method === 'PUT' && url === '/repos/o/r/pulls/4/merge') {
+      merges.push('merge')
+      json(response, 200, { merged: true })
+      return
+    }
+    if (method === 'POST' && url === '/repos/o/r/issues/4/comments') {
+      json(response, 200, {})
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'auto-merge-protection-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_auto_merge_protection', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, requireProtection: true, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const secret = 'auto-merge-protection-secret'
+    store.createJob({ id: 'job_auto_merge_protection', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob('job_auto_merge_protection', { status: 'running', started_at: new Date().toISOString() })
+    await jobs.handleCallback('job_auto_merge_protection', secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/4', summary: 'done' })
+    assert.equal(merges.length, 0)
   } finally {
     store.close()
     await github.close()
