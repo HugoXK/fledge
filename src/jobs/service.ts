@@ -9,7 +9,7 @@ import { log } from '../lib/log.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, type Evidence } from '../lib/evidence.js'
-import { decryptSecret, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
+import { decryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
 import { GithubApp } from '../repos/app.js'
@@ -119,7 +119,7 @@ export class Jobs {
     }
   }
 
-  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string } = {}): Promise<EnqueueResult> {
+  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number } = {}): Promise<EnqueueResult> {
     if (repo.enabled !== 1) return { ok: false, error: '这个仓库已停用', code: 'REPO_DISABLED' }
     if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
       return { ok: false, error: '请先选择你在这个仓库的角色。', code: 'ROLE_REQUIRED' }
@@ -195,7 +195,11 @@ export class Jobs {
       expiresAt: addMinutes(this.config.runner.timeoutMinutes + 60),
     })
     const priorJobs = this.store.listJobs(user.id, 1).length
-    const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch })
+    const priority = options.priority ?? (trigger === 'followup' ? 20 : trigger === 'manual' ? 10 : 0)
+    const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch, workItemId: options.workItemId ?? null, priority })
+    if (options.workItemId !== undefined) {
+      this.store.updateWorkItem(options.workItemId, { state: 'in_progress', job_id: job.id, assignee_user_id: user.id })
+    }
     if (options.branch !== undefined || options.prUrl !== undefined) {
       this.store.updateJob(job.id, { branch: options.branch ?? null, pr_url: options.prUrl ?? null })
       job.branch = options.branch ?? null
@@ -272,6 +276,36 @@ export class Jobs {
     }
   }
 
+  private syncWorkItemForJob(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; prUrl: string | null; issueUrl: string | null }): void {
+    const existing = job.work_item_id === null ? undefined : this.store.getWorkItem(job.work_item_id)
+    if (existing !== undefined) {
+      const prState = result.prUrl === null ? existing.pr_state : 'open'
+      const state = result.status === 'succeeded' && result.prUrl !== null ? 'pr_ready' : result.status === 'failed' ? 'in_progress' : existing.state
+      this.store.updateWorkItem(existing.id, {
+        state,
+        ...(result.prUrl === null ? {} : { pr_url: result.prUrl, pr_state: prState }),
+        ...(result.issueUrl === null ? {} : { issue_url: result.issueUrl }),
+        job_id: job.id,
+      })
+      return
+    }
+    if (result.status !== 'succeeded' || (result.prUrl === null && result.issueUrl === null)) return
+    const title = (result.prUrl ?? result.issueUrl ?? job.goal).slice(0, 160)
+    this.store.createWorkItem({
+      id: randomId('work'),
+      repoId: job.repo_id,
+      userId: job.user_id,
+      title,
+      detail: job.goal.slice(0, 2000),
+      issueUrl: result.issueUrl,
+      prUrl: result.prUrl,
+      state: result.prUrl === null ? 'in_progress' : 'pr_ready',
+      priority: job.priority,
+      jobId: job.id,
+      prState: result.prUrl === null ? null : 'open',
+    })
+  }
+
   private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }, revoke: () => void, attribution: Attribution | null = null, evidence: Evidence | null = null): void {
     const job = this.store.getJob(jobId)
     if (job === undefined) return
@@ -292,6 +326,7 @@ export class Jobs {
       error: (result.error ?? job.error ?? '').slice(0, 2000),
       finished_at: nowIso(),
     })
+    this.syncWorkItemForJob(job, { status: result.status, prUrl, issueUrl })
     if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_at: nowIso(), last_review_status: result.status })
     else this.store.updateRepo(job.repo_id, { last_status: result.status })
     void this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => {
@@ -418,6 +453,10 @@ export class Jobs {
       }
       const merged = await client.mergePullRequest(owner, name, number, { sha: pr.headSha, mergeMethod: 'squash' })
       if (merged.merged) {
+        const workItem = job.work_item_id === null ? undefined : this.store.getWorkItem(job.work_item_id)
+        if (workItem !== undefined) {
+          this.store.updateWorkItem(workItem.id, { state: 'merged', pr_state: 'merged', merged_at: nowIso(), merge_commit: merged.sha ?? null })
+        }
         this.store.audit(job.user_id, 'job.auto_merged', `${job.id}: PR ${number} ${merged.sha ?? ''}`)
         this.store.event('job_auto_merged', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: `pr=${number}` })
       } else {
