@@ -58,6 +58,8 @@ function statusLabel(t: Translate, status: string): string {
     onboarding: t('待申请', 'Onboarding'),
     idle: t('空闲', 'Idle'),
     quota_exhausted: t('额度用完', 'Quota exhausted'),
+    paused: t('已暂停', 'Paused'),
+    cancelled: t('已取消', 'Cancelled'),
     ready: t('就绪', 'Ready'),
     starting: t('启动中', 'Starting'),
     provisioning: t('初始化中', 'Provisioning'),
@@ -158,6 +160,8 @@ function jobSummary(locale: Locale, t: Translate, job: JobRow): string {
   if (raw === '' || raw === 'probe' || raw.length < 8) {
     if (job.status === 'succeeded') return `${job.kind === 'research' ? t('分析完成', 'Research completed') : t('任务完成', 'Job completed')}${cost}`
     if (job.status === 'failed') return `${job.kind === 'research' ? t('分析失败', 'Research failed') : t('任务失败', 'Job failed')}${cost}`
+    if (job.status === 'paused') return `${t('已暂停', 'Paused')}${cost}`
+    if (job.status === 'cancelled') return `${t('已取消', 'Cancelled')}${cost}`
     return '—'
   }
   return `${raw}${cost}`
@@ -1347,10 +1351,11 @@ export function jobPage(input: {
   viewer: Viewer
   repo: RepoRow
   job: JobRow
+  queuePosition?: number
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, repo, job, notice, error } = input
+  const { config, locale, viewer, repo, job, queuePosition, notice, error } = input
   const t = translator(locale)
   const advanced = advancedViewer(viewer)
   const evidence = parseEvidenceJson(job.evidence_json)
@@ -1376,6 +1381,11 @@ export function jobPage(input: {
   const execute = job.kind === 'plan' && job.status === 'succeeded' && job.plan_approved_at !== null
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/execute">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('执行这个计划', 'Execute this plan'))}</button></form>`
     : ''
+  const control = job.status === 'queued' || job.status === 'running'
+    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/pause">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('暂停', 'Pause'))}</button></form><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/cancel" data-confirm="${escapeHtml(t('取消这个任务？', 'Cancel this job?'))}">${csrf(viewer)}<button class="btn btn-danger" type="submit">${escapeHtml(t('取消', 'Cancel'))}</button></form>`
+    : job.status === 'paused'
+      ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/resume">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('恢复', 'Resume'))}</button></form>`
+      : ''
   const planCard = job.kind === 'plan' && job.status === 'succeeded'
     ? `<section class="card">
         <div class="row between"><div><h2>${escapeHtml(t('计划审批', 'Plan approval'))}</h2><p class="muted">${job.plan_rejected_at !== null ? escapeHtml(t('计划已被拒绝。', 'This plan was rejected.')) : job.plan_approved_at !== null ? escapeHtml(t('计划已批准；可以执行。', 'This plan is approved and can be executed.')) : escapeHtml(t('等待 maintainer 批准计划。', 'Waiting for a maintainer to approve the plan.'))}</p></div><span class="badge ${job.plan_approved_at !== null ? 'good' : job.plan_rejected_at !== null ? 'bad' : 'busy'}">${job.plan_approved_at !== null ? escapeHtml(t('已批准', 'Approved')) : job.plan_rejected_at !== null ? escapeHtml(t('已拒绝', 'Rejected')) : escapeHtml(t('待批准', 'Pending'))}</span></div>
@@ -1390,12 +1400,13 @@ export function jobPage(input: {
       <div>
         <div class="eyebrow">${escapeHtml(t('任务', 'JOB'))}</div>
         <h1><code>${escapeHtml(job.id)}</code></h1>
-        <p class="muted">${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)} · ${badge(t, job.status)} · ${escapeHtml(jobKindLabel(t, job))} · ${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(t('目标分支', 'Base branch'))} <code>${escapeHtml(job.base_branch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)))}</code>${job.base_sha === null ? '' : ` · ${escapeHtml(t('基于', 'Based on'))} <code>${escapeHtml(job.base_sha.slice(0, 12))}</code>`}</p>
+        <p class="muted">${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)} · ${badge(t, job.status)} · ${escapeHtml(jobKindLabel(t, job))} · ${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(t('目标分支', 'Base branch'))} <code>${escapeHtml(job.base_branch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)))}</code>${job.base_sha === null ? '' : ` · ${escapeHtml(t('基于', 'Based on'))} <code>${escapeHtml(job.base_sha.slice(0, 12))}</code>`}${queuePosition === undefined ? '' : ` · ${escapeHtml(t('队列位置', 'Queue position'))} ${queuePosition}`}</p>
       </div>
       <div class="row">
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a>
         ${advanced ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
+        ${control}
         ${execute}
         ${retry}
       </div>
