@@ -726,3 +726,36 @@ test('flybot preflight records the base SHA and skips scheduled work while a wor
     await github.close()
   }
 })
+
+test('a running job can be cancelled and a paused job can be resumed', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'job-control-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_job_control', userId: user.id, owner: 'o', name: 'jc', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_cancel', repoId: repo.id, userId: user.id, title: 'Cancel me', state: 'in_progress' })
+    store.createJob({ id: 'job_cancel', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', workItemId: item.id })
+    store.updateJob('job_cancel', { status: 'running', started_at: new Date().toISOString() })
+    const cancelled = await jobs.cancelJob('job_cancel', 'user cancelled')
+    assert.equal(cancelled.ok, true)
+    assert.equal(store.getJob('job_cancel')?.status, 'cancelled')
+    assert.equal(store.getWorkItem(item.id)?.state, 'closed')
+
+    store.createJob({ id: 'job_pause', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g2', callbackHash: 'cb2', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob('job_pause', { status: 'running', started_at: new Date().toISOString() })
+    const paused = await jobs.pauseJob('job_pause')
+    assert.equal(paused.ok, true)
+    assert.equal(store.getJob('job_pause')?.status, 'paused')
+    const resumed = await jobs.resumeJob('job_pause')
+    assert.equal(resumed.ok, true)
+    assert.ok(resumed.job)
+    assert.equal(store.getJob('job_pause')?.status, 'cancelled')
+    assert.equal(contexts.length, 1)
+    assert.equal(resumed.job?.status, 'running')
+  } finally {
+    store.close()
+  }
+})

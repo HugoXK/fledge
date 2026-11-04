@@ -109,6 +109,77 @@ export class Jobs {
     }
   }
 
+  async cancelJob(jobId: string, reason: string): Promise<{ ok: boolean; error?: string }> {
+    const job = this.store.getJob(jobId)
+    if (job === undefined) return { ok: false, error: '任务不存在。' }
+    if (job.status !== 'queued' && job.status !== 'running') return { ok: false, error: '这个任务已经结束。' }
+    if (job.status === 'running' && this.instances !== undefined) {
+      try {
+        const state = await this.instances.teamState(job.repo_id, 5_000)
+        const sessions = state.bots.filter((bot) => bot.activity === 'thinking' || bot.activity === 'working').map((bot) => bot.sessionId)
+        if (sessions.length > 0) await this.instances.stopSessions(job.repo_id, sessions)
+      } catch (error) {
+        log.warn('cancel job stop failed', { job: jobId, error: String(error) })
+      }
+    }
+    const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
+    if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
+    await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { job: jobId, error: String(error) }))
+    this.store.updateJob(jobId, { status: 'cancelled', error: reason.slice(0, 1000), finished_at: nowIso() })
+    if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_status: 'cancelled' })
+    else this.store.updateRepo(job.repo_id, { last_status: 'cancelled' })
+    if (job.work_item_id !== null) {
+      const item = this.store.getWorkItem(job.work_item_id)
+      if (item !== undefined) this.store.updateWorkItem(item.id, { state: 'closed' })
+    }
+    this.store.audit(job.user_id, 'job.cancelled', `${jobId}: ${reason.slice(0, 300)}`)
+    this.store.event('job_cancelled', { userId: job.user_id, repoId: job.repo_id, jobId })
+    return { ok: true }
+  }
+
+  async pauseJob(jobId: string, reason = '任务已暂停'): Promise<{ ok: boolean; error?: string }> {
+    const job = this.store.getJob(jobId)
+    if (job === undefined) return { ok: false, error: '任务不存在。' }
+    if (job.status !== 'queued' && job.status !== 'running') return { ok: false, error: '这个任务已经结束。' }
+    if (job.status === 'running' && this.instances !== undefined) {
+      try {
+        const state = await this.instances.teamState(job.repo_id, 5_000)
+        const sessions = state.bots.filter((bot) => bot.activity === 'thinking' || bot.activity === 'working').map((bot) => bot.sessionId)
+        if (sessions.length > 0) await this.instances.stopSessions(job.repo_id, sessions)
+      } catch (error) {
+        log.warn('pause job stop failed', { job: jobId, error: String(error) })
+      }
+    }
+    const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
+    if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
+    await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { job: jobId, error: String(error) }))
+    this.store.updateJob(jobId, { status: 'paused', error: reason.slice(0, 1000) })
+    this.store.updateRepo(job.repo_id, { last_status: 'paused', ...(job.kind === 'review' ? { last_review_status: 'paused' } : {}) })
+    this.store.audit(job.user_id, 'job.paused', jobId)
+    this.store.event('job_paused', { userId: job.user_id, repoId: job.repo_id, jobId })
+    return { ok: true }
+  }
+
+  async resumeJob(jobId: string): Promise<{ ok: boolean; job?: JobRow; error?: string }> {
+    const job = this.store.getJob(jobId)
+    if (job === undefined) return { ok: false, error: '任务不存在。' }
+    if (job.status !== 'paused') return { ok: false, error: '只有已暂停的任务可以恢复。' }
+    const repo = this.store.getRepo(job.repo_id)
+    if (repo === undefined) return { ok: false, error: '仓库不存在。' }
+    const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
+    const result = await this.enqueue(repo, 'manual', goal, job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : 'iterate', {
+      ...(job.branch === null ? {} : { branch: job.branch }),
+      ...(job.pr_url === null ? {} : { prUrl: job.pr_url }),
+      ...(job.base_branch === null ? {} : { baseBranch: job.base_branch }),
+      ...(job.work_item_id === null ? {} : { workItemId: job.work_item_id }),
+      priority: job.priority,
+    })
+    if (!result.ok || result.job === undefined) return { ok: false, error: result.error ?? '恢复失败。' }
+    this.store.updateJob(jobId, { status: 'cancelled', error: `resumed as ${result.job.id}`, finished_at: nowIso() })
+    this.store.audit(job.user_id, 'job.resumed', `${jobId} -> ${result.job.id}`)
+    return { ok: true, job: result.job }
+  }
+
   async cancelRepoJobs(repoId: string, reason: string): Promise<void> {
     for (const job of this.store.listActiveJobs().filter((entry) => entry.repo_id === repoId)) {
       const revoke = (): void => {
