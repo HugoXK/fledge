@@ -23,7 +23,7 @@ const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: st
 
 export type UserStatus = 'onboarding' | 'pending' | 'approved' | 'rejected'
 export type UserRole = 'user' | 'admin' | 'superadmin'
-export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'paused' | 'quota_exhausted'
+export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'quota_exhausted'
 
 export interface UserRow {
   id: string
@@ -76,13 +76,6 @@ export interface RepoRow {
   repo_role: string | null
   auto_merge: number
   role_checked_at: string | null
-  plan_required: number
-  allow_paths: string
-  deny_paths: string
-  merge_method: string
-  require_protection: number
-  protection_state: string | null
-  protection_checked_at: string | null
   auto_iterate: number
   interval_minutes: number
   last_run_at: string | null
@@ -154,36 +147,9 @@ export interface JobRow {
   evidence_json: string | null
   checkpoint: string | null
   team_stats_json: string | null
-  work_item_id: string | null
-  priority: number
-  plan_approved_at: string | null
-  plan_approved_by: string | null
-  plan_rejected_at: string | null
-  plan_allow_paths: string | null
-  plan_deny_paths: string | null
-  base_sha: string | null
   created_at: string
   started_at: string | null
   finished_at: string | null
-}
-
-export interface WorkItemRow {
-  id: string
-  repo_id: string
-  user_id: string
-  title: string
-  detail: string
-  issue_url: string | null
-  pr_url: string | null
-  state: string
-  priority: number
-  assignee_user_id: string | null
-  job_id: string | null
-  pr_state: string | null
-  merged_at: string | null
-  merge_commit: string | null
-  created_at: string
-  updated_at: string
 }
 
 export interface ApiTokenRow {
@@ -322,13 +288,6 @@ CREATE TABLE IF NOT EXISTS repos (
   repo_role TEXT,
   auto_merge INTEGER NOT NULL DEFAULT 0,
   role_checked_at TEXT,
-  plan_required INTEGER NOT NULL DEFAULT 0,
-  allow_paths TEXT NOT NULL DEFAULT '',
-  deny_paths TEXT NOT NULL DEFAULT '',
-  merge_method TEXT NOT NULL DEFAULT 'squash',
-  require_protection INTEGER NOT NULL DEFAULT 1,
-  protection_state TEXT,
-  protection_checked_at TEXT,
   auto_iterate INTEGER NOT NULL DEFAULT 0,
   interval_minutes INTEGER NOT NULL DEFAULT 1440,
   last_run_at TEXT,
@@ -403,14 +362,6 @@ CREATE TABLE IF NOT EXISTS jobs (
   evidence_json TEXT,
   checkpoint TEXT,
   team_stats_json TEXT,
-  work_item_id TEXT,
-  priority INTEGER NOT NULL DEFAULT 0,
-  plan_approved_at TEXT,
-  plan_approved_by TEXT,
-  plan_rejected_at TEXT,
-  plan_allow_paths TEXT,
-  plan_deny_paths TEXT,
-  base_sha TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   finished_at TEXT
@@ -483,28 +434,6 @@ CREATE TABLE IF NOT EXISTS github_installations (
 );
 CREATE INDEX IF NOT EXISTS github_installations_user_idx ON github_installations(user_id);
 
-CREATE TABLE IF NOT EXISTS work_items (
-  id TEXT PRIMARY KEY,
-  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  title TEXT NOT NULL,
-  detail TEXT NOT NULL DEFAULT '',
-  issue_url TEXT,
-  pr_url TEXT,
-  state TEXT NOT NULL DEFAULT 'proposed',
-  priority INTEGER NOT NULL DEFAULT 0,
-  assignee_user_id TEXT,
-  job_id TEXT,
-  pr_state TEXT,
-  merged_at TEXT,
-  merge_commit TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS work_items_repo_idx ON work_items(repo_id, state, created_at DESC);
-CREATE INDEX IF NOT EXISTS work_items_pr_idx ON work_items(pr_url);
-CREATE INDEX IF NOT EXISTS work_items_issue_idx ON work_items(issue_url);
-
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -535,9 +464,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 18) {
+    if (previousVersion > 16) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (18)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (16)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -549,7 +478,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 18)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 16)};`)
   }
 
   private migrateColumns(): void {
@@ -584,13 +513,6 @@ export class Store {
       ['repo_role', 'TEXT'],
       ['auto_merge', 'INTEGER NOT NULL DEFAULT 0'],
       ['role_checked_at', 'TEXT'],
-      ['plan_required', 'INTEGER NOT NULL DEFAULT 0'],
-      ['allow_paths', "TEXT NOT NULL DEFAULT ''"],
-      ['deny_paths', "TEXT NOT NULL DEFAULT ''"],
-      ['merge_method', "TEXT NOT NULL DEFAULT 'squash'"],
-      ['require_protection', 'INTEGER NOT NULL DEFAULT 1'],
-      ['protection_state', 'TEXT'],
-      ['protection_checked_at', 'TEXT'],
       ['upstream_owner', "TEXT NOT NULL DEFAULT ''"],
       ['upstream_name', "TEXT NOT NULL DEFAULT ''"],
       ['fork_owner', "TEXT NOT NULL DEFAULT ''"],
@@ -628,14 +550,6 @@ export class Store {
     if (!jobColumns.has('evidence_json')) this.run('ALTER TABLE jobs ADD COLUMN evidence_json TEXT')
     if (!jobColumns.has('checkpoint')) this.run('ALTER TABLE jobs ADD COLUMN checkpoint TEXT')
     if (!jobColumns.has('team_stats_json')) this.run('ALTER TABLE jobs ADD COLUMN team_stats_json TEXT')
-    if (!jobColumns.has('work_item_id')) this.run('ALTER TABLE jobs ADD COLUMN work_item_id TEXT')
-    if (!jobColumns.has('priority')) this.run('ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0')
-    if (!jobColumns.has('plan_approved_at')) this.run('ALTER TABLE jobs ADD COLUMN plan_approved_at TEXT')
-    if (!jobColumns.has('plan_approved_by')) this.run('ALTER TABLE jobs ADD COLUMN plan_approved_by TEXT')
-    if (!jobColumns.has('plan_rejected_at')) this.run('ALTER TABLE jobs ADD COLUMN plan_rejected_at TEXT')
-    if (!jobColumns.has('plan_allow_paths')) this.run('ALTER TABLE jobs ADD COLUMN plan_allow_paths TEXT')
-    if (!jobColumns.has('plan_deny_paths')) this.run('ALTER TABLE jobs ADD COLUMN plan_deny_paths TEXT')
-    if (!jobColumns.has('base_sha')) this.run('ALTER TABLE jobs ADD COLUMN base_sha TEXT')
     if (!jobColumns.has('base_branch')) this.run('ALTER TABLE jobs ADD COLUMN base_branch TEXT')
     this.run("UPDATE jobs SET base_branch = (SELECT upstream_default_branch FROM repos WHERE repos.id = jobs.repo_id) WHERE base_branch IS NULL")
   }
@@ -1017,13 +931,6 @@ export class Store {
     repoRole?: string | null
     autoMerge?: boolean
     roleCheckedAt?: string | null
-    planRequired?: boolean
-    allowPaths?: string
-    denyPaths?: string
-    mergeMethod?: string
-    requireProtection?: boolean
-    protectionState?: string | null
-    protectionCheckedAt?: string | null
     upstreamOwner?: string
     upstreamName?: string
     forkOwner?: string
@@ -1044,9 +951,9 @@ export class Store {
     this.run(
       `INSERT INTO repos (id, user_id, owner, name, default_branch, token_enc, installation_id, goal, enabled, auto_iterate, interval_minutes, created_at,
          upstream_owner, upstream_name, fork_owner, fork_name, upstream_default_branch, fork_default_branch, target_branch, job_mode,
-         repo_role, auto_merge, role_checked_at, plan_required, allow_paths, deny_paths, merge_method, require_protection, protection_state, protection_checked_at,
+         repo_role, auto_merge, role_checked_at,
          is_fork, fork_created, permission, can_review, can_create_issue, reviewer_enabled, review_interval_minutes, upstream_html_url, fork_html_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.userId,
       input.owner,
@@ -1069,13 +976,6 @@ export class Store {
       input.repoRole ?? null,
       input.autoMerge === true ? 1 : 0,
       input.roleCheckedAt ?? (input.repoRole === 'maintainer' || input.repoRole === 'developer' ? nowIso() : null),
-      input.planRequired === true ? 1 : 0,
-      input.allowPaths ?? '',
-      input.denyPaths ?? '',
-      input.mergeMethod ?? 'squash',
-      input.requireProtection === false ? 0 : 1,
-      input.protectionState ?? null,
-      input.protectionCheckedAt ?? null,
       input.isFork === true ? 1 : 0,
       input.forkCreated === true ? 1 : 0,
       input.permission ?? 'write',
@@ -1116,7 +1016,7 @@ export class Store {
     return this.get<RepoRow>('SELECT * FROM repos WHERE user_id = ? AND lower(owner) = lower(?) AND lower(name) = lower(?)', userId, owner, name)
   }
 
-  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'plan_required' | 'allow_paths' | 'deny_paths' | 'merge_method' | 'require_protection' | 'protection_state' | 'protection_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
+  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -1184,10 +1084,10 @@ export class Store {
     this.run('DELETE FROM repo_instances WHERE repo_id = ?', repoId)
   }
 
-  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null }): JobRow {
+  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; baseBranch?: string | null }): JobRow {
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, base_branch, work_item_id, priority, base_sha, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, base_branch, created_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -1197,9 +1097,6 @@ export class Store {
       input.platformTokenHash,
       input.kind ?? 'iterate',
       input.baseBranch ?? null,
-      input.workItemId ?? null,
-      input.priority ?? 0,
-      input.baseSha ?? null,
       nowIso(),
     )
     return this.getJob(input.id)!
@@ -1241,64 +1138,6 @@ export class Store {
     return this.get<JobRow>('SELECT * FROM jobs WHERE user_id = ? AND pr_url = ? ORDER BY created_at DESC LIMIT 1', userId, prUrl)
   }
 
-  createWorkItem(input: { id: string; repoId: string; userId: string; title: string; detail?: string; issueUrl?: string | null; prUrl?: string | null; state?: string; priority?: number; assigneeUserId?: string | null; jobId?: string | null; prState?: string | null; mergedAt?: string | null; mergeCommit?: string | null }): WorkItemRow {
-    const at = nowIso()
-    this.run(
-      `INSERT INTO work_items (id, repo_id, user_id, title, detail, issue_url, pr_url, state, priority, assignee_user_id, job_id, pr_state, merged_at, merge_commit, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      input.id, input.repoId, input.userId, input.title, input.detail ?? '', input.issueUrl ?? null, input.prUrl ?? null,
-      input.state ?? 'proposed', input.priority ?? 0, input.assigneeUserId ?? null, input.jobId ?? null,
-      input.prState ?? null, input.mergedAt ?? null, input.mergeCommit ?? null, at, at,
-    )
-    return this.getWorkItem(input.id)!
-  }
-
-  getWorkItem(id: string): WorkItemRow | undefined {
-    return this.get<WorkItemRow>('SELECT * FROM work_items WHERE id = ?', id)
-  }
-
-  findWorkItemByPrUrl(repoId: string, prUrl: string): WorkItemRow | undefined {
-    return this.get<WorkItemRow>('SELECT * FROM work_items WHERE repo_id = ? AND pr_url = ? ORDER BY updated_at DESC LIMIT 1', repoId, prUrl)
-  }
-
-  findWorkItemByIssueUrl(repoId: string, issueUrl: string): WorkItemRow | undefined {
-    return this.get<WorkItemRow>('SELECT * FROM work_items WHERE repo_id = ? AND issue_url = ? ORDER BY updated_at DESC LIMIT 1', repoId, issueUrl)
-  }
-
-  listWorkItems(repoId: string): WorkItemRow[] {
-    return this.all<WorkItemRow>('SELECT * FROM work_items WHERE repo_id = ? ORDER BY priority DESC, updated_at DESC', repoId)
-  }
-
-  hasActiveWorkItem(repoId: string): boolean {
-    const row = this.get<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM work_items WHERE repo_id = ? AND state IN ('assigned', 'in_progress', 'pr_ready', 'in_review', 'changes_requested', 'approved')",
-      repoId,
-    )
-    return Number(row?.n ?? 0) > 0
-  }
-
-  listOpenWorkItems(repoId: string): WorkItemRow[] {
-    return this.all<WorkItemRow>("SELECT * FROM work_items WHERE repo_id = ? AND state NOT IN ('merged', 'closed') ORDER BY priority DESC, updated_at DESC", repoId)
-  }
-
-  updateWorkItem(id: string, patch: Partial<Pick<WorkItemRow, 'title' | 'detail' | 'issue_url' | 'pr_url' | 'state' | 'priority' | 'assignee_user_id' | 'job_id' | 'pr_state' | 'merged_at' | 'merge_commit'>>): void {
-    const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
-    if (entries.length === 0) return
-    entries.push(['updated_at', nowIso()])
-    const sets = entries.map(([key]) => `${key} = ?`).join(', ')
-    this.run(`UPDATE work_items SET ${sets} WHERE id = ?`, ...entries.map(([, value]) => value), id)
-  }
-
-  workItemMetrics(sinceIso: string): { total: number; open: number; merged: number; closed: number } {
-    const count = (sql: string): number => Number(this.get<{ n: number }>(sql, sinceIso)?.n ?? 0)
-    return {
-      total: count('SELECT COUNT(*) AS n FROM work_items WHERE created_at >= ?'),
-      open: count("SELECT COUNT(*) AS n FROM work_items WHERE created_at >= ? AND state NOT IN ('merged', 'closed')"),
-      merged: count("SELECT COUNT(*) AS n FROM work_items WHERE created_at >= ? AND state = 'merged'"),
-      closed: count("SELECT COUNT(*) AS n FROM work_items WHERE created_at >= ? AND state = 'closed'"),
-    }
-  }
-
   activeJobForRepo(repoId: string): JobRow | undefined {
     return this.get<JobRow>("SELECT * FROM jobs WHERE repo_id = ? AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1", repoId)
   }
@@ -1308,14 +1147,10 @@ export class Store {
   }
 
   listActiveJobs(): JobRow[] {
-    return this.all<JobRow>("SELECT * FROM jobs WHERE status IN ('queued','running') ORDER BY priority DESC, created_at ASC")
+    return this.all<JobRow>("SELECT * FROM jobs WHERE status IN ('queued','running') ORDER BY created_at ASC")
   }
 
-  listQueuedJobs(): JobRow[] {
-    return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority DESC, created_at ASC")
-  }
-
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at' | 'base_branch'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')

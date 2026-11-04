@@ -324,24 +324,6 @@ export class GithubClient {
       : []
   }
 
-  async getBranchProtection(owner: string, name: string, branch: string): Promise<{ protected: boolean; requiredChecks: string[]; requiredApprovals: number } | null> {
-    try {
-      const result = await this.request<{
-        required_status_checks?: { contexts?: string[] } | null
-        required_pull_request_reviews?: { required_approving_review_count?: number } | null
-      }>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branches/${encodeURIComponent(branch)}/protection`)
-      return {
-        protected: true,
-        requiredChecks: Array.isArray(result.required_status_checks?.contexts) ? result.required_status_checks.contexts : [],
-        requiredApprovals: Number(result.required_pull_request_reviews?.required_approving_review_count ?? 0),
-      }
-    } catch (error) {
-      if (error instanceof GithubError && error.status === 404) return { protected: false, requiredChecks: [], requiredApprovals: 0 }
-      if (error instanceof GithubError && error.status === 403) return null
-      throw error
-    }
-  }
-
   async mergePullRequest(owner: string, name: string, number: number, input: { sha: string; mergeMethod?: 'merge' | 'squash' | 'rebase' }): Promise<{ merged: boolean; sha?: string; message?: string }> {
     const result = await this.request<{ merged?: boolean; sha?: string; message?: string }>(
       'PUT',

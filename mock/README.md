@@ -19,11 +19,8 @@ What to review:
   then choose a role.
 - The preview is intentionally the **user view only**: no admin page, no
   superadmin team console and no workspace proxy controls.
-- Work items: create, triage, assign, start, and move through the state machine.
-- Job lifecycle: run iterate/plan/review, open the job detail, pause/cancel/resume,
-  approve a plan, and execute an approved plan.
-- Repository settings: plan-first, allowed/forbidden paths, merge method and
-  branch-protection requirement.
+- Job lifecycle: run iterate/plan/review, open the job detail, and execute a
+  completed plan.
 - Global settings and the mock question inbox.
 - The top-right `中 / EN` switch changes the main labels; mock content stays as
   written.

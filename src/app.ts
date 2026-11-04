@@ -27,7 +27,6 @@ import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, ty
 import { normalizeInterval } from './lib/intervals.js'
 import { isValidBranchName } from './lib/branches.js'
 import { allowedRepoRoles, parseRepoRole, roleAllowed } from './lib/repoRole.js'
-import { isWorkItemState, MAINTAINER_ONLY_STATES, WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -882,7 +881,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         repo,
         instance,
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
-        workItems: store.listWorkItems(repo.id),
         questions,
         chiefMessages,
         activeJob: store.activeJobForRepo(repo.id) !== undefined,
@@ -1249,43 +1247,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
-    const queued = store.listQueuedJobs()
-    const queueIndex = queued.findIndex((entry) => entry.id === job.id)
     return reply.type('text/html').send(jobPage({
       config,
       locale: request.locale ?? 'zh',
       viewer: viewOf(viewer),
       repo,
       job,
-      queuePosition: queueIndex === -1 ? undefined : queueIndex + 1,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
-  })
-
-  app.post('/repos/:id/jobs/:jobId/cancel', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    const job = store.getJob(String((request.params as Record<string, string>).jobId))
-    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
-    const result = await jobs.cancelJob(job.id, '用户取消任务')
-    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${result.ok ? 'notice' : 'error'}=${encodeURIComponent(result.ok ? '任务已取消。' : result.error ?? '取消失败。')}`)
-  })
-
-  app.post('/repos/:id/jobs/:jobId/pause', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    const job = store.getJob(String((request.params as Record<string, string>).jobId))
-    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
-    const result = await jobs.pauseJob(job.id)
-    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${result.ok ? 'notice' : 'error'}=${encodeURIComponent(result.ok ? '任务已暂停。' : result.error ?? '暂停失败。')}`)
-  })
-
-  app.post('/repos/:id/jobs/:jobId/resume', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    const job = store.getJob(String((request.params as Record<string, string>).jobId))
-    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
-    const result = await jobs.resumeJob(job.id)
-    if (!result.ok || result.job === undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(result.error ?? '恢复失败。')}`)
-    return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已恢复任务。')}`)
   })
 
   app.post('/repos/:id/jobs/:jobId/retry', async (request, reply) => {
@@ -1305,113 +1275,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已重新排队。')}`)
   })
 
-  app.post('/repos/:id/jobs/:jobId/approve-plan', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    const job = store.getJob(String((request.params as Record<string, string>).jobId))
-    if (job === undefined || job.repo_id !== repo.id || job.kind !== 'plan' || job.status !== 'succeeded') throw httpError(404, '计划任务不存在或尚未完成。', 'PLAN_NOT_READY')
-    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以批准计划。')}`)
-    const body = form(request)
-    const allow = (body.allowPaths ?? repo.allow_paths).trim().slice(0, 2000)
-    const deny = (body.denyPaths ?? repo.deny_paths).trim().slice(0, 2000)
-    store.updateJob(job.id, { plan_approved_at: nowIso(), plan_approved_by: viewer.user.id, plan_rejected_at: null, plan_allow_paths: allow, plan_deny_paths: deny })
-    store.audit(viewer.user.id, 'job.plan_approved', `${job.id} allow=${allow.slice(0, 200)} deny=${deny.slice(0, 200)}`)
-    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?notice=${encodeURIComponent('计划已批准，可以执行。')}`)
-  })
-
-  app.post('/repos/:id/jobs/:jobId/reject-plan', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    const job = store.getJob(String((request.params as Record<string, string>).jobId))
-    if (job === undefined || job.repo_id !== repo.id || job.kind !== 'plan' || job.status !== 'succeeded') throw httpError(404, '计划任务不存在或尚未完成。', 'PLAN_NOT_READY')
-    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以拒绝计划。')}`)
-    store.updateJob(job.id, { plan_rejected_at: nowIso(), plan_approved_at: null, plan_approved_by: null })
-    store.audit(viewer.user.id, 'job.plan_rejected', job.id)
-    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?notice=${encodeURIComponent('计划已拒绝。')}`)
-  })
-
   app.post('/repos/:id/jobs/:jobId/execute', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id || job.kind !== 'plan' || job.status !== 'succeeded') throw httpError(404, '计划任务不存在或尚未完成。', 'PLAN_NOT_READY')
-    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以执行计划。')}`)
-    if (job.plan_approved_at === null) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('计划尚未批准。')}`)
     const active = store.activeJobForRepo(repo.id)
     if (active !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}`)
-    const allow = (job.plan_allow_paths ?? repo.allow_paths).trim()
-    const deny = (job.plan_deny_paths ?? repo.deny_paths).trim()
-    const goal = `${job.goal}\n\nApproved plan:\n${job.summary ?? ''}${allow === '' ? '' : `\n\nAllowed paths: ${allow}`}${deny === '' ? '' : `\nForbidden paths: ${deny}`}\nOnly modify files inside the allowed paths; never touch forbidden paths.`
-    const result = await jobs.enqueue(repo, 'manual', goal, 'iterate', { workItemId: job.work_item_id ?? undefined, priority: job.priority })
+    const goal = `${job.goal}\n\nApproved plan:\n${job.summary ?? ''}`
+    const result = await jobs.enqueue(repo, 'manual', goal, 'iterate')
     store.audit(viewer.user.id, 'job.executed', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
     if (!result.ok || result.job === undefined) {
       return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(result.error ?? '执行计划失败。')}`)
     }
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已按计划开始执行。')}`)
-  })
-
-  app.post('/repos/:id/work', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
-      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请先选择你的角色。')}#work`)
-    }
-    const body = form(request)
-    const title = (body.title ?? '').trim().slice(0, 200)
-    if (title === '') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请填写工作项标题。')}#work`)
-    const detail = (body.detail ?? '').trim().slice(0, 4000)
-    const rawIssue = (body.issueUrl ?? '').trim()
-    const issueUrl = /^https:\/\/github\.com\//.test(rawIssue) ? rawIssue.slice(0, 500) : null
-    const priority = Math.max(0, Math.min(100, Math.floor(Number(body.priority) || 0)))
-    const item = store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: viewer.user.id, title, detail, issueUrl, priority, state: 'proposed' })
-    store.audit(viewer.user.id, 'work_item.created', `${item.id} ${repo.owner}/${repo.name} priority=${priority}`)
-    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('工作项已创建。')}#work`)
-  })
-
-  app.post('/repos/:id/work/:workItemId/state', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    const item = store.getWorkItem(String((request.params as Record<string, string>).workItemId))
-    if (item === undefined || item.repo_id !== repo.id) throw httpError(404, '工作项不存在。', 'WORK_ITEM_NOT_FOUND')
-    const body = form(request)
-    const state = body.state
-    if (!isWorkItemState(state)) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('工作项状态无效。')}#work`)
-    const allowed = WORK_ITEM_TRANSITIONS[item.state as WorkItemState] ?? []
-    if (!allowed.includes(state)) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('不能从这个状态切换。')}#work`)
-    if (MAINTAINER_ONLY_STATES.has(state) && repo.repo_role !== 'maintainer') {
-      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('只有 maintainer 可以执行这个操作。')}#work`)
-    }
-    const patch: { state: string; assignee_user_id?: string; pr_state?: string; merged_at?: string; merge_commit?: string | null } = { state }
-    if (state === 'assigned' || state === 'in_progress') patch.assignee_user_id = viewer.user.id
-    if (state === 'merged') {
-      patch.pr_state = 'merged'
-      patch.merged_at = nowIso()
-    } else if (state === 'closed' && item.pr_state !== 'merged') {
-      patch.pr_state = 'closed'
-    }
-    store.updateWorkItem(item.id, patch)
-    store.audit(viewer.user.id, 'work_item.state', `${item.id} ${item.state} -> ${state}`)
-    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('工作项状态已更新。')}#work`)
-  })
-
-  app.post('/repos/:id/work/:workItemId/run', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    const item = store.getWorkItem(String((request.params as Record<string, string>).workItemId))
-    if (item === undefined || item.repo_id !== repo.id) throw httpError(404, '工作项不存在。', 'WORK_ITEM_NOT_FOUND')
-    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
-      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请先选择你的角色。')}#work`)
-    }
-    if (item.state === 'merged' || item.state === 'closed') {
-      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('这个工作项已经结束。')}#work`)
-    }
-    const goal = [
-      `Work item: ${item.title}`,
-      item.detail === '' ? '' : item.detail,
-      item.issue_url === null || item.issue_url === '' ? '' : `Issue: ${item.issue_url}`,
-      'Follow the one issue, one branch, one pull request rule. Do not start unrelated work.',
-    ].filter((line) => line !== '').join('\n\n')
-    const kind = repo.plan_required === 1 ? 'plan' : 'iterate'
-    const result = await jobs.enqueue(repo, 'manual', goal, kind, { workItemId: item.id, priority: item.priority })
-    store.audit(viewer.user.id, 'work_item.run', `${item.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
-    if (!result.ok || result.job === undefined) {
-      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(result.error ?? '工作项启动失败。')}#work`)
-    }
-    return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent(kind === 'plan' ? '计划任务已排队。' : '工作项任务已排队。')}`)
   })
 
   app.get('/repos/:id/workspace', async (request, reply) => {
@@ -1470,9 +1346,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const viewer = approvedCsrfGuard(request)
     const repo = store.getRepo(String((request.params as Record<string, string>).id))
     if (repo === undefined || repo.user_id !== viewer.user.id) throw httpError(404, '仓库不存在。', 'REPO_NOT_FOUND')
-    const result = await jobs.enqueue(repo, 'manual', undefined, repo.plan_required === 1 ? 'plan' : 'iterate')
+    const result = await jobs.enqueue(repo, 'manual')
     const key = result.ok ? 'notice' : 'error'
-    const message = result.ok ? (repo.plan_required === 1 ? '计划任务已排队；批准后才会写代码。' : '任务已排队。') : result.error ?? '任务启动失败。'
+    const message = result.ok ? '任务已排队。' : result.error ?? '任务启动失败。'
     return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
   })
 
@@ -1510,18 +1386,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const downgraded = currentRole === 'maintainer' && !allowed.includes('maintainer')
       const nextRole = downgraded ? 'developer' : repo.repo_role
       const enableReviewer = nextRole === 'maintainer' && prepared.canReview && repo.reviewer_enabled === 1
-      let protectionState = repo.protection_state
-      let protectionCheckedAt = repo.protection_checked_at
-      const protectionBranch = repo.target_branch !== '' ? repo.target_branch : (prepared.upstream.defaultBranch || repo.default_branch)
-      try {
-        const protection = await new GithubClient(token, config.github.apiBase).getBranchProtection(prepared.upstream.owner, prepared.upstream.name, protectionBranch)
-        protectionState = protection === null ? 'unknown' : protection.protected ? 'protected' : 'unprotected'
-        protectionCheckedAt = nowIso()
-      } catch (error) {
-        protectionState = 'unknown'
-        protectionCheckedAt = nowIso()
-        log.warn('branch protection check failed', { repo: repo.id, error: String(error) })
-      }
       store.updateRepo(repo.id, {
         upstream_owner: prepared.upstream.owner,
         upstream_name: prepared.upstream.name,
@@ -1535,8 +1399,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         repo_role: nextRole,
         auto_merge: downgraded ? 0 : repo.auto_merge,
         role_checked_at: nowIso(),
-        protection_state: protectionState,
-        protection_checked_at: protectionCheckedAt,
         can_review: prepared.canReview ? 1 : 0,
         can_create_issue: prepared.canCreateIssue ? 1 : 0,
         reviewer_enabled: enableReviewer ? 1 : 0,
@@ -1641,11 +1503,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repo_role: repoRole,
       ...(roleChanged ? { role_checked_at: nowIso() } : {}),
       auto_merge: canMaintain && body.autoMerge === '1' ? 1 : 0,
-      plan_required: body.planRequired === '1' ? 1 : 0,
-      allow_paths: (body.allowPaths ?? '').trim().slice(0, 2000),
-      deny_paths: (body.denyPaths ?? '').trim().slice(0, 2000),
-      merge_method: body.mergeMethod === 'merge' || body.mergeMethod === 'rebase' ? body.mergeMethod : 'squash',
-      require_protection: body.requireProtection === '1' ? 1 : 0,
       auto_iterate: body.auto === '1' ? 1 : 0,
       enabled: body.enabled === '1' ? 1 : 0,
       interval_minutes: interval,
@@ -1660,7 +1517,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         log.warn('team playbook not updated after goal change', { repo: repo.id, error: String(error) })
       })
     }
-    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} role=${repoRole}${roleChanged ? ' role=changed' : ''} autoMerge=${canMaintain && body.autoMerge === '1' ? 'on' : 'off'} planRequired=${body.planRequired === '1' ? 'on' : 'off'} merge=${body.mergeMethod ?? 'squash'} protection=${body.requireProtection === '1' ? 'required' : 'optional'} reviewer=${canMaintain && repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
+    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} role=${repoRole}${roleChanged ? ' role=changed' : ''} autoMerge=${canMaintain && body.autoMerge === '1' ? 'on' : 'off'} reviewer=${canMaintain && repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(goalChanged ? '设置已保存；团队规则已按新目标更新。' : '设置已保存。')}#repo-settings`)
   })
 
@@ -1806,7 +1663,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewer: viewOf(viewer),
       metrics: store.productMetrics(since),
       team: store.teamMetrics(since),
-      workItems: store.workItemMetrics(since),
       since,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
@@ -2025,62 +1881,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
   }
 
-  const handleWorkItemEvent = async (event: string, body: Record<string, unknown>): Promise<void> => {
-    if (event !== 'issues' && event !== 'pull_request' && event !== 'pull_request_review') return
-    const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
-    const installationId = Number(installation.id)
-    if (!Number.isFinite(installationId)) return
-    const repository = typeof body.repository === 'object' && body.repository !== null ? (body.repository as Record<string, unknown>) : {}
-    const fullName = typeof repository.full_name === 'string' ? repository.full_name : ''
-    if (fullName === '') return
-    const repo = store.findRepoByInstallationAndFullName(installationId, fullName)
-    if (repo === undefined) return
-    const action = typeof body.action === 'string' ? body.action : ''
-    if (event === 'issues') {
-      const issue = typeof body.issue === 'object' && body.issue !== null ? (body.issue as Record<string, unknown>) : {}
-      const issueUrl = typeof issue.html_url === 'string' ? issue.html_url : ''
-      const title = typeof issue.title === 'string' ? issue.title.slice(0, 200) : ''
-      const detail = typeof issue.body === 'string' ? issue.body.slice(0, 4000) : ''
-      if (issueUrl === '' || title === '') return
-      const existing = store.findWorkItemByIssueUrl(repo.id, issueUrl)
-      const closed = action === 'closed' || issue.state === 'closed'
-      if (existing === undefined) {
-        store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, detail, issueUrl, state: closed ? 'closed' : 'proposed' })
-      } else {
-        store.updateWorkItem(existing.id, { title, detail, issue_url: issueUrl, ...(closed ? { state: 'closed' } : {}) })
-      }
-      return
-    }
-    const pull = typeof body.pull_request === 'object' && body.pull_request !== null ? (body.pull_request as Record<string, unknown>) : {}
-    const prUrl = typeof pull.html_url === 'string' ? pull.html_url : ''
-    if (prUrl === '') return
-    const existing = store.findWorkItemByPrUrl(repo.id, prUrl)
-    if (event === 'pull_request') {
-      const title = typeof pull.title === 'string' ? pull.title.slice(0, 200) : prUrl
-      const merged = pull.merged === true
-      const closed = action === 'closed' || pull.state === 'closed'
-      if (existing === undefined && action !== 'opened') return
-      if (existing === undefined) {
-        store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, prUrl, state: merged ? 'merged' : closed ? 'closed' : 'pr_ready', prState: merged ? 'merged' : closed ? 'closed' : 'open', mergedAt: merged ? nowIso() : null, mergeCommit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null })
-        return
-      }
-      if (closed) {
-        store.updateWorkItem(existing.id, {
-          state: merged ? 'merged' : 'closed',
-          pr_state: merged ? 'merged' : 'closed',
-          ...(merged ? { merged_at: nowIso(), merge_commit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null } : {}),
-        })
-      } else {
-        store.updateWorkItem(existing.id, { state: existing.state === 'in_review' ? 'in_review' : 'pr_ready', pr_state: 'open', pr_url: prUrl, title })
-      }
-      return
-    }
-    if (existing === undefined) return
-    const review = typeof body.review === 'object' && body.review !== null ? (body.review as Record<string, unknown>) : {}
-    const state = review.state === 'approved' ? 'approved' : review.state === 'changes_requested' ? 'changes_requested' : 'in_review'
-    store.updateWorkItem(existing.id, { state })
-  }
-
   app.post('/api/github/webhook', async (request, reply) => {
     if (!apiLimiter.take(`webhook:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
     if (!githubApp.configured || config.githubApp.webhookSecret === '') return reply.code(503).send({ error: 'GitHub App webhook is not configured' })
@@ -2107,7 +1907,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       }
       if (action === 'deleted' && Number.isFinite(installationId)) store.deleteInstallation(installationId)
     }
-    await handleWorkItemEvent(event, body).catch((error) => log.warn('github work item sync failed', { event, error: String(error) }))
     await handleGithubFollowup(event, body).catch((error) => log.warn('github follow-up failed', { event, error: String(error) }))
     return { ok: true }
   })

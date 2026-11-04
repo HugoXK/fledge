@@ -121,8 +121,7 @@ own improvements. See [docs/decisions/0001-name.md](docs/decisions/0001-name.md)
   (manual, every 15 minutes to every 30 days), enabled flag and last status.
   The interval is the minimum gap between runs; it does not cap the number of
   PRs or issues the repository can produce.
-- **Job lifecycle**: `queued → running → succeeded | failed | cancelled | paused | quota_exhausted`.
-- **Work items and gates**: triage-to-merge work items linked to issues, PRs and jobs; optional plan-first approval with allowed/forbidden paths; per-job pause/resume/cancel; target-branch preflight and active-work-item dedupe.
+- **Job lifecycle**: `queued → running → succeeded | failed | quota_exhausted`.
 - **Per-repository FlyBot**: each repository gets a separate container, a
   private bridge/model proxy and a team (Chief, Lead, Product, Test, Security,
   Reviewer, two Devs). The shared operator FlyBot is never used for user jobs.

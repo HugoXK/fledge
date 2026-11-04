@@ -93,20 +93,10 @@
   upstream can enable a scheduled reviewer. Review jobs list every open upstream
   PR, score each one, and post a COMMENT review; they never merge or modify
   code. A developer cannot run review jobs even when GitHub grants write access.
-- **Work items and gates**: each repository has work items with a
-  triage-to-merge state machine (`proposed → triaged → assigned → in_progress →
-  pr_ready → in_review → changes_requested → approved → merged/closed`). Jobs
-  link to a work item, and issue/PR/review webhooks keep state and PR outcome in
-  sync. A repository can require a plan before code; a maintainer approves or
-  rejects it with allowed/forbidden path constraints, and execution is blocked
-  until approval. Iterate jobs preflight the target branch, record the base SHA,
-  warn when the fork is behind, and scheduled work is skipped while an active
-  work item is open.
 - **Auto-merge switch**: off by default. Only a maintainer can enable it. When
   it is on, Fledge (not the agent) verifies the PR is open and mergeable, every
   check run is green, the combined commit status is not failing, and no current
-  review requests changes, and the branch protection rule confirms the required
-  checks and approvals before it performs a squash merge. The agent prompt
+  review requests changes before it performs a squash merge. The agent prompt
   always forbids merging. The switch is stored on the repository and included
   in the job payload for reporting. A stale or downgraded role blocks the merge.
 
