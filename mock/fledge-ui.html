@@ -27,6 +27,8 @@
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   }
   * { box-sizing: border-box; }
+  .skip-link { position: absolute; left: -9999px; top: 0; z-index: 100; padding: 10px 14px; border-radius: 0 0 10px 0; background: var(--accent-strong); color: #fff; font-weight: 700; }
+  .skip-link:focus { left: 0; }
   html, body { margin: 0; padding: 0; }
   body {
     background:
@@ -68,7 +70,6 @@
   .lang { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
   .lang button { border: 0; background: transparent; color: var(--muted-2); font: inherit; font-size: 11px; font-weight: 700; padding: 4px 7px; border-radius: 6px; cursor: pointer; }
   .lang button[aria-pressed="true"] { background: rgba(123,149,255,.16); color: var(--accent); }
-  .mock-flag { border: 1px dashed rgba(240,198,116,.5); color: var(--warn); background: rgba(240,198,116,.08); font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
   .wrap { max-width: 1180px; margin: 0 auto; padding: 38px 24px 100px; }
   .eyebrow { color: var(--accent); font: 700 10.5px/1.4 var(--mono); letter-spacing: .16em; text-transform: uppercase; margin-bottom: 12px; }
   .card { border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(180deg, var(--panel-2), var(--panel)); padding: 22px; margin-bottom: 18px; }
@@ -161,6 +162,11 @@
   .foot-links { display: flex; gap: 16px; flex-wrap: wrap; }
   .foot a { color: var(--muted-2); }
   .foot a:hover { color: var(--accent); text-decoration: none; }
+  .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .stat { border: 1px solid var(--line); border-radius: 13px; background: var(--panel); padding: 14px 16px; color: var(--text); }
+  .stat span, .stat small { display: block; color: var(--muted-2); font-size: 11px; }
+  .stat strong { display: block; font-size: 26px; letter-spacing: -.04em; margin: 4px 0; }
+  @media (max-width: 860px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   .mobile-hide { display: initial; }
   @media (max-width: 860px) {
     .grid2, .quota-card, .grid3, .role-grid, .evidence { grid-template-columns: 1fr; }
@@ -173,17 +179,17 @@
 </style>
 </head>
 <body>
+<a class="skip-link" href="#app">跳到主要内容</a>
 <header class="top">
   <div class="top-inner">
     <a class="brand" data-action="nav" data-screen="dashboard"><span class="mark">F</span><span>Fledge <small>羽巢</small></span></a>
     <nav class="nav" id="nav"></nav>
     <div class="spacer"></div>
-    <span class="mock-flag">MOCK · 设计评审</span>
     <div class="lang" role="group" aria-label="Language">
       <button type="button" data-action="lang" data-lang="zh" aria-pressed="true">中</button>
       <button type="button" data-action="lang" data-lang="en" aria-pressed="false">EN</button>
     </div>
-    <div class="account"><span class="avatar">H</span><span>@HugoXK</span><span class="badge role-m">superadmin</span><button class="chip" data-action="toggle-preview" id="preview-toggle">预览用户视图</button></div>
+    <div class="account"><span class="avatar">H</span><span>@HugoXK</span><span class="pill">¥0.63</span><button class="link" data-action="toast" data-message="已退出登录（mock）。">退出</button></div>
   </div>
 </header>
 <main class="wrap" id="app"></main>
@@ -196,11 +202,9 @@
 const state = {
   lang: 'zh',
   screen: 'dashboard',
-  preview: false,
   activeRepo: 'digitalmate',
   activeJob: null,
   toastTimer: null,
-  newRepo: { repo: 'openJiuwen-ai/DigitalMate', permission: 'write' },
   repos: {
     digitalmate: {
       id: 'digitalmate',
@@ -271,10 +275,6 @@ const state = {
       jobs: []
     }
   },
-  adminUsers: [
-    { login: 'wyhohyw', applied: '2026-11-03 08:12', role: 'user', quota: '¥1.00', used: '¥0.37', status: 'pending' },
-    { login: 'Birfy', applied: '2026-11-01 14:20', role: 'admin', quota: '不限额', used: '¥4.12', status: 'approved' }
-  ]
 };
 
 const t = (zh, en) => state.lang === 'en' ? en : zh;
@@ -306,15 +306,12 @@ function toast(message, tone = '') {
 function navHtml() {
   return `<a class="${state.screen === 'workspace' ? 'on' : ''}" data-action="nav" data-screen="workspace">${esc(t('工作区', 'Workspace'))}</a>
     <a class="${state.screen === 'dashboard' ? 'on' : ''}" data-action="nav" data-screen="dashboard">${esc(t('仓库', 'Repositories'))}</a>
-    <a class="${state.screen === 'settings' ? 'on' : ''}" data-action="nav" data-screen="settings">${esc(t('设置', 'Settings'))}</a>
-    <a class="${state.screen === 'admin' ? 'on' : ''}" data-action="nav" data-screen="admin">${esc(t('管理', 'Admin'))}</a>`;
+    <a class="${state.screen === 'settings' ? 'on' : ''}" data-action="nav" data-screen="settings">${esc(t('设置', 'Settings'))}</a>`;
 }
 
 function render() {
   document.documentElement.lang = state.lang === 'en' ? 'en' : 'zh-CN';
   document.getElementById('nav').innerHTML = navHtml();
-  const previewToggle = document.getElementById('preview-toggle');
-  if (previewToggle) previewToggle.textContent = state.preview ? t('退出预览', 'Exit preview') : t('预览用户视图', 'Preview user view');
   document.querySelectorAll('.lang button').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.lang === state.lang)));
   const screens = {
     workspace: workspaceScreen,
@@ -322,29 +319,41 @@ function render() {
     repo: repoScreen,
     newrepo: newRepoScreen,
     job: jobScreen,
-    team: teamScreen,
-    settings: settingsScreen,
-    admin: adminScreen
+    settings: settingsScreen
   };
-  const preview = state.preview ? `<div class="banner ok" style="margin-bottom:18px">${esc(t('正在预览用户视图。高级团队台和工作区仍只对超级管理员开放。', 'Previewing the user view. The advanced team console and workspace stay superadmin-only.'))} <button class="btn ghost small" data-action="toggle-preview">${esc(t('退出模拟', 'Exit preview'))}</button></div>` : '';
-  document.getElementById('app').innerHTML = preview + (screens[state.screen] || dashboardScreen)();
+  document.getElementById('app').innerHTML = (screens[state.screen] || dashboardScreen)();
 }
 
 function workspaceScreen() {
   const repos = Object.values(state.repos);
+  const recent = repos.flatMap((repo) => repo.jobs.map((job) => ({ ...job, repo }))).sort((a, b) => b.created.localeCompare(a.created)).slice(0, 10);
   const active = repos.reduce((count, repo) => count + repo.jobs.filter((job) => job.status === 'running' || job.status === 'queued').length, 0);
-  const rows = repos.map((repo) => `<div class="list-row"><div class="list-main"><strong>${esc(repo.owner)}/${esc(repo.name)}</strong><small>${esc(roleLabel(repo.role))} · ${repo.autoIterate ? esc(t('自动运行', 'Auto')) : esc(t('手动', 'Manual'))} · ${esc(repo.lastRun)}</small></div><a data-action="open-repo" data-repo="${repo.id}">${esc(t('打开', 'Open'))}</a></div>`).join('');
-  return `<div class="row between">
-      <div><div class="eyebrow">${esc(t('工作区', 'WORKSPACE'))}</div><h1>${esc(t('工作区', 'Workspace'))}</h1><p class="muted">${esc(t('已接入仓库、进行中任务和额度的概览。', 'An overview of connected repositories, active jobs and quota.'))}</p></div>
-      <button class="btn" data-action="nav" data-screen="dashboard">${esc(t('仓库列表', 'Repository list'))}</button>
+  const questions = repos.reduce((count, repo) => count + repo.questions.filter((q) => !q.answered).length, 0);
+  const repoRows = repos.map((repo) => `<a class="list-row" data-action="open-repo" data-repo="${repo.id}">
+    <div class="list-main"><strong>${esc(repo.owner)}/${esc(repo.name)}</strong><small>${repo.autoIterate ? esc(t('自动', 'Auto')) : esc(t('手动', 'Manual'))} · ${esc(t('上次运行', 'Last run'))} ${esc(repo.lastRun)} <span class="badge ${roleClass(repo.role)}">${esc(roleLabel(repo.role))}</span></small></div>
+    <div class="list-meta">${statusBadge(repo.status)}</div>
+  </a>`).join('');
+  const jobRows = recent.length === 0 ? `<tr><td colspan="4" class="muted">${esc(t('还没有任务。', 'No jobs yet.'))}</td></tr>` : recent.map((job) => `<tr class="clickable" data-action="open-job" data-repo="${job.repo.id}" data-job="${job.id}">
+    <td><code>${esc(job.id)}</code><br><small class="muted">${esc(job.repo.owner)}/${esc(job.repo.name)}</small></td>
+    <td>${statusBadge(job.status)} <span class="badge kind">${esc(kindLabel(job.kind))}</span></td>
+    <td>${esc(job.pr)} / ${esc(job.issue)}</td>
+    <td><span class="job-summary">${esc(job.summary)}</span></td>
+  </tr>`).join('');
+  return `<section class="card">
+    <div class="row between">
+      <div class="row"><span class="avatar" style="width:56px;height:56px;font-size:20px">H</span><div><div class="eyebrow">${esc(t('工作区', 'WORKSPACE'))}</div><h1>@HugoXK</h1><p class="workspace-meta">${statusBadge('approved')} <span class="dot-sep">·</span> ${esc(t('加入于', 'Joined'))} 2026-10-30</p></div></div>
+      <div class="row"><button class="btn" data-action="nav" data-screen="dashboard">${esc(t('添加仓库', 'Add repository'))}</button><button class="btn ghost" data-action="nav" data-screen="settings">${esc(t('设置', 'Settings'))}</button><button class="btn ghost" data-action="toast" data-message="${esc(t('文档链接（mock）。', 'Docs link (mock).'))}">${esc(t('文档', 'Docs'))}</button></div>
     </div>
-    <div class="grid3">
-      <div class="card tight"><div class="eyebrow">${esc(t('仓库', 'REPOSITORIES'))}</div><div class="quota-big">${repos.length}</div><p class="fine">${esc(t('已接入', 'Connected'))}</p></div>
-      <div class="card tight"><div class="eyebrow">${esc(t('活跃任务', 'ACTIVE JOBS'))}</div><div class="quota-big">${active}</div><p class="fine">${esc(t('排队或运行中', 'Queued or running'))}</p></div>
-      <div class="card tight"><div class="eyebrow">${esc(t('平台额度', 'PLATFORM QUOTA'))}</div><div class="quota-big">¥0.63</div><p class="fine">${esc(t('剩余 / ¥1.00', 'remaining / ¥1.00'))}</p></div>
-    </div>
-    <section class="card"><h2>${esc(t('仓库', 'Repositories'))}</h2><div class="list">${rows}</div></section>
-    <div class="banner warn">${esc(t('需要你处理：DigitalMate 有一个等待回答的问题。', 'Needs you: DigitalMate has one open question.'))} <a data-action="open-repo" data-repo="digitalmate">${esc(t('去回答', 'Answer'))}</a></div>`;
+    <p class="muted" style="margin-top:12px">${esc(t('管理仓库、任务和模型额度；需要完整列表时进入仓库页。', 'Manage repositories, jobs and model quota; open Repositories for the full list.'))}</p>
+  </section>
+  <div class="stats">
+    <a class="stat" data-action="nav" data-screen="dashboard"><span>${esc(t('仓库', 'Repositories'))}</span><strong>${repos.length}</strong><small>${esc(t('已接入', 'Connected'))}</small></a>
+    <a class="stat" data-action="nav" data-screen="dashboard"><span>${esc(t('进行中', 'In progress'))}</span><strong>${active}</strong><small>${esc(t('排队或运行', 'Queued or running'))}</small></a>
+    <a class="stat" data-action="open-repo" data-repo="digitalmate"><span>${esc(t('需要你处理', 'Needs your input'))}</span><strong>${questions}</strong><small>${questions === 0 ? esc(t('没有待回答问题', 'No open questions')) : esc(t('FlyBot 正在等你', 'FlyBot is waiting'))}</small></a>
+    <a class="stat" data-action="nav" data-screen="settings"><span>${esc(t('平台额度', 'Platform quota'))}</span><strong>¥0.63</strong><small>${esc(t('剩余 / ¥1.00', 'left of ¥1.00'))}</small></a>
+  </div>
+  <section class="card"><div class="row between"><h2>${esc(t('仓库', 'Repositories'))}</h2><a data-action="nav" data-screen="dashboard">${esc(t('管理全部', 'Manage all'))}</a></div>${repos.length === 0 ? `<p class="muted">${esc(t('还没有仓库。', 'No repositories yet.'))}</p>` : `<div class="list">${repoRows}</div>`}</section>
+  <section class="card"><div class="row between"><h2>${esc(t('最近任务', 'Recent jobs'))}</h2><a data-action="nav" data-screen="dashboard">${esc(t('查看全部', 'View all'))}</a></div><div class="table-scroll"><table><thead><tr><th>${esc(t('任务', 'Job'))}</th><th>${esc(t('状态', 'Status'))}</th><th>PR / Issue</th><th>${esc(t('摘要', 'Summary'))}</th></tr></thead><tbody>${jobRows}</tbody></table></div></section>`;
 }
 
 function dashboardScreen() {
@@ -369,7 +378,7 @@ function dashboardScreen() {
         <h1>${esc(t('仓库', 'Repositories'))}</h1>
         <p class="muted">${esc(t('接入仓库、选择你的 GitHub 角色，并查看最近任务。', 'Connect repositories, choose your GitHub role and review recent jobs.'))}</p>
       </div>
-      <button class="btn" data-action="nav" data-screen="newrepo">${esc(t('添加仓库', 'Add repository'))}</button>
+      <button class="btn" data-action="scroll-add">${esc(t('添加仓库', 'Add repository'))}</button>
     </div>
     <section class="card quota-card">
       <div>
@@ -390,12 +399,24 @@ function dashboardScreen() {
       </section>
       <section class="card" id="add-repo">
         <h2>${esc(t('添加仓库', 'Add repository'))}</h2>
-        <p class="muted">${esc(t('GitHub App（推荐）或 fine-grained token。添加后先选角色，未选择前不会启动任务。', 'GitHub App (recommended) or a fine-grained token. Choose a role after adding; jobs stay paused until you do.'))}</p>
-        <div class="list">
-          <div class="list-row"><div class="list-main"><strong>${esc(t('个人仓库', 'Personal repository'))}</strong><small>${esc(t('admin/maintain → maintainer 或 developer', 'admin/maintain → maintainer or developer'))}</small></div><span class="badge role-m">maintainer</span></div>
-          <div class="list-row"><div class="list-main"><strong>${esc(t('上游公共仓库', 'Upstream public repository'))}</strong><small>${esc(t('write/triage/read → 只能 developer', 'write/triage/read → developer only'))}</small></div><span class="badge role-d">developer</span></div>
+        <div class="add-choice">
+          <h3>${esc(t('方式一（推荐）：GitHub App', 'Option 1 (recommended): GitHub App'))}</h3>
+          <p class="muted">${esc(t('安装 App 并选择仓库，不需要创建 PAT；Fledge 使用短时 installation token。', 'Install the App and choose repositories; no PAT is needed. Fledge uses short-lived installation tokens.'))}</p>
+          <p><button class="btn" data-action="toast" data-message="${esc(t('GitHub App 安装流程（mock）。', 'GitHub App install flow (mock).'))}">${esc(t('通过 GitHub App 接入', 'Connect with GitHub App'))}</button> <a data-action="nav" data-screen="newrepo">${esc(t('选择已安装的仓库', 'Choose installed repositories'))}</a></p>
         </div>
-        <button class="btn" data-action="nav" data-screen="newrepo" style="margin-top:12px">${esc(t('开始添加', 'Start'))}</button>
+        <details class="add-manual"><summary>${esc(t('方式二：手动提供 fine-grained token', 'Option 2: provide a fine-grained token manually'))}</summary>
+          <form data-form="add-manual">
+            <div class="field"><label>${esc(t('上游仓库', 'Upstream repository'))}</label><input name="repo" placeholder="owner/name" required></div>
+            <div class="field"><label>${esc(t('GitHub token', 'GitHub token'))}</label><input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required></div>
+            <div class="field"><label>${esc(t('迭代目标（可选）', 'Iteration goal (optional)'))}</label><textarea name="goal" rows="3" placeholder="${esc(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></div>
+            <div class="row"><label class="check"><input type="checkbox" name="auto"> ${esc(t('自动迭代', 'Auto-iterate'))}</label><label>${esc(t('自动迭代间隔', 'Auto-iterate interval'))} <select name="interval">${[15, 60, 360, 1440].map((value) => `<option value="${value}">${value >= 1440 ? '24h' : value + 'm'}</option>`).join('')}</select></label></div>
+            <div class="row"><label class="check"><input type="checkbox" name="review"> ${esc(t('启用 PR 审核角色', 'Enable PR reviewer role'))}</label><label>${esc(t('审核间隔', 'Review interval'))} <select name="reviewInterval">${[360, 1440, 4320, 10080].map((value) => `<option value="${value}">${value >= 1440 ? Math.round(value / 1440) + 'd' : Math.round(value / 60) + 'h'}</option>`).join('')}</select></label></div>
+            <p class="fine">${esc(t('添加后请选择你的角色；未选择前不会启动任务。', 'Choose your role after adding; jobs stay paused until you do.'))}</p>
+            <button class="btn" type="submit">${esc(t('添加仓库', 'Add repository'))}</button>
+          </form>
+        </details>
+        <p class="fine">${esc(t('两种方式选一种即可；GitHub App 不需要 PAT。', 'Choose one of the two options; the GitHub App does not need a PAT.'))}</p>
+      </section>
       </section>
     </div>
     <section class="card">
@@ -405,7 +426,6 @@ function dashboardScreen() {
 }
 
 function repoHeader(repo) {
-  const advanced = !state.preview;
   const canReview = repo.role === 'maintainer' && (repo.permission === 'admin' || repo.permission === 'maintain');
   return `<a class="back" data-action="nav" data-screen="dashboard">← ${esc(t('返回仓库', 'Back to repositories'))}</a>
     <section class="card">
@@ -417,7 +437,6 @@ function repoHeader(repo) {
           <p class="fine">${esc(t('目标分支', 'Target branch'))} <code>${esc(repo.targetBranch || 'main')}</code> · ${repo.autoIterate ? esc(t('自动迭代已开启', 'Auto-iteration on')) : esc(t('仅手动运行', 'Manual runs only'))} · ${esc(t('自动间隔', 'Auto every'))} <b>${esc(repo.interval || 1440)}m</b> · ${esc(t('上次运行', 'Last run'))} ${esc(repo.lastRun)}</p>
         </div>
         <div class="row">
-          ${advanced ? `<button class="btn ghost" data-action="nav" data-screen="workspace">${esc(t('工作区', 'Workspace'))}</button><button class="btn ghost" data-action="nav" data-screen="team">${esc(t('团队工作台', 'Team console'))}</button>` : ''}
           ${repo.role === null ? `<span class="badge busy">${esc(t('先选择角色', 'Choose a role first'))}</span>` : `<button class="btn" data-action="run" data-repo="${repo.id}" data-kind="iterate">${esc(t('立即运行', 'Run now'))}</button>
           <button class="btn ghost" data-action="run" data-repo="${repo.id}" data-kind="plan">${esc(t('只出计划', 'Plan only'))}</button>`}
           ${canReview && repo.review ? `<button class="btn ghost" data-action="run" data-repo="${repo.id}" data-kind="review">${esc(t('立即审核', 'Review now'))}</button>` : ''}
@@ -444,7 +463,6 @@ function roleCard(repo) {
 
 function repoScreen() {
   const repo = activeRepo();
-  const advanced = !state.preview;
   const questions = repo.questions.filter((q) => !q.answered);
   const canMaintain = repo.role === 'maintainer';
   const canReview = canMaintain && (repo.permission === 'admin' || repo.permission === 'maintain');
@@ -456,7 +474,7 @@ function repoScreen() {
   </tr>`).join('');
   const thread = repo.chief.length === 0 ? `<p class="muted">${esc(t('还没有对话。给 Chief 发第一句。', 'No conversation yet. Send the Chief the first message.'))}</p>` : repo.chief.map((message) => `<div class="chief-msg ${message.role}"><div class="chief-role">${message.role === 'user' ? esc(t('你', 'You')) : 'Chief'}</div><div class="chief-text">${esc(message.text)}</div></div>`).join('');
   const qHtml = questions.length === 0 ? '' : `<section class="card question"><div class="row between"><h2>${esc(t('需要你处理', 'Needs you'))}</h2><span class="badge busy">${questions.length}</span></div>${questions.map((q) => `<div><strong>${esc(q.title)}</strong><p class="muted" style="margin:6px 0 0">${esc(q.detail)}</p><div class="options">${q.options.map((option) => `<button class="option" data-action="answer" data-repo="${repo.id}" data-question="${q.id}" data-answer="${esc(option)}">${esc(option)}</button>`).join('')}</div></div>`).join('')}</section>`;
-  const chiefCard = advanced ? '' : `<section class="card">
+  const chiefCard = `<section class="card">
     <div class="row between"><h2>${esc(t('和 Chief 沟通', 'Talk to the Chief'))}</h2><span class="fine">${esc(t('对话会写入审计', 'Conversation is audited'))}</span></div>
     <div class="chief-thread">${thread}</div>
     <form data-form="chief" data-repo="${repo.id}">
@@ -469,16 +487,9 @@ function repoScreen() {
       <button class="btn" type="submit">${esc(t('发送给 Chief', 'Send to Chief'))}</button>
     </form>
   </section>`;
-  const teamRoles = [
-    ['Chief', '总控', 'thinking'], ['Lead', '负责人', 'working'], ['Product', '产品', 'idle'],
-    ['Test', '测试', 'working'], ['Security', '安全', 'idle'], ['Reviewer', '审核', repo.review ? 'working' : 'idle'],
-    ['Dev-1', '开发 1', 'working'], ['Dev-2', '开发 2', 'idle']
-  ];
-  const teamGrid = advanced ? `<div class="grid3" style="margin-top:14px">${teamRoles.map(([en, zh, activity]) => `<div class="card tight"><div class="row between"><strong>${esc(state.lang === 'en' ? en : zh)}</strong><span class="badge ${activity === 'working' || activity === 'thinking' ? 'busy' : ''}">${esc(activity === 'working' ? t('工作中', 'Working') : activity === 'thinking' ? t('思考中', 'Thinking') : t('空闲', 'Idle'))}</span></div></div>`).join('')}</div>` : '';
   const instanceCard = `<section class="card">
-    <div class="row between"><div><div class="eyebrow">${esc(t('每仓库 FlyBot', 'PER-REPOSITORY FLYBOT'))}</div><h2>${esc(advanced ? t('实例与团队', 'Instance & team') : t('FlyBot 状态', 'FlyBot status'))}</h2><p class="muted">${repo.instance === 'ready' ? statusBadge('ready') : statusBadge('pending')} ${esc(t('实例', 'Instance'))} <span class="fine">repo-${esc(repo.id)}</span></p></div>${advanced ? `<button class="btn ghost small" data-action="nav" data-screen="team">${esc(t('团队工作台', 'Team console'))}</button>` : ''}</div>
-    ${teamGrid}
-    ${advanced ? '' : `<p class="fine">${esc(t('任务先发给 Chief，再由负责人执行。高级团队台只对超级管理员开放。', 'Jobs go to the Chief, then the Lead. The advanced team console is superadmin-only.'))}</p>`}
+    <div class="row between"><div><div class="eyebrow">${esc(t('每仓库 FlyBot', 'PER-REPOSITORY FLYBOT'))}</div><h2>${esc(t('FlyBot 状态', 'FlyBot status'))}</h2><p class="muted">${repo.instance === 'ready' ? statusBadge('ready') : statusBadge('pending')} ${esc(t('实例', 'Instance'))} <span class="fine">repo-${esc(repo.id)}</span></p></div></div>
+    <p class="fine">${esc(t('任务先发给 Chief，再由负责人执行。', 'Jobs go to the Chief, then the Lead.'))}</p>
   </section>`;
   const settingsCard = `<section class="card" id="repo-settings">
     <div class="row between"><h2>${esc(t('迭代目标', 'Iteration goal'))}</h2><span class="badge ${roleClass(repo.role)}">${esc(roleLabel(repo.role))}</span></div>
@@ -493,7 +504,6 @@ function repoScreen() {
       </div>
       <label class="check ${canMaintain ? '' : 'disabled'}"><input type="checkbox" name="autoMerge" ${repo.autoMerge ? 'checked' : ''} ${canMaintain ? '' : 'disabled'}> ${esc(t('允许 maintainer 自动合并 PR', 'Allow maintainer auto-merge'))}</label>
       <label class="check ${canReview ? '' : 'disabled'}"><input type="checkbox" name="review" ${repo.review ? 'checked' : ''} ${canReview ? '' : 'disabled'}> ${esc(t('启用 PR 审核', 'Enable PR reviewer'))}</label>
-      <p class="fine">${esc(t('角色来自 GitHub；超过 6 小时的角色检查会在 review 或自动合并前重新验证。', 'The role comes from GitHub; a role check older than six hours is revalidated before review or auto-merge.'))}</p>
       <p class="fine">${repo.role === null ? esc(t('先选择你的角色，审核和自动合并才会生效。', 'Choose your role before review or auto-merge can take effect.')) : !canMaintain ? esc(t('developer 不能启用 PR 审核或自动合并；切换为 maintainer 后才可用。', 'A developer cannot enable PR review or auto-merge; switch to maintainer first.')) : !canReview ? esc(t('你在这个上游没有 admin/maintain 权限，审核角色不可用。', 'You do not have admin/maintain permission on this upstream, so the reviewer role is unavailable.')) : esc(t('自动合并默认关闭；开启后由 Fledge 在 checks 通过且没有 changes requested 时执行 squash merge。', 'Auto-merge is off by default; when on, Fledge squash-merges after checks pass and no changes are requested.'))}</p>
       <button class="btn" type="submit">${esc(t('保存', 'Save'))}</button>
     </form>
@@ -514,29 +524,21 @@ function repoScreen() {
 }
 
 function newRepoScreen() {
+  const repos = [
+    { fullName: 'openJiuwen-ai/DigitalMate', private: false, branch: 'main' },
+    { fullName: 'HugoXK/fledge', private: false, branch: 'main' }
+  ];
   return `<a class="back" data-action="nav" data-screen="dashboard">← ${esc(t('返回仓库', 'Back to repositories'))}</a>
-    <div class="row between"><div><div class="eyebrow">${esc(t('接入仓库', 'CONNECT REPOSITORY'))}</div><h1>${esc(t('添加仓库', 'Add repository'))}</h1><p class="muted">${esc(t('接入成功后回到仓库页，先选择角色；未选择前不会启动任务。', 'After connecting, choose a role on the repository page; jobs stay paused until you do.'))}</p></div><span class="mock-flag">${esc(t('角色不会自动勾选', 'No auto-selected role'))}</span></div>
-    <div class="grid2">
-      <section class="card">
-        <h2>${esc(t('方式一（推荐）：GitHub App', 'Option 1 (recommended): GitHub App'))}</h2>
-        <p class="muted">${esc(t('安装 App 并选择仓库，不需要创建 PAT；Fledge 使用短时 installation token。', 'Install the App and choose repositories; no PAT is needed. Fledge uses short-lived installation tokens.'))}</p>
-        <p><button class="btn" data-action="toast" data-message="${esc(t('GitHub App 安装流程（mock）。', 'GitHub App install flow (mock).'))}">${esc(t('通过 GitHub App 接入', 'Connect with GitHub App'))}</button> <a data-action="toast" data-message="${esc(t('已安装仓库选择器（mock）。', 'Installed repository picker (mock).'))}">${esc(t('选择已安装的仓库', 'Choose installed repositories'))}</a></p>
-        <p class="fine">${esc(t('真实页面会列出安装下的仓库；添加后未选择角色前任务暂停。', 'The real page lists the installation repositories; jobs stay paused until a role is chosen.'))}</p>
-      </section>
-      <section class="card">
-        <h2>${esc(t('方式二：fine-grained token', 'Option 2: fine-grained token'))}</h2>
-        <div class="field"><label>${esc(t('上游仓库', 'Upstream repository'))}</label><input data-new-repo value="${esc(state.newRepo.repo)}" /></div>
-        <div class="field"><label>${esc(t('GitHub token', 'GitHub token'))}</label><input type="password" value="github_pat_mock_token" /></div>
-        <div class="field"><label>${esc(t('Mock 演示：模拟 GitHub 权限', 'Mock demo: simulated GitHub permission'))}</label>
-          <select data-new-permission>
-            <option value="write" ${state.newRepo.permission === 'write' ? 'selected' : ''}>write · DigitalMate（只能 developer）</option>
-            <option value="admin" ${state.newRepo.permission === 'admin' ? 'selected' : ''}>admin · 自有仓库（maintainer 或 developer）</option>
-          </select>
-        </div>
-        <button class="btn" data-action="add-demo-repo">${esc(t('添加仓库', 'Add repository'))}</button>
-      </section>
-    </div>
-    <div class="banner">${esc(t('添加后你会在仓库页看到“选择你在这个仓库的角色”。Fledge 不会自动替你勾选。', 'After adding you will see “Choose your role for this repository” on the repository page. Fledge will not choose for you.'))}</div>`;
+    <div class="row between"><div><div class="eyebrow">${esc(t('GITHUB APP', 'GITHUB APP'))}</div><h1>${esc(t('通过 GitHub App 接入', 'Connect with GitHub App'))}</h1><p class="muted">${esc(t('安装 App、选择仓库后，Fledge 使用短时 installation token，不需要你创建 PAT。', 'After installing the App and choosing repositories, Fledge uses short-lived installation tokens instead of a PAT.'))}</p></div><button class="btn ghost" data-action="nav" data-screen="dashboard">${esc(t('返回工作区', 'Back to dashboard'))}</button></div>
+    <section class="card"><h2>${esc(t('已安装', 'Installed'))}</h2><div class="list"><div class="list-row"><div class="list-main"><strong>@HugoXK</strong><small>User · installation 177732813</small></div><span class="fine">${esc(t('已绑定', 'Bound'))}</span></div></div></section>
+    <section class="card">
+      <h2>${esc(t('选择要接入的仓库', 'Choose repositories'))}</h2>
+      <div class="table-scroll"><table><thead><tr><th>${esc(t('仓库', 'Repository'))}</th><th>${esc(t('可见性', 'Visibility'))}</th><th>${esc(t('默认分支', 'Default branch'))}</th></tr></thead><tbody>${repos.map((repo) => `<tr><td><label class="check"><input type="checkbox" data-app-repo value="${esc(repo.fullName)}"> <strong>${esc(repo.fullName)}</strong></label></td><td>${repo.private ? esc(t('私有', 'Private')) : esc(t('公开', 'Public'))}</td><td><code>${esc(repo.branch)}</code></td></tr>`).join('')}</tbody></table></div>
+      <div class="field"><label>${esc(t('迭代目标（可选）', 'Iteration goal (optional)'))}</label><textarea rows="3"></textarea></div>
+      <div class="row"><label class="check"><input type="checkbox"> ${esc(t('自动迭代', 'Auto-iterate'))}</label><label>${esc(t('自动迭代间隔', 'Auto-iterate interval'))} <select>${[15, 60, 360, 1440].map((value) => `<option value="${value}">${value >= 1440 ? '24h' : value + 'm'}</option>`).join('')}</select></label><label class="check"><input type="checkbox"> ${esc(t('启用 PR 审核角色', 'Enable PR reviewer role'))}</label></div>
+      <p class="fine">${esc(t('添加后请为每个仓库选择 maintainer 或 developer；角色来自你的 GitHub 权限，Fledge 不会自动选择。', 'After adding, choose maintainer or developer for each repository. The role comes from your GitHub permission; Fledge will not choose it for you.'))}</p>
+      <button class="btn" data-action="connect-app-repos">${esc(t('接入选中的仓库', 'Connect selected repositories'))}</button>
+    </section>`;
 }
 
 function jobScreen() {
@@ -565,24 +567,6 @@ function jobScreen() {
     </div></section>`;
 }
 
-function teamScreen() {
-  const repo = activeRepo();
-  const roles = [
-    ['Chief', '总控', 'thinking', 'planning the next task'],
-    ['Lead', '负责人', 'working', 'routing work'],
-    ['Product', '产品', 'idle', 'scope ready'],
-    ['Test', '测试', 'working', 'running regression'],
-    ['Security', '安全', 'idle', 'no material risk'],
-    ['Reviewer', '审核', repo.review ? 'working' : 'idle', repo.review ? 'scoring PR' : 'disabled'],
-    ['Dev-1', '开发 1', 'working', 'implementing fix'],
-    ['Dev-2', '开发 2', 'idle', 'waiting']
-  ];
-  return `<a class="back" data-action="open-repo" data-repo="${repo.id}">← ${esc(t('返回仓库', 'Back to repository'))}</a>
-    <div class="row between"><div><div class="eyebrow">${esc(t('团队', 'TEAM'))}</div><h1>${esc(t('团队工作台', 'Team console'))}</h1><p class="muted">${esc(repo.owner)}/${esc(repo.name)} · ${esc(t('实时状态（mock）', 'Live state (mock)'))}</p></div><span class="badge good">${esc(t('实时更新', 'Live'))}</span></div>
-    <div class="grid3">${roles.map(([en, zh, activity, detail]) => `<div class="card tight"><div class="row between"><strong>${esc(state.lang === 'en' ? en : zh)}</strong><span class="badge ${activity === 'working' || activity === 'thinking' ? 'busy' : activity === 'idle' ? '' : 'bad'}">${esc(activity === 'working' ? t('工作中', 'Working') : activity === 'thinking' ? t('思考中', 'Thinking') : t('空闲', 'Idle'))}</span></div><p class="fine" style="margin:8px 0 0">${esc(detail)}</p><div class="meter" style="margin-top:10px"><span style="width:${activity === 'working' ? '68' : activity === 'thinking' ? '42' : '8'}%"></span></div></div>`).join('')}</div>
-    <section class="card"><h2>${esc(t('待回答的问题', 'Open questions'))}</h2>${repo.questions.filter((q) => !q.answered).length === 0 ? `<p class="muted">${esc(t('没有待回答的问题。', 'No open questions.'))}</p>` : repo.questions.filter((q) => !q.answered).map((q) => `<div class="question"><strong>${esc(q.title)}</strong><p class="muted">${esc(q.detail)}</p><div class="options">${q.options.map((option) => `<button class="option" data-action="answer" data-repo="${repo.id}" data-question="${q.id}" data-answer="${esc(option)}">${esc(option)}</button>`).join('')}</div></div>`).join('')}</section>`;
-}
-
 function settingsScreen() {
   return `<div class="eyebrow">${esc(t('设置', 'SETTINGS'))}</div><h1>${esc(t('设置', 'Settings'))}</h1><p class="muted">${esc(t('账号、模型、通知和 API token（mock）。', 'Account, model, notifications and API tokens (mock).'))}</p>
     <div class="grid2">
@@ -590,13 +574,6 @@ function settingsScreen() {
       <section class="card"><h2>${esc(t('通知', 'Notifications'))}</h2><div class="field"><label>${esc(t('通知邮箱', 'Notification email'))}</label><input value="h***@gmail.com" /></div><label class="check"><input type="checkbox" checked> ${esc(t('任务需要回答、完成或失败时发邮件', 'Email me when a job needs an answer, finishes or fails'))}</label><label class="check"><input type="checkbox" checked> ${esc(t('每日摘要', 'Daily digest'))}</label><button class="btn" data-action="toast" data-message="${esc(t('通知设置已保存（mock）。', 'Notification settings saved (mock).'))}">${esc(t('保存', 'Save'))}</button></section>
     </div>
     <section class="card"><h2>API tokens</h2><div class="list"><div class="list-row"><div class="list-main"><strong><code>flg_7f2a…</code></strong><small>flybot-cli · 最近使用 2026-11-03 10:12</small></div><button class="btn danger small" data-action="toast" data-message="${esc(t('token 已撤销（mock）。', 'Token revoked (mock).'))}">${esc(t('撤销', 'Revoke'))}</button></div></div><button class="btn ghost" style="margin-top:12px" data-action="toast" data-message="${esc(t('已创建新 token（mock）。', 'New token created (mock).'))}">${esc(t('创建 token', 'Create token'))}</button></section>`;
-}
-
-function adminScreen() {
-  const rows = state.adminUsers.map((user) => `<tr><td><strong>@${esc(user.login)}</strong><br><small class="muted">${esc(user.applied)}</small></td><td>${statusBadge(user.status)}</td><td><span class="badge">${esc(user.role)}</span></td><td>${esc(user.quota)}<br><small class="muted">${esc(t('已用', 'Used'))} ${esc(user.used)}</small></td><td><div class="row">${user.status === 'pending' ? `<button class="btn small" data-action="admin-approve" data-login="${esc(user.login)}">${esc(t('批准', 'Approve'))}</button>` : ''}<button class="btn ghost small" data-action="toast" data-message="${esc(t('已打开用户详情（mock）。', 'Opened user detail (mock).'))}">${esc(t('查看', 'View'))}</button></div></td></tr>`).join('');
-  return `<div class="eyebrow">${esc(t('管理', 'ADMIN'))}</div><h1>${esc(t('管理', 'Admin'))}</h1><p class="muted">${esc(t('审批、角色和额度（mock）。平台管理员不能替用户选择仓库角色。', 'Approvals, roles and quota (mock). Platform admins cannot choose repository roles for users.'))}</p>
-    <section class="card"><h2>${esc(t('待审批用户', 'Pending users'))}</h2><div class="table-scroll"><table><thead><tr><th>${esc(t('用户', 'User'))}</th><th>${esc(t('状态', 'Status'))}</th><th>${esc(t('平台角色', 'Platform role'))}</th><th>${esc(t('额度', 'Quota'))}</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></section>
-    <section class="card"><h2>${esc(t('产品指标', 'Product metrics'))}</h2><div class="grid3"><div class="fact"><span>${esc(t('仓库', 'Repositories'))}</span><b>3</b></div><div class="fact"><span>${esc(t('任务', 'Jobs'))}</span><b>128</b></div><div class="fact"><span>${esc(t('成功率', 'Success rate'))}</span><b>91%</b></div></div></section>`;
 }
 
 function setRepoRole(repo, role) {
@@ -693,21 +670,25 @@ document.addEventListener('click', (event) => {
     if (form) form.querySelector('textarea').value = el.dataset.text;
     return;
   }
-  if (action === 'toggle-preview') { state.preview = !state.preview; render(); return; }
-  if (action === 'add-demo-repo') {
-    const input = document.querySelector('[data-new-repo]');
-    const select = document.querySelector('[data-new-permission]');
-    const repo = String(input?.value || state.newRepo.repo).trim();
-    const permission = String(select?.value || state.newRepo.permission);
-    const [owner, name] = repo.split('/');
-    if (!owner || !name) { toast(t('请填写 owner/name。', 'Enter owner/name.'), 'bad'); return; }
-    const id = rid('repo');
-    state.repos[id] = { id, owner, name, permission, targetBranch: 'main', enabled: true, role: null, autoMerge: false, review: false, autoIterate: false, interval: 1440, status: 'idle', lastRun: '—', goal: '', instance: 'starting', chief: [], questions: [], jobs: [] };
-    state.newRepo = { repo, permission };
-    state.activeRepo = id;
-    state.screen = 'repo';
+  if (action === 'scroll-add') {
+    document.getElementById('add-repo')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  if (action === 'connect-app-repos') {
+    const selected = [...document.querySelectorAll('[data-app-repo]:checked')].map((input) => String(input.value));
+    if (selected.length === 0) { toast(t('请选择至少一个仓库。', 'Choose at least one repository.'), 'bad'); return; }
+    let first = '';
+    for (const fullName of selected) {
+      const [owner, name] = fullName.split('/');
+      if (!owner || !name) continue;
+      const id = rid('repo');
+      const permission = /fledge/i.test(fullName) ? 'admin' : 'write';
+      state.repos[id] = { id, owner, name, permission, targetBranch: 'main', enabled: true, role: null, autoMerge: false, review: false, autoIterate: false, interval: 1440, status: 'idle', lastRun: '—', goal: '', instance: 'starting', chief: [], questions: [], jobs: [] };
+      if (first === '') first = id;
+    }
+    state.screen = 'dashboard';
     render();
-    toast(t('仓库已添加；请选择你的角色。', 'Repository added; choose your role.'), 'good');
+    toast(t(`已接入 ${selected.length} 个仓库；请为每个仓库选择角色。`, `Connected ${selected.length} repositories; choose a role for each.`), 'good');
     return;
   }
   if (action === 'execute-plan') {
@@ -724,11 +705,6 @@ document.addEventListener('click', (event) => {
     const repo = repoById(el.dataset.repo);
     const job = repo.jobs.find((entry) => entry.id === el.dataset.job);
     if (job) { job.status = 'queued'; job.summary = t('重试已排队（mock）。', 'Retry queued (mock).'); render(); toast(t('已重新排队（mock）。', 'Requeued (mock).'), 'good'); }
-    return;
-  }
-  if (action === 'admin-approve') {
-    const user = state.adminUsers.find((entry) => entry.login === el.dataset.login);
-    if (user) { user.status = 'approved'; render(); toast(t('已批准 ', 'Approved ') + user.login + t('（mock）。', ' (mock).'), 'good'); }
     return;
   }
   if (action === 'toast') { toast(el.dataset.message || t('已执行（mock）。', 'Done (mock).'), 'good'); }
@@ -773,6 +749,25 @@ document.addEventListener('submit', (event) => {
       const thread = document.querySelector('.chief-thread');
       if (thread) thread.scrollTop = thread.scrollHeight;
     }, 900);
+    return;
+  }
+  if (form.dataset.form === 'add-manual') {
+    const data = new FormData(form);
+    const repoName = String(data.get('repo') || '').trim();
+    const [owner, name] = repoName.split('/');
+    if (!owner || !name) { toast(t('仓库格式应为 owner/name', 'Use the owner/name repository format.'), 'bad'); return; }
+    const permission = /fledge/i.test(repoName) ? 'admin' : 'write';
+    const id = rid('repo');
+    state.repos[id] = {
+      id, owner, name, permission, targetBranch: 'main', enabled: true, role: null,
+      autoMerge: false, review: false, autoIterate: data.get('auto') === 'on',
+      interval: Number(data.get('interval') || 1440), status: 'idle', lastRun: '—',
+      goal: String(data.get('goal') || ''), instance: 'starting', chief: [], questions: [], jobs: []
+    };
+    state.activeRepo = id;
+    state.screen = 'repo';
+    render();
+    toast(t('仓库已添加；请选择你的角色。', 'Repository added; choose your role.'), 'good');
     return;
   }
   if (form.dataset.form === 'settings') {
