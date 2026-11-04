@@ -1,1 +1,0 @@
-A repository maintainer can now set an optional rolling 30-day repository budget and a per-job alert threshold. Once the repository budget is reached, new jobs are refused with `REPO_BUDGET_EXHAUSTED`; a job that costs more than its per-job budget produces an audit entry and a quota notification.

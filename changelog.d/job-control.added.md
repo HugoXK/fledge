@@ -1,1 +1,0 @@
-Added per-job pause, resume and cancel controls. Paused jobs release the repository slot and can be resumed from their checkpoint; cancellation stops active team sessions, revokes the job token and closes the linked work item. Jobs now record priority, and queued jobs show their queue position.

@@ -5,6 +5,33 @@ All notable changes to Fledge are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-11-04
+
+### Added
+
+- Admins can now search jobs and audit entries from a single page, filtered by the same user visibility as the admin panel, and export the current result as CSV. Exports are audited.
+- Admins now have a read-only support view for the users they are allowed to see, including that user's repositories, recent jobs and audit entries. The same view opens a job without the control buttons, so support can inspect a run without changing it or triggering new work.
+- Added per-job pause, resume and cancel controls. Paused jobs release the repository slot and can be resumed from their checkpoint; cancellation stops active team sessions, revokes the job token and closes the linked work item. Jobs now record priority, and queued jobs show their queue position.
+- Operators can configure an optional outbound webhook. Fledge posts a Slack-compatible JSON payload when a job succeeds or fails and when a team asks the user a question; an optional bearer secret signs the request.
+- Added plan-first approval. A repository can require a plan before code, maintainers approve or reject the plan with allowed and forbidden path constraints, and execution stays blocked until the plan is approved.
+- A repository maintainer can now set an optional rolling 30-day repository budget and a per-job alert threshold. Once the repository budget is reached, new jobs are refused with `REPO_BUDGET_EXHAUSTED`; a job that costs more than its per-job budget produces an audit entry and a quota notification.
+- Added repository work items with a triage-to-merge state machine. Work items link issues, pull requests and jobs; maintainers can triage, assign and approve, developers can start and update their own work, and GitHub App issue/PR/review webhooks keep states and PR outcomes in sync. Admin metrics now show open, merged and closed work items.
+
+### Fixed
+
+- GitHub App onboarding and refresh now use the signed-in user's collaborator permission to decide `maintainer` versus `developer`, instead of treating the App installation token as the user's permission. App jobs use the installation token by default; `GITHUB_APP_USER_TOKEN=true` opts in to the broader user OAuth token for attribution.
+- Persisted review follow-ups before finalization, resolved a missing PR head SHA server-side, validate follow-up branches, cancel active jobs when a repository or instance stops, add single-flight scheduling with fair due ordering, add bridge health sweeps and `/readyz`, prune old jobs/audit/events/notifications with TTLs, apply GitHub rate-limit backoff, and ship the runtime ops scripts in the Docker image.
+- Made job finalization idempotent, preserved the existing branch, PR and base branch when retrying a failed iterate job, returned the full job credential with the job's actual base branch, guarded database migrations against newer schema versions, and added a SQLite busy timeout plus hot-path indexes.
+- Added preflight for Flybot iterate jobs: validate the target branch, record the base SHA on the job, warn when the fork is behind upstream, and skip scheduled work while an active work item is open.
+- Repository role, reviewer and auto-merge settings can now be changed in one save: selecting maintainer enables the reviewer and auto-merge controls immediately instead of requiring a second page load.
+
+### Security
+
+- Closed an approval bypass where onboarding or rejected accounts could still submit settings, add repositories, start instances or change repository state through CSRF-protected routes. Production config now normalizes `NODE_ENV`, requires an explicit bootstrap admin login, no longer enables the example dev login by default, and the Docker Compose sample binds the app to loopback.
+- Moved auto-merge to a server-side gate: Fledge verifies the pull request state, check runs, combined commit status and current review conclusions before performing a squash merge. The agent prompt now always forbids merging, and a stale GitHub permission check is revalidated and downgraded before auto-merge or a scheduled review.
+- Added branch protection verification to auto-merge. Fledge reads the target branch protection rule, verifies required status checks and required approvals, supports squash/merge/rebase, and refuses to auto-merge when protection cannot be verified or a required gate is missing.
+
+
 ## [0.2.2] — 2026-11-03
 
 ### Added

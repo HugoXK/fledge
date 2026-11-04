@@ -1,1 +1,0 @@
-GitHub App onboarding and refresh now use the signed-in user's collaborator permission to decide `maintainer` versus `developer`, instead of treating the App installation token as the user's permission. App jobs use the installation token by default; `GITHUB_APP_USER_TOKEN=true` opts in to the broader user OAuth token for attribution.

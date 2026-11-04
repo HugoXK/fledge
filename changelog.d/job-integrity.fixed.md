@@ -1,1 +1,0 @@
-Made job finalization idempotent, preserved the existing branch, PR and base branch when retrying a failed iterate job, returned the full job credential with the job's actual base branch, guarded database migrations against newer schema versions, and added a SQLite busy timeout plus hot-path indexes.

@@ -1,1 +1,0 @@
-Operators can configure an optional outbound webhook. Fledge posts a Slack-compatible JSON payload when a job succeeds or fails and when a team asks the user a question; an optional bearer secret signs the request.

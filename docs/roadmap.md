@@ -52,6 +52,17 @@ execution (LangSmith/Langfuse, OpenTelemetry, Temporal/DBOS):
 - [x] Maintainer-only review and an opt-in auto-merge switch (off by default).
 - [x] Refresh downgrades a maintainer when the GitHub permission is lost.
 
+## v0.2.3 — governance and operations (shipped)
+
+- [x] Repository work items with a triage-to-merge state machine.
+- [x] Plan-first approval with allowed and forbidden path constraints.
+- [x] Upstream preflight, duplicate-work guard and the job base SHA.
+- [x] Job pause, resume and cancel controls with queue priority.
+- [x] Branch-protection verification before auto-merge.
+- [x] Read-only admin support view and audit/job search with CSV export.
+- [x] Repository and per-job budgets.
+- [x] Optional outbound notification webhook.
+
 ## v0.3 — branded agent workspace (path workspace shipped)
 
 - [ ] Per-repository authenticated workspace on a subdomain, e.g.
