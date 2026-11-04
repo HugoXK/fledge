@@ -193,6 +193,7 @@ export interface ApiTokenRow {
   name: string
   token_hash: string
   prefix: string
+  repo_id: string | null
   expires_at: string | null
   revoked_at: string | null
   last_used_at: string | null
@@ -426,6 +427,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   name TEXT NOT NULL,
   token_hash TEXT NOT NULL UNIQUE,
   prefix TEXT NOT NULL,
+  repo_id TEXT,
   expires_at TEXT,
   revoked_at TEXT,
   last_used_at TEXT,
@@ -438,6 +440,7 @@ CREATE TABLE IF NOT EXISTS quota_ledger (
   at TEXT NOT NULL,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   job_id TEXT,
+  repo_id TEXT,
   cost_usd REAL NOT NULL,
   meta TEXT
 );
@@ -535,9 +538,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 18) {
+    if (previousVersion > 19) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (18)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (19)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -549,7 +552,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 18)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 19)};`)
   }
 
   private migrateColumns(): void {
@@ -636,6 +639,10 @@ export class Store {
     if (!jobColumns.has('plan_allow_paths')) this.run('ALTER TABLE jobs ADD COLUMN plan_allow_paths TEXT')
     if (!jobColumns.has('plan_deny_paths')) this.run('ALTER TABLE jobs ADD COLUMN plan_deny_paths TEXT')
     if (!jobColumns.has('base_sha')) this.run('ALTER TABLE jobs ADD COLUMN base_sha TEXT')
+    const tokenColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(api_tokens)').map((row) => row.name))
+    if (!tokenColumns.has('repo_id')) this.run('ALTER TABLE api_tokens ADD COLUMN repo_id TEXT')
+    const ledgerColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(quota_ledger)').map((row) => row.name))
+    if (!ledgerColumns.has('repo_id')) this.run('ALTER TABLE quota_ledger ADD COLUMN repo_id TEXT')
     if (!jobColumns.has('base_branch')) this.run('ALTER TABLE jobs ADD COLUMN base_branch TEXT')
     this.run("UPDATE jobs SET base_branch = (SELECT upstream_default_branch FROM repos WHERE repos.id = jobs.repo_id) WHERE base_branch IS NULL")
   }
@@ -1335,15 +1342,16 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' AND created_at < ?", beforeIso)
   }
 
-  createApiToken(input: { id: string; userId: string; kind: string; name: string; tokenHash: string; prefix: string; expiresAt: string | null }): ApiTokenRow {
+  createApiToken(input: { id: string; userId: string; kind: string; name: string; tokenHash: string; prefix: string; repoId?: string | null; expiresAt: string | null }): ApiTokenRow {
     this.run(
-      'INSERT INTO api_tokens (id, user_id, kind, name, token_hash, prefix, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO api_tokens (id, user_id, kind, name, token_hash, prefix, repo_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       input.id,
       input.userId,
       input.kind,
       input.name,
       input.tokenHash,
       input.prefix,
+      input.repoId ?? null,
       input.expiresAt,
       nowIso(),
     )
@@ -1406,9 +1414,9 @@ export class Store {
     this.run("UPDATE api_tokens SET revoked_at = ? WHERE kind = 'job' AND (expires_at IS NOT NULL AND expires_at <= ?) AND revoked_at IS NULL", nowIso(), nowIso())
   }
 
-  recordUsage(userId: string, jobId: string | null, costUsd: number, meta: string | null = null): void {
+  recordUsage(userId: string, jobId: string | null, costUsd: number, meta: string | null = null, repoId: string | null = null): void {
     this.transaction(() => {
-      this.run('INSERT INTO quota_ledger (at, user_id, job_id, cost_usd, meta) VALUES (?, ?, ?, ?, ?)', nowIso(), userId, jobId, costUsd, meta)
+      this.run('INSERT INTO quota_ledger (at, user_id, job_id, repo_id, cost_usd, meta) VALUES (?, ?, ?, ?, ?, ?)', nowIso(), userId, jobId, repoId, costUsd, meta)
       this.run('UPDATE users SET quota_used_usd = quota_used_usd + ? WHERE id = ?', costUsd, userId)
     })
   }
