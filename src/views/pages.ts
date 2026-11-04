@@ -665,6 +665,11 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <div class="row" data-merge-group>
           <label class="check"><input type="checkbox" name="autoMerge" value="1" ${canMaintain && repo.auto_merge === 1 ? 'checked' : ''} ${canMaintain ? '' : 'disabled'} /> ${escapeHtml(t('允许 maintainer 自动合并 PR', 'Allow maintainer auto-merge'))}${infoTip(t('默认关闭。只有 maintainer 能开启；开启后 Fledge 会在 PR 检查通过且没有 changes requested 时执行 squash merge。developer 不能开启。', 'Off by default. Only a maintainer can enable it. When on, Fledge squash-merges a PR only after checks are green and no changes are requested. Developers cannot enable it.'))}</label>
         </div>
+        <label class="check"><input type="checkbox" name="planRequired" value="1" ${repo.plan_required === 1 ? 'checked' : ''} /> ${escapeHtml(t('先出计划，批准后执行', 'Plan first; execute only after approval'))}${infoTip(t('开启后“立即运行”先生成计划；maintainer 批准计划后才写代码。', 'When on, Run now creates a plan; code is written only after a maintainer approves it.'))}</label>
+        <div class="row">
+          <label style="flex:1">${escapeHtml(t('允许修改路径（可选）', 'Allowed paths (optional)'))}${infoTip(t('逗号或换行分隔。批准计划时会填入执行 prompt；不是硬性沙箱。', 'Comma or newline separated. Included in the execution prompt at plan approval; not a hard sandbox.'))} <input name="allowPaths" value="${escapeHtml(repo.allow_paths)}" placeholder="src/, docs/" /></label>
+          <label style="flex:1">${escapeHtml(t('禁止修改路径（可选）', 'Forbidden paths (optional)'))} <input name="denyPaths" value="${escapeHtml(repo.deny_paths)}" placeholder=".github/, deploy/" /></label>
+        </div>
         ${roleMissing ? `<p class="fine">${escapeHtml(t('先选择你的角色，审核和自动合并才会生效。', 'Choose your role before review or auto-merge can take effect.'))}</p>` : !githubCanReview ? `<p class="fine">${escapeHtml(t('你在这个上游没有 admin/maintain 权限，审核角色不可用。', 'You do not have admin/maintain permission on this upstream, so the reviewer role is unavailable.'))}</p>` : !canMaintain ? `<p class="fine">${escapeHtml(t('developer 不能启用 PR 审核或自动合并；切换为 maintainer 后才可用。', 'A developer cannot enable PR review or auto-merge; switch to maintainer first.'))}</p>` : ''}
         ${advanced ? `<details class="fine advanced-help"><summary>${escapeHtml(t('团队与调度规则', 'Team and scheduling rules'))}</summary>
           <p>${escapeHtml(t('保存目标后，团队 playbook 会按新目标更新：总控 → 负责人 → 产品/测试/安全/审核/开发。审核角色只有勾选“启用 PR 审核”后才会参与。', 'Saving the goal updates the team playbook: Chief -> Lead -> Product/Test/Security/Reviewer/Dev. The Reviewer takes part only when "Enable PR reviewer" is checked.'))}</p>
@@ -1368,8 +1373,17 @@ export function jobPage(input: {
   const retry = job.status === 'failed'
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/retry">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(job.checkpoint === null || job.checkpoint === '' ? t('重试这个任务', 'Retry this job') : t('从断点继续', 'Resume from checkpoint'))}</button></form>`
     : ''
-  const execute = job.kind === 'plan' && job.status === 'succeeded'
+  const execute = job.kind === 'plan' && job.status === 'succeeded' && job.plan_approved_at !== null
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/execute">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('执行这个计划', 'Execute this plan'))}</button></form>`
+    : ''
+  const planCard = job.kind === 'plan' && job.status === 'succeeded'
+    ? `<section class="card">
+        <div class="row between"><div><h2>${escapeHtml(t('计划审批', 'Plan approval'))}</h2><p class="muted">${job.plan_rejected_at !== null ? escapeHtml(t('计划已被拒绝。', 'This plan was rejected.')) : job.plan_approved_at !== null ? escapeHtml(t('计划已批准；可以执行。', 'This plan is approved and can be executed.')) : escapeHtml(t('等待 maintainer 批准计划。', 'Waiting for a maintainer to approve the plan.'))}</p></div><span class="badge ${job.plan_approved_at !== null ? 'good' : job.plan_rejected_at !== null ? 'bad' : 'busy'}">${job.plan_approved_at !== null ? escapeHtml(t('已批准', 'Approved')) : job.plan_rejected_at !== null ? escapeHtml(t('已拒绝', 'Rejected')) : escapeHtml(t('待批准', 'Pending'))}</span></div>
+        ${repo.repo_role === 'maintainer' && job.plan_approved_at === null && job.plan_rejected_at === null ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/approve-plan" class="form">${csrf(viewer)}
+          <div class="row"><label style="flex:1">${escapeHtml(t('允许修改路径', 'Allowed paths'))} <input name="allowPaths" value="${escapeHtml(job.plan_allow_paths ?? repo.allow_paths)}" placeholder="src/, docs/" /></label><label style="flex:1">${escapeHtml(t('禁止修改路径', 'Forbidden paths'))} <input name="denyPaths" value="${escapeHtml(job.plan_deny_paths ?? repo.deny_paths)}" placeholder=".github/, deploy/" /></label></div>
+          <div class="row"><button class="btn" type="submit">${escapeHtml(t('批准计划', 'Approve plan'))}</button><button class="btn btn-danger" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/reject-plan" data-confirm="${escapeHtml(t('拒绝这个计划？', 'Reject this plan?'))}">${escapeHtml(t('拒绝', 'Reject'))}</button></div>
+        </form>` : job.plan_approved_at !== null ? `<p class="fine">${escapeHtml(t('批准人', 'Approved by'))} ${escapeHtml(job.plan_approved_by ?? '—')} · ${escapeHtml(t('允许路径', 'Allowed'))} ${escapeHtml(job.plan_allow_paths ?? '—')} · ${escapeHtml(t('禁止路径', 'Forbidden'))} ${escapeHtml(job.plan_deny_paths ?? '—')}</p>` : ''}
+      </section>`
     : ''
   const body = `<section class="card">
     <div class="row between">
@@ -1387,6 +1401,7 @@ export function jobPage(input: {
       </div>
     </div>
   </section>
+  ${planCard}
   <section class="cols">
     <div class="card">
       <h2>${escapeHtml(t('结果', 'Result'))}</h2>

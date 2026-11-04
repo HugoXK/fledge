@@ -361,7 +361,7 @@ test('a plan job can be executed after approval', async () => {
     const user = makeUser(store, { login: 'plan-exec-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_plan_exec', userId: user.id, owner: 'o', name: 'p', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'goal', autoIterate: false, intervalMinutes: 1440 })
     const job = store.createJob({ id: 'job_plan_exec', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'goal', callbackHash: 'cb', platformTokenHash: '', kind: 'plan' })
-    store.updateJob(job.id, { status: 'succeeded', summary: 'Plan: change one file and add one test', finished_at: new Date().toISOString() })
+    store.updateJob(job.id, { status: 'succeeded', summary: 'Plan: change one file and add one test', finished_at: new Date().toISOString(), plan_approved_at: new Date().toISOString(), plan_approved_by: user.id })
     const { cookie, csrf } = sessionFor(built, user)
     const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${job.id}`, headers: { cookie } })
     assert.equal(page.statusCode, 200)
@@ -717,6 +717,51 @@ test('work items can be created, triaged and started', async () => {
     assert.equal(contexts.length, 1)
     assert.equal(contexts[0]?.job.work_item_id, item.id)
     assert.equal(store.getWorkItem(item.id)?.state, 'in_progress')
+  } finally {
+    await built.close()
+  }
+})
+
+test('a plan must be approved by a maintainer before execution', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner, startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'plan-approval-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_plan_approval', userId: user.id, owner: 'o', name: 'pa', defaultBranch: 'main', targetBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', planRequired: true, goal: 'ship it', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_plan_approval', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'plan goal', callbackHash: 'cb', platformTokenHash: '', kind: 'plan', baseBranch: 'main' })
+    store.updateJob(job.id, { status: 'succeeded', summary: 'Plan: change src/parser.ts', finished_at: new Date().toISOString() })
+    const { cookie, csrf } = sessionFor(built, user)
+    const rejected = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/jobs/${job.id}/execute`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf }),
+    })
+    assert.equal(rejected.statusCode, 302)
+    assert.match(String(rejected.headers.location), /error=/)
+    assert.equal(contexts.length, 0)
+
+    const approved = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/jobs/${job.id}/approve-plan`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, allowPaths: 'src/', denyPaths: '.github/' }),
+    })
+    assert.equal(approved.statusCode, 302)
+    assert.notEqual(store.getJob(job.id)?.plan_approved_at, null)
+    const executed = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/jobs/${job.id}/execute`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf }),
+    })
+    assert.equal(executed.statusCode, 302)
+    assert.equal(contexts.length, 1)
+    assert.match(contexts[0]!.goal, /Allowed paths: src\//)
+    assert.match(contexts[0]!.goal, /Forbidden paths: \.github\//)
   } finally {
     await built.close()
   }

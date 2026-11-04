@@ -1277,14 +1277,41 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已重新排队。')}`)
   })
 
+  app.post('/repos/:id/jobs/:jobId/approve-plan', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id || job.kind !== 'plan' || job.status !== 'succeeded') throw httpError(404, '计划任务不存在或尚未完成。', 'PLAN_NOT_READY')
+    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以批准计划。')}`)
+    const body = form(request)
+    const allow = (body.allowPaths ?? repo.allow_paths).trim().slice(0, 2000)
+    const deny = (body.denyPaths ?? repo.deny_paths).trim().slice(0, 2000)
+    store.updateJob(job.id, { plan_approved_at: nowIso(), plan_approved_by: viewer.user.id, plan_rejected_at: null, plan_allow_paths: allow, plan_deny_paths: deny })
+    store.audit(viewer.user.id, 'job.plan_approved', `${job.id} allow=${allow.slice(0, 200)} deny=${deny.slice(0, 200)}`)
+    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?notice=${encodeURIComponent('计划已批准，可以执行。')}`)
+  })
+
+  app.post('/repos/:id/jobs/:jobId/reject-plan', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id || job.kind !== 'plan' || job.status !== 'succeeded') throw httpError(404, '计划任务不存在或尚未完成。', 'PLAN_NOT_READY')
+    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以拒绝计划。')}`)
+    store.updateJob(job.id, { plan_rejected_at: nowIso(), plan_approved_at: null, plan_approved_by: null })
+    store.audit(viewer.user.id, 'job.plan_rejected', job.id)
+    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?notice=${encodeURIComponent('计划已拒绝。')}`)
+  })
+
   app.post('/repos/:id/jobs/:jobId/execute', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id || job.kind !== 'plan' || job.status !== 'succeeded') throw httpError(404, '计划任务不存在或尚未完成。', 'PLAN_NOT_READY')
+    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以执行计划。')}`)
+    if (job.plan_approved_at === null) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('计划尚未批准。')}`)
     const active = store.activeJobForRepo(repo.id)
     if (active !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}`)
-    const goal = `${job.goal}\n\nApproved plan:\n${job.summary ?? ''}`
-    const result = await jobs.enqueue(repo, 'manual', goal, 'iterate')
+    const allow = (job.plan_allow_paths ?? repo.allow_paths).trim()
+    const deny = (job.plan_deny_paths ?? repo.deny_paths).trim()
+    const goal = `${job.goal}\n\nApproved plan:\n${job.summary ?? ''}${allow === '' ? '' : `\n\nAllowed paths: ${allow}`}${deny === '' ? '' : `\nForbidden paths: ${deny}`}\nOnly modify files inside the allowed paths; never touch forbidden paths.`
+    const result = await jobs.enqueue(repo, 'manual', goal, 'iterate', { workItemId: job.work_item_id ?? undefined, priority: job.priority })
     store.audit(viewer.user.id, 'job.executed', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
     if (!result.ok || result.job === undefined) {
       return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(result.error ?? '执行计划失败。')}`)
@@ -1415,9 +1442,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const viewer = approvedCsrfGuard(request)
     const repo = store.getRepo(String((request.params as Record<string, string>).id))
     if (repo === undefined || repo.user_id !== viewer.user.id) throw httpError(404, '仓库不存在。', 'REPO_NOT_FOUND')
-    const result = await jobs.enqueue(repo, 'manual')
+    const result = await jobs.enqueue(repo, 'manual', undefined, repo.plan_required === 1 ? 'plan' : 'iterate')
     const key = result.ok ? 'notice' : 'error'
-    const message = result.ok ? '任务已排队。' : result.error ?? '任务启动失败。'
+    const message = result.ok ? (repo.plan_required === 1 ? '计划任务已排队；批准后才会写代码。' : '任务已排队。') : result.error ?? '任务启动失败。'
     return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
   })
 
@@ -1572,6 +1599,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repo_role: repoRole,
       ...(roleChanged ? { role_checked_at: nowIso() } : {}),
       auto_merge: canMaintain && body.autoMerge === '1' ? 1 : 0,
+      plan_required: body.planRequired === '1' ? 1 : 0,
+      allow_paths: (body.allowPaths ?? '').trim().slice(0, 2000),
+      deny_paths: (body.denyPaths ?? '').trim().slice(0, 2000),
       auto_iterate: body.auto === '1' ? 1 : 0,
       enabled: body.enabled === '1' ? 1 : 0,
       interval_minutes: interval,
@@ -1586,7 +1616,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         log.warn('team playbook not updated after goal change', { repo: repo.id, error: String(error) })
       })
     }
-    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} role=${repoRole}${roleChanged ? ' role=changed' : ''} autoMerge=${canMaintain && body.autoMerge === '1' ? 'on' : 'off'} reviewer=${canMaintain && repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
+    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} role=${repoRole}${roleChanged ? ' role=changed' : ''} autoMerge=${canMaintain && body.autoMerge === '1' ? 'on' : 'off'} planRequired=${body.planRequired === '1' ? 'on' : 'off'} reviewer=${canMaintain && repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(goalChanged ? '设置已保存；团队规则已按新目标更新。' : '设置已保存。')}#repo-settings`)
   })
 
