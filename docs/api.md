@@ -31,7 +31,10 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/repos` | approved + CSRF | Add an upstream repository; Fledge checks or creates the user's fork |
 | GET | `/repos/:id` | owner | Repo detail, including the selected role and allowed roles |
 | GET | `/readyz` | public | Database and per-repository instance readiness summary |
-| POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job |
+| POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job; plan-first repositories enqueue a plan |
+| POST | `/repos/:id/work` | owner + CSRF | Create a work item |
+| POST | `/repos/:id/work/:workItemId/state` | owner + CSRF | Move a work item through the triage/assignment/review state machine |
+| POST | `/repos/:id/work/:workItemId/run` | owner + CSRF | Start a plan or iterate job for a work item |
 | POST | `/repos/:id/role` | owner + CSRF | Select `maintainer` or `developer` for this user-repository connection |
 | POST | `/repos/:id/plan` | owner + CSRF | Enqueue a plan-only job (no code, branch or PR) |
 | POST | `/repos/:id/instance` | owner + CSRF | Start the per-repository FlyBot instance |
@@ -40,7 +43,12 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/repos/:id/review` | owner + CSRF | Enqueue a manual review job |
 | GET | `/repos/:id/jobs/:jobId` | owner | Job detail: evidence, cost, attribution, retry |
 | POST | `/repos/:id/jobs/:jobId/retry` | owner + CSRF | Retry a failed job, including its checkpoint |
-| POST | `/repos/:id/jobs/:jobId/execute` | owner + CSRF | Execute a completed plan as an iterate job |
+| POST | `/repos/:id/jobs/:jobId/approve-plan` | maintainer + CSRF | Approve a completed plan with allowed/forbidden paths |
+| POST | `/repos/:id/jobs/:jobId/reject-plan` | maintainer + CSRF | Reject a completed plan |
+| POST | `/repos/:id/jobs/:jobId/execute` | maintainer + CSRF | Execute an approved plan as an iterate job |
+| POST | `/repos/:id/jobs/:jobId/cancel` | owner + CSRF | Cancel a queued or running job |
+| POST | `/repos/:id/jobs/:jobId/pause` | owner + CSRF | Pause a queued or running job |
+| POST | `/repos/:id/jobs/:jobId/resume` | owner + CSRF | Resume a paused job from its checkpoint |
 | GET | `/repos/:id/workspace` | admin | Fledge-branded agent workspace shell |
 | `*` | `/repos/:id/workspace/app/*` | admin | Authenticated reverse proxy to the per-repo DSH UI |
 | GET | `/repos/:id/team` | admin | Team console |
@@ -52,7 +60,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/api/repos/:id/chief/events` | owner | Server-Sent Events for new Chief messages |
 | POST | `/api/repos/:id/team/answer` | admin + CSRF | Answer a team question |
 | POST | `/api/repos/:id/team/stop` | admin + CSRF | Stop the active roles (hard when possible, otherwise a stop request) |
-| POST | `/repos/:id/settings` | owner + CSRF | Goal, target branch, role, auto-merge switch, cadence, enabled, reviewer interval |
+| POST | `/repos/:id/settings` | owner + CSRF | Goal, target branch, role, plan-first, path constraints, merge method/protection, auto-merge, cadence, enabled, reviewer interval |
 | POST | `/repos/:id/delete` | owner + CSRF | Delete repo and jobs |
 | GET | `/settings` | approved | Account, model, API tokens |
 | POST | `/settings/model` | approved + CSRF | Save/clear own model |

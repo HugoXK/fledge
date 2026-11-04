@@ -108,7 +108,8 @@ Fledge 是幼鸟长齐飞羽、离巢试飞的那一刻——不是因为被推�
 
 - **一个账号多个仓库**：每个仓库有独立目标、节奏（手动，15 分钟到 30 天）、
   启用状态和上次状态。间隔是最小运行间隔，不是 PR/issue 数量上限。
-- **任务状态**：`queued → running → succeeded | failed | quota_exhausted`。
+- **任务状态**：`queued → running → succeeded | failed | cancelled | paused | quota_exhausted`。
+- **工作项与门禁**：工作项覆盖 triage 到 merge，关联 issue/PR/job；可选“先出计划、批准后执行”并限制允许/禁止路径；任务支持暂停/恢复/取消；任务创建前检查目标分支，有活跃工作项时跳过定时任务。
 - **每仓库 FlyBot**：每个仓库一个独立容器、独立 bridge/模型代理和团队
   （Chief、Lead、Product、Test、Security、Reviewer、2 个 Dev）。共享的运营方
   FlyBot 永远不接用户任务。
