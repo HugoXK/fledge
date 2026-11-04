@@ -1510,6 +1510,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const downgraded = currentRole === 'maintainer' && !allowed.includes('maintainer')
       const nextRole = downgraded ? 'developer' : repo.repo_role
       const enableReviewer = nextRole === 'maintainer' && prepared.canReview && repo.reviewer_enabled === 1
+      let protectionState = repo.protection_state
+      let protectionCheckedAt = repo.protection_checked_at
+      const protectionBranch = repo.target_branch !== '' ? repo.target_branch : (prepared.upstream.defaultBranch || repo.default_branch)
+      try {
+        const protection = await new GithubClient(token, config.github.apiBase).getBranchProtection(prepared.upstream.owner, prepared.upstream.name, protectionBranch)
+        protectionState = protection === null ? 'unknown' : protection.protected ? 'protected' : 'unprotected'
+        protectionCheckedAt = nowIso()
+      } catch (error) {
+        protectionState = 'unknown'
+        protectionCheckedAt = nowIso()
+        log.warn('branch protection check failed', { repo: repo.id, error: String(error) })
+      }
       store.updateRepo(repo.id, {
         upstream_owner: prepared.upstream.owner,
         upstream_name: prepared.upstream.name,
@@ -1523,6 +1535,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         repo_role: nextRole,
         auto_merge: downgraded ? 0 : repo.auto_merge,
         role_checked_at: nowIso(),
+        protection_state: protectionState,
+        protection_checked_at: protectionCheckedAt,
         can_review: prepared.canReview ? 1 : 0,
         can_create_issue: prepared.canCreateIssue ? 1 : 0,
         reviewer_enabled: enableReviewer ? 1 : 0,
@@ -1630,6 +1644,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       plan_required: body.planRequired === '1' ? 1 : 0,
       allow_paths: (body.allowPaths ?? '').trim().slice(0, 2000),
       deny_paths: (body.denyPaths ?? '').trim().slice(0, 2000),
+      merge_method: body.mergeMethod === 'merge' || body.mergeMethod === 'rebase' ? body.mergeMethod : 'squash',
+      require_protection: body.requireProtection === '1' ? 1 : 0,
       auto_iterate: body.auto === '1' ? 1 : 0,
       enabled: body.enabled === '1' ? 1 : 0,
       interval_minutes: interval,
@@ -1644,7 +1660,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         log.warn('team playbook not updated after goal change', { repo: repo.id, error: String(error) })
       })
     }
-    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} role=${repoRole}${roleChanged ? ' role=changed' : ''} autoMerge=${canMaintain && body.autoMerge === '1' ? 'on' : 'off'} planRequired=${body.planRequired === '1' ? 'on' : 'off'} reviewer=${canMaintain && repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
+    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} role=${repoRole}${roleChanged ? ' role=changed' : ''} autoMerge=${canMaintain && body.autoMerge === '1' ? 'on' : 'off'} planRequired=${body.planRequired === '1' ? 'on' : 'off'} merge=${body.mergeMethod ?? 'squash'} protection=${body.requireProtection === '1' ? 'required' : 'optional'} reviewer=${canMaintain && repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(goalChanged ? '设置已保存；团队规则已按新目标更新。' : '设置已保存。')}#repo-settings`)
   })
 
