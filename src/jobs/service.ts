@@ -5,6 +5,7 @@ import { QuotaNotifier } from '../gateway/notifier.js'
 import { quotaView } from '../gateway/quota.js'
 import { dailyDigestEmail, jobAttentionEmail, jobFailedEmail, jobSucceededEmail, type DigestInput } from '../email/templates.js'
 import { notifyEmail, replyAddressFor } from '../email/recipient.js'
+import { sendNotificationWebhook } from '../lib/webhook.js'
 import { log } from '../lib/log.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
@@ -454,7 +455,21 @@ export class Jobs {
     if (result.status === 'succeeded' && prUrl !== null) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
     if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? job.error ?? '未知原因'}`)
     if (result.status === 'succeeded') void this.postAutomationComment(job, { prUrl: prUrl ?? undefined, issueUrl: issueUrl ?? undefined }, attribution)
-    if (result.status === 'succeeded' || result.status === 'failed') void this.sendJobEmail(job, result)
+    if (result.status === 'succeeded' || result.status === 'failed') {
+      void this.sendJobEmail(job, result)
+      void sendNotificationWebhook(this.config, `job.${result.status}`, {
+        text: `${job.kind} job ${job.id} ${result.status}`,
+        jobId: job.id,
+        repoId: job.repo_id,
+        kind: job.kind,
+        trigger: job.trigger,
+        status: result.status,
+        prUrl: prUrl,
+        issueUrl: issueUrl,
+        summary: result.summary ?? job.summary ?? '',
+        error: result.error ?? job.error ?? '',
+      })
+    }
     const repo = this.store.getRepo(job.repo_id)
     if (repo !== undefined && repo.job_budget_cny > 0) {
       const jobCostCny = this.store.usageForJob(jobId) * this.config.quota.usdCny
@@ -774,6 +789,14 @@ export class Jobs {
           if (this.store.getSetting(key) !== undefined) continue
           this.store.setSetting(key, nowIso())
           this.store.notify(user.id, 'job', `${repo.owner}/${repo.name} 团队提问：${question.question}`)
+          void sendNotificationWebhook(this.config, 'question', {
+            text: `${repo.owner}/${repo.name}: ${question.question}`,
+            repoId: repo.id,
+            jobId: job.id,
+            question: question.question,
+            detail: question.detail,
+            options: question.options,
+          })
           if (user.email_job_updates !== 1) continue
           const email = notifyEmail(user)
           if (email === '') continue
