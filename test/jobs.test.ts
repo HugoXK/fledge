@@ -817,3 +817,28 @@ test('auto-merge is skipped when branch protection is unavailable', async () => 
     await github.close()
   }
 })
+
+test('repository monthly and per-job budgets are enforced and attributed', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'budget-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_budget', userId: user.id, owner: 'o', name: 'b', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', monthlyBudgetCny: 1, jobBudgetCny: 0.01, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.recordUsage(user.id, null, 0.2, null, repo.id)
+    assert.equal(store.repoUsageSince(repo.id, '2000-01-01T00:00:00.000Z'), 0.2)
+    const blocked = await jobs.enqueue(repo, 'manual')
+    assert.equal(blocked.ok, false)
+    assert.equal(blocked.code, 'REPO_BUDGET_EXHAUSTED')
+
+    const cheap = store.createRepo({ id: 'repo_budget_job', userId: user.id, owner: 'o', name: 'bj', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', jobBudgetCny: 0.01, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const secret = 'budget-job-secret'
+    store.createJob({ id: 'job_budget', repoId: cheap.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob('job_budget', { status: 'running', started_at: new Date().toISOString() })
+    store.recordUsage(user.id, 'job_budget', 0.02, null, cheap.id)
+    await jobs.handleCallback('job_budget', secret, { status: 'succeeded', summary: 'done' })
+    assert.equal(store.listNotifications(user.id).some((entry) => entry.message.includes('超过单任务预算')), true)
+  } finally {
+    store.close()
+  }
+})

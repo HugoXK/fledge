@@ -238,6 +238,13 @@ export class Jobs {
     if (active !== undefined) return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
     const user = this.store.userById(repo.user_id)
     if (user === undefined || user.status !== 'approved') return { ok: false, error: '用户不可用', code: 'USER_UNAVAILABLE' }
+    if (repo.monthly_budget_cny > 0) {
+      const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+      const spentCny = this.store.repoUsageSince(repo.id, since) * this.config.quota.usdCny
+      if (spentCny >= repo.monthly_budget_cny) {
+        return { ok: false, error: '仓库月度预算已用完。', code: 'REPO_BUDGET_EXHAUSTED' }
+      }
+    }
 
     const repoBaseBranch = repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)
     const baseBranch = (options.baseBranch ?? repoBaseBranch).trim()
@@ -448,6 +455,14 @@ export class Jobs {
     if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? job.error ?? '未知原因'}`)
     if (result.status === 'succeeded') void this.postAutomationComment(job, { prUrl: prUrl ?? undefined, issueUrl: issueUrl ?? undefined }, attribution)
     if (result.status === 'succeeded' || result.status === 'failed') void this.sendJobEmail(job, result)
+    const repo = this.store.getRepo(job.repo_id)
+    if (repo !== undefined && repo.job_budget_cny > 0) {
+      const jobCostCny = this.store.usageForJob(jobId) * this.config.quota.usdCny
+      if (jobCostCny > repo.job_budget_cny) {
+        this.store.audit(job.user_id, 'job.budget_exceeded', `${jobId}: ${jobCostCny.toFixed(4)} > ${repo.job_budget_cny}`)
+        this.store.notify(job.user_id, 'quota', `任务 ${jobId} 成本 ${jobCostCny.toFixed(2)} 元，超过单任务预算 ${repo.job_budget_cny.toFixed(2)} 元。`)
+      }
+    }
     void this.captureTeamStats(jobId)
   }
 

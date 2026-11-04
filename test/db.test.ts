@@ -150,7 +150,7 @@ test('the role backfill runs once and future schema versions are refused', () =>
     const reopened = new Store(path)
     assert.equal(reopened.getRepo(repo.id)?.repo_role, 'maintainer')
     assert.notEqual(reopened.getRepo(repo.id)?.role_checked_at, null)
-    reopened.db.exec('PRAGMA user_version = 20;')
+    reopened.db.exec('PRAGMA user_version = 21;')
     reopened.close()
 
     assert.throws(() => new Store(path), /newer than this build/)

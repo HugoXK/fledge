@@ -60,6 +60,23 @@ stream ends. A request that is already in flight is allowed to finish; the
 }
 ```
 
+## Repository and per-job budgets
+
+A maintainer can set two optional caps per repository in the repository
+settings:
+
+- **Monthly repository budget (CNY)** — a rolling 30-day cap on the repository's
+  attributed platform spend. A new job is refused with
+  `REPO_BUDGET_EXHAUSTED` when the cap is reached.
+- **Per-job budget (CNY)** — an alerting threshold, not a hard stop. When a
+  finished job's attributed cost exceeds it, Fledge writes a
+  `job.budget_exceeded` audit entry and an in-app quota notification.
+
+Cost is attributed through `quota_ledger.repo_id`; rows written before that
+column existed fall back to the job's `repo_id` when they can be joined. Both
+caps default to `0` (disabled) and are recorded in the repository audit entry
+when changed.
+
 ## Own model
 
 `POST /settings/model` stores:
