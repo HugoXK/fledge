@@ -81,6 +81,8 @@ export interface RepoRow {
   deny_paths: string
   merge_method: string
   require_protection: number
+  monthly_budget_cny: number
+  job_budget_cny: number
   protection_state: string | null
   protection_checked_at: string | null
   auto_iterate: number
@@ -328,6 +330,8 @@ CREATE TABLE IF NOT EXISTS repos (
   deny_paths TEXT NOT NULL DEFAULT '',
   merge_method TEXT NOT NULL DEFAULT 'squash',
   require_protection INTEGER NOT NULL DEFAULT 1,
+  monthly_budget_cny REAL NOT NULL DEFAULT 0,
+  job_budget_cny REAL NOT NULL DEFAULT 0,
   protection_state TEXT,
   protection_checked_at TEXT,
   auto_iterate INTEGER NOT NULL DEFAULT 0,
@@ -538,9 +542,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 19) {
+    if (previousVersion > 20) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (19)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (20)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -552,7 +556,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 19)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 20)};`)
   }
 
   private migrateColumns(): void {
@@ -592,6 +596,8 @@ export class Store {
       ['deny_paths', "TEXT NOT NULL DEFAULT ''"],
       ['merge_method', "TEXT NOT NULL DEFAULT 'squash'"],
       ['require_protection', 'INTEGER NOT NULL DEFAULT 1'],
+      ['monthly_budget_cny', 'REAL NOT NULL DEFAULT 0'],
+      ['job_budget_cny', 'REAL NOT NULL DEFAULT 0'],
       ['protection_state', 'TEXT'],
       ['protection_checked_at', 'TEXT'],
       ['upstream_owner', "TEXT NOT NULL DEFAULT ''"],
@@ -1029,6 +1035,8 @@ export class Store {
     denyPaths?: string
     mergeMethod?: string
     requireProtection?: boolean
+    monthlyBudgetCny?: number
+    jobBudgetCny?: number
     protectionState?: string | null
     protectionCheckedAt?: string | null
     upstreamOwner?: string
@@ -1051,9 +1059,9 @@ export class Store {
     this.run(
       `INSERT INTO repos (id, user_id, owner, name, default_branch, token_enc, installation_id, goal, enabled, auto_iterate, interval_minutes, created_at,
          upstream_owner, upstream_name, fork_owner, fork_name, upstream_default_branch, fork_default_branch, target_branch, job_mode,
-         repo_role, auto_merge, role_checked_at, plan_required, allow_paths, deny_paths, merge_method, require_protection, protection_state, protection_checked_at,
+         repo_role, auto_merge, role_checked_at, plan_required, allow_paths, deny_paths, merge_method, require_protection, monthly_budget_cny, job_budget_cny, protection_state, protection_checked_at,
          is_fork, fork_created, permission, can_review, can_create_issue, reviewer_enabled, review_interval_minutes, upstream_html_url, fork_html_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.userId,
       input.owner,
@@ -1081,6 +1089,8 @@ export class Store {
       input.denyPaths ?? '',
       input.mergeMethod ?? 'squash',
       input.requireProtection === false ? 0 : 1,
+      input.monthlyBudgetCny ?? 0,
+      input.jobBudgetCny ?? 0,
       input.protectionState ?? null,
       input.protectionCheckedAt ?? null,
       input.isFork === true ? 1 : 0,
@@ -1123,7 +1133,7 @@ export class Store {
     return this.get<RepoRow>('SELECT * FROM repos WHERE user_id = ? AND lower(owner) = lower(?) AND lower(name) = lower(?)', userId, owner, name)
   }
 
-  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'plan_required' | 'allow_paths' | 'deny_paths' | 'merge_method' | 'require_protection' | 'protection_state' | 'protection_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
+  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'plan_required' | 'allow_paths' | 'deny_paths' | 'merge_method' | 'require_protection' | 'monthly_budget_cny' | 'job_budget_cny' | 'protection_state' | 'protection_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -1419,6 +1429,14 @@ export class Store {
       this.run('INSERT INTO quota_ledger (at, user_id, job_id, repo_id, cost_usd, meta) VALUES (?, ?, ?, ?, ?, ?)', nowIso(), userId, jobId, repoId, costUsd, meta)
       this.run('UPDATE users SET quota_used_usd = quota_used_usd + ? WHERE id = ?', costUsd, userId)
     })
+  }
+
+  repoUsageSince(repoId: string, sinceIso: string): number {
+    const row = this.get<{ total: number | null }>(
+      'SELECT SUM(q.cost_usd) AS total FROM quota_ledger q LEFT JOIN jobs j ON j.id = q.job_id WHERE COALESCE(q.repo_id, j.repo_id) = ? AND q.at >= ?',
+      repoId, sinceIso,
+    )
+    return Number(row?.total ?? 0)
   }
 
   usageTotal(userId: string): number {

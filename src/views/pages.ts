@@ -459,9 +459,10 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; workItems?: WorkItemRow[]; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; workItems?: WorkItemRow[]; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const workItems = input.workItems ?? []
+  const repoSpendCny = input.repoSpendCny ?? 0
   const questions = input.questions ?? []
   const chiefMessages = input.chiefMessages ?? []
   const jobsPage = input.jobsPage ?? 1
@@ -679,6 +680,11 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           <label class="check"><input type="checkbox" name="requireProtection" value="1" ${repo.require_protection === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动合并前要求 branch protection', 'Require branch protection before auto-merge'))}${infoTip(t('开启后 Fledge 会检查保护规则、required checks 和 required approvals；读不到保护规则时不会自动合并。', 'When on, Fledge checks the protection rule, required checks and required approvals; if the rule cannot be read, it will not auto-merge.'))}</label>
         </div>
         <p class="fine">${escapeHtml(t('Branch protection', 'Branch protection'))}: <code>${escapeHtml(repo.protection_state ?? 'unknown')}</code>${repo.protection_checked_at === null ? '' : ` · ${escapeHtml(humanTimeShort(repo.protection_checked_at))}`}</p>
+        <div class="row">
+          <label>${escapeHtml(t('仓库月度预算（元）', 'Monthly repository budget (CNY)'))} <input name="monthlyBudget" type="number" min="0" max="10000" step="0.01" value="${repo.monthly_budget_cny.toFixed(2)}" /></label>
+          <label>${escapeHtml(t('单任务预算（元）', 'Per-job budget (CNY)'))} <input name="jobBudget" type="number" min="0" max="10000" step="0.01" value="${repo.job_budget_cny.toFixed(2)}" /></label>
+        </div>
+        <p class="fine">${escapeHtml(t('本月已用', 'Spent this month'))} ${escapeHtml(quotaMoney(repoSpendCny))}${repo.monthly_budget_cny > 0 ? ` / ${escapeHtml(quotaMoney(repo.monthly_budget_cny))}` : ''}</p>
         ${roleMissing ? `<p class="fine">${escapeHtml(t('先选择你的角色，审核和自动合并才会生效。', 'Choose your role before review or auto-merge can take effect.'))}</p>` : !githubCanReview ? `<p class="fine">${escapeHtml(t('你在这个上游没有 admin/maintain 权限，审核角色不可用。', 'You do not have admin/maintain permission on this upstream, so the reviewer role is unavailable.'))}</p>` : !canMaintain ? `<p class="fine">${escapeHtml(t('developer 不能启用 PR 审核或自动合并；切换为 maintainer 后才可用。', 'A developer cannot enable PR review or auto-merge; switch to maintainer first.'))}</p>` : ''}
         ${advanced ? `<details class="fine advanced-help"><summary>${escapeHtml(t('团队与调度规则', 'Team and scheduling rules'))}</summary>
           <p>${escapeHtml(t('保存目标后，团队 playbook 会按新目标更新：总控 → 负责人 → 产品/测试/安全/审核/开发。审核角色只有勾选“启用 PR 审核”后才会参与。', 'Saving the goal updates the team playbook: Chief -> Lead -> Product/Test/Security/Reviewer/Dev. The Reviewer takes part only when "Enable PR reviewer" is checked.'))}</p>
