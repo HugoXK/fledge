@@ -548,6 +548,10 @@ test('maintainer auto-merge merges only after checks pass and no changes are req
       json(response, 200, reviews)
       return
     }
+    if (method === 'GET' && url === '/repos/o/r/branches/main/protection') {
+      json(response, 200, { required_status_checks: { contexts: ['ci'] }, required_pull_request_reviews: { required_approving_review_count: 0 } })
+      return
+    }
     if (method === 'PUT' && url === '/repos/o/r/pulls/1/merge') {
       merges.push('merge')
       json(response, 200, { merged: true, sha: 'def' })
@@ -757,5 +761,59 @@ test('a running job can be cancelled and a paused job can be resumed', async () 
     assert.equal(resumed.job?.status, 'running')
   } finally {
     store.close()
+  }
+})
+
+test('auto-merge is skipped when branch protection is unavailable', async () => {
+  const merges: string[] = []
+  const github = await startFakeServer((request, response) => {
+    const method = request.method ?? 'GET'
+    const url = request.url ?? ''
+    if (method === 'GET' && url === '/repos/o/r/pulls/4') {
+      json(response, 200, { number: 4, html_url: 'https://github.com/o/r/pull/4', title: 'fix', state: 'open', head: { ref: 'fledge/fix', sha: 'abc' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/abc/check-runs?per_page=100') {
+      json(response, 200, { check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/abc/status') {
+      json(response, 200, { state: 'success', statuses: [] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/pulls/4/reviews?per_page=100') {
+      json(response, 200, [])
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/branches/main/protection') {
+      json(response, 404, { message: 'Not Found' })
+      return
+    }
+    if (method === 'PUT' && url === '/repos/o/r/pulls/4/merge') {
+      merges.push('merge')
+      json(response, 200, { merged: true })
+      return
+    }
+    if (method === 'POST' && url === '/repos/o/r/issues/4/comments') {
+      json(response, 200, {})
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'auto-merge-protection-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_auto_merge_protection', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, requireProtection: true, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const secret = 'auto-merge-protection-secret'
+    store.createJob({ id: 'job_auto_merge_protection', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob('job_auto_merge_protection', { status: 'running', started_at: new Date().toISOString() })
+    await jobs.handleCallback('job_auto_merge_protection', secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/4', summary: 'done' })
+    assert.equal(merges.length, 0)
+  } finally {
+    store.close()
+    await github.close()
   }
 })
