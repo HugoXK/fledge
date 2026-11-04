@@ -559,7 +559,29 @@ export class Jobs {
         this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: changes requested`)
         return
       }
-      const merged = await client.mergePullRequest(owner, name, number, { sha: pr.headSha, mergeMethod: 'squash' })
+      if (repo.require_protection === 1) {
+        const protection = await client.getBranchProtection(owner, name, pr.base)
+        if (protection === null || !protection.protected) {
+          this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: branch protection unavailable`)
+          return
+        }
+        if (protection.requiredChecks.length > 0) {
+          const passing = new Set(checks.filter((run) => run.status === 'completed' && ['success', 'neutral', 'skipped'].includes(run.conclusion ?? '')).map((run) => run.name))
+          if (!protection.requiredChecks.every((context) => passing.has(context))) {
+            this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: required checks missing`)
+            return
+          }
+        }
+        if (protection.requiredApprovals > 0) {
+          const approvals = [...latest.values()].filter((state) => state === 'APPROVED').length
+          if (approvals < protection.requiredApprovals) {
+            this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: required approvals missing`)
+            return
+          }
+        }
+      }
+      const requestedMethod = repo.merge_method === 'merge' || repo.merge_method === 'rebase' ? repo.merge_method : 'squash'
+      const merged = await client.mergePullRequest(owner, name, number, { sha: pr.headSha, mergeMethod: requestedMethod })
       if (merged.merged) {
         const workItem = job.work_item_id === null ? undefined : this.store.getWorkItem(job.work_item_id)
         if (workItem !== undefined) {
