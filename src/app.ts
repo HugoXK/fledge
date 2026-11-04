@@ -1510,18 +1510,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const downgraded = currentRole === 'maintainer' && !allowed.includes('maintainer')
       const nextRole = downgraded ? 'developer' : repo.repo_role
       const enableReviewer = nextRole === 'maintainer' && prepared.canReview && repo.reviewer_enabled === 1
-      let protectionState = repo.protection_state
-      let protectionCheckedAt = repo.protection_checked_at
       const protectionBranch = repo.target_branch !== '' ? repo.target_branch : (prepared.upstream.defaultBranch || repo.default_branch)
-      try {
-        const protection = await new GithubClient(token, config.github.apiBase).getBranchProtection(prepared.upstream.owner, prepared.upstream.name, protectionBranch)
-        protectionState = protection === null ? 'unknown' : protection.protected ? 'protected' : 'unprotected'
-        protectionCheckedAt = nowIso()
-      } catch (error) {
-        protectionState = 'unknown'
-        protectionCheckedAt = nowIso()
-        log.warn('branch protection check failed', { repo: repo.id, error: String(error) })
-      }
+      const protection = await new GithubClient(token, config.github.apiBase)
+        .getBranchProtection(prepared.upstream.owner, prepared.upstream.name, protectionBranch)
+        .catch((error) => {
+          log.warn('branch protection check failed', { repo: repo.id, error: String(error) })
+          return null
+        })
+      const protectionState = protection === null ? 'unknown' : protection.protected ? 'protected' : 'unprotected'
+      const protectionCheckedAt = nowIso()
       store.updateRepo(repo.id, {
         upstream_owner: prepared.upstream.owner,
         upstream_name: prepared.upstream.name,
