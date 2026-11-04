@@ -696,3 +696,33 @@ test('a work item follows its job to PR ready', async () => {
     store.close()
   }
 })
+
+test('flybot preflight records the base SHA and skips scheduled work while a work item is active', async () => {
+  const github = await startFakeServer((request, response) => {
+    if (request.url === '/repos/o/preflight/branches/main') {
+      json(response, 200, { name: 'main', commit: { sha: 'abc123' } })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'flybot', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'preflight-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_preflight', userId: user.id, owner: 'o', name: 'preflight', defaultBranch: 'main', targetBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const first = await jobs.enqueue(repo, 'manual')
+    assert.equal(first.ok, true)
+    assert.equal(first.job?.base_sha, 'abc123')
+    store.updateJob(first.job!.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    store.createWorkItem({ id: 'work_preflight', repoId: repo.id, userId: user.id, title: 'Active work', state: 'in_progress' })
+    const scheduled = await jobs.enqueue(repo, 'schedule')
+    assert.equal(scheduled.ok, false)
+    assert.equal(scheduled.code, 'WORK_ITEM_OPEN')
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
