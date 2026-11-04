@@ -59,7 +59,9 @@
   normal product UI plus a scoped management page for themselves and normal
   users; the super admin sees everyone, can set admins and is the only role that can
   set unlimited quota. The owner can toggle a normal-user preview cookie that
-  renders the simple UI while advanced routes stay blocked.
+  renders the simple UI while advanced routes stay blocked. An admin can open a
+  read-only support view for a visible user and that user's jobs; it never
+  mutates data or triggers work.
 - **No worker process**: a 60-second tick schedules due iterate jobs and, when
   the user selected the maintainer role and the upstream grants admin/maintain permission, review jobs for all open PRs.
   The interval is the minimum gap between runs, not a cap on PRs or issues; a

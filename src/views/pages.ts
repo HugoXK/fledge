@@ -1103,7 +1103,7 @@ export function adminPage(input: {
   const userRows = users
     .map(
       (user) => `<tr>
-        <td>@${escapeHtml(user.login)}<br /><small class="muted">${escapeHtml(user.email ?? '')}</small></td>
+        <td>@${escapeHtml(user.login)}<br /><small class="muted">${escapeHtml(user.email ?? '')}</small><br /><a class="link" href="/admin/users/${escapeHtml(user.id)}">${escapeHtml(t('支持视图', 'Support view'))}</a></td>
         <td>${badge(t, user.status)}</td>
         <td>${escapeHtml(roleLabel(t, user.role))}</td>
         <td>${user.quota_unlimited === 1 ? escapeHtml(t('不限额', 'Unlimited')) : money(user.quota_cny)}</td>
@@ -1363,10 +1363,12 @@ export function jobPage(input: {
   repo: RepoRow
   job: JobRow
   queuePosition?: number
+  supportMode?: boolean
   notice?: string
   error?: string
 }): string {
   const { config, locale, viewer, repo, job, queuePosition, notice, error } = input
+  const supportMode = input.supportMode === true
   const t = translator(locale)
   const advanced = advancedViewer(viewer)
   const evidence = parseEvidenceJson(job.evidence_json)
@@ -1415,15 +1417,15 @@ export function jobPage(input: {
       </div>
       <div class="row">
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a>
-        ${advanced ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
+        ${advanced && !supportMode ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
-        ${control}
-        ${execute}
-        ${retry}
+        ${supportMode ? '' : control}
+        ${supportMode ? '' : execute}
+        ${supportMode ? '' : retry}
       </div>
     </div>
   </section>
-  ${planCard}
+  ${supportMode ? '' : planCard}
   <section class="cols">
     <div class="card">
       <h2>${escapeHtml(t('结果', 'Result'))}</h2>
@@ -1625,4 +1627,32 @@ export function agentWorkspacePage(input: {
     : `<section class="card"><p class="muted">${escapeHtml(t('实例就绪后才能打开工作区。', 'The workspace opens after the instance is ready.'))}</p></section>`}
   <p class="fine" style="text-align:right">Fledge · powered by FlyBot</p>`
   return layout({ title: `${t('工作区', 'Workspace')} · ${repo.upstream_name || repo.name}`, viewer, body, config, locale, path: `/repos/${repo.id}/workspace`, active: 'dashboard', notice, error })
+}
+
+export function adminSupportPage(input: {
+  config: Config
+  locale: Locale
+  viewer: Viewer
+  user: UserRow
+  repos: RepoRow[]
+  jobs: JobRow[]
+  audit: AuditRow[]
+  notice?: string
+  error?: string
+}): string {
+  const { config, locale, viewer, user, repos, jobs, audit, notice, error } = input
+  const t = translator(locale)
+  const usersById = new Map([[user.id, user.login]])
+  const repoRows = repos.length === 0
+    ? `<tr><td colspan="4" class="muted">${escapeHtml(t('没有仓库。', 'No repositories.'))}</td></tr>`
+    : repos.map((repo) => `<tr><td><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></td><td><span class="badge kind">${escapeHtml(repoRoleLabel(t, repo.repo_role))}</span></td><td>${badge(t, repo.last_status ?? 'idle')}</td><td>${escapeHtml(humanTimeShort(repo.last_run_at))}</td></tr>`).join('')
+  const jobRows = jobs.length === 0
+    ? `<tr><td colspan="4" class="muted">${escapeHtml(t('没有任务。', 'No jobs.'))}</td></tr>`
+    : jobs.map((job) => `<tr><td><a href="/admin/jobs/${escapeHtml(job.id)}"><code>${escapeHtml(job.id)}</code></a></td><td>${badge(t, job.status)} <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span></td><td>${escapeHtml(job.pr_url ?? '—')}</td><td>${escapeHtml(humanTimeShort(job.created_at))}</td></tr>`).join('')
+  const body = `<a class="back" href="/admin">← ${escapeHtml(t('返回管理', 'Back to admin'))}</a>
+    <section class="card"><div class="eyebrow">${escapeHtml(t('支持视图', 'SUPPORT VIEW'))}</div><h1>@${escapeHtml(user.login)}</h1><p class="muted">${badge(t, user.status)} · ${escapeHtml(roleLabel(t, user.role))} · ${escapeHtml(t('加入于', 'Joined'))} ${escapeHtml(humanTimeShort(user.created_at))}</p><p class="fine">${escapeHtml(t('只读；不会修改用户数据或触发任务。', 'Read-only; no user data or jobs are changed.'))}</p></section>
+    <section class="card"><h2>${escapeHtml(t('仓库', 'Repositories'))}</h2><div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('角色', 'Role'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('上次运行', 'Last run'))}</th></tr></thead><tbody>${repoRows}</tbody></table></div></section>
+    <section class="card"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2><div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>PR</th><th>${escapeHtml(t('创建', 'Created'))}</th></tr></thead><tbody>${jobRows}</tbody></table></div></section>
+    <section class="card"><h2>${escapeHtml(t('审计', 'Audit'))}</h2>${auditRows(locale, audit, usersById, true)}</section>`
+  return layout({ title: `${t('支持视图', 'Support view')} @${user.login}`, viewer, body, config, locale, path: `/admin/users/${user.id}`, active: 'admin', notice, error })
 }
