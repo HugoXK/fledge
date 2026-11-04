@@ -1,0 +1,1 @@
+Moved auto-merge to a server-side gate: Fledge verifies the pull request state, check runs, combined commit status and current review conclusions before performing a squash merge. The agent prompt now always forbids merging, and a stale GitHub permission check is revalidated and downgraded before auto-merge or a scheduled review.

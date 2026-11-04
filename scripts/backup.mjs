@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url)
 const { DatabaseSync, backup } = require('node:sqlite')
 
 const dbPath = resolve(process.env.DB_PATH ?? join(process.env.DATA_DIR ?? './data', 'fledge.db'))
-const outDir = resolve(process.env.BACKUP_DIR ?? './backups')
+const outDir = resolve(process.env.BACKUP_DIR ?? join(process.env.DATA_DIR ?? './data', 'backups'))
 mkdirSync(outDir, { recursive: true })
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')
 const target = join(outDir, `fledge-${stamp}.db`)

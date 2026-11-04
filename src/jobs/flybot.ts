@@ -32,7 +32,6 @@ interface BridgePayload {
 function iterateInstructions(context: RunnerContext): string[] {
   const upstream = context.upstream
   const fork = context.fork
-  const mergeAllowed = context.kind === 'iterate' && context.autoMerge && context.repoRole === 'maintainer'
   const target = context.isFork
     ? `Push your branch to the fork ${fork.owner}/${fork.name} and open the pull request against ${upstream.owner}/${upstream.name} with base "${upstream.defaultBranch}" and head "${fork.owner}:<branch>".`
     : `This is the user's own repository. Push your branch to ${upstream.owner}/${upstream.name} and open the pull request with base "${upstream.defaultBranch}".`
@@ -53,9 +52,7 @@ function iterateInstructions(context: RunnerContext): string[] {
         ]),
     'Team participation is mandatory: Product scopes the issue, Test writes/verifies the failing test, Dev-1 or Dev-2 implements, Security reviews material risk, and Reviewer reviews the PR. Do not let the Lead implement the whole change alone; if a role is unavailable, say so in the callback.',
     'Write a failing test first when a test is possible. Never force-push or change repository settings.',
-    mergeAllowed
-      ? 'Maintainer auto-merge is enabled: after the PR is open, checks are green and no review requests changes, merge it with a squash merge. Do not merge if checks fail, changes are requested or the PR is not mergeable.'
-      : 'Never merge. Leave the PR open for the maintainer to decide.',
+    'Never merge. Fledge performs the maintainer-enabled auto-merge only after independently checking the PR checks and reviews.',
   ]
 }
 
@@ -75,7 +72,7 @@ function reviewInstructions(context: RunnerContext): string[] {
     `Mode: review. You are a dedicated reviewer for ${upstream.owner}/${upstream.name}. Do not modify code, push branches or open pull requests.`,
     `List all open pull requests on the upstream repository with GET /repos/${upstream.owner}/${upstream.name}/pulls?state=open&per_page=100.`,
     'For each PR, inspect the diff and tests, assess correctness, scope, test coverage, security and regressions, then give an integer score from 0 to 100 with a short rationale.',
-    'For a pull request created by Fledge that needs changes, post a REQUEST_CHANGES review with concrete findings so Fledge can schedule a same-branch fix; for other PRs use event "COMMENT". Never APPROVE, merge or push.',
+    'Post a COMMENT review with concrete findings. For every Fledge pull request that needs changes, return a followUps entry with the PR URL, branch, head SHA and reason so Fledge can schedule a same-branch fix. Never REQUEST_CHANGES, APPROVE, merge or push.',
     'Review all open PRs, including PRs not created by Fledge.',
     'Finish by POSTing the callback with JSON {status, summary, reviewScore, error, followUps}; reviewScore is the average across reviewed PRs. For each Fledge PR that needs changes, include followUps: [{prUrl, branch, headSha, baseBranch, reason:"review requested changes"}] so Fledge queues a same-branch fix after this review. Do not send branch or prUrl for the review itself.',
   ]
@@ -127,9 +124,7 @@ export class FlyBotRunner implements Runner {
         'Also include "evidence": {"tests":"<command and pass/fail>","checks":"<CI/check status>","files":<changed files>,"risk":"low|medium|high","rollback":"<one line>"}; use only what you actually ran.',
         `The job is failed after ${context.timeoutMinutes} minutes without a final callback; finish one focused change before then or report the concrete blocker.`,
         `When done, POST ${context.callback.url} with JSON {status, branch, prUrl, issueUrl, reviewScore, summary, error} and "Authorization: Bearer ${context.callback.secret}".`,
-        context.kind === 'iterate' && context.autoMerge && context.repoRole === 'maintainer'
-          ? 'Do not print the GitHub token or the job token. Do not force-push. Merge only under the maintainer auto-merge rule above.'
-          : 'Do not print the GitHub token or the job token. Do not force-push. Do not merge.',
+        'Do not print the GitHub token or the job token. Do not force-push. Do not merge; Fledge handles maintainer-enabled auto-merge.',
       ].join('\n'),
     }
     const response = await fetch(bridgeUrl, {

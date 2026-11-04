@@ -8,7 +8,7 @@ import { GithubApp } from '../src/repos/app.js'
 import { makeUser, MemoryMailer, testConfig } from './helpers.js'
 
 function appConfig() {
-  return testConfig({ githubApp: { id: '1', slug: 'fledge-platform', privateKeyPath: '/tmp/fake.pem', webhookSecret: 'secret' } })
+  return testConfig({ githubApp: { id: '1', slug: 'fledge-platform', privateKeyPath: '/tmp/fake.pem', webhookSecret: 'secret', useUserToken: false } })
 }
 
 function sign(body: Buffer, secret = 'secret'): string {
@@ -76,6 +76,22 @@ test('a failed check on a Fledge PR enqueues a follow-up job', async () => {
     assert.ok(followup)
     assert.equal(followup?.branch, 'fledge/fix')
     assert.equal(followup?.pr_url, 'https://github.com/HugoXK/system1-agents/pull/7')
+  } finally {
+    await built.close()
+  }
+})
+
+test('readyz reports database and instance counts', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: { name: 'capture', async run() { return { status: 'running' as const } } }, startScheduler: false })
+  try {
+    const response = await built.app.inject({ method: 'GET', url: '/readyz' })
+    assert.equal(response.statusCode, 200)
+    const body = response.json() as { ok: boolean; db: boolean; instances: { ready: number; failed: number; total: number } }
+    assert.equal(body.ok, true)
+    assert.equal(body.db, true)
+    assert.equal(body.instances.total, 0)
   } finally {
     await built.close()
   }

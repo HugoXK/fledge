@@ -37,6 +37,30 @@
     sync()
   })
 
+  document.querySelectorAll('form').forEach((form) => {
+    const role = form.querySelector('select[name="repoRole"]')
+    if (!role) return
+    const autoMerge = form.querySelector('input[name="autoMerge"]')
+    const review = form.querySelector('input[name="review"]')
+    const reviewInterval = form.querySelector('select[name="reviewInterval"]')
+    const sync = () => {
+      const maintainer = role.value === 'maintainer'
+      if (autoMerge) {
+        autoMerge.disabled = !maintainer
+        if (!maintainer) autoMerge.checked = false
+      }
+      if (review) {
+        const allowed = maintainer && review.dataset.roleCanReview === '1'
+        review.disabled = !allowed
+        if (!allowed) review.checked = false
+        if (reviewInterval) reviewInterval.disabled = !allowed || !review.checked
+      }
+    }
+    role.addEventListener('change', sync)
+    if (review) review.addEventListener('change', sync)
+    sync()
+  })
+
   document.querySelectorAll('[data-lang-btn]').forEach((el) => {
     el.addEventListener('click', (event) => {
       const next = el.getAttribute('data-lang-btn')

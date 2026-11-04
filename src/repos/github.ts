@@ -50,6 +50,23 @@ export interface PullRequestInfo {
   state: string
   head: string
   base: string
+  headSha: string
+  mergeable: boolean | null
+  mergeableState: string
+  draft: boolean
+  merged: boolean
+}
+
+export interface CheckRunInfo {
+  name: string
+  status: string
+  conclusion: string | null
+}
+
+export interface ReviewInfo {
+  state: string
+  user: string
+  submittedAt: string
 }
 
 interface GithubRepoPayload {
@@ -111,28 +128,32 @@ export class GithubClient {
   ) {}
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const response = await fetch(`${this.apiBase.replace(/\/$/, '')}${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${this.token}`,
-        accept: 'application/vnd.github+json',
-        'x-github-api-version': '2022-11-28',
-        'user-agent': 'fledge/0.1',
-        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(30_000),
-    })
-    const text = await response.text()
-    if (!response.ok) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await fetch(`${this.apiBase.replace(/\/$/, '')}${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${this.token}`,
+          accept: 'application/vnd.github+json',
+          'x-github-api-version': '2022-11-28',
+          'user-agent': 'fledge/0.1',
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: AbortSignal.timeout(30_000),
+      })
+      const text = await response.text()
+      if (response.ok) return (text === '' ? {} : JSON.parse(text)) as T
       let message = text.slice(0, 300)
       try {
         const parsed = JSON.parse(text) as { message?: string }
         if (parsed.message !== undefined) message = parsed.message
       } catch {}
-      throw new GithubError(response.status, message)
+      const retryable = response.status === 429 || (method === 'GET' && response.status >= 500) || (response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.get('retry-after') !== null || /rate limit/i.test(message)))
+      if (!retryable || attempt === 2) throw new GithubError(response.status, message)
+      const retryAfter = Number(response.headers.get('retry-after'))
+      await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 10_000) : Math.min(500 * 2 ** attempt, 5_000))
     }
-    return (text === '' ? {} : JSON.parse(text)) as T
+    throw new GithubError(500, 'GitHub request failed')
   }
 
   private mapRepo(repo: GithubRepoPayload): RepoInfo {
@@ -218,25 +239,108 @@ export class GithubClient {
     name: string,
     input: { title: string; head: string; base: string; body: string },
   ): Promise<PullRequestInfo> {
-    const pr = await this.request<{ number: number; html_url: string; title: string; state: string; head: { ref: string }; base: { ref: string } }>(
+    const pr = await this.request<{ number: number; html_url: string; title: string; state: string; head: { ref: string; sha: string }; base: { ref: string }; mergeable?: boolean | null; mergeable_state?: string; draft?: boolean; merged?: boolean }>(
       'POST',
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls`,
       input,
     )
-    return { number: pr.number, url: pr.html_url, title: pr.title, state: pr.state, head: pr.head.ref, base: pr.base.ref }
+    return {
+      number: pr.number,
+      url: pr.html_url,
+      title: pr.title,
+      state: pr.state,
+      head: pr.head.ref,
+      base: pr.base.ref,
+      headSha: pr.head.sha,
+      mergeable: pr.mergeable ?? null,
+      mergeableState: pr.mergeable_state ?? 'unknown',
+      draft: pr.draft === true,
+      merged: pr.merged === true,
+    }
   }
 
   async getPullRequest(owner: string, name: string, number: number): Promise<PullRequestInfo> {
-    const pr = await this.request<{ number: number; html_url: string; title: string; state: string; head: { ref: string }; base: { ref: string } }>(
+    const pr = await this.request<{
+      number: number
+      html_url: string
+      title: string
+      state: string
+      head: { ref: string; sha: string }
+      base: { ref: string }
+      mergeable: boolean | null
+      mergeable_state: string
+      draft: boolean
+      merged: boolean
+    }>(
       'GET',
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}`,
     )
-    return { number: pr.number, url: pr.html_url, title: pr.title, state: pr.state, head: pr.head.ref, base: pr.base.ref }
+    return {
+      number: pr.number,
+      url: pr.html_url,
+      title: pr.title,
+      state: pr.state,
+      head: pr.head.ref,
+      base: pr.base.ref,
+      headSha: pr.head.sha,
+      mergeable: pr.mergeable,
+      mergeableState: pr.mergeable_state,
+      draft: pr.draft,
+      merged: pr.merged,
+    }
+  }
+
+  async listCheckRuns(owner: string, name: string, ref: string): Promise<CheckRunInfo[]> {
+    const result = await this.request<{ check_runs?: Array<{ name?: string; status?: string; conclusion?: string | null }> }>(
+      'GET',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/commits/${encodeURIComponent(ref)}/check-runs?per_page=100`,
+    )
+    return (result.check_runs ?? []).map((run) => ({
+      name: run.name ?? 'check',
+      status: run.status ?? 'unknown',
+      conclusion: run.conclusion ?? null,
+    }))
+  }
+
+  async getCombinedStatus(owner: string, name: string, ref: string): Promise<{ state: string; count: number }> {
+    const result = await this.request<{ state?: string; statuses?: unknown[] }>(
+      'GET',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/commits/${encodeURIComponent(ref)}/status`,
+    )
+    return { state: result.state ?? 'unknown', count: Array.isArray(result.statuses) ? result.statuses.length : 0 }
+  }
+
+  async listReviews(owner: string, name: string, number: number): Promise<ReviewInfo[]> {
+    const result = await this.request<Array<{ state?: string; user?: { login?: string }; submitted_at?: string }>>(
+      'GET',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/reviews?per_page=100`,
+    )
+    return Array.isArray(result)
+      ? result.map((review) => ({
+          state: review.state ?? 'COMMENTED',
+          user: review.user?.login ?? '',
+          submittedAt: review.submitted_at ?? '',
+        }))
+      : []
+  }
+
+  async mergePullRequest(owner: string, name: string, number: number, input: { sha: string; mergeMethod?: 'merge' | 'squash' | 'rebase' }): Promise<{ merged: boolean; sha?: string; message?: string }> {
+    const result = await this.request<{ merged?: boolean; sha?: string; message?: string }>(
+      'PUT',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/merge`,
+      { sha: input.sha, merge_method: input.mergeMethod ?? 'squash' },
+    )
+    return { merged: result.merged === true, ...(result.sha === undefined ? {} : { sha: result.sha }), ...(result.message === undefined ? {} : { message: result.message }) }
   }
 
   async comment(owner: string, name: string, number: number, body: string): Promise<void> {
     await this.request('POST', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/comments`, { body })
   }
+}
+
+export async function repoPermissionWithToken(token: string, owner: string, name: string, apiBase?: string): Promise<RepoPermission> {
+  const client = new GithubClient(token, apiBase)
+  return permissionOf(await client.getRepo(owner, name))
 }
 
 export async function prepareRepo(

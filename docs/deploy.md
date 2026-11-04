@@ -31,7 +31,7 @@ Key settings:
 | `SESSION_SECRET` | >= 32 chars, signs CSRF and session-derived values |
 | `TOKEN_ENCRYPTION_KEY` | 32 bytes base64, encrypts GitHub/model keys |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | OAuth App |
-| `ADMIN_GITHUB_LOGIN` | Auto-approved bootstrap admin (default `HugoXK`) |
+| `ADMIN_GITHUB_LOGIN` | Auto-approved bootstrap super admin; set your own GitHub login (no default) |
 | `MAIL_TRANSPORT` | `smtp` in production, `console` for a local demo |
 | `SMTP_HOST/PORT/SECURE/USER/PASS` | For yeah.net: `smtp.yeah.net`, 465, secure |
 | `MAIL_FROM` / `ADMIN_EMAIL` | `fledge@hugoxk.online` / `admin@example.com` |
@@ -191,7 +191,8 @@ are absolute.
 
 ```sh
 npm run db:backup
-# writes backups/fledge-YYYYmmdd-HHMMSS.db using SQLite's online backup API
+# writes ${DATA_DIR}/backups/fledge-<ISO timestamp>.db via SQLite's online backup API
+# set BACKUP_DIR to override; in Docker the default is /data/backups
 ```
 
 Back up `.env` separately (it contains the encryption key). Without
@@ -200,7 +201,7 @@ Back up `.env` separately (it contains the encryption key). Without
 Restore on a stopped instance:
 
 ```sh
-cp backups/fledge-YYYYmmdd-HHMMSS.db "$DB_PATH"
+cp "$DATA_DIR/backups/fledge-<timestamp>.db" "$DB_PATH"
 npm start
 ```
 

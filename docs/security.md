@@ -68,11 +68,11 @@ an installation bound to another user.
 - The private key lives outside the repository (`GITHUB_APP_PRIVATE_KEY_PATH`,
   mode 0600). The App JWT is held in memory and never logged.
 - Installation tokens are cached in memory only until shortly before expiry and
-  are never stored in SQLite. Repositories with `installation_id` prefer the
-  signed-in user's OAuth token when it was authorized with `repo` scope, so
-  issues/PRs/commits are attributed to the user; otherwise they use a fresh
-  installation token and the UI shows a re-authorize notice. PAT repositories
-  keep the encrypted token path.
+  are never stored in SQLite. Repositories with `installation_id` use the
+  installation token for jobs by default, so the token is limited to the App's
+  repository permissions. Set `GITHUB_APP_USER_TOKEN=true` to opt in to the
+  signed-in user's OAuth token for attribution; that token can be broader, so it
+  is off by default. PAT repositories keep the encrypted token path.
 - The setup callback only binds an installation to a user after checking the
   user's OAuth installations (or an individual account match).
 - `POST /api/github/webhook` verifies `X-Hub-Signature-256` on the raw body
@@ -148,7 +148,8 @@ per day. Test mail is rate-limited to one per minute.
   primary login is promoted to owner on startup; only the super admin can promote or
   demote admins and set unlimited quota. The one-off CLI is
   `npm run role:set -- <github-login> <admin|user>`; it refuses to change the
-  owner role.
+  owner role. This runs the built `dist/`; for a source checkout use
+  `npm run role:set:dev -- <github-login> <admin|user>`.
 - Admin management is scoped: an admin sees themselves and normal users, never
   another admin or the super admin. Admin jobs and audit rows are filtered to that
   visible set and actor names are masked in the admin audit view. The owner sees
@@ -161,9 +162,10 @@ per day. Test mail is rate-limited to one per minute.
   (`admin`/`maintain` may choose either; all other permissions may only choose
   `developer`). The server validates the choice against the GitHub permission
   recorded from the last add/refresh, never trusts a hidden form value, and does
-  not let platform admins assign the role. A refresh re-checks GitHub and
-  downgrades a maintainer to developer when the permission is lost. Auto-merge
-  is an explicit maintainer-only switch and is off by default.
+  not let platform admins assign the role. A refresh or a stale-role recheck
+  before review/auto-merge downgrades a maintainer to developer when the
+  permission is lost. Auto-merge is an explicit maintainer-only switch and is
+  off by default; Fledge verifies the PR, checks and reviews before merging.
 
 ### Team console and agent controls
 

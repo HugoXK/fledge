@@ -469,7 +469,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const upstreamUrl = repo.upstream_html_url ?? `https://github.com/${upstreamOwner}/${upstreamName}`
   const forkUrl = repo.fork_html_url ?? `https://github.com/${forkOwner}/${forkName}`
   const targetBranch = repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)
-  const appAttribution = repo.installation_id !== null && !(viewer.user.github_token_scopes ?? '').split(/[ ,]+/).includes('repo')
+  const appAttribution = config.githubApp.useUserToken && repo.installation_id !== null && !(viewer.user.github_token_scopes ?? '').split(/[ ,]+/).includes('repo')
   const defaultBranch = repo.upstream_default_branch || repo.default_branch
   const repoRole: RepoRole | null = repo.repo_role === 'maintainer' || repo.repo_role === 'developer' ? repo.repo_role : null
   const allowedRoles = allowedRepoRoles(repo.permission)
@@ -624,11 +624,11 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))} <select name="interval">${intervalOptions(t, repo.interval_minutes)}</select></label>
         </div>
         <div class="row" data-review-group>
-          <label class="check"><input type="checkbox" name="review" value="1" ${reviewerEnabled ? 'checked' : ''} ${canReview ? '' : 'disabled'} /> ${escapeHtml(t('启用 PR 审核', 'Enable PR reviewer'))}</label>
+          <label class="check"><input type="checkbox" name="review" value="1" ${reviewerEnabled ? 'checked' : ''} ${canReview ? '' : 'disabled'} data-role-can-review="${githubCanReview ? '1' : '0'}" /> ${escapeHtml(t('启用 PR 审核', 'Enable PR reviewer'))}</label>
           <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval" ${canReview ? '' : 'disabled'}>${reviewIntervalOptions(t, repo.review_interval_minutes)}</select></label>
         </div>
         <div class="row" data-merge-group>
-          <label class="check"><input type="checkbox" name="autoMerge" value="1" ${canMaintain && repo.auto_merge === 1 ? 'checked' : ''} ${canMaintain ? '' : 'disabled'} /> ${escapeHtml(t('允许 maintainer 自动合并 PR', 'Allow maintainer auto-merge'))}${infoTip(t('默认关闭。只有 maintainer 能开启；开启后 agent 仅在 PR 检查通过且没有 changes requested 时做 squash merge。developer 不能开启。', 'Off by default. Only a maintainer can enable it. When on, the agent may squash-merge a PR only after checks are green and no changes are requested. Developers cannot enable it.'))}</label>
+          <label class="check"><input type="checkbox" name="autoMerge" value="1" ${canMaintain && repo.auto_merge === 1 ? 'checked' : ''} ${canMaintain ? '' : 'disabled'} /> ${escapeHtml(t('允许 maintainer 自动合并 PR', 'Allow maintainer auto-merge'))}${infoTip(t('默认关闭。只有 maintainer 能开启；开启后 Fledge 会在 PR 检查通过且没有 changes requested 时执行 squash merge。developer 不能开启。', 'Off by default. Only a maintainer can enable it. When on, Fledge squash-merges a PR only after checks are green and no changes are requested. Developers cannot enable it.'))}</label>
         </div>
         ${roleMissing ? `<p class="fine">${escapeHtml(t('先选择你的角色，审核和自动合并才会生效。', 'Choose your role before review or auto-merge can take effect.'))}</p>` : !githubCanReview ? `<p class="fine">${escapeHtml(t('你在这个上游没有 admin/maintain 权限，审核角色不可用。', 'You do not have admin/maintain permission on this upstream, so the reviewer role is unavailable.'))}</p>` : !canMaintain ? `<p class="fine">${escapeHtml(t('developer 不能启用 PR 审核或自动合并；切换为 maintainer 后才可用。', 'A developer cannot enable PR review or auto-merge; switch to maintainer first.'))}</p>` : ''}
         ${advanced ? `<details class="fine advanced-help"><summary>${escapeHtml(t('团队与调度规则', 'Team and scheduling rules'))}</summary>
@@ -922,6 +922,22 @@ const AUDIT_ACTIONS: Record<string, [string, string]> = {
   'model.saved': ['保存模型', 'Model saved'],
   'model.cleared': ['清除模型', 'Model cleared'],
   'settings.email': ['邮件通知设置', 'Email notification settings'],
+  'settings.email.test': ['测试通知邮件', 'Test notification email'],
+  'admin.role': ['调整平台角色', 'Platform role changed'],
+  'approval.approved': ['批准申请', 'Application approved'],
+  'approval.rejected': ['拒绝申请', 'Application rejected'],
+  'repo.role': ['调整仓库角色', 'Repository role changed'],
+  'repo.goal_updated': ['更新仓库目标', 'Repository goal updated'],
+  'plan.enqueued': ['计划入队', 'Plan queued'],
+  'job.executed': ['执行计划', 'Plan executed'],
+  'job.quota_exhausted': ['任务额度用完', 'Job quota exhausted'],
+  'job.auto_merged': ['自动合并', 'Auto-merged'],
+  'job.auto_merge_skipped': ['跳过自动合并', 'Auto-merge skipped'],
+  'job.auto_merge_failed': ['自动合并失败', 'Auto-merge failed'],
+  'team.chief_message': ['发送 Chief 消息', 'Chief message'],
+  'team.email_reply': ['邮件回复', 'Email reply'],
+  'github_app.installed': ['安装 GitHub App', 'GitHub App installed'],
+  'flybot.bridge.restarted': ['重启 bridge', 'Bridge restarted'],
 }
 
 function auditLabel(t: Translate, action: string): string {

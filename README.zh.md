@@ -93,9 +93,11 @@ Fledge 是幼鸟长齐飞羽、离巢试飞的那一刻——不是因为被推�
 - **自选仓库角色**：托管仓库时，根据你在该 GitHub 仓库的权限选择 `maintainer`
   或 `developer`。`admin`/`maintain` 两个都能选，其他权限只能选 `developer`。
   maintainer 解锁审核/维护动作和可选的自动合并开关；developer 只跑迭代/计划任务。
-  角色按仓库计算，平台管理员不能替你分配。
+  角色按仓库计算，平台管理员不能替你分配。Fledge 会在合并前检查 PR 状态、checks
+  和 review 结论；agent 自己不会 merge。
 - **审核角色**：仓库 maintainer（GitHub `admin`/`maintain`）可以启用定时审核，FlyBot 会审核上游所有
-  open PR、打分并发表 COMMENT review；只有 maintainer 为迭代任务开启自动合并开关时才会合并。
+  open PR、打分并发表 COMMENT review；合并由 Fledge 在检查 PR 状态、checks 和 review
+  后执行，reviewer 自己不会 merge。
 - **fine-grained GitHub token**：添加时验证写权限，AES-256-GCM 加密保存，
   只在任务运行时解密。
 - **Session + CSRF**：所有表单都有 CSRF；审批链接一次性、7 天过期。
@@ -237,7 +239,7 @@ node bridge/flybot-bridge.mjs
 | `SESSION_SECRET` | — | 随机密钥，签 CSRF/session 派生值 |
 | `TOKEN_ENCRYPTION_KEY` | — | 32 字节 base64，AES-256-GCM |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | — | OAuth App |
-| `ADMIN_GITHUB_LOGIN` | `HugoXK` | 自动批准的 bootstrap 管理员 |
+| `ADMIN_GITHUB_LOGIN` | 空 | 自动批准的 bootstrap 超级管理员；请填自己的 GitHub 登录名 |
 | `DEV_LOGIN_LOGIN` | 空 | 本地演示登录；生产必须为空 |
 | `MAIL_TRANSPORT` | `console` | `console` 写 `.eml`；`smtp` 真发 |
 | `MAIL_FROM` / `ADMIN_EMAIL` | `fledge@hugoxk.online` / `admin@hugoxk.online` | 服务发件人与管理员收件人（角色别名） |

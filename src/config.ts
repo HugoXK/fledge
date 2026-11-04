@@ -24,6 +24,7 @@ export interface Config {
     slug: string
     privateKeyPath: string
     webhookSecret: string
+    useUserToken: boolean
   }
   mail: {
     transport: MailTransport
@@ -133,7 +134,9 @@ function secret(name: string, bytes: number): string {
 
 export function loadConfig(overrides: Partial<Config> = {}): Config {
   loadDotEnv()
-  const env = (text('NODE_ENV', 'development') as Config['env']) || 'development'
+  const rawEnv = text('NODE_ENV', 'production').toLowerCase()
+  const env = (rawEnv === 'prod' ? 'production' : rawEnv === 'dev' ? 'development' : rawEnv) as Config['env']
+  if (env !== 'development' && env !== 'production' && env !== 'test') throw new Error(`unknown NODE_ENV: ${rawEnv}`)
   const keyB64 = text('TOKEN_ENCRYPTION_KEY')
   const encryptionKey = keyB64 === '' ? randomBytes(32).toString('base64') : keyB64
   const dataDir = resolve(text('DATA_DIR', './data'))
@@ -148,7 +151,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       clientId: text('GITHUB_CLIENT_ID'),
       clientSecret: text('GITHUB_CLIENT_SECRET'),
       scopes: text('GITHUB_OAUTH_SCOPES', 'read:user user:email'),
-      adminLogin: text('ADMIN_GITHUB_LOGIN', 'HugoXK'),
+      adminLogin: text('ADMIN_GITHUB_LOGIN'),
       apiBase: text('GITHUB_API_BASE', 'https://api.github.com').replace(/\/$/, ''),
     },
     githubApp: {
@@ -156,6 +159,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       slug: text('GITHUB_APP_SLUG'),
       privateKeyPath: text('GITHUB_APP_PRIVATE_KEY_PATH'),
       webhookSecret: text('GITHUB_APP_WEBHOOK_SECRET'),
+      useUserToken: bool('GITHUB_APP_USER_TOKEN', false),
     },
     mail: {
       transport: (text('MAIL_TRANSPORT', 'console') as MailTransport) || 'console',

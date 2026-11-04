@@ -1,5 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Store } from '../src/db.js'
 import { addDays } from '../src/lib/time.js'
 import { makeUser } from './helpers.js'
@@ -128,6 +131,53 @@ test('a running job without started_at is still eligible for timeout cleanup', (
     store.createJob({ id: 'job_stale_queued', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb2', platformTokenHash: '' })
     const staleQueued = store.staleQueuedJobs(new Date(Date.now() + 60_000).toISOString())
     assert.equal(staleQueued.some((job) => job.id === 'job_stale_queued'), true)
+  } finally {
+    store.close()
+  }
+})
+
+
+test('the role backfill runs once and future schema versions are refused', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-migrate-'))
+  const path = join(dir, 'fledge.db')
+  try {
+    const store = new Store(path)
+    const user = makeUser(store, { login: 'migrate-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_migrate', userId: user.id, owner: 'o', name: 'migrate', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: null, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.db.exec('PRAGMA user_version = 14;')
+    store.close()
+
+    const reopened = new Store(path)
+    assert.equal(reopened.getRepo(repo.id)?.repo_role, 'maintainer')
+    assert.notEqual(reopened.getRepo(repo.id)?.role_checked_at, null)
+    reopened.db.exec('PRAGMA user_version = 17;')
+    reopened.close()
+
+    assert.throws(() => new Store(path), /newer than this build/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('pruneOldData removes old jobs, notifications and settings keys', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'prune-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_prune', userId: user.id, owner: 'o', name: 'prune', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_old', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb1', platformTokenHash: '' })
+    store.updateJob('job_old', { status: 'succeeded', finished_at: '2000-01-01T00:00:00.000Z' })
+    store.createJob({ id: 'job_new', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb2', platformTokenHash: '' })
+    store.updateJob('job_new', { status: 'succeeded', finished_at: new Date().toISOString() })
+    store.notify(user.id, 'test', 'old')
+    store.db.exec("UPDATE notifications SET created_at = '2000-01-01T00:00:00.000Z'")
+    store.setSetting('followup:old', '2000-01-01T00:00:00.000Z')
+    store.setSetting('followup:recent', new Date().toISOString())
+    store.pruneOldData()
+    assert.equal(store.getJob('job_old'), undefined)
+    assert.ok(store.getJob('job_new'))
+    assert.equal(store.listNotifications(user.id).length, 0)
+    assert.equal(store.getSetting('followup:old'), undefined)
+    assert.notEqual(store.getSetting('followup:recent'), undefined)
   } finally {
     store.close()
   }

@@ -81,7 +81,8 @@
   role. A user can be a maintainer in one repository and a developer in another.
   Maintainer enables review/triage maintenance actions and the opt-in
   auto-merge switch; developer runs iterate/plan jobs only. There is no separate
-  owner or viewer role.
+  owner or viewer role. The scheduler re-checks a stale role before review or
+  auto-merge and downgrades it when the GitHub permission is lost.
 - **Target branch**: each repository stores a `target_branch` that defaults to
   the upstream default but can be `develop` or a release branch. Jobs snapshot
   it as `base_branch`; the agent still creates a new head branch and opens the
@@ -93,9 +94,11 @@
   PR, score each one, and post a COMMENT review; they never merge or modify
   code. A developer cannot run review jobs even when GitHub grants write access.
 - **Auto-merge switch**: off by default. Only a maintainer can enable it. When
-  it is on, an iterate job may squash-merge its own green PR after checks pass
-  and no review requests changes; otherwise the prompt forbids merging. The
-  switch is stored on the repository and passed to the bridge with the job.
+  it is on, Fledge (not the agent) verifies the PR is open and mergeable, every
+  check run is green, the combined commit status is not failing, and no current
+  review requests changes before it performs a squash merge. The agent prompt
+  always forbids merging. The switch is stored on the repository and included
+  in the job payload for reporting. A stale or downgraded role blocks the merge.
 
 ### Model gateway
 

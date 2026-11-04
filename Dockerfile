@@ -16,6 +16,8 @@ COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY public ./public
+COPY scripts ./scripts
+COPY bridge ./bridge
 RUN mkdir -p /data && chown -R node:node /app /data
 USER node
 EXPOSE 8080

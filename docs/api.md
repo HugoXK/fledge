@@ -30,6 +30,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/console` | approved + session | Workspace overview (repos, jobs, quota) |
 | POST | `/repos` | approved + CSRF | Add an upstream repository; Fledge checks or creates the user's fork |
 | GET | `/repos/:id` | owner | Repo detail, including the selected role and allowed roles |
+| GET | `/readyz` | public | Database and per-repository instance readiness summary |
 | POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job |
 | POST | `/repos/:id/role` | owner + CSRF | Select `maintainer` or `developer` for this user-repository connection |
 | POST | `/repos/:id/plan` | owner + CSRF | Enqueue a plan-only job (no code, branch or PR) |

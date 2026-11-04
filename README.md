@@ -102,10 +102,12 @@ own improvements. See [docs/decisions/0001-name.md](docs/decisions/0001-name.md)
   may choose either; every other permission can only choose `developer`.
   Maintainer unlocks review/maintenance actions and an opt-in auto-merge switch;
   developer runs iterate/plan jobs only. Roles are per repository and never
-  assigned by a platform admin.
+  assigned by a platform admin. Fledge verifies the PR state, check runs and
+  review conclusions before it performs an auto-merge; the agent never merges.
 - **Reviewer role** for repository maintainers (`admin`/`maintain`): a scheduled FlyBot
-  reviewer scores every open upstream PR and posts a COMMENT review. It never
-  merges unless the maintainer enabled the auto-merge switch for an iterate job.
+  reviewer scores every open upstream PR and posts a COMMENT review. Fledge
+  verifies the PR before any maintainer-enabled auto-merge; the reviewer never
+  merges.
 - **Fine-grained GitHub tokens**, validated for write access on add, encrypted
   with AES-256-GCM, and only decrypted for a running job.
 - **Sessions and CSRF** on every browser form; approval links are single-use and
@@ -260,7 +262,7 @@ full list and comments.
 | `SESSION_SECRET` | — | Recent random secret; signs CSRF and session values |
 | `TOKEN_ENCRYPTION_KEY` | — | 32-byte base64 key for AES-256-GCM |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | — | OAuth App |
-| `ADMIN_GITHUB_LOGIN` | `HugoXK` | Auto-approved bootstrap admin |
+| `ADMIN_GITHUB_LOGIN` | empty | Auto-approved bootstrap super admin; set your own GitHub login |
 | `DEV_LOGIN_LOGIN` | empty | Local demo login; must be empty in production |
 | `MAIL_TRANSPORT` | `console` | `console` writes `.eml` files; `smtp` sends |
 | `MAIL_FROM` / `ADMIN_EMAIL` | `fledge@hugoxk.online` / `admin@hugoxk.online` | Service sender and admin recipient (role aliases) |

@@ -29,7 +29,7 @@ const PROTOCOL = [
   'Job rules:',
   '- One focused issue and one pull request per job. Do not expand scope or start a second feature.',
   '- Before working, check the latest upstream target branch and existing issues/PRs. If the work is already fixed or covered, report the existing link instead of duplicating it. Sync a stale fork before creating the branch.',
-  '- Never push to the upstream base branch, never force-push, never change repository settings, and never merge unless the job rules explicitly enable maintainer auto-merge.',
+  '- Never push to the upstream base branch, never force-push, never change repository settings, and never merge; Fledge performs any maintainer-enabled merge after checking the PR.',
   '- Fetch the GitHub token only from the credential URL in the job; never print or store the token value.',
   '- Send a progress heartbeat by POSTing the job callback with {"status":"running","summary":"<one line progress>","checkpoint":"<done + next>"} after each major step and at least every 10 minutes.',
   '- Finish with the final callback before the time limit. If blocked, POST {"status":"failed","error":"<concrete blocker>"} instead of running silently.',
@@ -42,7 +42,7 @@ const PROTOCOL = [
   '1. Every delegation is self-contained: goal, repo and fork, branch, acceptance criteria and what to return. Never paste token values.',
   '2. The Lead delegates: Product for positioning and issue quality, Dev-1/Dev-2 for implementation, Test for failing tests and verification, Security for risk review, Reviewer for PR review. If a child cannot act, do that step yourself and say why in the final callback.',
   '3. For iterate jobs, the Lead must not implement alone. Use Product to scope the issue, Test to write/verify the failing test, Dev-1 or Dev-2 to implement, Security for material risk, and Reviewer for the final PR review. Do not claim a role that did not act.',
-  '4. The Reviewer only reviews: score 0-100. For a Fledge PR that needs changes, post REQUEST_CHANGES with concrete findings so Fledge can schedule the same-branch fix; otherwise COMMENT. Never approve, merge or push.',
+  '4. The Reviewer only reviews: score 0-100 and post a COMMENT review. For a Fledge PR that needs changes, return a followUps entry so Fledge can schedule the same-branch fix. Never request changes, approve, merge or push.',
   '5. Escalate irreversible product or security decisions to the human instead of guessing.',
 ].join('\n')
 
@@ -76,7 +76,7 @@ const ROLE_TEXT: Record<TeamRole, string> = {
   reviewer: [
     'You are the dedicated reviewer.',
     'Review the pull request diff and tests, then score it 0-100 with a short rationale.',
-    'For a Fledge PR that needs changes, post a REQUEST_CHANGES review with concrete findings; otherwise post COMMENT.',
+    'For a Fledge PR that needs changes, return a followUps entry with concrete findings and post a COMMENT review.',
     'Never approve, merge, push or change repository settings.',
   ].join(' '),
   dev1: [
