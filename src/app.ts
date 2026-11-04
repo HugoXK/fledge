@@ -1765,6 +1765,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       name,
       tokenHash: sha256Hex(raw),
       prefix: raw.slice(0, 8),
+      repoId: null,
       expiresAt: null,
     })
     store.audit(viewer.user.id, 'token.created', name)

@@ -241,6 +241,7 @@ server.listen(3081, '0.0.0.0')
         name: `flybot:${repo.id}`,
         tokenHash: sha256Hex(gatewayToken),
         prefix: gatewayToken.slice(0, 8),
+        repoId: repo.id,
         expiresAt: null,
       })
 

@@ -150,7 +150,7 @@ test('the role backfill runs once and future schema versions are refused', () =>
     const reopened = new Store(path)
     assert.equal(reopened.getRepo(repo.id)?.repo_role, 'maintainer')
     assert.notEqual(reopened.getRepo(repo.id)?.role_checked_at, null)
-    reopened.db.exec('PRAGMA user_version = 19;')
+    reopened.db.exec('PRAGMA user_version = 20;')
     reopened.close()
 
     assert.throws(() => new Store(path), /newer than this build/)
@@ -197,6 +197,21 @@ test('work items persist, update and are found by issue or PR', () => {
     assert.equal(store.workItemMetrics('2000-01-01T00:00:00.000Z').open, 1)
     store.updateWorkItem(item.id, { state: 'merged', merged_at: new Date().toISOString() })
     assert.equal(store.workItemMetrics('2000-01-01T00:00:00.000Z').merged, 1)
+  } finally {
+    store.close()
+  }
+})
+
+test('usage and job tokens carry the repository for cost attribution', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'attribution-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_attribution', userId: user.id, owner: 'o', name: 'a', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.recordUsage(user.id, null, 0.2, null, repo.id)
+    const usage = store.get<{ repo_id: string | null }>('SELECT repo_id FROM quota_ledger ORDER BY id DESC LIMIT 1')
+    assert.equal(usage?.repo_id, repo.id)
+    const token = store.createApiToken({ id: 'tok_attr', userId: user.id, kind: 'job', name: 'job:attr', tokenHash: 'hash_attr', prefix: 'flg', repoId: repo.id, expiresAt: null })
+    assert.equal(token.repo_id, repo.id)
   } finally {
     store.close()
   }

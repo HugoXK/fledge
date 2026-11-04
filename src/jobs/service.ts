@@ -300,6 +300,7 @@ export class Jobs {
       name: `job:${jobId}`,
       tokenHash: sha256Hex(platformToken),
       prefix: platformToken.slice(0, 8),
+      repoId: repo.id,
       expiresAt: addMinutes(this.config.runner.timeoutMinutes + 60),
     })
     const priorJobs = this.store.listJobs(user.id, 1).length
