@@ -1497,6 +1497,80 @@ export class Store {
     return Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM audit_log WHERE user_id IN (${marks})`, ...userIds)?.n ?? 0)
   }
 
+  private auditFilter(userIds: string[] | null, filters: { q?: string; action?: string; from?: string; to?: string }, limit: number, offset: number, count: boolean): { sql: string; params: Array<string | number> } {
+    const clauses: string[] = []
+    const params: Array<string | number> = []
+    if (userIds !== null) {
+      if (userIds.length === 0) return { sql: count ? 'SELECT 0 AS n' : 'SELECT * FROM audit_log WHERE 0', params: [] }
+      clauses.push(`user_id IN (${userIds.map(() => '?').join(', ')})`)
+      params.push(...userIds)
+    }
+    if (filters.q !== undefined && filters.q !== '') {
+      clauses.push('(action LIKE ? OR detail LIKE ?)')
+      params.push(`%${filters.q}%`, `%${filters.q}%`)
+    }
+    if (filters.action !== undefined && filters.action !== '') {
+      clauses.push('action LIKE ?')
+      params.push(`${filters.action}%`)
+    }
+    if (filters.from !== undefined && filters.from !== '') {
+      clauses.push('at >= ?')
+      params.push(filters.from)
+    }
+    if (filters.to !== undefined && filters.to !== '') {
+      clauses.push('at <= ?')
+      params.push(filters.to)
+    }
+    const where = clauses.length === 0 ? '' : ` WHERE ${clauses.join(' AND ')}`
+    if (count) return { sql: `SELECT COUNT(*) AS n FROM audit_log${where}`, params }
+    return { sql: `SELECT * FROM audit_log${where} ORDER BY id DESC LIMIT ? OFFSET ?`, params: [...params, limit, offset] }
+  }
+
+  searchAudit(userIds: string[] | null, filters: { q?: string; action?: string; from?: string; to?: string }, limit: number, offset: number): AuditRow[] {
+    const query = this.auditFilter(userIds, filters, limit, offset, false)
+    return this.all<AuditRow>(query.sql, ...query.params)
+  }
+
+  countSearchAudit(userIds: string[] | null, filters: { q?: string; action?: string; from?: string; to?: string }): number {
+    const query = this.auditFilter(userIds, filters, 0, 0, true)
+    return Number(this.get<{ n: number }>(query.sql, ...query.params)?.n ?? 0)
+  }
+
+  private jobFilter(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string }, limit: number, offset: number, count: boolean): { sql: string; params: Array<string | number> } {
+    const clauses: string[] = []
+    const params: Array<string | number> = []
+    if (userIds !== null) {
+      if (userIds.length === 0) return { sql: count ? 'SELECT 0 AS n' : 'SELECT * FROM jobs WHERE 0', params: [] }
+      clauses.push(`user_id IN (${userIds.map(() => '?').join(', ')})`)
+      params.push(...userIds)
+    }
+    if (filters.q !== undefined && filters.q !== '') {
+      clauses.push(`(goal LIKE ? OR summary LIKE ? OR pr_url LIKE ? OR issue_url LIKE ? OR repo_id IN (SELECT id FROM repos WHERE lower(owner || '/' || name) LIKE ?))`)
+      params.push(`%${filters.q}%`, `%${filters.q}%`, `%${filters.q}%`, `%${filters.q}%`, `%${filters.q}%`)
+    }
+    if (filters.status !== undefined && filters.status !== '') {
+      clauses.push('status = ?')
+      params.push(filters.status)
+    }
+    if (filters.kind !== undefined && filters.kind !== '') {
+      clauses.push('kind = ?')
+      params.push(filters.kind)
+    }
+    const where = clauses.length === 0 ? '' : ` WHERE ${clauses.join(' AND ')}`
+    if (count) return { sql: `SELECT COUNT(*) AS n FROM jobs${where}`, params }
+    return { sql: `SELECT * FROM jobs${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`, params: [...params, limit, offset] }
+  }
+
+  searchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string }, limit: number, offset: number): JobRow[] {
+    const query = this.jobFilter(userIds, filters, limit, offset, false)
+    return this.all<JobRow>(query.sql, ...query.params)
+  }
+
+  countSearchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string }): number {
+    const query = this.jobFilter(userIds, filters, 0, 0, true)
+    return Number(this.get<{ n: number }>(query.sql, ...query.params)?.n ?? 0)
+  }
+
   listJobsPage(limit: number, offset: number): JobRow[] {
     return this.all<JobRow>('SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?', limit, offset)
   }

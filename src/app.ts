@@ -32,6 +32,7 @@ import { Approvals } from './users/approval.js'
 import {
   adminPage,
   adminSupportPage,
+  adminSearchPage,
   approvalPage,
   dashboardPage,
   landingPage,
@@ -1815,6 +1816,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }))
   })
 
+  const adminVisibleUserIds = (viewer: { user: UserRow }): string[] | null => {
+    if (viewer.user.role === 'superadmin') return null
+    return store.listUsers().filter((user) => user.id === viewer.user.id || user.role === 'user').map((user) => user.id)
+  }
+
   const adminCanViewUser = (viewer: { user: UserRow; preview?: boolean }, user: UserRow): boolean => {
     if (viewer.preview === true) return false
     if (viewer.user.role === 'superadmin') return true
@@ -1859,6 +1865,73 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
+  })
+
+  app.get('/admin/search', async (request, reply) => {
+    const viewer = requireAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    const userIds = adminVisibleUserIds(viewer)
+    const q = (queryText(request, 'q') ?? '').slice(0, 200)
+    const status = (queryText(request, 'status') ?? '').slice(0, 30)
+    const kind = (queryText(request, 'kind') ?? '').slice(0, 30)
+    const action = (queryText(request, 'action') ?? '').slice(0, 80)
+    const from = (queryText(request, 'from') ?? '').slice(0, 20)
+    const to = (queryText(request, 'to') ?? '').slice(0, 20)
+    const perPage = 20
+    const page = (name: string, total: number): number => {
+      const n = Number(queryText(request, name))
+      return Number.isFinite(n) && n >= 1 ? Math.min(Math.floor(n), Math.max(1, Math.ceil(total / perPage))) : 1
+    }
+    const auditFilters = { q, action, from, to: to === '' ? '' : (to.length === 10 ? `${to}T23:59:59.999Z` : to) }
+    const jobFilters = { q, status, kind }
+    const auditTotal = store.countSearchAudit(userIds, auditFilters)
+    const jobsTotal = store.countSearchJobs(userIds, jobFilters)
+    const auditPage = page('auditPage', auditTotal)
+    const jobsPage = page('jobsPage', jobsTotal)
+    const usersById = new Map(store.listUsers().map((user) => [user.id, user.login]))
+    return reply.type('text/html').send(adminSearchPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      jobs: store.searchJobs(userIds, jobFilters, perPage, (jobsPage - 1) * perPage),
+      audit: store.searchAudit(userIds, auditFilters, perPage, (auditPage - 1) * perPage),
+      usersById,
+      filters: { q, status, kind, action, from, to },
+      jobsPage,
+      jobsTotal,
+      auditPage,
+      auditTotal,
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
+  })
+
+  const csvCell = (value: unknown): string => {
+    const text = String(value ?? '')
+    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+  }
+
+  app.get('/admin/export/audit.csv', async (request, reply) => {
+    const viewer = requireAdmin(request)
+    if (viewer.preview === true) return reply.code(403).send({ error: 'preview' })
+    const userIds = adminVisibleUserIds(viewer)
+    const to = (queryText(request, 'to') ?? '').slice(0, 20)
+    const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), action: (queryText(request, 'action') ?? '').slice(0, 80), from: (queryText(request, 'from') ?? '').slice(0, 20), to: to === '' ? '' : (to.length === 10 ? `${to}T23:59:59.999Z` : to) }
+    const rows = store.searchAudit(userIds, filters, 5000, 0)
+    const csv = ['at,user_id,action,detail', ...rows.map((row) => [row.at, row.user_id ?? '', row.action, row.detail ?? ''].map(csvCell).join(','))].join('\n')
+    store.audit(viewer.user.id, 'admin.audit_export', `rows=${rows.length}`)
+    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-audit.csv"').send(csv)
+  })
+
+  app.get('/admin/export/jobs.csv', async (request, reply) => {
+    const viewer = requireAdmin(request)
+    if (viewer.preview === true) return reply.code(403).send({ error: 'preview' })
+    const userIds = adminVisibleUserIds(viewer)
+    const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), status: (queryText(request, 'status') ?? '').slice(0, 30), kind: (queryText(request, 'kind') ?? '').slice(0, 30) }
+    const rows = store.searchJobs(userIds, filters, 5000, 0)
+    const csv = ['id,repo_id,user_id,status,kind,trigger,created_at,finished_at,pr_url,issue_url,cost_usd', ...rows.map((row) => [row.id, row.repo_id, row.user_id, row.status, row.kind, row.trigger, row.created_at, row.finished_at ?? '', row.pr_url ?? '', row.issue_url ?? '', row.cost_usd].map(csvCell).join(','))].join('\n')
+    store.audit(viewer.user.id, 'admin.jobs_export', `rows=${rows.length}`)
+    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-jobs.csv"').send(csv)
   })
 
   app.get('/admin', async (request, reply) => {

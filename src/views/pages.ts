@@ -1125,7 +1125,7 @@ export function adminPage(input: {
   const body = `<section class="card">
     <div class="eyebrow">${escapeHtml(t('管理', 'ADMIN'))}</div>
     <h1>${escapeHtml(t('审批与额度', 'Approvals & quota'))}</h1>
-    <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}${superadmin ? ` · <a class="link" href="/admin/metrics">${escapeHtml(t('产品指标', 'Product metrics'))}</a>` : ''}</p>
+    <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}${superadmin ? ` · <a class="link" href="/admin/metrics">${escapeHtml(t('产品指标', 'Product metrics'))}</a>` : ''} · <a class="link" href="/admin/search">${escapeHtml(t('审计与任务', 'Audit and jobs'))}</a></p>
     ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出用户视图预览', 'Exit user preview') : t('预览用户视图', 'Preview the user view'))}</button></form>` : ''}
   </section>
   <section class="card">
@@ -1655,4 +1655,39 @@ export function adminSupportPage(input: {
     <section class="card"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2><div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>PR</th><th>${escapeHtml(t('创建', 'Created'))}</th></tr></thead><tbody>${jobRows}</tbody></table></div></section>
     <section class="card"><h2>${escapeHtml(t('审计', 'Audit'))}</h2>${auditRows(locale, audit, usersById, true)}</section>`
   return layout({ title: `${t('支持视图', 'Support view')} @${user.login}`, viewer, body, config, locale, path: `/admin/users/${user.id}`, active: 'admin', notice, error })
+}
+
+export function adminSearchPage(input: {
+  config: Config
+  locale: Locale
+  viewer: Viewer
+  jobs: JobRow[]
+  audit: AuditRow[]
+  usersById: Map<string, string>
+  filters: { q: string; status: string; kind: string; action: string; from: string; to: string }
+  jobsPage: number
+  jobsTotal: number
+  auditPage: number
+  auditTotal: number
+  notice?: string
+  error?: string
+}): string {
+  const { config, locale, viewer, jobs, audit, usersById, filters, jobsPage, jobsTotal, auditPage, auditTotal, notice, error } = input
+  const t = translator(locale)
+  const query = (values: Record<string, string | number>): string => {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(values)) if (String(value) !== '') params.set(key, String(value))
+    return params.toString()
+  }
+  const jobRows = jobs.length === 0
+    ? `<tr><td colspan="4" class="muted">${escapeHtml(t('没有匹配的任务。', 'No matching jobs.'))}</td></tr>`
+    : jobs.map((job) => `<tr><td><a href="/admin/jobs/${escapeHtml(job.id)}"><code>${escapeHtml(job.id)}</code></a></td><td>${badge(t, job.status)} <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span></td><td>${escapeHtml(usersById.get(job.user_id) ?? job.user_id)}</td><td>${escapeHtml(job.pr_url ?? job.issue_url ?? '—')}</td></tr>`).join('')
+  const auditTable = auditRows(locale, audit, usersById, false)
+  const jobQuery = query({ q: filters.q, status: filters.status, kind: filters.kind })
+  const auditQuery = query({ q: filters.q, action: filters.action, from: filters.from, to: filters.to })
+  const body = `<a class="back" href="/admin">← ${escapeHtml(t('返回管理', 'Back to admin'))}</a>
+    <section class="card"><div class="eyebrow">${escapeHtml(t('搜索与导出', 'SEARCH & EXPORT'))}</div><h1>${escapeHtml(t('审计与任务', 'Audit and jobs'))}</h1><p class="muted">${escapeHtml(t('按用户范围过滤；可导出当前结果。', 'Scoped by the same user visibility as the admin page; export the current result.'))}</p></section>
+    <section class="card"><h2>${escapeHtml(t('任务', 'Jobs'))}</h2><form method="get" action="/admin/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" /></label><label>${escapeHtml(t('状态', 'Status'))} <select name="status"><option value="">${escapeHtml(t('全部', 'All'))}</option>${['queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted'].map((status) => `<option value="${status}"${filters.status === status ? ' selected' : ''}>${status}</option>`).join('')}</select></label><label>${escapeHtml(t('类型', 'Kind'))} <select name="kind"><option value="">${escapeHtml(t('全部', 'All'))}</option>${['iterate', 'review', 'plan'].map((kind) => `<option value="${kind}"${filters.kind === kind ? ' selected' : ''}>${kind}</option>`).join('')}</select></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button><a class="btn btn-ghost" href="/admin/export/jobs.csv?${escapeHtml(jobQuery)}">${escapeHtml(t('导出 CSV', 'Export CSV'))}</a></div></form><div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('用户', 'User'))}</th><th>PR / Issue</th></tr></thead><tbody>${jobRows}</tbody></table></div><p class="fine">${escapeHtml(t('共', 'Total'))} ${jobsTotal} · ${escapeHtml(t('第', 'Page'))} ${jobsPage}</p></section>
+    <section class="card"><h2>${escapeHtml(t('审计', 'Audit'))}</h2><form method="get" action="/admin/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" /></label><label>${escapeHtml(t('动作', 'Action'))} <input name="action" value="${escapeHtml(filters.action)}" placeholder="repo.settings" /></label><label>${escapeHtml(t('从', 'From'))} <input name="from" value="${escapeHtml(filters.from)}" placeholder="YYYY-MM-DD" /></label><label>${escapeHtml(t('到', 'To'))} <input name="to" value="${escapeHtml(filters.to)}" placeholder="YYYY-MM-DD" /></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button><a class="btn btn-ghost" href="/admin/export/audit.csv?${escapeHtml(auditQuery)}">${escapeHtml(t('导出 CSV', 'Export CSV'))}</a></div></form>${auditTable}<p class="fine">${escapeHtml(t('共', 'Total'))} ${auditTotal} · ${escapeHtml(t('第', 'Page'))} ${auditPage}</p></section>`
+  return layout({ title: t('审计与任务', 'Audit and jobs'), viewer, body, config, locale, path: '/admin/search', active: 'admin', notice, error })
 }
