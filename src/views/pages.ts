@@ -1390,7 +1390,7 @@ export function jobPage(input: {
       <div>
         <div class="eyebrow">${escapeHtml(t('任务', 'JOB'))}</div>
         <h1><code>${escapeHtml(job.id)}</code></h1>
-        <p class="muted">${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)} · ${badge(t, job.status)} · ${escapeHtml(jobKindLabel(t, job))} · ${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(t('目标分支', 'Base branch'))} <code>${escapeHtml(job.base_branch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)))}</code></p>
+        <p class="muted">${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)} · ${badge(t, job.status)} · ${escapeHtml(jobKindLabel(t, job))} · ${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(t('目标分支', 'Base branch'))} <code>${escapeHtml(job.base_branch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)))}</code>${job.base_sha === null ? '' : ` · ${escapeHtml(t('基于', 'Based on'))} <code>${escapeHtml(job.base_sha.slice(0, 12))}</code>`}</p>
       </div>
       <div class="row">
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a>

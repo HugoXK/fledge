@@ -119,6 +119,34 @@ export class Jobs {
     }
   }
 
+  private async preflight(repo: RepoRow, baseBranch: string, trigger: string): Promise<{ ok: boolean; baseSha?: string; warning?: string; error?: string; code?: string }> {
+    if (this.runner.name !== 'flybot') return { ok: true }
+    if (trigger === 'schedule' && this.store.hasActiveWorkItem(repo.id)) {
+      return { ok: false, error: '已有进行中的工作项，跳过定时任务。', code: 'WORK_ITEM_OPEN' }
+    }
+    try {
+      const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
+      const client = new GithubClient(token, this.config.github.apiBase)
+      const upstreamOwner = repo.upstream_owner || repo.owner
+      const upstreamName = repo.upstream_name || repo.name
+      const branch = await client.getBranch(upstreamOwner, upstreamName, baseBranch)
+      if (branch === null) return { ok: false, error: `目标分支 ${baseBranch} 不存在或不可访问。`, code: 'BRANCH_MISSING' }
+      let warning = ''
+      if (repo.is_fork === 1) {
+        const forkOwner = repo.fork_owner || repo.owner
+        const forkName = repo.fork_name || repo.name
+        if (forkOwner !== upstreamOwner || forkName !== upstreamName) {
+          const forkBranch = await client.getBranch(forkOwner, forkName, baseBranch)
+          if (forkBranch === null) warning = 'fork target branch is missing'
+          else if (forkBranch.sha !== branch.sha) warning = 'fork is behind upstream'
+        }
+      }
+      return { ok: true, baseSha: branch.sha, warning }
+    } catch (error) {
+      return { ok: false, error: String(error instanceof Error ? error.message : error), code: 'PREFLIGHT_FAILED' }
+    }
+  }
+
   async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number } = {}): Promise<EnqueueResult> {
     if (repo.enabled !== 1) return { ok: false, error: '这个仓库已停用', code: 'REPO_DISABLED' }
     if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
@@ -143,8 +171,17 @@ export class Jobs {
     const repoBaseBranch = repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)
     const baseBranch = (options.baseBranch ?? repoBaseBranch).trim()
     if (!isValidBranchName(baseBranch)) return { ok: false, error: '目标分支格式不正确。', code: 'BRANCH_INVALID' }
+    let preflightSha: string | null = null
+    let preflightWarning = ''
+    if (kind === 'iterate') {
+      const preflight = await this.preflight(repo, baseBranch, trigger)
+      if (!preflight.ok) return { ok: false, error: preflight.error, code: preflight.code }
+      preflightSha = preflight.baseSha ?? null
+      preflightWarning = preflight.warning ?? ''
+    }
     const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
-    const goal = (goalOverride ?? baseGoal).slice(0, 4000)
+    const rawGoal = goalOverride ?? baseGoal
+    const goal = (preflightWarning === '' ? rawGoal : `${rawGoal}\n\nPreflight: ${preflightWarning}. Sync the fork before creating the working branch.`).slice(0, 4000)
     const jobId = `job_${randomToken(10)}`
     const callbackSecret = randomToken(24)
     const callbackHash = sha256Hex(callbackSecret)
@@ -196,7 +233,7 @@ export class Jobs {
     })
     const priorJobs = this.store.listJobs(user.id, 1).length
     const priority = options.priority ?? (trigger === 'followup' ? 20 : trigger === 'manual' ? 10 : 0)
-    const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch, workItemId: options.workItemId ?? null, priority })
+    const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha })
     if (options.workItemId !== undefined) {
       this.store.updateWorkItem(options.workItemId, { state: 'in_progress', job_id: job.id, assignee_user_id: user.id })
     }
