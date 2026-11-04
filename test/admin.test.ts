@@ -201,3 +201,34 @@ test('the configured primary login is promoted to owner on startup', async () =>
     await built.close()
   }
 })
+
+test('admins can inspect a normal user read-only from a support view', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'support-admin', admin: true })
+    const user = makeUser(store, { login: 'support-user', status: 'approved' })
+    const otherAdmin = makeUser(store, { login: 'other-admin', admin: true })
+    const repo = store.createRepo({ id: 'repo_support', userId: user.id, owner: 'o', name: 'support', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'fix', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_support', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'support goal', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate' })
+    store.audit(user.id, 'repo.settings', 'support detail')
+    const { cookie } = sessionFor(built, admin)
+    const support = await built.app.inject({ method: 'GET', url: `/admin/users/${user.id}`, headers: { cookie } })
+    assert.equal(support.statusCode, 200)
+    assert.match(support.body, /@support-user/)
+    assert.match(support.body, /只读/)
+    const job = await built.app.inject({ method: 'GET', url: '/admin/jobs/job_support', headers: { cookie } })
+    assert.equal(job.statusCode, 200)
+    assert.match(job.body, /job_support/)
+    assert.doesNotMatch(job.body, /取消这个任务|重试这个任务|执行这个计划/)
+    const hidden = await built.app.inject({ method: 'GET', url: `/admin/users/${otherAdmin.id}`, headers: { cookie } })
+    assert.equal(hidden.statusCode, 404)
+    const normal = makeUser(store, { login: 'normal-user', status: 'approved' })
+    const normalSession = sessionFor(built, normal)
+    const denied = await built.app.inject({ method: 'GET', url: `/admin/users/${user.id}`, headers: { cookie: normalSession.cookie } })
+    assert.equal(denied.statusCode, 403)
+  } finally {
+    await built.close()
+  }
+})

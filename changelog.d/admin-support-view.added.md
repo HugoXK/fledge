@@ -1,0 +1,1 @@
+Admins now have a read-only support view for the users they are allowed to see, including that user's repositories, recent jobs and audit entries. The same view opens a job without the control buttons, so support can inspect a run without changing it or triggering new work.

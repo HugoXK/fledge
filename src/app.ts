@@ -31,6 +31,7 @@ import { isWorkItemState, MAINTAINER_ONLY_STATES, WORK_ITEM_TRANSITIONS, type Wo
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
+  adminSupportPage,
   approvalPage,
   dashboardPage,
   landingPage,
@@ -1809,6 +1810,52 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       team: store.teamMetrics(since),
       workItems: store.workItemMetrics(since),
       since,
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
+  })
+
+  const adminCanViewUser = (viewer: { user: UserRow; preview?: boolean }, user: UserRow): boolean => {
+    if (viewer.preview === true) return false
+    if (viewer.user.role === 'superadmin') return true
+    return user.id === viewer.user.id || user.role === 'user'
+  }
+
+  app.get('/admin/users/:id', async (request, reply) => {
+    const viewer = requireAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    const user = store.userById(String((request.params as Record<string, string>).id))
+    if (user === undefined || !adminCanViewUser(viewer, user)) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
+    store.audit(viewer.user.id, 'admin.support_view', `user:${user.id}`)
+    return reply.type('text/html').send(adminSupportPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      user,
+      repos: store.listRepos(user.id),
+      jobs: store.listJobsPageForUser(user.id, 20, 0),
+      audit: store.listAuditPageForUsers([user.id], 20, 0),
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
+  })
+
+  app.get('/admin/jobs/:jobId', async (request, reply) => {
+    const viewer = requireAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const repo = store.getRepo(job.repo_id)
+    const user = store.userById(job.user_id)
+    if (repo === undefined || user === undefined || !adminCanViewUser(viewer, user)) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    store.audit(viewer.user.id, 'admin.support_view', `job:${job.id}`)
+    return reply.type('text/html').send(jobPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      repo,
+      job,
+      supportMode: true,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
