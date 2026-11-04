@@ -136,3 +136,30 @@ test('prepareRepo rejects a token that belongs to another GitHub user', async ()
     await github.close()
   }
 })
+
+test('GithubClient retries a rate-limited read', async () => {
+  let hits = 0
+  const github = await startFakeServer((request, response) => {
+    if (request.url === '/user') {
+      json(response, 200, { login: 'HugoXK', id: 1 })
+      return
+    }
+    if (request.url === '/repos/HugoXK/RetryRepo') {
+      hits += 1
+      if (hits === 1) {
+        json(response, 429, { message: 'rate limit' }, { 'retry-after': '0' })
+        return
+      }
+      json(response, 200, repoPayload('HugoXK', 'RetryRepo', { admin: true }))
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  try {
+    const prepared = await prepareRepo('token', 'HugoXK', 'RetryRepo', 'HugoXK', github.url)
+    assert.equal(prepared.permission, 'admin')
+    assert.equal(hits, 2)
+  } finally {
+    await github.close()
+  }
+})

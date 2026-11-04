@@ -9,9 +9,9 @@ import { log } from '../lib/log.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, type Evidence } from '../lib/evidence.js'
-import { randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
+import { decryptSecret, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
-import { GithubClient } from '../repos/github.js'
+import { GithubClient, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
 import { GithubApp } from '../repos/app.js'
 import { repoGithubToken } from '../repos/token.js'
 import { parseTeam } from '../flybot/instances.js'
@@ -22,7 +22,7 @@ export const DEFAULT_GOAL =
   'Review this repository for one high-value defect or improvement. Write a failing test first, implement the smallest correct fix, run the relevant tests, and open a pull request. Do not refactor unrelated code.'
 
 export const DEFAULT_REVIEW_GOAL =
-  'Review every open pull request on the upstream repository. For each PR, inspect the diff, tests and risk, give a score from 0 to 100 with a short rationale, and post a review comment. Do not approve, merge, push or change repository settings. Summarize the scores and the most important issues.'
+  'Review every open pull request on the upstream repository. For each PR, inspect the diff, tests and risk, give a score from 0 to 100 with a short rationale, and post a COMMENT review. Do not request changes, approve, merge, push or change repository settings. Return followUps for every Fledge PR that needs a same-branch fix. Summarize the scores and the most important issues.'
 
 export interface EnqueueResult {
   ok: boolean
@@ -68,6 +68,9 @@ export interface CallbackPayload {
 export class Jobs {
   private timer: NodeJS.Timeout | null = null
   private questionBusy = false
+  private readonly followUpLocks = new Set<string>()
+  private ticking = false
+  private lastPruneAt = 0
   private readonly quotaNotifier: QuotaNotifier
 
   constructor(
@@ -106,6 +109,16 @@ export class Jobs {
     }
   }
 
+  async cancelRepoJobs(repoId: string, reason: string): Promise<void> {
+    for (const job of this.store.listActiveJobs().filter((entry) => entry.repo_id === repoId)) {
+      const revoke = (): void => {
+        const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
+        if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
+      }
+      this.finish(job.id, { status: 'failed', error: reason }, revoke)
+    }
+  }
+
   async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string } = {}): Promise<EnqueueResult> {
     if (repo.enabled !== 1) return { ok: false, error: '这个仓库已停用', code: 'REPO_DISABLED' }
     if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
@@ -116,6 +129,11 @@ export class Jobs {
     }
     if (kind === 'review' && (repo.reviewer_enabled !== 1 || repo.can_review !== 1)) {
       return { ok: false, error: '这个仓库没有启用审核角色', code: 'REVIEW_DISABLED' }
+    }
+    if (kind === 'review' && !this.roleFresh(repo)) {
+      const refreshed = await this.refreshRepoAccess(repo)
+      if (refreshed === undefined) return { ok: false, error: 'GitHub 权限检查已过期，请刷新仓库后再审核。', code: 'ROLE_STALE' }
+      repo = refreshed
     }
     const active = this.store.activeJobForRepo(repo.id)
     if (active !== undefined) return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
@@ -229,6 +247,11 @@ export class Jobs {
         timeoutMinutes: this.config.runner.timeoutMinutes,
       })
       if (result.status === 'running') {
+        const current = this.store.getJob(job.id)
+        if (current !== undefined && current.status !== 'queued') {
+          if (current.status === 'succeeded' || current.status === 'running') return { ok: true, job: current }
+          return { ok: false, job: current, error: current.error ?? '任务失败' }
+        }
         this.store.updateJob(job.id, { status: 'running', started_at: nowIso() })
         if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'running' })
         else this.store.updateRepo(repo.id, { last_status: 'running' })
@@ -252,6 +275,7 @@ export class Jobs {
   private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }, revoke: () => void, attribution: Attribution | null = null, evidence: Evidence | null = null): void {
     const job = this.store.getJob(jobId)
     if (job === undefined) return
+    if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'quota_exhausted') return
     const branch = result.branch ?? job.branch
     const prUrl = result.prUrl ?? job.pr_url
     const issueUrl = result.issueUrl ?? job.issue_url
@@ -274,7 +298,6 @@ export class Jobs {
       log.warn('clear job model token failed', { job: jobId, error: String(error) })
     })
     revoke()
-    void this.releasePendingFollowups(job.repo_id)
     this.store.audit(job.user_id, `job.${result.status}`, jobId)
     this.store.event(`job_${result.status}`, { userId: job.user_id, repoId: job.repo_id, jobId })
     if (result.status === 'succeeded' && prUrl !== null) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
@@ -284,7 +307,162 @@ export class Jobs {
     void this.captureTeamStats(jobId)
   }
 
+  private async refreshRepoAccess(repo: RepoRow): Promise<RepoRow | undefined> {
+    const user = this.store.userById(repo.user_id)
+    if (user === undefined || user.status !== 'approved') return undefined
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    try {
+      let prepared: Awaited<ReturnType<typeof prepareRepo>>
+      let effectivePermission: string
+      if (repo.installation_id !== null) {
+        const installationToken = await this.githubApp.installationToken(repo.installation_id)
+        prepared = await prepareRepoWithInstallation(installationToken, owner, name, user.login, this.config.github.apiBase)
+        effectivePermission = 'none'
+        if (user.github_token_enc !== null) {
+          try {
+            effectivePermission = await repoPermissionWithToken(decryptSecret(user.github_token_enc, this.config.tokenEncryptionKey), owner, name, this.config.github.apiBase)
+          } catch (error) {
+            log.warn('role recheck user permission failed', { repo: repo.id, error: String(error) })
+          }
+        }
+      } else {
+        const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
+        prepared = await prepareRepo(token, owner, name, user.login, this.config.github.apiBase)
+        effectivePermission = prepared.permission
+      }
+      const allowed = effectivePermission === 'admin' || effectivePermission === 'maintain' ? ['maintainer', 'developer'] : ['developer']
+      const currentRole = repo.repo_role === 'maintainer' || repo.repo_role === 'developer' ? repo.repo_role : null
+      const downgraded = currentRole === 'maintainer' && !allowed.includes('maintainer')
+      const nextRole = downgraded ? 'developer' : repo.repo_role
+      this.store.updateRepo(repo.id, {
+        upstream_owner: prepared.upstream.owner,
+        upstream_name: prepared.upstream.name,
+        fork_owner: prepared.fork.owner,
+        fork_name: prepared.fork.name,
+        upstream_default_branch: prepared.upstream.defaultBranch,
+        fork_default_branch: prepared.fork.defaultBranch,
+        is_fork: prepared.isFork ? 1 : 0,
+        fork_created: prepared.forkCreated ? 1 : 0,
+        permission: effectivePermission,
+        repo_role: nextRole,
+        auto_merge: downgraded ? 0 : repo.auto_merge,
+        role_checked_at: nowIso(),
+        can_review: prepared.canReview ? 1 : 0,
+        can_create_issue: prepared.canCreateIssue ? 1 : 0,
+        reviewer_enabled: nextRole === 'maintainer' && prepared.canReview && repo.reviewer_enabled === 1 ? 1 : 0,
+        upstream_html_url: prepared.upstream.htmlUrl,
+        fork_html_url: prepared.fork.htmlUrl,
+      })
+      this.store.audit(repo.user_id, 'repo.refreshed', `${repo.owner}/${repo.name} permission=${effectivePermission} role=${nextRole ?? 'none'}${downgraded ? ' downgraded' : ''} auto=role-recheck`)
+      return this.store.getRepo(repo.id)
+    } catch (error) {
+      log.warn('role recheck failed', { repo: repo.id, error: String(error) })
+      return undefined
+    }
+  }
+
+  private roleFresh(repo: RepoRow, maxAgeMs = 6 * 60 * 60 * 1_000): boolean {
+    if (repo.role_checked_at === null) return false
+    const at = Date.parse(repo.role_checked_at)
+    return Number.isFinite(at) && Date.now() - at <= maxAgeMs
+  }
+
+  private async maybeAutoMerge(job: JobRow, prUrl: string): Promise<void> {
+    if (job.kind !== 'iterate') return
+    const repo = this.store.getRepo(job.repo_id)
+    if (repo === undefined || repo.repo_role !== 'maintainer' || repo.auto_merge !== 1) return
+    if (!this.roleFresh(repo)) {
+      const refreshed = await this.refreshRepoAccess(repo)
+      if (refreshed === undefined || refreshed.repo_role !== 'maintainer' || refreshed.auto_merge !== 1) {
+        this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: stale role check`)
+        return
+      }
+    }
+    const match = /\/pull\/(\d+)(?:[/?#]|$)/.exec(prUrl)
+    if (match === null) return
+    const number = Number(match[1])
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    try {
+      const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
+      const client = new GithubClient(token, this.config.github.apiBase)
+      const pr = await client.getPullRequest(owner, name, number)
+      if (pr.state !== 'open' || pr.draft || pr.merged) return
+      if (pr.mergeable === false || ['blocked', 'dirty', 'behind', 'unknown'].includes(pr.mergeableState)) {
+        this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: PR ${number} is ${pr.mergeableState}`)
+        return
+      }
+      const checks = await client.listCheckRuns(owner, name, pr.headSha)
+      if (checks.length === 0) {
+        this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: no check runs`)
+        return
+      }
+      if (checks.some((run) => run.status !== 'completed' || !['success', 'neutral', 'skipped'].includes(run.conclusion ?? ''))) {
+        this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: checks are not green`)
+        return
+      }
+      const combined = await client.getCombinedStatus(owner, name, pr.headSha)
+      if (combined.count > 0 && combined.state !== 'success') {
+        this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: commit status is ${combined.state}`)
+        return
+      }
+      const reviews = await client.listReviews(owner, name, number)
+      const latest = new Map<string, string>()
+      for (const review of reviews.sort((a, b) => a.submittedAt.localeCompare(b.submittedAt))) {
+        if (review.user !== '') latest.set(review.user, review.state)
+      }
+      if ([...latest.values()].includes('CHANGES_REQUESTED')) {
+        this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: changes requested`)
+        return
+      }
+      const merged = await client.mergePullRequest(owner, name, number, { sha: pr.headSha, mergeMethod: 'squash' })
+      if (merged.merged) {
+        this.store.audit(job.user_id, 'job.auto_merged', `${job.id}: PR ${number} ${merged.sha ?? ''}`)
+        this.store.event('job_auto_merged', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: `pr=${number}` })
+      } else {
+        this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: ${merged.message ?? 'merge rejected'}`)
+      }
+    } catch (error) {
+      this.store.audit(job.user_id, 'job.auto_merge_failed', `${job.id}: ${String(error).slice(0, 300)}`)
+      log.warn('auto-merge failed', { job: job.id, pr: number, error: String(error) })
+    }
+  }
+
+  private async resolveHeadSha(repo: RepoRow, prUrl: string): Promise<string | undefined> {
+    const match = /\/pull\/(\d+)(?:[/?#]|$)/.exec(prUrl)
+    if (match === null) return undefined
+    try {
+      const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
+      const client = new GithubClient(token, this.config.github.apiBase)
+      const pr = await client.getPullRequest(repo.upstream_owner || repo.owner, repo.upstream_name || repo.name, Number(match[1]))
+      return pr.headSha
+    } catch (error) {
+      log.warn('could not resolve PR head', { repo: repo.id, prUrl, error: String(error) })
+      return undefined
+    }
+  }
+
+  private async releaseAllPendingFollowups(): Promise<void> {
+    const repoIds = new Set<string>()
+    for (const row of this.store.listSettings('pending_followup:')) {
+      const repoId = row.key.split(':')[1]
+      if (repoId !== undefined && repoId !== '') repoIds.add(repoId)
+    }
+    for (const repoId of repoIds) await this.releasePendingFollowups(repoId)
+  }
+
   private async releasePendingFollowups(repoId: string): Promise<void> {
+    if (this.followUpLocks.has(repoId)) return
+    this.followUpLocks.add(repoId)
+    try {
+      await this.releasePendingFollowupsLocked(repoId)
+    } finally {
+      this.followUpLocks.delete(repoId)
+    }
+  }
+
+  private async releasePendingFollowupsLocked(repoId: string): Promise<void> {
     const prefix = `pending_followup:${repoId}:`
     for (const row of this.store.listSettings(prefix)) {
       this.store.deleteSetting(row.key)
@@ -363,6 +541,10 @@ export class Jobs {
   }
 
   async followUp(repo: RepoRow, input: { prUrl: string; branch: string; baseBranch?: string; reason: string; headSha: string }): Promise<EnqueueResult> {
+    const baseBranch = input.baseBranch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch))
+    if (!isValidBranchName(input.branch) || input.branch === baseBranch || input.branch === repo.upstream_default_branch || input.branch === repo.default_branch) {
+      return { ok: false, error: 'follow-up 分支不能是目标分支。', code: 'BRANCH_INVALID' }
+    }
     const key = `followup:${repo.id}:${input.prUrl}:${input.headSha}:${input.reason}`.slice(0, 300)
     if (this.store.getSetting(key) !== undefined) return { ok: false, error: '这个失败已经跟进过', code: 'DUPLICATE_FOLLOWUP' }
     const activeJob = this.store.activeJobForRepo(repo.id)
@@ -590,6 +772,9 @@ export class Jobs {
     const attribution = parseAttribution(payload.attribution)
     const evidence = parseEvidence(payload.evidence)
     const checkpoint = typeof payload.checkpoint === 'string' ? payload.checkpoint.trim().slice(0, 4000) : undefined
+    if (branch !== undefined && (!isValidBranchName(branch) || branch === job.base_branch)) {
+      return { ok: false, status: 400, error: 'invalid branch' }
+    }
     const followUps: ReviewFollowUp[] = job.kind === 'review' && Array.isArray(payload.followUps)
       ? payload.followUps.flatMap((entry) => {
           if (entry === null || typeof entry !== 'object') return []
@@ -631,25 +816,30 @@ export class Jobs {
     }
     if (checkpoint !== undefined) this.store.updateJob(jobId, { checkpoint })
     this.finish(jobId, { status, branch, prUrl, issueUrl, reviewScore, summary, error }, revoke, attribution, evidence)
-    if (status === 'succeeded' && followUps.length > 0) await this.queueReviewFollowUps(job, followUps)
+    if (status === 'succeeded' && followUps.length > 0) {
+      await this.queueReviewFollowUps(job, followUps)
+      await this.releasePendingFollowups(job.repo_id)
+    }
+    if (status === 'succeeded' && prUrl !== undefined) await this.maybeAutoMerge(job, prUrl)
     return { ok: true }
   }
 
   private async queueReviewFollowUps(job: JobRow, followUps: ReviewFollowUp[]): Promise<void> {
     const repo = this.store.getRepo(job.repo_id)
     if (repo === undefined) return
+    let index = 0
     for (const follow of followUps) {
+      const headSha = follow.headSha ?? await this.resolveHeadSha(repo, follow.prUrl) ?? job.id
       const input = {
         prUrl: follow.prUrl,
         branch: follow.branch,
         ...(follow.baseBranch === undefined ? {} : { baseBranch: follow.baseBranch }),
         reason: follow.reason ?? 'review requested changes',
-        headSha: follow.headSha ?? '',
+        headSha,
       }
-      const result = await this.followUp(repo, input)
-      if (!result.ok && result.code !== 'DUPLICATE_FOLLOWUP') {
-        log.warn('review follow-up not queued', { repo: repo.id, prUrl: follow.prUrl, code: result.code, error: result.error })
-      }
+      const key = `pending_followup:${repo.id}:${job.id}:${index}`.slice(0, 300)
+      this.store.setSetting(key, JSON.stringify(input))
+      index += 1
     }
   }
 
@@ -678,10 +868,11 @@ export class Jobs {
     if (repo === undefined) return { ok: false, status: 404, error: 'repo not found' }
     try {
       const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
+      const baseBranch = job.base_branch ?? repo.upstream_default_branch ?? repo.default_branch
       const upstream: RepoRef = {
         owner: repo.upstream_owner || repo.owner,
         name: repo.upstream_name || repo.name,
-        defaultBranch: repo.upstream_default_branch || repo.default_branch,
+        defaultBranch: baseBranch,
         htmlUrl: repo.upstream_html_url ?? `https://github.com/${repo.owner}/${repo.name}`,
       }
       const fork: RepoRef = {
@@ -695,7 +886,7 @@ export class Jobs {
         token,
         owner: upstream.owner,
         name: upstream.name,
-        defaultBranch: upstream.defaultBranch,
+        defaultBranch: baseBranch,
         upstream,
         fork,
         isFork: repo.is_fork === 1,
@@ -711,6 +902,16 @@ export class Jobs {
   }
 
   async tick(): Promise<void> {
+    if (this.ticking) return
+    this.ticking = true
+    try {
+      await this.tickOnce()
+    } finally {
+      this.ticking = false
+    }
+  }
+
+  private async tickOnce(): Promise<void> {
     const staleBefore = addMinutes(-this.config.runner.timeoutMinutes)
     const staleJobs = [...this.store.staleQueuedJobs(addMinutes(-10)), ...this.store.staleRunningJobs(staleBefore)]
     for (const job of staleJobs) {
@@ -721,11 +922,25 @@ export class Jobs {
       this.finish(job.id, { status: 'failed', error: job.status === 'queued' ? '任务排队超时未启动' : '任务超时未回报' }, revoke)
     }
     this.store.deleteExpiredJobTokens()
+    if (Date.now() - this.lastPruneAt > 60 * 60 * 1_000) {
+      this.lastPruneAt = Date.now()
+      this.store.pruneOldData()
+    }
+    if (this.config.env !== 'test' && this.instances !== undefined) {
+      await this.instances.healthSweep().catch((error) => log.warn('instance health sweep failed', { error: String(error) }))
+    }
+    await this.releaseAllPendingFollowups().catch((error) => log.warn('pending follow-up recovery failed', { error: String(error) }))
     await this.notifyQuestions().catch((error) => log.warn('question notification pass failed', { error: String(error) }))
     await this.maybeSendDigests().catch((error) => log.warn('daily digest pass failed', { error: String(error) }))
     if (this.store.countActiveJobs() >= 2) return
-    for (const repo of this.store.listReviewRepos()) {
+    for (const listed of this.store.listReviewRepos()) {
       if (this.store.countActiveJobs() >= 2) break
+      let repo = listed
+      if (!this.roleFresh(repo)) {
+        const refreshed = await this.refreshRepoAccess(repo)
+        if (refreshed === undefined) continue
+        repo = refreshed
+      }
       if (repo.repo_role !== 'maintainer') continue
       if (!this.userReadyForScheduling(repo.user_id)) continue
       if (!this.instanceReady(repo.id)) continue
@@ -735,8 +950,13 @@ export class Jobs {
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
       log.info('scheduled review', { repo: `${repo.owner}/${repo.name}`, ok: result.ok, job: result.job?.id })
     }
-    for (const repo of this.store.listAutoRepos()) {
+    for (const listed of this.store.listAutoRepos()) {
       if (this.store.countActiveJobs() >= 2) break
+      let repo = listed
+      if (repo.auto_merge === 1 && repo.repo_role === 'maintainer' && !this.roleFresh(repo)) {
+        const refreshed = await this.refreshRepoAccess(repo)
+        if (refreshed !== undefined) repo = refreshed
+      }
       if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') continue
       if (!this.userReadyForScheduling(repo.user_id)) continue
       if (!this.instanceReady(repo.id)) continue

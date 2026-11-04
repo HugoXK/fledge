@@ -47,7 +47,7 @@ import {
   errorPage,
   type InboxQuestion,
 } from './views/pages.js'
-import { GithubClient, parseRepoInput, prepareRepo, prepareRepoWithInstallation } from './repos/github.js'
+import { GithubClient, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
 import { GithubApp } from './repos/app.js'
 import { repoGithubToken } from './repos/token.js'
 import { InstanceManager } from './flybot/instances.js'
@@ -144,6 +144,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const sessions = new Sessions(store, config)
   const approvals = new Approvals(store, config, mailer)
   const instances = new InstanceManager(store, config)
+  if (options.startScheduler !== false && config.env !== 'test' && config.flybot.instanceImage !== '') {
+    void instances.healthSweep().catch((error) => log.warn('startup instance health sweep failed', { error: String(error) }))
+  }
   const githubApp = new GithubApp(config)
   const jobs = new Jobs(store, config, runner, mailer, instances, githubApp)
   const loginLimiter = new RateLimiter(30, 60_000)
@@ -195,8 +198,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return viewer
   }
 
+  const approvedCsrfGuard = (request: FastifyRequest) => {
+    const viewer = csrfGuard(request)
+    if (viewer.user.status !== 'approved') throw httpError(403, '账号正在等待审批。', 'NOT_APPROVED')
+    return viewer
+  }
+
   const ownedRepo = (request: FastifyRequest, id: string, mutating = false) => {
-    const viewer = mutating ? csrfGuard(request) : requireApproved(request)
+    const viewer = mutating ? approvedCsrfGuard(request) : requireApproved(request)
     const repo = store.getRepo(id)
     if (repo === undefined || repo.user_id !== viewer.user.id) throw httpError(404, '仓库不存在。', 'REPO_NOT_FOUND')
     return { viewer, repo }
@@ -263,6 +272,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: '0.2.2', time: new Date().toISOString() }))
+
+  app.get('/readyz', async (_request, reply) => {
+    try {
+      store.db.prepare('SELECT 1').get()
+    } catch {
+      return reply.code(503).send({ ok: false, db: false })
+    }
+    const instances = store.listRepoInstances()
+    const ready = instances.filter((entry) => entry.status === 'ready').length
+    const failed = instances.filter((entry) => entry.status === 'failed').length
+    return { ok: true, db: true, instances: { ready, failed, total: instances.length } }
+  })
 
   app.get('/lang/:locale', async (request, reply) => {
     const requested = String((request.params as Record<string, string>).locale)
@@ -694,7 +715,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/app', async (request, reply) => {
-    const viewer = csrfGuard(request)
+    const viewer = approvedCsrfGuard(request)
     if (!githubApp.configured) return reply.redirect(`/dashboard?error=${encodeURIComponent('GitHub App 未配置。')}`)
     const body = (request.body ?? {}) as Record<string, unknown>
     const installationId = Number(body.installation)
@@ -723,7 +744,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       try {
         const token = await githubApp.installationToken(installationId)
         const prepared = await prepareRepoWithInstallation(token, repoInfo.owner, repoInfo.name, installation.account_login, config.github.apiBase)
-        const canMaintainPermission = prepared.permission === 'admin' || prepared.permission === 'maintain'
+        const userToken = viewer.user.github_token_enc === null ? '' : decryptSecret(viewer.user.github_token_enc, config.tokenEncryptionKey)
+        let userPermission = 'none'
+        if (userToken !== '') {
+          try {
+            userPermission = await repoPermissionWithToken(userToken, repoInfo.owner, repoInfo.name, config.github.apiBase)
+          } catch (error) {
+            log.warn('user repository permission check failed', { repo: repoInfo.fullName, error: String(error) })
+          }
+        }
+        const canMaintainPermission = userPermission === 'admin' || userPermission === 'maintain'
         const repo = store.createRepo({
           id: randomId('repo'),
           userId: viewer.user.id,
@@ -743,7 +773,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
           forkDefaultBranch: prepared.fork.defaultBranch,
           isFork: prepared.isFork,
           forkCreated: prepared.forkCreated,
-          permission: prepared.permission,
+          permission: userPermission,
           canReview: prepared.canReview,
           canCreateIssue: prepared.canCreateIssue,
           reviewerEnabled: canMaintainPermission && review,
@@ -767,7 +797,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos', async (request, reply) => {
-    const viewer = csrfGuard(request)
+    const viewer = approvedCsrfGuard(request)
     const body = form(request)
     try {
       const { owner, name } = parseRepoInput(body.repo ?? '')
@@ -1236,7 +1266,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (active !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}`)
     const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : 'iterate'
     const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
-    const result = await jobs.enqueue(repo, 'manual', goal, kind)
+    const resumePr = kind === 'iterate' && job.pr_url !== null
+    const result = await jobs.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {})
     store.audit(viewer.user.id, 'job.retried', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
     if (!result.ok || result.job === undefined) {
       return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(result.error ?? '重试失败。')}`)
@@ -1312,7 +1343,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/run', async (request, reply) => {
-    const viewer = csrfGuard(request)
+    const viewer = approvedCsrfGuard(request)
     const repo = store.getRepo(String((request.params as Record<string, string>).id))
     if (repo === undefined || repo.user_id !== viewer.user.id) throw httpError(404, '仓库不存在。', 'REPO_NOT_FOUND')
     const result = await jobs.enqueue(repo, 'manual')
@@ -1333,9 +1364,24 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/refresh', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     try {
-      const token = await repoGithubToken(repo, config, githubApp, store)
-      const prepared = await prepareRepo(token, repo.upstream_owner || repo.owner, repo.upstream_name || repo.name, viewer.user.login, config.github.apiBase)
-      const allowed = allowedRepoRoles(prepared.permission)
+      const isAppRepo = repo.installation_id !== null
+      const token = isAppRepo ? await githubApp.installationToken(repo.installation_id!) : await repoGithubToken(repo, config, githubApp, store)
+      const prepared = isAppRepo
+        ? await prepareRepoWithInstallation(token, repo.upstream_owner || repo.owner, repo.upstream_name || repo.name, viewer.user.login, config.github.apiBase)
+        : await prepareRepo(token, repo.upstream_owner || repo.owner, repo.upstream_name || repo.name, viewer.user.login, config.github.apiBase)
+      let effectivePermission = prepared.permission
+      if (isAppRepo) {
+        effectivePermission = 'none'
+        const userToken = viewer.user.github_token_enc === null ? '' : decryptSecret(viewer.user.github_token_enc, config.tokenEncryptionKey)
+        if (userToken !== '') {
+          try {
+            effectivePermission = await repoPermissionWithToken(userToken, repo.upstream_owner || repo.owner, repo.upstream_name || repo.name, config.github.apiBase)
+          } catch (error) {
+            log.warn('user repository permission check failed', { repo: repo.id, error: String(error) })
+          }
+        }
+      }
+      const allowed = allowedRepoRoles(effectivePermission)
       const currentRole = parseRepoRole(repo.repo_role)
       const downgraded = currentRole === 'maintainer' && !allowed.includes('maintainer')
       const nextRole = downgraded ? 'developer' : repo.repo_role
@@ -1349,7 +1395,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         fork_default_branch: prepared.fork.defaultBranch,
         is_fork: prepared.isFork ? 1 : 0,
         fork_created: prepared.forkCreated ? 1 : 0,
-        permission: prepared.permission,
+        permission: effectivePermission,
         repo_role: nextRole,
         auto_merge: downgraded ? 0 : repo.auto_merge,
         role_checked_at: nowIso(),
@@ -1359,11 +1405,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         upstream_html_url: prepared.upstream.htmlUrl,
         fork_html_url: prepared.fork.htmlUrl,
       })
-      store.audit(viewer.user.id, 'repo.refreshed', `${repo.owner}/${repo.name} fork=${prepared.fork.owner}/${prepared.fork.name} permission=${prepared.permission} role=${nextRole ?? 'none'}${downgraded ? ' downgraded' : ''}`)
+      store.audit(viewer.user.id, 'repo.refreshed', `${repo.owner}/${repo.name} fork=${prepared.fork.owner}/${prepared.fork.name} permission=${effectivePermission} role=${nextRole ?? 'none'}${downgraded ? ' downgraded' : ''}`)
       const t = translator(request.locale ?? 'zh')
       const notice = [
         prepared.forkCreated ? t(`已创建 fork ${prepared.fork.fullName}。`, `Created fork ${prepared.fork.fullName}.`) : t('上游 / fork / 权限已重新检测。', 'Upstream, fork and permissions refreshed.'),
         downgraded ? t('GitHub 权限已变更，角色已降级为 developer，自动合并已关闭。', 'GitHub permission changed; the role was downgraded to developer and auto-merge is off.') : '',
+        isAppRepo && effectivePermission !== 'admin' && effectivePermission !== 'maintain' ? t('无法确认你的 GitHub maintain 权限；如这是你自己的仓库，请重新授权 GitHub。', 'Could not confirm your GitHub maintain permission; re-authorize GitHub if this is your repository.') : '',
       ].filter((line) => line !== '').join(' ')
       return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(notice)}`)
     } catch (error) {
@@ -1385,6 +1432,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/instance/stop', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     await instances.stop(repo.id)
+    await jobs.cancelRepoJobs(repo.id, 'FlyBot 实例已停止')
     store.audit(viewer.user.id, 'flybot.instance.stopped', `${repo.owner}/${repo.name}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例已停止。')}`)
   })
@@ -1401,16 +1449,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/role', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const body = form(request)
+    const t = translator(request.locale ?? 'zh')
     const role = parseRepoRole(body.role)
     if (role === null) {
-      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请选择 maintainer 或 developer。')}#role`)
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('请选择 maintainer 或 developer。', 'Choose maintainer or developer.'))}#role`)
     }
     if (!roleAllowed(repo.permission, role)) {
-      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('你的 GitHub 权限不允许选择这个角色。')}#role`)
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('你的 GitHub 权限不允许选择这个角色。', 'Your GitHub permission does not allow this role.'))}#role`)
     }
     store.updateRepo(repo.id, { repo_role: role, auto_merge: 0, reviewer_enabled: role === 'maintainer' ? repo.reviewer_enabled : 0, role_checked_at: nowIso() })
     store.audit(viewer.user.id, 'repo.role', `${repo.owner}/${repo.name} role=${role} previous=${repo.repo_role ?? 'none'}`)
-    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(`已选择角色：${role === 'maintainer' ? 'Maintainer' : 'Developer'}。`)}`)
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(role === 'maintainer' ? t('已选择角色：Maintainer。', 'Role selected: Maintainer.') : t('已选择角色：Developer。', 'Role selected: Developer.'))}`)
   })
 
   app.post('/repos/:id/settings', async (request, reply) => {
@@ -1418,14 +1467,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const body = form(request)
     const interval = normalizeInterval(body.interval, repo.interval_minutes)
     const reviewInterval = normalizeInterval(body.reviewInterval, repo.review_interval_minutes)
+    const t = translator(request.locale ?? 'zh')
     const currentRole = parseRepoRole(repo.repo_role)
     const requestedRole = parseRepoRole(body.repoRole)
     const repoRole = requestedRole ?? currentRole
     if (repoRole === null) {
-      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请先选择你的角色。')}#repo-settings`)
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('请先选择你的角色。', 'Choose your role first.'))}#repo-settings`)
     }
     if (!roleAllowed(repo.permission, repoRole)) {
-      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('你的 GitHub 权限不允许选择这个角色。')}#repo-settings`)
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('你的 GitHub 权限不允许选择这个角色。', 'Your GitHub permission does not allow this role.'))}#repo-settings`)
     }
     const canMaintain = repoRole === 'maintainer'
     const roleChanged = repoRole !== currentRole
@@ -1451,6 +1501,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       goal,
       target_branch: targetBranch,
       repo_role: repoRole,
+      ...(roleChanged ? { role_checked_at: nowIso() } : {}),
       auto_merge: canMaintain && body.autoMerge === '1' ? 1 : 0,
       auto_iterate: body.auto === '1' ? 1 : 0,
       enabled: body.enabled === '1' ? 1 : 0,
@@ -1458,6 +1509,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       reviewer_enabled: canMaintain && repo.can_review === 1 && body.review === '1' ? 1 : 0,
       review_interval_minutes: reviewInterval,
     })
+    if (repo.enabled === 1 && body.enabled !== '1') {
+      await jobs.cancelRepoJobs(repo.id, '仓库已停用')
+    }
     if (goalChanged) {
       await instances.ensurePlaybook(repo.id).catch((error) => {
         log.warn('team playbook not updated after goal change', { repo: repo.id, error: String(error) })
@@ -1494,7 +1548,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/settings/model', async (request, reply) => {
-    const viewer = csrfGuard(request)
+    const viewer = approvedCsrfGuard(request)
     const body = form(request)
     if (body.action === 'clear') {
       store.setUserOwnModel(viewer.user.id, null, null, null)
@@ -1523,7 +1577,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/settings/notifications', async (request, reply) => {
-    const viewer = csrfGuard(request)
+    const viewer = approvedCsrfGuard(request)
     const body = form(request)
     const rawEmail = (body.email ?? '').trim().slice(0, 254)
     const clear = body.clear === '1'
@@ -1561,7 +1615,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/settings/tokens', async (request, reply) => {
-    const viewer = csrfGuard(request)
+    const viewer = approvedCsrfGuard(request)
     const name = (form(request).name ?? '').trim().slice(0, 80) || 'default'
     const raw = `flg_${randomToken(32)}`
     store.createApiToken({
@@ -1587,14 +1641,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/settings/tokens/:id/revoke', async (request, reply) => {
-    const viewer = csrfGuard(request)
+    const viewer = approvedCsrfGuard(request)
     store.revokeApiToken(String((request.params as Record<string, string>).id), viewer.user.id)
     store.audit(viewer.user.id, 'token.revoked')
     return reply.redirect(`/settings?notice=${encodeURIComponent('Token 已撤销。')}`)
   })
 
   app.post('/notifications/read', async (request, reply) => {
-    const viewer = csrfGuard(request)
+    const viewer = approvedCsrfGuard(request)
     store.markNotificationsRead(viewer.user.id)
     return reply.redirect('/dashboard')
   })
@@ -1659,7 +1713,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   const adminStatus = async (request: FastifyRequest, status: 'approved' | 'rejected') => {
-    const viewer = csrfGuard(request)
+    const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
     const id = String((request.params as Record<string, string>).id)
     const user = store.userById(id)
@@ -1695,7 +1749,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/admin/users/:id/quota', async (request, reply) => {
-    const viewer = csrfGuard(request)
+    const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
     const id = String((request.params as Record<string, string>).id)
     const user = store.userById(id)
@@ -1715,7 +1769,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/admin/users/:id/role', async (request, reply) => {
-    const viewer = csrfGuard(request)
+    const viewer = approvedCsrfGuard(request)
     if (viewer.user.role !== 'superadmin') throw httpError(403, '仅超级管理员可访问。', 'SUPERADMIN_ONLY')
     const id = String((request.params as Record<string, string>).id)
     const user = store.userById(id)
@@ -1728,7 +1782,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/admin/simulation', async (request, reply) => {
-    const viewer = csrfGuard(request)
+    const viewer = approvedCsrfGuard(request)
     if (viewer.user.role !== 'superadmin') throw httpError(403, '仅超级管理员可访问。', 'SUPERADMIN_ONLY')
     const body = form(request)
     sessions.setPreview(reply, body.enable === '1')
@@ -1757,7 +1811,20 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const secret = bearerSecret(request)
     const result = await jobs.credential(String((request.params as Record<string, string>).id), secret)
     if (!result.ok) return reply.code(result.status ?? 400).send({ error: result.error ?? 'unauthorized' })
-    return { token: result.token, owner: result.owner, name: result.name, defaultBranch: result.defaultBranch }
+    return {
+      token: result.token,
+      owner: result.owner,
+      name: result.name,
+      defaultBranch: result.defaultBranch,
+      upstream: result.upstream,
+      fork: result.fork,
+      isFork: result.isFork,
+      permission: result.permission,
+      repoRole: result.repoRole,
+      autoMerge: result.autoMerge,
+      canReview: result.canReview,
+      canCreateIssue: result.canCreateIssue,
+    }
   })
 
   app.post('/api/jobs/:id/callback', async (request, reply) => {

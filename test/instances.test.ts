@@ -108,3 +108,40 @@ test('clearJobToken tells the per-repo bridge to drop the job model token', asyn
     await bridge.close()
   }
 })
+
+test('healthSweep records live bridges and marks a dead bridge failed', async () => {
+  const bridge = await startFakeServer((request, response) => {
+    if (request.url === '/healthz') {
+      json(response, 200, { ok: true })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const manager = new InstanceManager(store, config)
+  let closed = false
+  try {
+    const user = makeUser(store, { login: 'health-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_health', userId: user.id, owner: 'o', name: 'health', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.saveRepoInstance({
+      repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/health', bridge_script: '/tmp/bridge',
+      dsh_port: 1, bridge_port: Number(new URL(bridge.url).port), model_port: 2, model_bind: '127.0.0.1', image: 'image',
+      status: 'ready', chief_session: 'chief-1', team_json: null,
+      bridge_token_enc: encryptSecret('bridge-token', config.tokenEncryptionKey), bridge_pid: null, log_pid: null,
+      last_error: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_health_at: null,
+    })
+    const live = await manager.healthSweep()
+    assert.equal(live.ready, 1)
+    assert.equal(live.failed, 0)
+    assert.notEqual(store.getRepoInstance(repo.id)?.last_health_at, null)
+    await bridge.close()
+    closed = true
+    const dead = await manager.healthSweep()
+    assert.equal(dead.failed, 1)
+    assert.equal(store.getRepoInstance(repo.id)?.status, 'failed')
+  } finally {
+    store.close()
+    if (!closed) await bridge.close()
+  }
+})

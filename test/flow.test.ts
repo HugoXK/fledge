@@ -197,6 +197,23 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     assert.equal(tokenUser.status, 'onboarding')
     assert.equal(mailer.messages.length, mailsBeforeLogin)
 
+    const blockedSettings = await built.app.inject({
+      method: 'POST',
+      url: '/settings/model',
+      headers: { cookie: tokenCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf: tokenCsrf, baseUrl: 'https://example.com/v1', apiKey: 'sk-test', model: 'test' }),
+    })
+    assert.equal(blockedSettings.statusCode, 403)
+    assert.match(blockedSettings.body, /等待审批/)
+
+    const blockedRepo = await built.app.inject({
+      method: 'POST',
+      url: '/repos',
+      headers: { cookie: tokenCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf: tokenCsrf, repo: 'octo/demo', token: 'repo-token' }),
+    })
+    assert.equal(blockedRepo.statusCode, 403)
+
     const applyPage = await built.app.inject({ method: 'GET', url: '/apply', headers: { cookie: tokenCookie } })
     assert.equal(applyPage.statusCode, 200)
     assert.match(applyPage.body, /免责声明/)

@@ -75,29 +75,33 @@ export class GithubApp {
   }
 
   private async request<T>(method: string, path: string, token: string, body?: unknown, allow404 = false): Promise<T | null> {
-    const response = await fetch(`${this.config.github.apiBase}${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        accept: 'application/vnd.github+json',
-        'x-github-api-version': '2022-11-28',
-        'user-agent': 'fledge/0.1',
-        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(30_000),
-    })
-    const text = await response.text()
-    if (response.status === 404 && allow404) return null
-    if (!response.ok) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await fetch(`${this.config.github.apiBase}${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${token}`,
+          accept: 'application/vnd.github+json',
+          'x-github-api-version': '2022-11-28',
+          'user-agent': 'fledge/0.1',
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: AbortSignal.timeout(30_000),
+      })
+      const text = await response.text()
+      if (response.status === 404 && allow404) return null
+      if (response.ok) return (text === '' ? {} : JSON.parse(text)) as T
       let message = text.slice(0, 300)
       try {
         const parsed = JSON.parse(text) as { message?: string }
         if (parsed.message !== undefined) message = parsed.message
       } catch {}
-      throw new GithubError(response.status, message)
+      const retryable = response.status === 429 || (method === 'GET' && response.status >= 500) || (response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.get('retry-after') !== null || /rate limit/i.test(message)))
+      if (!retryable || attempt === 2) throw new GithubError(response.status, message)
+      const retryAfter = Number(response.headers.get('retry-after'))
+      await new Promise((resolve) => setTimeout(resolve, Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 10_000) : Math.min(500 * 2 ** attempt, 5_000)))
     }
-    return (text === '' ? {} : JSON.parse(text)) as T
+    throw new GithubError(500, 'GitHub App request failed')
   }
 
   private async appRequest<T>(method: string, path: string, body?: unknown, allow404 = false): Promise<T | null> {

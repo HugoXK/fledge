@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
+import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
 import { appReposPage, dashboardPage, landingPage, repoPage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
@@ -212,13 +213,17 @@ test('the anonymous landing page follows the saved language', async () => {
 test('job detail shows evidence and can retry a failed job', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
-  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner, startScheduler: false })
   try {
     const user = makeUser(store, { login: 'retry-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_retry', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'keep it small', autoIterate: false, intervalMinutes: 1440 })
-    const job = store.createJob({ id: 'job_retry', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'keep it small', callbackHash: 'cb', platformTokenHash: '' })
+    const job = store.createJob({ id: 'job_retry', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'keep it small', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
     store.updateJob(job.id, {
       status: 'failed',
+      branch: 'fledge/fix',
+      pr_url: 'https://github.com/o/r/pull/7',
       summary: 'Tests failed',
       error: 'one assertion failed',
       cost_usd: 0.0123,
@@ -251,6 +256,14 @@ test('job detail shows evidence and can retry a failed job', async () => {
     assert.equal(jobs.length, 2)
     assert.match(jobs[0]!.goal, /Resume from checkpoint:/)
     assert.match(jobs[0]!.goal, /done A; next B/)
+    assert.equal(jobs[0]!.trigger, 'followup')
+    assert.equal(jobs[0]!.branch, 'fledge/fix')
+    assert.equal(jobs[0]!.pr_url, 'https://github.com/o/r/pull/7')
+    assert.equal(jobs[0]!.base_branch, 'main')
+    assert.equal(contexts[0]?.job.trigger, 'followup')
+    assert.equal(contexts[0]?.job.branch, 'fledge/fix')
+    assert.equal(contexts[0]?.job.pr_url, 'https://github.com/o/r/pull/7')
+    assert.equal(contexts[0]?.job.base_branch, 'main')
   } finally {
     await built.close()
   }

@@ -822,6 +822,29 @@ server.listen(3081, '0.0.0.0')
     if (!response.ok) throw new Error(`bridge /job-done ${response.status}`)
   }
 
+  async healthSweep(): Promise<{ ready: number; failed: number; total: number }> {
+    let ready = 0
+    let failed = 0
+    for (const instance of this.store.listRepoInstances()) {
+      if (instance.status !== 'ready') continue
+      try {
+        const response = await fetch(`http://127.0.0.1:${instance.bridge_port}/healthz`, { signal: AbortSignal.timeout(2_000) })
+        if (!response.ok) throw new Error(`bridge ${response.status}`)
+        this.store.updateRepoInstance(instance.repo_id, { last_health_at: nowIso() })
+        ready += 1
+      } catch (error) {
+        failed += 1
+        this.store.updateRepoInstance(instance.repo_id, {
+          status: 'failed',
+          last_error: `health check failed: ${String(error).slice(0, 200)}`,
+          updated_at: nowIso(),
+        })
+        log.warn('instance health check failed', { repo: instance.repo_id, error: String(error) })
+      }
+    }
+    return { ready, failed, total: ready + failed }
+  }
+
   async stop(repoId: string, update = true): Promise<void> {
     const instance = this.store.getRepoInstance(repoId)
     if (instance === undefined) return

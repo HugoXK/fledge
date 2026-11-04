@@ -144,6 +144,18 @@ const MESSAGES: Record<string, string> = {
   'FlyBot 实例未就绪': 'FlyBot instance is not ready.',
   '已批准': 'Approved',
   '已拒绝': 'Rejected',
+  '请先选择你在这个仓库的角色。': 'Choose your role for this repository first.',
+  '只有 maintainer 可以运行审核任务。': 'Only a maintainer can run review jobs.',
+  'GitHub 权限检查已过期，请刷新仓库后再审核。': 'The GitHub permission check has expired; refresh the repository before reviewing.',
+  '你的 GitHub 权限不允许选择这个角色。': 'Your GitHub permission does not allow this role.',
+  '请选择 maintainer 或 developer。': 'Choose maintainer or developer.',
+  '请先选择你的角色。': 'Choose your role first.',
+  '已选择角色：Maintainer。': 'Role selected: Maintainer.',
+  '已选择角色：Developer。': 'Role selected: Developer.',
+  'follow-up 分支不能是目标分支。': 'A follow-up branch cannot be the target branch.',
+  '仓库已停用': 'Repository disabled.',
+  'FlyBot 实例已停止': 'FlyBot instance stopped.',
+  '无法确认你的 GitHub maintain 权限；如这是你自己的仓库，请重新授权 GitHub。': 'Could not confirm your GitHub maintain permission; re-authorize GitHub if this is your repository.',
 }
 
 export function localizeMessage(locale: Locale, message: string | undefined): string | undefined {

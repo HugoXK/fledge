@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module'
+import { randomBytes } from 'node:crypto'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { log } from './lib/log.js'
@@ -437,6 +438,16 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS audit_log_user_idx ON audit_log(user_id, id DESC);
+CREATE INDEX IF NOT EXISTS audit_log_at_idx ON audit_log(at);
+CREATE INDEX IF NOT EXISTS repos_installation_idx ON repos(installation_id);
+CREATE INDEX IF NOT EXISTS repos_auto_idx ON repos(enabled, auto_iterate);
+CREATE INDEX IF NOT EXISTS repos_review_idx ON repos(enabled, reviewer_enabled, can_review, repo_role);
+CREATE INDEX IF NOT EXISTS jobs_user_pr_idx ON jobs(user_id, pr_url);
+CREATE INDEX IF NOT EXISTS jobs_created_idx ON jobs(created_at);
+CREATE INDEX IF NOT EXISTS events_at_idx ON events(at);
 `
 
 function clean(params: unknown[]): unknown[] {
@@ -451,15 +462,23 @@ export class Store {
     this.db = new DatabaseSync(path)
     this.db.exec('PRAGMA journal_mode = WAL;')
     this.db.exec('PRAGMA foreign_keys = ON;')
+    this.db.exec('PRAGMA busy_timeout = 5000;')
+    const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
+    if (previousVersion > 16) {
+      this.db.close()
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (16)`)
+    }
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
-    const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
     this.run("UPDATE repos SET job_mode = 'iterate' WHERE job_mode != 'iterate'")
     if (previousVersion < 15) {
       this.run("UPDATE repos SET repo_role = CASE WHEN permission IN ('admin', 'maintain') THEN 'maintainer' ELSE 'developer' END WHERE repo_role IS NULL")
     }
-    this.db.exec('PRAGMA user_version = 15;')
+    if (previousVersion < 16) {
+      this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
+    }
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 16)};`)
   }
 
   private migrateColumns(): void {
@@ -737,7 +756,7 @@ export class Store {
     this.run(
       `INSERT INTO github_installations (installation_id, user_id, account_login, account_type, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(installation_id) DO UPDATE SET user_id = excluded.user_id, account_login = excluded.account_login, account_type = excluded.account_type, updated_at = excluded.updated_at`,
+       ON CONFLICT(installation_id) DO UPDATE SET account_login = excluded.account_login, account_type = excluded.account_type, updated_at = excluded.updated_at`,
       input.installationId, input.userId, input.accountLogin, input.accountType, nowIso(), nowIso(),
     )
   }
@@ -956,7 +975,7 @@ export class Store {
       'iterate',
       input.repoRole ?? null,
       input.autoMerge === true ? 1 : 0,
-      input.roleCheckedAt ?? null,
+      input.roleCheckedAt ?? (input.repoRole === 'maintainer' || input.repoRole === 'developer' ? nowIso() : null),
       input.isFork === true ? 1 : 0,
       input.forkCreated === true ? 1 : 0,
       input.permission ?? 'write',
@@ -1009,11 +1028,11 @@ export class Store {
   }
 
   listAutoRepos(): RepoRow[] {
-    return this.all<RepoRow>('SELECT * FROM repos WHERE enabled = 1 AND auto_iterate = 1')
+    return this.all<RepoRow>("SELECT * FROM repos WHERE enabled = 1 AND auto_iterate = 1 ORDER BY CASE WHEN last_run_at IS NULL THEN 0 ELSE 1 END, last_run_at ASC, created_at ASC")
   }
 
   listReviewRepos(): RepoRow[] {
-    return this.all<RepoRow>("SELECT * FROM repos WHERE enabled = 1 AND reviewer_enabled = 1 AND can_review = 1 AND repo_role = 'maintainer'")
+    return this.all<RepoRow>("SELECT * FROM repos WHERE enabled = 1 AND reviewer_enabled = 1 AND can_review = 1 AND repo_role = 'maintainer' ORDER BY CASE WHEN last_review_at IS NULL THEN 0 ELSE 1 END, last_review_at ASC, created_at ASC")
   }
 
   getRepoInstance(repoId: string): RepoInstanceRow | undefined {
@@ -1182,6 +1201,42 @@ export class Store {
     return this.all<ApiTokenRow>('SELECT * FROM api_tokens WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC', userId)
   }
 
+  pruneOldData(): void {
+    const now = Date.now()
+    const cutoff = (days: number): string => new Date(now - days * 86_400_000).toISOString()
+    this.deleteExpiredSessions()
+    this.run('DELETE FROM oauth_states WHERE created_at < ?', cutoff(7))
+    this.run('DELETE FROM approval_tokens WHERE (expires_at < ? OR used_at IS NOT NULL) AND created_at < ?', nowIso(), cutoff(30))
+    this.run('DELETE FROM notifications WHERE read_at IS NOT NULL AND created_at < ?', cutoff(30))
+    this.run('DELETE FROM notifications WHERE read_at IS NULL AND created_at < ?', cutoff(90))
+    this.run('DELETE FROM events WHERE at < ?', cutoff(90))
+    this.run("DELETE FROM jobs WHERE status IN ('succeeded', 'failed', 'quota_exhausted') AND finished_at IS NOT NULL AND finished_at < ?", cutoff(365))
+    this.run('DELETE FROM audit_log WHERE at < ?', cutoff(365))
+    this.run('DELETE FROM quota_ledger WHERE at < ?', cutoff(730))
+    const settings = this.all<{ key: string; value: string }>(
+      "SELECT key, value FROM settings WHERE key LIKE 'followup:%' OR key LIKE 'question_notified:%' OR key LIKE 'digest_sent:%' OR key LIKE 'email_test:%' OR key LIKE 'webhook_delivery:%' OR key LIKE 'email_reply:%' OR key LIKE 'github_app_state:%' OR key LIKE 'installation_sender:%'",
+    )
+    const limits: Array<[string, string]> = [
+      ['followup:', cutoff(30)],
+      ['question_notified:', cutoff(30)],
+      ['digest_sent:', cutoff(14)],
+      ['email_test:', cutoff(1)],
+      ['webhook_delivery:', cutoff(30)],
+      ['email_reply:', cutoff(7)],
+      ['github_app_state:', cutoff(1)],
+      ['installation_sender:', cutoff(30)],
+    ]
+    for (const row of settings) {
+      const limit = limits.find(([prefix]) => row.key.startsWith(prefix))?.[1]
+      if (limit === undefined) continue
+      const raw = row.value.slice(row.value.lastIndexOf(':') + 1)
+      const at = /^\d{4}-\d{2}-\d{2}T/.test(row.value) ? Date.parse(row.value) : Number(raw)
+      if (!Number.isFinite(at) || at === 0) continue
+      const iso = at > 10_000_000_000 ? new Date(at).toISOString() : row.value
+      if (iso < limit) this.run('DELETE FROM settings WHERE key = ?', row.key)
+    }
+  }
+
   deleteExpiredJobTokens(): void {
     this.run("UPDATE api_tokens SET revoked_at = ? WHERE kind = 'job' AND (expires_at IS NOT NULL AND expires_at <= ?) AND revoked_at IS NULL", nowIso(), nowIso())
   }
@@ -1209,7 +1264,7 @@ export class Store {
   }
 
   notify(userId: string, kind: string, message: string): void {
-    this.run('INSERT INTO notifications (id, user_id, kind, message, created_at) VALUES (?, ?, ?, ?, ?)', `ntf_${Math.random().toString(36).slice(2, 12)}`, userId, kind, message, nowIso())
+    this.run('INSERT INTO notifications (id, user_id, kind, message, created_at) VALUES (?, ?, ?, ?, ?)', `ntf_${randomBytes(6).toString('hex')}`, userId, kind, message, nowIso())
   }
 
   listNotifications(userId: string, limit = 20): NotificationRow[] {
