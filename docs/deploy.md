@@ -43,6 +43,7 @@ Key settings:
 | `FLYBOT_BRIDGE_URL` / `FLYBOT_BRIDGE_TOKEN` | Bridge endpoint and shared secret |
 | `DATA_DIR` / `DB_PATH` | Defaults `./data`, `./data/fledge.db` |
 | `ALLOW_PRIVATE_MODEL_URLS` | Keep `false` for untrusted users |
+| `NOTIFY_WEBHOOK_URL` / `NOTIFY_WEBHOOK_SECRET` | Optional outbound notifications (Slack-compatible `text`); the secret is sent as a bearer token |
 
 Production startup fails closed if the session/encryption keys, OAuth app or
 SMTP password are missing.

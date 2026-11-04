@@ -80,6 +80,8 @@ export interface Config {
   dbPath: string
   allowPrivateModelUrls: boolean
   inboundEmailSecret: string
+  notifyWebhookUrl: string
+  notifyWebhookSecret: string
   allowTokenLoginOnly: boolean
   devLogin: {
     login: string
@@ -215,6 +217,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     dbPath: resolve(text('DB_PATH', `${dataDir}/fledge.db`)),
     allowPrivateModelUrls: bool('ALLOW_PRIVATE_MODEL_URLS', false),
     inboundEmailSecret: text('INBOUND_EMAIL_SECRET'),
+    notifyWebhookUrl: text('NOTIFY_WEBHOOK_URL'),
+    notifyWebhookSecret: text('NOTIFY_WEBHOOK_SECRET'),
     allowTokenLoginOnly: bool('ALLOW_TOKEN_LOGIN_ONLY', false),
     devLogin: {
       login: text('DEV_LOGIN_LOGIN'),

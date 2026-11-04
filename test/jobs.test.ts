@@ -842,3 +842,31 @@ test('repository monthly and per-job budgets are enforced and attributed', async
     store.close()
   }
 })
+
+test('job completion and questions can be forwarded to a notification webhook', async () => {
+  const events: Array<Record<string, unknown>> = []
+  const webhook = await startFakeServer(async (request, response) => {
+    const body = JSON.parse((await readBody(request)).toString('utf8')) as Record<string, unknown>
+    events.push(body)
+    json(response, 200, { ok: true })
+  })
+  const config = testConfig({ notifyWebhookUrl: webhook.url, notifyWebhookSecret: 'hook-secret' })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'webhook-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_webhook', userId: user.id, owner: 'o', name: 'hook', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const secret = 'webhook-job-secret'
+    store.createJob({ id: 'job_webhook', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob('job_webhook', { status: 'running', started_at: new Date().toISOString() })
+    await jobs.handleCallback('job_webhook', secret, { status: 'succeeded', summary: 'done' })
+    for (let i = 0; i < 20 && events.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25))
+    assert.equal(events.length, 1)
+    assert.equal(events[0]?.event, 'job.succeeded')
+    assert.equal(events[0]?.jobId, 'job_webhook')
+    assert.equal(events[0]?.text, 'iterate job job_webhook succeeded')
+  } finally {
+    store.close()
+    await webhook.close()
+  }
+})
