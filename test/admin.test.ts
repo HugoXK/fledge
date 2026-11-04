@@ -232,3 +232,29 @@ test('admins can inspect a normal user read-only from a support view', async () 
     await built.close()
   }
 })
+
+test('admins can search and export jobs and audit within their visibility scope', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'search-admin', admin: true })
+    const user = makeUser(store, { login: 'search-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_search', userId: user.id, owner: 'o', name: 'search', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'fix', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_search', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'search goal', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate' })
+    store.audit(user.id, 'repo.settings', 'search detail')
+    const { cookie } = sessionFor(built, admin)
+    const search = await built.app.inject({ method: 'GET', url: '/admin/search?q=search', headers: { cookie } })
+    assert.equal(search.statusCode, 200)
+    assert.match(search.body, /job_search/)
+    const jobsCsv = await built.app.inject({ method: 'GET', url: '/admin/export/jobs.csv?q=search', headers: { cookie } })
+    assert.equal(jobsCsv.statusCode, 200)
+    assert.match(String(jobsCsv.headers['content-type']), /text\/csv/)
+    assert.match(jobsCsv.body, /job_search/)
+    const auditCsv = await built.app.inject({ method: 'GET', url: '/admin/export/audit.csv?q=search', headers: { cookie } })
+    assert.equal(auditCsv.statusCode, 200)
+    assert.match(auditCsv.body, /repo.settings/)
+  } finally {
+    await built.close()
+  }
+})

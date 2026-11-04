@@ -282,8 +282,10 @@ a job is running it uses that job's short-lived `flg_` token instead (the
 structured evidence (`tests`, `checks`, `files`, `risk`, `rollback`); failed
 jobs have a one-click retry. Admins get a read-only `/admin/metrics` funnel:
 users, approved, repos, users with jobs/PRs, success rate, job cost and recent
-events. The `events` table records activation and intervention events only; no
-prompt or token data.
+events. `/admin/search` filters jobs and audit entries by the same user
+visibility as the admin page and can export the current result as CSV. The
+`events` table records activation and intervention events only; no prompt or
+token data.
 
 ### Email notifications
 
