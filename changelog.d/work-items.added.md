@@ -1,0 +1,1 @@
+Added repository work items with a triage-to-merge state machine. Work items link issues, pull requests and jobs; maintainers can triage, assign and approve, developers can start and update their own work, and GitHub App issue/PR/review webhooks keep states and PR outcomes in sync. Admin metrics now show open, merged and closed work items.

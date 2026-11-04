@@ -27,6 +27,7 @@ import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, ty
 import { normalizeInterval } from './lib/intervals.js'
 import { isValidBranchName } from './lib/branches.js'
 import { allowedRepoRoles, parseRepoRole, roleAllowed } from './lib/repoRole.js'
+import { isWorkItemState, MAINTAINER_ONLY_STATES, WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -881,6 +882,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         repo,
         instance,
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
+        workItems: store.listWorkItems(repo.id),
         questions,
         chiefMessages,
         activeJob: store.activeJobForRepo(repo.id) !== undefined,
@@ -1290,6 +1292,73 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已按计划开始执行。')}`)
   })
 
+  app.post('/repos/:id/work', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请先选择你的角色。')}#work`)
+    }
+    const body = form(request)
+    const title = (body.title ?? '').trim().slice(0, 200)
+    if (title === '') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请填写工作项标题。')}#work`)
+    const detail = (body.detail ?? '').trim().slice(0, 4000)
+    const rawIssue = (body.issueUrl ?? '').trim()
+    const issueUrl = /^https:\/\/github\.com\//.test(rawIssue) ? rawIssue.slice(0, 500) : null
+    const priority = Math.max(0, Math.min(100, Math.floor(Number(body.priority) || 0)))
+    const item = store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: viewer.user.id, title, detail, issueUrl, priority, state: 'proposed' })
+    store.audit(viewer.user.id, 'work_item.created', `${item.id} ${repo.owner}/${repo.name} priority=${priority}`)
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('工作项已创建。')}#work`)
+  })
+
+  app.post('/repos/:id/work/:workItemId/state', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const item = store.getWorkItem(String((request.params as Record<string, string>).workItemId))
+    if (item === undefined || item.repo_id !== repo.id) throw httpError(404, '工作项不存在。', 'WORK_ITEM_NOT_FOUND')
+    const body = form(request)
+    const state = body.state
+    if (!isWorkItemState(state)) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('工作项状态无效。')}#work`)
+    const allowed = WORK_ITEM_TRANSITIONS[item.state as WorkItemState] ?? []
+    if (!allowed.includes(state)) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('不能从这个状态切换。')}#work`)
+    if (MAINTAINER_ONLY_STATES.has(state) && repo.repo_role !== 'maintainer') {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('只有 maintainer 可以执行这个操作。')}#work`)
+    }
+    const patch: { state: string; assignee_user_id?: string; pr_state?: string; merged_at?: string; merge_commit?: string | null } = { state }
+    if (state === 'assigned' || state === 'in_progress') patch.assignee_user_id = viewer.user.id
+    if (state === 'merged') {
+      patch.pr_state = 'merged'
+      patch.merged_at = nowIso()
+    } else if (state === 'closed' && item.pr_state !== 'merged') {
+      patch.pr_state = 'closed'
+    }
+    store.updateWorkItem(item.id, patch)
+    store.audit(viewer.user.id, 'work_item.state', `${item.id} ${item.state} -> ${state}`)
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('工作项状态已更新。')}#work`)
+  })
+
+  app.post('/repos/:id/work/:workItemId/run', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const item = store.getWorkItem(String((request.params as Record<string, string>).workItemId))
+    if (item === undefined || item.repo_id !== repo.id) throw httpError(404, '工作项不存在。', 'WORK_ITEM_NOT_FOUND')
+    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请先选择你的角色。')}#work`)
+    }
+    if (item.state === 'merged' || item.state === 'closed') {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('这个工作项已经结束。')}#work`)
+    }
+    const goal = [
+      `Work item: ${item.title}`,
+      item.detail === '' ? '' : item.detail,
+      item.issue_url === null || item.issue_url === '' ? '' : `Issue: ${item.issue_url}`,
+      'Follow the one issue, one branch, one pull request rule. Do not start unrelated work.',
+    ].filter((line) => line !== '').join('\n\n')
+    const kind = repo.plan_required === 1 ? 'plan' : 'iterate'
+    const result = await jobs.enqueue(repo, 'manual', goal, kind, { workItemId: item.id, priority: item.priority })
+    store.audit(viewer.user.id, 'work_item.run', `${item.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
+    if (!result.ok || result.job === undefined) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(result.error ?? '工作项启动失败。')}#work`)
+    }
+    return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent(kind === 'plan' ? '计划任务已排队。' : '工作项任务已排队。')}`)
+  })
+
   app.get('/repos/:id/workspace', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
     requireAdvanced(viewer)
@@ -1663,6 +1732,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewer: viewOf(viewer),
       metrics: store.productMetrics(since),
       team: store.teamMetrics(since),
+      workItems: store.workItemMetrics(since),
       since,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
@@ -1881,6 +1951,62 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
   }
 
+  const handleWorkItemEvent = async (event: string, body: Record<string, unknown>): Promise<void> => {
+    if (event !== 'issues' && event !== 'pull_request' && event !== 'pull_request_review') return
+    const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
+    const installationId = Number(installation.id)
+    if (!Number.isFinite(installationId)) return
+    const repository = typeof body.repository === 'object' && body.repository !== null ? (body.repository as Record<string, unknown>) : {}
+    const fullName = typeof repository.full_name === 'string' ? repository.full_name : ''
+    if (fullName === '') return
+    const repo = store.findRepoByInstallationAndFullName(installationId, fullName)
+    if (repo === undefined) return
+    const action = typeof body.action === 'string' ? body.action : ''
+    if (event === 'issues') {
+      const issue = typeof body.issue === 'object' && body.issue !== null ? (body.issue as Record<string, unknown>) : {}
+      const issueUrl = typeof issue.html_url === 'string' ? issue.html_url : ''
+      const title = typeof issue.title === 'string' ? issue.title.slice(0, 200) : ''
+      const detail = typeof issue.body === 'string' ? issue.body.slice(0, 4000) : ''
+      if (issueUrl === '' || title === '') return
+      const existing = store.findWorkItemByIssueUrl(repo.id, issueUrl)
+      const closed = action === 'closed' || issue.state === 'closed'
+      if (existing === undefined) {
+        store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, detail, issueUrl, state: closed ? 'closed' : 'proposed' })
+      } else {
+        store.updateWorkItem(existing.id, { title, detail, issue_url: issueUrl, ...(closed ? { state: 'closed' } : {}) })
+      }
+      return
+    }
+    const pull = typeof body.pull_request === 'object' && body.pull_request !== null ? (body.pull_request as Record<string, unknown>) : {}
+    const prUrl = typeof pull.html_url === 'string' ? pull.html_url : ''
+    if (prUrl === '') return
+    const existing = store.findWorkItemByPrUrl(repo.id, prUrl)
+    if (event === 'pull_request') {
+      const title = typeof pull.title === 'string' ? pull.title.slice(0, 200) : prUrl
+      const merged = pull.merged === true
+      const closed = action === 'closed' || pull.state === 'closed'
+      if (existing === undefined && action !== 'opened') return
+      if (existing === undefined) {
+        store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, prUrl, state: merged ? 'merged' : closed ? 'closed' : 'pr_ready', prState: merged ? 'merged' : closed ? 'closed' : 'open', mergedAt: merged ? nowIso() : null, mergeCommit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null })
+        return
+      }
+      if (closed) {
+        store.updateWorkItem(existing.id, {
+          state: merged ? 'merged' : 'closed',
+          pr_state: merged ? 'merged' : 'closed',
+          ...(merged ? { merged_at: nowIso(), merge_commit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null } : {}),
+        })
+      } else {
+        store.updateWorkItem(existing.id, { state: existing.state === 'in_review' ? 'in_review' : 'pr_ready', pr_state: 'open', pr_url: prUrl, title })
+      }
+      return
+    }
+    if (existing === undefined) return
+    const review = typeof body.review === 'object' && body.review !== null ? (body.review as Record<string, unknown>) : {}
+    const state = review.state === 'approved' ? 'approved' : review.state === 'changes_requested' ? 'changes_requested' : 'in_review'
+    store.updateWorkItem(existing.id, { state })
+  }
+
   app.post('/api/github/webhook', async (request, reply) => {
     if (!apiLimiter.take(`webhook:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
     if (!githubApp.configured || config.githubApp.webhookSecret === '') return reply.code(503).send({ error: 'GitHub App webhook is not configured' })
@@ -1907,6 +2033,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       }
       if (action === 'deleted' && Number.isFinite(installationId)) store.deleteInstallation(installationId)
     }
+    await handleWorkItemEvent(event, body).catch((error) => log.warn('github work item sync failed', { event, error: String(error) }))
     await handleGithubFollowup(event, body).catch((error) => log.warn('github follow-up failed', { event, error: String(error) }))
     return { ok: true }
   })
