@@ -17,6 +17,9 @@
    that records real cost per user and per job.
 5. **Every state change is auditable.** Approval, repo changes, job transitions,
    token creation/revocation and quota edits write to `audit_log`.
+6. **One version source.** `/healthz` and the release tooling read `package.json`
+   through `src/version.ts`; a release bumps that file and `CHANGELOG.md`
+   together.
 
 ## Components
 

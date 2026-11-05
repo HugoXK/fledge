@@ -73,6 +73,23 @@ function arg(name, fallback) {
   return process.argv[index + 1] ?? fallback
 }
 
+function bumpVersions(version) {
+  const pkgRaw = readFileSync('package.json', 'utf8')
+  const previous = String(JSON.parse(pkgRaw).version ?? '')
+  if (previous === version) return
+  const escaped = previous.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  writeFileSync('package.json', pkgRaw.replace(new RegExp(`"version":\\s*"${escaped}"`), `"version": "${version}"`))
+  const lockRaw = readFileSync('package-lock.json', 'utf8')
+  let seen = 0
+  const next = lockRaw.replace(new RegExp(`"version":\\s*"${escaped}"`, 'g'), (match) => {
+    seen += 1
+    return seen <= 2 ? `"version": "${version}"` : match
+  })
+  writeFileSync('package-lock.json', next)
+  const compose = readFileSync('docker-compose.yml', 'utf8').replace(/(image:\s*fledge:)[^\s]+/, `$1${version}`)
+  writeFileSync('docker-compose.yml', compose)
+}
+
 function release() {
   const raw = process.argv[3]
   if (raw === undefined || raw === '') {
@@ -107,7 +124,8 @@ function release() {
   }
   writeFileSync(CHANGELOG, next)
   for (const fragment of list) unlinkSync(join(DIR, fragment.name))
-  console.log(`changelog: released ${version} (${list.length} fragments)`)
+  bumpVersions(version)
+  console.log(`changelog: released ${version} (${list.length} fragments); versions bumped to ${version}`)
 }
 
 function notes() {

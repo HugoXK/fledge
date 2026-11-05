@@ -105,7 +105,8 @@ not a conclusion.
 
 ```
 Verdict: PASS at <sha>
-Written-by: <name>
+Written-by: Reviewer
+Posted-by: <GitHub login>
 Ran:
 - `npm run check` — pass
 - `node scripts/risk-gate.mjs --base origin/main` — T2
@@ -114,7 +115,10 @@ Not run: Docker image, real SMTP
 
 - First line: exactly `Verdict: PASS|INC|REQUEST_CHANGES at <sha>`.
 - Second line: `Written-by:` from the policy's `writers` list.
-- A relay may add `Posted-by:` third; it does not change the verdict.
+- Third line: `Posted-by:` with the account that submitted the review. It must
+  match the actual poster, or the gate rejects the conclusion.
+- The PR author may not PASS its own tip unless `selfReview` in the policy
+  allows it.
 - One tip carries one conclusion. A replacement PASS at the same tip is allowed
   only when the first was rejected for a missing `Ran:` line, and it must say
   `Replaces:`.

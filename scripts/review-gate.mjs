@@ -109,6 +109,15 @@ function writtenBy(body) {
   return match?.[1]?.trim() ?? ''
 }
 
+function postedBy(body) {
+  const match = /^\s*Posted-by:\s*(.+)$/im.exec(String(body ?? ''))
+  return match?.[1]?.trim() ?? ''
+}
+
+function hasNotRun(body) {
+  return /(^|\n)\s*Not run[^\n:]*[:：]/i.test(String(body ?? ''))
+}
+
 function hasRan(body) {
   const text = String(body ?? '')
   if (/(^|\n)\s*Ran[^\n:]*[:：]\s*(npm|node|npx|docker|git|gh|curl|pnpm|yarn)\b/i.test(text)) return true
@@ -166,6 +175,18 @@ if (!headSha.startsWith(newest.sha)) fail(`newest conclusion is for ${newest.sha
 const writer = writtenBy(newest.body)
 if (writer === '') fail('the newest conclusion has no Written-by line')
 if (!POLICY.writers.map((name) => name.toLowerCase()).includes(writer.toLowerCase())) fail(`writer "${writer}" is not in the review policy`)
+
+const poster = postedBy(newest.body)
+if (poster === '') fail('the newest conclusion has no Posted-by line')
+if (poster.toLowerCase() !== newest.author.toLowerCase()) fail(`Posted-by "${poster}" does not match the poster "${newest.author}"`)
+
+const author = String(pr.user?.login ?? '')
+const selfReview = (POLICY.selfReview ?? []).map((name) => String(name).toLowerCase())
+if (author !== '' && writer.toLowerCase() === author.toLowerCase() && !selfReview.includes(writer.toLowerCase())) {
+  fail(`the pull request author "${author}" may not PASS its own tip`)
+}
+
 if (newest.verdict !== 'PASS') fail(`newest conclusion is ${newest.verdict} at ${newest.sha}`)
 if (!hasRan(newest.body)) fail('the PASS has no real Ran: command; it is not a conclusion')
-pass(`${tier} PASS at ${headSha.slice(0, 12)} by ${writer}`)
+if (!hasNotRun(newest.body)) fail('the PASS has no Not run: line; it is not a conclusion')
+pass(`${tier} PASS at ${headSha.slice(0, 12)} by ${writer}, posted by ${poster}`)

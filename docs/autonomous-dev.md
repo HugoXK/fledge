@@ -145,8 +145,8 @@ review.
 
 ## Gates
 
-The required check is **`ci-ok`**. It is green only when all of these are green
-at the same tip:
+The required checks are **`ci-ok`**, **`review-gate`** and **`pr-lint`**.
+`ci-ok` is green only when all of these are green at the same tip:
 
 - `lint`
 - `typecheck`
@@ -155,29 +155,40 @@ at the same tip:
 - `docker` (image builds)
 - `audit` (no high-severity production dependency)
 - `changelog` (fragments are well formed)
+- `version` (`package.json`, lockfile, changelog, compose and tag agree)
 - `risk` (the tier report succeeds)
 
-`review-gate` is a second check. It parses the newest conclusion at the PR head:
+`pr-lint` checks the PR body (`Written-by:`, `Fixes #N` / `No-issue:`, `Ran:`,
+`Not run:`), the changelog fragment and docs obligations, the `Written-by`
+writer, and any `risk:T*` label against the computed tier.
+
+`review-gate` runs on `pull_request`, `pull_request_review` and `merge_group`, so
+posting a PASS reruns the check without a manual retry. It parses the newest
+conclusion at the PR head:
 
 ```
 Verdict: PASS at <sha>
-Written-by: <name>
+Written-by: Reviewer
+Posted-by: <GitHub login>
 Ran:
 - `npm run check` — pass
 Not run: Docker, real SMTP
 ```
 
 - T2/T3 need a PASS at the head being merged.
-- A PASS with no real `Ran:` command is refused.
+- A PASS with no real `Ran:` or `Not run:` line is refused.
 - A report with no `Written-by:` line, or a writer outside
   `.github/agent/review-policy.json`, is refused.
+- `Posted-by:` is mandatory and must match the account that submitted the
+  review; a relay cannot claim a different poster.
+- The PR author may not PASS its own tip unless `selfReview` in the policy
+  allows it.
 - The newest conclusion wins; a later INC overrides an earlier PASS.
 - A new commit voids the PASS.
 - A `hold` label blocks the queue.
 
-Until `review-gate` is a required check and `main` has a merge queue, the
-maintainer must apply the same rules manually. The repository settings checklist
-is in [docs/handoff.md](handoff.md).
+`main` is protected by required `ci-ok`, `review-gate` and `pr-lint`, conversation resolution
+and a merge queue. Never bypass these with a direct push or an admin merge.
 
 ## Release
 
