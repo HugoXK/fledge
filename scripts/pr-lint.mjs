@@ -78,7 +78,7 @@ const INVESTIGATE_PATH = /(^|\n)\s*(No-issue|Investigates)\s*:/i
 const DOCS_GROUPS = [
   { match: /^src\/(auth|users|email)\//, docs: ['docs/security.md'] },
   { match: /^src\/gateway\//, docs: ['docs/quota.md'] },
-  { match: /^src\/jobs\//, docs: ['docs/quota.md', 'docs/api.md'] },
+  { match: /^src\/jobs\//, docs: ['docs/quota.md', 'docs/api.md', 'docs/architecture.md'] },
   { match: /^src\/repos\//, docs: ['docs/api.md'] },
   { match: /^src\/(app\.ts|db\.ts|views\/)/, docs: ['docs/architecture.md'] },
   { match: /^bridge\//, docs: ['bridge/README.md'] },
