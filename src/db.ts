@@ -45,6 +45,7 @@ export interface UserRow {
   own_llm_base_url: string | null
   own_llm_key_enc: string | null
   own_llm_model: string | null
+  allow_private_models: number
   created_at: string
   approved_at: string | null
   approved_by: string | null
@@ -324,6 +325,7 @@ CREATE TABLE IF NOT EXISTS users (
   own_llm_base_url TEXT,
   own_llm_key_enc TEXT,
   own_llm_model TEXT,
+  allow_private_models INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   approved_at TEXT,
   approved_by TEXT,
@@ -665,9 +667,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 26) {
+    if (previousVersion > 27) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (26)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (27)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -681,7 +683,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 26)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 27)};`)
   }
 
   backfillTokenRepoIds(): void {
@@ -745,6 +747,7 @@ export class Store {
       ['allow_paths', "TEXT NOT NULL DEFAULT ''"],
       ['deny_paths', "TEXT NOT NULL DEFAULT ''"],
       ['merge_method', "TEXT NOT NULL DEFAULT 'squash'"],
+      ['allow_private_models', 'INTEGER NOT NULL DEFAULT 0'],
       ['require_protection', 'INTEGER NOT NULL DEFAULT 1'],
       ['stage_mode', "TEXT NOT NULL DEFAULT 'off'"],
       ['models_dirty', 'INTEGER NOT NULL DEFAULT 0'],
@@ -1124,6 +1127,10 @@ export class Store {
 
   setUserOwnModel(id: string, baseUrl: string | null, keyEnc: string | null, model: string | null): void {
     this.run('UPDATE users SET own_llm_base_url = ?, own_llm_key_enc = ?, own_llm_model = ? WHERE id = ?', baseUrl, keyEnc, model, id)
+  }
+
+  setUserAllowPrivateModels(id: string, allow: boolean): void {
+    this.run('UPDATE users SET allow_private_models = ? WHERE id = ?', allow ? 1 : 0, id)
   }
 
   listUserModels(userId: string): UserModelRow[] {
