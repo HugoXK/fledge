@@ -31,6 +31,10 @@ export async function dshCookie(instance: RepoInstanceRow): Promise<string> {
   return cookie
 }
 
+export function clearWorkspaceCookie(repoId: string): void {
+  cookieCache.delete(repoId)
+}
+
 export function workspacePrefix(repoId: string): string {
   return `/repos/${repoId}/workspace/app/`
 }

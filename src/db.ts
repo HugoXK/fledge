@@ -82,6 +82,7 @@ export interface RepoRow {
   merge_method: string
   require_protection: number
   stage_mode: string
+  models_dirty: number
   monthly_budget_cny: number
   job_budget_cny: number
   protection_state: string | null
@@ -109,6 +110,25 @@ export interface RepoRow {
   last_review_status: string | null
   upstream_html_url: string | null
   fork_html_url: string | null
+}
+
+export interface UserModelRow {
+  id: string
+  user_id: string
+  label: string
+  base_url: string
+  key_enc: string
+  model: string
+  allow_private: number
+  created_at: string
+  updated_at: string
+}
+
+export interface RepoModelRow {
+  repo_id: string
+  model_id: string
+  is_default: number
+  created_at: string
 }
 
 export interface RepoInstanceRow {
@@ -332,6 +352,7 @@ CREATE TABLE IF NOT EXISTS repos (
   merge_method TEXT NOT NULL DEFAULT 'squash',
   require_protection INTEGER NOT NULL DEFAULT 1,
   stage_mode TEXT NOT NULL DEFAULT 'off',
+  models_dirty INTEGER NOT NULL DEFAULT 0,
   monthly_budget_cny REAL NOT NULL DEFAULT 0,
   job_budget_cny REAL NOT NULL DEFAULT 0,
   protection_state TEXT,
@@ -514,6 +535,27 @@ CREATE INDEX IF NOT EXISTS work_items_repo_idx ON work_items(repo_id, state, cre
 CREATE INDEX IF NOT EXISTS work_items_pr_idx ON work_items(pr_url);
 CREATE INDEX IF NOT EXISTS work_items_issue_idx ON work_items(issue_url);
 
+CREATE TABLE IF NOT EXISTS user_models (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  key_enc TEXT NOT NULL,
+  model TEXT NOT NULL,
+  allow_private INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS user_models_user_idx ON user_models(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS repo_models (
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  model_id TEXT NOT NULL REFERENCES user_models(id) ON DELETE CASCADE,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (repo_id, model_id)
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -544,9 +586,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 21) {
+    if (previousVersion > 22) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (21)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (22)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -558,7 +600,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 21)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 22)};`)
   }
 
   private migrateColumns(): void {
@@ -599,6 +641,7 @@ export class Store {
       ['merge_method', "TEXT NOT NULL DEFAULT 'squash'"],
       ['require_protection', 'INTEGER NOT NULL DEFAULT 1'],
       ['stage_mode', "TEXT NOT NULL DEFAULT 'off'"],
+      ['models_dirty', 'INTEGER NOT NULL DEFAULT 0'],
       ['monthly_budget_cny', 'REAL NOT NULL DEFAULT 0'],
       ['job_budget_cny', 'REAL NOT NULL DEFAULT 0'],
       ['protection_state', 'TEXT'],
@@ -973,6 +1016,61 @@ export class Store {
     this.run('UPDATE users SET own_llm_base_url = ?, own_llm_key_enc = ?, own_llm_model = ? WHERE id = ?', baseUrl, keyEnc, model, id)
   }
 
+  listUserModels(userId: string): UserModelRow[] {
+    return this.all<UserModelRow>('SELECT * FROM user_models WHERE user_id = ? ORDER BY created_at ASC', userId)
+  }
+
+  userModelById(id: string, userId: string): UserModelRow | undefined {
+    return this.get<UserModelRow>('SELECT * FROM user_models WHERE id = ? AND user_id = ?', id, userId)
+  }
+
+  createUserModel(input: { id: string; userId: string; label: string; baseUrl: string; keyEnc: string; model: string; allowPrivate: boolean }): UserModelRow {
+    this.run(
+      'INSERT INTO user_models (id, user_id, label, base_url, key_enc, model, allow_private, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      input.id, input.userId, input.label, input.baseUrl, input.keyEnc, input.model, input.allowPrivate ? 1 : 0, nowIso(), nowIso(),
+    )
+    return this.get<UserModelRow>('SELECT * FROM user_models WHERE id = ?', input.id)!
+  }
+
+  updateUserModel(id: string, userId: string, patch: Partial<Pick<UserModelRow, 'label' | 'base_url' | 'key_enc' | 'model' | 'allow_private'>>): void {
+    const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
+    if (entries.length === 0) return
+    const sets = entries.map(([key]) => `${key} = ?`).join(', ')
+    this.run(`UPDATE user_models SET ${sets}, updated_at = ? WHERE id = ? AND user_id = ?`, ...entries.map(([, value]) => value), nowIso(), id, userId)
+  }
+
+  deleteUserModel(id: string, userId: string): void {
+    this.run('DELETE FROM user_models WHERE id = ? AND user_id = ?', id, userId)
+  }
+
+  listRepoModels(repoId: string): Array<UserModelRow & { is_default: number }> {
+    return this.all<UserModelRow & { is_default: number }>(
+      'SELECT m.*, rm.is_default FROM repo_models rm JOIN user_models m ON m.id = rm.model_id WHERE rm.repo_id = ? ORDER BY m.created_at ASC',
+      repoId,
+    )
+  }
+
+  repoModelForRun(repoId: string, alias: string): UserModelRow | undefined {
+    return this.get<UserModelRow>('SELECT m.* FROM repo_models rm JOIN user_models m ON m.id = rm.model_id WHERE rm.repo_id = ? AND m.id = ?', repoId, alias)
+  }
+
+  setRepoModels(repoId: string, modelIds: string[], defaultId: string | null): void {
+    const unique = [...new Set(modelIds)]
+    const fallback = unique[0] ?? null
+    const chosen = defaultId !== null && unique.includes(defaultId) ? defaultId : fallback
+    this.transaction(() => {
+      this.run('DELETE FROM repo_models WHERE repo_id = ?', repoId)
+      for (const modelId of unique) {
+        this.run('INSERT INTO repo_models (repo_id, model_id, is_default, created_at) VALUES (?, ?, ?, ?)', repoId, modelId, modelId === chosen ? 1 : 0, nowIso())
+      }
+      this.run('UPDATE repos SET models_dirty = 1 WHERE id = ?', repoId)
+    })
+  }
+
+  markRepoModelsApplied(repoId: string): void {
+    this.run('UPDATE repos SET models_dirty = 0 WHERE id = ?', repoId)
+  }
+
   createSession(input: { idHash: string; userId: string; expiresAt: string; ip: string | null; userAgent: string | null }): void {
     this.run(
       'INSERT INTO sessions (id_hash, user_id, created_at, expires_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?)',
@@ -1138,7 +1236,7 @@ export class Store {
     return this.get<RepoRow>('SELECT * FROM repos WHERE user_id = ? AND lower(owner) = lower(?) AND lower(name) = lower(?)', userId, owner, name)
   }
 
-  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'plan_required' | 'allow_paths' | 'deny_paths' | 'merge_method' | 'require_protection' | 'stage_mode' | 'monthly_budget_cny' | 'job_budget_cny' | 'protection_state' | 'protection_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
+  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'plan_required' | 'allow_paths' | 'deny_paths' | 'merge_method' | 'require_protection' | 'stage_mode' | 'models_dirty' | 'monthly_budget_cny' | 'job_budget_cny' | 'protection_state' | 'protection_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')

@@ -93,6 +93,23 @@ network. Once set, the gateway proxies to the user's endpoint and **does not**
 touch the platform quota or ledger. Clearing it returns the user to the platform
 quota.
 
+## Model connections and repository selection
+
+Settings manages a per-user list of OpenAI-compatible connections
+(`user_models`). Each connection has a label, base URL, encrypted key,
+underlying model and a private/HTTP flag. Repository settings only choose which
+connections the repository may use and the default; that selection lives in
+`repo_models`.
+
+The gateway aliases each connection by its id. An instance or job token that
+carries `repo_id` resolves `body.model` to a selected connection and calls that
+provider; an unselected model falls back to the user's single own model, then the
+platform model. `/v1/models` lists the selected aliases for a repository token.
+
+Changing the selection marks the repository dirty. `POST
+/repos/:id/models/apply` rewrites the instance `cordis.patch.yml` and restarts
+the workspace only when no job is active; a running job returns `JOB_ACTIVE`.
+
 ## Admin
 
 Admins can set `quota_cny` per user from `/admin` (0–10000), or tick
