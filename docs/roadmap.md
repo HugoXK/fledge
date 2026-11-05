@@ -63,6 +63,17 @@ execution (LangSmith/Langfuse, OpenTelemetry, Temporal/DBOS):
 - [x] Repository and per-job budgets.
 - [x] Optional outbound notification webhook.
 
+## v0.2.4 — stage evidence and intake (in progress)
+
+- [x] Team stage evidence gate (`off` / `shadow` / `enforced`).
+- [x] Issue labels map priority and `agent-ready` triage.
+- [x] Repeated-failure ops alert with dedupe.
+- [x] Answering a question marks the matching notification read.
+- [ ] Issue comment commands (`/fledge plan`, `/fledge fix`, `/fledge status`).
+- [ ] Realtime inbox SSE with a cursor.
+- [ ] Fledge-orchestrated stage jobs (separate Product/Test/Review runs).
+- [ ] Shared repository members (see [decisions/0002](decisions/0002-shared-repo-members.md)).
+
 ## v0.3 — branded agent workspace (path workspace shipped)
 
 - [ ] Per-repository authenticated workspace on a subdomain, e.g.
@@ -79,15 +90,15 @@ execution (LangSmith/Langfuse, OpenTelemetry, Temporal/DBOS):
 
 ## v0.4 — durable execution and gates
 
-- [ ] Plan-first mode: the agent posts a plan; a human approves before code is
+- [x] Plan-first mode: the agent posts a plan; a human approves before code is
       written.
-- [ ] Durable job state and checkpoints: resume after timeout, restart or bridge
+- [x] Durable job state and checkpoints: resume after timeout, restart or bridge
       failure; idempotent callbacks.
-- [ ] Tool/path approval and per-repo "only touch / never touch" guards.
-- [ ] Per-repo budgets, live token/cost display and a monthly summary.
+- [x] Tool/path approval and per-repo "only touch / never touch" guards.
+- [x] Per-repo budgets, live token/cost display and a monthly summary.
 - [ ] Automatic attribution from events, not only the agent's self-report;
       signed audit and session replay.
-- [ ] GitHub App installation and webhook feedback (red CI / review findings ->
+- [x] GitHub App installation and webhook feedback (red CI / review findings ->
       follow-up job on the same branch).
 
 ## v1.0 — production hardening

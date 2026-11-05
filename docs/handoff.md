@@ -45,6 +45,9 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
   active jobs and quota. The shared Portal is a footer link, never a permission
   handoff.
 - Admin panel, roles, audit log, in-app notifications.
+- Team stage evidence gate (`off` / `shadow` / `enforced`), issue-label intake
+  (`priority:*`, `agent-ready`), a deduped repeated-failure ops alert, and
+  selective question-notification read.
 - Multiple repositories per user; per-repo fine-grained GitHub tokens, validated
   on add and encrypted with AES-256-GCM.
 - Upstream/fork onboarding: Fledge detects or creates the user's fork, pushes
@@ -124,11 +127,12 @@ back. See [architecture.md](architecture.md) and [api.md](api.md).
 7. **Homepage + guide**: live at `hugoxk.online/fledge/` and
    `hugoxk.online/fledge/guide/` (English under `/en/`); keep them in step with
    the product.
-8. **Operational hardening**: log rotation, alert on repeated job failures,
-   backup restore drill, quota notice dedupe, admin token rotation.
-9. **Next product slice**: GitHub App installation (instead of a personal
-   token), PR feedback loop (red CI/review comment → follow-up job), per-repo
-   budgets, team roles.
+8. **Operational hardening**: repeated-failure alert is done; still needed are
+   log rotation, a backup restore drill, quota notice dedupe and admin token
+   rotation.
+9. **Next product slice**: Fledge-orchestrated stage jobs, issue comment
+   commands, realtime inbox SSE, and shared repository members (design in
+   [decisions/0002](decisions/0002-shared-repo-members.md)).
 
 ## Decisions to keep
 
