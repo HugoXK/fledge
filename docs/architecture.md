@@ -280,6 +280,20 @@ job is retried, so a new job can continue from the last known point instead of
 starting from scratch. The add/settings goal forms also offer four task
 templates (bug, tests, docs, dependency) that fill the goal text.
 
+### Job health and credential circuit breaker
+
+Every callback records `jobs.last_callback_at`. A running job with no callback for
+`JOB_STALL_MINUTES` (default 30) fails with a `stalled` message instead of holding
+the repository slot until the 90-minute hard timeout. A successful job resets the
+repository failure counter; three consecutive failures pause auto-iterate and
+notify the owner.
+
+An iterate preflight (and a cached check for plan/review jobs) reads the target
+branch with the repository token. A 401/403 marks `repos.credential_state =
+'invalid'`, pauses auto-iterate, and notifies the owner with a re-authorize link.
+The repository page shows the credential banner until a refresh or a successful
+preflight clears it.
+
 ### Model connections
 
 Settings owns a per-user catalog of OpenAI-compatible model connections

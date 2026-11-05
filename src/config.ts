@@ -53,6 +53,7 @@ export interface Config {
     bridgeUrl: string
     bridgeToken: string
     timeoutMinutes: number
+    stallMinutes: number
   }
   digest: {
     hour: number
@@ -190,6 +191,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       bridgeUrl: text('FLYBOT_BRIDGE_URL', 'http://127.0.0.1:8787/run'),
       bridgeToken: text('FLYBOT_BRIDGE_TOKEN'),
       timeoutMinutes: number('JOB_TIMEOUT_MINUTES', 90),
+      stallMinutes: number('JOB_STALL_MINUTES', 30),
     },
     digest: {
       hour: Math.min(23, Math.max(0, number('DIGEST_HOUR', 9))),

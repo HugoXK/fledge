@@ -83,6 +83,8 @@ export interface RepoRow {
   require_protection: number
   stage_mode: string
   models_dirty: number
+  credential_state: string
+  consecutive_failures: number
   monthly_budget_cny: number
   job_budget_cny: number
   protection_state: string | null
@@ -187,6 +189,7 @@ export interface JobRow {
   base_sha: string | null
   created_at: string
   started_at: string | null
+  last_callback_at: string | null
   finished_at: string | null
 }
 
@@ -353,6 +356,8 @@ CREATE TABLE IF NOT EXISTS repos (
   require_protection INTEGER NOT NULL DEFAULT 1,
   stage_mode TEXT NOT NULL DEFAULT 'off',
   models_dirty INTEGER NOT NULL DEFAULT 0,
+  credential_state TEXT NOT NULL DEFAULT 'ok',
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
   monthly_budget_cny REAL NOT NULL DEFAULT 0,
   job_budget_cny REAL NOT NULL DEFAULT 0,
   protection_state TEXT,
@@ -441,6 +446,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   base_sha TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
+  last_callback_at TEXT,
   finished_at TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_repo_idx ON jobs(repo_id, created_at DESC);
@@ -586,9 +592,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 22) {
+    if (previousVersion > 23) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (22)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (23)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -600,7 +606,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 22)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 23)};`)
   }
 
   private migrateColumns(): void {
@@ -642,6 +648,8 @@ export class Store {
       ['require_protection', 'INTEGER NOT NULL DEFAULT 1'],
       ['stage_mode', "TEXT NOT NULL DEFAULT 'off'"],
       ['models_dirty', 'INTEGER NOT NULL DEFAULT 0'],
+      ['credential_state', "TEXT NOT NULL DEFAULT 'ok'"],
+      ['consecutive_failures', 'INTEGER NOT NULL DEFAULT 0'],
       ['monthly_budget_cny', 'REAL NOT NULL DEFAULT 0'],
       ['job_budget_cny', 'REAL NOT NULL DEFAULT 0'],
       ['protection_state', 'TEXT'],
@@ -691,6 +699,7 @@ export class Store {
     if (!jobColumns.has('plan_allow_paths')) this.run('ALTER TABLE jobs ADD COLUMN plan_allow_paths TEXT')
     if (!jobColumns.has('plan_deny_paths')) this.run('ALTER TABLE jobs ADD COLUMN plan_deny_paths TEXT')
     if (!jobColumns.has('base_sha')) this.run('ALTER TABLE jobs ADD COLUMN base_sha TEXT')
+    if (!jobColumns.has('last_callback_at')) this.run('ALTER TABLE jobs ADD COLUMN last_callback_at TEXT')
     const tokenColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(api_tokens)').map((row) => row.name))
     if (!tokenColumns.has('repo_id')) this.run('ALTER TABLE api_tokens ADD COLUMN repo_id TEXT')
     const ledgerColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(quota_ledger)').map((row) => row.name))
@@ -1236,7 +1245,7 @@ export class Store {
     return this.get<RepoRow>('SELECT * FROM repos WHERE user_id = ? AND lower(owner) = lower(?) AND lower(name) = lower(?)', userId, owner, name)
   }
 
-  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'plan_required' | 'allow_paths' | 'deny_paths' | 'merge_method' | 'require_protection' | 'stage_mode' | 'models_dirty' | 'monthly_budget_cny' | 'job_budget_cny' | 'protection_state' | 'protection_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
+  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'plan_required' | 'allow_paths' | 'deny_paths' | 'merge_method' | 'require_protection' | 'stage_mode' | 'models_dirty' | 'credential_state' | 'consecutive_failures' | 'monthly_budget_cny' | 'job_budget_cny' | 'protection_state' | 'protection_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -1435,7 +1444,7 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority DESC, created_at ASC")
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -1449,6 +1458,29 @@ export class Store {
 
   staleRunningJobs(beforeIso: string): JobRow[] {
     return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'running' AND COALESCE(started_at, created_at) < ?", beforeIso)
+  }
+
+  stalledRunningJobs(beforeIso: string): JobRow[] {
+    return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'running' AND COALESCE(last_callback_at, started_at, created_at) < ?", beforeIso)
+  }
+
+  touchJobCallback(jobId: string): void {
+    this.run('UPDATE jobs SET last_callback_at = ? WHERE id = ?', nowIso(), jobId)
+  }
+
+  markRepoCredential(repoId: string, state: 'ok' | 'invalid'): void {
+    this.run('UPDATE repos SET credential_state = ? WHERE id = ?', state, repoId)
+  }
+
+  incrementRepoFailures(repoId: string): number {
+    return this.transaction(() => {
+      this.run('UPDATE repos SET consecutive_failures = consecutive_failures + 1 WHERE id = ?', repoId)
+      return Number(this.get<{ n: number }>('SELECT consecutive_failures AS n FROM repos WHERE id = ?', repoId)?.n ?? 0)
+    })
+  }
+
+  resetRepoFailures(repoId: string): void {
+    this.run('UPDATE repos SET consecutive_failures = 0 WHERE id = ?', repoId)
   }
 
   staleQueuedJobs(beforeIso: string): JobRow[] {
