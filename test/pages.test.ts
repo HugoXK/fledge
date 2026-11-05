@@ -299,13 +299,13 @@ test('normal users get a simplified repository page without the live team consol
     const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
     assert.equal(page.statusCode, 200)
     assert.doesNotMatch(page.body, new RegExp(`/repos/${repo.id}/team`))
-    assert.doesNotMatch(page.body, new RegExp(`/repos/${repo.id}/workspace`))
+    assert.match(page.body, new RegExp(`/repos/${repo.id}/workspace`))
     assert.doesNotMatch(page.body, /团队与调度规则/)
     assert.match(page.body, /和 Chief 沟通/)
     const team = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/team`, headers: { cookie } })
     assert.equal(team.statusCode, 403)
     const workspace = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/workspace`, headers: { cookie } })
-    assert.equal(workspace.statusCode, 403)
+    assert.equal(workspace.statusCode, 200)
   } finally {
     await built.close()
   }

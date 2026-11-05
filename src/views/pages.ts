@@ -550,8 +550,8 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <p class="fine">${escapeHtml(t('上游', 'Upstream'))} <a href="${escapeHtml(upstreamUrl)}" target="_blank" rel="noreferrer">${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</a> · ${repo.is_fork === 1 ? `${escapeHtml(t('Fork', 'Fork'))} <a href="${escapeHtml(forkUrl)}" target="_blank" rel="noreferrer">${escapeHtml(forkOwner)}/${escapeHtml(forkName)}</a>` : escapeHtml(t('自有仓库，无需 fork', 'Own repository, no fork'))} · ${escapeHtml(t('GitHub 权限', 'GitHub permission'))} <code>${escapeHtml(permission)}</code> · ${escapeHtml(t('你的角色', 'Your role'))} <code>${escapeHtml(repoRoleLabel(t, repoRole))}</code> · ${escapeHtml(reviewerLabel)}</p>
       </div>
       <div class="row">
-        ${advanced ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
-        <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
+        <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
+        ${advanced ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
         ${roleMissing ? `<span class="badge busy">${escapeHtml(t('先选择角色', 'Choose a role first'))}</span>` : `<form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button></form>
         <form method="post" action="/repos/${escapeHtml(repo.id)}/plan">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('只出计划', 'Plan only'))}</button></form>`}
         ${!roleMissing && canReview && reviewerEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/review">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('立即审核', 'Review now'))}</button></form>` : ''}
@@ -915,12 +915,13 @@ export function settingsPage(input: {
       <label>Base URL <input name="baseUrl" value="${escapeHtml(user.own_llm_base_url ?? '')}" placeholder="https://api.example.com/v1" autocomplete="off" /></label>
       <label>API Key <input name="apiKey" type="password" placeholder="${escapeHtml(user.own_llm_key_enc === null ? 'sk-…' : t('已保存，留空不修改', 'Saved; leave blank to keep'))}" autocomplete="off" /></label>
       <label>Model <input name="model" value="${escapeHtml(user.own_llm_model ?? '')}" placeholder="${escapeHtml(t('例如 gpt-4o-mini 或 deepseek-chat', 'e.g. gpt-4o-mini or deepseek-chat'))}" autocomplete="off" /></label>
+      ${viewer.user.role === 'superadmin' || config.allowPrivateModelUrls ? `<label class="check"><input type="checkbox" name="allowPrivate" value="1" ${user.own_llm_base_url?.startsWith('http://') === true ? 'checked' : ''} /> ${escapeHtml(t('允许 HTTP / 内网地址（确认 Fledge 能访问这个地址）', 'Allow HTTP / private address (Fledge must be able to reach it)'))}</label>` : ''}
       <div class="row">
         <button class="btn" name="action" value="save" type="submit">${escapeHtml(t('保存并测试', 'Save and test'))}</button>
         <button class="btn btn-ghost" name="action" value="clear" type="submit">${escapeHtml(t('清除，改回平台额度', 'Clear and use platform quota'))}</button>
       </div>
     </form>
-    <p class="fine">${escapeHtml(t('必须是 OpenAI 兼容的 /v1/chat/completions 服务；公网服务要求 https。保存时会发一个 1 token 的测试请求。', 'Must be an OpenAI-compatible /v1/chat/completions service; public endpoints must use https. Saving sends a 1-token test request.'))}</p>
+    <p class="fine">${escapeHtml(t('必须是 OpenAI 兼容的 /v1/chat/completions 服务；公网服务要求 https。保存时会发一个 1 token 的测试请求；内网地址测试失败时仍会保存，请自行确认可达性。', 'Must be an OpenAI-compatible /v1/chat/completions service; public endpoints must use https. Saving sends a 1-token test request; a private address is still saved if the test fails, so confirm reachability yourself.'))}</p>
   </section>
 
   <section class="card" id="notifications">
@@ -1427,8 +1428,8 @@ export function jobPage(input: {
       </div>
       <div class="row">
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a>
-        ${advanced && !supportMode ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
-        <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
+        ${supportMode ? '' : `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>`}
+        ${advanced && !supportMode ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
         ${supportMode ? '' : control}
         ${supportMode ? '' : execute}
         ${supportMode ? '' : retry}
@@ -1614,18 +1615,19 @@ export function agentWorkspacePage(input: {
 }): string {
   const { config, locale, viewer, repo, instance, notice, error } = input
   const t = translator(locale)
+  const advanced = advancedViewer(viewer)
   const ready = instance?.status === 'ready'
   const body = `<section class="card">
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('工作区', 'WORKSPACE'))}</div>
         <h1>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</h1>
-        <p class="muted">${instance === undefined ? escapeHtml(t('实例未创建', 'Instance not created')) : `${badge(t, instance.status)} · ${escapeHtml(instance.container)}`} · <a href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a> · <a href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a></p>
+        <p class="muted">${instance === undefined ? escapeHtml(t('实例未创建', 'Instance not created')) : `${badge(t, instance.status)} · ${escapeHtml(instance.container)}`} · <a href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a>${advanced ? ` · <a href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}</p>
       </div>
       <div class="row workspace-toolbar">
         ${ready ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace/app/" target="_blank" rel="noreferrer">${escapeHtml(t('新窗口打开', 'Open in new window'))}</a>` : ''}
         <button class="btn btn-ghost" type="button" data-reload>${escapeHtml(t('刷新', 'Refresh'))}</button>
-        ${ready ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/team/stop">${csrf(viewer)}<input type="hidden" name="returnTo" value="/repos/${escapeHtml(repo.id)}/workspace" /><button class="btn btn-ghost" type="submit">${escapeHtml(t('请求暂停', 'Request stop'))}</button></form>` : ''}
+        ${ready && advanced ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/team/stop">${csrf(viewer)}<input type="hidden" name="returnTo" value="/repos/${escapeHtml(repo.id)}/workspace" /><button class="btn btn-ghost" type="submit">${escapeHtml(t('请求暂停', 'Request stop'))}</button></form>` : ''}
       </div>
     </div>
   </section>
