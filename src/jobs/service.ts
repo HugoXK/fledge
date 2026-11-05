@@ -10,6 +10,7 @@ import { log } from '../lib/log.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, type Evidence } from '../lib/evidence.js'
+import { checkStage, parseStageMode } from '../lib/stages.js'
 import { decryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
@@ -1021,6 +1022,23 @@ export class Jobs {
     const revoke = (): void => {
       const row = this.store.findApiToken(job.platform_token_hash ?? '')
       if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
+    }
+    if (status === 'succeeded') {
+      const repo = this.store.getRepo(job.repo_id)
+      const stageMode = parseStageMode(repo?.stage_mode) ?? 'off'
+      const stage = checkStage(stageMode, job.kind, evidence, attribution, reviewScore)
+      if (!stage.ok) {
+        const detail = stage.errors.join('；')
+        const meta = `stage:${stageMode}:${stage.errors.join('|')}`.slice(0, 500)
+        this.store.event('stage_evidence_missing', { userId: job.user_id, repoId: job.repo_id, jobId, meta })
+        this.store.audit(job.user_id, stageMode === 'enforced' ? 'job.stage_missing' : 'job.stage_missing_shadow', `${jobId}: ${detail}`.slice(0, 600))
+        if (stageMode === 'enforced') {
+          const message = `STAGE_EVIDENCE_MISSING: ${detail}`
+          this.store.notify(job.user_id, 'job', `${job.kind} 任务 ${jobId} 缺少阶段证据：${detail}`)
+          this.finish(jobId, { status: 'failed', branch, prUrl, issueUrl, summary, error: message }, revoke, attribution, evidence)
+          return { ok: false, status: 422, error: message }
+        }
+      }
     }
     if (checkpoint !== undefined) this.store.updateJob(jobId, { checkpoint })
     this.finish(jobId, { status, branch, prUrl, issueUrl, reviewScore, summary, error }, revoke, attribution, evidence)

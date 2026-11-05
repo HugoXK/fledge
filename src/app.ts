@@ -28,6 +28,7 @@ import { normalizeInterval } from './lib/intervals.js'
 import { isValidBranchName } from './lib/branches.js'
 import { allowedRepoRoles, parseRepoRole, roleAllowed } from './lib/repoRole.js'
 import { isWorkItemState, MAINTAINER_ONLY_STATES, WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
+import { parseStageMode } from './lib/stages.js'
 import { VERSION } from './version.js'
 import { Approvals } from './users/approval.js'
 import {
@@ -1647,6 +1648,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       deny_paths: (body.denyPaths ?? '').trim().slice(0, 2000),
       merge_method: body.mergeMethod === 'merge' || body.mergeMethod === 'rebase' ? body.mergeMethod : 'squash',
       require_protection: body.requireProtection === '1' ? 1 : 0,
+      stage_mode: parseStageMode(body.stageMode) ?? 'off',
       monthly_budget_cny: Math.max(0, Math.min(10000, Number(body.monthlyBudget) || 0)),
       job_budget_cny: Math.max(0, Math.min(10000, Number(body.jobBudget) || 0)),
       auto_iterate: body.auto === '1' ? 1 : 0,
@@ -1663,7 +1665,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         log.warn('team playbook not updated after goal change', { repo: repo.id, error: String(error) })
       })
     }
-    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} role=${repoRole}${roleChanged ? ' role=changed' : ''} autoMerge=${canMaintain && body.autoMerge === '1' ? 'on' : 'off'} planRequired=${body.planRequired === '1' ? 'on' : 'off'} merge=${body.mergeMethod ?? 'squash'} protection=${body.requireProtection === '1' ? 'required' : 'optional'} reviewer=${canMaintain && repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
+    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} role=${repoRole}${roleChanged ? ' role=changed' : ''} autoMerge=${canMaintain && body.autoMerge === '1' ? 'on' : 'off'} planRequired=${body.planRequired === '1' ? 'on' : 'off'} merge=${body.mergeMethod ?? 'squash'} protection=${body.requireProtection === '1' ? 'required' : 'optional'} stage=${parseStageMode(body.stageMode) ?? 'off'} reviewer=${canMaintain && repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(goalChanged ? '设置已保存；团队规则已按新目标更新。' : '设置已保存。')}#repo-settings`)
   })
 

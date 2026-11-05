@@ -1,4 +1,9 @@
 export interface Evidence {
+  scope?: string
+  acceptance?: string
+  testPlan?: string
+  testRed?: string
+  testGreen?: string
   tests?: string
   checks?: string
   files?: number
@@ -18,11 +23,21 @@ export function parseEvidence(value: unknown): Evidence | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
   const raw = value as Record<string, unknown>
   const out: Evidence = {}
+  const scope = text(raw.scope, 2000)
+  const acceptance = text(raw.acceptance, 2000)
+  const testPlan = text(raw.testPlan, 1000)
+  const testRed = text(raw.testRed, 1000)
+  const testGreen = text(raw.testGreen, 1000)
   const tests = text(raw.tests)
   const checks = text(raw.checks)
   const rollback = text(raw.rollback)
   const risk = text(raw.risk, 20)?.toLowerCase()
   const files = typeof raw.files === 'number' && Number.isFinite(raw.files) ? Math.max(0, Math.round(raw.files)) : undefined
+  if (scope !== undefined) out.scope = scope
+  if (acceptance !== undefined) out.acceptance = acceptance
+  if (testPlan !== undefined) out.testPlan = testPlan
+  if (testRed !== undefined) out.testRed = testRed
+  if (testGreen !== undefined) out.testGreen = testGreen
   if (tests !== undefined) out.tests = tests
   if (checks !== undefined) out.checks = checks
   if (rollback !== undefined) out.rollback = rollback
