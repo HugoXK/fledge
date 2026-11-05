@@ -145,8 +145,8 @@ review.
 
 ## Gates
 
-The required checks are **`ci-ok`** and **`merge-ok`**. `ci-ok` is green only
-when all of these are green at the same tip:
+The required checks are **`ci-ok`**, **`review-gate`** and **`pr-lint`**.
+`ci-ok` is green only when all of these are green at the same tip:
 
 - `lint`
 - `typecheck`
@@ -158,10 +158,9 @@ when all of these are green at the same tip:
 - `version` (`package.json`, lockfile, changelog, compose and tag agree)
 - `risk` (the tier report succeeds)
 
-`merge-ok` aggregates `review-gate` and `pr-lint`. `pr-lint` checks the PR body
-(`Written-by:`, `Fixes #N` / `No-issue:`, `Ran:`, `Not run:`), the changelog
-fragment and docs obligations, the `Written-by` writer, and any `risk:T*` label
-against the computed tier.
+`pr-lint` checks the PR body (`Written-by:`, `Fixes #N` / `No-issue:`, `Ran:`,
+`Not run:`), the changelog fragment and docs obligations, the `Written-by`
+writer, and any `risk:T*` label against the computed tier.
 
 `review-gate` runs on `pull_request`, `pull_request_review` and `merge_group`, so
 posting a PASS reruns the check without a manual retry. It parses the newest
@@ -188,7 +187,7 @@ Not run: Docker, real SMTP
 - A new commit voids the PASS.
 - A `hold` label blocks the queue.
 
-`main` is protected by required `ci-ok` and `merge-ok`, conversation resolution
+`main` is protected by required `ci-ok`, `review-gate` and `pr-lint`, conversation resolution
 and a merge queue. Never bypass these with a direct push or an admin merge.
 
 ## Release

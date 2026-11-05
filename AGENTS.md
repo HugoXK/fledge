@@ -86,8 +86,8 @@ issue → claim → worktree/branch → red test → fix → gates → PR
    did not run, risks, and a `Docs-not-needed:` line only when the docs really
    say nothing about the change. Add one changelog fragment for a user-visible
    change.
-7. **Review.** `ci-ok` covers the build; `merge-ok` aggregates `review-gate` and
-   `pr-lint`. T0/T1 merge on green `ci-ok`. T2/T3 need a PASS at the same tip
+7. **Review.** `ci-ok` covers the build; `review-gate` and `pr-lint` are also
+   required. T0/T1 merge on green `ci-ok`. T2/T3 need a PASS at the same tip
    from a reviewer in `.github/agent/review-policy.json` (self-PASS by the
    owner's reviewer agent is allowed). The review format is fixed; see below.
 8. **Merge queue.** Enqueue with

@@ -43,25 +43,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/pr-lint.mjs
-
-  merge-ok:
-    name: merge-ok
-    if: always()
-    needs: [review-gate, pr-lint]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Every merge gate passed
-        env:
-          NEEDS: ${{ toJSON(needs) }}
-        run: |
-          node -e '
-            const needs = JSON.parse(process.env.NEEDS)
-            const failed = Object.entries(needs).filter(([, value]) => value.result !== "success" && value.result !== "skipped")
-            for (const [name, value] of Object.entries(needs)) console.log(`${name}: ${value.result}`)
-            if (failed.length > 0) {
-              console.error("merge gates failed: " + failed.map(([name]) => name).join(", "))
-              process.exit(1)
-            }
-            console.log("merge-ok: every merge gate passed")
-          '
