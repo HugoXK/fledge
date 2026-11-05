@@ -102,7 +102,9 @@
   triage-to-merge state machine (`proposed → triaged → assigned → in_progress →
   pr_ready → in_review → changes_requested → approved → merged/closed`). Jobs
   link to a work item, and issue/PR/review webhooks keep state and PR outcome in
-  sync. A repository can require a plan before code; a maintainer approves or
+  sync. Issue labels map `priority:high|medium|low` (or `p0`–`p3`) to work-item
+  priority, and an `agent-ready` label moves a proposed item to triaged. A
+  repository can require a plan before code; a maintainer approves or
   rejects it with allowed/forbidden path constraints, and execution is blocked
   until approval. Iterate jobs preflight the target branch, record the base SHA,
   warn when the fork is behind, and scheduled work is skipped while an active

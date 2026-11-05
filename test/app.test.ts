@@ -96,3 +96,32 @@ test('readyz reports database and instance counts', async () => {
     await built.close()
   }
 })
+
+test('issue labels set work item priority and triage state', async () => {
+  const config = appConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: { name: 'capture', async run() { return { status: 'running' as const } } }, startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'issue-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_issue', userId: user.id, owner: 'HugoXK', name: 'issue-demo', defaultBranch: 'main', tokenEnc: '', permission: 'admin', repoRole: 'maintainer', installationId: 42, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const issueUrl = 'https://github.com/HugoXK/issue-demo/issues/5'
+    const send = async (labels: Array<{ name: string }>, delivery: string, action = 'opened') => {
+      const payload = { action, installation: { id: 42 }, repository: { full_name: 'HugoXK/issue-demo' }, issue: { html_url: issueUrl, title: 'Fix it', body: 'details', state: 'open', labels } }
+      const body = Buffer.from(JSON.stringify(payload))
+      return built.app.inject({
+        method: 'POST',
+        url: '/api/github/webhook',
+        headers: { 'content-type': 'application/json', 'x-github-event': 'issues', 'x-github-delivery': delivery, 'x-hub-signature-256': sign(body) },
+        payload: body,
+      })
+    }
+    assert.equal((await send([], 'issue-1')).statusCode, 200)
+    assert.equal(store.findWorkItemByIssueUrl(repo.id, issueUrl)?.state, 'proposed')
+    assert.equal((await send([{ name: 'agent-ready' }, { name: 'priority:high' }], 'issue-2', 'labeled')).statusCode, 200)
+    const item = store.findWorkItemByIssueUrl(repo.id, issueUrl)
+    assert.equal(item?.state, 'triaged')
+    assert.equal(item?.priority, 30)
+  } finally {
+    await built.close()
+  }
+})

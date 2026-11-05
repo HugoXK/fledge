@@ -29,6 +29,7 @@ import { isValidBranchName } from './lib/branches.js'
 import { allowedRepoRoles, parseRepoRole, roleAllowed } from './lib/repoRole.js'
 import { isWorkItemState, MAINTAINER_ONLY_STATES, WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 import { parseStageMode } from './lib/stages.js'
+import { issuePriority, issueState, shouldTriage } from './lib/issueIntake.js'
 import { VERSION } from './version.js'
 import { Approvals } from './users/approval.js'
 import {
@@ -2165,13 +2166,28 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const issueUrl = typeof issue.html_url === 'string' ? issue.html_url : ''
       const title = typeof issue.title === 'string' ? issue.title.slice(0, 200) : ''
       const detail = typeof issue.body === 'string' ? issue.body.slice(0, 4000) : ''
+      const labels = Array.isArray(issue.labels)
+        ? issue.labels.flatMap((label) => {
+            if (typeof label === 'string') return [label]
+            if (typeof label === 'object' && label !== null && typeof (label as Record<string, unknown>).name === 'string') return [(label as Record<string, unknown>).name as string]
+            return []
+          })
+        : []
       if (issueUrl === '' || title === '') return
       const existing = store.findWorkItemByIssueUrl(repo.id, issueUrl)
       const closed = action === 'closed' || issue.state === 'closed'
+      const priority = issuePriority(labels)
+      const state = issueState(labels, closed)
       if (existing === undefined) {
-        store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, detail, issueUrl, state: closed ? 'closed' : 'proposed' })
+        store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, detail, issueUrl, state, priority })
       } else {
-        store.updateWorkItem(existing.id, { title, detail, issue_url: issueUrl, ...(closed ? { state: 'closed' } : {}) })
+        store.updateWorkItem(existing.id, {
+          title,
+          detail,
+          issue_url: issueUrl,
+          priority,
+          ...(closed ? { state: 'closed' } : shouldTriage(labels) && existing.state === 'proposed' ? { state: 'triaged' } : {}),
+        })
       }
       return
     }
