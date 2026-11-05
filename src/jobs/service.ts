@@ -13,7 +13,7 @@ import { parseEvidence, type Evidence } from '../lib/evidence.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
 import { decryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
-import { GithubClient, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
+import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
 import { GithubApp } from '../repos/app.js'
 import { repoGithubToken } from '../repos/token.js'
 import { parseTeam } from '../flybot/instances.js'
@@ -73,6 +73,7 @@ export class Jobs {
   private readonly followUpLocks = new Set<string>()
   private ticking = false
   private lastPruneAt = 0
+  private readonly credentialCache = new Map<string, { at: number }>()
   private readonly quotaNotifier: QuotaNotifier
 
   constructor(
@@ -203,6 +204,8 @@ export class Jobs {
       const upstreamOwner = repo.upstream_owner || repo.owner
       const upstreamName = repo.upstream_name || repo.name
       const branch = await client.getBranch(upstreamOwner, upstreamName, baseBranch)
+      this.store.markRepoCredential(repo.id, 'ok')
+      this.credentialCache.set(repo.id, { at: Date.now() })
       if (branch === null) return { ok: false, error: `目标分支 ${baseBranch} 不存在或不可访问。`, code: 'BRANCH_MISSING' }
       let warning = ''
       if (repo.is_fork === 1) {
@@ -216,8 +219,44 @@ export class Jobs {
       }
       return { ok: true, baseSha: branch.sha, warning }
     } catch (error) {
+      if (error instanceof GithubError && (error.status === 401 || error.status === 403) && !/rate limit/i.test(error.message)) {
+        this.markCredentialInvalid(repo, error)
+        return { ok: false, error: 'GitHub token 权限不足，请重新授权这个仓库。', code: 'REPO_CREDENTIAL_INVALID' }
+      }
       return { ok: false, error: String(error instanceof Error ? error.message : error), code: 'PREFLIGHT_FAILED' }
     }
+  }
+
+  private async checkCredential(repo: RepoRow): Promise<{ ok: boolean; code?: string; error?: string }> {
+    const cached = this.credentialCache.get(repo.id)
+    if (cached !== undefined && Date.now() - cached.at < 10 * 60_000) return { ok: true }
+    try {
+      const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
+      const client = new GithubClient(token, this.config.github.apiBase)
+      const owner = repo.upstream_owner || repo.owner
+      const name = repo.upstream_name || repo.name
+      const branch = await client.getBranch(owner, name, repo.upstream_default_branch || repo.default_branch)
+      if (branch !== null) this.credentialCache.set(repo.id, { at: Date.now() })
+      this.store.markRepoCredential(repo.id, 'ok')
+      return { ok: true }
+    } catch (error) {
+      if (error instanceof GithubError && (error.status === 401 || error.status === 403) && !/rate limit/i.test(error.message)) {
+        this.markCredentialInvalid(repo, error)
+        return { ok: false, code: 'REPO_CREDENTIAL_INVALID', error: 'GitHub token 权限不足，请重新授权这个仓库。' }
+      }
+      return { ok: true }
+    }
+  }
+
+  private markCredentialInvalid(repo: RepoRow, error: unknown): void {
+    this.credentialCache.delete(repo.id)
+    this.store.markRepoCredential(repo.id, 'invalid')
+    const current = this.store.getRepo(repo.id)
+    if (current !== undefined && current.auto_iterate === 1) this.store.updateRepo(repo.id, { auto_iterate: 0 })
+    const message = error instanceof Error ? error.message : String(error)
+    this.store.audit(repo.user_id, 'repo.credential_invalid', `${repo.owner}/${repo.name}: ${message.slice(0, 200)}`)
+    this.store.notify(repo.user_id, 'job', `${repo.owner}/${repo.name} 的 GitHub token 权限不足，自动迭代已暂停；请重新授权后手动开启。`)
+    void sendNotificationWebhook(this.config, 'repo.credential_invalid', { text: `${repo.owner}/${repo.name}: GitHub token is invalid`, repoId: repo.id, error: message.slice(0, 300) })
   }
 
   async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number } = {}): Promise<EnqueueResult> {
@@ -240,6 +279,10 @@ export class Jobs {
     if (active !== undefined) return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
     const user = this.store.userById(repo.user_id)
     if (user === undefined || user.status !== 'approved') return { ok: false, error: '用户不可用', code: 'USER_UNAVAILABLE' }
+    if (kind !== 'iterate') {
+      const credential = await this.checkCredential(repo)
+      if (!credential.ok) return { ok: false, error: credential.error ?? 'GitHub token 权限不足。', code: credential.code ?? 'REPO_CREDENTIAL_INVALID' }
+    }
     if (repo.monthly_budget_cny > 0) {
       const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
       const spentCny = this.store.repoUsageSince(repo.id, since) * this.config.quota.usdCny
@@ -479,8 +522,14 @@ export class Jobs {
         this.store.notify(job.user_id, 'quota', `任务 ${jobId} 成本 ${jobCostCny.toFixed(2)} 元，超过单任务预算 ${repo.job_budget_cny.toFixed(2)} 元。`)
       }
     }
-    if (result.status === 'succeeded') this.store.deleteSetting(`ops:repo_failing:${job.repo_id}`)
-    if (result.status === 'failed') this.checkRepeatedFailures(job)
+    if (result.status === 'succeeded') {
+      this.store.deleteSetting(`ops:repo_failing:${job.repo_id}`)
+      this.store.resetRepoFailures(job.repo_id)
+    }
+    if (result.status === 'failed') {
+      this.store.incrementRepoFailures(job.repo_id)
+      this.checkRepeatedFailures(job)
+    }
     void this.captureTeamStats(jobId)
   }
 
@@ -492,9 +541,13 @@ export class Jobs {
     this.store.setSetting(key, nowIso())
     const repo = this.store.getRepo(job.repo_id)
     const label = repo === undefined ? job.repo_id : `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`
-    this.store.notify(job.user_id, 'job', `${label} 连续 3 个任务失败，请检查 bridge、GitHub 凭据和模型额度。`)
+    if (repo !== undefined && repo.auto_iterate === 1) {
+      this.store.updateRepo(repo.id, { auto_iterate: 0 })
+      this.store.audit(job.user_id, 'repo.auto_paused', `${label}: 3 consecutive failures`)
+    }
+    this.store.notify(job.user_id, 'job', `${label} 连续 3 个任务失败，自动迭代已暂停；请检查 bridge、GitHub 凭据和模型额度后手动重新开启。`)
     this.store.audit(job.user_id, 'ops.repeated_failures', `${label}: 3 consecutive failures`)
-    void sendNotificationWebhook(this.config, 'repo.repeated_failures', { text: `${label}: 3 consecutive job failures`, repoId: job.repo_id, jobId: job.id })
+    void sendNotificationWebhook(this.config, 'repo.repeated_failures', { text: `${label}: 3 consecutive job failures; auto-iterate paused`, repoId: job.repo_id, jobId: job.id })
   }
 
   private async refreshRepoAccess(repo: RepoRow): Promise<RepoRow | undefined> {
@@ -987,6 +1040,7 @@ export class Jobs {
     if (job.status !== 'queued' && job.status !== 'running') return { ok: false, status: 409, error: 'job already finished' }
     const status = payload.status
     if (status !== 'succeeded' && status !== 'failed' && status !== 'running') return { ok: false, status: 400, error: 'invalid status' }
+    this.store.touchJobCallback(jobId)
     const branch = typeof payload.branch === 'string' ? payload.branch.slice(0, 300) : undefined
     const prUrl = typeof payload.prUrl === 'string' && payload.prUrl.startsWith('https://') ? payload.prUrl.slice(0, 500) : undefined
     const issueUrl = typeof payload.issueUrl === 'string' && payload.issueUrl.startsWith('https://') ? payload.issueUrl.slice(0, 500) : undefined
@@ -1153,8 +1207,18 @@ export class Jobs {
   }
 
   private async tickOnce(): Promise<void> {
+    const handled = new Set<string>()
+    const stalledBefore = addMinutes(-this.config.runner.stallMinutes)
+    for (const job of this.store.stalledRunningJobs(stalledBefore)) {
+      handled.add(job.id)
+      const revoke = (): void => {
+        const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
+        if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
+      }
+      this.finish(job.id, { status: 'failed', error: `任务停滞：超过 ${this.config.runner.stallMinutes} 分钟没有心跳。` }, revoke)
+    }
     const staleBefore = addMinutes(-this.config.runner.timeoutMinutes)
-    const staleJobs = [...this.store.staleQueuedJobs(addMinutes(-10)), ...this.store.staleRunningJobs(staleBefore)]
+    const staleJobs = [...this.store.staleQueuedJobs(addMinutes(-10)), ...this.store.staleRunningJobs(staleBefore)].filter((job) => !handled.has(job.id))
     for (const job of staleJobs) {
       const revoke = (): void => {
         const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)

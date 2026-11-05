@@ -150,7 +150,7 @@ test('the role backfill runs once and future schema versions are refused', () =>
     const reopened = new Store(path)
     assert.equal(reopened.getRepo(repo.id)?.repo_role, 'maintainer')
     assert.notEqual(reopened.getRepo(repo.id)?.role_checked_at, null)
-    reopened.db.exec('PRAGMA user_version = 23;')
+    reopened.db.exec('PRAGMA user_version = 24;')
     reopened.close()
 
     assert.throws(() => new Store(path), /newer than this build/)
@@ -251,6 +251,27 @@ test('user model connections and repository selections persist', () => {
     assert.equal(store.getRepo(repo.id)?.models_dirty, 0)
     store.deleteUserModel(first.id, user.id)
     assert.equal(store.listRepoModels(repo.id).length, 1)
+  } finally {
+    store.close()
+  }
+})
+
+test('stalled jobs and repository failure counters are persisted', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'stall-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_stall', userId: user.id, owner: 'o', name: 's', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_stall', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate' })
+    store.updateJob('job_stall', { status: 'running', started_at: '2000-01-01T00:00:00.000Z' })
+    assert.equal(store.stalledRunningJobs(new Date().toISOString()).length, 1)
+    store.touchJobCallback('job_stall')
+    assert.notEqual(store.getJob('job_stall')?.last_callback_at, null)
+    assert.equal(store.incrementRepoFailures(repo.id), 1)
+    assert.equal(store.incrementRepoFailures(repo.id), 2)
+    store.resetRepoFailures(repo.id)
+    assert.equal(store.getRepo(repo.id)?.consecutive_failures, 0)
+    store.markRepoCredential(repo.id, 'invalid')
+    assert.equal(store.getRepo(repo.id)?.credential_state, 'invalid')
   } finally {
     store.close()
   }

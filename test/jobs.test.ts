@@ -943,3 +943,67 @@ test('three consecutive job failures raise one ops notice', async () => {
     store.close()
   }
 })
+
+test('a running job with no heartbeat is failed as stalled', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'heartbeat-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_heartbeat', userId: user.id, owner: 'o', name: 'h', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_heartbeat', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate' })
+    store.updateJob('job_heartbeat', { status: 'running', started_at: '2000-01-01T00:00:00.000Z' })
+    await jobs.tick()
+    const job = store.getJob('job_heartbeat')
+    assert.equal(job?.status, 'failed')
+    assert.match(job?.error ?? '', /停滞/)
+  } finally {
+    store.close()
+  }
+})
+
+test('three consecutive failures pause auto-iterate', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'pause-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_pause', userId: user.id, owner: 'o', name: 'p', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    for (let i = 1; i <= 3; i += 1) {
+      const secret = `pause-secret-${i}`
+      const id = `job_pause_${i}`
+      store.createJob({ id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+      store.updateJob(id, { status: 'running', started_at: new Date().toISOString() })
+      await jobs.handleCallback(id, secret, { status: 'failed', error: 'boom' })
+    }
+    assert.equal(store.getRepo(repo.id)?.auto_iterate, 0)
+    assert.equal(store.getRepo(repo.id)?.consecutive_failures, 3)
+    assert.equal(store.listNotifications(user.id).some((entry) => entry.message.includes('自动迭代已暂停')), true)
+  } finally {
+    store.close()
+  }
+})
+
+test('a credential 403 pauses the repository before enqueue', async () => {
+  const github = await startFakeServer((request, response) => {
+    if (request.url?.startsWith('/repos/o/c/branches/')) {
+      json(response, 403, { message: 'Resource not accessible by personal access token' })
+      return
+    }
+    json(response, 404, { message: 'not found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'credential-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_credential', userId: user.id, owner: 'o', name: 'c', defaultBranch: 'main', tokenEnc: encryptSecret('bad-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    const result = await jobs.enqueue(repo, 'manual', 'plan this', 'plan')
+    assert.equal(result.ok, false)
+    assert.equal(result.code, 'REPO_CREDENTIAL_INVALID')
+    assert.equal(store.getRepo(repo.id)?.credential_state, 'invalid')
+    assert.equal(store.getRepo(repo.id)?.auto_iterate, 0)
+  } finally {
+    store.close()
+    await github.close()
+  }
+})

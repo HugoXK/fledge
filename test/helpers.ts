@@ -22,7 +22,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     tokenEncryptionKey: randomBytes(32).toString('base64'),
     dataDir: '/tmp/fledge-test',
     dbPath: ':memory:',
-    runner: { mode: 'mock', bridgeUrl: '', bridgeToken: '', timeoutMinutes: 45 },
+    runner: { mode: 'mock', bridgeUrl: '', bridgeToken: '', timeoutMinutes: 45, stallMinutes: 30 },
     allowTokenLoginOnly: true,
     mail: {
       transport: 'console',
