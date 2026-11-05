@@ -870,3 +870,56 @@ test('job completion and questions can be forwarded to a notification webhook', 
     await webhook.close()
   }
 })
+
+test('enforced stage mode rejects a callback without stage evidence', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'stage-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_stage', userId: user.id, owner: 'o', name: 'stage', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', stageMode: 'enforced', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const secret = 'stage-secret'
+    store.createJob({ id: 'job_stage', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob('job_stage', { status: 'running', started_at: new Date().toISOString() })
+    const result = await jobs.handleCallback('job_stage', secret, {
+      status: 'succeeded',
+      summary: 'done',
+      branch: 'fledge/stage',
+      prUrl: 'https://github.com/o/stage/pull/1',
+      attribution: { implementedBy: 'Lead', testedBy: 'Lead' },
+      evidence: { tests: 'ok' },
+    })
+    assert.equal(result.ok, false)
+    assert.equal(result.status, 422)
+    const job = store.getJob('job_stage')
+    assert.equal(job?.status, 'failed')
+    assert.match(job?.error ?? '', /STAGE_EVIDENCE_MISSING/)
+    assert.equal(store.listNotifications(user.id).some((entry) => entry.message.includes('缺少阶段证据')), true)
+  } finally {
+    store.close()
+  }
+})
+
+test('shadow stage mode records missing evidence without blocking', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'shadow-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_shadow', userId: user.id, owner: 'o', name: 'shadow', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', stageMode: 'shadow', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const secret = 'shadow-secret'
+    store.createJob({ id: 'job_shadow', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob('job_shadow', { status: 'running', started_at: new Date().toISOString() })
+    const result = await jobs.handleCallback('job_shadow', secret, {
+      status: 'succeeded',
+      summary: 'done',
+      branch: 'fledge/shadow',
+      prUrl: 'https://github.com/o/shadow/pull/1',
+      attribution: { implementedBy: 'Dev-1', testedBy: 'Test' },
+      evidence: { tests: 'ok' },
+    })
+    assert.equal(result.ok, true)
+    assert.equal(store.getJob('job_shadow')?.status, 'succeeded')
+    assert.equal(store.all<{ name: string }>('SELECT name FROM events WHERE job_id = ?', 'job_shadow').some((entry) => entry.name === 'stage_evidence_missing'), true)
+  } finally {
+    store.close()
+  }
+})

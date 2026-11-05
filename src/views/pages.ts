@@ -9,6 +9,7 @@ import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRo
 import { WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
+import { STAGE_MODES } from '../lib/stages.js'
 import type { InstallationRepo } from '../repos/app.js'
 import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
 import { parseTeam, type TeamLiveState, type TeamQuestionState } from '../flybot/instances.js'
@@ -677,6 +678,10 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </div>
         <div class="row">
           <label>${escapeHtml(t('合并方式', 'Merge method'))} <select name="mergeMethod">${['squash', 'merge', 'rebase'].map((method) => `<option value="${method}"${(repo.merge_method || 'squash') === method ? ' selected' : ''}>${method}</option>`).join('')}</select></label>
+          <label>${escapeHtml(t('团队阶段门禁', 'Team stage gate'))} <select name="stageMode">${STAGE_MODES.map((mode) => `<option value="${mode}"${(repo.stage_mode || 'off') === mode ? ' selected' : ''}>${escapeHtml(mode === 'enforced' ? t('强制', 'Enforced') : mode === 'shadow' ? t('观察', 'Shadow') : t('关闭', 'Off'))}</option>`).join('')}</select></label>
+        </div>
+        <p class="fine">${escapeHtml(t('强制模式下，实现任务必须带范围、验收标准、失败/通过测试证据和 Dev/Test 分工，审核任务必须带 Reviewer 和评分；否则任务失败且不会自动合并。观察模式只记录不阻断。', 'In enforced mode an implement job needs scope, acceptance criteria, red/green test evidence and Dev/Test roles; a review job needs a Reviewer and a score. Shadow mode records without blocking.'))}</p>
+        <div class="row">
           <label class="check"><input type="checkbox" name="requireProtection" value="1" ${repo.require_protection === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动合并前要求 branch protection', 'Require branch protection before auto-merge'))}${infoTip(t('开启后 Fledge 会检查保护规则、required checks 和 required approvals；读不到保护规则时不会自动合并。', 'When on, Fledge checks the protection rule, required checks and required approvals; if the rule cannot be read, it will not auto-merge.'))}</label>
         </div>
         <p class="fine">${escapeHtml(t('Branch protection', 'Branch protection'))}: <code>${escapeHtml(repo.protection_state ?? 'unknown')}</code>${repo.protection_checked_at === null ? '' : ` · ${escapeHtml(humanTimeShort(repo.protection_checked_at))}`}</p>
@@ -1382,6 +1387,11 @@ export function jobPage(input: {
   const evidenceRows = evidence === null
     ? `<p class="muted">${escapeHtml(t('团队还没有回报结构化证据。', 'The team has not reported structured evidence yet.'))}</p>`
     : `<div class="list">
+        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('范围', 'Scope'))}</strong><small>${escapeHtml(evidence.scope ?? '—')}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('验收标准', 'Acceptance'))}</strong><small>${escapeHtml(evidence.acceptance ?? '—')}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试计划', 'Test plan'))}</strong><small>${escapeHtml(evidence.testPlan ?? '—')}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('失败测试', 'Red test'))}</strong><small>${escapeHtml(evidence.testRed ?? '—')}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('通过测试', 'Green test'))}</strong><small>${escapeHtml(evidence.testGreen ?? '—')}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试', 'Tests'))}</strong><small>${escapeHtml(evidence.tests ?? '—')}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('CI / checks', 'CI / checks'))}</strong><small>${escapeHtml(evidence.checks ?? '—')}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('改动文件', 'Files changed'))}</strong><small>${evidence.files ?? '—'}</small></div></div>

@@ -195,6 +195,11 @@ Headers: `Authorization: Bearer <callbackSecret>`, `Content-Type: application/js
     "reviewedBy": "Reviewer"
   },
   "evidence": {
+    "scope": "Fix the CSV splitter; do not change the public API",
+    "acceptance": "A quoted comma stays one field",
+    "testPlan": "Add a failing parser test, then a passing one",
+    "testRed": "node --test tests/unit/csv.test.mjs — 1 fail",
+    "testGreen": "node --test tests/unit/csv.test.mjs — 1 pass",
     "tests": "node --test tests/unit/foo.test.mjs — 12 pass",
     "checks": "CI green",
     "files": 3,
@@ -219,7 +224,12 @@ progress heartbeat: it updates `summary`, `checkpoint` and optionally `branch`,
 into the goal when a failed job is retried. A `plan` job writes the plan to
 `summary` and must not create a branch, issue or PR; the super admin can execute it
 later as an iterate job. `evidence` is stored structurally and shown on the job
-detail page; the Fledge automation comment stays compact. On
+detail page; the Fledge automation comment stays compact. With
+`repos.stage_mode = 'enforced'`, an iterate callback must also include `scope`,
+`acceptance`, `testRed`, `testGreen` and Dev/Test attribution, and a review
+callback must include a Reviewer and `reviewScore`; otherwise the job fails with
+`STAGE_EVIDENCE_MISSING` and does not auto-merge. `shadow` records the same check
+as an event without blocking. On
 success, Fledge adds a collapsible automation block to the PR with the job,
 team and the attribution steps that actually happened, so humans can see which
 role claimed, implemented, tested and reviewed the change without a fabricated
