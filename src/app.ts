@@ -1843,7 +1843,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const baseUrl = (body.baseUrl ?? '').trim()
       const key = (body.apiKey ?? '').trim()
       if (label === '' || baseUrl === '' || key === '') throw new Error('请填写名称、Base URL 和 API Key')
-      const allowPrivate = config.allowPrivateModelUrls || (viewer.user.role === 'superadmin' && body.allowPrivate === '1')
+      const canPrivate = config.allowPrivateModelUrls || viewer.user.allow_private_models === 1 || viewer.user.role === 'superadmin'
+      const allowPrivate = canPrivate && (config.allowPrivateModelUrls || body.allowPrivate === '1')
       const safeUrl = await assertSafeModelUrl(baseUrl, allowPrivate)
       const provider = store.createModelProvider({
         id: randomId('prv'),
@@ -2211,6 +2212,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.setUserQuotaUnlimited(id, unlimited)
     store.audit(id, 'admin.quota', `${unlimited ? 'unlimited' : `${quota} CNY`} by @${viewer.user.login}`)
     return reply.redirect(`/admin?notice=${encodeURIComponent(unlimited ? '额度已设为不限额。' : '额度已更新。')}`)
+  })
+
+  app.post('/admin/users/:id/private-models', async (request, reply) => {
+    const viewer = approvedCsrfGuard(request)
+    if (viewer.user.role !== 'superadmin') throw httpError(403, '仅超级管理员可访问。', 'SUPERADMIN_ONLY')
+    const id = String((request.params as Record<string, string>).id)
+    const user = store.userById(id)
+    if (user === undefined || user.role === 'superadmin') throw httpError(403, '不能修改这个账号。', 'ROLE_PROTECTED')
+    const allow = form(request).allow === '1'
+    store.setUserAllowPrivateModels(id, allow)
+    store.audit(id, 'admin.private_models', `allow=${allow} by @${viewer.user.login}`)
+    return reply.redirect(`/admin?notice=${encodeURIComponent(allow ? '已允许这个用户配置 HTTP/内网模型。' : '已禁止这个用户配置 HTTP/内网模型。')}`)
   })
 
   app.post('/admin/users/:id/role', async (request, reply) => {

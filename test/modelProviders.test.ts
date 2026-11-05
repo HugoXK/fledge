@@ -37,3 +37,33 @@ test('a provider model is only saved after Fledge tests the connection', async (
     await modelServer.close()
   }
 })
+
+test('a normal user needs the per-user private-model permission', async () => {
+  const modelServer = await startFakeServer(async (_request, response) => {
+    json(response, 200, { id: 'x', choices: [{ message: { role: 'assistant', content: 'ok' } }], usage: { total_tokens: 1 } })
+  })
+  const config = testConfig({ allowPrivateModelUrls: false })
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'private-model-user', status: 'approved' })
+    const { cookie, csrf } = sessionFor(built, user)
+    const headers = { cookie, 'content-type': 'application/x-www-form-urlencoded' }
+    const payload = formBody({ csrf, label: 'Local', baseUrl: `${modelServer.url}/v1`, apiKey: 'secret', allowPrivate: '1' })
+    const denied = await built.app.inject({ method: 'POST', url: '/settings/providers', headers, payload })
+    assert.equal(denied.statusCode, 302)
+    assert.equal(store.listModelProviders(user.id).length, 0)
+    store.setUserAllowPrivateModels(user.id, true)
+    const allowed = await built.app.inject({ method: 'POST', url: '/settings/providers', headers, payload })
+    assert.equal(allowed.statusCode, 302)
+    const provider = store.listModelProviders(user.id)[0]
+    assert.ok(provider)
+    assert.equal(provider.allow_private, 1)
+    const model = await built.app.inject({ method: 'POST', url: `/settings/providers/${provider.id}/models`, headers, payload: formBody({ csrf, model: 'local-model', label: 'Local' }) })
+    assert.equal(model.statusCode, 302)
+    assert.equal(store.listProviderModels(provider.id).length, 1)
+  } finally {
+    await built.close()
+    await modelServer.close()
+  }
+})

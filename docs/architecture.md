@@ -345,8 +345,10 @@ preflight clears it.
 
 Settings owns a per-user set of OpenAI-compatible providers. Each provider has
 an encrypted key and an optional private/HTTP flag, and can hold multiple models
-(`provider_models`). A repository selects which provider models it may use and
-which is default (`repo_model_selection`). Adding a model runs a 1-token test
+(`provider_models`). A superadmin can grant a normal user `allow_private_models`;
+the user then sees the private-URL checkbox and must still pass the connection
+test. A repository selects which provider models it may use and which is default
+(`repo_model_selection`). Adding a model runs a 1-token test
 from Fledge and is refused on failure. The instance patch groups the selected
 models under their providers as DSH models, and the gateway maps an alias back
 to its provider, key and underlying model. Applying a changed selection rewrites

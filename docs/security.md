@@ -242,9 +242,10 @@ User model base URLs are validated before saving and before use:
 
 - HTTPS only for public hosts.
 - HTTP and private/loopback/link-local addresses are accepted only when
-  `ALLOW_PRIVATE_MODEL_URLS=true`, or when a superadmin ticks the private-URL
-  checkbox on the model form. This is an explicit trust decision: the gateway
-  host must be able to reach that address.
+  `ALLOW_PRIVATE_MODEL_URLS=true`, the user has `allow_private_models=1` (set by
+  a superadmin in Admin), or a superadmin ticks the private-URL checkbox on the
+  model form. This is an explicit trust decision: the gateway host must be able
+  to reach that address.
 - Without the opt-in, IP literals in private/loopback/link-local ranges are
   rejected and hostnames are resolved and checked.
 - Credentials in the URL are rejected.
