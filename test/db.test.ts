@@ -150,7 +150,7 @@ test('the role backfill runs once and future schema versions are refused', () =>
     const reopened = new Store(path)
     assert.equal(reopened.getRepo(repo.id)?.repo_role, 'maintainer')
     assert.notEqual(reopened.getRepo(repo.id)?.role_checked_at, null)
-    reopened.db.exec('PRAGMA user_version = 24;')
+    reopened.db.exec('PRAGMA user_version = 25;')
     reopened.close()
 
     assert.throws(() => new Store(path), /newer than this build/)
@@ -272,6 +272,21 @@ test('stalled jobs and repository failure counters are persisted', () => {
     assert.equal(store.getRepo(repo.id)?.consecutive_failures, 0)
     store.markRepoCredential(repo.id, 'invalid')
     assert.equal(store.getRepo(repo.id)?.credential_state, 'invalid')
+  } finally {
+    store.close()
+  }
+})
+
+test('pull request jobs disappear from the delivery list after merge', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'delivery-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_delivery', userId: user.id, owner: 'o', name: 'd', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_delivery', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate' })
+    store.updateJob('job_delivery', { pr_url: 'https://github.com/o/d/pull/1' })
+    assert.equal(store.listPrJobsForRepo(repo.id).length, 1)
+    store.updateJobsPrState('https://github.com/o/d/pull/1', 'merged')
+    assert.equal(store.listPrJobsForRepo(repo.id).length, 0)
   } finally {
     store.close()
   }

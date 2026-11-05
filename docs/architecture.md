@@ -280,6 +280,15 @@ job is retried, so a new job can continue from the last known point instead of
 starting from scratch. The add/settings goal forms also offer four task
 templates (bug, tests, docs, dependency) that fill the goal text.
 
+### Pull-request delivery
+
+Each repository page has a delivery list of iterate jobs with open pull requests,
+with review score, cost, age and a maintainer one-click merge. Merging re-checks
+the PR state, checks, commit status, reviews and branch protection through the
+same path as auto-merge, updates the linked work item and marks the job's PR
+state. A webhook updates the PR state when a PR is merged or closed. When at
+least three PRs are waiting and auto-merge is off, the page suggests enabling it.
+
 ### Job health and credential circuit breaker
 
 Every callback records `jobs.last_callback_at`. A running job with no callback for

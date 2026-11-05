@@ -895,6 +895,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         repo,
         instance,
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
+        prJobs: store.listPrJobsForRepo(repo.id, 10),
         workItems: store.listWorkItems(repo.id),
         models: store.listUserModels(repo.user_id),
         repoModelIds: repoModels.map((model) => model.id),
@@ -1324,6 +1325,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已重新排队。')}`)
   })
 
+  app.post('/repos/:id/jobs/:jobId/merge', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以合并 PR。')}`)
+    const result = await jobs.manualMerge(repo, job)
+    store.audit(viewer.user.id, 'job.merge_requested', `${job.id}: ${result.ok ? 'merged' : (result.message ?? 'failed')}`)
+    const key = result.ok ? 'notice' : 'error'
+    const message = result.ok ? 'PR 已合并。' : (result.message ?? '合并失败。')
+    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${key}=${encodeURIComponent(message)}`)
+  })
+
   app.post('/repos/:id/jobs/:jobId/approve-plan', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
@@ -1448,7 +1461,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.all('/repos/:id/workspace/app', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
     const url = request.raw.url ?? ''
     const query = url.includes('?') ? url.slice(url.indexOf('?')) : ''
     if (!url.split('?')[0]?.endsWith('/')) return reply.redirect(`/repos/${repo.id}/workspace/app/${query}`)
@@ -1463,7 +1476,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.all('/repos/:id/workspace/app/*', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
     const instance = store.getRepoInstance(repo.id)
     if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
     const prefix = `/repos/${repo.id}/workspace/app/`
@@ -2284,6 +2297,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const title = typeof pull.title === 'string' ? pull.title.slice(0, 200) : prUrl
       const merged = pull.merged === true
       const closed = action === 'closed' || pull.state === 'closed'
+      store.updateJobsPrState(prUrl, merged ? 'merged' : closed ? 'closed' : 'open')
       if (existing === undefined && action !== 'opened') return
       if (existing === undefined) {
         store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, prUrl, state: merged ? 'merged' : closed ? 'closed' : 'pr_ready', prState: merged ? 'merged' : closed ? 'closed' : 'open', mergedAt: merged ? nowIso() : null, mergeCommit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null })

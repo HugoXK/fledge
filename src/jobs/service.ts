@@ -611,19 +611,23 @@ export class Jobs {
     return Number.isFinite(at) && Date.now() - at <= maxAgeMs
   }
 
-  private async maybeAutoMerge(job: JobRow, prUrl: string): Promise<void> {
-    if (job.kind !== 'iterate') return
-    const repo = this.store.getRepo(job.repo_id)
-    if (repo === undefined || repo.repo_role !== 'maintainer' || repo.auto_merge !== 1) return
+  private async tryMerge(job: JobRow, prUrl: string, manual: boolean): Promise<{ ok: boolean; message?: string }> {
+    if (job.kind !== 'iterate') return { ok: false, message: '只有 iterate 任务可以合并。' }
+    let repo = this.store.getRepo(job.repo_id)
+    if (repo === undefined) return { ok: false, message: '仓库不存在。' }
+    if (repo.repo_role !== 'maintainer') return { ok: false, message: '只有 maintainer 可以合并。' }
+    if (!manual && repo.auto_merge !== 1) return { ok: false, message: '自动合并未开启。' }
     if (!this.roleFresh(repo)) {
       const refreshed = await this.refreshRepoAccess(repo)
-      if (refreshed === undefined || refreshed.repo_role !== 'maintainer' || refreshed.auto_merge !== 1) {
-        this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: stale role check`)
-        return
+      if (refreshed === undefined || refreshed.repo_role !== 'maintainer') {
+        this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: stale role check`)
+        return { ok: false, message: 'GitHub 权限已过期，请刷新仓库。' }
       }
+      repo = refreshed
+      if (!manual && repo.auto_merge !== 1) return { ok: false, message: '自动合并未开启。' }
     }
     const match = /\/pull\/(\d+)(?:[/?#]|$)/.exec(prUrl)
-    if (match === null) return
+    if (match === null) return { ok: false, message: 'PR 链接格式不正确。' }
     const number = Number(match[1])
     const owner = repo.upstream_owner || repo.owner
     const name = repo.upstream_name || repo.name
@@ -631,24 +635,28 @@ export class Jobs {
       const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
       const client = new GithubClient(token, this.config.github.apiBase)
       const pr = await client.getPullRequest(owner, name, number)
-      if (pr.state !== 'open' || pr.draft || pr.merged) return
+      if (pr.merged) {
+        this.store.updateJobsPrState(prUrl, 'merged')
+        return { ok: false, message: 'PR 已合并。' }
+      }
+      if (pr.state !== 'open' || pr.draft) return { ok: false, message: 'PR 不是 open 状态。' }
       if (pr.mergeable === false || ['blocked', 'dirty', 'behind', 'unknown'].includes(pr.mergeableState)) {
-        this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: PR ${number} is ${pr.mergeableState}`)
-        return
+        this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: PR ${number} is ${pr.mergeableState}`)
+        return { ok: false, message: `PR 当前不可合并（${pr.mergeableState}）。` }
       }
       const checks = await client.listCheckRuns(owner, name, pr.headSha)
       if (checks.length === 0) {
-        this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: no check runs`)
-        return
+        this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: no check runs`)
+        return { ok: false, message: 'PR 还没有 check runs。' }
       }
       if (checks.some((run) => run.status !== 'completed' || !['success', 'neutral', 'skipped'].includes(run.conclusion ?? ''))) {
-        this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: checks are not green`)
-        return
+        this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: checks are not green`)
+        return { ok: false, message: 'PR 检查还没有全绿。' }
       }
       const combined = await client.getCombinedStatus(owner, name, pr.headSha)
       if (combined.count > 0 && combined.state !== 'success') {
-        this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: commit status is ${combined.state}`)
-        return
+        this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: commit status is ${combined.state}`)
+        return { ok: false, message: `commit status 是 ${combined.state}。` }
       }
       const reviews = await client.listReviews(owner, name, number)
       const latest = new Map<string, string>()
@@ -656,27 +664,27 @@ export class Jobs {
         if (review.user !== '') latest.set(review.user, review.state)
       }
       if ([...latest.values()].includes('CHANGES_REQUESTED')) {
-        this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: changes requested`)
-        return
+        this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: changes requested`)
+        return { ok: false, message: 'PR 还有 changes requested。' }
       }
       if (repo.require_protection === 1) {
         const protection = await client.getBranchProtection(owner, name, pr.base)
         if (protection === null || !protection.protected) {
-          this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: branch protection unavailable`)
-          return
+          this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: branch protection unavailable`)
+          return { ok: false, message: '读不到 branch protection。' }
         }
         if (protection.requiredChecks.length > 0) {
           const passing = new Set(checks.filter((run) => run.status === 'completed' && ['success', 'neutral', 'skipped'].includes(run.conclusion ?? '')).map((run) => run.name))
           if (!protection.requiredChecks.every((context) => passing.has(context))) {
-            this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: required checks missing`)
-            return
+            this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: required checks missing`)
+            return { ok: false, message: '缺少 required checks。' }
           }
         }
         if (protection.requiredApprovals > 0) {
           const approvals = [...latest.values()].filter((state) => state === 'APPROVED').length
           if (approvals < protection.requiredApprovals) {
-            this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: required approvals missing`)
-            return
+            this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: required approvals missing`)
+            return { ok: false, message: '缺少 required approvals。' }
           }
         }
       }
@@ -687,15 +695,28 @@ export class Jobs {
         if (workItem !== undefined) {
           this.store.updateWorkItem(workItem.id, { state: 'merged', pr_state: 'merged', merged_at: nowIso(), merge_commit: merged.sha ?? null })
         }
-        this.store.audit(job.user_id, 'job.auto_merged', `${job.id}: PR ${number} ${merged.sha ?? ''}`)
+        this.store.updateJobsPrState(prUrl, 'merged')
+        this.store.audit(job.user_id, manual ? 'job.manually_merged' : 'job.auto_merged', `${job.id}: PR ${number} ${merged.sha ?? ''}`)
         this.store.event('job_auto_merged', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: `pr=${number}` })
-      } else {
-        this.store.audit(job.user_id, 'job.auto_merge_skipped', `${job.id}: ${merged.message ?? 'merge rejected'}`)
+        return { ok: true, message: '已合并。' }
       }
+      this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: ${merged.message ?? 'merge rejected'}`)
+      return { ok: false, message: merged.message ?? 'GitHub 拒绝了合并。' }
     } catch (error) {
-      this.store.audit(job.user_id, 'job.auto_merge_failed', `${job.id}: ${String(error).slice(0, 300)}`)
-      log.warn('auto-merge failed', { job: job.id, pr: number, error: String(error) })
+      this.store.audit(job.user_id, 'job.merge_failed', `${job.id}: ${String(error).slice(0, 300)}`)
+      log.warn('merge failed', { job: job.id, pr: number, error: String(error) })
+      return { ok: false, message: error instanceof Error ? error.message : String(error) }
     }
+  }
+
+  private async maybeAutoMerge(job: JobRow, prUrl: string): Promise<void> {
+    await this.tryMerge(job, prUrl, false)
+  }
+
+  async manualMerge(repo: RepoRow, job: JobRow): Promise<{ ok: boolean; message?: string }> {
+    if (job.repo_id !== repo.id) return { ok: false, message: '任务不属于这个仓库。' }
+    if (job.pr_url === null) return { ok: false, message: '这个任务没有 PR。' }
+    return this.tryMerge(job, job.pr_url, true)
   }
 
   private async resolveHeadSha(repo: RepoRow, prUrl: string): Promise<string | undefined> {
