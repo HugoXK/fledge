@@ -174,6 +174,7 @@ export interface JobRow {
   callback_hash: string
   kind: string
   issue_url: string | null
+  pr_state: string | null
   review_score: number | null
   attribution_json: string | null
   evidence_json: string | null
@@ -431,6 +432,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   callback_hash TEXT NOT NULL,
   kind TEXT NOT NULL DEFAULT 'iterate',
   issue_url TEXT,
+  pr_state TEXT,
   review_score INTEGER,
   attribution_json TEXT,
   evidence_json TEXT,
@@ -592,9 +594,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 23) {
+    if (previousVersion > 24) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (23)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (24)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -606,7 +608,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 23)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 24)};`)
   }
 
   private migrateColumns(): void {
@@ -700,6 +702,7 @@ export class Store {
     if (!jobColumns.has('plan_deny_paths')) this.run('ALTER TABLE jobs ADD COLUMN plan_deny_paths TEXT')
     if (!jobColumns.has('base_sha')) this.run('ALTER TABLE jobs ADD COLUMN base_sha TEXT')
     if (!jobColumns.has('last_callback_at')) this.run('ALTER TABLE jobs ADD COLUMN last_callback_at TEXT')
+    if (!jobColumns.has('pr_state')) this.run('ALTER TABLE jobs ADD COLUMN pr_state TEXT')
     const tokenColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(api_tokens)').map((row) => row.name))
     if (!tokenColumns.has('repo_id')) this.run('ALTER TABLE api_tokens ADD COLUMN repo_id TEXT')
     const ledgerColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(quota_ledger)').map((row) => row.name))
@@ -1358,6 +1361,14 @@ export class Store {
     return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC LIMIT ?', repoId, limit)
   }
 
+  listPrJobsForRepo(repoId: string, limit = 20): JobRow[] {
+    return this.all<JobRow>("SELECT * FROM jobs WHERE repo_id = ? AND pr_url IS NOT NULL AND kind = 'iterate' AND (pr_state IS NULL OR pr_state != 'merged') ORDER BY created_at DESC LIMIT ?", repoId, limit)
+  }
+
+  updateJobsPrState(prUrl: string, state: string): void {
+    this.run('UPDATE jobs SET pr_state = ? WHERE pr_url = ?', state, prUrl)
+  }
+
   listJobsPageForRepo(repoId: string, limit: number, offset: number): JobRow[] {
     return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?', repoId, limit, offset)
   }
@@ -1444,7 +1455,7 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority DESC, created_at ASC")
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')

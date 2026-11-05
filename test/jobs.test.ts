@@ -1007,3 +1007,18 @@ test('a credential 403 pauses the repository before enqueue', async () => {
     await github.close()
   }
 })
+
+test('manual merge rejects a job without a pull request', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'merge-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_merge', userId: user.id, owner: 'o', name: 'm', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_merge', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate' })
+    const result = await jobs.manualMerge(repo, job)
+    assert.equal(result.ok, false)
+    assert.match(result.message ?? '', /没有 PR/)
+  } finally {
+    store.close()
+  }
+})
