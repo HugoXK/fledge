@@ -79,19 +79,15 @@ function bumpVersions(version) {
   if (previous === version) return
   const escaped = previous.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   writeFileSync('package.json', pkgRaw.replace(new RegExp(`"version":\\s*"${escaped}"`), `"version": "${version}"`))
-  if (existsSync('package-lock.json')) {
-    const lockRaw = readFileSync('package-lock.json', 'utf8')
-    let seen = 0
-    const next = lockRaw.replace(new RegExp(`"version":\\s*"${escaped}"`, 'g'), (match) => {
-      seen += 1
-      return seen <= 2 ? `"version": "${version}"` : match
-    })
-    writeFileSync('package-lock.json', next)
-  }
-  if (existsSync('docker-compose.yml')) {
-    const compose = readFileSync('docker-compose.yml', 'utf8').replace(/(image:\s*fledge:)[^\s]+/, `$1${version}`)
-    writeFileSync('docker-compose.yml', compose)
-  }
+  const lockRaw = readFileSync('package-lock.json', 'utf8')
+  let seen = 0
+  const next = lockRaw.replace(new RegExp(`"version":\\s*"${escaped}"`, 'g'), (match) => {
+    seen += 1
+    return seen <= 2 ? `"version": "${version}"` : match
+  })
+  writeFileSync('package-lock.json', next)
+  const compose = readFileSync('docker-compose.yml', 'utf8').replace(/(image:\s*fledge:)[^\s]+/, `$1${version}`)
+  writeFileSync('docker-compose.yml', compose)
 }
 
 function release() {

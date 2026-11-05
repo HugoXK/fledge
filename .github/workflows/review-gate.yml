@@ -11,10 +11,6 @@ permissions:
   pull-requests: read
   issues: read
 
-concurrency:
-  group: review-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   review-gate:
     name: review-gate

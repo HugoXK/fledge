@@ -41,8 +41,7 @@ if (!Number.isInteger(prNumber) || prNumber <= 0) fail('cannot determine the pul
 function fail(message) {
   console.error(`pr-lint: FAIL — ${message}`)
   if (process.env.GITHUB_STEP_SUMMARY !== undefined) {
-    const summary = `pr-lint: FAIL — ${message}\n`
-    import('node:fs').then(({ appendFileSync }) => appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary)).catch(() => {})
+    import('node:fs').then(({ appendFileSync }) => appendFileSync(process.env.GITHUB_STEP_SUMMARY, 'pr-lint: FAIL — see the job log.\n')).catch(() => {})
   }
   process.exit(1)
 }
@@ -139,7 +138,7 @@ if (errors.length > 0) {
   for (const error of errors) console.error(`- ${error}`)
   if (process.env.GITHUB_STEP_SUMMARY !== undefined) {
     const { appendFileSync } = await import('node:fs')
-    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `pr-lint: FAIL (#${prNumber})\n${errors.map((error) => `- ${error}`).join('\n')}\n`)
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `pr-lint: FAIL (#${prNumber}) — ${errors.length} error(s); see the job log.\n`)
   }
   process.exit(1)
 }
