@@ -923,3 +923,23 @@ test('shadow stage mode records missing evidence without blocking', async () => 
     store.close()
   }
 })
+
+test('three consecutive job failures raise one ops notice', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'ops-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_ops', userId: user.id, owner: 'o', name: 'ops', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    for (let i = 1; i <= 4; i += 1) {
+      const secret = `ops-secret-${i}`
+      const id = `job_ops_${i}`
+      store.createJob({ id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+      store.updateJob(id, { status: 'running', started_at: new Date().toISOString() })
+      await jobs.handleCallback(id, secret, { status: 'failed', error: 'boom' })
+    }
+    const notices = store.listNotifications(user.id).filter((entry) => entry.message.includes('连续 3 个任务失败'))
+    assert.equal(notices.length, 1)
+  } finally {
+    store.close()
+  }
+})
