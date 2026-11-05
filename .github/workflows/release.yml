@@ -35,6 +35,11 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: node scripts/changelog.mjs notes "$RELEASE_TAG" > /tmp/release-notes.md
 
+      - name: Verify the version and tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: node scripts/version.mjs check
+
       - name: Build the image
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}

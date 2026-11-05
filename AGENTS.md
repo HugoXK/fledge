@@ -78,6 +78,7 @@ issue → claim → worktree/branch → red test → fix → gates → PR
    ```sh
    npm ci
    npm run check        # lint + typecheck + tests + build
+   node scripts/version.mjs check
    npm run dev          # when the change is user-visible
    ```
 
@@ -85,7 +86,8 @@ issue → claim → worktree/branch → red test → fix → gates → PR
    did not run, risks, and a `Docs-not-needed:` line only when the docs really
    say nothing about the change. Add one changelog fragment for a user-visible
    change.
-7. **Review.** T0/T1 merge on green `ci-ok`. T2/T3 need a PASS at the same tip
+7. **Review.** `ci-ok` covers the build; `merge-ok` aggregates `review-gate` and
+   `pr-lint`. T0/T1 merge on green `ci-ok`. T2/T3 need a PASS at the same tip
    from a reviewer in `.github/agent/review-policy.json` (self-PASS by the
    owner's reviewer agent is allowed). The review format is fixed; see below.
 8. **Merge queue.** Enqueue with
@@ -127,8 +129,10 @@ Verdict: INC at <sha>
 Verdict: REQUEST_CHANGES at <sha>
 ```
 
-The second line is `Written-by: <name>` from the policy's `writers` list. A
-relay adds `Posted-by:` on the third line; never edit someone else's report.
+The second line is `Written-by: <name>` from the policy's `writers` list. The
+third line is `Posted-by: <GitHub login>` and must match the account that
+submitted the review; never edit someone else's report. The PR author may not
+PASS its own tip unless `selfReview` allows it.
 Below that:
 
 ```

@@ -28,6 +28,7 @@ import { normalizeInterval } from './lib/intervals.js'
 import { isValidBranchName } from './lib/branches.js'
 import { allowedRepoRoles, parseRepoRole, roleAllowed } from './lib/repoRole.js'
 import { isWorkItemState, MAINTAINER_ONLY_STATES, WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
+import { VERSION } from './version.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -274,7 +275,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }).catch(() => fail('502 Bad Gateway'))
   })
 
-  app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: '0.2.3', time: new Date().toISOString() }))
+  app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: VERSION, time: new Date().toISOString() }))
 
   app.get('/readyz', async (_request, reply) => {
     try {

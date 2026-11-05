@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
 
 permissions:
   contents: read
@@ -106,6 +107,17 @@ jobs:
           node-version: 22
       - run: node scripts/changelog.mjs check
 
+  version:
+    name: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/version.mjs check
+
   risk:
     name: risk
     runs-on: ubuntu-latest
@@ -132,7 +144,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [lint, typecheck, test, build, docker, audit, changelog, risk]
+    needs: [lint, typecheck, test, build, docker, audit, changelog, version, risk]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
