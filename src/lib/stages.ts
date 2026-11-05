@@ -31,6 +31,17 @@ export function checkStage(
 ): StageCheck {
   if (mode === 'off' || kind === 'plan') return { ok: true, errors: [] }
   const errors: string[] = []
+  if (kind === 'scope') {
+    if (evidence?.scope === undefined) errors.push('缺少范围（evidence.scope）')
+    if (evidence?.acceptance === undefined) errors.push('缺少验收标准（evidence.acceptance）')
+    if (evidence?.testPlan === undefined) errors.push('缺少测试计划（evidence.testPlan）')
+    if (!roleMatches(attribution?.writtenBy, /product/i) && !roleMatches(attribution?.claimedBy, /product/i)) errors.push('范围必须由 Product 产出')
+  }
+  if (kind === 'verify') {
+    if (evidence?.testRed === undefined) errors.push('缺少失败测试证据（evidence.testRed）')
+    if (evidence?.testGreen === undefined) errors.push('缺少通过测试证据（evidence.testGreen）')
+    if (!roleMatches(attribution?.testedBy, TEST)) errors.push('验证必须由 Test 执行（attribution.testedBy）')
+  }
   if (kind === 'iterate') {
     if (evidence?.scope === undefined) errors.push('缺少范围证据（evidence.scope）')
     if (evidence?.acceptance === undefined) errors.push('缺少验收标准（evidence.acceptance）')

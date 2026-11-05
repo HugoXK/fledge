@@ -39,3 +39,12 @@ test('off and plan jobs are never blocked', () => {
   assert.equal(checkStage('off', 'iterate', null, null).ok, true)
   assert.equal(checkStage('enforced', 'plan', null, null).ok, true)
 })
+
+test('scope and verify stages require their own evidence and roles', () => {
+  assert.equal(checkStage('enforced', 'scope', { scope: 's', acceptance: 'a', testPlan: 't' }, { writtenBy: 'Product' }).ok, true)
+  assert.equal(checkStage('enforced', 'scope', { acceptance: 'a', testPlan: 't' }, { writtenBy: 'Product' }).ok, false)
+  assert.equal(checkStage('enforced', 'scope', { scope: 's', acceptance: 'a', testPlan: 't' }, { writtenBy: 'Lead' }).ok, false)
+  assert.equal(checkStage('enforced', 'verify', { testRed: 'r', testGreen: 'g' }, { testedBy: 'Test' }).ok, true)
+  assert.equal(checkStage('enforced', 'verify', { testGreen: 'g' }, { testedBy: 'Test' }).ok, false)
+  assert.equal(checkStage('enforced', 'verify', { testRed: 'r', testGreen: 'g' }, { testedBy: 'Lead' }).ok, false)
+})

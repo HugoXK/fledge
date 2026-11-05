@@ -24,6 +24,12 @@ import type { InstanceManager } from '../flybot/instances.js'
 export const DEFAULT_GOAL =
   'Review this repository for one high-value defect or improvement. Write a failing test first, implement the smallest correct fix, run the relevant tests, and open a pull request. Do not refactor unrelated code.'
 
+export const DEFAULT_SCOPE_GOAL =
+  'Produce a Product scope for the requested issue: goal, non-goals, acceptance criteria and a test plan. Do not write code, create a branch, open a PR or change settings.'
+
+export const DEFAULT_VERIFY_GOAL =
+  'Verify the existing pull request and branch with the Test role: run the relevant tests, report the failing evidence and the passing evidence after the fix, plus CI/check status. Do not write code, push, open a PR or merge.'
+
 export const DEFAULT_REVIEW_GOAL =
   'Review every open pull request on the upstream repository. For each PR, inspect the diff, tests and risk, give a score from 0 to 100 with a short rationale, and post a COMMENT review. Do not request changes, approve, merge, push or change repository settings. Return followUps for every Fledge PR that needs a same-branch fix. Summarize the scores and the most important issues.'
 
@@ -303,7 +309,7 @@ export class Jobs {
       preflightSha = preflight.baseSha ?? null
       preflightWarning = preflight.warning ?? ''
     }
-    const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
+    const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : kind === 'scope' ? DEFAULT_SCOPE_GOAL : kind === 'verify' ? DEFAULT_VERIFY_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
     const rawGoal = goalOverride ?? baseGoal
     const goal = (preflightWarning === '' ? rawGoal : `${rawGoal}\n\nPreflight: ${preflightWarning}. Sync the fork before creating the working branch.`).slice(0, 4000)
     const jobId = `job_${randomToken(10)}`
@@ -321,7 +327,7 @@ export class Jobs {
       return { ok: false, error: '平台额度已用完，请先配置自己的模型 API', code: 'QUOTA_EXHAUSTED', job: this.store.getJob(job.id) }
     }
 
-    let flybot: { url: string; token: string; sessionId: string; role: 'chief' | 'lead' | 'reviewer'; leadName: string } | undefined
+    let flybot: { url: string; token: string; sessionId: string; role: 'chief' | 'lead' | 'reviewer' | 'product' | 'test'; leadName: string } | undefined
     if (this.config.flybot.instanceImage !== '') {
       if (this.instances === undefined) return { ok: false, error: 'FlyBot 实例管理器未配置', code: 'INSTANCE_UNAVAILABLE' }
       try {
@@ -330,8 +336,20 @@ export class Jobs {
         })
         const bridge = this.instances.bridgeFor(repo.id)
         const reviewer = kind === 'review' ? bridge.team.reviewer : null
-        const role = reviewer !== null && reviewer !== '' ? 'reviewer' : bridge.team.chief !== '' ? 'chief' : 'lead'
-        const sessionId = reviewer !== null && reviewer !== '' ? reviewer : bridge.team.chief !== '' ? bridge.team.chief : bridge.team.lead
+        const role: 'chief' | 'lead' | 'reviewer' | 'product' | 'test' = kind === 'review'
+          ? 'reviewer'
+          : kind === 'scope'
+            ? 'product'
+            : kind === 'verify'
+              ? 'test'
+              : bridge.team.chief !== '' ? 'chief' : 'lead'
+        const sessionId = kind === 'review'
+          ? (reviewer ?? '')
+          : kind === 'scope'
+            ? bridge.team.product
+            : kind === 'verify'
+              ? bridge.team.test
+              : bridge.team.chief !== '' ? bridge.team.chief : bridge.team.lead
         flybot = { url: bridge.url, token: bridge.token, sessionId, role, leadName: `${bridge.team.team} Lead` }
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error), code: 'INSTANCE_NOT_READY' }
@@ -532,7 +550,7 @@ export class Jobs {
     }
     if (result.status === 'succeeded') {
       void this.afterSucceeded(job, prUrl ?? undefined, issueUrl ?? undefined, attribution).catch((error) => log.warn('post-job side effects failed', { job: jobId, error: String(error) }))
-      void this.autoQueueReview(jobId).catch((error) => log.warn('auto review queue failed', { job: jobId, error: String(error) }))
+      void this.autoQueueNextStage(jobId).catch((error) => log.warn('auto next stage failed', { job: jobId, error: String(error) }))
     } else {
       void this.captureTeamStats(jobId, attribution).catch((error) => log.warn('team stats capture failed', { job: jobId, error: String(error) }))
     }
@@ -774,6 +792,33 @@ export class Jobs {
       if (!result.ok) log.warn('pending follow-up not queued', { repo: repoId, code: result.code, error: result.error })
       else log.info('pending follow-up queued', { repo: repoId, job: result.job?.id })
     }
+  }
+
+  private async autoQueueNextStage(jobId: string): Promise<void> {
+    const job = this.store.getJob(jobId)
+    if (job === undefined || job.pr_url === null) return
+    const repo = this.store.getRepo(job.repo_id)
+    if (repo === undefined) return
+    if (job.kind === 'iterate' && repo.stage_mode !== 'off') {
+      let testSession = ''
+      try {
+        testSession = this.instances?.bridgeFor(repo.id).team.test ?? ''
+      } catch {
+        testSession = ''
+      }
+      if (testSession !== '') {
+        const result = await this.enqueue(repo, 'schedule', `Verify PR ${job.pr_url} (branch ${job.branch ?? 'unknown'}) with the Test role.`, 'verify', {
+          ...(job.branch === null ? {} : { branch: job.branch }),
+          prUrl: job.pr_url,
+          ...(job.work_item_id === null ? {} : { workItemId: job.work_item_id }),
+        })
+        if (result.ok) {
+          this.store.audit(job.user_id, 'verify.auto_queued', `${job.id} -> ${result.job?.id ?? ''}`)
+          return
+        }
+      }
+    }
+    if (job.kind === 'iterate' || job.kind === 'verify') await this.autoQueueReview(jobId)
   }
 
   private async autoQueueReview(jobId: string): Promise<void> {
@@ -1161,6 +1206,11 @@ export class Jobs {
     if (status === 'succeeded' && followUps.length > 0) {
       await this.queueReviewFollowUps(job, followUps)
       await this.releasePendingFollowups(job.repo_id)
+    }
+    if (status === 'succeeded' && job.work_item_id !== null) {
+      const item = this.store.getWorkItem(job.work_item_id)
+      if (item !== undefined && job.kind === 'scope') this.store.updateWorkItem(item.id, { state: 'assigned' })
+      if (item !== undefined && job.kind === 'verify') this.store.updateWorkItem(item.id, { state: 'in_review' })
     }
     if (status === 'succeeded' && job.kind === 'review' && job.work_item_id !== null) {
       const item = this.store.getWorkItem(job.work_item_id)
