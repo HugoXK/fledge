@@ -512,6 +512,11 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           : humanTimeShort(nextRun.toISOString())
   const instanceTeam = instance === undefined ? null : parseTeam(instance.team_json)
   const instanceReady = instance?.status === 'ready' && instanceTeam !== null
+  const flybotAvailable = config.flybot.instanceImage !== ''
+  const flybotReady = !flybotAvailable || instance?.status === 'ready'
+  const repoEnabled = repo.enabled === 1
+  const credentialOk = repo.credential_state !== 'invalid'
+  const runnable = repoEnabled && flybotReady && credentialOk
   const instanceNotice = config.flybot.instanceImage === ''
     ? `<div class="banner">${escapeHtml(t('这个部署没有启用每仓库 FlyBot 实例，任务由全局 mock/runner 处理。', 'This deployment has no per-repository FlyBot instance; jobs use the global mock/runner.'))}</div>`
     : instance === undefined
@@ -556,9 +561,9 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <div class="row">
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
         ${advanced ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
-        ${roleMissing ? `<span class="badge busy">${escapeHtml(t('先选择角色', 'Choose a role first'))}</span>` : `<form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button></form>
+        ${roleMissing ? `<span class="badge busy">${escapeHtml(t('先选择角色', 'Choose a role first'))}</span>` : !runnable ? `<span class="badge busy">${escapeHtml(t('仓库不可运行', 'Not runnable'))}</span>` : `<form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button></form>
         <form method="post" action="/repos/${escapeHtml(repo.id)}/plan">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('只出计划', 'Plan only'))}</button></form>`}
-        ${!roleMissing && canReview && reviewerEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/review">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('立即审核', 'Review now'))}</button></form>` : ''}
+        ${!roleMissing && runnable && canReview && reviewerEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/review">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('立即审核', 'Review now'))}</button></form>` : ''}
       </div>
     </div>
   </section>`
@@ -663,10 +668,31 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     ${repo.auto_merge === 0 && prJobs.length >= 3 ? `<div class="banner">${escapeHtml(t(`有 ${prJobs.length} 个 PR 等待合并。如果检查一直全绿，可在仓库设置里开启自动合并。`, `${prJobs.length} pull requests are waiting. If checks stay green, enable auto-merge in repository settings.`))} <a class="link" href="#repo-settings">${escapeHtml(t('去设置', 'Open settings'))}</a></div>` : ''}
     <p class="muted">${escapeHtml(t('合并前会重新检查 PR 状态、checks、commit status、reviews 和 branch protection。', 'Merging re-checks the PR state, checks, commit status, reviews and branch protection.'))}</p>
     <div class="table-scroll"><table><thead><tr><th>PR</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('审核分', 'Review'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th><th>${escapeHtml(t('创建', 'Created'))}</th><th></th></tr></thead><tbody>${prRows}</tbody></table></div></section>`
-  const credentialBanner = repo.credential_state === 'invalid' || repo.consecutive_failures >= 3
-    ? `<div class="banner bad">${escapeHtml(t('GitHub token 可能已失效或权限不足，自动迭代已暂停。请重新授权仓库或更新连接，然后到设置里手动重新开启。', 'The GitHub token may be invalid or lack permission; auto-iterate is paused. Re-authorize or update the connection, then enable it again in settings.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a> · <a class="link" href="#connection">${escapeHtml(t('更新连接', 'Update connection'))}</a></div>`
-    : ''
-  const body = `${repoHeader}${roleCard}${credentialBanner}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${questionsBlock(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}${deliveryCard}${workCard}
+  const lifecycleItems: string[] = []
+  if (!repoEnabled) lifecycleItems.push(t('仓库已停用：不会自动或手动运行任务。', 'Repository disabled: no jobs run automatically or manually.'))
+  if (flybotAvailable && instance?.status !== 'ready') lifecycleItems.push(t(`FlyBot ${instance === undefined ? '未创建' : statusLabel(t, instance.status)}：任务不会运行。`, `FlyBot is ${instance === undefined ? 'not created' : statusLabel(t, instance.status)}: jobs will not run.`))
+  if (!credentialOk) lifecycleItems.push(t('GitHub 凭据失效：调度已暂停。', 'GitHub credentials are invalid: scheduling is paused.'))
+  if (repo.auto_iterate === 1 && (!repoEnabled || !flybotReady)) lifecycleItems.push(t('自动迭代已开启，但当前不会运行。', 'Auto-iteration is on but cannot run right now.'))
+  const lifecycleActions = [
+    !repoEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/enable">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('启用仓库', 'Enable repository'))}</button></form>` : '',
+    flybotAvailable && instance?.status !== 'ready' ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/instance">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('启动 FlyBot', 'Start FlyBot'))}</button></form>` : '',
+    !credentialOk ? `<a class="btn btn-ghost" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a>` : '',
+  ].join('')
+  const lifecycleBanner = lifecycleItems.length === 0 ? '' : `<div class="banner bad"><strong>${escapeHtml(t('当前状态', 'Current state'))}</strong><ul>${lifecycleItems.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>${lifecycleActions === '' ? '' : `<div class="row">${lifecycleActions}</div>`}</div>`
+  const dangerCard = `<section class="card" id="danger">
+    <h2>${escapeHtml(t('危险操作', 'Danger zone'))}</h2>
+    <p class="muted">${escapeHtml(t('这里的操作只影响 Fledge 连接，不会删除 GitHub 仓库。停止调度会保留实例和历史；停止 FlyBot 会停止容器；删除会移除连接、实例、任务和 token。', 'These actions affect the Fledge connection only; the GitHub repository is not deleted. Stop scheduling keeps the instance and history; Stop FlyBot stops the container; Delete removes the connection, instance, jobs and tokens.'))}</p>
+    <div class="row">
+      ${repoEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/disable">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('停止调度', 'Stop scheduling'))}</button></form>` : `<form method="post" action="/repos/${escapeHtml(repo.id)}/enable">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('恢复调度', 'Resume scheduling'))}</button></form>`}
+      ${flybotAvailable ? (instance?.status === 'ready' ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/instance/stop" data-confirm="${escapeHtml(t('停止这个仓库的 FlyBot 实例？正在运行的工作会中断。', 'Stop the FlyBot instance for this repository? Running work will be interrupted.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('停止 FlyBot', 'Stop FlyBot'))}</button></form>` : `<form method="post" action="/repos/${escapeHtml(repo.id)}/instance">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('启动 FlyBot', 'Start FlyBot'))}</button></form>`) : ''}
+    </div>
+    <form method="post" action="/repos/${escapeHtml(repo.id)}/delete" class="form">
+      ${csrf(viewer)}
+      <label>${escapeHtml(t('输入仓库名', 'Type the repository name'))} <code>${escapeHtml(repo.name)}</code> ${escapeHtml(t('确认删除', 'to confirm deletion'))} <input name="confirmName" autocomplete="off" required /></label>
+      <button class="btn btn-danger" type="submit">${escapeHtml(t('删除仓库连接', 'Delete repository connection'))}</button>
+    </form>
+  </section>`
+  const body = `${repoHeader}${roleCard}${lifecycleBanner}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${questionsBlock(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}${deliveryCard}${workCard}${dangerCard}
   <section class="cols">
     <div class="card" id="repo-settings">
       <h2>${escapeHtml(t('迭代目标', 'Iteration goal'))}</h2>
@@ -732,7 +758,6 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <div class="row" style="margin-bottom:12px">
         <form method="post" action="/repos/${escapeHtml(repo.id)}/refresh">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('重新检测上游 / fork', 'Refresh upstream / fork'))}</button></form>
       </div>
-      <form method="post" action="/repos/${escapeHtml(repo.id)}/delete" data-confirm="${escapeHtml(t('删除这个仓库及其任务记录？', 'Delete this repository and its job history?'))}">${csrf(viewer)}<button class="btn btn-danger" type="submit">${escapeHtml(t('删除仓库', 'Delete repository'))}</button></form>
       <p class="fine">${escapeHtml(t('平台只通过 GitHub API 读取元数据、创建 fork 和分支/PR；不会 clone 到公共磁盘。', 'The platform only uses the GitHub API to read metadata, create forks and open branches/PRs; it never clones to public disk.'))}</p>
     </div>
   </section>

@@ -1715,8 +1715,27 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
   })
 
+  app.post('/repos/:id/enable', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    store.updateRepo(repo.id, { enabled: 1 })
+    store.audit(viewer.user.id, 'repo.enabled', `${repo.owner}/${repo.name}`)
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('仓库已启用；自动迭代不会自动打开，需要时在设置里开启。')}`)
+  })
+
+  app.post('/repos/:id/disable', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    store.updateRepo(repo.id, { enabled: 0, auto_iterate: 0 })
+    await jobs.cancelRepoJobs(repo.id, '仓库已停用')
+    store.audit(viewer.user.id, 'repo.disabled', `${repo.owner}/${repo.name}`)
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('仓库已停用，任务不会再运行。')}`)
+  })
+
   app.post('/repos/:id/delete', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const confirmName = (form(request).confirmName ?? '').trim()
+    if (confirmName !== repo.name && confirmName !== `${repo.owner}/${repo.name}`) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请输入仓库名确认删除。')}#danger`)
+    }
     for (const job of store.listActiveJobs().filter((entry) => entry.repo_id === repo.id)) {
       const token = job.platform_token_hash === null ? undefined : store.findApiToken(job.platform_token_hash)
       if (token !== undefined) store.revokeApiToken(token.id, token.user_id)
@@ -1724,7 +1743,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     await instances.remove(repo.id)
     store.deleteRepo(repo.id)
     store.audit(viewer.user.id, 'repo.deleted', `${repo.owner}/${repo.name}`)
-    return reply.redirect(`/dashboard?notice=${encodeURIComponent('仓库已删除。')}`)
+    return reply.redirect(`/dashboard?notice=${encodeURIComponent('仓库连接已删除；GitHub 仓库不受影响。')}`)
   })
 
   app.get('/settings', async (request, reply) => {
