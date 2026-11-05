@@ -1,0 +1,1 @@
+Added `scripts/rotate-instance-tokens.mjs` to rotate Fledge-managed bridge and per-instance gateway tokens, with a dry-run mode, an active-job guard and rollback on a failed bridge restart. The leaked GitHub development PAT is not managed by this script and must be rotated in GitHub settings.

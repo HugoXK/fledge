@@ -296,8 +296,13 @@ question can appear without a reload.
 
 ### Fledge-driven delivery chain
 
-After an iterate job succeeds with a PR, Fledge queues a review job when the
-repository has an enabled reviewer and no other job is active. A successful review
+After an iterate job succeeds with a PR, Fledge queues a Product scope job from
+the work-item action, and in stage mode queues a Test verify job to the Test
+session before review. The scope and verify jobs use the DSH `sessionId` of the
+Product/Test bot and only produce evidence (`scope`/`acceptance`/`testPlan` or
+`testRed`/`testGreen`); they never create a branch or PR. After verification (or
+iteration outside stage mode), Fledge queues a review job when the repository has
+an enabled reviewer and no other job is active. A successful review
 moves the linked work item to `approved` (score >= 80 and no follow-ups) or
 `changes_requested`; follow-ups are queued on the same branch. Plan approval
 moves the work item to `assigned`, and the execute action enqueues the

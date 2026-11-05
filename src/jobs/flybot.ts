@@ -4,11 +4,11 @@ import type { Runner, RunnerContext, RunnerResult } from './runner.js'
 
 interface BridgePayload {
   jobId: string
-  kind: 'iterate' | 'review' | 'plan'
+  kind: 'iterate' | 'review' | 'plan' | 'scope' | 'verify'
   branch?: string
   prUrl?: string
   sessionId?: string
-  dispatchRole?: 'chief' | 'lead' | 'reviewer'
+  dispatchRole?: 'chief' | 'lead' | 'reviewer' | 'product' | 'test'
   leadName?: string
   repo: { owner: string; name: string; defaultBranch: string }
   upstream: { owner: string; name: string; defaultBranch: string; htmlUrl: string }
@@ -66,6 +66,24 @@ function planInstructions(context: RunnerContext): string[] {
   ]
 }
 
+function scopeInstructions(context: RunnerContext): string[] {
+  const upstream = context.upstream
+  return [
+    `Mode: scope. You are the Product role for ${upstream.owner}/${upstream.name}. Do not write code, create a branch, push, open a PR/issue or change settings.`,
+    'Read the issue, repository docs, open issues/PRs and tests. Produce a scope with non-goals, acceptance criteria and a test plan.',
+    'Finish with status succeeded and evidence.scope, evidence.acceptance and evidence.testPlan in the callback; do not send branch, prUrl or issueUrl.',
+  ]
+}
+
+function verifyInstructions(context: RunnerContext): string[] {
+  const upstream = context.upstream
+  return [
+    `Mode: verify. You are the Test role for ${upstream.owner}/${upstream.name}. Do not write code, push, open a PR or merge.`,
+    'Read the existing PR/branch and run the relevant tests. Report the failing test evidence and the passing evidence after the fix, plus CI/check status.',
+    'Finish with status succeeded and evidence.testRed, evidence.testGreen, evidence.tests and evidence.checks in the callback; do not send branch, prUrl or issueUrl.',
+  ]
+}
+
 function reviewInstructions(context: RunnerContext): string[] {
   const upstream = context.upstream
   return [
@@ -117,11 +135,11 @@ export class FlyBotRunner implements Runner {
         'You are the Fledge repository worker.',
         `Get the GitHub token with GET ${context.credential.url} and header "Authorization: Bearer ${context.credential.secret}".`,
         `Use the platform model at ${context.platform.baseUrl} with the job token as the API key; the model is ${context.platform.model}.`,
-        ...(context.kind === 'review' ? reviewInstructions(context) : context.kind === 'plan' ? planInstructions(context) : iterateInstructions(context)),
+        ...(context.kind === 'review' ? reviewInstructions(context) : context.kind === 'plan' ? planInstructions(context) : context.kind === 'scope' ? scopeInstructions(context) : context.kind === 'verify' ? verifyInstructions(context) : iterateInstructions(context)),
         `Send a progress heartbeat after each major step and at least every 10 minutes: POST ${context.callback.url} with JSON {"status":"running","summary":"<one line progress>","checkpoint":"<done + next>"} and "Authorization: Bearer ${context.callback.secret}".`,
         'GitHub attribution: end every issue, PR and comment you create with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',
         'Final callback: include "attribution": {"writtenBy":"...","claimedBy":"...","implementedBy":"...","testedBy":"...","reviewedBy":"..."} with role names only (Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2). Omit a key for a step that did not happen; never write "not run", "pending" or "(Team)".',
-        'Also include "evidence": {"tests":"<command and pass/fail>","checks":"<CI/check status>","files":<changed files>,"risk":"low|medium|high","rollback":"<one line>"}; use only what you actually ran.',
+        'Also include "evidence": {"scope":"<scope>","acceptance":"<acceptance>","testPlan":"<test plan>","testRed":"<failing test>","testGreen":"<passing test>","tests":"<command and pass/fail>","checks":"<CI/check status>","files":<changed files>,"risk":"low|medium|high","rollback":"<one line>"}; use only what you actually ran.',
         `The job is failed after ${context.timeoutMinutes} minutes without a final callback; finish one focused change before then or report the concrete blocker.`,
         `When done, POST ${context.callback.url} with JSON {status, branch, prUrl, issueUrl, reviewScore, summary, error} and "Authorization: Bearer ${context.callback.secret}".`,
         'Do not print the GitHub token or the job token. Do not force-push. Do not merge; Fledge handles maintainer-enabled auto-merge.',

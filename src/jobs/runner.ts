@@ -4,7 +4,7 @@ import type { RepoRole } from '../lib/repoRole.js'
 import { FlyBotRunner } from './flybot.js'
 import { MockRunner } from './mock.js'
 
-export type JobKind = 'iterate' | 'review' | 'plan'
+export type JobKind = 'iterate' | 'review' | 'plan' | 'scope' | 'verify'
 
 export interface JobCredential {
   url: string
@@ -41,7 +41,7 @@ export interface RunnerContext {
   callback: JobCredential
   credential: JobCredential
   platform: PlatformModel
-  flybot?: { url: string; token: string; sessionId: string; role: 'chief' | 'lead' | 'reviewer'; leadName: string }
+  flybot?: { url: string; token: string; sessionId: string; role: 'chief' | 'lead' | 'reviewer' | 'product' | 'test'; leadName: string }
   timeoutMinutes: number
 }
 

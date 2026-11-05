@@ -126,7 +126,7 @@ async function sendToBot(text, sessionId) {
 }
 
 function buildText(job) {
-  const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : job.kind === 'provision' ? 'provision' : 'iterate'
+  const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : job.kind === 'scope' ? 'scope' : job.kind === 'verify' ? 'verify' : job.kind === 'provision' ? 'provision' : 'iterate'
   const upstream = job.upstream || job.repo || {}
   const fork = job.fork || job.repo || upstream
   const rules = kind === 'review'
@@ -142,6 +142,18 @@ function buildText(job) {
           '- Inspect the repository, docs, issues/PRs and tests; produce one concrete plan.',
           '- Include problem/evidence, files, ordered steps, tests, acceptance criteria, risks, rollback and size.',
           '- Finish with status succeeded and the plan in summary; no branch, prUrl or issueUrl.',
+        ]
+      : kind === 'scope'
+      ? [
+          '- This is a Product scoping job. Do not write code, create a branch, push, open a PR/issue or change settings.',
+          '- Read the issue, repository docs, open issues/PRs and tests. Produce scope, non-goals, acceptance criteria and a test plan.',
+          '- Finish with status succeeded and evidence.scope, evidence.acceptance and evidence.testPlan; no branch, prUrl or issueUrl.',
+        ]
+      : kind === 'verify'
+      ? [
+          '- This is a Test verification job. Do not write code, push, open a PR or merge.',
+          '- Read the existing PR/branch and run the relevant tests; report failing and passing evidence plus CI/check status.',
+          '- Finish with status succeeded and evidence.testRed, evidence.testGreen, evidence.tests and evidence.checks; no branch, prUrl or issueUrl.',
         ]
       : kind === 'provision'
       ? ['- This is a provisioning request. Do not write code, push, or open PRs.']
@@ -184,7 +196,7 @@ function buildText(job) {
     '- Do not merge; Fledge handles maintainer-enabled auto-merge. Never force-push.',
     '- End every GitHub issue, PR and comment with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',
     '- The final callback must include "attribution": {"writtenBy":"...","claimedBy":"...","implementedBy":"...","testedBy":"...","reviewedBy":"..."} with role names only (Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2). Omit a key for a step that did not happen; never write "not run", "pending" or "(Team)".',
-    '- Also include "evidence": {"tests":"<command and pass/fail>","checks":"<CI/check status>","files":<changed files>,"risk":"low|medium|high","rollback":"<one line>"}; use only what you actually ran.',
+    '- Also include "evidence": {"scope":"<scope>","acceptance":"<acceptance>","testPlan":"<test plan>","testRed":"<failing test>","testGreen":"<passing test>","tests":"<command and pass/fail>","checks":"<CI/check status>","files":<changed files>,"risk":"low|medium|high","rollback":"<one line>"}; use only what you actually ran.',
     `- After each major step and at least every 10 minutes, POST ${job.callbackUrl} with JSON {"status":"running","summary":"<one line progress>","checkpoint":"<done + next>"}`,
     `  and "Authorization: Bearer ${job.callbackSecret}". This is a heartbeat, not a finish.`,
     `- Finish by POSTing ${job.callbackUrl} with JSON {status, branch, prUrl, issueUrl, reviewScore, summary, error}`,

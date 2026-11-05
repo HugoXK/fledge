@@ -70,7 +70,8 @@ loopback only; keep it that way.
 
 The bridge returns `202 {ok:true}` once DSH accepted the message. It does not wait
 for the job; the agent reports back to Fledge. `sessionId` in the payload routes
-the job to a repository-specific Lead or Reviewer.
+the job to a repository-specific Lead, Product, Test or Reviewer session. `kind`
+may be `iterate`, `plan`, `scope`, `verify` or `review`.
 
 The bridge also exposes `POST /dsh` (authenticated with `BRIDGE_TOKEN`) as a
 small proxy for DSH `/api/bot`. Fledge uses it to read state, rename the Chief
@@ -85,11 +86,15 @@ The agent prompt includes:
 3. for `kind=iterate`: push to `fork`, create/reuse an issue on `upstream`, open
    one focused PR against `upstream`, no force-push and never merge; Fledge
    performs the maintainer-enabled auto-merge after checking the PR;
-4. for `kind=review`: review every open PR, score each 0–100; use
-   post a COMMENT review, never request changes or approve/merge, and report
-   `reviewScore` plus a `followUps` array for each Fledge PR that needs a
-   same-branch fix;
-5. POST the result to `callbackUrl` with
+4. for `kind=scope`: use the Product session to produce scope, non-goals,
+   acceptance criteria and a test plan; do not create a branch or PR;
+5. for `kind=verify`: use the Test session to run the relevant tests against the
+   existing PR/branch and report `testRed`/`testGreen`; do not create a branch
+   or PR;
+6. for `kind=review`: review every open PR, score each 0–100; post a COMMENT
+   review, never request changes or approve/merge, and report `reviewScore` plus
+   a `followUps` array for each Fledge PR that needs a same-branch fix;
+7. POST the result to `callbackUrl` with
    `{status, branch, prUrl, issueUrl, reviewScore, summary, error}`.
 
 The payload also carries `repoRole` (`maintainer` or `developer`) and

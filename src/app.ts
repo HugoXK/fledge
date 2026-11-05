@@ -1485,6 +1485,36 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent(kind === 'plan' ? '计划任务已排队。' : '工作项任务已排队。')}`)
   })
 
+  app.post('/repos/:id/work/:workItemId/scope', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const item = store.getWorkItem(String((request.params as Record<string, string>).workItemId))
+    if (item === undefined || item.repo_id !== repo.id) throw httpError(404, '工作项不存在。', 'WORK_ITEM_NOT_FOUND')
+    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请先选择你的角色。')}#work`)
+    if (item.state === 'merged' || item.state === 'closed') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('这个工作项已经结束。')}#work`)
+    const active = store.activeJobForRepo(repo.id)
+    if (active !== undefined) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}#work`)
+    const goal = [`Scope work item: ${item.title}`, item.detail === '' ? '' : item.detail, item.issue_url === null ? '' : `Issue: ${item.issue_url}`, 'Product scoping only: goal, non-goals, acceptance criteria and test plan. Do not code.'].filter((line) => line !== '').join('\n\n')
+    const result = await jobs.enqueue(repo, 'manual', goal, 'scope', { workItemId: item.id, priority: item.priority })
+    store.audit(viewer.user.id, 'work_item.scope', `${item.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
+    if (!result.ok || result.job === undefined) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(result.error ?? '范围任务启动失败。')}#work`)
+    return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('Product 范围任务已排队。')}`)
+  })
+
+  app.post('/repos/:id/work/:workItemId/verify', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const item = store.getWorkItem(String((request.params as Record<string, string>).workItemId))
+    if (item === undefined || item.repo_id !== repo.id) throw httpError(404, '工作项不存在。', 'WORK_ITEM_NOT_FOUND')
+    if (item.pr_url === null) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('这个工作项还没有 PR。')}#work`)
+    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请先选择你的角色。')}#work`)
+    const active = store.activeJobForRepo(repo.id)
+    if (active !== undefined) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}#work`)
+    const goal = `Verify PR ${item.pr_url} with the Test role. Read the PR and branch, run the relevant tests, and report failing and passing evidence. Do not code, push or merge.`
+    const result = await jobs.enqueue(repo, 'manual', goal, 'verify', { prUrl: item.pr_url, workItemId: item.id, priority: item.priority })
+    store.audit(viewer.user.id, 'work_item.verify', `${item.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
+    if (!result.ok || result.job === undefined) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(result.error ?? '验证任务启动失败。')}#work`)
+    return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('Test 验证任务已排队。')}`)
+  })
+
   app.get('/repos/:id/workspace', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
     const instance = store.getRepoInstance(repo.id)

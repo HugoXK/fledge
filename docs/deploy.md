@@ -64,6 +64,23 @@ empty and set `ALLOW_TOKEN_LOGIN_ONLY=true`. The landing page then offers a
 **GitHub token login** that uses `GET /user` only to confirm identity and never
 stores the token. Configure OAuth before a public launch.
 
+### Rotate managed instance tokens
+
+Fledge-managed bridge and per-instance gateway tokens can be rotated without
+touching user data:
+
+```sh
+cd /home/xuke/work/fledge
+node --env-file=.env scripts/rotate-instance-tokens.mjs --dry-run
+node --env-file=.env scripts/rotate-instance-tokens.mjs
+```
+
+The script refuses while a job is active unless `--force` is passed. It updates
+`bridge.env`, `repo_instances.bridge_token_enc` and the matching `api_tokens` row
+and restarts each bridge. The GitHub PAT used by the development routine is not
+managed by this script: create a new classic PAT with `repo` scope in GitHub
+settings, replace it in `~/.dsh/bot/secrets.json`, and revoke the old token.
+
 ## 3. SMTP
 
 Configure your operator SMTP account (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`,
