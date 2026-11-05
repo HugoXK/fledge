@@ -280,6 +280,30 @@ job is retried, so a new job can continue from the last known point instead of
 starting from scratch. The add/settings goal forms also offer four task
 templates (bug, tests, docs, dependency) that fill the goal text.
 
+### Issue commands and live inbox
+
+A collaborator can drive a work item from the issue thread with `/fledge status`,
+`/fledge plan`, `/fledge approve` or `/fledge fix`. The webhook checks the author
+association, dedupes by comment id, creates or reuses the work item, and replies
+on the issue with the work-item/job/PR state. `/fledge approve` is maintainer-only
+and approves the latest completed plan.
+
+The inbox is also available as `GET /api/inbox/events`, a per-user SSE stream.
+The server reuses the cached inbox snapshot, sends the server-rendered inbox HTML
+when the question signature changes, and the browser replaces the section and
+rebinds the answer forms. The page keeps a hidden empty inbox so the first new
+question can appear without a reload.
+
+### Fledge-driven delivery chain
+
+After an iterate job succeeds with a PR, Fledge queues a review job when the
+repository has an enabled reviewer and no other job is active. A successful review
+moves the linked work item to `approved` (score >= 80 and no follow-ups) or
+`changes_requested`; follow-ups are queued on the same branch. Plan approval
+moves the work item to `assigned`, and the execute action enqueues the
+implementation with the work item attached. The repository work-item table shows
+the stage (Scope / Implement / Review / Merge) alongside the state.
+
 ### Repository lifecycle
 
 The repository page has an explicit lifecycle: an enabled/disabled flag, the

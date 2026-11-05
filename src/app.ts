@@ -30,6 +30,7 @@ import { allowedRepoRoles, parseRepoRole, roleAllowed } from './lib/repoRole.js'
 import { isWorkItemState, MAINTAINER_ONLY_STATES, WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 import { parseStageMode } from './lib/stages.js'
 import { issuePriority, issueState, shouldTriage } from './lib/issueIntake.js'
+import { parseIssueCommand } from './lib/issueCommands.js'
 import { VERSION } from './version.js'
 import { Approvals } from './users/approval.js'
 import {
@@ -50,6 +51,7 @@ import {
   workspacePage,
   agentWorkspacePage,
   settingsPage,
+  inboxSection,
   errorPage,
   type InboxQuestion,
 } from './views/pages.js'
@@ -1221,6 +1223,41 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     await tick()
   })
 
+  app.get('/api/inbox/events', async (request, reply) => {
+    const viewer = requireApproved(request)
+    reply.hijack()
+    reply.raw.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    })
+    let closed = false
+    request.raw.on('close', () => { closed = true })
+    let last = ''
+    const send = (event: string, data: unknown): void => {
+      if (!closed) reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+    }
+    const tick = async (): Promise<void> => {
+      try {
+        const repos = store.listRepos(viewer.user.id)
+        const questions = await inboxForUser(viewer.user.id, repos)
+        const signature = questions.map((question) => `${question.repoId}:${question.sessionId}:${question.id}`).sort().join('|')
+        if (signature === last) {
+          if (!closed) reply.raw.write(': ping\n\n')
+          return
+        }
+        last = signature
+        send('inbox', { html: inboxSection(request.locale ?? 'zh', viewOf(viewer), questions, '/console'), count: questions.length })
+      } catch (error) {
+        send('error', { message: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    const timer = setInterval(() => void tick(), 5_000)
+    request.raw.on('close', () => clearInterval(timer))
+    await tick()
+  })
+
   app.post('/api/repos/:id/team/answer', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     requireAdvanced(viewer)
@@ -1347,6 +1384,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const allow = (body.allowPaths ?? repo.allow_paths).trim().slice(0, 2000)
     const deny = (body.denyPaths ?? repo.deny_paths).trim().slice(0, 2000)
     store.updateJob(job.id, { plan_approved_at: nowIso(), plan_approved_by: viewer.user.id, plan_rejected_at: null, plan_allow_paths: allow, plan_deny_paths: deny })
+    if (job.work_item_id !== null) store.updateWorkItem(job.work_item_id, { state: 'assigned' })
     store.audit(viewer.user.id, 'job.plan_approved', `${job.id} allow=${allow.slice(0, 200)} deny=${deny.slice(0, 200)}`)
     return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?notice=${encodeURIComponent('计划已批准，可以执行。')}`)
   })
@@ -2258,6 +2296,73 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
   }
 
+  const handleIssueCommand = async (event: string, body: Record<string, unknown>): Promise<void> => {
+    if (event !== 'issue_comment' || body.action !== 'created') return
+    const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
+    const installationId = Number(installation.id)
+    if (!Number.isFinite(installationId)) return
+    const repository = typeof body.repository === 'object' && body.repository !== null ? (body.repository as Record<string, unknown>) : {}
+    const fullName = typeof repository.full_name === 'string' ? repository.full_name : ''
+    if (fullName === '') return
+    const repo = store.findRepoByInstallationAndFullName(installationId, fullName)
+    if (repo === undefined) return
+    const parsed = parseIssueCommand(body)
+    if (parsed === null) return
+    const { command, issueUrl, number, title, detail } = parsed
+    const key = `issue_command:${parsed.commentId}`
+    if (store.getSetting(key) !== undefined) return
+    store.setSetting(key, nowIso())
+    let item = store.findWorkItemByIssueUrl(repo.id, issueUrl)
+    if (item === undefined) {
+      item = store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, detail, issueUrl, state: 'proposed' })
+    }
+    const token = await repoGithubToken(repo, config, githubApp, store)
+    const client = new GithubClient(token, config.github.apiBase)
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    const reply = async (message: string): Promise<void> => {
+      await client.comment(owner, name, number, `${message}\n\n<sub>Fledge · issue command</sub>`)
+    }
+    if (command === 'status') {
+      const latest = store.listJobsForRepo(repo.id, 20).find((job) => job.work_item_id === item.id)
+      await reply(`Work item ${item.id}: ${item.state}. ${latest === undefined ? 'No job yet.' : `Latest job ${latest.id}: ${latest.status}${latest.pr_url === null ? '' : ` · ${latest.pr_url}`}`}`)
+      return
+    }
+    if (store.activeJobForRepo(repo.id) !== undefined) {
+      await reply('A job is already running for this repository; wait for it to finish.')
+      return
+    }
+    if (command === 'approve') {
+      if (repo.repo_role !== 'maintainer') {
+        await reply('Only a maintainer can approve a plan.')
+        return
+      }
+      const plan = store.listJobsForRepo(repo.id, 20).find((job) => job.kind === 'plan' && job.status === 'succeeded' && job.work_item_id === item.id && job.plan_approved_at === null)
+      if (plan === undefined) {
+        await reply('No plan is waiting for approval.')
+        return
+      }
+      store.updateJob(plan.id, { plan_approved_at: nowIso(), plan_approved_by: repo.user_id, plan_rejected_at: null })
+      store.updateWorkItem(item.id, { state: 'assigned' })
+      store.audit(repo.user_id, 'plan.approved', `${plan.id} via issue command`)
+      await reply(`Plan ${plan.id} approved. Run /fledge fix to start implementation.`)
+      return
+    }
+    if (command === 'plan') {
+      const goal = `Issue ${issueUrl}\nTitle: ${title}\n${detail}\n\nProduce one concrete plan only; do not write code, create a branch or open a PR.`
+      const result = await jobs.enqueue(repo, 'manual', goal, 'plan', { workItemId: item.id })
+      await reply(result.ok ? `Plan job ${result.job?.id ?? ''} queued.` : `Could not queue a plan: ${result.error ?? 'unknown error'}`)
+      return
+    }
+    if (repo.plan_required === 1 && item.state !== 'approved' && item.state !== 'assigned' && item.state !== 'pr_ready') {
+      await reply('This repository requires an approved plan first. Run /fledge plan, then /fledge approve.')
+      return
+    }
+    const goal = `Issue ${issueUrl}\nTitle: ${title}\n${detail}\n\nImplement one focused fix for this issue.`
+    const result = await jobs.enqueue(repo, 'manual', goal, 'iterate', { workItemId: item.id })
+    await reply(result.ok ? `Implementation job ${result.job?.id ?? ''} queued.` : `Could not queue a fix: ${result.error ?? 'unknown error'}`)
+  }
+
   const handleWorkItemEvent = async (event: string, body: Record<string, unknown>): Promise<void> => {
     if (event !== 'issues' && event !== 'pull_request' && event !== 'pull_request_review') return
     const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
@@ -2357,6 +2462,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (action === 'deleted' && Number.isFinite(installationId)) store.deleteInstallation(installationId)
     }
     await handleWorkItemEvent(event, body).catch((error) => log.warn('github work item sync failed', { event, error: String(error) }))
+    await handleIssueCommand(event, body).catch((error) => log.warn('github issue command failed', { event, error: String(error) }))
     await handleGithubFollowup(event, body).catch((error) => log.warn('github follow-up failed', { event, error: String(error) }))
     return { ok: true }
   })
