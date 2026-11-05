@@ -86,7 +86,8 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
   the service runs `RUNNER_MODE=mock`).
 - Docker image build on a host with Docker (CI builds the image in the `docker`
   job).
-- Branch protection, required checks and a merge queue on GitHub.
+- Branch protection and required checks are configured; a merge queue is not
+  available through this repository's API plan, so auto-merge is used.
 
 ## Architecture in one screen
 
@@ -114,10 +115,12 @@ back. See [architecture.md](architecture.md) and [api.md](api.md).
    `RUNNER_MODE=flybot` in Fledge.
 4. **First real job**: add a small test repo, run one job, verify the PR, the
    callback, the job token revocation and the quota ledger.
-5. **Branch protection**: require `ci-ok` (and later `review-gate`), require a
-   pull request and conversation resolution, enable a merge queue on `main`.
-6. **Review gate as a required check**: finish `scripts/review-gate.mjs` for the
-   `merge_group` event and enable it on `main`.
+5. **Branch protection** — done: `main` requires `ci-ok`, `review-gate`,
+   `pr-lint` and conversation resolution, and enforces the rules for admins.
+6. **Review gate as a required check** — done: `review-gate` runs on
+   `pull_request`, `pull_request_review` and `merge_group`; `pr-lint` checks the
+   body, changelog/docs obligations and risk labels. No merge queue is available
+   through the API plan, so auto-merge performs the squash merge.
 7. **Homepage + guide**: live at `hugoxk.online/fledge/` and
    `hugoxk.online/fledge/guide/` (English under `/en/`); keep them in step with
    the product.

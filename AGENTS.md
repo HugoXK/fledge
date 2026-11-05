@@ -50,8 +50,9 @@ Core paths:
    that branch. Never open a second PR and close the first.
 4. **Test first.** A regression test must fail on the unbroken tip, then pass
    with the fix. Keep both halves of the evidence.
-5. **No admin merge, no bypass.** Merge only through the merge queue once the
-   required checks are green at the tip. A new commit voids a PASS.
+5. **No admin merge, no bypass.** Merge only through auto-merge (or the merge
+   queue when one is available) once the required checks are green at the tip.
+   A new commit voids a PASS.
 6. **No deploy without consent.** A production deploy, a DNS/tunnel change, a
    quota change on a live user, or a token rotation needs the owner's explicit
    yes.
@@ -90,10 +91,10 @@ issue → claim → worktree/branch → red test → fix → gates → PR
    required. T0/T1 merge on green `ci-ok`. T2/T3 need a PASS at the same tip
    from a reviewer in `.github/agent/review-policy.json` (self-PASS by the
    owner's reviewer agent is allowed). The review format is fixed; see below.
-8. **Merge queue.** Enqueue with
-   `gh pr merge --auto --squash --match-head-commit <sha>` after the guard
-   script agrees. The queue performs the squash merge. Never use
-   `--admin`, never force-push `main`.
+8. **Merge.** Enqueue with `gh pr merge --auto --squash --match-head-commit
+   <sha>` after the guard script agrees. Auto-merge (or the merge queue when
+   available) performs the squash merge. Never use `--admin`, never force-push
+   `main`.
 9. **Release.** The release routine owns `CHANGELOG.md` and the version. It
    assembles `changelog.d/` fragments and creates the tag.
 
