@@ -1,5 +1,5 @@
 import type { Config } from '../config.js'
-import type { AuditRow, JobRow, NotificationRow, RepoInstanceRow, RepoRow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
+import type { AuditRow, JobRow, NotificationRow, RepoInstanceRow, RepoRow, UserModelRow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
@@ -460,9 +460,12 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; workItems?: WorkItemRow[]; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; workItems?: WorkItemRow[]; models?: UserModelRow[]; repoModelIds?: string[]; repoDefaultModelId?: string; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const workItems = input.workItems ?? []
+  const models = input.models ?? []
+  const repoModelIds = new Set(input.repoModelIds ?? [])
+  const repoDefaultModelId = input.repoDefaultModelId ?? ''
   const repoSpendCny = input.repoSpendCny ?? 0
   const questions = input.questions ?? []
   const chiefMessages = input.chiefMessages ?? []
@@ -690,6 +693,15 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           <label>${escapeHtml(t('单任务预算（元）', 'Per-job budget (CNY)'))} <input name="jobBudget" type="number" min="0" max="10000" step="0.01" value="${repo.job_budget_cny.toFixed(2)}" /></label>
         </div>
         <p class="fine">${escapeHtml(t('本月已用', 'Spent this month'))} ${escapeHtml(quotaMoney(repoSpendCny))}${repo.monthly_budget_cny > 0 ? ` / ${escapeHtml(quotaMoney(repo.monthly_budget_cny))}` : ''}</p>
+        <div class="row">
+          <label style="flex:1">${escapeHtml(t('可用模型', 'Available models'))}${infoTip(t('在 Settings 里添加模型连接；这里只选择这个仓库允许使用的模型。', 'Add model connections in Settings; select only the models this repository may use.'))}
+            ${models.length === 0
+              ? `<span class="muted">${escapeHtml(t('还没有模型连接。先到 Settings 添加。', 'No model connections yet. Add one in Settings.'))}</span>`
+              : `<span class="list">${models.map((model) => `<label class="check"><input type="checkbox" name="modelIds" value="${escapeHtml(model.id)}" ${repoModelIds.has(model.id) ? 'checked' : ''} /> ${escapeHtml(model.label)} <small class="muted">${escapeHtml(model.model)}</small></label>`).join('')}</span>`}
+          </label>
+        </div>
+        <label>${escapeHtml(t('默认模型', 'Default model'))} <select name="defaultModelId"><option value="">${escapeHtml(t('平台默认', 'Platform default'))}</option>${models.map((model) => `<option value="${escapeHtml(model.id)}"${repoDefaultModelId === model.id ? ' selected' : ''}>${escapeHtml(model.label)}${repoModelIds.has(model.id) ? '' : ' *'}</option>`).join('')}</select></label>
+        <p class="fine">${escapeHtml(t('保存选择后，空闲时点击“应用模型并重启工作区”才会生效。', 'After saving the selection, use "Apply models and restart workspace" while idle for it to take effect.'))}</p>
         ${roleMissing ? `<p class="fine">${escapeHtml(t('先选择你的角色，审核和自动合并才会生效。', 'Choose your role before review or auto-merge can take effect.'))}</p>` : !githubCanReview ? `<p class="fine">${escapeHtml(t('你在这个上游没有 admin/maintain 权限，审核角色不可用。', 'You do not have admin/maintain permission on this upstream, so the reviewer role is unavailable.'))}</p>` : !canMaintain ? `<p class="fine">${escapeHtml(t('developer 不能启用 PR 审核或自动合并；切换为 maintainer 后才可用。', 'A developer cannot enable PR review or auto-merge; switch to maintainer first.'))}</p>` : ''}
         ${advanced ? `<details class="fine advanced-help"><summary>${escapeHtml(t('团队与调度规则', 'Team and scheduling rules'))}</summary>
           <p>${escapeHtml(t('保存目标后，团队 playbook 会按新目标更新：总控 → 负责人 → 产品/测试/安全/审核/开发。审核角色只有勾选“启用 PR 审核”后才会参与。', 'Saving the goal updates the team playbook: Chief -> Lead -> Product/Test/Security/Reviewer/Dev. The Reviewer takes part only when "Enable PR reviewer" is checked.'))}</p>
@@ -697,6 +709,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </details>` : ''}
         <button class="btn" type="submit">${escapeHtml(t('保存', 'Save'))}</button>
       </form>
+      ${repo.models_dirty === 1 ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/models/apply" style="margin-top:12px">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('应用模型并重启工作区', 'Apply models and restart workspace'))}</button><p class="fine">${escapeHtml(t('有运行中的任务时会拒绝重启。', 'Restart is refused while a job is running.'))}</p></form>` : ''}
     </div>
     <div class="card">
       <h2>${escapeHtml(t('连接', 'Connection'))}</h2>
@@ -880,11 +893,12 @@ export function settingsPage(input: {
   locale: Locale
   viewer: Viewer
   tokens: ApiTokenRow[]
+  models: UserModelRow[]
   newToken?: string
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, tokens, newToken, notice, error } = input
+  const { config, locale, viewer, tokens, models, newToken, notice, error } = input
   const t = translator(locale)
   const user = viewer.user
   const quota = quotaView(user, config)
@@ -922,6 +936,25 @@ export function settingsPage(input: {
       </div>
     </form>
     <p class="fine">${escapeHtml(t('必须是 OpenAI 兼容的 /v1/chat/completions 服务；公网服务要求 https。保存时会发一个 1 token 的测试请求；内网地址测试失败时仍会保存，请自行确认可达性。', 'Must be an OpenAI-compatible /v1/chat/completions service; public endpoints must use https. Saving sends a 1-token test request; a private address is still saved if the test fails, so confirm reachability yourself.'))}</p>
+  </section>
+
+  <section class="card" id="model-connections">
+    <h2>${escapeHtml(t('模型连接', 'Model connections'))}</h2>
+    <p class="muted">${escapeHtml(t('这里添加模型服务；仓库设置里只选择这个仓库可用的模型。', 'Add model services here; repository settings only select which ones a repository may use.'))}</p>
+    ${models.length === 0
+      ? `<p class="muted">${escapeHtml(t('还没有模型连接。', 'No model connections yet.'))}</p>`
+      : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('名称', 'Label'))}</th><th>Base URL</th><th>Model</th><th></th></tr></thead><tbody>${models.map((model) => `<tr><td><strong>${escapeHtml(model.label)}</strong>${model.allow_private === 1 ? ' · private' : ''}</td><td><code>${escapeHtml(model.base_url)}</code></td><td><code>${escapeHtml(model.model)}</code></td><td><form method="post" action="/settings/models/${escapeHtml(model.id)}/delete">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('删除', 'Delete'))}</button></form></td></tr>`).join('')}</tbody></table></div>`}
+    <form method="post" action="/settings/models" class="form">
+      ${csrf(viewer)}
+      <div class="row">
+        <label style="flex:1">${escapeHtml(t('名称', 'Label'))} <input name="label" required maxlength="80" placeholder="deepseek / local" /></label>
+        <label style="flex:1">Model <input name="model" required maxlength="120" placeholder="deepseek-chat" /></label>
+      </div>
+      <label>Base URL <input name="baseUrl" required placeholder="https://api.example.com/v1" autocomplete="off" /></label>
+      <label>API Key <input name="apiKey" required type="password" placeholder="sk-…" autocomplete="off" /></label>
+      ${viewer.user.role === 'superadmin' || config.allowPrivateModelUrls ? `<label class="check"><input type="checkbox" name="allowPrivate" value="1" /> ${escapeHtml(t('允许 HTTP / 内网地址', 'Allow HTTP / private address'))}</label>` : ''}
+      <button class="btn" type="submit">${escapeHtml(t('添加模型', 'Add model'))}</button>
+    </form>
   </section>
 
   <section class="card" id="notifications">

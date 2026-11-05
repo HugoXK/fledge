@@ -96,6 +96,14 @@ function form(request: FastifyRequest): Record<string, string> {
   return out
 }
 
+function formList(request: FastifyRequest, key: string): string[] {
+  const body = (request.body ?? {}) as Record<string, unknown>
+  const value = body[key]
+  if (Array.isArray(value)) return value.filter((entry): entry is string => typeof entry === 'string')
+  if (typeof value === 'string' && value !== '') return [value]
+  return []
+}
+
 function safeLocalPath(value: string | undefined, fallback: string): string {
   if (value === undefined || !value.startsWith('/') || value.startsWith('//')) return fallback
   try {
@@ -871,6 +879,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const jobsPage = Math.min(Math.max(1, Math.floor(Number(queryText(request, 'jobsPage')) || 1)), Math.max(1, Math.ceil(jobsTotal / 10)))
     const questions = (await inboxForUser(viewer.user.id, store.listRepos(viewer.user.id))).filter((question) => question.repoId === repo.id)
     const instance = store.getRepoInstance(repo.id)
+    const repoModels = store.listRepoModels(repo.id)
     let chiefMessages
     if ((viewer.user.role !== 'superadmin' || viewer.preview === true) && instance?.status === 'ready') {
       chiefMessages = await instances.chiefTranscript(repo.id).catch((error) => {
@@ -887,6 +896,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         instance,
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
         workItems: store.listWorkItems(repo.id),
+        models: store.listUserModels(repo.user_id),
+        repoModelIds: repoModels.map((model) => model.id),
+        repoDefaultModelId: repoModels.find((model) => model.is_default === 1)?.id ?? '',
         repoSpendCny: store.repoUsageSince(repo.id, new Date(Date.now() - 30 * 86_400_000).toISOString()) * config.quota.usdCny,
         questions,
         chiefMessages,
@@ -1656,6 +1668,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       reviewer_enabled: canMaintain && repo.can_review === 1 && body.review === '1' ? 1 : 0,
       review_interval_minutes: reviewInterval,
     })
+    const requestedModels = [...new Set(formList(request, 'modelIds').filter((id) => store.userModelById(id, viewer.user.id) !== undefined))]
+    const requestedDefault = (body.defaultModelId ?? '').trim()
+    const effectiveDefault = requestedDefault !== '' && requestedModels.includes(requestedDefault) ? requestedDefault : requestedModels[0] ?? ''
+    const currentModels = store.listRepoModels(repo.id)
+    const currentDefault = currentModels.find((model) => model.is_default === 1)?.id ?? ''
+    const currentIds = currentModels.map((model) => model.id).sort().join(',')
+    if (currentIds !== requestedModels.sort().join(',') || currentDefault !== effectiveDefault) {
+      store.setRepoModels(repo.id, requestedModels, effectiveDefault === '' ? null : effectiveDefault)
+      store.audit(viewer.user.id, 'repo.models.changed', `${repo.owner}/${repo.name} models=${requestedModels.length} default=${effectiveDefault || 'none'}`)
+    }
     if (repo.enabled === 1 && body.enabled !== '1') {
       await jobs.cancelRepoJobs(repo.id, '仓库已停用')
     }
@@ -1666,6 +1688,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} role=${repoRole}${roleChanged ? ' role=changed' : ''} autoMerge=${canMaintain && body.autoMerge === '1' ? 'on' : 'off'} planRequired=${body.planRequired === '1' ? 'on' : 'off'} merge=${body.mergeMethod ?? 'squash'} protection=${body.requireProtection === '1' ? 'required' : 'optional'} stage=${parseStageMode(body.stageMode) ?? 'off'} reviewer=${canMaintain && repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(goalChanged ? '设置已保存；团队规则已按新目标更新。' : '设置已保存。')}#repo-settings`)
+  })
+
+  app.post('/repos/:id/models/apply', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    try {
+      const result = await instances.applyModels(repo.id)
+      if (!result.ok) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(result.error ?? '模型应用失败。')}#repo-settings`)
+      store.audit(viewer.user.id, 'repo.models.applied', repo.id)
+      return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('模型已应用，工作区已重启。')}#repo-settings`)
+    } catch (error) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}#repo-settings`)
+    }
   })
 
   app.post('/repos/:id/delete', async (request, reply) => {
@@ -1688,6 +1722,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'),
+        models: store.listUserModels(viewer.user.id),
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
       }),
@@ -1704,7 +1739,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     const render = (error: string) =>
       reply.type('text/html').send(
-        settingsPage({ config, locale: request.locale ?? 'zh', viewer: viewOf(viewer), tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'), error }),
+        settingsPage({ config, locale: request.locale ?? 'zh', viewer: viewOf(viewer), tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'), models: store.listUserModels(viewer.user.id), error }),
       )
     try {
       const baseUrl = (body.baseUrl ?? '').trim()
@@ -1728,6 +1763,50 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     } catch (error) {
       return render(error instanceof Error ? error.message : String(error))
     }
+  })
+
+  app.post('/settings/models', async (request, reply) => {
+    const viewer = approvedCsrfGuard(request)
+    const body = form(request)
+    try {
+      const label = (body.label ?? '').trim().slice(0, 80)
+      const baseUrl = (body.baseUrl ?? '').trim()
+      const key = (body.apiKey ?? '').trim()
+      const model = (body.model ?? '').trim().slice(0, 120)
+      if (label === '' || baseUrl === '' || key === '' || model === '') throw new Error('请填写名称、Base URL、API Key 和 Model')
+      const allowPrivate = config.allowPrivateModelUrls || (viewer.user.role === 'superadmin' && body.allowPrivate === '1')
+      const safeUrl = await assertSafeModelUrl(baseUrl, allowPrivate)
+      let warning = ''
+      try {
+        await testOwnModel(safeUrl, key, model)
+      } catch (error) {
+        if (!allowPrivate) throw error
+        warning = '模型已保存，但连接测试失败；请确认 Fledge 服务器能访问这个地址。'
+      }
+      const created = store.createUserModel({
+        id: randomId('mdl'),
+        userId: viewer.user.id,
+        label,
+        baseUrl: safeUrl,
+        keyEnc: encryptSecret(key, config.tokenEncryptionKey),
+        model,
+        allowPrivate,
+      })
+      store.audit(viewer.user.id, 'model.added', `${created.id} ${label} private=${allowPrivate ? 'on' : 'off'}`)
+      return reply.redirect(`/settings?notice=${encodeURIComponent(warning === '' ? '模型已保存并通过测试。' : warning)}#model`)
+    } catch (error) {
+      return reply.redirect(`/settings?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}#model`)
+    }
+  })
+
+  app.post('/settings/models/:id/delete', async (request, reply) => {
+    const viewer = approvedCsrfGuard(request)
+    const id = String((request.params as Record<string, string>).id)
+    const model = store.userModelById(id, viewer.user.id)
+    if (model === undefined) return reply.code(404).send({ error: '模型不存在。' })
+    store.deleteUserModel(id, viewer.user.id)
+    store.audit(viewer.user.id, 'model.removed', `${id} ${model.label}`)
+    return reply.redirect(`/settings?notice=${encodeURIComponent('模型已删除。')}#model`)
   })
 
   app.post('/settings/notifications', async (request, reply) => {
@@ -1789,6 +1868,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'),
+        models: store.listUserModels(viewer.user.id),
         newToken: raw,
         notice: '新 token 只显示这一次，请现在复制保存。',
       }),

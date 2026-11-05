@@ -280,6 +280,16 @@ job is retried, so a new job can continue from the last known point instead of
 starting from scratch. The add/settings goal forms also offer four task
 templates (bug, tests, docs, dependency) that fill the goal text.
 
+### Model connections
+
+Settings owns a per-user catalog of OpenAI-compatible model connections
+(`user_models`), each with an encrypted key and an optional private/HTTP flag.
+A repository only selects which catalog entries it may use and which is default
+(`repo_models`). The instance patch lists the selected alias ids as DSH models,
+and the gateway maps an alias back to its provider, key and underlying model.
+Applying a changed selection rewrites the patch and restarts the container only
+when no job is active.
+
 ### Per-job cost, evidence and metrics
 
 The bridge's model proxy normally uses the per-repository instance token. While

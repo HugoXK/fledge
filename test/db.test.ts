@@ -150,7 +150,7 @@ test('the role backfill runs once and future schema versions are refused', () =>
     const reopened = new Store(path)
     assert.equal(reopened.getRepo(repo.id)?.repo_role, 'maintainer')
     assert.notEqual(reopened.getRepo(repo.id)?.role_checked_at, null)
-    reopened.db.exec('PRAGMA user_version = 22;')
+    reopened.db.exec('PRAGMA user_version = 23;')
     reopened.close()
 
     assert.throws(() => new Store(path), /newer than this build/)
@@ -227,6 +227,30 @@ test('answering a team question marks only question notifications read', () => {
     const rows = store.listNotifications(user.id)
     assert.notEqual(rows.find((row) => row.message.includes('团队提问'))?.read_at, null)
     assert.equal(rows.find((row) => row.message.includes('unrelated'))?.read_at, null)
+  } finally {
+    store.close()
+  }
+})
+
+test('user model connections and repository selections persist', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'model-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_models', userId: user.id, owner: 'o', name: 'm', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const first = store.createUserModel({ id: 'mdl_a', userId: user.id, label: 'A', baseUrl: 'https://a.example/v1', keyEnc: 'enc', model: 'model-a', allowPrivate: false })
+    const second = store.createUserModel({ id: 'mdl_b', userId: user.id, label: 'B', baseUrl: 'http://192.168.1.2:11434/v1', keyEnc: 'enc', model: 'model-b', allowPrivate: true })
+    assert.equal(store.listUserModels(user.id).length, 2)
+    assert.equal(store.userModelById(first.id, user.id)?.label, 'A')
+    store.setRepoModels(repo.id, [first.id, second.id], second.id)
+    const selected = store.listRepoModels(repo.id)
+    assert.deepEqual(selected.map((model) => model.id), [first.id, second.id])
+    assert.equal(selected.find((model) => model.is_default === 1)?.id, second.id)
+    assert.equal(store.getRepo(repo.id)?.models_dirty, 1)
+    assert.equal(store.repoModelForRun(repo.id, second.id)?.model, 'model-b')
+    store.markRepoModelsApplied(repo.id)
+    assert.equal(store.getRepo(repo.id)?.models_dirty, 0)
+    store.deleteUserModel(first.id, user.id)
+    assert.equal(store.listRepoModels(repo.id).length, 1)
   } finally {
     store.close()
   }

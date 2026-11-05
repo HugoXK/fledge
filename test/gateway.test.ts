@@ -182,3 +182,33 @@ test('gateway tokens are scoped to their user', async () => {
     await platform.close()
   }
 })
+
+test('repository model aliases route to the configured provider', async () => {
+  const hits: Array<Record<string, unknown>> = []
+  const provider = await startFakeServer(async (request, response) => {
+    const body = JSON.parse((await readBody(request)).toString('utf8')) as Record<string, unknown>
+    hits.push(body)
+    json(response, 200, { id: 'x', choices: [{ message: { role: 'assistant', content: 'ok' } }], usage: { total_tokens: 10 } })
+  })
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'repo-model-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_gateway_models', userId: user.id, owner: 'o', name: 'm', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const raw = `flg_${randomToken(32)}`
+    store.createApiToken({ id: 'tok_repo_model', userId: user.id, kind: 'instance', name: 'flybot', tokenHash: sha256Hex(raw), prefix: raw.slice(0, 8), repoId: repo.id, expiresAt: null })
+    const model = store.createUserModel({ id: 'mdl_gateway', userId: user.id, label: 'Provider A', baseUrl: `${provider.url}/v1`, keyEnc: encryptSecret('provider-key', config.tokenEncryptionKey), model: 'provider-model', allowPrivate: false })
+    store.setRepoModels(repo.id, [model.id], model.id)
+    const headers = { authorization: `Bearer ${raw}`, 'content-type': 'application/json' }
+    const response = await built.app.inject({ method: 'POST', url: '/v1/chat/completions', headers, payload: { model: 'mdl_gateway', messages: [{ role: 'user', content: 'hi' }] } })
+    assert.equal(response.statusCode, 200)
+    assert.equal(hits.length, 1)
+    assert.equal(hits[0]?.model, 'provider-model')
+    const models = await built.app.inject({ method: 'GET', url: '/v1/models', headers: { authorization: `Bearer ${raw}` } })
+    assert.equal((models.json() as { data: Array<{ id: string }> }).data[0]?.id, 'mdl_gateway')
+  } finally {
+    await built.close()
+    await provider.close()
+  }
+})

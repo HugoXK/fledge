@@ -248,6 +248,8 @@ User model base URLs are validated before saving and before use:
 - Without the opt-in, IP literals in private/loopback/link-local ranges are
   rejected and hostnames are resolved and checked.
 - Credentials in the URL are rejected.
+- Model connection keys are encrypted with the platform key and never rendered;
+  a repository can only select connections owned by the same user.
 - A private URL whose connection test fails is still saved with a warning so a
   model that is only reachable from a restricted network can be configured.
 

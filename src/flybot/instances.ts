@@ -9,7 +9,7 @@ import { log } from '../lib/log.js'
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from '../lib/secrets.js'
 import { nowIso } from '../lib/time.js'
 import { PLAYBOOK_VERSION, TEAM_ROLES, playbookFingerprint, playbookFor } from './playbook.js'
-import { dshCookie } from './workspace.js'
+import { clearWorkspaceCookie, dshCookie } from './workspace.js'
 import { readZipText } from '../lib/zip.js'
 import { parseChiefTranscript, type ChiefMessage } from '../lib/chiefTranscript.js'
 
@@ -247,30 +247,7 @@ server.listen(3081, '0.0.0.0')
 
       const profileDir = join(dataDir, 'profiles', 'web')
       mkdirSync(profileDir, { recursive: true, mode: 0o700 })
-      const model = this.config.flybot.model
-      const patch = [
-        '- id: llm-pi-ai',
-        '  config:',
-        '    providers:',
-        '      fledge:',
-        '        displayName: Fledge',
-        '        api: openai-completions',
-        `        baseURL: ${yaml(`http://${modelBind}:${modelPort}/v1`)}`,
-        '        apiKeyEnv: FLEDGE_MODEL_KEY',
-        '        models:',
-        `          - id: ${yaml(model)}`,
-        `            name: ${yaml(model)}`,
-        '- id: agent-default-model',
-        '  config:',
-        '    provider: fledge',
-        `    model: ${yaml(model)}`,
-        '- id: flybot-tree',
-        '  config:',
-        '    dailyTidy: false',
-        '- id: flybot-social',
-        '  disabled: true',
-      ].join('\n') + '\n'
-      writeFileSync(join(profileDir, 'cordis.patch.yml'), patch, { mode: 0o600 })
+      writeFileSync(join(profileDir, 'cordis.patch.yml'), this.modelPatch(repo.id, modelBind, modelPort), { mode: 0o600 })
 
       const bridgeEnv = {
         BRIDGE_HOST: '127.0.0.1',
@@ -384,6 +361,53 @@ server.listen(3081, '0.0.0.0')
     return child
   }
 
+
+  private modelPatch(repoId: string, modelBind: string, modelPort: number): string {
+    const selected = this.store.listRepoModels(repoId)
+    const entries = selected.length === 0
+      ? [{ id: this.config.flybot.model, label: this.config.flybot.model, is_default: 1 }]
+      : selected
+    const defaultModel = entries.find((entry) => entry.is_default === 1)?.id ?? entries[0]!.id
+    const modelLines = entries.flatMap((entry) => [`          - id: ${yaml(entry.id)}`, `            name: ${yaml(entry.label)}`])
+    return [
+      '- id: llm-pi-ai',
+      '  config:',
+      '    providers:',
+      '      fledge:',
+      '        displayName: Fledge',
+      '        api: openai-completions',
+      `        baseURL: ${yaml(`http://${modelBind}:${modelPort}/v1`)}`,
+      '        apiKeyEnv: FLEDGE_MODEL_KEY',
+      '        models:',
+      ...modelLines,
+      '- id: agent-default-model',
+      '  config:',
+      '    provider: fledge',
+      `    model: ${yaml(defaultModel)}`,
+      '- id: flybot-tree',
+      '  config:',
+      '    dailyTidy: false',
+      '- id: flybot-social',
+      '  disabled: true',
+    ].join('\n') + '\n'
+  }
+
+  async applyModels(repoId: string): Promise<{ ok: boolean; code?: string; error?: string }> {
+    const instance = this.store.getRepoInstance(repoId)
+    if (instance === undefined || instance.status !== 'ready') return { ok: false, code: 'INSTANCE_NOT_READY', error: '实例尚未就绪。' }
+    if (this.store.activeJobForRepo(repoId) !== undefined) return { ok: false, code: 'JOB_ACTIVE', error: '有运行中的任务，完成后才能重启工作区。' }
+    const profileDir = join(instance.data_dir, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true, mode: 0o700 })
+    writeFileSync(join(profileDir, 'cordis.patch.yml'), this.modelPatch(repoId, instance.model_bind, instance.model_port), { mode: 0o600 })
+    writeFileSync(join(instance.data_dir, 'dsh-web.log'), '')
+    clearWorkspaceCookie(repoId)
+    await this.docker(['restart', '-t', '15', instance.container])
+    await this.waitForDsh(instance.dsh_port, instance)
+    this.store.markRepoModelsApplied(repoId)
+    this.store.audit(instance.user_id, 'flybot.models.applied', `${repoId} models=${this.store.listRepoModels(repoId).length}`)
+    log.info('models applied', { repo: repoId })
+    return { ok: true }
+  }
 
   async restartBridge(repoId: string): Promise<void> {
     const instance = this.store.getRepoInstance(repoId)

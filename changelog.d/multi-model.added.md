@@ -1,0 +1,1 @@
+Settings can now hold multiple OpenAI-compatible model connections, each with its own label, base URL, encrypted key and optional private/HTTP flag. A repository selects which connections it may use and the default, and the gateway routes the selected alias to that provider. Applying a changed selection restarts the workspace only when no job is running.
