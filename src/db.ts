@@ -728,6 +728,7 @@ export class Store {
       ['email_job_updates', 'INTEGER NOT NULL DEFAULT 1'],
       ['email_daily_digest', 'INTEGER NOT NULL DEFAULT 1'],
       ['notify_email', 'TEXT'],
+      ['allow_private_models', 'INTEGER NOT NULL DEFAULT 0'],
       ['github_token_scopes', 'TEXT'],
     ]
     for (const [name, type] of additions) {
@@ -747,7 +748,6 @@ export class Store {
       ['allow_paths', "TEXT NOT NULL DEFAULT ''"],
       ['deny_paths', "TEXT NOT NULL DEFAULT ''"],
       ['merge_method', "TEXT NOT NULL DEFAULT 'squash'"],
-      ['allow_private_models', 'INTEGER NOT NULL DEFAULT 0'],
       ['require_protection', 'INTEGER NOT NULL DEFAULT 1'],
       ['stage_mode', "TEXT NOT NULL DEFAULT 'off'"],
       ['models_dirty', 'INTEGER NOT NULL DEFAULT 0'],
