@@ -150,7 +150,7 @@ test('the role backfill runs once and future schema versions are refused', () =>
     const reopened = new Store(path)
     assert.equal(reopened.getRepo(repo.id)?.repo_role, 'maintainer')
     assert.notEqual(reopened.getRepo(repo.id)?.role_checked_at, null)
-    reopened.db.exec('PRAGMA user_version = 26;')
+    reopened.db.exec('PRAGMA user_version = 27;')
     reopened.close()
 
     assert.throws(() => new Store(path), /newer than this build/)
@@ -347,6 +347,26 @@ test('legacy user models and own model migrate to providers', () => {
     const labels = store.listUserProviderModels(user.id).map((model) => model.model)
     assert.ok(labels.includes('legacy-model'))
     assert.ok(labels.includes('own-model'))
+  } finally {
+    store.close()
+  }
+})
+
+test('repository bot model assignments persist and are cleaned with the selection', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'bot-model-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_bot_models', userId: user.id, owner: 'o', name: 'b', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const provider = store.createModelProvider({ id: 'prv_bot', userId: user.id, label: 'Provider', baseUrl: 'https://p.example/v1', keyEnc: 'enc', allowPrivate: false })
+    const first = store.createProviderModel({ id: 'pvm_bot_a', providerId: provider.id, model: 'a', label: 'A' })
+    const second = store.createProviderModel({ id: 'pvm_bot_b', providerId: provider.id, model: 'b', label: 'B' })
+    store.setRepoModelSelection(repo.id, [first.id, second.id], first.id)
+    store.setRepoBotModel(repo.id, 'lead', first.id)
+    store.setRepoBotModel(repo.id, 'product', second.id)
+    assert.equal(store.listRepoBotModels(repo.id).length, 2)
+    store.setRepoModelSelection(repo.id, [second.id], second.id)
+    const remaining = store.listRepoBotModels(repo.id)
+    assert.deepEqual(remaining.map((entry) => entry.role), ['product'])
   } finally {
     store.close()
   }

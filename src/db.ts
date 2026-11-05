@@ -160,6 +160,13 @@ export interface RepoProviderModelRow extends ProviderModelRow {
   is_default: number
 }
 
+export interface RepoBotModelRow {
+  repo_id: string
+  role: string
+  provider_model_id: string
+  created_at: string
+}
+
 export interface RepoInstanceRow {
   repo_id: string
   user_id: string
@@ -620,6 +627,14 @@ CREATE TABLE IF NOT EXISTS repo_model_selection (
   PRIMARY KEY (repo_id, provider_model_id)
 );
 
+CREATE TABLE IF NOT EXISTS repo_bot_models (
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,
+  provider_model_id TEXT NOT NULL REFERENCES provider_models(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (repo_id, role)
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -650,9 +665,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 25) {
+    if (previousVersion > 26) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (25)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (26)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -666,7 +681,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 25)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 26)};`)
   }
 
   backfillTokenRepoIds(): void {
@@ -1231,8 +1246,24 @@ export class Store {
       for (const modelId of unique) {
         this.run('INSERT INTO repo_model_selection (repo_id, provider_model_id, is_default, created_at) VALUES (?, ?, ?, ?)', repoId, modelId, modelId === chosen ? 1 : 0, nowIso())
       }
+      this.run('DELETE FROM repo_bot_models WHERE repo_id = ? AND provider_model_id NOT IN (SELECT provider_model_id FROM repo_model_selection WHERE repo_id = ?)', repoId, repoId)
       this.run('UPDATE repos SET models_dirty = 1 WHERE id = ?', repoId)
     })
+  }
+
+  listRepoBotModels(repoId: string): RepoBotModelRow[] {
+    return this.all<RepoBotModelRow>('SELECT * FROM repo_bot_models WHERE repo_id = ? ORDER BY role ASC', repoId)
+  }
+
+  setRepoBotModel(repoId: string, role: string, providerModelId: string | null): void {
+    if (providerModelId === null || providerModelId === '') {
+      this.run('DELETE FROM repo_bot_models WHERE repo_id = ? AND role = ?', repoId, role)
+      return
+    }
+    this.run(
+      'INSERT INTO repo_bot_models (repo_id, role, provider_model_id, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(repo_id, role) DO UPDATE SET provider_model_id = excluded.provider_model_id, created_at = excluded.created_at',
+      repoId, role, providerModelId, nowIso(),
+    )
   }
 
   createSession(input: { idHash: string; userId: string; expiresAt: string; ip: string | null; userAgent: string | null }): void {

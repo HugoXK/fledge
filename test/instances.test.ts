@@ -169,3 +169,44 @@ test('the instance patch groups selected models under their providers', () => {
     store.close()
   }
 })
+
+test('applyBotModels updates each configured bot through the bridge', async () => {
+  const updates: Array<Record<string, unknown>> = []
+  const bridge = await startFakeServer(async (request, response) => {
+    const body = JSON.parse((await readBody(request)).toString('utf8')) as { endpoint: string; payload: Record<string, unknown> }
+    if (body.endpoint === 'state') {
+      json(response, 200, { value: { bots: [{ id: 'lead-id', name: 'Repo Lead' }, { id: 'product-id', name: 'Repo Product' }] } })
+      return
+    }
+    updates.push({ ...body.payload, endpoint: body.endpoint })
+    json(response, 200, { ok: true })
+  })
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const manager = new InstanceManager(store, config)
+  try {
+    const user = makeUser(store, { login: 'bot-apply-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_bot_apply', userId: user.id, owner: 'o', name: 'b', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const provider = store.createModelProvider({ id: 'prv_apply', userId: user.id, label: 'Provider', baseUrl: 'https://p.example/v1', keyEnc: 'enc', allowPrivate: false })
+    const model = store.createProviderModel({ id: 'pvm_apply', providerId: provider.id, model: 'm', label: 'M' })
+    store.setRepoModelSelection(repo.id, [model.id], model.id)
+    store.setRepoBotModel(repo.id, 'lead', model.id)
+    store.setRepoBotModel(repo.id, 'product', model.id)
+    store.saveRepoInstance({
+      repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/bot-apply', bridge_script: '/tmp/bridge',
+      dsh_port: 1, bridge_port: Number(new URL(bridge.url).port), model_port: 2, model_bind: '127.0.0.1', image: 'image',
+      status: 'ready', chief_session: 'c', team_json: null,
+      bridge_token_enc: encryptSecret('bridge-token', config.tokenEncryptionKey), bridge_pid: null, log_pid: null,
+      last_error: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_health_at: null,
+    })
+    const result = await manager.applyBotModels(repo.id)
+    assert.equal(result.updated, 2)
+    assert.deepEqual(result.skipped, [])
+    assert.equal(updates.length, 2)
+    assert.equal(updates[0]?.model, 'fledge-prv_apply/pvm_apply')
+    assert.equal(updates[0]?.endpoint, 'update-bot')
+  } finally {
+    store.close()
+    await bridge.close()
+  }
+})
