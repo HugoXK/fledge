@@ -314,6 +314,13 @@ issue/PR links, summary or question, and a link to the repository inbox or job p
 contain tokens or model keys. Approval and quota mail are transactional and are
 not controlled by the digest/job switches.
 
+### Operational alerts
+
+A failed job also feeds the ops signal: three consecutive failures in one
+repository write an `ops.repeated_failures` audit entry, one in-app notification
+and, when `NOTIFY_WEBHOOK_URL` is set, a `repo.repeated_failures` webhook. The
+notice is deduped until the next successful job resets it.
+
 ### FlyBot bridge
 
 The bridge is a tiny HTTP service on the FlyBot host. Fledge POSTs a job

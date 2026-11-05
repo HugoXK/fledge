@@ -479,7 +479,22 @@ export class Jobs {
         this.store.notify(job.user_id, 'quota', `任务 ${jobId} 成本 ${jobCostCny.toFixed(2)} 元，超过单任务预算 ${repo.job_budget_cny.toFixed(2)} 元。`)
       }
     }
+    if (result.status === 'succeeded') this.store.deleteSetting(`ops:repo_failing:${job.repo_id}`)
+    if (result.status === 'failed') this.checkRepeatedFailures(job)
     void this.captureTeamStats(jobId)
+  }
+
+  private checkRepeatedFailures(job: JobRow): void {
+    const key = `ops:repo_failing:${job.repo_id}`
+    const recent = this.store.listJobsForRepo(job.repo_id, 3)
+    if (recent.length < 3 || !recent.every((entry) => entry.status === 'failed')) return
+    if (this.store.getSetting(key) !== undefined) return
+    this.store.setSetting(key, nowIso())
+    const repo = this.store.getRepo(job.repo_id)
+    const label = repo === undefined ? job.repo_id : `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`
+    this.store.notify(job.user_id, 'job', `${label} 连续 3 个任务失败，请检查 bridge、GitHub 凭据和模型额度。`)
+    this.store.audit(job.user_id, 'ops.repeated_failures', `${label}: 3 consecutive failures`)
+    void sendNotificationWebhook(this.config, 'repo.repeated_failures', { text: `${label}: 3 consecutive job failures`, repoId: job.repo_id, jobId: job.id })
   }
 
   private async refreshRepoAccess(repo: RepoRow): Promise<RepoRow | undefined> {
