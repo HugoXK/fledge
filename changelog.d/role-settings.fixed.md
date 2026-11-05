@@ -1,1 +1,0 @@
-Repository role, reviewer and auto-merge settings can now be changed in one save: selecting maintainer enables the reviewer and auto-merge controls immediately instead of requiring a second page load.

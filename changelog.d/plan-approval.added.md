@@ -1,1 +1,0 @@
-Added plan-first approval. A repository can require a plan before code, maintainers approve or reject the plan with allowed and forbidden path constraints, and execution stays blocked until the plan is approved.

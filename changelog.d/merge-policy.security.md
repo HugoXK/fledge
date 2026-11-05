@@ -1,1 +1,0 @@
-Added branch protection verification to auto-merge. Fledge reads the target branch protection rule, verifies required status checks and required approvals, supports squash/merge/rebase, and refuses to auto-merge when protection cannot be verified or a required gate is missing.

@@ -1,1 +1,0 @@
-Closed an approval bypass where onboarding or rejected accounts could still submit settings, add repositories, start instances or change repository state through CSRF-protected routes. Production config now normalizes `NODE_ENV`, requires an explicit bootstrap admin login, no longer enables the example dev login by default, and the Docker Compose sample binds the app to loopback.

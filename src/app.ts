@@ -274,7 +274,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }).catch(() => fail('502 Bad Gateway'))
   })
 
-  app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: '0.2.2', time: new Date().toISOString() }))
+  app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: '0.2.3', time: new Date().toISOString() }))
 
   app.get('/readyz', async (_request, reply) => {
     try {
