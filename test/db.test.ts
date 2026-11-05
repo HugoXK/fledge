@@ -371,3 +371,15 @@ test('repository bot model assignments persist and are cleaned with the selectio
     store.close()
   }
 })
+
+test('the per-user private model permission persists', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'private-permission-user', status: 'approved' })
+    assert.equal(store.userById(user.id)?.allow_private_models, 0)
+    store.setUserAllowPrivateModels(user.id, true)
+    assert.equal(store.userById(user.id)?.allow_private_models, 1)
+  } finally {
+    store.close()
+  }
+})
