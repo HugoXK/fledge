@@ -601,6 +601,7 @@ export class Store {
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
+    this.backfillTokenRepoIds()
     this.run("UPDATE repos SET job_mode = 'iterate' WHERE job_mode != 'iterate'")
     if (previousVersion < 15) {
       this.run("UPDATE repos SET repo_role = CASE WHEN permission IN ('admin', 'maintain') THEN 'maintainer' ELSE 'developer' END WHERE repo_role IS NULL")
@@ -609,6 +610,11 @@ export class Store {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
     this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 24)};`)
+  }
+
+  backfillTokenRepoIds(): void {
+    this.run("UPDATE api_tokens SET repo_id = substr(name, 8) WHERE kind = 'instance' AND name LIKE 'flybot:%' AND repo_id IS NULL")
+    this.run("UPDATE api_tokens SET repo_id = (SELECT repo_id FROM jobs WHERE jobs.id = substr(api_tokens.name, 5)) WHERE kind = 'job' AND name LIKE 'job:%' AND repo_id IS NULL")
   }
 
   private migrateColumns(): void {

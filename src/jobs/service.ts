@@ -11,6 +11,7 @@ import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, type Evidence } from '../lib/evidence.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
+import { observedAttribution } from '../lib/teamStats.js'
 import { decryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
@@ -498,7 +499,6 @@ export class Jobs {
     this.store.event(`job_${result.status}`, { userId: job.user_id, repoId: job.repo_id, jobId })
     if (result.status === 'succeeded' && prUrl !== null) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
     if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? job.error ?? '未知原因'}`)
-    if (result.status === 'succeeded') void this.postAutomationComment(job, { prUrl: prUrl ?? undefined, issueUrl: issueUrl ?? undefined }, attribution)
     if (result.status === 'succeeded' || result.status === 'failed') {
       void this.sendJobEmail(job, result)
       void sendNotificationWebhook(this.config, `job.${result.status}`, {
@@ -530,7 +530,11 @@ export class Jobs {
       this.store.incrementRepoFailures(job.repo_id)
       this.checkRepeatedFailures(job)
     }
-    void this.captureTeamStats(jobId)
+    if (result.status === 'succeeded') {
+      void this.afterSucceeded(job, prUrl ?? undefined, issueUrl ?? undefined, attribution).catch((error) => log.warn('post-job side effects failed', { job: jobId, error: String(error) }))
+    } else {
+      void this.captureTeamStats(jobId, attribution).catch((error) => log.warn('team stats capture failed', { job: jobId, error: String(error) }))
+    }
   }
 
   private checkRepeatedFailures(job: JobRow): void {
@@ -771,10 +775,15 @@ export class Jobs {
     }
   }
 
-  private async captureTeamStats(jobId: string): Promise<void> {
-    if (this.instances === undefined || this.config.flybot.instanceImage === '') return
+  private async afterSucceeded(job: JobRow, prUrl: string | undefined, issueUrl: string | undefined, claimed: Attribution | null): Promise<void> {
+    const observed = await this.captureTeamStats(job.id, claimed).catch(() => null)
+    await this.postAutomationComment(job, { prUrl, issueUrl }, observed ?? claimed)
+  }
+
+  private async captureTeamStats(jobId: string, claimed: Attribution | null = null): Promise<Attribution | null> {
+    if (this.instances === undefined || this.config.flybot.instanceImage === '') return null
     const job = this.store.getJob(jobId)
-    if (job === undefined) return
+    if (job === undefined) return null
     try {
       const state = await this.instances.teamState(job.repo_id, 20_000)
       const stats = state.bots.map((bot) => ({
@@ -786,8 +795,12 @@ export class Jobs {
         step: bot.step,
         lastActivityAt: bot.lastActivityAt,
       }))
-      this.store.updateJob(jobId, { team_stats_json: JSON.stringify(stats) })
+      const observed = observedAttribution(stats)
+      this.store.updateJob(jobId, { team_stats_json: JSON.stringify(stats), ...(observed === null ? {} : { attribution_json: JSON.stringify(observed) }) })
       this.store.event('team_stats', { userId: job.user_id, repoId: job.repo_id, jobId })
+      if (observed !== null && claimed !== null) {
+        this.store.event('team_attribution_grounded', { userId: job.user_id, repoId: job.repo_id, jobId, meta: `claimed=${Object.values(claimed).join(',')};observed=${Object.values(observed).join(',')}`.slice(0, 500) })
+      }
       if (job.kind === 'iterate') {
         const active = stats.filter((entry) => entry.calls > 0).map((entry) => entry.role)
         if (active.length === 1 && active[0] === 'lead') {
@@ -798,8 +811,10 @@ export class Jobs {
           log.warn('team participation low', { job: jobId, repo: job.repo_id, roles: active })
         }
       }
+      return observed
     } catch (error) {
       log.warn('team stats capture failed', { job: jobId, error: String(error) })
+      return null
     }
   }
 

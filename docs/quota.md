@@ -106,6 +106,10 @@ carries `repo_id` resolves `body.model` to a selected connection and calls that
 provider; an unselected model falls back to the user's single own model, then the
 platform model. `/v1/models` lists the selected aliases for a repository token.
 
+Existing `flybot:<repo>` instance tokens and `job:<id>` tokens are backfilled
+with their repository id at startup, so new model usage is attributed per
+repository. Historical ledger rows without a job id remain unattributed.
+
 Changing the selection marks the repository dirty. `POST
 /repos/:id/models/apply` rewrites the instance `cordis.patch.yml` and restarts
 the workspace only when no job is active; a running job returns `JOB_ACTIVE`.

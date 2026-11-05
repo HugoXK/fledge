@@ -291,3 +291,21 @@ test('pull request jobs disappear from the delivery list after merge', () => {
     store.close()
   }
 })
+
+test('existing instance and job tokens are backfilled with their repository', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'backfill-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_backfill', userId: user.id, owner: 'o', name: 'b', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_backfill', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate' })
+    const instance = store.createApiToken({ id: 'tok_instance', userId: user.id, kind: 'instance', name: `flybot:${repo.id}`, tokenHash: 'h1', prefix: 'flg', expiresAt: null })
+    const jobToken = store.createApiToken({ id: 'tok_job', userId: user.id, kind: 'job', name: 'job:job_backfill', tokenHash: 'h2', prefix: 'flg', expiresAt: null })
+    assert.equal(instance.repo_id, null)
+    assert.equal(jobToken.repo_id, null)
+    store.backfillTokenRepoIds()
+    assert.equal(store.findApiToken('h1')?.repo_id, repo.id)
+    assert.equal(store.findApiToken('h2')?.repo_id, repo.id)
+  } finally {
+    store.close()
+  }
+})

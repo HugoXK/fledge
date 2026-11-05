@@ -1,0 +1,1 @@
+Job attribution is now grounded in the actual per-role call counts: the job page and PR automation comment use only roles that acted, and a claimed role with zero calls is recorded as a mismatch event instead of being presented as team participation.

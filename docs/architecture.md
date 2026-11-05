@@ -319,6 +319,10 @@ The bridge's model proxy normally uses the per-repository instance token. While
 a job is running it uses that job's short-lived `flg_` token instead (the
 `/run` payload carries it), so the gateway can write `job_id` into
 `quota_ledger` and add `jobs.cost_usd`. The job page shows cost, attribution and
+Team attribution is grounded in the DSH per-role call counts: the job page and the
+PR automation comment use only roles with actual calls, and a claimed role with
+zero calls is recorded as a `team_attribution_grounded` mismatch event.
+
 structured evidence (`scope`, `acceptance`, `testPlan`, `testRed`, `testGreen`,
 `tests`, `checks`, `files`, `risk`, `rollback`); failed jobs have a one-click
 retry. A repository can set a team stage gate: `off` keeps the old behaviour,
