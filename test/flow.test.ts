@@ -199,7 +199,7 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
 
     const blockedSettings = await built.app.inject({
       method: 'POST',
-      url: '/settings/model',
+      url: '/settings/providers',
       headers: { cookie: tokenCookie, 'content-type': 'application/x-www-form-urlencoded' },
       payload: formBody({ csrf: tokenCsrf, baseUrl: 'https://example.com/v1', apiKey: 'sk-test', model: 'test' }),
     })

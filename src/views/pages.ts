@@ -1,5 +1,5 @@
 import type { Config } from '../config.js'
-import type { AuditRow, JobRow, NotificationRow, RepoInstanceRow, RepoRow, UserModelRow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
+import type { AuditRow, JobRow, ModelProviderRow, NotificationRow, ProviderModelRow, RepoInstanceRow, RepoRow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
@@ -460,7 +460,7 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; models?: UserModelRow[]; repoModelIds?: string[]; repoDefaultModelId?: string; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const workItems = input.workItems ?? []
   const prJobs = input.prJobs ?? []
@@ -734,13 +734,13 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </div>
         <p class="fine">${escapeHtml(t('本月已用', 'Spent this month'))} ${escapeHtml(quotaMoney(repoSpendCny))}${repo.monthly_budget_cny > 0 ? ` / ${escapeHtml(quotaMoney(repo.monthly_budget_cny))}` : ''}</p>
         <div class="row">
-          <label style="flex:1">${escapeHtml(t('可用模型', 'Available models'))}${infoTip(t('在 Settings 里添加模型连接；这里只选择这个仓库允许使用的模型。', 'Add model connections in Settings; select only the models this repository may use.'))}
+          <label style="flex:1">${escapeHtml(t('可用模型', 'Available models'))}${infoTip(t('提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。', 'Providers and models are managed in Settings; select only the models this repository may use.'))}
             ${models.length === 0
-              ? `<span class="muted">${escapeHtml(t('还没有模型连接。先到 Settings 添加。', 'No model connections yet. Add one in Settings.'))}</span>`
-              : `<span class="list">${models.map((model) => `<label class="check"><input type="checkbox" name="modelIds" value="${escapeHtml(model.id)}" ${repoModelIds.has(model.id) ? 'checked' : ''} /> ${escapeHtml(model.label)} <small class="muted">${escapeHtml(model.model)}</small></label>`).join('')}</span>`}
+              ? `<span class="muted">${escapeHtml(t('还没有模型。先到 Settings 添加提供方和模型。', 'No models yet. Add a provider and models in Settings.'))}</span>`
+              : `<span class="list">${[...new Set(models.map((model) => model.provider_label))].map((provider) => `<div style="margin-bottom:6px"><strong>${escapeHtml(provider)}</strong><br />${models.filter((model) => model.provider_label === provider).map((model) => `<label class="check"><input type="checkbox" name="modelIds" value="${escapeHtml(model.id)}" ${repoModelIds.has(model.id) ? 'checked' : ''} /> ${escapeHtml(model.label)} <small class="muted">${escapeHtml(model.model)}</small></label>`).join('')}</div>`).join('')}</span>`}
           </label>
         </div>
-        <label>${escapeHtml(t('默认模型', 'Default model'))} <select name="defaultModelId"><option value="">${escapeHtml(t('平台默认', 'Platform default'))}</option>${models.map((model) => `<option value="${escapeHtml(model.id)}"${repoDefaultModelId === model.id ? ' selected' : ''}>${escapeHtml(model.label)}${repoModelIds.has(model.id) ? '' : ' *'}</option>`).join('')}</select></label>
+        <label>${escapeHtml(t('默认模型', 'Default model'))} <select name="defaultModelId"><option value="">${escapeHtml(t('平台默认', 'Platform default'))}</option>${models.map((model) => `<option value="${escapeHtml(model.id)}"${repoDefaultModelId === model.id ? ' selected' : ''}>${escapeHtml(model.provider_label)} · ${escapeHtml(model.label)}${repoModelIds.has(model.id) ? '' : ' *'}</option>`).join('')}</select></label>
         <p class="fine">${escapeHtml(t('保存选择后，空闲时点击“应用模型并重启工作区”才会生效。', 'After saving the selection, use "Apply models and restart workspace" while idle for it to take effect.'))}</p>
         ${roleMissing ? `<p class="fine">${escapeHtml(t('先选择你的角色，审核和自动合并才会生效。', 'Choose your role before review or auto-merge can take effect.'))}</p>` : !githubCanReview ? `<p class="fine">${escapeHtml(t('你在这个上游没有 admin/maintain 权限，审核角色不可用。', 'You do not have admin/maintain permission on this upstream, so the reviewer role is unavailable.'))}</p>` : !canMaintain ? `<p class="fine">${escapeHtml(t('developer 不能启用 PR 审核或自动合并；切换为 maintainer 后才可用。', 'A developer cannot enable PR review or auto-merge; switch to maintainer first.'))}</p>` : ''}
         ${advanced ? `<details class="fine advanced-help"><summary>${escapeHtml(t('团队与调度规则', 'Team and scheduling rules'))}</summary>
@@ -932,12 +932,12 @@ export function settingsPage(input: {
   locale: Locale
   viewer: Viewer
   tokens: ApiTokenRow[]
-  models: UserModelRow[]
+  providers: Array<ModelProviderRow & { models: ProviderModelRow[] }>
   newToken?: string
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, tokens, models, newToken, notice, error } = input
+  const { config, locale, viewer, tokens, providers, newToken, notice, error } = input
   const t = translator(locale)
   const user = viewer.user
   const quota = quotaView(user, config)
@@ -959,40 +959,37 @@ export function settingsPage(input: {
     ${user.github_token_enc !== null ? `<p class="fine">${escapeHtml(t('登录时保存了一个默认 GitHub token；添加仓库时仍以仓库表单里的 token 为准。', 'A default GitHub token was saved at sign-in; the token in the repository form still takes precedence.'))}</p>` : ''}
   </section>
 
-  <section class="card" id="model">
-    <h2>${escapeHtml(t('模型服务', 'Model service'))}</h2>
-    <p class="muted">${escapeHtml(quota.unlimited ? t('你的平台额度不限额，平台会继续记录用量但不拦截任务。', 'Your platform quota is unlimited: usage is still recorded but jobs are never blocked.') : t(`默认使用平台额度（${money(quota.initialCny)}）。额度用完后，填入你自己的 OpenAI 兼容服务即可继续；平台不再扣额度。`, `The platform quota (${money(quota.initialCny)}) is used by default. When it runs out, add your own OpenAI-compatible service to continue; the platform no longer meters it.`))}</p>
-    ${quota.exhausted ? `<div class="banner bad">${escapeHtml(t('平台额度已用完。保存自己的模型服务后，任务会自动使用它。', 'Platform quota is used up. After you save your own model service, jobs will use it automatically.'))}</div>` : ''}
-    <form method="post" action="/settings/model" class="form">
-      ${csrf(viewer)}
-      <label>Base URL <input name="baseUrl" value="${escapeHtml(user.own_llm_base_url ?? '')}" placeholder="https://api.example.com/v1" autocomplete="off" /></label>
-      <label>API Key <input name="apiKey" type="password" placeholder="${escapeHtml(user.own_llm_key_enc === null ? 'sk-…' : t('已保存，留空不修改', 'Saved; leave blank to keep'))}" autocomplete="off" /></label>
-      <label>Model <input name="model" value="${escapeHtml(user.own_llm_model ?? '')}" placeholder="${escapeHtml(t('例如 gpt-4o-mini 或 deepseek-chat', 'e.g. gpt-4o-mini or deepseek-chat'))}" autocomplete="off" /></label>
-      ${viewer.user.role === 'superadmin' || config.allowPrivateModelUrls ? `<label class="check"><input type="checkbox" name="allowPrivate" value="1" ${user.own_llm_base_url?.startsWith('http://') === true ? 'checked' : ''} /> ${escapeHtml(t('允许 HTTP / 内网地址（确认 Fledge 能访问这个地址）', 'Allow HTTP / private address (Fledge must be able to reach it)'))}</label>` : ''}
-      <div class="row">
-        <button class="btn" name="action" value="save" type="submit">${escapeHtml(t('保存并测试', 'Save and test'))}</button>
-        <button class="btn btn-ghost" name="action" value="clear" type="submit">${escapeHtml(t('清除，改回平台额度', 'Clear and use platform quota'))}</button>
-      </div>
-    </form>
-    <p class="fine">${escapeHtml(t('必须是 OpenAI 兼容的 /v1/chat/completions 服务；公网服务要求 https。保存时会发一个 1 token 的测试请求；内网地址测试失败时仍会保存，请自行确认可达性。', 'Must be an OpenAI-compatible /v1/chat/completions service; public endpoints must use https. Saving sends a 1-token test request; a private address is still saved if the test fails, so confirm reachability yourself.'))}</p>
-  </section>
-
-  <section class="card" id="model-connections">
-    <h2>${escapeHtml(t('模型连接', 'Model connections'))}</h2>
-    <p class="muted">${escapeHtml(t('这里添加模型服务；仓库设置里只选择这个仓库可用的模型。', 'Add model services here; repository settings only select which ones a repository may use.'))}</p>
-    ${models.length === 0
-      ? `<p class="muted">${escapeHtml(t('还没有模型连接。', 'No model connections yet.'))}</p>`
-      : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('名称', 'Label'))}</th><th>Base URL</th><th>Model</th><th></th></tr></thead><tbody>${models.map((model) => `<tr><td><strong>${escapeHtml(model.label)}</strong>${model.allow_private === 1 ? ' · private' : ''}</td><td><code>${escapeHtml(model.base_url)}</code></td><td><code>${escapeHtml(model.model)}</code></td><td><form method="post" action="/settings/models/${escapeHtml(model.id)}/delete">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('删除', 'Delete'))}</button></form></td></tr>`).join('')}</tbody></table></div>`}
-    <form method="post" action="/settings/models" class="form">
+  <section class="card" id="model-providers">
+    <h2>${escapeHtml(t('模型提供方', 'Model providers'))}</h2>
+    <p class="muted">${escapeHtml(t('先添加提供方（Base URL + API Key），再在它下面添加模型。添加模型时 Fledge 会发起 1-token 测试；测试失败不会保存。', 'Add a provider (Base URL + API key), then add models under it. Adding a model sends a 1-token test from Fledge; a failed test is not saved.'))}</p>
+    ${providers.length === 0
+      ? `<p class="muted">${escapeHtml(t('还没有模型提供方。', 'No model providers yet.'))}</p>`
+      : providers.map((provider) => `<div class="card" style="margin-bottom:12px">
+          <div class="row between">
+            <div><strong>${escapeHtml(provider.label)}</strong>${provider.allow_private === 1 ? ' · private' : ''}<br /><code>${escapeHtml(provider.base_url)}</code></div>
+            <form method="post" action="/settings/providers/${escapeHtml(provider.id)}/delete">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('删除提供方', 'Delete provider'))}</button></form>
+          </div>
+          ${provider.models.length === 0
+            ? `<p class="muted">${escapeHtml(t('还没有模型。', 'No models yet.'))}</p>`
+            : `<ul>${provider.models.map((model) => `<li><strong>${escapeHtml(model.label)}</strong> <code>${escapeHtml(model.model)}</code> <form method="post" action="/settings/providers/${escapeHtml(provider.id)}/models/${escapeHtml(model.id)}/delete">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('删除', 'Delete'))}</button></form></li>`).join('')}</ul>`}
+          <form method="post" action="/settings/providers/${escapeHtml(provider.id)}/models" class="form">
+            ${csrf(viewer)}
+            <div class="row">
+              <label style="flex:1">Model ID <input name="model" required maxlength="120" placeholder="deepseek-chat" /></label>
+              <label style="flex:1">${escapeHtml(t('显示名', 'Label'))} <input name="label" maxlength="120" placeholder="${escapeHtml(t('可选', 'optional'))}" /></label>
+            </div>
+            <button class="btn" type="submit">${escapeHtml(t('添加模型并测试', 'Add model and test'))}</button>
+          </form>
+        </div>`).join('')}
+    <form method="post" action="/settings/providers" class="form">
       ${csrf(viewer)}
       <div class="row">
-        <label style="flex:1">${escapeHtml(t('名称', 'Label'))} <input name="label" required maxlength="80" placeholder="deepseek / local" /></label>
-        <label style="flex:1">Model <input name="model" required maxlength="120" placeholder="deepseek-chat" /></label>
+        <label style="flex:1">${escapeHtml(t('名称', 'Label'))} <input name="label" required maxlength="80" placeholder="DeepSeek / local" /></label>
+        <label style="flex:1">Base URL <input name="baseUrl" required placeholder="https://api.example.com/v1" autocomplete="off" /></label>
       </div>
-      <label>Base URL <input name="baseUrl" required placeholder="https://api.example.com/v1" autocomplete="off" /></label>
       <label>API Key <input name="apiKey" required type="password" placeholder="sk-…" autocomplete="off" /></label>
-      ${viewer.user.role === 'superadmin' || config.allowPrivateModelUrls ? `<label class="check"><input type="checkbox" name="allowPrivate" value="1" /> ${escapeHtml(t('允许 HTTP / 内网地址', 'Allow HTTP / private address'))}</label>` : ''}
-      <button class="btn" type="submit">${escapeHtml(t('添加模型', 'Add model'))}</button>
+      ${viewer.user.role === 'superadmin' || config.allowPrivateModelUrls ? `<label class="check"><input type="checkbox" name="allowPrivate" value="1" /> ${escapeHtml(t('允许 HTTP / 内网地址（Fledge 必须能访问）', 'Allow HTTP / private address (Fledge must be able to reach it)'))}</label>` : ''}
+      <button class="btn" type="submit">${escapeHtml(t('添加提供方', 'Add provider'))}</button>
     </form>
   </section>
 

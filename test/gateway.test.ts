@@ -198,15 +198,16 @@ test('repository model aliases route to the configured provider', async () => {
     const repo = store.createRepo({ id: 'repo_gateway_models', userId: user.id, owner: 'o', name: 'm', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const raw = `flg_${randomToken(32)}`
     store.createApiToken({ id: 'tok_repo_model', userId: user.id, kind: 'instance', name: 'flybot', tokenHash: sha256Hex(raw), prefix: raw.slice(0, 8), repoId: repo.id, expiresAt: null })
-    const model = store.createUserModel({ id: 'mdl_gateway', userId: user.id, label: 'Provider A', baseUrl: `${provider.url}/v1`, keyEnc: encryptSecret('provider-key', config.tokenEncryptionKey), model: 'provider-model', allowPrivate: false })
-    store.setRepoModels(repo.id, [model.id], model.id)
+    const providerRow = store.createModelProvider({ id: 'prv_gateway', userId: user.id, label: 'Provider A', baseUrl: `${provider.url}/v1`, keyEnc: encryptSecret('provider-key', config.tokenEncryptionKey), allowPrivate: false })
+    const model = store.createProviderModel({ id: 'pvm_gateway', providerId: providerRow.id, model: 'provider-model', label: 'Provider A Model' })
+    store.setRepoModelSelection(repo.id, [model.id], model.id)
     const headers = { authorization: `Bearer ${raw}`, 'content-type': 'application/json' }
-    const response = await built.app.inject({ method: 'POST', url: '/v1/chat/completions', headers, payload: { model: 'mdl_gateway', messages: [{ role: 'user', content: 'hi' }] } })
+    const response = await built.app.inject({ method: 'POST', url: '/v1/chat/completions', headers, payload: { model: 'pvm_gateway', messages: [{ role: 'user', content: 'hi' }] } })
     assert.equal(response.statusCode, 200)
     assert.equal(hits.length, 1)
     assert.equal(hits[0]?.model, 'provider-model')
     const models = await built.app.inject({ method: 'GET', url: '/v1/models', headers: { authorization: `Bearer ${raw}` } })
-    assert.equal((models.json() as { data: Array<{ id: string }> }).data[0]?.id, 'mdl_gateway')
+    assert.equal((models.json() as { data: Array<{ id: string }> }).data[0]?.id, 'pvm_gateway')
   } finally {
     await built.close()
     await provider.close()

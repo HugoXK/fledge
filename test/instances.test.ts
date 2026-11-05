@@ -145,3 +145,27 @@ test('healthSweep records live bridges and marks a dead bridge failed', async ()
     if (!closed) await bridge.close()
   }
 })
+
+test('the instance patch groups selected models under their providers', () => {
+  const store = new Store(':memory:')
+  const manager = new InstanceManager(store, testConfig())
+  try {
+    const user = makeUser(store, { login: 'patch-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_patch', userId: user.id, owner: 'o', name: 'patch', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const providerA = store.createModelProvider({ id: 'prv_a', userId: user.id, label: 'Provider A', baseUrl: 'https://a.example/v1', keyEnc: 'enc', allowPrivate: false })
+    const providerB = store.createModelProvider({ id: 'prv_b', userId: user.id, label: 'Provider B', baseUrl: 'https://b.example/v1', keyEnc: 'enc', allowPrivate: false })
+    const a1 = store.createProviderModel({ id: 'pvm_a1', providerId: providerA.id, model: 'a-1', label: 'A1' })
+    const a2 = store.createProviderModel({ id: 'pvm_a2', providerId: providerA.id, model: 'a-2', label: 'A2' })
+    const b1 = store.createProviderModel({ id: 'pvm_b1', providerId: providerB.id, model: 'b-1', label: 'B1' })
+    store.setRepoModelSelection(repo.id, [a1.id, a2.id, b1.id], b1.id)
+    const patch = manager.modelPatch(repo.id, '127.0.0.1', 4100)
+    assert.match(patch, /fledge-prv_a:/)
+    assert.match(patch, /fledge-prv_b:/)
+    assert.match(patch, /pvm_a1/)
+    assert.match(patch, /pvm_a2/)
+    assert.match(patch, /pvm_b1/)
+    assert.match(patch, /provider: fledge-prv_b/)
+  } finally {
+    store.close()
+  }
+})

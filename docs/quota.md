@@ -77,42 +77,29 @@ column existed fall back to the job's `repo_id` when they can be joined. Both
 caps default to `0` (disabled) and are recorded in the repository audit entry
 when changed.
 
-## Own model
+## Model providers and repository selection
 
-`POST /settings/model` stores:
+Settings manages a per-user set of OpenAI-compatible providers. A provider has a
+label, base URL, encrypted key and an optional private/HTTP flag; each provider
+can have multiple models (`provider_models`). Repository settings select which
+provider models the repository may use and which is default
+(`repo_model_selection`).
 
-- `own_llm_base_url` (validated; HTTPS for public hosts),
-- `own_llm_key_enc` (AES-256-GCM),
-- `own_llm_model`.
+The gateway aliases each provider model by its id. An instance or job token that
+carries `repo_id` resolves `body.model` to the selected provider model and calls
+that provider; an unselected model falls back to the user's legacy own model,
+then the platform model. `/v1/models` lists the selected aliases for a
+repository token.
 
-Saving performs a 1-token test request. A superadmin (or an operator with
-`ALLOW_PRIVATE_MODEL_URLS=true`) can tick the private-URL checkbox to allow
-HTTP/private targets; if the test fails for such a target the service is still
-saved with a warning, because the model may only be reachable from a restricted
-network. Once set, the gateway proxies to the user's endpoint and **does not**
-touch the platform quota or ledger. Clearing it returns the user to the platform
-quota.
+Adding a model performs a 1-token test from Fledge. A failed test is an error and
+nothing is saved. HTTP/private addresses still require `ALLOW_PRIVATE_MODEL_URLS`
+or the superadmin checkbox, and the test must pass; the gateway host is the
+component that calls the model, so it must be able to reach the address.
 
-## Model connections and repository selection
-
-Settings manages a per-user list of OpenAI-compatible connections
-(`user_models`). Each connection has a label, base URL, encrypted key,
-underlying model and a private/HTTP flag. Repository settings only choose which
-connections the repository may use and the default; that selection lives in
-`repo_models`.
-
-The gateway aliases each connection by its id. An instance or job token that
-carries `repo_id` resolves `body.model` to a selected connection and calls that
-provider; an unselected model falls back to the user's single own model, then the
-platform model. `/v1/models` lists the selected aliases for a repository token.
-
-Existing `flybot:<repo>` instance tokens and `job:<id>` tokens are backfilled
-with their repository id at startup, so new model usage is attributed per
+Existing legacy `user_models` and `users.own_llm_*` rows are migrated into
+provider/model rows at startup. Existing `flybot:<repo>` and `job:<id>` tokens
+are backfilled with their repository id, so new usage is attributed per
 repository. Historical ledger rows without a job id remain unattributed.
-
-Changing the selection marks the repository dirty. `POST
-/repos/:id/models/apply` rewrites the instance `cordis.patch.yml` and restarts
-the workspace only when no job is active; a running job returns `JOB_ACTIVE`.
 
 ## Admin
 

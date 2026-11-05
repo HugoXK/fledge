@@ -150,7 +150,7 @@ test('the role backfill runs once and future schema versions are refused', () =>
     const reopened = new Store(path)
     assert.equal(reopened.getRepo(repo.id)?.repo_role, 'maintainer')
     assert.notEqual(reopened.getRepo(repo.id)?.role_checked_at, null)
-    reopened.db.exec('PRAGMA user_version = 25;')
+    reopened.db.exec('PRAGMA user_version = 26;')
     reopened.close()
 
     assert.throws(() => new Store(path), /newer than this build/)
@@ -305,6 +305,48 @@ test('existing instance and job tokens are backfilled with their repository', ()
     store.backfillTokenRepoIds()
     assert.equal(store.findApiToken('h1')?.repo_id, repo.id)
     assert.equal(store.findApiToken('h2')?.repo_id, repo.id)
+  } finally {
+    store.close()
+  }
+})
+
+test('model providers and provider models can be selected per repository', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'provider-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_provider', userId: user.id, owner: 'o', name: 'p', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const provider = store.createModelProvider({ id: 'prv_a', userId: user.id, label: 'Provider A', baseUrl: 'https://a.example/v1', keyEnc: 'enc', allowPrivate: false })
+    const first = store.createProviderModel({ id: 'pvm_a1', providerId: provider.id, model: 'model-a', label: 'A' })
+    const second = store.createProviderModel({ id: 'pvm_a2', providerId: provider.id, model: 'model-b', label: 'B' })
+    assert.equal(store.listModelProviders(user.id).length, 1)
+    assert.equal(store.listProviderModels(provider.id).length, 2)
+    store.setRepoModelSelection(repo.id, [first.id, second.id], second.id)
+    const selected = store.listRepoModelSelection(repo.id)
+    assert.deepEqual(selected.map((model) => model.id), [first.id, second.id])
+    assert.equal(selected.find((model) => model.is_default === 1)?.id, second.id)
+    assert.equal(store.providerModelForRun(repo.id, second.id)?.model, 'model-b')
+    assert.equal(store.deleteProviderModel(first.id, user.id), true)
+    assert.equal(store.listRepoModelSelection(repo.id).length, 1)
+  } finally {
+    store.close()
+  }
+})
+
+test('legacy user models and own model migrate to providers', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'legacy-model-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_legacy_models', userId: user.id, owner: 'o', name: 'l', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const legacy = store.createUserModel({ id: 'mdl_legacy', userId: user.id, label: 'Legacy', baseUrl: 'https://legacy.example/v1', keyEnc: 'enc', model: 'legacy-model', allowPrivate: false })
+    store.setRepoModels(repo.id, [legacy.id], legacy.id)
+    store.setUserOwnModel(user.id, 'https://own.example/v1', 'own-enc', 'own-model')
+    store.deleteSetting('models_v2')
+    store.migrateModelsV2()
+    assert.equal(store.listModelProviders(user.id).length, 2)
+    assert.equal(store.listRepoModelSelection(repo.id).length, 1)
+    const labels = store.listUserProviderModels(user.id).map((model) => model.model)
+    assert.ok(labels.includes('legacy-model'))
+    assert.ok(labels.includes('own-model'))
   } finally {
     store.close()
   }

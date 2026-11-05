@@ -879,7 +879,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const jobsPage = Math.min(Math.max(1, Math.floor(Number(queryText(request, 'jobsPage')) || 1)), Math.max(1, Math.ceil(jobsTotal / 10)))
     const questions = (await inboxForUser(viewer.user.id, store.listRepos(viewer.user.id))).filter((question) => question.repoId === repo.id)
     const instance = store.getRepoInstance(repo.id)
-    const repoModels = store.listRepoModels(repo.id)
+    const repoModels = store.listRepoModelSelection(repo.id)
     let chiefMessages
     if ((viewer.user.role !== 'superadmin' || viewer.preview === true) && instance?.status === 'ready') {
       chiefMessages = await instances.chiefTranscript(repo.id).catch((error) => {
@@ -897,7 +897,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
         prJobs: store.listPrJobsForRepo(repo.id, 10),
         workItems: store.listWorkItems(repo.id),
-        models: store.listUserModels(repo.user_id),
+        models: store.listUserProviderModels(repo.user_id),
         repoModelIds: repoModels.map((model) => model.id),
         repoDefaultModelId: repoModels.find((model) => model.is_default === 1)?.id ?? '',
         repoSpendCny: store.repoUsageSince(repo.id, new Date(Date.now() - 30 * 86_400_000).toISOString()) * config.quota.usdCny,
@@ -1681,14 +1681,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       reviewer_enabled: canMaintain && repo.can_review === 1 && body.review === '1' ? 1 : 0,
       review_interval_minutes: reviewInterval,
     })
-    const requestedModels = [...new Set(formList(request, 'modelIds').filter((id) => store.userModelById(id, viewer.user.id) !== undefined))]
+    const allowedModels = new Set(store.listUserProviderModels(viewer.user.id).map((model) => model.id))
+    const requestedModels = [...new Set(formList(request, 'modelIds').filter((id) => allowedModels.has(id)))]
     const requestedDefault = (body.defaultModelId ?? '').trim()
     const effectiveDefault = requestedDefault !== '' && requestedModels.includes(requestedDefault) ? requestedDefault : requestedModels[0] ?? ''
-    const currentModels = store.listRepoModels(repo.id)
+    const currentModels = store.listRepoModelSelection(repo.id)
     const currentDefault = currentModels.find((model) => model.is_default === 1)?.id ?? ''
     const currentIds = currentModels.map((model) => model.id).sort().join(',')
     if (currentIds !== requestedModels.sort().join(',') || currentDefault !== effectiveDefault) {
-      store.setRepoModels(repo.id, requestedModels, effectiveDefault === '' ? null : effectiveDefault)
+      store.setRepoModelSelection(repo.id, requestedModels, effectiveDefault === '' ? null : effectiveDefault)
       store.audit(viewer.user.id, 'repo.models.changed', `${repo.owner}/${repo.name} models=${requestedModels.length} default=${effectiveDefault || 'none'}`)
     }
     if (repo.enabled === 1 && body.enabled !== '1') {
@@ -1754,91 +1755,76 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'),
-        models: store.listUserModels(viewer.user.id),
+        providers: store.listModelProviders(viewer.user.id).map((provider) => ({ ...provider, models: store.listProviderModels(provider.id) })),
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
       }),
     )
   })
 
-  app.post('/settings/model', async (request, reply) => {
-    const viewer = approvedCsrfGuard(request)
-    const body = form(request)
-    if (body.action === 'clear') {
-      store.setUserOwnModel(viewer.user.id, null, null, null)
-      store.audit(viewer.user.id, 'model.cleared')
-      return reply.redirect(`/settings?notice=${encodeURIComponent('已改回平台额度。')}`)
-    }
-    const render = (error: string) =>
-      reply.type('text/html').send(
-        settingsPage({ config, locale: request.locale ?? 'zh', viewer: viewOf(viewer), tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'), models: store.listUserModels(viewer.user.id), error }),
-      )
-    try {
-      const baseUrl = (body.baseUrl ?? '').trim()
-      if (baseUrl === '') throw new Error('请填写 Base URL')
-      const allowPrivate = config.allowPrivateModelUrls || (viewer.user.role === 'superadmin' && body.allowPrivate === '1')
-      const safeUrl = await assertSafeModelUrl(baseUrl, allowPrivate)
-      const existingKey = viewer.user.own_llm_key_enc === null ? '' : decryptSecret(viewer.user.own_llm_key_enc, config.tokenEncryptionKey)
-      const key = (body.apiKey ?? '').trim() !== '' ? (body.apiKey ?? '').trim() : existingKey
-      if (key === '') throw new Error('请填写 API Key')
-      const model = (body.model ?? '').trim() !== '' ? (body.model ?? '').trim() : config.llm.model
-      let warning = ''
-      try {
-        await testOwnModel(safeUrl, key, model)
-      } catch (error) {
-        if (!allowPrivate) throw error
-        warning = '模型服务已保存，但连接测试失败；请确认 Fledge 服务器能访问这个地址。'
-      }
-      store.setUserOwnModel(viewer.user.id, safeUrl, encryptSecret(key, config.tokenEncryptionKey), model)
-      store.audit(viewer.user.id, 'model.saved', `${safeUrl} private=${allowPrivate ? 'on' : 'off'}`)
-      return reply.redirect(`/settings?notice=${encodeURIComponent(warning === '' ? '模型服务已保存并通过测试。' : warning)}`)
-    } catch (error) {
-      return render(error instanceof Error ? error.message : String(error))
-    }
-  })
-
-  app.post('/settings/models', async (request, reply) => {
+  app.post('/settings/providers', async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
     const body = form(request)
     try {
       const label = (body.label ?? '').trim().slice(0, 80)
       const baseUrl = (body.baseUrl ?? '').trim()
       const key = (body.apiKey ?? '').trim()
-      const model = (body.model ?? '').trim().slice(0, 120)
-      if (label === '' || baseUrl === '' || key === '' || model === '') throw new Error('请填写名称、Base URL、API Key 和 Model')
+      if (label === '' || baseUrl === '' || key === '') throw new Error('请填写名称、Base URL 和 API Key')
       const allowPrivate = config.allowPrivateModelUrls || (viewer.user.role === 'superadmin' && body.allowPrivate === '1')
       const safeUrl = await assertSafeModelUrl(baseUrl, allowPrivate)
-      let warning = ''
-      try {
-        await testOwnModel(safeUrl, key, model)
-      } catch (error) {
-        if (!allowPrivate) throw error
-        warning = '模型已保存，但连接测试失败；请确认 Fledge 服务器能访问这个地址。'
-      }
-      const created = store.createUserModel({
-        id: randomId('mdl'),
+      const provider = store.createModelProvider({
+        id: randomId('prv'),
         userId: viewer.user.id,
         label,
         baseUrl: safeUrl,
         keyEnc: encryptSecret(key, config.tokenEncryptionKey),
-        model,
         allowPrivate,
       })
-      store.audit(viewer.user.id, 'model.added', `${created.id} ${label} private=${allowPrivate ? 'on' : 'off'}`)
-      return reply.redirect(`/settings?notice=${encodeURIComponent(warning === '' ? '模型已保存并通过测试。' : warning)}#model`)
+      store.audit(viewer.user.id, 'model.provider.added', `${provider.id} ${label} private=${allowPrivate ? 'on' : 'off'}`)
+      return reply.redirect(`/settings?notice=${encodeURIComponent('模型提供方已添加。添加模型时会由 Fledge 测试连接。')}#model-providers`)
     } catch (error) {
-      return reply.redirect(`/settings?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}#model`)
+      return reply.redirect(`/settings?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}#model-providers`)
     }
   })
 
-  app.post('/settings/models/:id/delete', async (request, reply) => {
+  app.post('/settings/providers/:id/delete', async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
     const id = String((request.params as Record<string, string>).id)
-    const model = store.userModelById(id, viewer.user.id)
-    if (model === undefined) return reply.code(404).send({ error: '模型不存在。' })
-    store.deleteUserModel(id, viewer.user.id)
-    store.audit(viewer.user.id, 'model.removed', `${id} ${model.label}`)
-    return reply.redirect(`/settings?notice=${encodeURIComponent('模型已删除。')}#model`)
+    const provider = store.modelProviderById(id, viewer.user.id)
+    if (provider === undefined) return reply.code(404).send({ error: '模型提供方不存在。' })
+    store.deleteModelProvider(id, viewer.user.id)
+    store.audit(viewer.user.id, 'model.provider.removed', `${id} ${provider.label}`)
+    return reply.redirect(`/settings?notice=${encodeURIComponent('模型提供方已删除。')}#model-providers`)
+  })
+
+  app.post('/settings/providers/:id/models', async (request, reply) => {
+    const viewer = approvedCsrfGuard(request)
+    const id = String((request.params as Record<string, string>).id)
+    const provider = store.modelProviderById(id, viewer.user.id)
+    if (provider === undefined) return reply.code(404).send({ error: '模型提供方不存在。' })
+    const body = form(request)
+    try {
+      const model = (body.model ?? '').trim().slice(0, 120)
+      const label = (body.label ?? '').trim().slice(0, 120) || model
+      if (model === '') throw new Error('请填写模型 ID')
+      const key = decryptSecret(provider.key_enc, config.tokenEncryptionKey)
+      await testOwnModel(provider.base_url, key, model)
+      const created = store.createProviderModel({ id: randomId('pvm'), providerId: provider.id, model, label })
+      store.audit(viewer.user.id, 'model.added', `${created.id} ${provider.label}/${model}`)
+      return reply.redirect(`/settings?notice=${encodeURIComponent('模型已通过连接测试并保存。')}#model-providers`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return reply.redirect(`/settings?error=${encodeURIComponent(`连接测试失败，未保存：${message}`)}#model-providers`)
+    }
+  })
+
+  app.post('/settings/providers/:id/models/:modelId/delete', async (request, reply) => {
+    const viewer = approvedCsrfGuard(request)
+    const modelId = String((request.params as Record<string, string>).modelId)
+    const removed = store.deleteProviderModel(modelId, viewer.user.id)
+    if (!removed) return reply.code(404).send({ error: '模型不存在。' })
+    store.audit(viewer.user.id, 'model.removed', modelId)
+    return reply.redirect(`/settings?notice=${encodeURIComponent('模型已删除。')}#model-providers`)
   })
 
   app.post('/settings/notifications', async (request, reply) => {
@@ -1900,7 +1886,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'),
-        models: store.listUserModels(viewer.user.id),
+        providers: store.listModelProviders(viewer.user.id).map((provider) => ({ ...provider, models: store.listProviderModels(provider.id) })),
         newToken: raw,
         notice: '新 token 只显示这一次，请现在复制保存。',
       }),

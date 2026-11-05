@@ -362,34 +362,44 @@ server.listen(3081, '0.0.0.0')
   }
 
 
-  private modelPatch(repoId: string, modelBind: string, modelPort: number): string {
-    const selected = this.store.listRepoModels(repoId)
-    const entries = selected.length === 0
-      ? [{ id: this.config.flybot.model, label: this.config.flybot.model, is_default: 1 }]
-      : selected
-    const defaultModel = entries.find((entry) => entry.is_default === 1)?.id ?? entries[0]!.id
-    const modelLines = entries.flatMap((entry) => [`          - id: ${yaml(entry.id)}`, `            name: ${yaml(entry.label)}`])
-    return [
-      '- id: llm-pi-ai',
-      '  config:',
-      '    providers:',
-      '      fledge:',
-      '        displayName: Fledge',
-      '        api: openai-completions',
-      `        baseURL: ${yaml(`http://${modelBind}:${modelPort}/v1`)}`,
-      '        apiKeyEnv: FLEDGE_MODEL_KEY',
-      '        models:',
-      ...modelLines,
-      '- id: agent-default-model',
-      '  config:',
-      '    provider: fledge',
-      `    model: ${yaml(defaultModel)}`,
-      '- id: flybot-tree',
-      '  config:',
-      '    dailyTidy: false',
-      '- id: flybot-social',
-      '  disabled: true',
-    ].join('\n') + '\n'
+  modelPatch(repoId: string, modelBind: string, modelPort: number): string {
+    const selected = this.store.listRepoModelSelection(repoId)
+    const lines = ['- id: llm-pi-ai', '  config:', '    providers:']
+    if (selected.length === 0) {
+      const model = this.config.flybot.model
+      lines.push(
+        '      fledge:',
+        '        displayName: Fledge',
+        '        api: openai-completions',
+        `        baseURL: ${yaml(`http://${modelBind}:${modelPort}/v1`)}`,
+        '        apiKeyEnv: FLEDGE_MODEL_KEY',
+        '        models:',
+        `          - id: ${yaml(model)}`,
+        `            name: ${yaml(model)}`,
+      )
+      lines.push('- id: agent-default-model', '  config:', '    provider: fledge', `    model: ${yaml(model)}`)
+    } else {
+      const providerIds = [...new Set(selected.map((entry) => entry.provider_id))]
+      for (const providerId of providerIds) {
+        const models = selected.filter((entry) => entry.provider_id === providerId)
+        const first = models[0]!
+        lines.push(
+          `      fledge-${providerId}:`,
+          `        displayName: ${yaml(first.provider_label)}`,
+          '        api: openai-completions',
+          `        baseURL: ${yaml(`http://${modelBind}:${modelPort}/v1`)}`,
+          '        apiKeyEnv: FLEDGE_MODEL_KEY',
+          '        models:',
+        )
+        for (const entry of models) {
+          lines.push(`          - id: ${yaml(entry.id)}`, `            name: ${yaml(entry.label)}`)
+        }
+      }
+      const preferred = selected.find((entry) => entry.is_default === 1) ?? selected[0]!
+      lines.push('- id: agent-default-model', '  config:', `    provider: fledge-${preferred.provider_id}`, `    model: ${yaml(preferred.id)}`)
+    }
+    lines.push('- id: flybot-tree', '  config:', '    dailyTidy: false', '- id: flybot-social', '  disabled: true')
+    return lines.join('\n') + '\n'
   }
 
   async applyModels(repoId: string): Promise<{ ok: boolean; code?: string; error?: string }> {
