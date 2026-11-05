@@ -28,14 +28,12 @@ export async function assertSafeModelUrl(raw: string, allowPrivate: boolean): Pr
     throw new Error('Base URL 不是合法 URL')
   }
   if (url.username !== '' || url.password !== '') throw new Error('Base URL 不能包含用户名或密码')
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Base URL 必须是 https://（本地开发可用 http://）')
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Base URL 必须是 https:// 或 http://')
   const host = url.hostname.replace(/^\[|\]$/g, '')
+  if (allowPrivate) return url.toString().replace(/\/$/, '')
   const loopback = host === 'localhost' || host === '127.0.0.1' || host === '::1'
-  if (url.protocol === 'http:' && !(allowPrivate && loopback)) throw new Error('公网模型服务必须使用 https://')
-  if (loopback) {
-    if (!allowPrivate) throw new Error('不允许使用本机/内网地址')
-    return url.toString().replace(/\/$/, '')
-  }
+  if (url.protocol === 'http:') throw new Error('公网模型服务必须使用 https://')
+  if (loopback) throw new Error('不允许使用本机/内网地址')
   if (isIP(host) !== 0) {
     if (isPrivateIpv4(host) || isPrivateIpv6(host)) throw new Error('不允许使用内网地址')
     return url.toString().replace(/\/$/, '')

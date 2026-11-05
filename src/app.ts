@@ -268,8 +268,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (session === undefined) return fail('401 Unauthorized')
     const user = store.userById(session.user_id)
     const repo = store.getRepo(decodeURIComponent(match[1] ?? ''))
-    const preview = /(?:^|; )fledge_preview=user(?:;|$)/.test(String(request.headers.cookie ?? ''))
-    if (user === undefined || user.status !== 'approved' || user.role !== 'superadmin' || preview || repo === undefined || repo.user_id !== user.id) return fail('403 Forbidden')
+    if (user === undefined || user.status !== 'approved' || repo === undefined || repo.user_id !== user.id) return fail('403 Forbidden')
     const instance = store.getRepoInstance(repo.id)
     if (instance === undefined || instance.status !== 'ready') return fail('409 Conflict')
     void dshCookie(instance).then((cookie) => {
@@ -1424,7 +1423,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/repos/:id/workspace', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
-    requireAdvanced(viewer)
     const instance = store.getRepoInstance(repo.id)
     return reply.type('text/html').send(agentWorkspacePage({
       config,
@@ -1439,7 +1437,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.all('/repos/:id/workspace/app', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
-    requireAdvanced(viewer)
     const url = request.raw.url ?? ''
     const query = url.includes('?') ? url.slice(url.indexOf('?')) : ''
     if (!url.split('?')[0]?.endsWith('/')) return reply.redirect(`/repos/${repo.id}/workspace/app/${query}`)
@@ -1455,7 +1452,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.all('/repos/:id/workspace/app/*', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
-    requireAdvanced(viewer)
     const instance = store.getRepoInstance(repo.id)
     if (instance === undefined || instance.status !== 'ready') return reply.code(409).send({ error: 'FlyBot 实例尚未就绪' })
     const prefix = `/repos/${repo.id}/workspace/app/`
@@ -1713,15 +1709,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     try {
       const baseUrl = (body.baseUrl ?? '').trim()
       if (baseUrl === '') throw new Error('请填写 Base URL')
-      const safeUrl = await assertSafeModelUrl(baseUrl, config.allowPrivateModelUrls)
+      const allowPrivate = config.allowPrivateModelUrls || (viewer.user.role === 'superadmin' && body.allowPrivate === '1')
+      const safeUrl = await assertSafeModelUrl(baseUrl, allowPrivate)
       const existingKey = viewer.user.own_llm_key_enc === null ? '' : decryptSecret(viewer.user.own_llm_key_enc, config.tokenEncryptionKey)
       const key = (body.apiKey ?? '').trim() !== '' ? (body.apiKey ?? '').trim() : existingKey
       if (key === '') throw new Error('请填写 API Key')
       const model = (body.model ?? '').trim() !== '' ? (body.model ?? '').trim() : config.llm.model
-      await testOwnModel(safeUrl, key, model)
+      let warning = ''
+      try {
+        await testOwnModel(safeUrl, key, model)
+      } catch (error) {
+        if (!allowPrivate) throw error
+        warning = '模型服务已保存，但连接测试失败；请确认 Fledge 服务器能访问这个地址。'
+      }
       store.setUserOwnModel(viewer.user.id, safeUrl, encryptSecret(key, config.tokenEncryptionKey), model)
-      store.audit(viewer.user.id, 'model.saved', safeUrl)
-      return reply.redirect(`/settings?notice=${encodeURIComponent('模型服务已保存并通过测试。')}`)
+      store.audit(viewer.user.id, 'model.saved', `${safeUrl} private=${allowPrivate ? 'on' : 'off'}`)
+      return reply.redirect(`/settings?notice=${encodeURIComponent(warning === '' ? '模型服务已保存并通过测试。' : warning)}`)
     } catch (error) {
       return render(error instanceof Error ? error.message : String(error))
     }

@@ -99,9 +99,10 @@ or bridge tokens.
 
 ### Agent workspace proxy
 
-The workspace proxy is admin-only and same-origin. The session cookie and repo
+The workspace proxy is owner-only and same-origin. The session cookie and repo
 ownership are checked on every HTTP request; WebSocket upgrades check the same
-session hash, user status and repo owner. The DSH token is read from the
+session hash, user status and repo owner. The Fledge team console and its SSE
+stream remain superadmin-only. The DSH token is read from the
 instance log and exchanged for a DSH cookie server-side; that cookie and the
 token are never sent to the browser. Upstream `Set-Cookie`, CSP and
 `X-Frame-Options` headers are stripped; the proxied document is scoped to the
@@ -155,8 +156,8 @@ per day. Test mail is rate-limited to one per minute.
   visible set and actor names are masked in the admin audit view. The owner sees
   all users and actions.
 - The super-admin-only preview cookie renders the normal-user UI while leaving the
-  actual session owner-scoped behind the scenes. Advanced team/workspace routes
-  remain blocked until preview is exited.
+  actual session owner-scoped behind the scenes. The owner workspace is available
+  in preview like a normal-user page; advanced team routes remain blocked.
 - Repository roles are per user-repository connection: `maintainer` or
   `developer`. The allowed roles come from the user's GitHub permission
   (`admin`/`maintain` may choose either; all other permissions may only choose
@@ -181,8 +182,8 @@ per day. Test mail is rate-limited to one per minute.
   log. Answer text is not logged.
 - A stop request tries the DSH room cancel first; otherwise it delivers a stop
   message. The UI and API distinguish a hard stop from a request. The native DSH
-  UI is only exposed through the admin-only authenticated workspace proxy; normal
-  users use the repository page and the Fledge inbox.
+  UI is exposed through the owner-only authenticated workspace proxy; the Fledge
+  team console and its SSE stream remain superadmin-only.
 - The v0.3 workspace must use a short-lived signed ticket, a server-side DSH
   cookie, cookie isolation and an ownership check on every request; a raw DSH
   token must never appear in a browser URL.
@@ -239,11 +240,16 @@ managed by those products.
 
 User model base URLs are validated before saving and before use:
 
-- HTTPS only for public hosts; HTTP is allowed only for loopback when
-  `ALLOW_PRIVATE_MODEL_URLS=true`.
-- IP literals in private/loopback/link-local ranges are rejected.
-- Hostnames are resolved and every address is checked.
+- HTTPS only for public hosts.
+- HTTP and private/loopback/link-local addresses are accepted only when
+  `ALLOW_PRIVATE_MODEL_URLS=true`, or when a superadmin ticks the private-URL
+  checkbox on the model form. This is an explicit trust decision: the gateway
+  host must be able to reach that address.
+- Without the opt-in, IP literals in private/loopback/link-local ranges are
+  rejected and hostnames are resolved and checked.
 - Credentials in the URL are rejected.
+- A private URL whose connection test fails is still saved with a warning so a
+  model that is only reachable from a restricted network can be configured.
 
 DNS rebinding is not fully mitigated; deploy behind an egress policy if users
 are untrusted.

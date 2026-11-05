@@ -81,13 +81,17 @@ when changed.
 
 `POST /settings/model` stores:
 
-- `own_llm_base_url` (validated, HTTPS for public hosts),
+- `own_llm_base_url` (validated; HTTPS for public hosts),
 - `own_llm_key_enc` (AES-256-GCM),
 - `own_llm_model`.
 
-Saving performs a 1-token test request. Once set, the gateway proxies to the
-user's endpoint and **does not** touch the platform quota or ledger. Clearing it
-returns the user to the platform quota.
+Saving performs a 1-token test request. A superadmin (or an operator with
+`ALLOW_PRIVATE_MODEL_URLS=true`) can tick the private-URL checkbox to allow
+HTTP/private targets; if the test fails for such a target the service is still
+saved with a warning, because the model may only be reachable from a restricted
+network. Once set, the gateway proxies to the user's endpoint and **does not**
+touch the platform quota or ledger. Clearing it returns the user to the platform
+quota.
 
 ## Admin
 
