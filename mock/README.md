@@ -27,3 +27,17 @@ What to review:
 - Global settings and the mock question inbox.
 - The top-right `中 / EN` switch changes the main labels; mock content stays as
   written.
+
+## Latest screens
+
+- Repository lifecycle banner and danger zone (stop scheduling, stop FlyBot, typed-name delete).
+- Pull-request delivery list with review score, cost and a merge action.
+- Model providers with multiple models per provider and platform-side connection testing.
+- Per-bot model selectors (Chief, Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2).
+
+## Latest screens
+
+- Repository lifecycle banner and danger zone (stop scheduling, stop FlyBot, typed-name delete).
+- Pull-request delivery list with review score, cost and a merge action.
+- Model providers with multiple models per provider and platform-side connection testing.
+- Per-bot model selectors (Chief, Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2).

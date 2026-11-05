@@ -1,0 +1,1 @@
+The question inbox now updates over Server-Sent Events at `/api/inbox/events`. Fledge sends the server-rendered inbox when the question set changes, and the browser replaces the section and rebinds the answer forms without a reload.

@@ -532,6 +532,7 @@ export class Jobs {
     }
     if (result.status === 'succeeded') {
       void this.afterSucceeded(job, prUrl ?? undefined, issueUrl ?? undefined, attribution).catch((error) => log.warn('post-job side effects failed', { job: jobId, error: String(error) }))
+      void this.autoQueueReview(jobId).catch((error) => log.warn('auto review queue failed', { job: jobId, error: String(error) }))
     } else {
       void this.captureTeamStats(jobId, attribution).catch((error) => log.warn('team stats capture failed', { job: jobId, error: String(error) }))
     }
@@ -773,6 +774,16 @@ export class Jobs {
       if (!result.ok) log.warn('pending follow-up not queued', { repo: repoId, code: result.code, error: result.error })
       else log.info('pending follow-up queued', { repo: repoId, job: result.job?.id })
     }
+  }
+
+  private async autoQueueReview(jobId: string): Promise<void> {
+    const job = this.store.getJob(jobId)
+    if (job === undefined || job.kind !== 'iterate' || job.pr_url === null) return
+    const repo = this.store.getRepo(job.repo_id)
+    if (repo === undefined || repo.reviewer_enabled !== 1 || repo.can_review !== 1) return
+    if (this.store.activeJobForRepo(repo.id) !== undefined) return
+    const result = await this.enqueue(repo, 'schedule', undefined, 'review', job.work_item_id === null ? {} : { workItemId: job.work_item_id })
+    if (result.ok) this.store.audit(job.user_id, 'review.auto_queued', `${job.id} -> ${result.job?.id ?? ''}`)
   }
 
   private async afterSucceeded(job: JobRow, prUrl: string | undefined, issueUrl: string | undefined, claimed: Attribution | null): Promise<void> {
@@ -1150,6 +1161,14 @@ export class Jobs {
     if (status === 'succeeded' && followUps.length > 0) {
       await this.queueReviewFollowUps(job, followUps)
       await this.releasePendingFollowups(job.repo_id)
+    }
+    if (status === 'succeeded' && job.kind === 'review' && job.work_item_id !== null) {
+      const item = this.store.getWorkItem(job.work_item_id)
+      if (item !== undefined) {
+        const outcome = followUps.length > 0 || (reviewScore !== undefined && reviewScore < 80) ? 'changes_requested' : 'approved'
+        this.store.updateWorkItem(item.id, { state: outcome })
+        this.store.audit(job.user_id, 'work_item.review_outcome', `${item.id}: ${outcome} score=${reviewScore ?? '-'}`)
+      }
     }
     if (status === 'succeeded' && prUrl !== undefined) await this.maybeAutoMerge(job, prUrl)
     return { ok: true }

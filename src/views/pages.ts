@@ -247,10 +247,11 @@ function jobList(locale: Locale, jobs: JobRow[], repoLabels: Map<string, string>
     .join('')}</div>`
 }
 
-function questionsBlock(locale: Locale, viewer: Viewer, questions: InboxQuestion[], returnTo: string): string {
-  if (questions.length === 0) return ''
+export function inboxSection(locale: Locale, viewer: Viewer, questions: InboxQuestion[], returnTo: string): string {
   const t = translator(locale)
-  const cards = questions
+  const cards = questions.length === 0
+    ? `<p class="muted">${escapeHtml(t('没有待回答的问题。', 'No open questions.'))}</p>`
+    : questions
     .map((question) => {
       const options = question.options
         .map((option) => `<label class="option-card"><input type="${question.multiSelect ? 'checkbox' : 'radio'}" name="selected" value="${escapeHtml(option)}" /><span>${escapeHtml(option)}</span></label>`)
@@ -276,7 +277,7 @@ function questionsBlock(locale: Locale, viewer: Viewer, questions: InboxQuestion
       </div>`
     })
     .join('')
-  return `<section class="card inbox" id="inbox">
+  return `<section class="card inbox" id="inbox"${questions.length === 0 ? ' hidden' : ''}>
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('需要你处理', 'NEEDS YOUR INPUT'))}</div>
@@ -437,7 +438,7 @@ export function dashboardPage(input: {
     </div>
     <div class="meter"><span style="width:${quota.unlimited ? '0' : Math.min(100, Math.max(0, (quota.usedCny / Math.max(0.0001, quota.initialCny)) * 100)).toFixed(2)}%"></span></div>
   </section>
-  ${questionsBlock(locale, viewer, questions, '/dashboard')}
+  ${inboxSection(locale, viewer, questions, '/dashboard')}
 
   <section class="cols">
     <div class="card">
@@ -633,7 +634,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         const stateOptions = nextStates.map((state) => `<option value="${state}">${escapeHtml(workItemStateLabel(t, state))}</option>`).join('')
         return `<tr>
           <td><strong>${escapeHtml(item.title)}</strong>${item.detail === '' ? '' : `<br /><small class="muted">${escapeHtml(item.detail.slice(0, 180))}</small>`}</td>
-          <td><span class="badge kind">${escapeHtml(workItemStateLabel(t, item.state))}</span></td>
+          <td><span class="badge kind">${escapeHtml(workItemStateLabel(t, item.state))}</span><br /><small class="muted">${escapeHtml(workItemStageLabel(t, item.state))}</small></td>
           <td>${item.priority}</td>
           <td>${item.issue_url === null ? '' : `<a href="${escapeHtml(item.issue_url)}" target="_blank" rel="noreferrer">Issue</a>`}${item.issue_url !== null && item.pr_url !== null ? ' · ' : ''}${item.pr_url === null ? '' : `<a href="${escapeHtml(item.pr_url)}" target="_blank" rel="noreferrer">PR</a>`}</td>
           <td>${item.job_id === null ? '—' : `<a href="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(item.job_id)}"><code>${escapeHtml(item.job_id)}</code></a>`}</td>
@@ -693,7 +694,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <button class="btn btn-danger" type="submit">${escapeHtml(t('删除仓库连接', 'Delete repository connection'))}</button>
     </form>
   </section>`
-  const body = `${repoHeader}${roleCard}${lifecycleBanner}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${questionsBlock(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}${deliveryCard}${workCard}${dangerCard}
+  const body = `${repoHeader}${roleCard}${lifecycleBanner}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}${deliveryCard}${workCard}${dangerCard}
   <section class="cols">
     <div class="card" id="repo-settings">
       <h2>${escapeHtml(t('迭代目标', 'Iteration goal'))}</h2>
@@ -742,7 +743,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           </label>
         </div>
         <label>${escapeHtml(t('默认模型', 'Default model'))} <select name="defaultModelId"><option value="">${escapeHtml(t('平台默认', 'Platform default'))}</option>${models.map((model) => `<option value="${escapeHtml(model.id)}"${repoDefaultModelId === model.id ? ' selected' : ''}>${escapeHtml(model.provider_label)} · ${escapeHtml(model.label)}${repoModelIds.has(model.id) ? '' : ' *'}</option>`).join('')}</select></label>
-        ${models.length === 0 ? '' : `<div class="row">${([['chief', 'Chief'], ['lead', 'Lead'], ['product', 'Product'], ['test', 'Test'], ['security', 'Security'], ['reviewer', 'Reviewer'], ['dev1', 'Dev-1'], ['dev2', 'Dev-2']] as const).map(([role, label]) => `<label>${escapeHtml(label)} <select name="botModel_${role}"><option value="">${escapeHtml(t('跟随默认', 'Follow default'))}</option>${models.filter((model) => repoModelIds.has(model.id)).map((model) => `<option value="${escapeHtml(model.id)}"${botModelMap.get(role) === model.id ? ' selected' : ''}>${escapeHtml(model.provider_label)} · ${escapeHtml(model.label)}</option>`).join('')}</select></label>`).join('')}</div>
+        ${models.length === 0 ? '' : `<div class="row bot-models">${([['chief', 'Chief'], ['lead', 'Lead'], ['product', 'Product'], ['test', 'Test'], ['security', 'Security'], ['reviewer', 'Reviewer'], ['dev1', 'Dev-1'], ['dev2', 'Dev-2']] as const).map(([role, label]) => `<label>${escapeHtml(label)} <select name="botModel_${role}"><option value="">${escapeHtml(t('跟随默认', 'Follow default'))}</option>${models.filter((model) => repoModelIds.has(model.id)).map((model) => `<option value="${escapeHtml(model.id)}"${botModelMap.get(role) === model.id ? ' selected' : ''}>${escapeHtml(model.provider_label)} · ${escapeHtml(model.label)}</option>`).join('')}</select></label>`).join('')}</div>
         <p class="fine">${escapeHtml(t('每个 bot 可以单独选择模型；不选则跟随默认。保存选择后，空闲时点击“应用模型并重启工作区”才会生效，Fledge 会通过 DSH 把模型分配给对应 bot。', 'Each bot can choose a model; empty follows the default. After saving, use "Apply models and restart workspace" while idle; Fledge assigns the model through DSH.'))}</p>`}
         ${roleMissing ? `<p class="fine">${escapeHtml(t('先选择你的角色，审核和自动合并才会生效。', 'Choose your role before review or auto-merge can take effect.'))}</p>` : !githubCanReview ? `<p class="fine">${escapeHtml(t('你在这个上游没有 admin/maintain 权限，审核角色不可用。', 'You do not have admin/maintain permission on this upstream, so the reviewer role is unavailable.'))}</p>` : !canMaintain ? `<p class="fine">${escapeHtml(t('developer 不能启用 PR 审核或自动合并；切换为 maintainer 后才可用。', 'A developer cannot enable PR review or auto-merge; switch to maintainer first.'))}</p>` : ''}
         ${advanced ? `<details class="fine advanced-help"><summary>${escapeHtml(t('团队与调度规则', 'Team and scheduling rules'))}</summary>
@@ -769,6 +770,23 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     ${pager(`/repos/${repo.id}`, 'jobsPage', jobsPage, jobsTotal, 10, t, {}, '#jobs')}
   </section>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : '<script src="/assets/chief.js" defer></script>'}`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
+}
+
+function workItemStageLabel(t: Translate, state: string): string {
+  const map: Record<string, [string, string]> = {
+    proposed: ['范围', 'Scope'],
+    triaged: ['范围', 'Scope'],
+    assigned: ['范围', 'Scope'],
+    in_progress: ['实现', 'Implement'],
+    pr_ready: ['审核', 'Review'],
+    in_review: ['审核', 'Review'],
+    changes_requested: ['修改', 'Fix'],
+    approved: ['合并', 'Merge'],
+    merged: ['完成', 'Done'],
+    closed: ['关闭', 'Closed'],
+  }
+  const entry = map[state] ?? ['—', '—']
+  return t(entry[0], entry[1])
 }
 
 function teamRoleLabel(t: Translate, role: string): string {
@@ -966,7 +984,7 @@ export function settingsPage(input: {
     <p class="muted">${escapeHtml(t('先添加提供方（Base URL + API Key），再在它下面添加模型。添加模型时 Fledge 会发起 1-token 测试；测试失败不会保存。', 'Add a provider (Base URL + API key), then add models under it. Adding a model sends a 1-token test from Fledge; a failed test is not saved.'))}</p>
     ${providers.length === 0
       ? `<p class="muted">${escapeHtml(t('还没有模型提供方。', 'No model providers yet.'))}</p>`
-      : providers.map((provider) => `<div class="card" style="margin-bottom:12px">
+      : providers.map((provider) => `<div class="card provider-card">
           <div class="row between">
             <div><strong>${escapeHtml(provider.label)}</strong>${provider.allow_private === 1 ? ' · private' : ''}<br /><code>${escapeHtml(provider.base_url)}</code></div>
             <form method="post" action="/settings/providers/${escapeHtml(provider.id)}/delete">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('删除提供方', 'Delete provider'))}</button></form>
@@ -1400,7 +1418,7 @@ export function workspacePage(input: {
     </div>
   </section>
   ${quota.exhausted ? `<div class="banner bad">${escapeHtml(t('平台额度已用完。请到 Settings → Model 配置你自己的模型 API，任务才能继续。', 'Platform quota is used up. Add your own model API in Settings → Model to keep jobs running.'))}</div>` : ''}
-  ${questionsBlock(locale, viewer, questions, '/console')}
+  ${inboxSection(locale, viewer, questions, '/console')}
   <section class="stats">
     <a class="stat" href="/dashboard"><span>${escapeHtml(t('仓库', 'Repositories'))}</span><strong>${repos.length}</strong><small>${escapeHtml(t('已接入', 'Connected'))}</small></a>
     <a class="stat" href="/dashboard"><span>${escapeHtml(t('进行中', 'In progress'))}</span><strong>${active}</strong><small>${escapeHtml(t('排队或运行', 'Queued or running'))}</small></a>
