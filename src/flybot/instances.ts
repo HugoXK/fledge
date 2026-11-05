@@ -402,6 +402,42 @@ server.listen(3081, '0.0.0.0')
     return lines.join('\n') + '\n'
   }
 
+  async applyBotModels(repoId: string): Promise<{ updated: number; skipped: string[] }> {
+    const instance = this.store.getRepoInstance(repoId)
+    if (instance === undefined || instance.status !== 'ready') return { updated: 0, skipped: [] }
+    const mappings = this.store.listRepoBotModels(repoId)
+    if (mappings.length === 0) return { updated: 0, skipped: [] }
+    const selected = new Map(this.store.listRepoModelSelection(repoId).map((model) => [model.id, model]))
+    const token = decryptSecret(instance.bridge_token_enc ?? '', this.config.tokenEncryptionKey)
+    const state = await this.state(instance.bridge_port, token)
+    const suffix: Record<string, string> = { lead: 'Lead', product: 'Product', test: 'Test', security: 'Security', reviewer: 'Reviewer', dev1: 'Dev-1', dev2: 'Dev-2' }
+    let updated = 0
+    const skipped: string[] = []
+    for (const mapping of mappings) {
+      const model = selected.get(mapping.provider_model_id)
+      if (model === undefined) {
+        skipped.push(mapping.role)
+        continue
+      }
+      const bot = mapping.role === 'chief'
+        ? state.bots.find((entry) => String(entry.name ?? '') === 'Chief')
+        : state.bots.find((entry) => String(entry.name ?? '').endsWith(` ${suffix[mapping.role] ?? ''}`))
+      if (bot === undefined || typeof bot.id !== 'string') {
+        skipped.push(mapping.role)
+        continue
+      }
+      try {
+        await this.dsh(instance.bridge_port, token, 'update-bot', { id: bot.id, model: `fledge-${model.provider_id}/${model.id}` })
+        updated += 1
+      } catch (error) {
+        skipped.push(mapping.role)
+        log.warn('bot model update failed', { repo: repoId, role: mapping.role, error: String(error) })
+      }
+    }
+    this.store.audit(instance.user_id, 'flybot.bot_models.applied', `${repoId} updated=${updated} skipped=${skipped.join(',')}`)
+    return { updated, skipped }
+  }
+
   async applyModels(repoId: string): Promise<{ ok: boolean; code?: string; error?: string }> {
     const instance = this.store.getRepoInstance(repoId)
     if (instance === undefined || instance.status !== 'ready') return { ok: false, code: 'INSTANCE_NOT_READY', error: '实例尚未就绪。' }
@@ -414,7 +450,8 @@ server.listen(3081, '0.0.0.0')
     await this.docker(['restart', '-t', '15', instance.container])
     await this.waitForDsh(instance.dsh_port, instance)
     this.store.markRepoModelsApplied(repoId)
-    this.store.audit(instance.user_id, 'flybot.models.applied', `${repoId} models=${this.store.listRepoModels(repoId).length}`)
+    await this.applyBotModels(repoId).catch((error) => log.warn('bot model assignment failed', { repo: repoId, error: String(error) }))
+    this.store.audit(instance.user_id, 'flybot.models.applied', `${repoId} models=${this.store.listRepoModelSelection(repoId).length}`)
     log.info('models applied', { repo: repoId })
     return { ok: true }
   }

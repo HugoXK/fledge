@@ -321,7 +321,9 @@ which is default (`repo_model_selection`). Adding a model runs a 1-token test
 from Fledge and is refused on failure. The instance patch groups the selected
 models under their providers as DSH models, and the gateway maps an alias back
 to its provider, key and underlying model. Applying a changed selection rewrites
-the patch and restarts the container only when no job is active.
+the patch and restarts the container only when no job is active. A repository can
+also assign a selected model to each DSH bot role; after the restart Fledge calls
+`update-bot` with `model: <provider>/<model>` for every configured role.
 
 ### Per-job cost, evidence and metrics
 

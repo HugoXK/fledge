@@ -899,6 +899,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         workItems: store.listWorkItems(repo.id),
         models: store.listUserProviderModels(repo.user_id),
         repoModelIds: repoModels.map((model) => model.id),
+        repoBotModels: store.listRepoBotModels(repo.id),
         repoDefaultModelId: repoModels.find((model) => model.is_default === 1)?.id ?? '',
         repoSpendCny: store.repoUsageSince(repo.id, new Date(Date.now() - 30 * 86_400_000).toISOString()) * config.quota.usdCny,
         questions,
@@ -1685,6 +1686,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const requestedModels = [...new Set(formList(request, 'modelIds').filter((id) => allowedModels.has(id)))]
     const requestedDefault = (body.defaultModelId ?? '').trim()
     const effectiveDefault = requestedDefault !== '' && requestedModels.includes(requestedDefault) ? requestedDefault : requestedModels[0] ?? ''
+    for (const role of ['chief', 'lead', 'product', 'test', 'security', 'reviewer', 'dev1', 'dev2']) {
+      const value = (body[`botModel_${role}`] ?? '').trim()
+      store.setRepoBotModel(repo.id, role, requestedModels.includes(value) ? value : null)
+    }
     const currentModels = store.listRepoModelSelection(repo.id)
     const currentDefault = currentModels.find((model) => model.is_default === 1)?.id ?? ''
     const currentIds = currentModels.map((model) => model.id).sort().join(',')
