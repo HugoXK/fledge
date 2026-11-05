@@ -216,3 +216,18 @@ test('usage and job tokens carry the repository for cost attribution', () => {
     store.close()
   }
 })
+
+test('answering a team question marks only question notifications read', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'inbox-user', status: 'approved' })
+    store.notify(user.id, 'job', 'o/r 团队提问：continue?')
+    store.notify(user.id, 'job', 'unrelated job failure')
+    store.markQuestionNotificationsRead(user.id)
+    const rows = store.listNotifications(user.id)
+    assert.notEqual(rows.find((row) => row.message.includes('团队提问'))?.read_at, null)
+    assert.equal(rows.find((row) => row.message.includes('unrelated'))?.read_at, null)
+  } finally {
+    store.close()
+  }
+})

@@ -174,7 +174,8 @@ The same open questions are collected server-side from every ready instance and
 shown as a Fledge inbox on `/console`, `/dashboard` and the repository page, so a
 human can see and answer FlyBot's pending questions without opening the team
 console. The inbox form posts to `POST /repos/:id/team/answer`, which uses the
-same DSH call and invalidates the short-lived inbox cache.
+same DSH call, marks the matching question notifications read and invalidates
+the short-lived inbox cache.
 `POST /api/repos/:id/team/stop` first tries DSH `stop-member-work` when the role
 is in a room, otherwise it sends a stop message that takes effect at the next
 safe point. The workspace shell uses the form equivalent
