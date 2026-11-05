@@ -3,7 +3,7 @@ import https from 'node:https'
 import { StringDecoder } from 'node:string_decoder'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { Config } from '../config.js'
-import type { ApiTokenRow, Store, UserModelRow, UserRow } from '../db.js'
+import type { ApiTokenRow, RepoProviderModelRow, Store, UserRow } from '../db.js'
 import { log } from '../lib/log.js'
 import { decryptSecret, sha256Hex } from '../lib/secrets.js'
 import { costUsdFromUsage, headerCost, quotaView } from './quota.js'
@@ -49,7 +49,7 @@ function quotaError(reply: FastifyReply, user: UserRow, config: Config): void {
   })
 }
 
-function targetFor(user: UserRow, config: Config, body: ChatBody, repoModel?: UserModelRow): { baseUrl: string; key: string; model: string; platformFunded: boolean } | { error: string } {
+function targetFor(user: UserRow, config: Config, body: ChatBody, repoModel?: RepoProviderModelRow): { baseUrl: string; key: string; model: string; platformFunded: boolean } | { error: string } {
   if (repoModel !== undefined) {
     return {
       baseUrl: repoModel.base_url.replace(/\/$/, ''),
@@ -126,11 +126,18 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
     if (!limiter.take(`gateway-ip:${request.ip}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many gateway requests' } })
     const auth = authenticate(request)
     if (auth === null) return reply.code(401).send({ error: { type: 'invalid_api_key', message: 'Missing or invalid Fledge API token' } })
-    const repoModels = auth.token.repo_id === null ? [] : store.listRepoModels(auth.token.repo_id)
+    const repoModels = auth.token.repo_id === null ? [] : store.listRepoModelSelection(auth.token.repo_id)
     if (repoModels.length > 0) {
       return {
         object: 'list',
         data: repoModels.map((entry) => ({ id: entry.id, object: 'model', created: Math.floor(Date.now() / 1000), owned_by: 'fledge', name: entry.label })),
+      }
+    }
+    const userModels = auth.token.repo_id === null ? store.listUserProviderModels(auth.user.id) : []
+    if (userModels.length > 0) {
+      return {
+        object: 'list',
+        data: userModels.map((entry) => ({ id: entry.id, object: 'model', created: Math.floor(Date.now() / 1000), owned_by: 'fledge', name: entry.label })),
       }
     }
     const model = auth.user.own_llm_model ?? config.llm.model
@@ -145,7 +152,7 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
     const auth = authenticate(request)
     if (auth === null) return reply.code(401).send({ error: { type: 'invalid_api_key', message: 'Missing or invalid Fledge API token' } })
     const body = (request.body ?? {}) as ChatBody
-    const repoModel = auth.token.repo_id === null || typeof body.model !== 'string' ? undefined : store.repoModelForRun(auth.token.repo_id, body.model)
+    const repoModel = auth.token.repo_id === null || typeof body.model !== 'string' ? undefined : store.providerModelForRun(auth.token.repo_id, body.model)
     const target = targetFor(auth.user, config, body, repoModel)
     if ('error' in target) return reply.code(503).send({ error: { type: 'platform_model_unavailable', message: target.error } })
 

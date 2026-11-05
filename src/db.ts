@@ -133,6 +133,33 @@ export interface RepoModelRow {
   created_at: string
 }
 
+export interface ModelProviderRow {
+  id: string
+  user_id: string
+  label: string
+  base_url: string
+  key_enc: string
+  allow_private: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ProviderModelRow {
+  id: string
+  provider_id: string
+  model: string
+  label: string
+  created_at: string
+}
+
+export interface RepoProviderModelRow extends ProviderModelRow {
+  provider_label: string
+  base_url: string
+  key_enc: string
+  allow_private: number
+  is_default: number
+}
+
 export interface RepoInstanceRow {
   repo_id: string
   user_id: string
@@ -564,6 +591,35 @@ CREATE TABLE IF NOT EXISTS repo_models (
   PRIMARY KEY (repo_id, model_id)
 );
 
+CREATE TABLE IF NOT EXISTS model_providers (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  key_enc TEXT NOT NULL,
+  allow_private INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS model_providers_user_idx ON model_providers(user_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS provider_models (
+  id TEXT PRIMARY KEY,
+  provider_id TEXT NOT NULL REFERENCES model_providers(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  label TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS provider_models_provider_idx ON provider_models(provider_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS repo_model_selection (
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  provider_model_id TEXT NOT NULL REFERENCES provider_models(id) ON DELETE CASCADE,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (repo_id, provider_model_id)
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -594,14 +650,15 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 24) {
+    if (previousVersion > 25) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (24)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (25)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
     this.backfillTokenRepoIds()
+    this.migrateModelsV2()
     this.run("UPDATE repos SET job_mode = 'iterate' WHERE job_mode != 'iterate'")
     if (previousVersion < 15) {
       this.run("UPDATE repos SET repo_role = CASE WHEN permission IN ('admin', 'maintain') THEN 'maintainer' ELSE 'developer' END WHERE repo_role IS NULL")
@@ -609,12 +666,32 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 24)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 25)};`)
   }
 
   backfillTokenRepoIds(): void {
     this.run("UPDATE api_tokens SET repo_id = substr(name, 8) WHERE kind = 'instance' AND name LIKE 'flybot:%' AND repo_id IS NULL")
     this.run("UPDATE api_tokens SET repo_id = (SELECT repo_id FROM jobs WHERE jobs.id = substr(api_tokens.name, 5)) WHERE kind = 'job' AND name LIKE 'job:%' AND repo_id IS NULL")
+  }
+
+  migrateModelsV2(): void {
+    if (this.getSetting('models_v2') !== undefined) return
+    this.transaction(() => {
+      for (const row of this.all<UserModelRow>('SELECT * FROM user_models')) {
+        const providerId = `prv_${row.id}`
+        this.run('INSERT OR IGNORE INTO model_providers (id, user_id, label, base_url, key_enc, allow_private, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', providerId, row.user_id, row.label, row.base_url, row.key_enc, row.allow_private, row.created_at, row.updated_at)
+        this.run('INSERT OR IGNORE INTO provider_models (id, provider_id, model, label, created_at) VALUES (?, ?, ?, ?, ?)', row.id, providerId, row.model, row.label, row.created_at)
+      }
+      this.run("INSERT OR IGNORE INTO repo_model_selection (repo_id, provider_model_id, is_default, created_at) SELECT repo_id, model_id, is_default, ? FROM repo_models WHERE model_id IN (SELECT id FROM provider_models)", nowIso())
+      for (const user of this.all<UserRow>("SELECT * FROM users WHERE own_llm_base_url IS NOT NULL AND own_llm_base_url != '' AND own_llm_key_enc IS NOT NULL")) {
+        const providerId = `prv_legacy_${user.id}`
+        const modelId = `pvm_legacy_${user.id}`
+        const model = user.own_llm_model ?? 'default'
+        this.run('INSERT OR IGNORE INTO model_providers (id, user_id, label, base_url, key_enc, allow_private, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)', providerId, user.id, '默认', user.own_llm_base_url, user.own_llm_key_enc, nowIso(), nowIso())
+        this.run('INSERT OR IGNORE INTO provider_models (id, provider_id, model, label, created_at) VALUES (?, ?, ?, ?, ?)', modelId, providerId, model, model, nowIso())
+      }
+      this.setSetting('models_v2', nowIso())
+    })
   }
 
   private migrateColumns(): void {
@@ -1087,6 +1164,75 @@ export class Store {
 
   markRepoModelsApplied(repoId: string): void {
     this.run('UPDATE repos SET models_dirty = 0 WHERE id = ?', repoId)
+  }
+
+  listModelProviders(userId: string): ModelProviderRow[] {
+    return this.all<ModelProviderRow>('SELECT * FROM model_providers WHERE user_id = ? ORDER BY created_at ASC', userId)
+  }
+
+  modelProviderById(id: string, userId: string): ModelProviderRow | undefined {
+    return this.get<ModelProviderRow>('SELECT * FROM model_providers WHERE id = ? AND user_id = ?', id, userId)
+  }
+
+  createModelProvider(input: { id: string; userId: string; label: string; baseUrl: string; keyEnc: string; allowPrivate: boolean }): ModelProviderRow {
+    this.run(
+      'INSERT INTO model_providers (id, user_id, label, base_url, key_enc, allow_private, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      input.id, input.userId, input.label, input.baseUrl, input.keyEnc, input.allowPrivate ? 1 : 0, nowIso(), nowIso(),
+    )
+    return this.get<ModelProviderRow>('SELECT * FROM model_providers WHERE id = ?', input.id)!
+  }
+
+  deleteModelProvider(id: string, userId: string): void {
+    this.run('DELETE FROM model_providers WHERE id = ? AND user_id = ?', id, userId)
+  }
+
+  listProviderModels(providerId: string): ProviderModelRow[] {
+    return this.all<ProviderModelRow>('SELECT * FROM provider_models WHERE provider_id = ? ORDER BY created_at ASC', providerId)
+  }
+
+  listUserProviderModels(userId: string): Array<ProviderModelRow & { provider_label: string }> {
+    return this.all<ProviderModelRow & { provider_label: string }>(
+      'SELECT pm.*, mp.label AS provider_label FROM provider_models pm JOIN model_providers mp ON mp.id = pm.provider_id WHERE mp.user_id = ? ORDER BY mp.created_at ASC, pm.created_at ASC',
+      userId,
+    )
+  }
+
+  createProviderModel(input: { id: string; providerId: string; model: string; label: string }): ProviderModelRow {
+    this.run('INSERT INTO provider_models (id, provider_id, model, label, created_at) VALUES (?, ?, ?, ?, ?)', input.id, input.providerId, input.model, input.label, nowIso())
+    return this.get<ProviderModelRow>('SELECT * FROM provider_models WHERE id = ?', input.id)!
+  }
+
+  deleteProviderModel(id: string, userId: string): boolean {
+    const row = this.get<{ id: string }>('SELECT pm.id FROM provider_models pm JOIN model_providers mp ON mp.id = pm.provider_id WHERE pm.id = ? AND mp.user_id = ?', id, userId)
+    if (row === undefined) return false
+    this.run('DELETE FROM provider_models WHERE id = ?', id)
+    return true
+  }
+
+  listRepoModelSelection(repoId: string): RepoProviderModelRow[] {
+    return this.all<RepoProviderModelRow>(
+      'SELECT pm.*, mp.label AS provider_label, mp.base_url, mp.key_enc, mp.allow_private, rms.is_default FROM repo_model_selection rms JOIN provider_models pm ON pm.id = rms.provider_model_id JOIN model_providers mp ON mp.id = pm.provider_id WHERE rms.repo_id = ? ORDER BY mp.created_at ASC, pm.created_at ASC',
+      repoId,
+    )
+  }
+
+  providerModelForRun(repoId: string, alias: string): RepoProviderModelRow | undefined {
+    return this.get<RepoProviderModelRow>(
+      'SELECT pm.*, mp.label AS provider_label, mp.base_url, mp.key_enc, mp.allow_private, rms.is_default FROM repo_model_selection rms JOIN provider_models pm ON pm.id = rms.provider_model_id JOIN model_providers mp ON mp.id = pm.provider_id WHERE rms.repo_id = ? AND pm.id = ?',
+      repoId, alias,
+    )
+  }
+
+  setRepoModelSelection(repoId: string, providerModelIds: string[], defaultId: string | null): void {
+    const unique = [...new Set(providerModelIds)]
+    const chosen = defaultId !== null && unique.includes(defaultId) ? defaultId : unique[0] ?? null
+    this.transaction(() => {
+      this.run('DELETE FROM repo_model_selection WHERE repo_id = ?', repoId)
+      for (const modelId of unique) {
+        this.run('INSERT INTO repo_model_selection (repo_id, provider_model_id, is_default, created_at) VALUES (?, ?, ?, ?)', repoId, modelId, modelId === chosen ? 1 : 0, nowIso())
+      }
+      this.run('UPDATE repos SET models_dirty = 1 WHERE id = ?', repoId)
+    })
   }
 
   createSession(input: { idHash: string; userId: string; expiresAt: string; ip: string | null; userAgent: string | null }): void {

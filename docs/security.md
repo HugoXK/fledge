@@ -250,8 +250,9 @@ User model base URLs are validated before saving and before use:
 - Credentials in the URL are rejected.
 - Model connection keys are encrypted with the platform key and never rendered;
   a repository can only select connections owned by the same user.
-- A private URL whose connection test fails is still saved with a warning so a
-  model that is only reachable from a restricted network can be configured.
+- A model is saved only after a successful 1-token test from Fledge. A failed
+  test returns an error and nothing is saved; the gateway host must be able to
+  reach the address.
 
 DNS rebinding is not fully mitigated; deploy behind an egress policy if users
 are untrusted.

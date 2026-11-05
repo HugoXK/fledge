@@ -314,13 +314,14 @@ preflight clears it.
 
 ### Model connections
 
-Settings owns a per-user catalog of OpenAI-compatible model connections
-(`user_models`), each with an encrypted key and an optional private/HTTP flag.
-A repository only selects which catalog entries it may use and which is default
-(`repo_models`). The instance patch lists the selected alias ids as DSH models,
-and the gateway maps an alias back to its provider, key and underlying model.
-Applying a changed selection rewrites the patch and restarts the container only
-when no job is active.
+Settings owns a per-user set of OpenAI-compatible providers. Each provider has
+an encrypted key and an optional private/HTTP flag, and can hold multiple models
+(`provider_models`). A repository selects which provider models it may use and
+which is default (`repo_model_selection`). Adding a model runs a 1-token test
+from Fledge and is refused on failure. The instance patch groups the selected
+models under their providers as DSH models, and the gateway maps an alias back
+to its provider, key and underlying model. Applying a changed selection rewrites
+the patch and restarts the container only when no job is active.
 
 ### Per-job cost, evidence and metrics
 
