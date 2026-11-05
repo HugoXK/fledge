@@ -236,7 +236,8 @@ test('job detail shows evidence and can retry a failed job', async () => {
     assert.equal(repoPage.statusCode, 200)
     assert.match(repoPage.body, /data-goal-template/)
     assert.match(repoPage.body, /goal-settings/)
-    assert.match(repoPage.body, /data-confirm="删除这个仓库/)
+    assert.match(repoPage.body, /confirmName/)
+    assert.match(repoPage.body, /危险操作/)
     assert.doesNotMatch(repoPage.body, /onsubmit=|onclick=/)
     const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${job.id}`, headers: { cookie } })
     assert.equal(page.statusCode, 200)
@@ -503,7 +504,7 @@ test('deleting a repository revokes its active job token', async () => {
       method: 'POST',
       url: `/repos/${repo.id}/delete`,
       headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
-      payload: formBody({ csrf }),
+      payload: formBody({ csrf, confirmName: 'dt' }),
     })
     assert.equal(deleted.statusCode, 302)
     assert.equal(store.getRepo(repo.id), undefined)
@@ -762,6 +763,31 @@ test('a plan must be approved by a maintainer before execution', async () => {
     assert.equal(contexts.length, 1)
     assert.match(contexts[0]!.goal, /Allowed paths: src\//)
     assert.match(contexts[0]!.goal, /Forbidden paths: \.github\//)
+  } finally {
+    await built.close()
+  }
+})
+
+test('a disabled repository shows the lifecycle banner and can be enabled again', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'lifecycle-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_lifecycle', userId: user.id, owner: 'o', name: 'lifecycle', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    store.updateRepo(repo.id, { enabled: 0 })
+    const { cookie, csrf } = sessionFor(built, user)
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /仓库已停用/)
+    assert.match(page.body, /仓库不可运行/)
+    const enabled = await built.app.inject({ method: 'POST', url: `/repos/${repo.id}/enable`, headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, payload: formBody({ csrf }) })
+    assert.equal(enabled.statusCode, 302)
+    assert.equal(store.getRepo(repo.id)?.enabled, 1)
+    const disabled = await built.app.inject({ method: 'POST', url: `/repos/${repo.id}/disable`, headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, payload: formBody({ csrf }) })
+    assert.equal(disabled.statusCode, 302)
+    assert.equal(store.getRepo(repo.id)?.enabled, 0)
+    assert.equal(store.getRepo(repo.id)?.auto_iterate, 0)
   } finally {
     await built.close()
   }

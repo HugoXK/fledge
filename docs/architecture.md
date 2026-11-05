@@ -280,6 +280,15 @@ job is retried, so a new job can continue from the last known point instead of
 starting from scratch. The add/settings goal forms also offer four task
 templates (bug, tests, docs, dependency) that fill the goal text.
 
+### Repository lifecycle
+
+The repository page has an explicit lifecycle: an enabled/disabled flag, the
+FlyBot instance state, and the credential state. A top banner explains when the
+repository is disabled, FlyBot is stopped or the token is invalid, and disables
+Run/Plan/Review until the state is fixed. A danger zone offers stop scheduling,
+stop FlyBot and delete; deletion requires typing the repository name and removes
+the Fledge connection, instance, jobs and tokens without touching GitHub.
+
 ### Pull-request delivery
 
 Each repository page has a delivery list of iterate jobs with open pull requests,
