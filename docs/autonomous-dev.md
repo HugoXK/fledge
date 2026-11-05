@@ -187,8 +187,11 @@ Not run: Docker, real SMTP
 - A new commit voids the PASS.
 - A `hold` label blocks the queue.
 
-`main` is protected by required `ci-ok`, `review-gate` and `pr-lint`, conversation resolution
-and a merge queue. Never bypass these with a direct push or an admin merge.
+`main` is protected by required `ci-ok`, `review-gate` and `pr-lint` plus
+conversation resolution; admins are enforced. This repository has no merge
+queue available through its API plan, so auto-merge performs the squash merge
+once the required checks pass. Never bypass these with a direct push or an
+admin merge.
 
 ## Release
 
