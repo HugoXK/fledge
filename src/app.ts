@@ -1125,6 +1125,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     store.audit(viewer.user.id, 'team.answer', `${repo.owner}/${repo.name} question=${text('questionId').slice(0, 80)}`)
     store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: 'answer' })
+    store.markQuestionNotificationsRead(viewer.user.id)
     inboxCache.delete(viewer.user.id)
     if (wantsJson) return { ok: true }
     return reply.redirect(withMessage('notice', t('答案已发送。', 'Answer sent.')))
@@ -1222,6 +1223,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     store.audit(viewer.user.id, 'team.answer', `${repo.owner}/${repo.name} question=${questionId.slice(0, 80)}`)
     store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: 'answer' })
+    store.markQuestionNotificationsRead(viewer.user.id)
     inboxCache.delete(viewer.user.id)
     return { ok: true }
   })

@@ -1471,6 +1471,10 @@ export class Store {
     this.run('UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL', nowIso(), userId)
   }
 
+  markQuestionNotificationsRead(userId: string): void {
+    this.run("UPDATE notifications SET read_at = ? WHERE user_id = ? AND kind = 'job' AND message LIKE '%团队提问%' AND read_at IS NULL", nowIso(), userId)
+  }
+
   audit(userId: string | null, action: string, detail: string | null = null): void {
     this.run('INSERT INTO audit_log (at, user_id, action, detail) VALUES (?, ?, ?, ?)', nowIso(), userId, action, detail)
   }
