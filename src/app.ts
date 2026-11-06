@@ -1485,6 +1485,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent(kind === 'plan' ? '计划任务已排队。' : '工作项任务已排队。')}`)
   })
 
+  app.post('/repos/:id/delivery/merge-clean', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('只有 maintainer 可以批量合并 PR。')}#delivery`)
+    const result = await jobs.mergeCleanPrs(repo.id)
+    store.audit(viewer.user.id, 'delivery.merge_clean', `${repo.id} merged=${result.merged.length} skipped=${result.skipped.length}`)
+    const message = `已合并 ${result.merged.length} 个 PR${result.skipped.length === 0 ? '' : `，跳过 ${result.skipped.length} 个（检查/保护未通过）`}`
+    return reply.redirect(`/repos/${repo.id}?${result.merged.length > 0 ? 'notice' : 'error'}=${encodeURIComponent(message)}#delivery`)
+  })
+
   app.post('/repos/:id/work/:workItemId/scope', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const item = store.getWorkItem(String((request.params as Record<string, string>).workItemId))
