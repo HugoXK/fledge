@@ -223,9 +223,9 @@ export interface JobRow {
   plan_allow_paths: string | null
   plan_deny_paths: string | null
   base_sha: string | null
+  last_callback_at: string | null
   created_at: string
   started_at: string | null
-  last_callback_at: string | null
   finished_at: string | null
 }
 
@@ -302,6 +302,67 @@ export interface AuditRow {
   user_id: string | null
   action: string
   detail: string | null
+}
+
+export interface JobEventRow {
+  id: number
+  at: string
+  job_id: string
+  repo_id: string | null
+  user_id: string | null
+  kind: string
+  role: string | null
+  step: string | null
+  meta: string | null
+}
+
+export interface ArtifactVersionRow {
+  id: string
+  artifact: string
+  version: number
+  hash: string
+  content: string
+  status: string
+  evidence_json: string | null
+  created_at: string
+  promoted_at: string | null
+}
+
+export interface EvaluationRow {
+  id: string
+  artifact_id: string
+  dataset: string
+  metric: string
+  value: number
+  ci_low: number | null
+  ci_high: number | null
+  samples: number
+  created_at: string
+}
+
+export interface PromotionRow {
+  id: string
+  artifact_id: string
+  decision: string
+  reason: string | null
+  evidence_hash: string | null
+  approved_by: string | null
+  created_at: string
+}
+
+export interface AlertView {
+  kind: string
+  level: 'info' | 'warning' | 'critical'
+  repoId?: string
+  repoLabel?: string
+  jobId?: string
+  prUrl?: string
+  minutes?: number
+  hours?: number
+  spentCny?: number
+  budgetCny?: number
+  state?: string
+  message: string
 }
 
 const SCHEMA = `
@@ -642,6 +703,58 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS job_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  repo_id TEXT,
+  user_id TEXT,
+  kind TEXT NOT NULL,
+  role TEXT,
+  step TEXT,
+  meta TEXT
+);
+CREATE INDEX IF NOT EXISTS job_events_job_idx ON job_events(job_id, id DESC);
+CREATE INDEX IF NOT EXISTS job_events_at_idx ON job_events(at);
+
+CREATE TABLE IF NOT EXISTS artifact_versions (
+  id TEXT PRIMARY KEY,
+  artifact TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  hash TEXT NOT NULL,
+  content TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'candidate',
+  evidence_json TEXT,
+  created_at TEXT NOT NULL,
+  promoted_at TEXT,
+  UNIQUE(artifact, version)
+);
+CREATE INDEX IF NOT EXISTS artifact_versions_artifact_idx ON artifact_versions(artifact, version DESC);
+
+CREATE TABLE IF NOT EXISTS evaluations (
+  id TEXT PRIMARY KEY,
+  artifact_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE CASCADE,
+  dataset TEXT NOT NULL,
+  metric TEXT NOT NULL,
+  value REAL NOT NULL,
+  ci_low REAL,
+  ci_high REAL,
+  samples INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS evaluations_artifact_idx ON evaluations(artifact_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS promotions (
+  id TEXT PRIMARY KEY,
+  artifact_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE CASCADE,
+  decision TEXT NOT NULL,
+  reason TEXT,
+  evidence_hash TEXT,
+  approved_by TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS promotions_artifact_idx ON promotions(artifact_id, created_at DESC);
+
 CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS audit_log_user_idx ON audit_log(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS audit_log_at_idx ON audit_log(at);
@@ -651,10 +764,26 @@ CREATE INDEX IF NOT EXISTS repos_review_idx ON repos(enabled, reviewer_enabled, 
 CREATE INDEX IF NOT EXISTS jobs_user_pr_idx ON jobs(user_id, pr_url);
 CREATE INDEX IF NOT EXISTS jobs_created_idx ON jobs(created_at);
 CREATE INDEX IF NOT EXISTS events_at_idx ON events(at);
+CREATE INDEX IF NOT EXISTS quota_ledger_at_idx ON quota_ledger(at);
+CREATE INDEX IF NOT EXISTS work_items_merged_idx ON work_items(merged_at);
 `
 
 function clean(params: unknown[]): unknown[] {
   return params.map((value) => (value === undefined ? null : value))
+}
+
+function median(values: number[]): number | null {
+  if (values.length === 0) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  const middle = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 0 ? (sorted[middle - 1]! + sorted[middle]!) / 2 : sorted[middle]!
+}
+
+function durationMs(start: string | null, end: string | null): number | null {
+  if (start === null || end === null) return null
+  const a = Date.parse(start)
+  const b = Date.parse(end)
+  return Number.isFinite(a) && Number.isFinite(b) && b >= a ? b - a : null
 }
 
 export class Store {
@@ -667,13 +796,14 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 27) {
+    if (previousVersion > 28) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (27)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (28)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
+    this.migrateIndexes()
     this.backfillTokenRepoIds()
     this.migrateModelsV2()
     this.run("UPDATE repos SET job_mode = 'iterate' WHERE job_mode != 'iterate'")
@@ -683,7 +813,12 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 27)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 28)};`)
+  }
+
+  migrateIndexes(): void {
+    this.run('CREATE INDEX IF NOT EXISTS quota_ledger_repo_idx ON quota_ledger(repo_id, at DESC)')
+    this.run('CREATE INDEX IF NOT EXISTS jobs_pr_state_idx ON jobs(pr_state, created_at DESC)')
   }
 
   backfillTokenRepoIds(): void {
@@ -1058,6 +1193,122 @@ export class Store {
     return Number(row?.n ?? 0)
   }
 
+  recordJobEvent(input: {
+    jobId: string
+    repoId?: string | null
+    userId?: string | null
+    kind: string
+    role?: string | null
+    step?: string | null
+    meta?: string | null
+    at?: string
+  }): void {
+    this.run(
+      'INSERT INTO job_events (at, job_id, repo_id, user_id, kind, role, step, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      input.at ?? nowIso(),
+      input.jobId,
+      input.repoId ?? null,
+      input.userId ?? null,
+      input.kind,
+      input.role ?? null,
+      input.step ?? null,
+      input.meta === undefined || input.meta === null ? null : input.meta.slice(0, 4000),
+    )
+  }
+
+  listJobEvents(jobId: string, limit = 200): JobEventRow[] {
+    return this.all<JobEventRow>('SELECT * FROM job_events WHERE job_id = ? ORDER BY id DESC LIMIT ?', jobId, limit)
+  }
+
+  createArtifactVersion(input: {
+    id: string
+    artifact: string
+    version: number
+    hash: string
+    content: string
+    status?: string
+    evidenceJson?: string | null
+  }): ArtifactVersionRow {
+    this.run(
+      'INSERT INTO artifact_versions (id, artifact, version, hash, content, status, evidence_json, created_at, promoted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)',
+      input.id,
+      input.artifact,
+      input.version,
+      input.hash,
+      input.content,
+      input.status ?? 'candidate',
+      input.evidenceJson ?? null,
+      nowIso(),
+    )
+    return this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', input.id)!
+  }
+
+  listArtifactVersions(artifact?: string, limit = 50): ArtifactVersionRow[] {
+    return artifact === undefined
+      ? this.all<ArtifactVersionRow>('SELECT * FROM artifact_versions ORDER BY created_at DESC LIMIT ?', limit)
+      : this.all<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE artifact = ? ORDER BY version DESC LIMIT ?', artifact, limit)
+  }
+
+  promoteArtifactVersion(id: string, status = 'promoted'): void {
+    this.run('UPDATE artifact_versions SET status = ?, promoted_at = ? WHERE id = ?', status, nowIso(), id)
+  }
+
+  createEvaluation(input: {
+    id: string
+    artifactId: string
+    dataset: string
+    metric: string
+    value: number
+    ciLow?: number | null
+    ciHigh?: number | null
+    samples?: number
+  }): EvaluationRow {
+    this.run(
+      'INSERT INTO evaluations (id, artifact_id, dataset, metric, value, ci_low, ci_high, samples, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      input.id,
+      input.artifactId,
+      input.dataset,
+      input.metric,
+      input.value,
+      input.ciLow ?? null,
+      input.ciHigh ?? null,
+      input.samples ?? 0,
+      nowIso(),
+    )
+    return this.get<EvaluationRow>('SELECT * FROM evaluations WHERE id = ?', input.id)!
+  }
+
+  listEvaluations(artifactId: string): EvaluationRow[] {
+    return this.all<EvaluationRow>('SELECT * FROM evaluations WHERE artifact_id = ? ORDER BY created_at DESC', artifactId)
+  }
+
+  createPromotion(input: {
+    id: string
+    artifactId: string
+    decision: 'promote' | 'defer' | 'reject' | 'rollback'
+    reason?: string | null
+    evidenceHash?: string | null
+    approvedBy?: string | null
+  }): PromotionRow {
+    this.run(
+      'INSERT INTO promotions (id, artifact_id, decision, reason, evidence_hash, approved_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      input.id,
+      input.artifactId,
+      input.decision,
+      input.reason ?? null,
+      input.evidenceHash ?? null,
+      input.approvedBy ?? null,
+      nowIso(),
+    )
+    return this.get<PromotionRow>('SELECT * FROM promotions WHERE id = ?', input.id)!
+  }
+
+  listPromotions(artifactId?: string): PromotionRow[] {
+    return artifactId === undefined
+      ? this.all<PromotionRow>('SELECT * FROM promotions ORDER BY created_at DESC')
+      : this.all<PromotionRow>('SELECT * FROM promotions WHERE artifact_id = ? ORDER BY created_at DESC', artifactId)
+  }
+
   teamMetrics(sinceIso: string): {
     jobs: number
     avgRoles: number
@@ -1108,17 +1359,209 @@ export class Store {
   } {
     const count = (sql: string, ...params: Array<string | number>): number => Number(this.get<{ n: number }>(sql, ...params)?.n ?? 0)
     return {
-      users: count('SELECT COUNT(*) AS n FROM users'),
-      approved: count("SELECT COUNT(*) AS n FROM users WHERE status = 'approved'"),
-      repos: count('SELECT COUNT(*) AS n FROM repos'),
-      jobs: count('SELECT COUNT(*) AS n FROM jobs'),
-      succeeded: count("SELECT COUNT(*) AS n FROM jobs WHERE status = 'succeeded'"),
-      failed: count("SELECT COUNT(*) AS n FROM jobs WHERE status = 'failed'"),
-      usersWithJobs: count('SELECT COUNT(DISTINCT user_id) AS n FROM jobs'),
-      usersWithPr: count("SELECT COUNT(DISTINCT user_id) AS n FROM jobs WHERE pr_url IS NOT NULL"),
+      users: count('SELECT COUNT(*) AS n FROM users WHERE created_at >= ?', sinceIso),
+      approved: count("SELECT COUNT(*) AS n FROM users WHERE status = 'approved' AND created_at >= ?", sinceIso),
+      repos: count('SELECT COUNT(*) AS n FROM repos WHERE created_at >= ?', sinceIso),
+      jobs: count('SELECT COUNT(*) AS n FROM jobs WHERE created_at >= ?', sinceIso),
+      succeeded: count("SELECT COUNT(*) AS n FROM jobs WHERE status = 'succeeded' AND created_at >= ?", sinceIso),
+      failed: count("SELECT COUNT(*) AS n FROM jobs WHERE status = 'failed' AND created_at >= ?", sinceIso),
+      usersWithJobs: count('SELECT COUNT(DISTINCT user_id) AS n FROM jobs WHERE created_at >= ?', sinceIso),
+      usersWithPr: count("SELECT COUNT(DISTINCT user_id) AS n FROM jobs WHERE pr_url IS NOT NULL AND created_at >= ?", sinceIso),
       costUsd: Number(this.get<{ n: number | null }>("SELECT SUM(cost_usd) AS n FROM jobs WHERE created_at >= ?", sinceIso)?.n ?? 0),
       events: this.all<{ name: string; n: number }>('SELECT name, COUNT(*) AS n FROM events WHERE at >= ? GROUP BY name ORDER BY n DESC', sinceIso),
     }
+  }
+
+  deliveryMetrics(sinceIso: string): {
+    jobs: number
+    succeeded: number
+    failed: number
+    successRate: number
+    prs: number
+    merged: number
+    mergeRate: number
+    changesRequested: number
+    reviewAverage: number | null
+    reviewCount: number
+    medianJobMs: number | null
+    medianMergeMs: number | null
+    medianReviewMs: number | null
+  } {
+    const jobs = this.all<JobRow>('SELECT * FROM jobs WHERE created_at >= ?', sinceIso)
+    const succeeded = jobs.filter((job) => job.status === 'succeeded').length
+    const failed = jobs.filter((job) => job.status === 'failed').length
+    const prJobs = jobs.filter((job) => job.pr_url !== null)
+    const merged = jobs.filter((job) => job.pr_state === 'merged').length
+    const reviewScores = jobs.flatMap((job) => (job.kind === 'review' && job.review_score !== null ? [job.review_score] : []))
+    const jobDurations = jobs.flatMap((job) => {
+      const value = durationMs(job.started_at ?? job.created_at, job.finished_at)
+      return value === null ? [] : [value]
+    })
+    const reviewDurations = jobs.flatMap((job) => {
+      if (job.kind !== 'review') return []
+      const value = durationMs(job.started_at ?? job.created_at, job.finished_at)
+      return value === null ? [] : [value]
+    })
+    const mergedItems = this.all<WorkItemRow>('SELECT * FROM work_items WHERE merged_at IS NOT NULL AND merged_at >= ?', sinceIso)
+    const mergeDurations = mergedItems.flatMap((item) => {
+      const value = durationMs(item.created_at, item.merged_at)
+      return value === null ? [] : [value]
+    })
+    return {
+      jobs: jobs.length,
+      succeeded,
+      failed,
+      successRate: jobs.length === 0 ? 0 : Math.round((succeeded / jobs.length) * 1000) / 10,
+      prs: prJobs.length,
+      merged,
+      mergeRate: prJobs.length === 0 ? 0 : Math.round((merged / prJobs.length) * 1000) / 10,
+      changesRequested: Number(this.get<{ n: number }>("SELECT COUNT(*) AS n FROM work_items WHERE state = 'changes_requested' AND updated_at >= ?", sinceIso)?.n ?? 0),
+      reviewAverage: reviewScores.length === 0 ? null : Math.round((reviewScores.reduce((sum, score) => sum + score, 0) / reviewScores.length) * 10) / 10,
+      reviewCount: reviewScores.length,
+      medianJobMs: median(jobDurations),
+      medianMergeMs: median(mergeDurations),
+      medianReviewMs: median(reviewDurations),
+    }
+  }
+
+  dailyMetrics(sinceIso: string, limit = 30): Array<{ day: string; jobs: number; succeeded: number; failed: number; merged: number }> {
+    return this.all<{ day: string; jobs: number; succeeded: number; failed: number; merged: number }>(
+      `SELECT substr(created_at, 1, 10) AS day,
+              COUNT(*) AS jobs,
+              SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
+              SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+              SUM(CASE WHEN pr_state = 'merged' THEN 1 ELSE 0 END) AS merged
+         FROM jobs
+        WHERE created_at >= ?
+        GROUP BY day
+        ORDER BY day DESC
+        LIMIT ?`,
+      sinceIso,
+      limit,
+    ).map((row) => ({ day: row.day, jobs: Number(row.jobs), succeeded: Number(row.succeeded), failed: Number(row.failed), merged: Number(row.merged) }))
+  }
+
+  personalMetrics(userId: string, sinceIso: string): {
+    repos: number
+    jobs: number
+    succeeded: number
+    failed: number
+    prs: number
+    merged: number
+    costUsd: number
+    openWorkItems: number
+    lastJobAt: string | null
+  } {
+    const count = (sql: string): number => Number(this.get<{ n: number }>(sql, userId, sinceIso)?.n ?? 0)
+    const last = this.get<{ at: string | null }>('SELECT MAX(created_at) AS at FROM jobs WHERE user_id = ? AND created_at >= ?', userId, sinceIso)
+    return {
+      repos: Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM repos WHERE user_id = ?', userId)?.n ?? 0),
+      jobs: count('SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND created_at >= ?'),
+      succeeded: count("SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND status = 'succeeded' AND created_at >= ?"),
+      failed: count("SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND status = 'failed' AND created_at >= ?"),
+      prs: count('SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND pr_url IS NOT NULL AND created_at >= ?'),
+      merged: count("SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND pr_state = 'merged' AND created_at >= ?"),
+      costUsd: Number(this.get<{ n: number | null }>('SELECT SUM(cost_usd) AS n FROM quota_ledger WHERE user_id = ? AND at >= ?', userId, sinceIso)?.n ?? 0),
+      openWorkItems: Number(this.get<{ n: number }>("SELECT COUNT(*) AS n FROM work_items WHERE user_id = ? AND state NOT IN ('merged', 'closed')", userId)?.n ?? 0),
+      lastJobAt: last?.at ?? null,
+    }
+  }
+
+  repoCostMetrics(sinceIso: string, limit = 20): Array<{ repoId: string; label: string; costUsd: number; calls: number }> {
+    return this.all<{ repo_id: string; owner: string; name: string; total: number; calls: number }>(
+      `SELECT q.repo_id AS repo_id, COALESCE(r.upstream_owner, r.owner, '') AS owner, COALESCE(r.upstream_name, r.name, '') AS name,
+              SUM(q.cost_usd) AS total, COUNT(*) AS calls
+         FROM quota_ledger q
+         LEFT JOIN repos r ON r.id = q.repo_id
+        WHERE q.at >= ? AND q.repo_id IS NOT NULL
+        GROUP BY q.repo_id
+        ORDER BY total DESC
+        LIMIT ?`,
+      sinceIso,
+      limit,
+    ).map((row) => ({ repoId: row.repo_id, label: `${row.owner}/${row.name}`.replace(/^\//, ''), costUsd: Number(row.total ?? 0), calls: Number(row.calls ?? 0) }))
+  }
+
+  modelCostMetrics(sinceIso: string, limit = 20): Array<{ model: string; costUsd: number; calls: number }> {
+    const rows = this.all<{ meta: string | null; cost_usd: number }>('SELECT meta, cost_usd FROM quota_ledger WHERE at >= ?', sinceIso)
+    const byModel = new Map<string, { costUsd: number; calls: number }>()
+    for (const row of rows) {
+      let model = 'unknown'
+      if (row.meta !== null) {
+        try {
+          const parsed = JSON.parse(row.meta) as { model?: unknown }
+          if (typeof parsed.model === 'string' && parsed.model.trim() !== '') model = parsed.model.trim().slice(0, 120)
+        } catch {}
+      }
+      const current = byModel.get(model) ?? { costUsd: 0, calls: 0 }
+      current.costUsd += Number(row.cost_usd ?? 0)
+      current.calls += 1
+      byModel.set(model, current)
+    }
+    return [...byModel.entries()]
+      .map(([model, value]) => ({ model, ...value }))
+      .sort((a, b) => b.costUsd - a.costUsd)
+      .slice(0, limit)
+  }
+
+  alerts(input: { now?: string; stallMinutes?: number; prAgeHours?: number; usdCny?: number; budgetRatio?: number; userId?: string } = {}): AlertView[] {
+    const now = input.now ?? nowIso()
+    const nowMs = Date.parse(now)
+    const stallMs = (input.stallMinutes ?? 30) * 60_000
+    const prAgeMs = (input.prAgeHours ?? 24) * 3_600_000
+    const ratio = input.budgetRatio ?? 0.8
+    const usdCny = input.usdCny ?? 1
+    const alerts: AlertView[] = []
+    const repos = input.userId === undefined
+      ? this.all<RepoRow>('SELECT * FROM repos')
+      : this.all<RepoRow>('SELECT * FROM repos WHERE user_id = ?', input.userId)
+    const repoLabels = new Map(repos.map((repo) => [repo.id, `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`]))
+    const running = input.userId === undefined
+      ? this.all<JobRow>("SELECT * FROM jobs WHERE status = 'running'")
+      : this.all<JobRow>("SELECT * FROM jobs WHERE status = 'running' AND user_id = ?", input.userId)
+    for (const job of running) {
+      const last = job.last_callback_at ?? job.started_at ?? job.created_at
+      const at = Date.parse(last)
+      if (!Number.isFinite(at)) continue
+      const minutes = Math.round((nowMs - at) / 60_000)
+      if (nowMs - at >= stallMs * 2) {
+        alerts.push({ kind: 'job_stalled', level: 'critical', repoId: job.repo_id, repoLabel: repoLabels.get(job.repo_id), jobId: job.id, minutes, message: `job ${job.id} has no callback for ${minutes}m` })
+      } else if (nowMs - at >= stallMs) {
+        alerts.push({ kind: 'job_slow', level: 'warning', repoId: job.repo_id, repoLabel: repoLabels.get(job.repo_id), jobId: job.id, minutes, message: `job ${job.id} has no callback for ${minutes}m` })
+      }
+    }
+    const prJobs = input.userId === undefined
+      ? this.all<JobRow>("SELECT * FROM jobs WHERE pr_url IS NOT NULL AND (pr_state IS NULL OR pr_state = 'open')")
+      : this.all<JobRow>("SELECT * FROM jobs WHERE user_id = ? AND pr_url IS NOT NULL AND (pr_state IS NULL OR pr_state = 'open')", input.userId)
+    for (const job of prJobs) {
+      const at = Date.parse(job.created_at)
+      if (!Number.isFinite(at) || nowMs - at < prAgeMs) continue
+      const hours = Math.round((nowMs - at) / 3_600_000)
+      alerts.push({ kind: 'pr_stale', level: 'warning', repoId: job.repo_id, repoLabel: repoLabels.get(job.repo_id), jobId: job.id, prUrl: job.pr_url ?? undefined, hours, message: `PR ${job.pr_url} has been open for ${hours}h` })
+    }
+    const since = new Date(nowMs - 30 * 86_400_000).toISOString()
+    for (const repo of repos) {
+      const label = repoLabels.get(repo.id) ?? repo.id
+      if (repo.credential_state !== 'ok') {
+        alerts.push({ kind: 'credential_invalid', level: 'critical', repoId: repo.id, repoLabel: label, state: repo.credential_state, message: `${label}: GitHub credential is ${repo.credential_state}` })
+      }
+      if (repo.monthly_budget_cny > 0) {
+        const spentCny = this.repoUsageSince(repo.id, since) * usdCny
+        if (spentCny >= repo.monthly_budget_cny * ratio) {
+          alerts.push({
+            kind: 'budget_near_limit',
+            level: spentCny >= repo.monthly_budget_cny ? 'critical' : 'warning',
+            repoId: repo.id,
+            repoLabel: label,
+            spentCny,
+            budgetCny: repo.monthly_budget_cny,
+            message: `${label}: spent ${spentCny.toFixed(2)} of ${repo.monthly_budget_cny.toFixed(2)} CNY in 30 days`,
+          })
+        }
+      }
+    }
+    const rank: Record<string, number> = { critical: 0, warning: 1, info: 2 }
+    return alerts.sort((a, b) => (rank[a.level] ?? 9) - (rank[b.level] ?? 9))
   }
 
   setUserGithubToken(id: string, encrypted: string | null, scopes = ''): void {
@@ -1736,6 +2179,7 @@ export class Store {
     this.run('DELETE FROM notifications WHERE read_at IS NOT NULL AND created_at < ?', cutoff(30))
     this.run('DELETE FROM notifications WHERE read_at IS NULL AND created_at < ?', cutoff(90))
     this.run('DELETE FROM events WHERE at < ?', cutoff(90))
+    this.run('DELETE FROM job_events WHERE at < ?', cutoff(365))
     this.run("DELETE FROM jobs WHERE status IN ('succeeded', 'failed', 'quota_exhausted') AND finished_at IS NOT NULL AND finished_at < ?", cutoff(365))
     this.run('DELETE FROM audit_log WHERE at < ?', cutoff(365))
     this.run('DELETE FROM quota_ledger WHERE at < ?', cutoff(730))

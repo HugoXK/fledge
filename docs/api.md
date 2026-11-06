@@ -26,11 +26,12 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/apply` | session + CSRF | Submit the signed application once |
 | GET | `/apply/status` | session | Live queue position and status |
 | GET | `/api/application` | session | JSON status/queue for the status page |
-| GET | `/dashboard` | approved + session | Repos, quota, jobs |
+| GET | `/dashboard` | approved + session | Repos, quota, jobs, personal delivery metrics (`?window=7 or 30`) |
 | GET | `/console` | approved + session | Workspace overview (repos, jobs, quota) |
 | POST | `/repos` | approved + CSRF | Add an upstream repository; Fledge checks or creates the user's fork |
-| GET | `/repos/:id` | owner | Repo detail, including the selected role and allowed roles |
+| GET | `/repos/:id` | owner | Repo detail, including the selected role, delivery board and allowed roles (`?workState=...` filters the work-item list) |
 | GET | `/readyz` | public | Database and per-repository instance readiness summary |
+| GET | `/api/read/metrics` | approved | Read-only metrics: a super admin gets the global window, users get their own personal window (`?window=7 or 30`) |
 | POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job; plan-first repositories enqueue a plan |
 | POST | `/repos/:id/work` | owner + CSRF | Create a work item |
 | POST | `/repos/:id/work/:workItemId/state` | owner + CSRF | Move a work item through the triage/assignment/review state machine |
@@ -71,7 +72,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/repos/:id/settings` | owner + CSRF | Goal, target branch, role, plan-first, path constraints, merge method/protection, stage mode, budgets, model selection, bot models, cadence, enabled, reviewer interval |
 | POST | `/repos/:id/delete` | owner + CSRF | Delete the Fledge connection after typing the repository name; GitHub is untouched |
 | GET | `/settings` | approved | Account, model providers and models, API tokens |
-| GET | `/admin/metrics` | superadmin | Product funnel, team participation, attribution and stage metrics |
+| GET | `/admin/metrics` | superadmin | Product funnel, delivery efficiency, daily trend, cost breakdown, actionable alerts, team participation, attribution and stage metrics (`?window=7 or 30`) |
 | POST | `/settings/model` | approved + CSRF | Save/clear own model |
 | POST | `/settings/notifications` | approved + CSRF | Notification email, job/question mail, daily digest, test mail |
 | POST | `/settings/tokens` | approved + CSRF | Create a `flg_` token |
@@ -86,6 +87,16 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/admin/simulation` | owner + CSRF | Toggle the normal-user UI preview |
 | GET | `/approve/:token` | token | Confirmation page |
 | POST | `/approve/:token` | token | Apply approve/reject |
+
+## Read-only metrics
+
+### `GET /api/read/metrics`
+
+A session-authenticated, read-only dashboard contract for an external control
+room. `window=7` (default) or `window=30` selects the time window. A normal user
+receives only `personal` metrics for their own account. A super admin
+receives the global `product`, `delivery`, `daily`, `team`, `repoCosts`, `modelCosts`
+and `alerts` sections. The route never mutates state.
 
 ## Email notifications
 

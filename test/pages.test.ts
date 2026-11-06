@@ -6,7 +6,7 @@ import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
-import { appReposPage, dashboardPage, landingPage, repoPage } from '../src/views/pages.js'
+import { appReposPage, dashboardPage, jobPage, landingPage, metricsPage, repoPage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
 import { localizeMessage } from '../src/i18n.js'
 import { encryptSecret } from '../src/lib/secrets.js'
@@ -790,5 +790,152 @@ test('a disabled repository shows the lifecycle banner and can be enabled again'
     assert.equal(store.getRepo(repo.id)?.auto_iterate, 0)
   } finally {
     await built.close()
+  }
+})
+
+test('the dashboard shows a personal delivery card with a selectable window', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'personal-dashboard', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const page = dashboardPage({
+      config,
+      locale: 'en',
+      viewer,
+      repos: [],
+      jobs: [],
+      notifications: [],
+      windowDays: 30,
+      personal: { repos: 2, jobs: 10, succeeded: 8, failed: 2, prs: 6, merged: 4, costUsd: 0.5, openWorkItems: 1, lastJobAt: new Date().toISOString() },
+      alerts: [{ kind: 'job_stalled', level: 'critical', repoId: 'r1', repoLabel: 'o/r', jobId: 'j1', minutes: 45, message: 'job j1 has no callback for 45m' }],
+    })
+    assert.match(page, /MY DELIVERY/)
+    assert.match(page, /Delivery and cost/)
+    assert.match(page, /30 days/)
+    assert.match(page, />10</)
+    assert.match(page, /80%/)
+    assert.match(page, /Needs attention/)
+    assert.match(page, /45 minutes/)
+    assert.match(page, new RegExp(quotaMoney(0.5 * config.quota.usdCny).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  } finally {
+    store.close()
+  }
+})
+
+test('the admin metrics page shows delivery, cost and alerts', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'metrics-admin', status: 'approved', superadmin: true })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const page = metricsPage({
+      config,
+      locale: 'en',
+      viewer,
+      metrics: { users: 1, approved: 1, repos: 1, jobs: 2, succeeded: 1, failed: 1, usersWithJobs: 1, usersWithPr: 1, costUsd: 0.4, events: [{ name: 'job_enqueued', n: 2 }] },
+      team: { jobs: 1, avgRoles: 2, leadOnly: 0, roles: [{ role: 'lead', calls: 3, jobs: 1 }] },
+      workItems: { total: 1, open: 0, merged: 1, closed: 0 },
+      attribution: { unattributedCount: 0, unattributedUsd: 0, attributedUsd: 0.4 },
+      stages: { scope: 0, verify: 0, iterate: 1, review: 1, leadOnly: 0, grounded: 1 },
+      delivery: { jobs: 2, succeeded: 1, failed: 1, successRate: 50, prs: 1, merged: 1, mergeRate: 100, changesRequested: 0, reviewAverage: 82, reviewCount: 1, medianJobMs: 600_000, medianMergeMs: 3_600_000, medianReviewMs: 120_000 },
+      daily: [{ day: '2026-01-01', jobs: 2, succeeded: 1, failed: 1, merged: 1 }],
+      repoCosts: [{ repoId: 'r1', label: 'o/r', costUsd: 0.4, calls: 3 }],
+      modelCosts: [{ model: 'model-a', costUsd: 0.4, calls: 3 }],
+      alerts: [{ kind: 'job_stalled', level: 'critical', repoId: 'r1', repoLabel: 'o/r', jobId: 'j1', minutes: 60, message: 'job j1 has no callback for 60m' }],
+      windowDays: 7,
+      since: '2026-01-01T00:00:00.000Z',
+    })
+    assert.match(page, /Delivery efficiency/)
+    assert.match(page, /Daily trend/)
+    assert.match(page, /2026-01-01/)
+    assert.match(page, /PR merge rate/)
+    assert.match(page, /Cost by repository/)
+    assert.match(page, /model-a/)
+    assert.match(page, /job_stalled/)
+    assert.match(page, /7 days/)
+  } finally {
+    store.close()
+  }
+})
+
+test('the job page renders the durable timeline', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'job-timeline-page', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_job_timeline', userId: user.id, owner: 'o', name: 'jt', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_page_timeline', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    const page = jobPage({
+      config,
+      locale: 'en',
+      viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
+      repo,
+      job,
+      events: [
+        { id: 2, at: new Date().toISOString(), job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'team.role', role: 'lead', step: 'delegate', meta: '{"calls":3,"tool":"github","activity":"working"}' },
+        { id: 1, at: new Date().toISOString(), job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.enqueued', role: null, step: 'iterate', meta: 'iterate:manual' },
+      ],
+    })
+    assert.match(page, /Timeline/)
+    assert.match(page, /job\.enqueued/)
+    assert.match(page, /iterate:manual/)
+    assert.match(page, /3 calls/)
+  } finally {
+    store.close()
+  }
+})
+
+test('the read metrics API scopes a user to personal and a superadmin to global', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'read-api-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_read_api', userId: user.id, owner: 'o', name: 'ra', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_read_api', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    const normal = sessionFor(built, user)
+    const personal = await built.app.inject({ method: 'GET', url: '/api/read/metrics?window=30', headers: { cookie: normal.cookie } })
+    assert.equal(personal.statusCode, 200)
+    const personalBody = personal.json() as { personal?: { jobs: number }; product?: unknown }
+    assert.equal(personalBody.personal?.jobs, 1)
+    assert.equal(personalBody.product, undefined)
+
+    const admin = makeUser(store, { login: 'read-api-admin', status: 'approved', superadmin: true })
+    const adminSession = sessionFor(built, admin)
+    const global = await built.app.inject({ method: 'GET', url: '/api/read/metrics?window=30', headers: { cookie: adminSession.cookie } })
+    assert.equal(global.statusCode, 200)
+    const globalBody = global.json() as { product?: { jobs: number }; delivery?: { jobs: number } }
+    assert.equal(globalBody.product?.jobs, 1)
+    assert.equal(globalBody.delivery?.jobs, 1)
+  } finally {
+    await built.close()
+  }
+})
+
+test('the repository page shows a delivery board grouped by work-item state', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'board-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_board', userId: user.id, owner: 'o', name: 'board', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_board', repoId: repo.id, userId: user.id, title: 'Fix the board', detail: 'detail', state: 'in_review' })
+    const other = store.createWorkItem({ id: 'work_other', repoId: repo.id, userId: user.id, title: 'Other work', detail: 'detail', state: 'proposed' })
+    const page = repoPage({
+      config,
+      locale: 'en',
+      viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
+      repo,
+      jobs: [],
+      workItems: [item, other],
+      workState: 'in_review',
+    })
+    assert.match(page, /Delivery board/)
+    assert.match(page, /In review/)
+    assert.match(page, /Fix the board/)
+    assert.doesNotMatch(page, /Other work/)
+    assert.match(page, /Clear filter/)
+  } finally {
+    store.close()
   }
 })

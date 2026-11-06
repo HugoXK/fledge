@@ -150,7 +150,7 @@ test('the role backfill runs once and future schema versions are refused', () =>
     const reopened = new Store(path)
     assert.equal(reopened.getRepo(repo.id)?.repo_role, 'maintainer')
     assert.notEqual(reopened.getRepo(repo.id)?.role_checked_at, null)
-    reopened.db.exec('PRAGMA user_version = 28;')
+    reopened.db.exec('PRAGMA user_version = 29;')
     reopened.close()
 
     assert.throws(() => new Store(path), /newer than this build/)
@@ -401,6 +401,100 @@ test('usage attribution and stage metrics aggregate the window', () => {
     assert.equal(stages.scope, 1)
     assert.equal(stages.leadOnly, 1)
     assert.equal(stages.grounded, 1)
+  } finally {
+    store.close()
+  }
+})
+
+test('job events, personal delivery and cost read models are windowed', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'read-model-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_read_models', userId: user.id, owner: 'o', name: 'rm', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const old = store.createJob({ id: 'job_old_metric', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-old', platformTokenHash: '', kind: 'iterate' })
+    store.updateJob(old.id, { status: 'succeeded', pr_url: 'https://github.com/o/rm/pull/1', pr_state: 'merged', started_at: '2000-01-01T00:00:00.000Z', finished_at: '2000-01-01T00:10:00.000Z' })
+    store.db.exec("UPDATE jobs SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = 'job_old_metric'")
+
+    const job = store.createJob({ id: 'job_read_metric', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-new', platformTokenHash: '', kind: 'iterate' })
+    store.updateJob(job.id, { status: 'succeeded', pr_url: 'https://github.com/o/rm/pull/2', pr_state: 'merged', started_at: new Date(Date.now() - 10 * 60_000).toISOString(), finished_at: new Date().toISOString(), review_score: null })
+    store.createJob({ id: 'job_read_failed', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-fail', platformTokenHash: '', kind: 'review' })
+    store.updateJob('job_read_failed', { status: 'failed', review_score: 40 })
+
+    store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.enqueued', step: 'iterate' })
+    store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'team.role', role: 'lead', step: 'delegate', meta: '{"calls":2}' })
+    assert.equal(store.listJobEvents(job.id).length, 2)
+    assert.equal(store.listJobEvents(job.id)[0]?.kind, 'team.role')
+
+    store.recordUsage(user.id, job.id, 0.2, JSON.stringify({ model: 'model-a' }), repo.id)
+    store.recordUsage(user.id, null, 0.1, JSON.stringify({ model: 'model-b' }), null)
+
+    const since = new Date(Date.now() - 24 * 60 * 60_000).toISOString()
+    const product = store.productMetrics(since)
+    assert.equal(product.jobs, 2)
+    assert.equal(product.succeeded, 1)
+    assert.equal(product.failed, 1)
+
+    const delivery = store.deliveryMetrics(since)
+    assert.equal(delivery.jobs, 2)
+    assert.equal(delivery.succeeded, 1)
+    assert.equal(delivery.merged, 1)
+    assert.equal(delivery.mergeRate, 100)
+    assert.ok(delivery.medianJobMs !== null && delivery.medianJobMs >= 0)
+
+    const daily = store.dailyMetrics(since)
+    assert.ok(daily.length > 0)
+    assert.ok(daily.some((row) => row.jobs >= 1))
+
+    const personal = store.personalMetrics(user.id, since)
+    assert.equal(personal.jobs, 2)
+    assert.equal(personal.merged, 1)
+    assert.ok(Math.abs(personal.costUsd - 0.3) < 1e-9)
+
+    const repoCosts = store.repoCostMetrics(since)
+    assert.equal(repoCosts[0]?.repoId, repo.id)
+    assert.equal(repoCosts[0]?.costUsd, 0.2)
+    const modelCosts = store.modelCostMetrics(since)
+    assert.ok(modelCosts.some((row) => row.model === 'model-a' && row.costUsd === 0.2))
+    assert.ok(modelCosts.some((row) => row.model === 'model-b' && row.costUsd === 0.1))
+  } finally {
+    store.close()
+  }
+})
+
+test('artifact versions, evaluations and promotions keep a decision ledger', () => {
+  const store = new Store(':memory:')
+  try {
+    const artifact = store.createArtifactVersion({ id: 'art_1', artifact: 'playbook', version: 1, hash: 'hash-1', content: 'candidate text' })
+    assert.equal(artifact.status, 'candidate')
+    store.createEvaluation({ id: 'eval_1', artifactId: artifact.id, dataset: 'heldout', metric: 'merge_rate', value: 0.7, ciLow: 0.6, ciHigh: 0.8, samples: 40 })
+    assert.equal(store.listEvaluations(artifact.id).length, 1)
+    store.createPromotion({ id: 'promo_1', artifactId: artifact.id, decision: 'defer', reason: 'need more samples', evidenceHash: 'ev-hash' })
+    assert.equal(store.listPromotions(artifact.id)[0]?.decision, 'defer')
+    store.promoteArtifactVersion(artifact.id)
+    assert.equal(store.listArtifactVersions('playbook')[0]?.status, 'promoted')
+  } finally {
+    store.close()
+  }
+})
+
+test('alerts surface stalled jobs, stale PRs and near-budget repositories', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'alert-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_alerts', userId: user.id, owner: 'o', name: 'alerts', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440, monthlyBudgetCny: 1 })
+    store.createJob({ id: 'job_stalled_alert', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-alert', platformTokenHash: '' })
+    store.updateJob('job_stalled_alert', { status: 'running', started_at: '2000-01-01T00:00:00.000Z' })
+    store.createJob({ id: 'job_pr_alert', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-pr', platformTokenHash: '' })
+    store.updateJob('job_pr_alert', { status: 'succeeded', pr_url: 'https://github.com/o/alerts/pull/1', pr_state: 'open' })
+    store.db.exec("UPDATE jobs SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = 'job_pr_alert'")
+    store.recordUsage(user.id, null, 0.9, null, repo.id)
+    store.markRepoCredential(repo.id, 'invalid')
+    const alerts = store.alerts({ usdCny: 1 })
+    assert.ok(alerts.some((alert) => alert.kind === 'job_stalled' && alert.repoLabel === 'o/alerts' && (alert.minutes ?? 0) > 0))
+    assert.ok(alerts.some((alert) => alert.kind === 'pr_stale' && alert.prUrl === 'https://github.com/o/alerts/pull/1'))
+    assert.ok(alerts.some((alert) => alert.kind === 'budget_near_limit' && (alert.spentCny ?? 0) >= 0.9))
+    assert.ok(alerts.some((alert) => alert.kind === 'credential_invalid' && alert.state === 'invalid'))
+    assert.equal(store.alerts({ usdCny: 1, userId: 'someone-else' }).length, 0)
   } finally {
     store.close()
   }

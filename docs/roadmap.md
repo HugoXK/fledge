@@ -105,6 +105,16 @@ execution (LangSmith/Langfuse, OpenTelemetry, Temporal/DBOS):
 - [x] GitHub App installation and webhook feedback (red CI / review findings ->
       follow-up job on the same branch).
 
+## v0.5 — evidence and learning (started)
+
+- [x] Durable `job_events` timeline, including per-role team activity.
+- [x] Windowed personal and admin delivery metrics, cost by repository/model and alerts.
+- [x] Read-only `/api/read/metrics` contract for an external control room.
+- [x] Artifact/evaluation/promotion ledger tables and the AgentDescent shadow-evolution ADR.
+- [ ] Shadow evaluation of the playbook on a held-out job set.
+- [ ] First human-approved, canary-tested playbook promotion.
+- [ ] Per-repository policy evolution (goal/model/stage mode) with opt-in.
+
 ## v1.0 — production hardening
 
 - [ ] Postgres option for multi-instance deployments.

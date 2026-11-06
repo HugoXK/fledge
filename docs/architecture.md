@@ -242,6 +242,36 @@ job finishes, Fledge captures a per-role call snapshot into
 jobs with stats, average participating roles, Lead-only jobs and calls per role,
 and the job page shows the same per-role table.
 
+### Delivery metrics, job timeline and learning ledger
+
+`jobs` remains the source of truth. Every lifecycle transition now also writes a
+`job_events` row (`job.enqueued`, `job.running`, `job.progress`, `job.succeeded`,
+`job.failed`, `job.merged`, `stage.missing`, `team.role`), so a job can be
+replayed without reading DSH memory. `team.role` events persist the per-role
+calls, tool and last activity that used to exist only in the final
+`team_stats_json` snapshot.
+
+The repository page adds a compact delivery board grouped by work-item state; each state header links to a filtered work-item list (`?workState=`). The dashboard has two scopes. `/dashboard?window=7|30` shows the signed-in
+user's own delivery metrics: jobs, success rate, PRs, merged PRs, cost, open
+work items and the last job. `/admin/metrics` shows the global window with the
+product funnel, delivery efficiency (success and merge rate, median job and
+merge duration, review duration and score), cost by repository and by model,
+daily trend buckets, and current alerts. Alerts are localized, sorted by severity, and link to the affected repository or job; the dashboard shows the same alerts scoped to the signed-in user. Missing values render as `—`, never as a confident zero.
+
+`GET /api/read/metrics` exposes the same read model as JSON for an external
+control room: a normal user gets `personal`, a super admin gets the global sections.
+The route is read-only and session-scoped.
+
+The evolution ledger is intentionally separate from the job path. It adds
+`artifact_versions`, `evaluations` and `promotions`: an artifact candidate, its
+held-out evidence, and a human-approved decision. AgentDescent is an offline
+engine behind this ledger; it never runs a user repository, never receives a
+GitHub token and cannot change the evaluator, CI or merge gate. See
+[decisions/0003](decisions/0003-agentdescent-evolution.md). The read-only
+`scripts/evolution-shadow.mjs` exporter turns recent jobs into a redacted
+dataset, and `--report` prints the baseline plus a time-ordered train/holdout
+split; it does not write to the database.
+
 ### Agent workspace
 
 The owner-accessible workspace is path-based to avoid a wildcard certificate:

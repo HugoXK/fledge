@@ -553,6 +553,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.get('/dashboard', async (request, reply) => {
     const viewer = requireApproved(request)
     const view = viewOf(viewer)
+    const windowDays = queryText(request, 'window') === '30' ? 30 : 7
+    const since = new Date(Date.now() - windowDays * 86_400_000).toISOString()
+    const personal = store.personalMetrics(viewer.user.id, since)
+    const alerts = store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny })
     const perPage = 10
     const reposTotal = store.countReposForUser(viewer.user.id)
     const jobsTotal = store.countJobsForUser(viewer.user.id)
@@ -577,11 +581,34 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobsPage,
         jobsTotal,
         questions,
+        personal,
+        windowDays,
+        alerts,
         notifications: store.listNotifications(viewer.user.id),
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
       }),
     )
+  })
+
+  app.get('/api/read/metrics', async (request, _reply) => {
+    const viewer = requireApproved(request)
+    const windowDays = queryText(request, 'window') === '30' ? 30 : 7
+    const since = new Date(Date.now() - windowDays * 86_400_000).toISOString()
+    if (viewer.user.role === 'superadmin' && viewer.preview !== true) {
+      return {
+        windowDays,
+        since,
+        product: store.productMetrics(since),
+        delivery: store.deliveryMetrics(since),
+        daily: store.dailyMetrics(since),
+        team: store.teamMetrics(since),
+        repoCosts: store.repoCostMetrics(since),
+        modelCosts: store.modelCostMetrics(since),
+        alerts: store.alerts({ usdCny: config.quota.usdCny }),
+      }
+    }
+    return { windowDays, since, personal: store.personalMetrics(viewer.user.id, since), alerts: store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny }) }
   })
 
   app.get('/console', async (request, reply) => {
@@ -880,6 +907,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const jobsTotal = store.countJobsForRepo(repo.id)
     const jobsPage = Math.min(Math.max(1, Math.floor(Number(queryText(request, 'jobsPage')) || 1)), Math.max(1, Math.ceil(jobsTotal / 10)))
     const questions = (await inboxForUser(viewer.user.id, store.listRepos(viewer.user.id))).filter((question) => question.repoId === repo.id)
+    const workState = queryText(request, 'workState')
     const instance = store.getRepoInstance(repo.id)
     const repoModels = store.listRepoModelSelection(repo.id)
     let chiefMessages
@@ -899,6 +927,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
         prJobs: store.listPrJobsForRepo(repo.id, 10),
         workItems: store.listWorkItems(repo.id),
+        ...(workState !== undefined && isWorkItemState(workState) ? { workState } : {}),
         models: store.listUserProviderModels(repo.user_id),
         repoModelIds: repoModels.map((model) => model.id),
         repoBotModels: store.listRepoBotModels(repo.id),
@@ -1316,6 +1345,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repo,
       job,
       queuePosition: queueIndex === -1 ? undefined : queueIndex + 1,
+      events: store.listJobEvents(job.id, 200),
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
@@ -2072,7 +2102,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.get('/admin/metrics', async (request, reply) => {
     const viewer = requireSuperAdmin(request)
     if (viewer.preview === true) return reply.redirect('/console')
-    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000).toISOString()
+    const windowDays = queryText(request, 'window') === '7' ? 7 : 30
+    const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1_000).toISOString()
     return reply.type('text/html').send(metricsPage({
       config,
       locale: request.locale ?? 'zh',
@@ -2082,6 +2113,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       workItems: store.workItemMetrics(since),
       attribution: store.usageAttribution(since),
       stages: store.stageMetrics(since),
+      delivery: store.deliveryMetrics(since),
+      daily: store.dailyMetrics(since),
+      repoCosts: store.repoCostMetrics(since),
+      modelCosts: store.modelCostMetrics(since),
+      alerts: store.alerts({ usdCny: config.quota.usdCny }),
+      windowDays,
       since,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
@@ -2133,6 +2170,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewer: viewOf(viewer),
       repo,
       job,
+      events: store.listJobEvents(job.id, 200),
       supportMode: true,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
