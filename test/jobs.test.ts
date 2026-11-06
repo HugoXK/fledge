@@ -569,17 +569,17 @@ test('maintainer auto-merge merges only after checks pass and no changes are req
   const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
   try {
     const user = makeUser(store, { login: 'auto-merge-pass-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_auto_merge_pass', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_auto_merge_pass', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, upstreamHtmlUrl: 'https://github.com/o/r', forkHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const secret = 'auto-merge-secret'
     store.createJob({ id: 'job_auto_merge_pass', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
-    store.updateJob('job_auto_merge_pass', { status: 'running', started_at: new Date().toISOString() })
+    store.updateJob('job_auto_merge_pass', { status: 'running', branch: 'fledge/fix', started_at: new Date().toISOString() })
     const result = await jobs.handleCallback('job_auto_merge_pass', secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/1', summary: 'done' })
     assert.equal(result.ok, true)
     assert.equal(merges.length, 1)
 
     reviews = [{ state: 'CHANGES_REQUESTED', user: { login: 'reviewer' }, submitted_at: '2026-11-03T00:00:00Z' }]
     store.createJob({ id: 'job_auto_merge_blocked', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
-    store.updateJob('job_auto_merge_blocked', { status: 'running', started_at: new Date().toISOString() })
+    store.updateJob('job_auto_merge_blocked', { status: 'running', branch: 'fledge/fix', started_at: new Date().toISOString() })
     await jobs.handleCallback('job_auto_merge_blocked', secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/1', summary: 'done' })
     assert.equal(merges.length, 1)
   } finally {
@@ -806,10 +806,10 @@ test('auto-merge is skipped when branch protection is unavailable', async () => 
   const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
   try {
     const user = makeUser(store, { login: 'auto-merge-protection-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_auto_merge_protection', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, requireProtection: true, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_auto_merge_protection', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, requireProtection: true, upstreamHtmlUrl: 'https://github.com/o/r', forkHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const secret = 'auto-merge-protection-secret'
     store.createJob({ id: 'job_auto_merge_protection', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
-    store.updateJob('job_auto_merge_protection', { status: 'running', started_at: new Date().toISOString() })
+    store.updateJob('job_auto_merge_protection', { status: 'running', branch: 'fledge/fix', started_at: new Date().toISOString() })
     await jobs.handleCallback('job_auto_merge_protection', secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/4', summary: 'done' })
     assert.equal(merges.length, 0)
   } finally {
@@ -1114,7 +1114,7 @@ test('mergeCleanPrs merges only pull requests that pass every check', async () =
   const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
   try {
     const user = makeUser(store, { login: 'bulk-merge-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_bulk_merge', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', requireProtection: false, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_bulk_merge', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', requireProtection: false, upstreamHtmlUrl: 'https://github.com/o/r', forkHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: false, intervalMinutes: 1440 })
     for (const number of [4, 5]) {
       const id = `job_bulk_${number}`
       store.createJob({ id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
