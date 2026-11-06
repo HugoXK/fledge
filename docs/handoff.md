@@ -81,8 +81,8 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 
 ### Verified
 
-- `npm run check`: lint, typecheck, 160 tests, production build — green.
-- `npm run check`: lint, typecheck, 160 tests, production build — green.
+- `npm run check`: lint, typecheck, 161 tests, production build — green.
+- `npm run check`: lint, typecheck, 161 tests, production build — green.
 - GitHub Actions: Node 22 and Node 24 green at the release commit.
 - A real platform-funded call with the alternate key returned 200 and deducted
   `$0.00001064` from the dev account's quota.
@@ -146,6 +146,8 @@ back. See [architecture.md](architecture.md) and [api.md](api.md).
 - The platform is single-tenant per instance in v0.1; SQLite is single-writer.
 - The dev login is a local convenience and must never be enabled in production.
 - Reviews are by tip SHA; a PASS without a `Ran:` command is invalid.
+- The required PASS identity is `HugoXK-bot` (`hugo2001xk@gmail.com`); the
+  review policy is read from the base branch.
 - One PR per issue; never a duplicate.
 
 ## Environment map (operator-only)

@@ -1,0 +1,1 @@
+A T2/T3 pull request now needs a PASS written and posted by the required identity `HugoXK-bot` (`hugo2001xk@gmail.com`). The review policy is read from the base branch, so a pull request cannot relax its own merge requirement; the policy file records the required login and email explicitly.

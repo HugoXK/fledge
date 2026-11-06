@@ -134,6 +134,11 @@ The second line is `Written-by: <name>` from the policy's `writers` list. The
 third line is `Posted-by: <GitHub login>` and must match the account that
 submitted the review; never edit someone else's report. The PR author may not
 PASS its own tip unless `selfReview` allows it.
+
+`requiredPass` in `.github/agent/review-policy.json` names the required PASS
+identity: `HugoXK-bot`, the GitHub account for `hugo2001xk@gmail.com`. A T2/T3
+PASS must be both written and posted by that login. The gate reads the policy
+from the base branch, so a pull request cannot weaken its own review requirement.
 Below that:
 
 ```
