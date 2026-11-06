@@ -12,7 +12,7 @@ const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
 const REPO = process.env.GITHUB_REPOSITORY ?? ''
 const API = process.env.GITHUB_API_URL ?? 'https://api.github.com'
 const EVENT = process.env.GITHUB_EVENT_PATH ?? ''
-const POLICY = JSON.parse(readFileSync('.github/agent/review-policy.json', 'utf8'))
+const LOCAL_POLICY = JSON.parse(readFileSync('.github/agent/review-policy.json', 'utf8'))
 
 function arg(name, fallback) {
   const index = process.argv.indexOf(name)
@@ -62,6 +62,20 @@ async function api(path) {
   }
   return response.json()
 }
+
+async function loadPolicy() {
+  if (EVENT === '') return LOCAL_POLICY
+  const baseRef = String(ev.pull_request?.base?.ref ?? ev.merge_group?.base_ref ?? 'main').replace(/^refs\/heads\//, '')
+  try {
+    const file = await api(`/repos/${REPO}/contents/.github/agent/review-policy.json?ref=${encodeURIComponent(baseRef)}`)
+    if (file.encoding !== 'base64' || typeof file.content !== 'string') throw new Error('unexpected policy response')
+    return JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'))
+  } catch (error) {
+    fail(`cannot read the review policy from ${baseRef}: ${error.message}`)
+  }
+}
+
+const POLICY = await loadPolicy()
 
 async function paginate(path, maxPages = 6) {
   const out = []

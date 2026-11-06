@@ -1,7 +1,16 @@
 {
-  "version": 1,
-  "note": "Who may post a conclusion that counts. A review is a fresh run of the gates at the exact tip, not the author's narrative. Self-review by the owner's reviewer agent counts; it never replaces green CI. Editing this file is T3.",
-  "reviewers": ["HugoXK"],
-  "selfReview": ["HugoXK"],
-  "writers": ["HugoXK", "Reviewer", "Maintainer", "Release", "SelfTest", "Dev", "Dev2", "Chief"]
+  "version": 2,
+  "note": "Owner HugoXK keeps repository merge authority. Reviewer work is hosted by the HugoXK-bot account (hugo2001xk@gmail.com), and a T2/T3 PASS must be written and posted by that login. The policy is read from the base branch so a pull request cannot weaken its own gate.",
+  "reviewers": [
+    "HugoXK-bot"
+  ],
+  "requiredPass": "HugoXK-bot",
+  "requiredPassEmail": "hugo2001xk@gmail.com",
+  "selfReview": [
+    "HugoXK-bot"
+  ],
+  "writers": [
+    "HugoXK",
+    "HugoXK-bot"
+  ]
 }

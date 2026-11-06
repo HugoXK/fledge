@@ -18,6 +18,13 @@ A human contributor does not approve their own PR. The maintainer's automation
 may self-PASS only when `.github/agent/review-policy.json` lists it in
 `selfReview`; a self-PASS never replaces green CI.
 
+The required reviewer/PASS identity is `HugoXK-bot`, the GitHub account for
+`hugo2001xk@gmail.com`. The owner `HugoXK` keeps repository merge authority and
+remains a valid PR author; the bot gets write access so it can post the required
+PASS and merge when delegated. A T2/T3 PASS must be written and posted by the
+bot. Both the review gate and `pr-lint` read the policy from the base branch, so
+a PR cannot relax the requirement that applies to its own merge.
+
 ## The loop
 
 ```

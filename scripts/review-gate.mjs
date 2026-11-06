@@ -15,7 +15,7 @@ const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
 const REPO = process.env.GITHUB_REPOSITORY ?? ''
 const API = process.env.GITHUB_API_URL ?? 'https://api.github.com'
 const EVENT = process.env.GITHUB_EVENT_PATH ?? ''
-const POLICY = JSON.parse(readFileSync('.github/agent/review-policy.json', 'utf8'))
+const LOCAL_POLICY = JSON.parse(readFileSync('.github/agent/review-policy.json', 'utf8'))
 
 function arg(name, fallback) {
   const index = process.argv.indexOf(name)
@@ -57,6 +57,20 @@ async function api(path) {
   }
   return response.json()
 }
+
+async function loadPolicy() {
+  if (EVENT === '') return LOCAL_POLICY
+  const baseRef = String(ev.pull_request?.base?.ref ?? ev.merge_group?.base_ref ?? 'main').replace(/^refs\/heads\//, '')
+  try {
+    const file = await api(`/repos/${REPO}/contents/.github/agent/review-policy.json?ref=${encodeURIComponent(baseRef)}`)
+    if (file.encoding !== 'base64' || typeof file.content !== 'string') throw new Error('unexpected policy response')
+    return JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'))
+  } catch (error) {
+    fail(`cannot read the review policy from ${baseRef}: ${error.message}`)
+  }
+}
+
+const POLICY = await loadPolicy()
 
 async function paginate(path, maxPages = 4) {
   const out = []
@@ -179,6 +193,12 @@ if (!POLICY.writers.map((name) => name.toLowerCase()).includes(writer.toLowerCas
 const poster = postedBy(newest.body)
 if (poster === '') fail('the newest conclusion has no Posted-by line')
 if (poster.toLowerCase() !== newest.author.toLowerCase()) fail(`Posted-by "${poster}" does not match the poster "${newest.author}"`)
+
+const requiredPass = String(POLICY.requiredPass ?? '').trim()
+if (requiredPass !== '') {
+  if (writer.toLowerCase() !== requiredPass.toLowerCase()) fail(`the required PASS identity is ${requiredPass}, not ${writer}`)
+  if (newest.author.toLowerCase() !== requiredPass.toLowerCase()) fail(`the required PASS must be posted by ${requiredPass}, not ${newest.author}`)
+}
 
 const author = String(pr.user?.login ?? '')
 const selfReview = (POLICY.selfReview ?? []).map((name) => String(name).toLowerCase())
