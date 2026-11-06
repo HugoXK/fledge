@@ -1,0 +1,200 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, truncateSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { Store } from '../src/db.js'
+import { makeUser } from './helpers.js'
+
+const drillScript = fileURLToPath(new URL('../scripts/restore-drill.mjs', import.meta.url))
+const backupScript = fileURLToPath(new URL('../scripts/backup.mjs', import.meta.url))
+
+interface RunResult {
+  code: number
+  stdout: string
+  stderr: string
+}
+
+function run(script: string, args: string[], env: Record<string, string> = {}): RunResult {
+  try {
+    const stdout = execFileSync(process.execPath, [script, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...env },
+    })
+    return { code: 0, stdout, stderr: '' }
+  } catch (error) {
+    const failure = error as { status?: number | null; stdout?: string; stderr?: string }
+    return { code: failure.status ?? -1, stdout: failure.stdout ?? '', stderr: failure.stderr ?? '' }
+  }
+}
+
+function runDrill(args: string[], env: Record<string, string> = {}): RunResult {
+  return run(drillScript, args, env)
+}
+
+function seed(dbPath: string): void {
+  const store = new Store(dbPath)
+  try {
+    const user = makeUser(store, { login: 'drill-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_drill', userId: user.id, owner: 'o', name: 'drill', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_drill_1', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h1', platformTokenHash: '' })
+    store.createJob({ id: 'job_drill_2', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
+  } finally {
+    store.close()
+  }
+}
+
+function rows(result: RunResult, table: string): { expected: number; actual: number } | undefined {
+  const match = result.stdout.match(new RegExp(`^table=${table} expected=(\\d+) actual=(\\d+)$`, 'm'))
+  if (match === null) return undefined
+  return { expected: Number(match[1]), actual: Number(match[2]) }
+}
+
+function sha256(path: string): string {
+  return createHash('sha256').update(readFileSync(path)).digest('hex')
+}
+
+function mode(path: string): number {
+  return statSync(path).mode & 0o777
+}
+
+function backups(dir: string): string[] {
+  return existsSync(dir) ? readdirSync(dir).filter((name) => name.startsWith('fledge-') && name.endsWith('.db')) : []
+}
+
+test('the drill restores the newest backup into a temp path, compares every table and reports RTO and RPO', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+  seed(dbPath)
+
+  const result = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir])
+  assert.equal(result.code, 0, result.stderr)
+
+  const tableLines = [...result.stdout.matchAll(/^table=(\S+) expected=(\d+) actual=(\d+)$/gm)]
+  assert.ok(tableLines.length > 0, `no per-table comparison lines in:\n${result.stdout}`)
+  for (const line of tableLines) assert.equal(line[2], line[3], `row count mismatch for table ${line[1]}`)
+  assert.deepEqual(rows(result, 'jobs'), { expected: 2, actual: 2 })
+  assert.match(result.stdout, /^RTO=\d+(\.\d{3})?s$/m)
+  assert.match(result.stdout, /^RPO=\d+(\.\d{3})?s$/m)
+
+  const restored = join(workDir, 'restored.db')
+  const source = new Store(dbPath)
+  const copy = new Store(restored)
+  try {
+    const sourceJobs = source.get<{ n: number }>('SELECT COUNT(*) AS n FROM jobs')?.n
+    const copyJobs = copy.get<{ n: number }>('SELECT COUNT(*) AS n FROM jobs')?.n
+    assert.equal(Number(copyJobs), Number(sourceJobs))
+    assert.equal(Number(copyJobs), 2)
+  } finally {
+    source.close()
+    copy.close()
+  }
+})
+
+test('a corrupt backup exits non-zero instead of reporting a successful drill', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+
+  const first = runDrill(['--db', dbPath, '--backup-dir', backupDir])
+  assert.equal(first.code, 0, first.stderr)
+  const files = backups(backupDir)
+  assert.equal(files.length, 1, `expected one backup, found ${files.join(', ')}`)
+  const backup = join(backupDir, files[0]!)
+  truncateSync(backup, Math.max(1024, Math.floor(statSync(backup).size / 3)))
+
+  const second = runDrill(['--db', dbPath, '--backup-dir', backupDir])
+  assert.notEqual(second.code, 0, 'a corrupt backup must not be reported as a successful drill')
+  assert.match(second.stderr, /corrupt|mismatch/i, `stderr must say why, got: ${second.stderr}`)
+  assert.ok(second.stderr.includes(files[0]!), `stderr must name the corrupt file, got: ${second.stderr}`)
+})
+
+test('a backup directory that holds the source database is refused before anything is opened', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'fledge.db')
+  seed(dbPath)
+  const before = new Set(readdirSync(root))
+
+  const result = runDrill(['--db', dbPath, '--backup-dir', root])
+  assert.equal(result.code, 2, result.stdout)
+  assert.match(result.stderr, /refus/i)
+  for (const name of readdirSync(root)) {
+    if (!before.has(name)) assert.fail(`a refused drill must not write anything, found ${name}`)
+  }
+})
+
+test('the drill never writes the source database', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+  const before = sha256(dbPath)
+  const sizeBefore = statSync(dbPath).size
+
+  const result = runDrill(['--db', dbPath, '--backup-dir', backupDir])
+  assert.equal(result.code, 0, result.stderr)
+  assert.equal(sha256(dbPath), before, 'the source database changed during the drill')
+  assert.equal(statSync(dbPath).size, sizeBefore)
+})
+
+test('the backup directory is 0700 and every artifact is 0600', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+  seed(dbPath)
+
+  const drill = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir])
+  assert.equal(drill.code, 0, drill.stderr)
+  assert.equal(mode(backupDir), 0o700, 'the backup directory must be private')
+  const files = backups(backupDir)
+  assert.equal(files.length, 1)
+  assert.equal(mode(join(backupDir, files[0]!)), 0o600, 'a backup copy must be owner-only')
+  assert.equal(mode(workDir), 0o700, 'the drill work directory must be private')
+  assert.equal(mode(join(workDir, 'restored.db')), 0o600, 'the restored copy must be owner-only')
+
+  const standalone = join(root, 'standalone')
+  const backup = run(backupScript, ['--db', dbPath, '--backup-dir', standalone])
+  assert.equal(backup.code, 0, backup.stderr)
+  assert.equal(mode(standalone), 0o700, 'backup.mjs must create its directory private')
+  const standaloneFiles = backups(standalone)
+  assert.equal(standaloneFiles.length, 1)
+  assert.equal(mode(join(standalone, standaloneFiles[0]!)), 0o600, 'backup.mjs must write owner-only copies')
+})
+
+test('a drill target inside DATA_DIR is refused', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dataDir = join(root, 'data')
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+
+  const insideDataDir = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', join(dataDir, 'work')], { DATA_DIR: dataDir })
+  assert.equal(insideDataDir.code, 2, insideDataDir.stdout)
+  assert.match(insideDataDir.stderr, /DATA_DIR|live/i)
+  assert.equal(existsSync(join(dataDir, 'work')), false, 'a refused target must not be created')
+
+  const equalsDbDir = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', join(root, 'live')])
+  assert.equal(equalsDbDir.code, 2, equalsDbDir.stdout)
+  assert.match(equalsDbDir.stderr, /refus/i)
+})
+
+test('a work directory whose parent is missing fails without creating it', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+
+  const missing = join(root, 'absent', 'nested')
+  const result = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', missing])
+  assert.notEqual(result.code, 0, 'a missing parent must fail the drill')
+  assert.match(result.stderr, /parent|不存在|missing/i)
+  assert.equal(existsSync(join(root, 'absent')), false, 'the drill must not mkdir its target parent')
+})

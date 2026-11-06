@@ -350,7 +350,7 @@ issue → claim → worktree → 红测试 → 修 → gates → PR
 | `v0.1` | OAuth + 审批邮件、多仓库、加密 token、额度网关、自带模型、Mock/FlyBot runner、Admin/审计 |
 | `v0.2` | GitHub App、PR 反馈闭环（红 CI/review → 追加任务）、任务取消、路径守卫 |
 | `v0.3` | 按仓库预算、团队角色、模型路由、用量导出 |
-| `v1.0` | Postgres、worker pool、tracing/metrics、备份恢复演练、外部安全评审 |
+| `v1.0` | Postgres、worker pool、tracing/metrics、外部安全评审 |
 
 完整列表和开放问题见 [docs/roadmap.md](docs/roadmap.md)。
 

@@ -386,7 +386,7 @@ PASS at the same tip, with a real `Ran:` command.
 | `v0.2.4` | Provider → models, per-bot models, repository lifecycle, PR delivery, issue commands, live inbox, Product/Test stage sessions |
 | `v0.3` | Branded per-repo agent workspace (Fledge shell, powered by FlyBot), interactive takeover |
 | `v0.4` | Plan-first gates, durable checkpoints, per-repo budgets, automatic attribution/audit |
-| `v1.0` | Postgres, worker pool, tracing/metrics, backup restore drill, external security review |
+| `v1.0` | Postgres, worker pool, tracing/metrics, external security review |
 
 Full list and open questions: [docs/roadmap.md](docs/roadmap.md).
 
