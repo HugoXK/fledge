@@ -324,8 +324,9 @@ Each repository page has a delivery list of iterate jobs with open pull requests
 with review score, cost, age and a maintainer one-click merge. Merging re-checks
 the PR state, checks, commit status, reviews and branch protection through the
 same path as auto-merge, updates the linked work item and marks the job's PR
-state. A webhook updates the PR state when a PR is merged or closed. When at
-least three PRs are waiting and auto-merge is off, the page suggests enabling it.
+state. A webhook updates the PR state when a PR is merged or closed. A bulk
+action re-checks and merges all clean PRs, skipping blocked ones. When at least
+three PRs are waiting and auto-merge is off, the page suggests enabling it.
 
 ### Job health and credential circuit breaker
 
