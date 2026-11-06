@@ -1592,11 +1592,13 @@ export function metricsPage(input: {
   }
   team: { jobs: number; avgRoles: number; leadOnly: number; roles: Array<{ role: string; calls: number; jobs: number }> }
   workItems: { total: number; open: number; merged: number; closed: number }
+  attribution: { unattributedCount: number; unattributedUsd: number; attributedUsd: number }
+  stages: { scope: number; verify: number; iterate: number; review: number; leadOnly: number; grounded: number }
   since: string
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, metrics, team, workItems, since, notice, error } = input
+  const { config, locale, viewer, metrics, team, workItems, attribution, stages, since, notice, error } = input
   const t = translator(locale)
   const successRate = metrics.jobs === 0 ? 0 : Math.round((metrics.succeeded / metrics.jobs) * 1000) / 10
   const cost = quotaMoney(metrics.costUsd * config.quota.usdCny)
@@ -1650,6 +1652,15 @@ export function metricsPage(input: {
       <div class="list-row"><div class="list-main"><strong>${workItems.open}</strong><small>${escapeHtml(t('仍在进行', 'Still open'))}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${workItems.merged}</strong><small>${escapeHtml(t('已合并', 'Merged'))}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${workItems.closed}</strong><small>${escapeHtml(t('已关闭未合并', 'Closed unmerged'))}</small></div></div>
+    </div>
+  </section>
+  <section class="card">
+    <h2>${escapeHtml(t('归因与阶段', 'Attribution & stages'))}</h2>
+    <div class="list">
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(quotaMoney(attribution.unattributedUsd * config.quota.usdCny))}</strong><small>${escapeHtml(t(`未归因成本（${attribution.unattributedCount} 行）`, `Unattributed cost (${attribution.unattributedCount} rows)`))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(quotaMoney(attribution.attributedUsd * config.quota.usdCny))}</strong><small>${escapeHtml(t('已归因成本', 'Attributed cost'))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${stages.scope} / ${stages.verify} / ${stages.iterate} / ${stages.review}</strong><small>${escapeHtml(t('Scope / Verify / Iterate / Review 任务', 'Scope / Verify / Iterate / Review jobs'))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${stages.leadOnly} / ${stages.grounded}</strong><small>${escapeHtml(t('Lead-only / 已落地归因事件', 'Lead-only / grounded attribution events'))}</small></div></div>
     </div>
   </section>
   <section class="card">

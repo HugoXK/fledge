@@ -71,6 +71,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/repos/:id/settings` | owner + CSRF | Goal, target branch, role, plan-first, path constraints, merge method/protection, stage mode, budgets, model selection, bot models, cadence, enabled, reviewer interval |
 | POST | `/repos/:id/delete` | owner + CSRF | Delete the Fledge connection after typing the repository name; GitHub is untouched |
 | GET | `/settings` | approved | Account, model providers and models, API tokens |
+| GET | `/admin/metrics` | superadmin | Product funnel, team participation, attribution and stage metrics |
 | POST | `/settings/model` | approved + CSRF | Save/clear own model |
 | POST | `/settings/notifications` | approved + CSRF | Notification email, job/question mail, daily digest, test mail |
 | POST | `/settings/tokens` | approved + CSRF | Create a `flg_` token |

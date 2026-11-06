@@ -376,8 +376,9 @@ retry. A repository can set a team stage gate: `off` keeps the old behaviour,
 without scope, acceptance criteria, red/green tests and Dev/Test attribution,
 or a review job without a Reviewer and a score. Enforced jobs never auto-merge.
 Admins get a read-only `/admin/metrics` funnel:
-users, approved, repos, users with jobs/PRs, success rate, job cost and recent
-events. `/admin/search` filters jobs and audit entries by the same user
+users, approved, repos, users with jobs/PRs, success rate, job cost, attributed
+vs unattributed cost, scope/verify/iterate/review counts, Lead-only and grounded
+attribution events, and recent events. `/admin/search` filters jobs and audit entries by the same user
 visibility as the admin page and can export the current result as CSV. The
 `events` table records activation and intervention events only; no prompt or
 token data.
