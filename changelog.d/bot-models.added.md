@@ -1,1 +1,0 @@
-A repository can assign a selected provider model to each bot role (Chief, Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2). Empty roles follow the default model. Applying models restarts the workspace and Fledge assigns the model through DSH `update-bot`.

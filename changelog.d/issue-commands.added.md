@@ -1,1 +1,0 @@
-Collaborators can drive a work item from the issue thread with `/fledge status`, `/fledge plan`, `/fledge approve` and `/fledge fix`. Fledge checks the author association, dedupes commands by comment id, creates or reuses the work item, and replies with the current state; plan approval remains maintainer-only.

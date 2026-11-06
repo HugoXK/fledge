@@ -341,7 +341,7 @@ branch with the repository token. A 401/403 marks `repos.credential_state =
 The repository page shows the credential banner until a refresh or a successful
 preflight clears it.
 
-### Model connections
+### Model providers and per-bot models
 
 Settings owns a per-user set of OpenAI-compatible providers. Each provider has
 an encrypted key and an optional private/HTTP flag, and can hold multiple models

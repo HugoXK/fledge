@@ -1,7 +1,7 @@
-# Handoff — Fledge v0.2.3
+# Handoff — Fledge v0.2.4
 
-Status: **v0.2.3 is the latest release (`fledge.hugoxk.online`, GitHub token login; OAuth App pending); docs are live; CI green.**
-Last updated: 2026-11-04.
+Status: **v0.2.4 is the latest release (`fledge.hugoxk.online`, GitHub token login; OAuth App pending); docs are live; CI green.**
+Last updated: 2026-11-06.
 
 This page is the public handoff for a new development session. The operator's
 private handoff (server paths, env locations, non-public URLs) is not committed;
@@ -21,7 +21,7 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 ## What exists
 
 - **Repository:** <https://github.com/HugoXK/fledge>
-- **Release:** <https://github.com/HugoXK/fledge/releases/tag/v0.2.3>
+- **Release:** <https://github.com/HugoXK/fledge/releases/tag/v0.2.4>
 - **CI:** `ci.yml` (Node 22 + 24, lint, typecheck, tests, build, Docker, audit,
   changelog, risk), `codeql.yml`, `dependency-review.yml`, `release.yml`; the
   aggregate check is `ci-ok`.
@@ -48,6 +48,12 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 - Team stage evidence gate (`off` / `shadow` / `enforced`), issue-label intake
   (`priority:*`, `agent-ready`), a deduped repeated-failure ops alert, and
   selective question-notification read.
+- Model providers with multiple models, per-bot model assignment, a mandatory
+  platform connection test and a per-user private/HTTP permission.
+- Repository lifecycle banner and danger zone, PR delivery with maintainer merge,
+  issue commands and a live inbox SSE stream.
+- Product/Test stage sessions, a Fledge-driven delivery chain, grounded team
+  attribution, token backfill and managed instance-token rotation.
 - Multiple repositories per user; per-repo fine-grained GitHub tokens, validated
   on add and encrypted with AES-256-GCM.
 - Upstream/fork onboarding: Fledge detects or creates the user's fork, pushes
@@ -69,7 +75,7 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 
 ### Verified
 
-- `npm run check`: lint, typecheck, 7 tests, production build — green.
+- `npm run check`: lint, typecheck, 140 tests, production build — green.
 - GitHub Actions: Node 22 and Node 24 green at the release commit.
 - A real platform-funded call with the alternate key returned 200 and deducted
   `$0.00001064` from the dev account's quota.
@@ -83,14 +89,12 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 - Real GitHub OAuth login (the service currently uses the token login fallback;
   create an OAuth App, set `ALLOW_TOKEN_LOGIN_ONLY=false`, and add the client
   id/secret).
-- Real SMTP delivery (the server env is wired to the operator SMTP account; no test mail
-  has been sent).
-- A real FlyBot bridge job (needs a dedicated FlyBot session and bridge token;
-  the service runs `RUNNER_MODE=mock`).
-- Docker image build on a host with Docker (CI builds the image in the `docker`
-  job).
-- Branch protection and required checks are configured; a merge queue is not
-  available through this repository's API plan, so auto-merge is used.
+- Real SMTP delivery (the server env is wired to the operator SMTP account; no
+  test mail has been sent).
+- The leaked GitHub development PAT still needs owner rotation; managed bridge
+  and instance tokens are rotated by `scripts/rotate-instance-tokens.mjs`.
+- A merge queue is not available through this repository's API plan, so
+  branch-protection checks plus auto-merge are used.
 
 ## Architecture in one screen
 
@@ -113,26 +117,16 @@ back. See [architecture.md](architecture.md) and [api.md](api.md).
    put the client id/secret in the deployment env and set
    `ALLOW_TOKEN_LOGIN_ONLY=false`. The service is already live on the token
    fallback.
-2. **FlyBot bridge**: run `bridge/flybot-bridge.mjs` on the FlyBot host with a
-   dedicated “Fledge Runner” chat session and a strong `BRIDGE_TOKEN`; set
-   `RUNNER_MODE=flybot` in Fledge.
-4. **First real job**: add a small test repo, run one job, verify the PR, the
-   callback, the job token revocation and the quota ledger.
-5. **Branch protection** — done: `main` requires `ci-ok`, `review-gate`,
-   `pr-lint` and conversation resolution, and enforces the rules for admins.
-6. **Review gate as a required check** — done: `review-gate` runs on
-   `pull_request`, `pull_request_review` and `merge_group`; `pr-lint` checks the
-   body, changelog/docs obligations and risk labels. No merge queue is available
-   through the API plan, so auto-merge performs the squash merge.
-7. **Homepage + guide**: live at `hugoxk.online/fledge/` and
+2. **Operational hardening**: repeated-failure alerts, stall detection, the
+   credential circuit breaker and managed token rotation are done; still needed
+   are log rotation, a backup restore drill and admin token rotation. The leaked
+   GitHub development PAT must be rotated by the owner.
+3. **Next product slice**: shared repository members (design in
+   [decisions/0002](decisions/0002-shared-repo-members.md)), native DSH message
+   streaming and deeper stage orchestration.
+4. **Homepage + guide**: live at `hugoxk.online/fledge/` and
    `hugoxk.online/fledge/guide/` (English under `/en/`); keep them in step with
    the product.
-8. **Operational hardening**: repeated-failure alert is done; still needed are
-   log rotation, a backup restore drill, quota notice dedupe and admin token
-   rotation.
-9. **Next product slice**: Fledge-orchestrated stage jobs, issue comment
-   commands, realtime inbox SSE, and shared repository members (design in
-   [decisions/0002](decisions/0002-shared-repo-members.md)).
 
 ## Decisions to keep
 

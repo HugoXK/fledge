@@ -1,1 +1,0 @@
-HTTP and private-network model URLs can now be configured from Settings. A superadmin can tick the private-URL option (or the operator can set `ALLOW_PRIVATE_MODEL_URLS=true`); a failed connection test for such a URL saves with a warning instead of blocking the configuration.

@@ -1,1 +1,0 @@
-Every repository owner can now open the branded FlyBot workspace again; the Fledge team console and its live SSE stream remain superadmin-only. The workspace proxy still checks session, ownership and preview on every HTTP and WebSocket request.
