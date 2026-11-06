@@ -1,0 +1,1 @@
+Model providers can be discovered and edited. "Discover models" reads the provider's `/v1/models`, bulk-adds only models that pass a 1-token test, and provider edits re-test every existing model before saving. This removes the need to type model IDs blindly.

@@ -1829,6 +1829,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         viewer: viewOf(viewer),
         tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'),
         providers: store.listModelProviders(viewer.user.id).map((provider) => ({ ...provider, models: store.listProviderModels(provider.id) })),
+        discoveredProvider: queryText(request, 'discoveredProvider'),
+        discovered: (queryText(request, 'discovered') ?? '').split(',').filter((value) => value !== ''),
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
       }),
@@ -1859,6 +1861,84 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     } catch (error) {
       return reply.redirect(`/settings?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}#model-providers`)
     }
+  })
+
+  app.post('/settings/providers/:id/update', async (request, reply) => {
+    const viewer = approvedCsrfGuard(request)
+    const id = String((request.params as Record<string, string>).id)
+    const provider = store.modelProviderById(id, viewer.user.id)
+    if (provider === undefined) return reply.code(404).send({ error: '模型提供方不存在。' })
+    const body = form(request)
+    try {
+      const label = (body.label ?? '').trim().slice(0, 80) || provider.label
+      const baseUrl = (body.baseUrl ?? '').trim() || provider.base_url
+      const canPrivate = config.allowPrivateModelUrls || viewer.user.allow_private_models === 1 || viewer.user.role === 'superadmin'
+      const allowPrivate = canPrivate && body.allowPrivate === '1'
+      const safeUrl = await assertSafeModelUrl(baseUrl, allowPrivate)
+      const key = (body.apiKey ?? '').trim() !== '' ? (body.apiKey ?? '').trim() : decryptSecret(provider.key_enc, config.tokenEncryptionKey)
+      if (safeUrl !== provider.base_url || key !== decryptSecret(provider.key_enc, config.tokenEncryptionKey)) {
+        for (const model of store.listProviderModels(provider.id)) {
+          await testOwnModel(safeUrl, key, model.model)
+        }
+      }
+      store.updateModelProvider(provider.id, viewer.user.id, {
+        label,
+        base_url: safeUrl,
+        key_enc: encryptSecret(key, config.tokenEncryptionKey),
+        allow_private: allowPrivate ? 1 : 0,
+      })
+      store.audit(viewer.user.id, 'model.provider.updated', `${provider.id} ${label} private=${allowPrivate ? 'on' : 'off'}`)
+      return reply.redirect(`/settings?notice=${encodeURIComponent('模型提供方已更新。')}#model-providers`)
+    } catch (error) {
+      return reply.redirect(`/settings?error=${encodeURIComponent(`提供方测试失败，未保存：${error instanceof Error ? error.message : String(error)}`)}#model-providers`)
+    }
+  })
+
+  app.post('/settings/providers/:id/discover', async (request, reply) => {
+    const viewer = approvedCsrfGuard(request)
+    const id = String((request.params as Record<string, string>).id)
+    const provider = store.modelProviderById(id, viewer.user.id)
+    if (provider === undefined) return reply.code(404).send({ error: '模型提供方不存在。' })
+    try {
+      const key = decryptSecret(provider.key_enc, config.tokenEncryptionKey)
+      const response = await fetch(`${provider.base_url.replace(/\/$/, '')}/models`, {
+        headers: { authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(20_000),
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const payload = await response.json() as { data?: Array<{ id?: unknown }> }
+      const models = Array.isArray(payload.data) ? payload.data.map((entry) => entry.id).filter((value): value is string => typeof value === 'string').slice(0, 100) : []
+      if (models.length === 0) throw new Error('提供方没有返回模型')
+      return reply.redirect(`/settings?discoveredProvider=${encodeURIComponent(provider.id)}&discovered=${encodeURIComponent(models.join(','))}&notice=${encodeURIComponent(`发现 ${models.length} 个模型。`)}#model-providers`)
+    } catch (error) {
+      return reply.redirect(`/settings?error=${encodeURIComponent(`读取模型失败：${error instanceof Error ? error.message : String(error)}`)}#model-providers`)
+    }
+  })
+
+  app.post('/settings/providers/:id/models/bulk', async (request, reply) => {
+    const viewer = approvedCsrfGuard(request)
+    const id = String((request.params as Record<string, string>).id)
+    const provider = store.modelProviderById(id, viewer.user.id)
+    if (provider === undefined) return reply.code(404).send({ error: '模型提供方不存在。' })
+    const requested = [...new Set(formList(request, 'models'))].slice(0, 50)
+    if (requested.length === 0) return reply.redirect(`/settings?error=${encodeURIComponent('请选择至少一个模型。')}#model-providers`)
+    const key = decryptSecret(provider.key_enc, config.tokenEncryptionKey)
+    const existing = new Set(store.listProviderModels(provider.id).map((model) => model.model))
+    let added = 0
+    const failed: string[] = []
+    for (const model of requested) {
+      if (existing.has(model)) continue
+      try {
+        await testOwnModel(provider.base_url, key, model)
+        store.createProviderModel({ id: randomId('pvm'), providerId: provider.id, model, label: model })
+        store.audit(viewer.user.id, 'model.added', `${provider.id}/${model}`)
+        added += 1
+      } catch {
+        failed.push(model)
+      }
+    }
+    const message = `${added} 个模型已通过测试并保存${failed.length === 0 ? '' : `；失败：${failed.join(', ')}`}`
+    return reply.redirect(`/settings?${failed.length === 0 ? 'notice' : 'error'}=${encodeURIComponent(message)}#model-providers`)
   })
 
   app.post('/settings/providers/:id/delete', async (request, reply) => {

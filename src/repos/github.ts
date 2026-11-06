@@ -234,6 +234,16 @@ export class GithubClient {
     }
   }
 
+  async canReadContents(owner: string, name: string, ref: string): Promise<boolean> {
+    try {
+      await this.request('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/contents/?ref=${encodeURIComponent(ref)}`)
+      return true
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return true
+      throw error
+    }
+  }
+
   async createPullRequest(
     owner: string,
     name: string,

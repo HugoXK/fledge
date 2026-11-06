@@ -955,14 +955,17 @@ export function settingsPage(input: {
   viewer: Viewer
   tokens: ApiTokenRow[]
   providers: Array<ModelProviderRow & { models: ProviderModelRow[] }>
+  discoveredProvider?: string
+  discovered?: string[]
   newToken?: string
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, tokens, providers, newToken, notice, error } = input
+  const { config, locale, viewer, tokens, providers, discoveredProvider, discovered = [], newToken, notice, error } = input
   const t = translator(locale)
   const user = viewer.user
   const quota = quotaView(user, config)
+  const canPrivate = config.allowPrivateModelUrls || viewer.user.allow_private_models === 1 || viewer.user.role === 'superadmin'
   const customEmail = (user.notify_email ?? '').trim()
   const resolvedEmail = customEmail !== '' ? customEmail : (user.email ?? '')
   const maskedEmail = resolvedEmail === '' ? '' : maskEmail(resolvedEmail)
@@ -986,7 +989,9 @@ export function settingsPage(input: {
     <p class="muted">${escapeHtml(t('先添加提供方（Base URL + API Key），再在它下面添加模型。添加模型时 Fledge 会发起 1-token 测试；测试失败不会保存。', 'Add a provider (Base URL + API key), then add models under it. Adding a model sends a 1-token test from Fledge; a failed test is not saved.'))}</p>
     ${providers.length === 0
       ? `<p class="muted">${escapeHtml(t('还没有模型提供方。', 'No model providers yet.'))}</p>`
-      : providers.map((provider) => `<div class="card provider-card">
+      : providers.map((provider) => {
+          const pending = (discoveredProvider === provider.id ? discovered : []).filter((id) => !provider.models.some((model) => model.model === id))
+          return `<div class="card provider-card">
           <div class="row between">
             <div><strong>${escapeHtml(provider.label)}</strong>${provider.allow_private === 1 ? ' · private' : ''}<br /><code>${escapeHtml(provider.base_url)}</code></div>
             <form method="post" action="/settings/providers/${escapeHtml(provider.id)}/delete">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('删除提供方', 'Delete provider'))}</button></form>
@@ -1002,7 +1007,24 @@ export function settingsPage(input: {
             </div>
             <button class="btn" type="submit">${escapeHtml(t('添加模型并测试', 'Add model and test'))}</button>
           </form>
-        </div>`).join('')}
+          <div class="row">
+            <form method="post" action="/settings/providers/${escapeHtml(provider.id)}/discover">${csrf(viewer)}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('读取模型列表', 'Discover models'))}</button></form>
+          </div>
+          ${discoveredProvider === provider.id && discovered.length > 0 ? `<div class="banner">${escapeHtml(t(`发现 ${discovered.length} 个模型。`, `${discovered.length} models found.`))}</div>${pending.length === 0 ? `<p class="fine">${escapeHtml(t('这些模型已经全部添加。', 'All of these models are already added.'))}</p>` : `<form method="post" action="/settings/providers/${escapeHtml(provider.id)}/models/bulk" class="form">${csrf(viewer)}${pending.map((id) => `<label class="check"><input type="checkbox" name="models" value="${escapeHtml(id)}" checked /> ${escapeHtml(id)}</label>`).join('')}<button class="btn" type="submit">${escapeHtml(t('添加选中并测试', 'Add selected and test'))}</button></form>`}` : ''}
+          <details class="fine"><summary>${escapeHtml(t('编辑提供方', 'Edit provider'))}</summary>
+            <form method="post" action="/settings/providers/${escapeHtml(provider.id)}/update" class="form">
+              ${csrf(viewer)}
+              <div class="row">
+                <label style="flex:1">${escapeHtml(t('名称', 'Label'))} <input name="label" value="${escapeHtml(provider.label)}" maxlength="80" /></label>
+                <label style="flex:1">Base URL <input name="baseUrl" value="${escapeHtml(provider.base_url)}" /></label>
+              </div>
+              <label>API Key <input name="apiKey" type="password" placeholder="${escapeHtml(t('留空不修改', 'Leave blank to keep'))}" autocomplete="off" /></label>
+              ${canPrivate ? `<label class="check"><input type="checkbox" name="allowPrivate" value="1"${provider.allow_private === 1 ? ' checked' : ''} /> ${escapeHtml(t('允许 HTTP / 内网地址', 'Allow HTTP / private address'))}</label>` : ''}
+              <button class="btn btn-ghost" type="submit">${escapeHtml(t('保存提供方', 'Save provider'))}</button>
+            </form>
+          </details>
+        </div>`
+        }).join('')}
     <form method="post" action="/settings/providers" class="form">
       ${csrf(viewer)}
       <div class="row">

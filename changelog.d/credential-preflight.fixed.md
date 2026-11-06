@@ -1,0 +1,1 @@
+Credential preflight now checks repository contents in addition to the target branch. A token that can read branches but gets 403 on `/contents/` is marked invalid, auto-iterate is paused and the owner sees a re-authorize banner instead of a job that starts and stalls.

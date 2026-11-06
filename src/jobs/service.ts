@@ -214,6 +214,7 @@ export class Jobs {
       this.store.markRepoCredential(repo.id, 'ok')
       this.credentialCache.set(repo.id, { at: Date.now() })
       if (branch === null) return { ok: false, error: `目标分支 ${baseBranch} 不存在或不可访问。`, code: 'BRANCH_MISSING' }
+      await client.canReadContents(upstreamOwner, upstreamName, baseBranch)
       let warning = ''
       if (repo.is_fork === 1) {
         const forkOwner = repo.fork_owner || repo.owner
@@ -243,6 +244,7 @@ export class Jobs {
       const owner = repo.upstream_owner || repo.owner
       const name = repo.upstream_name || repo.name
       const branch = await client.getBranch(owner, name, repo.upstream_default_branch || repo.default_branch)
+      await client.canReadContents(owner, name, repo.upstream_default_branch || repo.default_branch)
       if (branch !== null) this.credentialCache.set(repo.id, { at: Date.now() })
       this.store.markRepoCredential(repo.id, 'ok')
       return { ok: true }
@@ -560,14 +562,14 @@ export class Jobs {
     const key = `ops:repo_failing:${job.repo_id}`
     const recent = this.store.listJobsForRepo(job.repo_id, 3)
     if (recent.length < 3 || !recent.every((entry) => entry.status === 'failed')) return
-    if (this.store.getSetting(key) !== undefined) return
-    this.store.setSetting(key, nowIso())
     const repo = this.store.getRepo(job.repo_id)
     const label = repo === undefined ? job.repo_id : `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`
     if (repo !== undefined && repo.auto_iterate === 1) {
       this.store.updateRepo(repo.id, { auto_iterate: 0 })
       this.store.audit(job.user_id, 'repo.auto_paused', `${label}: 3 consecutive failures`)
     }
+    if (this.store.getSetting(key) !== undefined) return
+    this.store.setSetting(key, nowIso())
     this.store.notify(job.user_id, 'job', `${label} 连续 3 个任务失败，自动迭代已暂停；请检查 bridge、GitHub 凭据和模型额度后手动重新开启。`)
     this.store.audit(job.user_id, 'ops.repeated_failures', `${label}: 3 consecutive failures`)
     void sendNotificationWebhook(this.config, 'repo.repeated_failures', { text: `${label}: 3 consecutive job failures; auto-iterate paused`, repoId: job.repo_id, jobId: job.id })
