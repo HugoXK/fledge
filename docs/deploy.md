@@ -213,17 +213,103 @@ are absolute.
 npm run db:backup
 # writes ${DATA_DIR}/backups/fledge-<ISO timestamp>.db via SQLite's online backup API
 # set BACKUP_DIR to override; in Docker the default is /data/backups
+# every copy is checked with PRAGMA integrity_check and pruned to BACKUP_KEEP
+# (default 14) newest copies; a copy that fails the check is deleted and the run
+# exits non-zero, so a failed backup never leaves a usable-looking file
 ```
 
 Back up `.env` separately (it contains the encryption key). Without
 `TOKEN_ENCRYPTION_KEY`, stored GitHub/model tokens cannot be decrypted.
 
-Restore on a stopped instance:
+Keep the key and the dumps apart: a copy of `.env` on a different machine or a
+different medium from the database copies. A dump alone cannot decrypt the
+tokens it holds, and a key stored next to the dump hands both halves to anyone
+who finds the disk. The backup directory is created `0700` and every copy is
+written `0600`, so the dump is not readable by other accounts on the host either.
+
+### Restore drill
+
+Prove that the newest copy still restores, without touching the live database:
 
 ```sh
-cp "$DATA_DIR/backups/fledge-<timestamp>.db" "$DB_PATH"
-npm start
+npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR"
+# table=jobs expected=5000 actual=5000        one line per table
+# schema_version expected=28 actual=28
+# backup=/var/lib/fledge/backups/fledge-2026-11-06T09-44-53-448Z.db
+# restored=/tmp/fledge-restore-drill-xxxx/restored.db
+# RTO=0.385s
+# RPO=0.002s
+# restore-drill: OK
 ```
+
+How it works and how to read it:
+
+- It takes the newest `fledge-*.db` in the backup directory (write a fresh copy
+  first with `--fresh`). Nothing is created if a copy already exists, so the RPO
+  you see is the age of your real backup schedule.
+- It copies the backup into a temp directory (`--work-dir` to choose one and
+  keep the restored file), opens it read-only, runs `PRAGMA integrity_check`,
+  and compares every table's row count and `PRAGMA user_version` with the
+  source. The source database is opened read-only and never written; a drill
+  leaves its bytes unchanged.
+- It refuses a `--backup-dir` or `--work-dir` that holds the source database,
+  and exits non-zero — naming the file and the table — when the copy is corrupt
+  or a count differs.
+- It refuses a `--work-dir` inside `DATA_DIR` (the live data directory), inside
+  the source database's own directory, or one whose parent directory does not
+  exist — `DATA_DIR` need not be exported for the source directory to be
+  refused. Every one of those paths is resolved through symbolic links first, so
+  a link that points into the live area is refused too. It never creates a missing parent and never creates a database at a
+  path that was refused, so a typo cannot write into the live area. The work
+  directory is `0700`, the restored copy `0600`.
+- **A failed drill leaves no restore result.** The copy at
+  `<work-dir>/restored.db` is renamed to `restored.db.failed` before the command
+  exits non-zero, and a drill that used its own temp directory removes that
+  directory entirely. Restoring from a `restored.db` left by a failed run is
+  therefore impossible, and a temp drill does not leave a copy of production
+  data in `/tmp`. Always check the exit status (or look for
+  `restore-drill: OK`) before using the restored copy.
+- **RTO** is the measured restore-and-verify time: how long a real restore would
+  take to produce a verified copy. **RPO** is the age of the copy that restored:
+  how much data a real loss would cost. Record both after every drill.
+
+### Restore drill log
+
+Both numbers are specific to this host, this database size and this disk: a
+larger database and a slower disk produce a larger RTO, and RPO only reflects how
+fresh the newest copy is. Quote a row together with its "Data" column; never
+present one as the platform's production RTO.
+
+| Date | Environment | Data | RTO | RPO | Result |
+|---|---|---|---|---|---|
+| 2026-11-06 | this host, Node 22.23, drill on a temp path | synthetic database, 32 MiB, 5,000 jobs and 200,000 audit rows; no production data | 0.385 s | 0.002 s | 25 tables equal, `integrity_check ok` |
+
+A drill against production backups is run by the operator, on the operator's
+copies, and appends a row here with the numbers it printed. Do not paste table
+contents or query results into this file.
+
+Restore for real, on a stopped instance. The work directory must be outside
+`DATA_DIR` (the drill refuses a target inside it), so use a scratch path:
+
+```sh
+sudo systemctl stop fledge
+sudo install -d -m 700 /var/tmp/fledge-restore
+if npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --work-dir /var/tmp/fledge-restore; then
+  echo "restore-drill: OK"
+else
+  echo "drill failed; do not restore from this copy" >&2
+  exit 1
+fi
+# a failed drill renames the copy to restored.db.failed, so only a fresh, verified
+# restored.db can be copied in the next step
+sudo rm -f "$DB_PATH-wal" "$DB_PATH-shm"
+sudo cp /var/tmp/fledge-restore/restored.db "$DB_PATH"
+sudo systemctl start fledge
+curl -fsS http://127.0.0.1:8080/healthz
+```
+
+Keep the replaced file until `/healthz` answers and one page loads, then remove
+the scratch directory (`sudo rm -rf /var/tmp/fledge-restore`).
 
 ## 8. Upgrade
 
@@ -244,6 +330,40 @@ before a major upgrade.
 - The Admin panel shows the audit trail and recent jobs.
 - Quota state: `GET /v1/models` with a user token, or the dashboard.
 - Disk: SQLite WAL files and logs.
+
+### Log rotation and retention
+
+Fledge logs one JSON line per event to stdout/stderr (`src/lib/log.ts`) and the
+systemd unit sets no `StandardOutput=`, so the service's logs live in journald.
+The only files are nginx's. The policy — and why it is journald rather than an
+application log file — is [decisions/0005-log-rotation.md](decisions/0005-log-rotation.md).
+
+Journal capacity and retention (host-wide, applies to every unit on the box):
+
+```sh
+sudo install -m 644 deploy/journald-fledge.conf /etc/systemd/journald.conf.d/fledge.conf
+sudo systemctl restart systemd-journald
+journalctl --disk-usage              # whole journal against SystemMaxUse=500M
+journalctl -u fledge --disk-usage    # what Fledge contributes
+journalctl --vacuum-time=7d          # one-off trim; does not change the cap
+```
+
+nginx logs (the sample writes `fledge-access.log` / `fledge-error.log`):
+
+```sh
+sudo install -m 644 deploy/logrotate-fledge.conf /etc/logrotate.d/fledge
+sudo logrotate -d /etc/logrotate.d/fledge   # dry run: prints what would rotate
+ls -l /var/log/nginx/fledge-*.log*          # after the first rotation
+```
+
+If you keep the distribution's `access.log`/`error.log` (no `access_log` line in
+your nginx config), skip this file and let the distribution's nginx rotation own
+those paths — never rotate the same file from two stanzas.
+
+Development mail (`MAIL_TRANSPORT=console`) is written to
+`$DATA_DIR/mail-outbox/*.eml` and is never pruned: it is a dev aid
+(`npm run mail:outbox`), an instance with SMTP does not write it, and the
+directory may be deleted at any time.
 
 ## 10. Go-live checklist
 
