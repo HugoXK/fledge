@@ -195,6 +195,15 @@ user selected for this repository; `autoMerge` is true only for an iterate job
 when that role is `maintainer` and the repository auto-merge switch is on. Only
 while the job is `queued` or `running`.
 
+Auto-merge only ever targets the pull request **this job produced**: the
+callback's `prUrl` must be this repository's own pull request — scheme and host
+equal to the recorded `upstream_html_url`/`fork_html_url` origin, or, when no
+`html_url` was recorded, to the web host derived from `GITHUB_API_BASE` — and
+the PR's head branch must be the job's `branch` with its base equal to the job's
+base branch. A URL that does not match, or a PR that does not belong to the job,
+is skipped without a merge and recorded as `job.merge_skipped` with the specific
+mismatch (host, repository, head, base or headSha).
+
 ### `POST /api/jobs/:id/callback`
 
 Headers: `Authorization: Bearer <callbackSecret>`, `Content-Type: application/json`
