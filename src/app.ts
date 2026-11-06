@@ -107,15 +107,25 @@ function formList(request: FastifyRequest, key: string): string[] {
   return []
 }
 
-function safeLocalPath(value: string | undefined, fallback: string): string {
-  if (value === undefined || !value.startsWith('/') || value.startsWith('//')) return fallback
+const LOCAL_ORIGIN = 'http://fledge.local'
+
+// A `next=` or `returnTo` value may only leave as a path on this site. The check
+// runs on the parsed result, not on the input: `/..//evil.com` is an ordinary
+// path before parsing and `//evil.com` after it, and `reply.redirect()` would
+// emit that as a protocol-relative Location.
+export function safeLocalPath(value: string | undefined, fallback: string): string {
+  if (value === undefined || !value.startsWith('/')) return fallback
+  let url: URL
   try {
-    const url = new URL(value, 'http://fledge.local')
-    if (url.origin !== 'http://fledge.local') return fallback
-    return `${url.pathname}${url.search}${url.hash}`
+    url = new URL(value, LOCAL_ORIGIN)
   } catch {
     return fallback
   }
+  // A path-only URL never changes origin, so this rejects `//host` and `https://host`.
+  if (url.origin !== LOCAL_ORIGIN) return fallback
+  // One leading slash, so nothing a client could read as a host survives folding.
+  if (!url.pathname.startsWith('/') || url.pathname.startsWith('//')) return fallback
+  return `${url.pathname}${url.search}${url.hash}`
 }
 
 function bearerSecret(request: FastifyRequest): string {
