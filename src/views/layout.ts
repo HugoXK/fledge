@@ -51,6 +51,17 @@ export function quotaPill(user: UserRow, config: Config, locale: Locale = 'zh'):
   return `<span class="${cls}" title="${escapeHtml(t('平台额度', 'Platform quota'))}">${quota.exhausted ? t('额度已用完', 'Quota used up') : quotaAmount(quota, t)}</span>`
 }
 
+// The nav marks the current section from the route so a page cannot forget to
+// pass `active`; nested routes stay inside their section.
+export function sectionForPath(path: string): string {
+  const clean = path.split('?')[0] ?? '/'
+  if (clean === '/console' || clean.startsWith('/console/')) return 'console'
+  if (clean === '/dashboard' || clean.startsWith('/dashboard/') || clean === '/repos' || clean.startsWith('/repos/')) return 'dashboard'
+  if (clean === '/settings' || clean.startsWith('/settings/')) return 'settings'
+  if (clean === '/admin' || clean.startsWith('/admin/')) return 'admin'
+  return ''
+}
+
 function withSlash(value: string): string {
   return value === '' || value.endsWith('/') ? value : `${value}/`
 }
@@ -63,13 +74,18 @@ export function layout(options: LayoutOptions): string {
   const notice = localizeMessage(locale, options.notice)
   const error = localizeMessage(locale, options.error)
   const preview = viewer !== undefined && viewer !== null && viewer.preview === true
+  const section = active ?? sectionForPath(path)
+  const navItem = (key: string, href: string, label: string): string =>
+    section === key
+      ? `<a class="on" href="${href}" aria-current="page">${escapeHtml(label)}</a>`
+      : `<a href="${href}">${escapeHtml(label)}</a>`
   const nav = viewer === undefined || viewer === null
     ? ''
     : `<nav class="nav" aria-label="${escapeHtml(t('主导航', 'Main navigation'))}">
-        <a class="${active === 'console' ? 'on' : ''}" href="/console">${escapeHtml(t('工作区', 'Workspace'))}</a>
-        <a class="${active === 'dashboard' ? 'on' : ''}" href="/dashboard">${escapeHtml(t('仓库', 'Repositories'))}</a>
-        <a class="${active === 'settings' ? 'on' : ''}" href="/settings">${escapeHtml(t('设置', 'Settings'))}</a>
-        ${!preview && (viewer.user.role === 'admin' || viewer.user.role === 'superadmin') ? `<a class="${active === 'admin' ? 'on' : ''}" href="/admin">${escapeHtml(t('管理', 'Admin'))}</a>` : ''}
+        ${navItem('console', '/console', t('工作区', 'Workspace'))}
+        ${navItem('dashboard', '/dashboard', t('仓库', 'Repositories'))}
+        ${navItem('settings', '/settings', t('设置', 'Settings'))}
+        ${!preview && (viewer.user.role === 'admin' || viewer.user.role === 'superadmin') ? navItem('admin', '/admin', t('管理', 'Admin')) : ''}
       </nav>`
   const accountAvatar = viewer !== undefined && viewer !== null && viewer.user.avatar_url !== null && viewer.user.avatar_url !== ''
     ? `<img src="${escapeHtml(viewer.user.avatar_url)}" alt="" width="24" height="24" />`

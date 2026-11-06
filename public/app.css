@@ -61,6 +61,9 @@
   --motion-base: 180ms;
   --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+  /* Height of the sticky header; re-declared per breakpoint because the header
+     wraps the nav onto its own row below 960px. */
+  --header-h: 84px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --touch: 44px;
   --content: 1180px;
@@ -68,7 +71,7 @@
 
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
-[id] { scroll-margin-top: 84px; }
+[id] { scroll-margin-top: var(--header-h); }
 html, body { margin: 0; padding: 0; }
 body {
   background:
@@ -152,7 +155,10 @@ p { margin: 0 0 12px; }
   box-shadow: 0 8px 24px rgba(184, 243, 74, 0.16);
 }
 .nav { display: flex; gap: 20px; flex-wrap: wrap; }
-.nav a { color: var(--muted); padding: 22px 0; border-bottom: 2px solid transparent; font-size: 13.5px; font-weight: 650; }
+.nav a {
+  color: var(--muted); padding: 22px 0; border-bottom: 2px solid transparent; font-size: 13.5px; font-weight: 650;
+  display: inline-flex; align-items: center; justify-content: center; min-height: var(--touch); min-width: var(--touch);
+}
 .nav a.on, .nav a:hover { color: var(--text); border-color: var(--accent); text-decoration: none; }
 .account {
   display: flex; align-items: center; gap: 9px; font-size: 12.5px;
@@ -163,14 +169,14 @@ p { margin: 0 0 12px; }
 .account-avatar { display: grid; place-items: center; color: var(--accent); font-size: 11px; font-weight: 800; }
 .account form { margin: 0; }
 .account-name { color: var(--muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.account-exit { color: var(--muted-2); font-size: 12px; }
+.account-exit { color: var(--muted-2); font-size: 12px; display: inline-flex; align-items: center; justify-content: center; min-height: var(--touch); min-width: var(--touch); padding: 0 6px; }
 .account-exit:hover { color: var(--accent); }
 .lang {
   display: inline-flex; align-items: center;
   border: 1px solid var(--line); border-radius: 8px; padding: 2px;
 }
 .lang a {
-  min-width: 26px; text-align: center; padding: 4px 7px; border-radius: 6px;
+  min-width: var(--touch); min-height: var(--touch); text-align: center; padding: 4px 7px; border-radius: 6px; display: grid; place-items: center;
   color: var(--muted-2); font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
 }
 .lang a:hover { color: var(--text); text-decoration: none; }
@@ -279,7 +285,7 @@ td code { white-space: nowrap; }
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   background: var(--accent-strong); color: var(--accent-ink); border: 1px solid var(--accent-strong);
-  border-radius: 10px; padding: 9px 16px; font-weight: 700; font-size: 13.5px; cursor: pointer;
+  border-radius: 10px; padding: 9px 16px; font-weight: 700; font-size: 13.5px; cursor: pointer; min-height: var(--touch);
   box-shadow: 0 10px 28px rgba(76, 102, 245, 0.2);
   transition: background 0.15s, border-color 0.15s, transform 0.15s;
 }
@@ -411,10 +417,11 @@ a.list-row:hover strong { color: var(--accent); }
   .hero-copy, .loop-card, .hero-note { grid-column: 1; grid-row: auto; max-width: 760px; }
   .loop-card { max-width: 620px; }
   .hero-note { margin-top: 4px; }
-  .cols, .stats { grid-template-columns: 1fr; }
+  .cols, .stats { grid-template-columns: minmax(0, 1fr); }
+  :root { --header-h: 200px; }
   .top-inner { padding: 10px 16px; gap: 10px 14px; }
   .nav { order: 4; width: 100%; gap: 16px; padding-top: 4px; border-top: 1px solid var(--line); }
-  .nav a { padding: 10px 0; }
+  .nav a { padding: 10px 0; min-height: var(--touch); }
   .lang, .account { order: 3; }
   .spacer { display: none; }
   .brand { margin-right: auto; }
@@ -437,9 +444,17 @@ a.list-row:hover strong { color: var(--accent); }
   .workspace-hero { align-items: flex-start; flex-direction: column; gap: 18px; }
   .workspace-user h1 { font-size: 27px; }
   .workspace-avatar { width: 48px; height: 48px; border-radius: 14px; }
-  .lang a { min-height: 32px; padding: 5px 9px; display: grid; place-items: center; }
+  .lang a { min-height: var(--touch); padding: 5px 9px; display: grid; place-items: center; }
   .empty { align-items: flex-start; flex-direction: column; }
   .foot { flex-direction: column; align-items: flex-start; }
+}
+
+@media (max-width: 420px) {
+  /* Below ~410px the language switch and the account row each take their own
+     row, so the sticky header grows again. Measured header height is 195px (zh)
+     and 256px (en) at 320-360, and the offset takes the taller of the two. */
+  :root { --header-h: 260px; }
+  .top-inner { padding: 10px 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
