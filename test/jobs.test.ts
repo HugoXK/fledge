@@ -1073,3 +1073,59 @@ test('a branch-readable but contents-forbidden token is rejected by preflight', 
     await github.close()
   }
 })
+
+test('mergeCleanPrs merges only pull requests that pass every check', async () => {
+  const merges: string[] = []
+  const github = await startFakeServer((request, response) => {
+    const method = request.method ?? 'GET'
+    const url = request.url ?? ''
+    const match = /^\/repos\/o\/r\/pulls\/(4|5)$/.exec(url)
+    if (method === 'GET' && match !== null) {
+      const number = Number(match[1])
+      json(response, 200, { number, html_url: `https://github.com/o/r/pull/${number}`, title: 'fix', state: 'open', head: { ref: 'fledge/fix', sha: `sha${number}` }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false })
+      return
+    }
+    if (method === 'GET' && /^\/repos\/o\/r\/commits\/sha(4|5)\/check-runs\?per_page=100$/.test(url)) {
+      json(response, 200, { check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] })
+      return
+    }
+    if (method === 'GET' && /^\/repos\/o\/r\/commits\/sha(4|5)\/status$/.test(url)) {
+      json(response, 200, { state: 'success', statuses: [] })
+      return
+    }
+    if (method === 'GET' && /^\/repos\/o\/r\/pulls\/(4|5)\/reviews\?per_page=100$/.test(url)) {
+      json(response, 200, [])
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/branches/main/protection') {
+      json(response, 200, { protected: false, required_status_checks: { contexts: [] }, required_pull_request_reviews: { required_approving_review_count: 0 } })
+      return
+    }
+    if (method === 'PUT' && /^\/repos\/o\/r\/pulls\/(4|5)\/merge$/.test(url)) {
+      merges.push(url)
+      json(response, 200, { merged: true, sha: 'merged' })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'bulk-merge-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_bulk_merge', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', requireProtection: false, goal: '', autoIterate: false, intervalMinutes: 1440 })
+    for (const number of [4, 5]) {
+      const id = `job_bulk_${number}`
+      store.createJob({ id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+      store.updateJob(id, { status: 'succeeded', pr_url: `https://github.com/o/r/pull/${number}`, finished_at: new Date().toISOString() })
+    }
+    const result = await jobs.mergeCleanPrs(repo.id)
+    assert.equal(result.merged.length, 2)
+    assert.equal(result.skipped.length, 0)
+    assert.equal(merges.length, 2)
+  } finally {
+    store.close()
+    await github.close()
+  }
+})

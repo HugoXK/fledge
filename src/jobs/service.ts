@@ -738,6 +738,22 @@ export class Jobs {
     await this.tryMerge(job, prUrl, false)
   }
 
+  async mergeCleanPrs(repoId: string): Promise<{ merged: string[]; skipped: Array<{ jobId: string; message: string }> }> {
+    const repo = this.store.getRepo(repoId)
+    if (repo === undefined) return { merged: [], skipped: [] }
+    const merged: string[] = []
+    const skipped: Array<{ jobId: string; message: string }> = []
+    const seen = new Set<string>()
+    for (const job of this.store.listPrJobsForRepo(repoId, 10)) {
+      if (job.pr_url === null || seen.has(job.pr_url)) continue
+      seen.add(job.pr_url)
+      const result = await this.manualMerge(repo, job)
+      if (result.ok) merged.push(job.id)
+      else skipped.push({ jobId: job.id, message: result.message ?? 'skipped' })
+    }
+    return { merged, skipped }
+  }
+
   async manualMerge(repo: RepoRow, job: JobRow): Promise<{ ok: boolean; message?: string }> {
     if (job.repo_id !== repo.id) return { ok: false, message: '任务不属于这个仓库。' }
     if (job.pr_url === null) return { ok: false, message: '这个任务没有 PR。' }

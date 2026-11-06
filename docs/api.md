@@ -53,6 +53,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/repos/:id/jobs/:jobId/reject-plan` | maintainer + CSRF | Reject a completed plan |
 | POST | `/repos/:id/jobs/:jobId/execute` | maintainer + CSRF | Execute an approved plan as an iterate job |
 | POST | `/repos/:id/jobs/:jobId/merge` | maintainer + CSRF | Re-check and squash-merge a Fledge PR |
+| POST | `/repos/:id/delivery/merge-clean` | maintainer + CSRF | Re-check and merge all clean Fledge PRs, skipping blocked ones |
 | POST | `/repos/:id/jobs/:jobId/cancel` | owner + CSRF | Cancel a queued or running job |
 | POST | `/repos/:id/jobs/:jobId/pause` | owner + CSRF | Pause a queued or running job |
 | POST | `/repos/:id/jobs/:jobId/resume` | owner + CSRF | Resume a paused job from its checkpoint |
