@@ -255,15 +255,29 @@ How it works and how to read it:
 - It refuses a `--backup-dir` or `--work-dir` that holds the source database,
   and exits non-zero — naming the file and the table — when the copy is corrupt
   or a count differs.
-- It refuses a `--work-dir` inside `DATA_DIR` (the live data directory) and one
-  whose parent directory does not exist. It never creates a missing parent and
-  never creates a database at a path that was refused, so a typo cannot write
-  into the live area. The work directory is `0700`, the restored copy `0600`.
+- It refuses a `--work-dir` inside `DATA_DIR` (the live data directory), inside
+  the source database's own directory, or one whose parent directory does not
+  exist — `DATA_DIR` need not be exported for the source directory to be
+  refused. It never creates a missing parent and never creates a database at a
+  path that was refused, so a typo cannot write into the live area. The work
+  directory is `0700`, the restored copy `0600`.
+- **A failed drill leaves no restore result.** The copy at
+  `<work-dir>/restored.db` is renamed to `restored.db.failed` before the command
+  exits non-zero, and a drill that used its own temp directory removes that
+  directory entirely. Restoring from a `restored.db` left by a failed run is
+  therefore impossible, and a temp drill does not leave a copy of production
+  data in `/tmp`. Always check the exit status (or look for
+  `restore-drill: OK`) before using the restored copy.
 - **RTO** is the measured restore-and-verify time: how long a real restore would
   take to produce a verified copy. **RPO** is the age of the copy that restored:
   how much data a real loss would cost. Record both after every drill.
 
 ### Restore drill log
+
+Both numbers are specific to this host, this database size and this disk: a
+larger database and a slower disk produce a larger RTO, and RPO only reflects how
+fresh the newest copy is. Quote a row together with its "Data" column; never
+present one as the platform's production RTO.
 
 | Date | Environment | Data | RTO | RPO | Result |
 |---|---|---|---|---|---|
@@ -279,8 +293,14 @@ Restore for real, on a stopped instance. The work directory must be outside
 ```sh
 sudo systemctl stop fledge
 sudo install -d -m 700 /var/tmp/fledge-restore
-npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --work-dir /var/tmp/fledge-restore
-# require "restore-drill: OK" before the next step
+if npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --work-dir /var/tmp/fledge-restore; then
+  echo "restore-drill: OK"
+else
+  echo "drill failed; do not restore from this copy" >&2
+  exit 1
+fi
+# a failed drill renames the copy to restored.db.failed, so only a fresh, verified
+# restored.db can be copied in the next step
 sudo rm -f "$DB_PATH-wal" "$DB_PATH-shm"
 sudo cp /var/tmp/fledge-restore/restored.db "$DB_PATH"
 sudo systemctl start fledge

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, truncateSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, truncateSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -101,19 +101,46 @@ test('a corrupt backup exits non-zero instead of reporting a successful drill', 
   const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
   const dbPath = join(root, 'live', 'fledge.db')
   const backupDir = join(root, 'backups')
+  const scratch = join(root, 'tmp')
+  mkdirSync(scratch, { recursive: true })
   seed(dbPath)
 
-  const first = runDrill(['--db', dbPath, '--backup-dir', backupDir])
+  const first = runDrill(['--db', dbPath, '--backup-dir', backupDir], { TMPDIR: scratch })
   assert.equal(first.code, 0, first.stderr)
   const files = backups(backupDir)
   assert.equal(files.length, 1, `expected one backup, found ${files.join(', ')}`)
   const backup = join(backupDir, files[0]!)
   truncateSync(backup, Math.max(1024, Math.floor(statSync(backup).size / 3)))
 
-  const second = runDrill(['--db', dbPath, '--backup-dir', backupDir])
+  const second = runDrill(['--db', dbPath, '--backup-dir', backupDir], { TMPDIR: scratch })
   assert.notEqual(second.code, 0, 'a corrupt backup must not be reported as a successful drill')
   assert.match(second.stderr, /corrupt|mismatch/i, `stderr must say why, got: ${second.stderr}`)
   assert.ok(second.stderr.includes(files[0]!), `stderr must name the corrupt file, got: ${second.stderr}`)
+  assert.deepEqual(readdirSync(scratch), [], 'a failed drill must remove its temp directory and the copy of production data inside it')
+})
+
+test('a failed drill leaves no copy at the path the restore instructions copy over the live database', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+  seed(dbPath)
+
+  const first = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir])
+  assert.equal(first.code, 0, first.stderr)
+  assert.equal(existsSync(join(workDir, 'restored.db')), true)
+
+  const files = backups(backupDir)
+  assert.equal(files.length, 1)
+  truncateSync(join(backupDir, files[0]!), Math.max(1024, Math.floor(statSync(join(backupDir, files[0]!)).size / 3)))
+
+  const failed = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir])
+  assert.notEqual(failed.code, 0, 'a corrupt backup must not be reported as a successful drill')
+  assert.equal(existsSync(join(workDir, 'restored.db')), false,
+    'a failed drill must not leave restored.db, which docs/deploy.md copies over $DB_PATH')
+  const failedCopy = join(workDir, 'restored.db.failed')
+  assert.equal(existsSync(failedCopy), true, 'the copy that failed verification is kept under a name no restore step picks up')
+  assert.equal(mode(failedCopy), 0o600, 'the kept copy is still owner-only')
 })
 
 test('a backup directory that holds the source database is refused before anything is opened', () => {
@@ -197,4 +224,19 @@ test('a work directory whose parent is missing fails without creating it', () =>
   assert.notEqual(result.code, 0, 'a missing parent must fail the drill')
   assert.match(result.stderr, /parent|不存在|missing/i)
   assert.equal(existsSync(join(root, 'absent')), false, 'the drill must not mkdir its target parent')
+  assert.equal(existsSync(join(missing, 'restored.db')), false, 'a refused drill must not leave a restore result')
+})
+
+test('a work directory inside the source database directory is refused without DATA_DIR being set', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'srv', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'srv', 'work')
+  seed(dbPath)
+
+  // No DATA_DIR: the source database's own directory is the live area either way.
+  const result = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir], { DATA_DIR: '' })
+  assert.equal(result.code, 2, `expected a refusal, got exit ${result.code}: ${result.stderr}`)
+  assert.match(result.stderr, /refus/i)
+  assert.equal(existsSync(workDir), false, 'a refused target must not be created')
 })

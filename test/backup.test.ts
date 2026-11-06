@@ -16,9 +16,13 @@ interface RunResult {
   stderr: string
 }
 
-function runBackup(args: string[]): RunResult {
+function runBackup(args: string[], env: Record<string, string> = {}): RunResult {
   try {
-    const stdout = execFileSync(process.execPath, [script, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    const stdout = execFileSync(process.execPath, [script, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...env },
+    })
     return { code: 0, stdout, stderr: '' }
   } catch (error) {
     const failure = error as { status?: number | null; stdout?: string; stderr?: string }
@@ -91,4 +95,21 @@ test('a corrupt source fails the backup with a non-zero exit and leaves no artif
   assert.notEqual(result.code, 0, 'a corrupt source must not produce a backup that looks usable')
   assert.match(result.stderr, /backup (failed|is corrupt)/i)
   assert.deepEqual(backups(backupDir), [])
+})
+
+test('a rejected retention count reports the value that was rejected', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-backup-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  seed(dbPath)
+
+  const fromFlag = runBackup(['--db', dbPath, '--backup-dir', join(root, 'flag'), '--keep', 'lots'])
+  assert.equal(fromFlag.code, 2, fromFlag.stdout)
+  assert.match(fromFlag.stderr, /got lots/, `stderr must echo the rejected --keep value, got: ${fromFlag.stderr}`)
+
+  const fromEnv = runBackup(['--db', dbPath, '--backup-dir', join(root, 'env')], { BACKUP_KEEP: 'many' })
+  assert.equal(fromEnv.code, 2, fromEnv.stdout)
+  assert.match(fromEnv.stderr, /got many/, `stderr must echo the rejected BACKUP_KEEP value, got: ${fromEnv.stderr}`)
+
+  assert.equal(existsSync(join(root, 'flag')), false, 'a refused run must not create the backup directory')
+  assert.equal(existsSync(join(root, 'env')), false, 'a refused run must not create the backup directory')
 })

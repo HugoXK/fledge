@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Restore drill: restore the newest online backup into a temp path and prove it
 // matches the source database. Reads the source read-only, never writes it.
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -11,9 +11,17 @@ const { DatabaseSync, backup } = require('node:sqlite')
 
 const USAGE = 'usage: node scripts/restore-drill.mjs [--db <path>] [--backup-dir <dir>] [--work-dir <dir>] [--fresh] [--keep]'
 
+// A drift failure is thrown rather than exited on, so every try/finally between
+// the failure and the entry point still runs its cleanup.
+class DrillError extends Error {
+  constructor(code, message) {
+    super(message)
+    this.code = code
+  }
+}
+
 function fail(code, message) {
-  process.stderr.write(`restore-drill: ${message}\n`)
-  process.exit(code)
+  throw new DrillError(code, message)
 }
 
 function parseArgs(argv) {
@@ -81,11 +89,20 @@ function openRestored(restoredPath, backupPath) {
     const rows = db.prepare('PRAGMA integrity_check').all()
     const messages = rows.map((row) => String(Object.values(row)[0]))
     if (messages.length !== 1 || messages[0] !== 'ok') {
+      db.close()
       fail(1, `corrupt backup ${backupPath}: integrity_check reported ${messages.slice(0, 3).join('; ') || 'no result'}`)
     }
     // A table list runs one more read; a truncated page may still pass the check above.
     tableNames(db)
   } catch (error) {
+    if (db !== undefined) {
+      try {
+        db.close()
+      } catch {
+        // Already closed by the integrity branch above.
+      }
+    }
+    if (error instanceof DrillError) throw error
     fail(1, `corrupt backup ${backupPath}: ${error instanceof Error ? error.message : String(error)}`)
   }
   return db
@@ -113,8 +130,13 @@ async function main() {
     if (requestedWorkDir === dbPath) {
       fail(2, `refusing to use ${requestedWorkDir} as --work-dir: it is the source database itself`)
     }
-    if (requestedWorkDir === dirname(dbPath) || requestedWorkDir === backupDir) {
-      fail(2, `refusing to use ${requestedWorkDir} as --work-dir: it holds the source database or the backups`)
+    // Not every host exports DATA_DIR; the source database's own directory is
+    // the live area either way, so a drill may never write into it.
+    if (isInside(requestedWorkDir, dirname(dbPath))) {
+      fail(2, `refusing to use ${requestedWorkDir} as --work-dir: it is inside ${dirname(dbPath)}, which holds the source database`)
+    }
+    if (requestedWorkDir === backupDir) {
+      fail(2, `refusing to use ${requestedWorkDir} as --work-dir: it holds the backups`)
     }
   }
 
@@ -141,6 +163,7 @@ async function main() {
   const cleanup = requestedWorkDir === null && !args.keep
   const restoredPath = join(workDir, 'restored.db')
   let restored
+  let succeeded = false
   try {
     const startedAt = process.hrtime.bigint()
     copyFileSync(backupPath, restoredPath)
@@ -176,10 +199,28 @@ async function main() {
     process.stdout.write(`RPO=${backupAgeSeconds.toFixed(3)}s\n`)
     if (failures.length > 0) fail(1, `restore does not match the source\n${failures.join('\n')}`)
     process.stdout.write('restore-drill: OK\n')
+    succeeded = true
   } finally {
     if (restored !== undefined) restored.close()
+    // docs/deploy.md restores from <work-dir>/restored.db, so a failed drill must
+    // not leave a copy there: rename it out of the way and drop the temp dir.
+    if (!succeeded && existsSync(restoredPath)) {
+      const failedPath = `${restoredPath}.failed`
+      rmSync(failedPath, { force: true })
+      renameSync(restoredPath, failedPath)
+    }
     if (cleanup) rmSync(workDir, { recursive: true, force: true })
   }
 }
 
-await main()
+try {
+  await main()
+} catch (error) {
+  if (error instanceof DrillError) {
+    process.stderr.write(`restore-drill: ${error.message}\n`)
+    process.exitCode = error.code
+  } else {
+    process.stderr.write(`restore-drill: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`)
+    process.exitCode = 1
+  }
+}

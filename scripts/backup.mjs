@@ -32,7 +32,7 @@ function parseArgs(argv) {
       parsed.backupDir = argv[index]
     } else if (arg === '--keep') {
       index += 1
-      parsed.keep = Number(argv[index])
+      parsed.keep = argv[index]
     } else {
       fail(2, `unknown argument ${arg}\n${USAGE}`)
     }
@@ -54,8 +54,9 @@ function prune(dir, keep) {
 const args = parseArgs(process.argv.slice(2))
 const dbPath = resolve(args.db ?? process.env.DB_PATH ?? join(process.env.DATA_DIR ?? './data', 'fledge.db'))
 const outDir = resolve(args.backupDir ?? process.env.BACKUP_DIR ?? join(process.env.DATA_DIR ?? './data', 'backups'))
-const keep = args.keep ?? Number(process.env.BACKUP_KEEP ?? DEFAULT_KEEP)
-if (!Number.isFinite(keep) || keep < 1) fail(2, `--keep must be a positive number, got ${args.keep}`)
+const rawKeep = args.keep ?? process.env.BACKUP_KEEP ?? String(DEFAULT_KEEP)
+const keep = Number(rawKeep)
+if (!Number.isInteger(keep) || keep < 1) fail(2, `--keep must be a positive whole number, got ${rawKeep}`)
 if (!existsSync(dbPath)) fail(2, `source database not found: ${dbPath}`)
 
 mkdirSync(outDir, { recursive: true, mode: 0o700 })
