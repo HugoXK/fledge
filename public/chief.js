@@ -104,6 +104,13 @@
     })
     source.addEventListener('error', () => {
       source.close()
+      const status = document.querySelector('[data-chief-status]')
+      if (status !== null) {
+        status.textContent = (document.documentElement.getAttribute('data-locale') || 'zh') !== 'en'
+          ? '实时连接已断开，已切换为 5 秒轮询。'
+          : 'Live connection lost; falling back to 5-second polling.'
+        status.className = 'chief-status bad'
+      }
       startPolling()
     })
     window.addEventListener('beforeunload', () => source.close())

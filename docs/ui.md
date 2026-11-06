@@ -98,3 +98,28 @@ computes the ratios from `:root` instead of trusting the palette:
   without changing the brand fill.
 - A new text colour is added together with a row in the test's contrast list, so
   the ratio is checked in CI rather than in a browser.
+
+## Console states (控制台状态)
+
+Every list, panel and stream in the console renders through `renderState` in
+`src/views/states.ts`, so the five states cannot drift apart again. The markup
+and the accessibility contract are fixed:
+
+| State | Marker | Role | What it must carry |
+|---|---|---|---|
+| loading | `aria-busy="true"` | `status` | skeleton lines, never a spinner with no text |
+| empty | `data-state="empty"` | `status` | a sentence and the next step as a link |
+| error | `data-state="error"` | `alert` | the reason and a `Try again` action |
+| success | `data-state="success"` | `status` | the result and where to go next |
+| disabled | `aria-disabled="true"` | `data-state="disabled"` | the reason, and no working control |
+
+- `stateCell(colspan, …)` is the table form; a table that still renders a bare
+  `<td colspan class="muted">` is a leftover, not a style choice.
+- A control that cannot act uses `aria-disabled="true"` and the shared inert
+  style, so a disabled link looks inert like a disabled button.
+- The three live streams (notifications, questions, chief) announce
+  `connecting`, `lost` and `recovered` in an `aria-live="polite"` status node
+  (`[data-inbox-status]`, `[data-chief-status]`), instead of stopping silently.
+- Evidence for the change: `test/uiStates.test.ts` (7 assertions; 6 of them red
+  on the base commit with only the renderer added), plus before/after captures
+  under `docs/images/ui-v2/69-*.jpg` at 1280 and 360 in both languages.

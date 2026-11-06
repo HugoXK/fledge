@@ -26,6 +26,14 @@
 The console is server-rendered from `src/views/` and styled by `public/app.css`;
 its design tokens are documented in [docs/ui.md](ui.md).
 
+Every list, panel and live stream renders its non-data states through
+`renderState`/`stateCell` in `src/views/states.ts` — loading, empty, error,
+success and disabled — so the aria contract (`status`, `alert`, `aria-busy`,
+`aria-disabled`) is decided once instead of per page. The stream status lines
+(`[data-inbox-status]`, `[data-chief-status]`) are `aria-live="polite"` regions:
+a dropped stream reports `lost` and `recovered` instead of going quiet. The
+state contract and its evidence are in [docs/ui.md](ui.md).
+
 ## Components
 
 ```

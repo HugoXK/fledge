@@ -67,7 +67,19 @@
   bind()
   const inbox = document.querySelector('#inbox')
   if (inbox === null || typeof EventSource === 'undefined') return
+  const status = document.querySelector('[data-inbox-status]')
+  const note = (text, bad = false) => {
+    if (status === null) return
+    status.textContent = text
+    status.className = bad ? 'fine bad' : 'fine'
+  }
   const source = new EventSource('/api/inbox/events')
+  source.addEventListener('open', () => {
+    note(t('实时连接已建立。', 'Live connection established.'))
+  })
+  source.addEventListener('error', () => {
+    note(t('实时连接已断开，正在重连；列表可能不是最新的。', 'Live connection lost; reconnecting. The list may be out of date.'), true)
+  })
   source.addEventListener('inbox', (event) => {
     try {
       const data = JSON.parse(event.data)
