@@ -202,7 +202,7 @@ equal to the recorded `upstream_html_url`/`fork_html_url` origin, or, when no
 the PR's head branch must be the job's `branch` with its base equal to the job's
 base branch. A URL that does not match, or a PR that does not belong to the job,
 is skipped without a merge and recorded as `job.merge_skipped` with the specific
-mismatch (host, repository, head, base or headSha).
+mismatch (host, repository, head or base).
 
 ### `POST /api/jobs/:id/callback`
 
