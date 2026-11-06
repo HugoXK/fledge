@@ -97,6 +97,18 @@ The agent prompt includes:
 7. POST the result to `callbackUrl` with
    `{status, branch, prUrl, issueUrl, reviewScore, summary, error}`.
 
+The callback answers:
+
+- `200 {"ok":true}` — recorded;
+- `200 {"ok":true,"duplicate":true}` — this exact result was already recorded;
+  it is a success, do not resend it;
+- `409` — the report was rejected: the job is already finished with a different
+  result, or it passed the hard timeout. Do not retry; a retry cannot change it;
+- `400` — the payload is invalid (for example a bad branch name).
+
+Send the final callback before `timeoutMinutes` (90 by default). A heartbeat
+never extends that deadline: it only postpones the stall sweep.
+
 The payload also carries `repoRole` (`maintainer` or `developer`) and
 `autoMerge` for reporting. `autoMerge` is true only when the user selected the
 maintainer role and enabled the repository switch; the agent never merges.

@@ -147,7 +147,12 @@ the job-scoped model token, open a PR and call back. It also asks for a
 `{"status":"running","summary":"..."}` heartbeat after each major step and at
 least every 10 minutes; heartbeats update the job summary but do not extend the
 limit. The platform fails the job after `JOB_TIMEOUT_MINUTES` (default 90) if no
-final callback arrives.
+final callback arrives, and a final callback that arrives after that deadline is
+rejected with 409 and is not retried by the bridge — the run counts as failed
+even if the PR was good. Raising `JOB_TIMEOUT_MINUTES` widens that window for
+long runs; lowering it makes that failure more likely, so change it together
+with the agent's own time budget. `JOB_STALL_MINUTES` (default 30) is the
+separate no-heartbeat stall sweep; a heartbeat moves only that one.
 
 ## 5. Run
 
