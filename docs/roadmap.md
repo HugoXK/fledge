@@ -63,15 +63,19 @@ execution (LangSmith/Langfuse, OpenTelemetry, Temporal/DBOS):
 - [x] Repository and per-job budgets.
 - [x] Optional outbound notification webhook.
 
-## v0.2.4 — stage evidence and intake (in progress)
+## v0.2.4 — model providers, delivery and stage sessions (shipped)
 
 - [x] Team stage evidence gate (`off` / `shadow` / `enforced`).
 - [x] Issue labels map priority and `agent-ready` triage.
 - [x] Repeated-failure ops alert with dedupe.
 - [x] Answering a question marks the matching notification read.
-- [ ] Issue comment commands (`/fledge plan`, `/fledge fix`, `/fledge status`).
-- [ ] Realtime inbox SSE with a cursor.
-- [ ] Fledge-orchestrated stage jobs (separate Product/Test/Review runs).
+- [x] Issue comment commands (`/fledge plan`, `/fledge fix`, `/fledge status`, `/fledge approve`).
+- [x] Realtime inbox SSE at `/api/inbox/events`.
+- [x] Provider → models, per-bot model assignment and a mandatory platform connection test.
+- [x] Per-user private/HTTP model permission and repository lifecycle/delete.
+- [x] PR delivery list and maintainer merge; issue commands and live inbox.
+- [x] Fledge-driven delivery chain and independent Product/Test stage sessions.
+- [x] Grounded team attribution, token backfill and managed instance-token rotation.
 - [ ] Shared repository members (see [decisions/0002](decisions/0002-shared-repo-members.md)).
 
 ## v0.3 — branded agent workspace (path workspace shipped)
@@ -113,7 +117,7 @@ execution (LangSmith/Langfuse, OpenTelemetry, Temporal/DBOS):
 ## Non-goals
 
 - Running arbitrary user code inside Fledge.
-- Auto-merging PRs.
+- Auto-merging without an explicit maintainer opt-in and green required checks.
 - A general-purpose CI system.
 - Being a GitHub replacement: Fledge is a thin, reviewable layer on top of it.
 - Turning the team console into a generic chat product; it exists to govern the

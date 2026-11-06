@@ -1,1 +1,0 @@
-Product and Test now run as independent stage jobs. The Product scope job goes to the Product DSH session and returns scope, non-goals, acceptance criteria and a test plan; the Test verify job goes to the Test session and returns failing/passing test evidence. Stage mode queues verification after implementation before review; neither stage creates a branch or PR.

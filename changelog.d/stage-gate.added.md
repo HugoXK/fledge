@@ -1,1 +1,0 @@
-Repositories can now enforce a team stage gate. In `enforced` mode an implement job must report scope, acceptance criteria, a failing test, a passing test and Dev/Test attribution; a review job must report a Reviewer and a score. Missing evidence fails the job with `STAGE_EVIDENCE_MISSING` and blocks auto-merge. `shadow` mode records the same check without blocking.

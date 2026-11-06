@@ -1,1 +1,0 @@
-GitHub issue labels now drive work-item intake: `priority:high|medium|low` (or `p0`–`p3`) sets the work-item priority and an `agent-ready` label moves a proposed item to triaged when the issue is opened, reopened, edited or labeled.

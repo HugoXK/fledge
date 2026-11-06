@@ -1,1 +1,0 @@
-Settings now uses a provider-to-models model: add an OpenAI-compatible provider (base URL, encrypted key, optional private/HTTP), then add multiple models under it. A repository selects which provider models it may use and the default. Adding a model performs a 1-token test from Fledge and refuses to save on failure.

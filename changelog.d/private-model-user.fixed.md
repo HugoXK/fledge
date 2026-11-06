@@ -1,1 +1,0 @@
-Normal users can now be granted the private/HTTP model permission per account. A superadmin toggles "Allow private models" in Admin; the user's Settings form then shows the private-URL checkbox, and the provider is still saved only after Fledge's connection test succeeds.

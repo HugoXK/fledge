@@ -1,1 +1,0 @@
-Fledge now raises an operational alert after three consecutive failed jobs in one repository: an `ops.repeated_failures` audit entry, one in-app notification and an optional `repo.repeated_failures` webhook. The alert is deduped until a successful job resets it.

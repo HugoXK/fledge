@@ -1,1 +1,0 @@
-Running jobs now fail after `JOB_STALL_MINUTES` (default 30) without a callback instead of blocking the repository for the full 90-minute timeout. A repository token that returns 401/403 marks the connection invalid, pauses auto-iterate and shows a re-authorize banner; three consecutive failures pause auto-iterate until the owner re-enables it.

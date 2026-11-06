@@ -1,1 +1,0 @@
-The delivery chain is now Fledge-driven: a successful iterate with a PR queues review when the reviewer is enabled, plan approval moves the work item to assigned, and a review outcome moves it to approved or changes_requested. The work-item table shows the current stage.

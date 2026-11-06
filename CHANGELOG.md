@@ -5,6 +5,42 @@ All notable changes to Fledge are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.4] — 2026-11-06
+
+### Added
+
+- A repository can assign a selected provider model to each bot role (Chief, Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2). Empty roles follow the default model. Applying models restarts the workspace and Fledge assigns the model through DSH `update-bot`.
+- Repository pages now show a delivery list of iterate jobs with open pull requests, including review score, cost, age and a maintainer one-click merge. Merging re-checks the PR state, checks, commit status, reviews and branch protection, updates the linked work item, and records the PR state; a webhook keeps it in sync. The page suggests enabling auto-merge when three PRs are waiting.
+- The question inbox now updates over Server-Sent Events at `/api/inbox/events`. Fledge sends the server-rendered inbox when the question set changes, and the browser replaces the section and rebinds the answer forms without a reload.
+- Collaborators can drive a work item from the issue thread with `/fledge status`, `/fledge plan`, `/fledge approve` and `/fledge fix`. Fledge checks the author association, dedupes commands by comment id, creates or reuses the work item, and replies with the current state; plan approval remains maintainer-only.
+- Settings now uses a provider-to-models model: add an OpenAI-compatible provider (base URL, encrypted key, optional private/HTTP), then add multiple models under it. A repository selects which provider models it may use and the default. Adding a model performs a 1-token test from Fledge and refuses to save on failure.
+- Fledge now raises an operational alert after three consecutive failed jobs in one repository: an `ops.repeated_failures` audit entry, one in-app notification and an optional `repo.repeated_failures` webhook. The alert is deduped until a successful job resets it.
+- Repositories can now enforce a team stage gate. In `enforced` mode an implement job must report scope, acceptance criteria, a failing test, a passing test and Dev/Test attribution; a review job must report a Reviewer and a score. Missing evidence fails the job with `STAGE_EVIDENCE_MISSING` and blocks auto-merge. `shadow` mode records the same check without blocking.
+- Product and Test now run as independent stage jobs. The Product scope job goes to the Product DSH session and returns scope, non-goals, acceptance criteria and a test plan; the Test verify job goes to the Test session and returns failing/passing test evidence. Stage mode queues verification after implementation before review; neither stage creates a branch or PR.
+
+### Changed
+
+- Hardened the merge gates. `main` now requires `ci-ok`, `review-gate` and `pr-lint`; `pr-lint` validates the PR body, changelog/docs obligations and risk labels; review conclusions must carry a matching `Posted-by` account; `/healthz` reads the version from `package.json`; and `scripts/version.mjs check` keeps the package, lockfile, changelog, compose image and release tag in step.
+- GitHub issue labels now drive work-item intake: `priority:high|medium|low` (or `p0`–`p3`) sets the work-item priority and an `agent-ready` label moves a proposed item to triaged when the issue is opened, reopened, edited or labeled.
+- Repository pages now show an explicit lifecycle banner for disabled repositories, stopped FlyBot instances and invalid credentials, and disable Run/Plan/Review until the state is fixed. A danger zone separates stop scheduling, stop FlyBot and delete; deleting requires typing the repository name and only removes the Fledge connection, instance, jobs and tokens.
+- The delivery chain is now Fledge-driven: a successful iterate with a PR queues review when the reviewer is enabled, plan approval moves the work item to assigned, and a review outcome moves it to approved or changes_requested. The work-item table shows the current stage.
+- Polished the repository lifecycle, provider cards, per-bot model grid, danger zone and delivery list, and updated the standalone user-view mock with the new provider, delivery and lifecycle screens.
+- Every repository owner can now open the branded FlyBot workspace again; the Fledge team console and its live SSE stream remain superadmin-only. The workspace proxy still checks session, ownership and preview on every HTTP and WebSocket request.
+
+### Fixed
+
+- Job attribution is now grounded in the actual per-role call counts: the job page and PR automation comment use only roles that acted, and a claimed role with zero calls is recorded as a mismatch event instead of being presented as team participation.
+- Answering a team question now marks the matching question notifications as read; unrelated job, quota and system notifications stay unread.
+- Running jobs now fail after `JOB_STALL_MINUTES` (default 30) without a callback instead of blocking the repository for the full 90-minute timeout. A repository token that returns 401/403 marks the connection invalid, pauses auto-iterate and shows a re-authorize banner; three consecutive failures pause auto-iterate until the owner re-enables it.
+- Model connections no longer save when the platform-side connection test fails. A failed test returns a concrete error and nothing is stored; HTTP/private targets still require the explicit opt-in and must also pass the test.
+- Normal users can now be granted the private/HTTP model permission per account. A superadmin toggles "Allow private models" in Admin; the user's Settings form then shows the private-URL checkbox, and the provider is still saved only after Fledge's connection test succeeds.
+- Existing `flybot:<repo>` instance tokens and `job:<id>` tokens are backfilled with their repository id at startup, so new model usage is attributed per repository instead of an unattributed bucket.
+
+### Security
+
+- Added `scripts/rotate-instance-tokens.mjs` to rotate Fledge-managed bridge and per-instance gateway tokens, with a dry-run mode, an active-job guard and rollback on a failed bridge restart. The leaked GitHub development PAT is not managed by this script and must be rotated in GitHub settings.
+
+
 ## [0.2.3] — 2026-11-04
 
 ### Added

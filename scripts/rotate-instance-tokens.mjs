@@ -44,12 +44,14 @@ const manager = new InstanceManager(store, config)
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')
 
 try {
-  const active = store.countActiveJobs()
-  if (active > 0 && !force) {
-    console.error(`rotate-instance-tokens: refusing to rotate while ${active} job(s) are active; finish them or pass --force`)
-    process.exit(2)
-  }
   const instances = store.listRepoInstances().filter((instance) => instance.status === 'ready')
+  if (!dryRun) {
+    const active = store.countActiveJobs()
+    if (active > 0 && !force) {
+      console.error(`rotate-instance-tokens: refusing to rotate while ${active} job(s) are active; finish them or pass --force`)
+      process.exit(2)
+    }
+  }
   if (instances.length === 0) {
     console.log('rotate-instance-tokens: no ready instances')
     process.exit(0)

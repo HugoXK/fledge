@@ -35,34 +35,41 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/repos/:id/work` | owner + CSRF | Create a work item |
 | POST | `/repos/:id/work/:workItemId/state` | owner + CSRF | Move a work item through the triage/assignment/review state machine |
 | POST | `/repos/:id/work/:workItemId/run` | owner + CSRF | Start a plan or iterate job for a work item |
+| POST | `/repos/:id/work/:workItemId/scope` | owner + CSRF | Queue a Product scope job for a work item |
+| POST | `/repos/:id/work/:workItemId/verify` | owner + CSRF | Queue a Test verify job for a work item with a PR |
 | POST | `/repos/:id/role` | owner + CSRF | Select `maintainer` or `developer` for this user-repository connection |
 | POST | `/repos/:id/plan` | owner + CSRF | Enqueue a plan-only job (no code, branch or PR) |
 | POST | `/repos/:id/instance` | owner + CSRF | Start the per-repository FlyBot instance |
 | POST | `/repos/:id/instance/stop` | owner + CSRF | Stop the per-repository FlyBot instance |
 | POST | `/repos/:id/refresh` | owner + CSRF | Re-check the upstream, fork and permissions |
+| POST | `/repos/:id/enable` | owner + CSRF | Enable the repository connection |
+| POST | `/repos/:id/disable` | owner + CSRF | Disable scheduling and cancel active jobs |
+| POST | `/repos/:id/delete` | owner + CSRF | Delete the Fledge connection after typing the repository name |
+| GET | `/api/inbox/events` | approved | Server-Sent Events stream of the user's inbox |
 | POST | `/repos/:id/review` | owner + CSRF | Enqueue a manual review job |
 | GET | `/repos/:id/jobs/:jobId` | owner | Job detail: evidence, cost, attribution, retry |
 | POST | `/repos/:id/jobs/:jobId/retry` | owner + CSRF | Retry a failed job, including its checkpoint |
 | POST | `/repos/:id/jobs/:jobId/approve-plan` | maintainer + CSRF | Approve a completed plan with allowed/forbidden paths |
 | POST | `/repos/:id/jobs/:jobId/reject-plan` | maintainer + CSRF | Reject a completed plan |
 | POST | `/repos/:id/jobs/:jobId/execute` | maintainer + CSRF | Execute an approved plan as an iterate job |
+| POST | `/repos/:id/jobs/:jobId/merge` | maintainer + CSRF | Re-check and squash-merge a Fledge PR |
 | POST | `/repos/:id/jobs/:jobId/cancel` | owner + CSRF | Cancel a queued or running job |
 | POST | `/repos/:id/jobs/:jobId/pause` | owner + CSRF | Pause a queued or running job |
 | POST | `/repos/:id/jobs/:jobId/resume` | owner + CSRF | Resume a paused job from its checkpoint |
-| GET | `/repos/:id/workspace` | admin | Fledge-branded agent workspace shell |
-| `*` | `/repos/:id/workspace/app/*` | admin | Authenticated reverse proxy to the per-repo DSH UI |
-| GET | `/repos/:id/team` | admin | Team console |
-| GET | `/api/repos/:id/team` | admin | Team state JSON (polling fallback) |
-| GET | `/api/repos/:id/team/events` | admin | Server-Sent Events snapshot stream |
-| POST | `/repos/:id/team/guidance` | admin + CSRF | Send guidance to a role |
+| GET | `/repos/:id/workspace` | owner | Fledge-branded agent workspace shell |
+| `*` | `/repos/:id/workspace/app/*` | owner | Authenticated reverse proxy to the per-repo DSH UI |
+| GET | `/repos/:id/team` | superadmin | Team console |
+| GET | `/api/repos/:id/team` | superadmin | Team state JSON (polling fallback) |
+| GET | `/api/repos/:id/team/events` | superadmin | Server-Sent Events snapshot stream |
+| POST | `/repos/:id/team/guidance` | superadmin + CSRF | Send guidance to a role |
 | POST | `/repos/:id/chief/message` | owner + CSRF | Send guidance to the Chief from the simplified UI |
 | GET | `/api/repos/:id/chief/messages` | owner | Chief conversation snapshot (filtered/redacted) |
 | GET | `/api/repos/:id/chief/events` | owner | Server-Sent Events for new Chief messages |
-| POST | `/api/repos/:id/team/answer` | admin + CSRF | Answer a team question |
-| POST | `/api/repos/:id/team/stop` | admin + CSRF | Stop the active roles (hard when possible, otherwise a stop request) |
-| POST | `/repos/:id/settings` | owner + CSRF | Goal, target branch, role, plan-first, path constraints, merge method/protection, auto-merge, cadence, enabled, reviewer interval |
-| POST | `/repos/:id/delete` | owner + CSRF | Delete repo and jobs |
-| GET | `/settings` | approved | Account, model, API tokens |
+| POST | `/api/repos/:id/team/answer` | superadmin + CSRF | Answer a team question |
+| POST | `/api/repos/:id/team/stop` | superadmin + CSRF | Stop the active roles (hard when possible, otherwise a stop request) |
+| POST | `/repos/:id/settings` | owner + CSRF | Goal, target branch, role, plan-first, path constraints, merge method/protection, stage mode, budgets, model selection, bot models, cadence, enabled, reviewer interval |
+| POST | `/repos/:id/delete` | owner + CSRF | Delete the Fledge connection after typing the repository name; GitHub is untouched |
+| GET | `/settings` | approved | Account, model providers and models, API tokens |
 | POST | `/settings/model` | approved + CSRF | Save/clear own model |
 | POST | `/settings/notifications` | approved + CSRF | Notification email, job/question mail, daily digest, test mail |
 | POST | `/settings/tokens` | approved + CSRF | Create a `flg_` token |
@@ -278,7 +285,7 @@ Status code: `402`.
 
 ## Health
 
-`GET /healthz` → `{ "ok": true, "service": "fledge", "version": "0.2.3" }`.
+`GET /healthz` → `{ "ok": true, "service": "fledge", "version": "0.2.4" }`.
 
 ## Conventions
 
@@ -286,3 +293,18 @@ Status code: `402`.
 - Browser form errors redirect back with `?error=`; API errors use HTTP status.
 - All timestamps are ISO-8601 UTC.
 - Money in the API is CNY unless the field says `usd`.
+
+## Model providers and issue commands
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| POST | `/settings/providers` | approved + CSRF | Add a provider; HTTP/private URLs need the per-user permission or the global flag |
+| POST | `/settings/providers/:id/delete` | approved + CSRF | Delete a provider and its models |
+| POST | `/settings/providers/:id/models` | approved + CSRF | Run a 1-token test from Fledge and save the model only on success |
+| POST | `/settings/providers/:id/models/:modelId/delete` | approved + CSRF | Delete a provider model |
+| POST | `/admin/users/:id/private-models` | superadmin + CSRF | Grant or revoke the private/HTTP model permission for a user |
+
+Issue comments from `OWNER`, `MEMBER` or `COLLABORATOR` accounts can run
+`/fledge status`, `/fledge plan`, `/fledge approve` or `/fledge fix`. Commands are
+deduped by comment id and reply on the issue. `/fledge approve` is maintainer-only.
+

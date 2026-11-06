@@ -254,6 +254,9 @@ User model base URLs are validated before saving and before use:
 - A model is saved only after a successful 1-token test from Fledge. A failed
   test returns an error and nothing is saved; the gateway host must be able to
   reach the address.
+- Fledge-managed bridge and per-instance gateway tokens can be rotated with
+  `scripts/rotate-instance-tokens.mjs`; the GitHub development PAT is outside
+  Fledge and must be rotated in GitHub settings.
 
 DNS rebinding is not fully mitigated; deploy behind an egress policy if users
 are untrusted.

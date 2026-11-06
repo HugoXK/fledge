@@ -1,1 +1,0 @@
-Repository pages now show an explicit lifecycle banner for disabled repositories, stopped FlyBot instances and invalid credentials, and disable Run/Plan/Review until the state is fixed. A danger zone separates stop scheduling, stop FlyBot and delete; deleting requires typing the repository name and only removes the Fledge connection, instance, jobs and tokens.

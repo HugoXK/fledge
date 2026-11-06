@@ -1,1 +1,0 @@
-Model connections no longer save when the platform-side connection test fails. A failed test returns a concrete error and nothing is stored; HTTP/private targets still require the explicit opt-in and must also pass the test.
