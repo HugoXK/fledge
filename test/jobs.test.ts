@@ -1022,3 +1022,54 @@ test('manual merge rejects a job without a pull request', async () => {
     store.close()
   }
 })
+
+test('the auto-pause still fires when the repeated-failure notice was already sent', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'pause-dedupe-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_pause_dedupe', userId: user.id, owner: 'o', name: 'p', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    store.setSetting(`ops:repo_failing:${repo.id}`, new Date().toISOString())
+    for (let i = 1; i <= 3; i += 1) {
+      const secret = `pause-dedupe-${i}`
+      const id = `job_pause_dedupe_${i}`
+      store.createJob({ id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+      store.updateJob(id, { status: 'running', started_at: new Date().toISOString() })
+      await jobs.handleCallback(id, secret, { status: 'failed', error: 'boom' })
+    }
+    assert.equal(store.getRepo(repo.id)?.auto_iterate, 0)
+  } finally {
+    store.close()
+  }
+})
+
+test('a branch-readable but contents-forbidden token is rejected by preflight', async () => {
+  const github = await startFakeServer((request, response) => {
+    if (request.url?.startsWith('/repos/o/contents/branches/')) {
+      json(response, 200, { name: 'main', commit: { sha: 'abc' } })
+      return
+    }
+    if (request.url?.startsWith('/repos/o/contents/contents/')) {
+      json(response, 403, { message: 'Resource not accessible by personal access token' })
+      return
+    }
+    json(response, 404, { message: 'not found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const runner = { name: 'flybot', async run() { return { status: 'running' as const } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'contents-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_contents', userId: user.id, owner: 'o', name: 'contents', defaultBranch: 'main', tokenEnc: encryptSecret('bad-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    const result = await jobs.enqueue(repo, 'manual')
+    assert.equal(result.ok, false)
+    assert.equal(result.code, 'REPO_CREDENTIAL_INVALID')
+    assert.equal(store.getRepo(repo.id)?.credential_state, 'invalid')
+    assert.equal(store.getRepo(repo.id)?.auto_iterate, 0)
+  } finally {
+    store.close()
+    await github.close()
+  }
+})

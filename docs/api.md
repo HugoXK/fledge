@@ -299,7 +299,10 @@ Status code: `402`.
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | POST | `/settings/providers` | approved + CSRF | Add a provider; HTTP/private URLs need the per-user permission or the global flag |
+| POST | `/settings/providers/:id/update` | approved + CSRF | Update a provider; existing models are re-tested before saving |
 | POST | `/settings/providers/:id/delete` | approved + CSRF | Delete a provider and its models |
+| POST | `/settings/providers/:id/discover` | approved + CSRF | Read the provider's `/v1/models` list from Fledge |
+| POST | `/settings/providers/:id/models/bulk` | approved + CSRF | Add selected discovered models, testing each before saving |
 | POST | `/settings/providers/:id/models` | approved + CSRF | Run a 1-token test from Fledge and save the model only on success |
 | POST | `/settings/providers/:id/models/:modelId/delete` | approved + CSRF | Delete a provider model |
 | POST | `/admin/users/:id/private-models` | superadmin + CSRF | Grant or revoke the private/HTTP model permission for a user |

@@ -92,7 +92,9 @@ then the platform model. `/v1/models` lists the selected aliases for a
 repository token.
 
 Adding a model performs a 1-token test from Fledge. A failed test is an error and
-nothing is saved. HTTP/private addresses require `ALLOW_PRIVATE_MODEL_URLS`, a
+nothing is saved. A provider can be edited after re-testing every existing model,
+and "Discover models" reads `/v1/models` and bulk-adds only the models that pass
+the test. HTTP/private addresses require `ALLOW_PRIVATE_MODEL_URLS`, a
 per-user `allow_private_models` flag set by a superadmin, or the superadmin
 checkbox; the test must pass; the gateway host is the
 component that calls the model, so it must be able to reach the address.

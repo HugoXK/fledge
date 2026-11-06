@@ -48,8 +48,9 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 - Team stage evidence gate (`off` / `shadow` / `enforced`), issue-label intake
   (`priority:*`, `agent-ready`), a deduped repeated-failure ops alert, and
   selective question-notification read.
-- Model providers with multiple models, per-bot model assignment, a mandatory
-  platform connection test and a per-user private/HTTP permission.
+- Model providers with multiple models, discovery, editing with re-test,
+  per-bot model assignment, a mandatory platform connection test and a per-user
+  private/HTTP permission.
 - Repository lifecycle banner and danger zone, PR delivery with maintainer merge,
   issue commands and a live inbox SSE stream.
 - Product/Test stage sessions, a Fledge-driven delivery chain, grounded team

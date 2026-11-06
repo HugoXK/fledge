@@ -336,7 +336,7 @@ repository failure counter; three consecutive failures pause auto-iterate and
 notify the owner.
 
 An iterate preflight (and a cached check for plan/review jobs) reads the target
-branch with the repository token. A 401/403 marks `repos.credential_state =
+branch and repository contents with the repository token. A 401/403 marks `repos.credential_state =
 'invalid'`, pauses auto-iterate, and notifies the owner with a re-authorize link.
 The repository page shows the credential banner until a refresh or a successful
 preflight clears it.
@@ -349,7 +349,9 @@ an encrypted key and an optional private/HTTP flag, and can hold multiple models
 the user then sees the private-URL checkbox and must still pass the connection
 test. A repository selects which provider models it may use and which is default
 (`repo_model_selection`). Adding a model runs a 1-token test
-from Fledge and is refused on failure. The instance patch groups the selected
+from Fledge and is refused on failure. A provider can be edited only after every
+existing model passes the new URL/key test; "Discover models" reads the
+provider's `/v1/models` and bulk-adds only passing models. The instance patch groups the selected
 models under their providers as DSH models, and the gateway maps an alias back
 to its provider, key and underlying model. Applying a changed selection rewrites
 the patch and restarts the container only when no job is active. A repository can

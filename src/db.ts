@@ -1204,6 +1204,13 @@ export class Store {
     return this.get<ModelProviderRow>('SELECT * FROM model_providers WHERE id = ?', input.id)!
   }
 
+  updateModelProvider(id: string, userId: string, patch: Partial<Pick<ModelProviderRow, 'label' | 'base_url' | 'key_enc' | 'allow_private'>>): void {
+    const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
+    if (entries.length === 0) return
+    const sets = entries.map(([key]) => `${key} = ?`).join(', ')
+    this.run(`UPDATE model_providers SET ${sets}, updated_at = ? WHERE id = ? AND user_id = ?`, ...entries.map(([, value]) => value), nowIso(), id, userId)
+  }
+
   deleteModelProvider(id: string, userId: string): void {
     this.run('DELETE FROM model_providers WHERE id = ? AND user_id = ?', id, userId)
   }
