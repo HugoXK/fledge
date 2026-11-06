@@ -172,6 +172,36 @@ test('a prUrl from another host is rejected before any GitHub call', async () =>
   }
 })
 
+test('a prUrl that only looks like the repository host is rejected before any GitHub call', async () => {
+  const github = await fakeGithub({ number: 12, headRef: 'fledge/job-a', baseRef: 'main', headSha: 'shaa' })
+  const s = await setup({ apiBase: github.url, slug: 'lookalike' })
+  try {
+    // The repository origin here is https://github.example. Each row is a URL
+    // that a prefix, suffix or substring comparison would mistake for it.
+    const hostile = [
+      'https://evil.example@github.example/o/r/pull/12', // credentials on the right host
+      'https://github.example@evil.example/o/r/pull/12', // userinfo swallows the host
+      'https://github.example.evil.example/o/r/pull/12', // our host as a suffix
+      'https://evil.example/github.example/o/r/pull/12', // our host inside the path
+      'https://github.example:8443/o/r/pull/12', // unexpected port
+    ]
+    for (const [index, prUrl] of hostile.entries()) {
+      const id = `job_lookalike_${index}`
+      const secret = `lookalike-secret-${index}`
+      startJob(s.store, s.repo, id, secret, 'fledge/job-a')
+      const result = await s.jobs.handleCallback(id, secret, { status: 'succeeded', prUrl, summary: 'done' })
+      assert.equal(result.ok, true, `${prUrl} must still finish the job`)
+      assert.notEqual(s.store.getJob(id)?.pr_state, 'merged', `${prUrl} must not merge`)
+    }
+    assert.equal(github.merges.length, 0)
+    assert.deepEqual(github.requests, [], 'no look-alike URL may reach GitHub')
+    assert.equal(auditOf(s.store, 'job.merge_skipped').length, hostile.length, 'every rejection is audited')
+  } finally {
+    await s.close()
+    await github.close()
+  }
+})
+
 test('a pull request that belongs to the job still merges exactly once', async () => {
   const github = await fakeGithub({ number: 12, headRef: 'fledge/job-a', baseRef: 'main', headSha: 'shaa' })
   const s = await setup({ apiBase: github.url, slug: 'own' })

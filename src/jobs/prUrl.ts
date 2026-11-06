@@ -61,6 +61,12 @@ export function parsePrUrl(repo: RepoRow, prUrl: string, apiBase: string): PrUrl
   } catch {
     return { ok: false, reason: `pull request URL ${prUrl} is not a valid URL` }
   }
+  // WHATWG keeps `user:pass@` outside `host`, so `https://x@github.example/...`
+  // compares equal to the repository origin while the URL still reads like a
+  // different host. A job callback has no reason to carry credentials.
+  if (url.username !== '' || url.password !== '') {
+    return { ok: false, reason: `pull request URL ${prUrl} carries credentials` }
+  }
   const actual = `${url.protocol}//${url.host}`
   if (actual !== expected) {
     return { ok: false, reason: `pull request host ${actual} is not ${expected}` }
