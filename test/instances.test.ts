@@ -175,7 +175,7 @@ test('applyBotModels updates each configured bot through the bridge', async () =
   const bridge = await startFakeServer(async (request, response) => {
     const body = JSON.parse((await readBody(request)).toString('utf8')) as { endpoint: string; payload: Record<string, unknown> }
     if (body.endpoint === 'state') {
-      json(response, 200, { value: { bots: [{ id: 'lead-id', name: 'Repo Lead' }, { id: 'product-id', name: 'Repo Product' }] } })
+      json(response, 200, { value: { bots: [{ id: 'lead-id', name: 'Repo Lead', model: 'fledge/old' }, { id: 'product-id', name: 'Repo Product', model: 'fledge/old' }] } })
       return
     }
     updates.push({ ...body.payload, endpoint: body.endpoint })
@@ -203,7 +203,7 @@ test('applyBotModels updates each configured bot through the bridge', async () =
     assert.equal(result.updated, 2)
     assert.deepEqual(result.skipped, [])
     assert.equal(updates.length, 2)
-    assert.equal(updates[0]?.model, 'fledge-prv_apply/pvm_apply')
+    assert.equal(updates.every((entry) => entry.model === 'fledge-prv_apply/pvm_apply'), true)
     assert.equal(updates[0]?.endpoint, 'update-bot')
   } finally {
     store.close()
