@@ -2079,6 +2079,10 @@ export class Store {
     }
   }
 
+  failedJobsSince(sinceIso: string, limit = 5000): JobRow[] {
+    return this.all<JobRow>("SELECT * FROM jobs WHERE created_at >= ? AND status IN ('failed', 'quota_exhausted') ORDER BY created_at DESC LIMIT ?", sinceIso, limit)
+  }
+
   activeJobForRepo(repoId: string): JobRow | undefined {
     return this.get<JobRow>("SELECT * FROM jobs WHERE repo_id = ? AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1", repoId)
   }

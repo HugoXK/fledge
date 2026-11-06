@@ -9,6 +9,7 @@ import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRo
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
+import { classifyFailure, failureLabel, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { STAGE_MODES } from '../lib/stages.js'
 import type { InstallationRepo } from '../repos/app.js'
 import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
@@ -90,6 +91,21 @@ function alertRows(t: Translate, alerts: AlertView[]): string {
       : href === '' ? '' : `<a class="link" href="${escapeHtml(href)}">${escapeHtml(t('打开', 'Open'))}</a>`
     return `<tr><td><span class="badge ${alert.level === 'critical' ? 'bad' : alert.level === 'warning' ? 'busy' : ''}">${escapeHtml(level)}</span></td><td>${escapeHtml(alert.kind)}</td><td>${escapeHtml(alert.repoLabel ?? '')}${alert.repoLabel === undefined || alert.repoLabel === '' ? '' : ' · '}${escapeHtml(alertText(t, alert))}</td><td>${link}</td></tr>`
   }).join('')
+}
+
+function failureHref(action: FailureAction, repoId: string): string {
+  if (action === 'reauthorize') return `/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repoId}`)}`
+  if (action === 'settings') return '/settings'
+  if (action === 'repo' || action === 'refresh') return `/repos/${repoId}`
+  return ''
+}
+
+function failureActionLabel(t: Translate, action: FailureAction): string {
+  if (action === 'reauthorize') return t('重新授权', 'Re-authorize')
+  if (action === 'settings') return t('打开设置', 'Open settings')
+  if (action === 'repo') return t('打开仓库', 'Open repository')
+  if (action === 'refresh') return t('刷新仓库', 'Refresh repository')
+  return ''
 }
 
 function maskEmail(email: string): string {
@@ -276,7 +292,7 @@ function jobRows(locale: Locale, jobs: JobRow[]): string {
           <a href="/repos/${escapeHtml(job.repo_id)}/jobs/${escapeHtml(job.id)}"><code>${escapeHtml(job.id)}</code></a> <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span>
           <small class="job-meta">${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(humanTimeShort(job.created_at))}</small>
         </td>
-        <td data-job-status>${badge(t, job.status)}</td>
+        <td data-job-status>${badge(t, job.status)}${classifyFailure(job) === null ? '' : `<br /><small class="muted">${escapeHtml(failureLabel(t, classifyFailure(job)!.kind))}</small>`}</td>
         <td class="job-links">${jobLinks(job)}</td>
         <td data-job-summary class="job-summary"><span data-job-summary-text title="${escapeHtml(summary.full)}">${escapeHtml(summary.short)}</span>${attribution === '' ? '' : `<small class="muted" data-job-attribution>${escapeHtml(attribution)}</small>`}</td>
       </tr>`
@@ -1613,6 +1629,8 @@ export function jobPage(input: {
   const t = translator(locale)
   const advanced = advancedViewer(viewer)
   const evidence = parseEvidenceJson(job.evidence_json)
+  const failure = classifyFailure(job)
+  const failureLink = failure === null ? '' : failureHref(failure.action, repo.id)
   const attribution = jobAttribution(t, job)
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
@@ -1676,7 +1694,8 @@ export function jobPage(input: {
     <div class="card">
       <h2>${escapeHtml(t('结果', 'Result'))}</h2>
       <p class="${job.kind === 'research' ? 'job-report' : ''}">${escapeHtml(jobSummary(locale, t, job))}</p>
-      ${job.error === null || job.error === '' ? '' : `<div class="banner bad">${escapeHtml(localizeMessage(locale, job.error) ?? job.error)}</div>`}
+      ${failure === null ? '' : `<div class="banner bad"><strong>${escapeHtml(failureLabel(t, failure.kind))}</strong> · ${escapeHtml(t(failure.hint[0], failure.hint[1]))}${failureLink === '' ? '' : ` <a class="link" href="${escapeHtml(failureLink)}">${escapeHtml(failureActionLabel(t, failure.action))}</a>`}</div>`}
+      ${job.error === null || job.error === '' ? '' : `<details class="fine"><summary>${escapeHtml(t('技术详情', 'Technical detail'))}</summary><p>${escapeHtml(localizeMessage(locale, job.error) ?? job.error)}</p></details>`}
       <p class="fine">${escapeHtml(t('成本', 'Cost'))} ${escapeHtml(cost)} · ${escapeHtml(t('创建', 'Created'))} ${escapeHtml(humanTimeShort(job.created_at))} · ${escapeHtml(t('结束', 'Finished'))} ${escapeHtml(humanTimeShort(job.finished_at))}</p>
       ${attribution === '' ? '' : `<p class="fine">${escapeHtml(attribution)}</p>`}
       ${job.checkpoint === null || job.checkpoint === '' ? '' : `<p class="fine"><strong>${escapeHtml(t('断点', 'Checkpoint'))}:</strong> ${escapeHtml(job.checkpoint)}</p>`}
@@ -1740,11 +1759,12 @@ export function metricsPage(input: {
   modelCosts: Array<{ model: string; costUsd: number; calls: number }>
   alerts: AlertView[]
   windowDays?: number
+  failures: Array<{ kind: FailureKind; count: number }>
   since: string
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, metrics, team, workItems, attribution, stages, delivery, daily, repoCosts, modelCosts, alerts, since, notice, error } = input
+  const { config, locale, viewer, metrics, team, workItems, attribution, stages, delivery, daily, repoCosts, modelCosts, alerts, failures, since, notice, error } = input
   const windowDays = input.windowDays ?? 30
   const t = translator(locale)
   const successRate = metrics.jobs === 0 ? null : Math.round((metrics.succeeded / metrics.jobs) * 1000) / 10
@@ -1829,6 +1849,12 @@ export function metricsPage(input: {
   <section class="card">
     <h2>${escapeHtml(t('每日趋势', 'Daily trend'))}</h2>
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('日期', 'Day'))}</th><th>${escapeHtml(t('任务', 'Jobs'))}</th><th>${escapeHtml(t('成功', 'Succeeded'))}</th><th>${escapeHtml(t('失败', 'Failed'))}</th><th>${escapeHtml(t('已合并 PR', 'Merged PRs'))}</th></tr></thead><tbody>${daily.length === 0 ? `<tr><td colspan="5" class="muted">${escapeHtml(t('还没有每日数据。', 'No daily data yet.'))}</td></tr>` : daily.map((row) => `<tr><td>${escapeHtml(row.day)}</td><td>${row.jobs}</td><td>${row.succeeded}</td><td>${row.failed}</td><td>${row.merged}</td></tr>`).join('')}</tbody></table></div>
+  </section>
+  <section class="card">
+    <h2>${escapeHtml(t('失败分类', 'Failure breakdown'))}</h2>
+    ${failures.length === 0
+      ? `<p class="muted">${escapeHtml(t('这个窗口没有失败任务。', 'No failed jobs in this window.'))}</p>`
+      : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('类型', 'Kind'))}</th><th>${escapeHtml(t('次数', 'Count'))}</th></tr></thead><tbody>${failures.map((row) => `<tr><td>${escapeHtml(failureLabel(t, row.kind))}</td><td>${row.count}</td></tr>`).join('')}</tbody></table></div>`}
   </section>
   <section class="card">
     <h2>${escapeHtml(t('工作项结果', 'Work item outcomes'))}</h2>

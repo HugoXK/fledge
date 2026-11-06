@@ -271,6 +271,16 @@ GitHub token and cannot change the evaluator, CI or merge gate. See
 `scripts/evolution-shadow.mjs` exporter turns recent jobs into a redacted
 dataset, and `--report` prints the baseline plus a time-ordered train/holdout
 split; it does not write to the database.
+### Failure categories and recovery guidance
+
+A failed job carries a stable category derived from its error (`quota`,
+`credential`, `stage_evidence`, `stalled`, `timeout`, `bridge`, `review`,
+`workflow`, `github`, `model`, `unknown`). The job page renders the category and
+a concrete next step: re-authorize GitHub, open Settings, refresh the repository
+or retry. The raw error stays available under "Technical detail" for operators.
+The admin metrics page aggregates the same categories for the selected window.
+The classifier lives in `src/lib/failure.ts`; it does not change job state or
+hide the original error.
 
 ### Agent workspace
 

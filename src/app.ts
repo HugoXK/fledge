@@ -16,6 +16,7 @@ import { registerGateway } from './gateway/gateway.js'
 import { assertSafeModelUrl } from './gateway/modelUrl.js'
 import { quotaView } from './gateway/quota.js'
 import { parseAttributionJson } from './lib/attribution.js'
+import { failureBreakdown } from './lib/failure.js'
 import { Jobs } from './jobs/service.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
@@ -2119,6 +2120,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       modelCosts: store.modelCostMetrics(since),
       alerts: store.alerts({ usdCny: config.quota.usdCny }),
       windowDays,
+      failures: failureBreakdown(store.failedJobsSince(since)),
       since,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
