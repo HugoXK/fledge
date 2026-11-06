@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "Required PASS identity: HugoXK-bot (hugo2001xk@gmail.com). The policy is read from the base branch so a pull request cannot weaken its own gate.",
+  "note": "Owner HugoXK keeps repository merge authority. Reviewer work is hosted by the HugoXK-bot account (hugo2001xk@gmail.com), and a T2/T3 PASS must be written and posted by that login. The policy is read from the base branch so a pull request cannot weaken its own gate.",
   "reviewers": [
     "HugoXK-bot"
   ],
@@ -10,6 +10,7 @@
     "HugoXK-bot"
   ],
   "writers": [
+    "HugoXK",
     "HugoXK-bot"
   ]
 }

@@ -146,8 +146,9 @@ back. See [architecture.md](architecture.md) and [api.md](api.md).
 - The platform is single-tenant per instance in v0.1; SQLite is single-writer.
 - The dev login is a local convenience and must never be enabled in production.
 - Reviews are by tip SHA; a PASS without a `Ran:` command is invalid.
-- The required PASS identity is `HugoXK-bot` (`hugo2001xk@gmail.com`); the
-  review policy is read from the base branch.
+- Reviewer work is hosted by `HugoXK-bot` (`hugo2001xk@gmail.com`); the owner
+  `HugoXK` keeps merge authority, the bot gets a required PASS and write access,
+  and the review policy is read from the base branch.
 - One PR per issue; never a duplicate.
 
 ## Environment map (operator-only)
