@@ -844,6 +844,7 @@ test('the admin metrics page shows delivery, cost and alerts', () => {
       modelCosts: [{ model: 'model-a', costUsd: 0.4, calls: 3 }],
       alerts: [{ kind: 'job_stalled', level: 'critical', repoId: 'r1', repoLabel: 'o/r', jobId: 'j1', minutes: 60, message: 'job j1 has no callback for 60m' }],
       windowDays: 7,
+      failures: [{ kind: 'quota', count: 1 }],
       since: '2026-01-01T00:00:00.000Z',
     })
     assert.match(page, /Delivery efficiency/)
@@ -854,6 +855,7 @@ test('the admin metrics page shows delivery, cost and alerts', () => {
     assert.match(page, /model-a/)
     assert.match(page, /job_stalled/)
     assert.match(page, /7 days/)
+    assert.match(page, /Failure breakdown/)
   } finally {
     store.close()
   }
@@ -881,6 +883,30 @@ test('the job page renders the durable timeline', () => {
     assert.match(page, /job\.enqueued/)
     assert.match(page, /iterate:manual/)
     assert.match(page, /3 calls/)
+  } finally {
+    store.close()
+  }
+})
+
+test('a failed job shows an actionable failure category and a recovery link', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'failure-page-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_failure_page', userId: user.id, owner: 'o', name: 'fp', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_failure_page', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob(job.id, { status: 'failed', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。', finished_at: new Date().toISOString() })
+    const page = jobPage({
+      config,
+      locale: 'en',
+      viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
+      repo,
+      job: store.getJob(job.id)!,
+    })
+    assert.match(page, /Platform quota exhausted/)
+    assert.match(page, /Open settings/)
+    assert.match(page, /Technical detail/)
+    assert.match(page, /Settings → Model/)
   } finally {
     store.close()
   }
@@ -935,6 +961,37 @@ test('the repository page shows a delivery board grouped by work-item state', ()
     assert.match(page, /Fix the board/)
     assert.doesNotMatch(page, /Other work/)
     assert.match(page, /Clear filter/)
+  } finally {
+    store.close()
+  }
+})
+
+test('admin metrics shows the failure breakdown', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'failure-admin', status: 'approved', superadmin: true })
+    const page = metricsPage({
+      config,
+      locale: 'en',
+      viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
+      metrics: { users: 1, approved: 1, repos: 1, jobs: 2, succeeded: 1, failed: 1, usersWithJobs: 1, usersWithPr: 0, costUsd: 0, events: [] },
+      team: { jobs: 0, avgRoles: 0, leadOnly: 0, roles: [] },
+      workItems: { total: 0, open: 0, merged: 0, closed: 0 },
+      attribution: { unattributedCount: 0, unattributedUsd: 0, attributedUsd: 0 },
+      stages: { scope: 0, verify: 0, iterate: 1, review: 0, leadOnly: 0, grounded: 0 },
+      delivery: { jobs: 2, succeeded: 1, failed: 1, successRate: 50, prs: 0, merged: 0, mergeRate: 0, changesRequested: 0, reviewAverage: null, reviewCount: 0, medianJobMs: null, medianMergeMs: null, medianReviewMs: null },
+      daily: [],
+      repoCosts: [],
+      modelCosts: [],
+      alerts: [],
+      windowDays: 30,
+      failures: [{ kind: 'quota', count: 1 }, { kind: 'github', count: 1 }],
+      since: '2026-01-01T00:00:00.000Z',
+    })
+    assert.match(page, /Failure breakdown/)
+    assert.match(page, /Platform quota exhausted/)
+    assert.match(page, /GitHub operation failed/)
   } finally {
     store.close()
   }
