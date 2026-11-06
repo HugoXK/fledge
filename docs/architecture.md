@@ -21,6 +21,11 @@
    through `src/version.ts`; a release bumps that file and `CHANGELOG.md`
    together.
 
+## UI
+
+The console is server-rendered from `src/views/` and styled by `public/app.css`;
+its design tokens are documented in [docs/ui.md](ui.md).
+
 ## Components
 
 ```
