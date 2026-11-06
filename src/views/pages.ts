@@ -5,6 +5,7 @@ import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
+import { renderState, stateCell } from './states.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
@@ -282,7 +283,7 @@ function jobPlainSummary(locale: Locale, t: Translate, job: JobRow, max = 160): 
 
 function jobRows(locale: Locale, jobs: JobRow[]): string {
   const t = translator(locale)
-  if (jobs.length === 0) return `<tr><td colspan="4" class="muted">${escapeHtml(t('还没有任务。', 'No jobs yet.'))}</td></tr>`
+  if (jobs.length === 0) return stateCell(4, { kind: 'empty', title: t('还没有任务。', 'No jobs yet.'), body: t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.'), action: { href: '/dashboard#add-repo', label: t('添加仓库', 'Add repository') } })
   return jobs
     .map((job) => {
       const summary = jobPlainSummary(locale, t, job)
@@ -353,7 +354,7 @@ export function inboxSection(locale: Locale, viewer: Viewer, questions: InboxQue
       </div>`
     })
     .join('')
-  return `<section class="card inbox" id="inbox"${questions.length === 0 ? ' hidden' : ''}>
+  return `<section class="card inbox" id="inbox" aria-live="polite"${questions.length === 0 ? ' hidden' : ''}>
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('需要你处理', 'NEEDS YOUR INPUT'))}</div>
@@ -363,6 +364,7 @@ export function inboxSection(locale: Locale, viewer: Viewer, questions: InboxQue
       ${returnTo === '/dashboard' ? '' : `<a class="link" href="/dashboard">${escapeHtml(t('查看仓库', 'View repositories'))}</a>`}
     </div>
     <div class="inbox-list">${cards}</div>
+    <p class="fine" data-inbox-status role="status" aria-live="polite"></p>
   </section>`
 }
 
@@ -483,7 +485,7 @@ export function dashboardPage(input: {
   const t = translator(locale)
   const quota = quotaView(viewer.user, config)
   const repoRows = repos.length === 0
-    ? `<tr><td colspan="5" class="muted">${escapeHtml(t('还没有仓库。先添加一个。', 'No repositories yet. Add one first.'))}</td></tr>`
+    ? stateCell(5, { kind: 'empty', title: t('还没有仓库。', 'No repositories yet.'), body: t('添加第一个仓库并选择你的角色，任务才会开始。', 'Add your first repository and choose your role before any job can start.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })
     : repos
         .map(
           (repo) => `<tr data-repo-id="${escapeHtml(repo.id)}">
@@ -755,7 +757,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     : ''
   const visibleWorkItems = workState === undefined ? workItems : workItems.filter((item) => item.state === workState)
   const workRows = visibleWorkItems.length === 0
-    ? `<tr><td colspan="6" class="muted">${escapeHtml(workState === undefined ? t('还没有工作项。创建一个，或让任务自动生成。', 'No work items yet. Create one, or let a job create it.') : t(`没有状态为“${workItemStateLabel(t, workState)}”的工作项。`, `No work items are in “${workItemStateLabel(t, workState)}”.`))}</td></tr>`
+    ? stateCell(6, { kind: 'empty', title: workState === undefined ? t('还没有工作项。', 'No work items yet.') : t(`没有状态为“${workItemStateLabel(t, workState)}”的工作项。`, `No work items are in “${workItemStateLabel(t, workState)}”.`), body: workState === undefined ? t('创建一个，或让任务自动生成。', 'Create one, or let a job create it.') : t('换一个状态筛选，或回到全部。', 'Switch the filter, or go back to all.'), action: workState === undefined ? { href: '/dashboard', label: t('回到仓库', 'Back to repositories') } : { href: `/repos/${escapeHtml(repo.id)}`, label: t('查看全部工作项', 'Show all work items') } })
     : visibleWorkItems.map((item) => {
         const nextStates = WORK_ITEM_TRANSITIONS[item.state as WorkItemState] ?? []
         const stateOptions = nextStates.map((state) => `<option value="${state}">${escapeHtml(workItemStateLabel(t, state))}</option>`).join('')
@@ -797,7 +799,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     <div class="table-scroll" style="margin-top:14px"><table><thead><tr><th>${escapeHtml(t('工作项', 'Work item'))}</th><th>${escapeHtml(t('状态', 'State'))}</th><th>${escapeHtml(t('优先级', 'Priority'))}</th><th>Issue / PR</th><th>${escapeHtml(t('任务', 'Job'))}</th><th></th></tr></thead><tbody>${workRows}</tbody></table></div>
   </section>`;
   const prRows = prJobs.length === 0
-    ? `<tr><td colspan="6" class="muted">${escapeHtml(t('没有待处理的 PR。', 'No pull requests waiting.'))}</td></tr>`
+    ? stateCell(6, { kind: 'empty', title: t('没有待处理的 PR。', 'No pull requests waiting.'), body: t('任务产出 PR 后会出现在这里；没有就是真的没有在等。', 'A pull request appears here once a job opens one; an empty list means nothing is waiting.'), action: { href: `/repos/${escapeHtml(repo.id)}`, label: t('回到仓库', 'Back to repository') } })
     : prJobs.map((job) => {
         const number = /\/pull\/(\d+)/.exec(job.pr_url ?? '')?.[1] ?? ''
         return `<tr><td><a href="${escapeHtml(job.pr_url ?? '')}" target="_blank" rel="noreferrer">#${escapeHtml(number)}</a></td><td>${badge(t, job.status)}</td><td>${job.review_score === null ? '—' : job.review_score}</td><td>${escapeHtml(quotaMoney(job.cost_usd * config.quota.usdCny))}</td><td>${escapeHtml(humanTimeShort(job.created_at))}</td><td>${repo.repo_role === 'maintainer' ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/merge">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('合并', 'Merge'))}</button></form>` : ''}</td></tr>`
@@ -1025,7 +1027,7 @@ export function teamPage(input: {
   const questionHtml = questions.length === 0
     ? `<p class="muted">${escapeHtml(t('没有待回答的问题。', 'No open questions.'))}</p>`
     : `<div class="list">${questions.map((question) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(question.question || t('团队提问', 'Team question'))}</strong>${question.options.length === 0 ? '' : `<small>${question.options.map((option) => escapeHtml(option)).join(' · ')}</small>`}</div></div>`).join('')}</div>`
-  const stateErrorHtml = stateError === undefined ? '' : `<div class="banner bad">${escapeHtml(t('读取团队状态失败：', 'Could not read team state: '))}${escapeHtml(stateError)}</div>`
+  const stateErrorHtml = stateError === undefined ? '' : renderState({ kind: 'error', title: t('读取团队状态失败。', 'Could not read the team state.'), body: stateError, action: { href: `/repos/${escapeHtml(repo.id)}/team`, label: t('重试', 'Try again') } })
   const instanceActions = config.flybot.instanceImage === ''
     ? ''
     : instance === undefined || instance.status === 'failed' || instance.status === 'stopped'
@@ -1106,7 +1108,7 @@ export function settingsPage(input: {
   const maskedEmail = resolvedEmail === '' ? '' : maskEmail(resolvedEmail)
   const hasEmail = resolvedEmail !== ''
   const tokenRows = tokens.length === 0
-    ? `<tr><td colspan="4" class="muted">${escapeHtml(t('还没有 API token。', 'No API tokens yet.'))}</td></tr>`
+    ? stateCell(4, { kind: 'empty', title: t('还没有 API token。', 'No API tokens yet.'), body: t('外部控制室读取指标需要一枚 token；在同一页下面创建一个。', 'An external control room needs one token to read metrics; create one lower on this page.'), action: { href: '#tokens', label: t('创建 token', 'Create a token') } })
     : tokens
         .map(
           (token) => `<tr><td><code>${escapeHtml(token.prefix)}…</code></td><td>${escapeHtml(token.name)}</td><td>${escapeHtml(humanTimeShort(token.last_used_at))}</td><td><form method="post" action="/settings/tokens/${escapeHtml(token.id)}/revoke">${csrf(viewer)}<button class="link" type="submit">${escapeHtml(t('撤销', 'Revoke'))}</button></form></td></tr>`,
@@ -1263,7 +1265,7 @@ function auditTone(action: string): string {
 
 function auditRows(locale: Locale, audit: AuditRow[], usersById: Map<string, string>, hideActor = false): string {
   const t = translator(locale)
-  if (audit.length === 0) return `<tr><td colspan="4" class="muted">${escapeHtml(t('暂无记录。', 'No records yet.'))}</td></tr>`
+  if (audit.length === 0) return stateCell(4, { kind: 'empty', title: t('暂无记录。', 'No records yet.'), body: t('审批、任务和设置变更都会写进审计；现在还没有任何一条。', 'Approvals, jobs and setting changes are audited; there is nothing yet.'), action: { href: '/dashboard', label: t('回到仓库', 'Back to repositories') } })
   return audit
     .map((row) => {
       const rawDetail = row.detail ?? ''
@@ -1340,7 +1342,7 @@ export function adminPage(input: {
     .filter((user) => user.status === 'pending')
     .sort((a, b) => String(a.application_submitted_at ?? a.created_at).localeCompare(String(b.application_submitted_at ?? b.created_at)))
   const pendingRows = pending.length === 0
-    ? `<tr><td colspan="4" class="muted">${escapeHtml(t('没有待审批申请。', 'No pending applications.'))}</td></tr>`
+    ? stateCell(4, { kind: 'empty', title: t('没有待审批申请。', 'No pending applications.'), body: t('新申请会出现在这里；审批会发邮件并写审计。', 'New applications land here; approving one sends mail and writes an audit entry.'), action: { href: '/admin/users', label: t('查看用户', 'View users') } })
     : pending
         .map(
           (user, index) => `<tr>
@@ -1672,6 +1674,9 @@ export function jobPage(input: {
         </form>` : job.plan_approved_at !== null ? `<p class="fine">${escapeHtml(t('批准人', 'Approved by'))} ${escapeHtml(job.plan_approved_by ?? '—')} · ${escapeHtml(t('允许路径', 'Allowed'))} ${escapeHtml(job.plan_allow_paths ?? '—')} · ${escapeHtml(t('禁止路径', 'Forbidden'))} ${escapeHtml(job.plan_deny_paths ?? '—')}</p>` : ''}
       </section>`
     : ''
+  const jobLoading = job.status === 'queued' || job.status === 'running'
+    ? renderState({ kind: 'loading', title: job.status === 'queued' ? t('任务已排队。', 'This job is queued.') : t('任务正在运行。', 'This job is running.'), body: job.status === 'queued' ? t('前面的任务结束后自动开始；这个页面会自己更新。', 'It starts as soon as the jobs ahead finish; this page updates by itself.') : t('团队进度会写进下面的时间线，不需要手动刷新。', 'Team progress lands in the timeline below; no manual refresh needed.'), skeletonLines: 2 })
+    : ''
   const body = `<section class="card">
     <div class="row between">
       <div>
@@ -1689,12 +1694,13 @@ export function jobPage(input: {
       </div>
     </div>
   </section>
+  ${jobLoading}
   ${supportMode ? '' : planCard}
   <section class="cols">
     <div class="card">
       <h2>${escapeHtml(t('结果', 'Result'))}</h2>
       <p class="${job.kind === 'research' ? 'job-report' : ''}">${escapeHtml(jobSummary(locale, t, job))}</p>
-      ${failure === null ? '' : `<div class="banner bad"><strong>${escapeHtml(failureLabel(t, failure.kind))}</strong> · ${escapeHtml(t(failure.hint[0], failure.hint[1]))}${failureLink === '' ? '' : ` <a class="link" href="${escapeHtml(failureLink)}">${escapeHtml(failureActionLabel(t, failure.action))}</a>`}</div>`}
+      ${failure === null ? '' : renderState({ kind: 'error', title: failureLabel(t, failure.kind), body: t(failure.hint[0], failure.hint[1]), action: failureLink === '' ? { label: t('按上面的动作处理后再重试。', 'Fix the cause above, then retry.') } : { href: failureLink, label: failureActionLabel(t, failure.action) } })}
       ${job.error === null || job.error === '' ? '' : `<details class="fine"><summary>${escapeHtml(t('技术详情', 'Technical detail'))}</summary><p>${escapeHtml(localizeMessage(locale, job.error) ?? job.error)}</p></details>`}
       <p class="fine">${escapeHtml(t('成本', 'Cost'))} ${escapeHtml(cost)} · ${escapeHtml(t('创建', 'Created'))} ${escapeHtml(humanTimeShort(job.created_at))} · ${escapeHtml(t('结束', 'Finished'))} ${escapeHtml(humanTimeShort(job.finished_at))}</p>
       ${attribution === '' ? '' : `<p class="fine">${escapeHtml(attribution)}</p>`}
@@ -1770,7 +1776,7 @@ export function metricsPage(input: {
   const successRate = metrics.jobs === 0 ? null : Math.round((metrics.succeeded / metrics.jobs) * 1000) / 10
   const cost = quotaMoney(metrics.costUsd * config.quota.usdCny)
   const eventRows = metrics.events.length === 0
-    ? `<tr><td colspan="2" class="muted">${escapeHtml(t('还没有事件。', 'No events yet.'))}</td></tr>`
+    ? stateCell(2, { kind: 'empty', title: t('还没有事件。', 'No events yet.'), body: t('任务开始后会记录每一次状态变化。', 'Every state change is recorded once the job starts.'), action: { href: '#', label: t('等第一个任务运行后回来看。', 'Come back after the first job runs.') } })
     : metrics.events.map((event) => `<tr><td><code>${escapeHtml(event.name)}</code></td><td>${event.n}</td></tr>`).join('')
   const body = `<section class="card">
     <div class="row between">
@@ -1814,7 +1820,7 @@ export function metricsPage(input: {
       <div class="list-row"><div class="list-main"><strong>${team.avgRoles}</strong><small>${escapeHtml(t('平均参与角色数', 'Average roles per job'))}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${team.leadOnly}</strong><small>${escapeHtml(t('只有 Lead 干活的任务', 'Lead-only jobs'))}</small></div></div>
     </div>
-    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('角色', 'Role'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('参与任务', 'Jobs'))}</th></tr></thead><tbody>${team.roles.length === 0 ? `<tr><td colspan="3" class="muted">${escapeHtml(t('还没有团队统计。', 'No team stats yet.'))}</td></tr>` : team.roles.map((entry) => `<tr><td>${escapeHtml(teamRoleLabel(t, entry.role))}</td><td>${entry.calls}</td><td>${entry.jobs}</td></tr>`).join('')}</tbody></table></div>
+    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('角色', 'Role'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('参与任务', 'Jobs'))}</th></tr></thead><tbody>${team.roles.length === 0 ? stateCell(3, { kind: 'empty', title: t('还没有团队统计。', 'No team stats yet.'), body: t('团队跑过一个任务后这里才有调用数。', 'Calls appear once the team has run a job.'), action: { href: '/dashboard#jobs', label: t('查看任务', 'View jobs') } }) : team.roles.map((entry) => `<tr><td>${escapeHtml(teamRoleLabel(t, entry.role))}</td><td>${entry.calls}</td><td>${entry.jobs}</td></tr>`).join('')}</tbody></table></div>
   </section>
   <section class="cols">
     <div class="card">
@@ -1839,16 +1845,16 @@ export function metricsPage(input: {
   <section class="cols">
     <div class="card">
       <h2>${escapeHtml(t('仓库成本', 'Cost by repository'))}</h2>
-      <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th></tr></thead><tbody>${repoCosts.length === 0 ? `<tr><td colspan="3" class="muted">${escapeHtml(t('还没有仓库成本数据。', 'No repository cost data yet.'))}</td></tr>` : repoCosts.map((row) => `<tr><td>${escapeHtml(row.label)}</td><td>${row.calls}</td><td>${escapeHtml(quotaMoney(row.costUsd * config.quota.usdCny))}</td></tr>`).join('')}</tbody></table></div>
+      <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th></tr></thead><tbody>${repoCosts.length === 0 ? stateCell(3, { kind: 'empty', title: t('还没有仓库成本数据。', 'No repository cost data yet.'), body: t('窗口内没有产生计费调用。', 'No billed calls in this window.'), action: { href: '/dashboard', label: t('回到仓库', 'Back to repositories') } }) : repoCosts.map((row) => `<tr><td>${escapeHtml(row.label)}</td><td>${row.calls}</td><td>${escapeHtml(quotaMoney(row.costUsd * config.quota.usdCny))}</td></tr>`).join('')}</tbody></table></div>
     </div>
     <div class="card">
       <h2>${escapeHtml(t('模型成本', 'Cost by model'))}</h2>
-      <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('模型', 'Model'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th></tr></thead><tbody>${modelCosts.length === 0 ? `<tr><td colspan="3" class="muted">${escapeHtml(t('还没有模型成本数据。', 'No model cost data yet.'))}</td></tr>` : modelCosts.map((row) => `<tr><td><code>${escapeHtml(row.model)}</code></td><td>${row.calls}</td><td>${escapeHtml(quotaMoney(row.costUsd * config.quota.usdCny))}</td></tr>`).join('')}</tbody></table></div>
+      <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('模型', 'Model'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th></tr></thead><tbody>${modelCosts.length === 0 ? stateCell(3, { kind: 'empty', title: t('还没有模型成本数据。', 'No model cost data yet.'), body: t('窗口内没有模型调用。', 'No model calls in this window.'), action: { href: '/settings', label: t('检查模型配置', 'Check the model setup') } }) : modelCosts.map((row) => `<tr><td><code>${escapeHtml(row.model)}</code></td><td>${row.calls}</td><td>${escapeHtml(quotaMoney(row.costUsd * config.quota.usdCny))}</td></tr>`).join('')}</tbody></table></div>
     </div>
   </section>
   <section class="card">
     <h2>${escapeHtml(t('每日趋势', 'Daily trend'))}</h2>
-    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('日期', 'Day'))}</th><th>${escapeHtml(t('任务', 'Jobs'))}</th><th>${escapeHtml(t('成功', 'Succeeded'))}</th><th>${escapeHtml(t('失败', 'Failed'))}</th><th>${escapeHtml(t('已合并 PR', 'Merged PRs'))}</th></tr></thead><tbody>${daily.length === 0 ? `<tr><td colspan="5" class="muted">${escapeHtml(t('还没有每日数据。', 'No daily data yet.'))}</td></tr>` : daily.map((row) => `<tr><td>${escapeHtml(row.day)}</td><td>${row.jobs}</td><td>${row.succeeded}</td><td>${row.failed}</td><td>${row.merged}</td></tr>`).join('')}</tbody></table></div>
+    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('日期', 'Day'))}</th><th>${escapeHtml(t('任务', 'Jobs'))}</th><th>${escapeHtml(t('成功', 'Succeeded'))}</th><th>${escapeHtml(t('失败', 'Failed'))}</th><th>${escapeHtml(t('已合并 PR', 'Merged PRs'))}</th></tr></thead><tbody>${daily.length === 0 ? stateCell(5, { kind: 'empty', title: t('还没有每日数据。', 'No daily data yet.'), body: t('窗口内没有任务。', 'No jobs in this window.'), action: { href: '/dashboard#jobs', label: t('查看任务', 'View jobs') } }) : daily.map((row) => `<tr><td>${escapeHtml(row.day)}</td><td>${row.jobs}</td><td>${row.succeeded}</td><td>${row.failed}</td><td>${row.merged}</td></tr>`).join('')}</tbody></table></div>
   </section>
   <section class="card">
     <h2>${escapeHtml(t('失败分类', 'Failure breakdown'))}</h2>
@@ -1993,10 +1999,10 @@ export function adminSupportPage(input: {
   const t = translator(locale)
   const usersById = new Map([[user.id, user.login]])
   const repoRows = repos.length === 0
-    ? `<tr><td colspan="4" class="muted">${escapeHtml(t('没有仓库。', 'No repositories.'))}</td></tr>`
+    ? stateCell(4, { kind: 'empty', title: t('没有仓库。', 'No repositories.'), body: t('这个用户还没有接入仓库。', 'This user has not connected a repository.'), action: { href: '/admin/users', label: t('查看用户', 'View users') } })
     : repos.map((repo) => `<tr><td><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></td><td><span class="badge kind">${escapeHtml(repoRoleLabel(t, repo.repo_role))}</span></td><td>${badge(t, repo.last_status ?? 'idle')}</td><td>${escapeHtml(humanTimeShort(repo.last_run_at))}</td></tr>`).join('')
   const jobRows = jobs.length === 0
-    ? `<tr><td colspan="4" class="muted">${escapeHtml(t('没有任务。', 'No jobs.'))}</td></tr>`
+    ? stateCell(4, { kind: 'empty', title: t('没有任务。', 'No jobs.'), body: t('这个仓库还没有跑过任务。', 'This repository has not run a job yet.'), action: { href: '/dashboard#jobs', label: t('查看任务', 'View jobs') } })
     : jobs.map((job) => `<tr><td><a href="/admin/jobs/${escapeHtml(job.id)}"><code>${escapeHtml(job.id)}</code></a></td><td>${badge(t, job.status)} <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span></td><td>${escapeHtml(job.pr_url ?? '—')}</td><td>${escapeHtml(humanTimeShort(job.created_at))}</td></tr>`).join('')
   const body = `<a class="back" href="/admin">← ${escapeHtml(t('返回管理', 'Back to admin'))}</a>
     <section class="card"><div class="eyebrow">${escapeHtml(t('支持视图', 'SUPPORT VIEW'))}</div><h1>@${escapeHtml(user.login)}</h1><p class="muted">${badge(t, user.status)} · ${escapeHtml(roleLabel(t, user.role))} · ${escapeHtml(t('加入于', 'Joined'))} ${escapeHtml(humanTimeShort(user.created_at))}</p><p class="fine">${escapeHtml(t('只读；不会修改用户数据或触发任务。', 'Read-only; no user data or jobs are changed.'))}</p></section>
@@ -2029,7 +2035,7 @@ export function adminSearchPage(input: {
     return params.toString()
   }
   const jobRows = jobs.length === 0
-    ? `<tr><td colspan="4" class="muted">${escapeHtml(t('没有匹配的任务。', 'No matching jobs.'))}</td></tr>`
+    ? stateCell(4, { kind: 'empty', title: t('没有匹配的任务。', 'No matching jobs.'), body: t('换一个关键词，或清空筛选。', 'Try another keyword, or clear the filter.'), action: { href: '/admin', label: t('回到管理', 'Back to admin') } })
     : jobs.map((job) => `<tr><td><a href="/admin/jobs/${escapeHtml(job.id)}"><code>${escapeHtml(job.id)}</code></a></td><td>${badge(t, job.status)} <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span></td><td>${escapeHtml(usersById.get(job.user_id) ?? job.user_id)}</td><td>${escapeHtml(job.pr_url ?? job.issue_url ?? '—')}</td></tr>`).join('')
   const auditTable = auditRows(locale, audit, usersById, false)
   const jobQuery = query({ q: filters.q, status: filters.status, kind: filters.kind })
