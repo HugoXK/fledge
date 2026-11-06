@@ -223,6 +223,7 @@ export interface JobRow {
   plan_allow_paths: string | null
   plan_deny_paths: string | null
   base_sha: string | null
+  callback_fingerprint: string | null
   last_callback_at: string | null
   created_at: string
   started_at: string | null
@@ -543,6 +544,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   plan_allow_paths TEXT,
   plan_deny_paths TEXT,
   base_sha TEXT,
+  callback_fingerprint TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   last_callback_at TEXT,
@@ -937,6 +939,7 @@ export class Store {
     if (!jobColumns.has('plan_allow_paths')) this.run('ALTER TABLE jobs ADD COLUMN plan_allow_paths TEXT')
     if (!jobColumns.has('plan_deny_paths')) this.run('ALTER TABLE jobs ADD COLUMN plan_deny_paths TEXT')
     if (!jobColumns.has('base_sha')) this.run('ALTER TABLE jobs ADD COLUMN base_sha TEXT')
+    if (!jobColumns.has('callback_fingerprint')) this.run('ALTER TABLE jobs ADD COLUMN callback_fingerprint TEXT')
     if (!jobColumns.has('last_callback_at')) this.run('ALTER TABLE jobs ADD COLUMN last_callback_at TEXT')
     if (!jobColumns.has('pr_state')) this.run('ALTER TABLE jobs ADD COLUMN pr_state TEXT')
     const tokenColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(api_tokens)').map((row) => row.name))
@@ -2104,6 +2107,25 @@ export class Store {
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
     this.run(`UPDATE jobs SET ${sets} WHERE id = ?`, ...entries.map(([, value]) => value), id)
+  }
+
+  // Returns the number of rows the statement changed, which is how a guarded
+  // transition reports whether this caller won it.
+  runChanges(sql: string, ...params: unknown[]): number {
+    return Number(this.db.prepare(sql).run(...clean(params)).changes ?? 0)
+  }
+
+  // The terminal transition is the callback idempotency key: only the delivery
+  // that moves the row out of queued/running may run side effects.
+  claimJobTerminal(jobId: string, status: string, fingerprint: string | null, patch: Record<string, unknown>): boolean {
+    const entries = Object.entries({ ...patch, status, ...(fingerprint === null ? {} : { callback_fingerprint: fingerprint }) }).filter(([, value]) => value !== undefined)
+    const sets = entries.map(([key]) => `${key} = ?`).join(', ')
+    const changes = this.runChanges(
+      `UPDATE jobs SET ${sets} WHERE id = ? AND status IN ('queued','running')`,
+      ...entries.map(([, value]) => value),
+      jobId,
+    )
+    return changes === 1
   }
 
   countActiveJobs(): number {
