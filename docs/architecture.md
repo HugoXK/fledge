@@ -357,7 +357,8 @@ models under their providers as DSH models, and the gateway maps an alias back
 to its provider, key and underlying model. Applying a changed selection rewrites
 the patch and restarts the container only when no job is active. A repository can
 also assign a selected model to each DSH bot role; after the restart Fledge calls
-`update-bot` with `model: <provider>/<model>` for every configured role.
+`update-bot` with `model: <provider>/<model>` for every role, using the assigned
+model or the new default, so a bot cannot keep a stale provider reference.
 
 ### Per-job cost, evidence and metrics
 

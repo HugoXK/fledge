@@ -405,33 +405,34 @@ server.listen(3081, '0.0.0.0')
   async applyBotModels(repoId: string): Promise<{ updated: number; skipped: string[] }> {
     const instance = this.store.getRepoInstance(repoId)
     if (instance === undefined || instance.status !== 'ready') return { updated: 0, skipped: [] }
-    const mappings = this.store.listRepoBotModels(repoId)
-    if (mappings.length === 0) return { updated: 0, skipped: [] }
-    const selected = new Map(this.store.listRepoModelSelection(repoId).map((model) => [model.id, model]))
+    const selectedRows = this.store.listRepoModelSelection(repoId)
+    if (selectedRows.length === 0) return { updated: 0, skipped: [] }
+    const selected = new Map(selectedRows.map((model) => [model.id, model]))
+    const defaultModel = selectedRows.find((model) => model.is_default === 1) ?? selectedRows[0]!
+    const mappings = new Map(this.store.listRepoBotModels(repoId).map((mapping) => [mapping.role, mapping.provider_model_id]))
     const token = decryptSecret(instance.bridge_token_enc ?? '', this.config.tokenEncryptionKey)
     const state = await this.state(instance.bridge_port, token)
     const suffix: Record<string, string> = { lead: 'Lead', product: 'Product', test: 'Test', security: 'Security', reviewer: 'Reviewer', dev1: 'Dev-1', dev2: 'Dev-2' }
     let updated = 0
     const skipped: string[] = []
-    for (const mapping of mappings) {
-      const model = selected.get(mapping.provider_model_id)
+    for (const bot of state.bots) {
+      const name = String(bot.name ?? '')
+      const role = name === 'Chief' ? 'chief' : Object.entries(suffix).find(([, label]) => name.endsWith(` ${label}`))?.[0]
+      if (role === undefined || typeof bot.id !== 'string') continue
+      const mapping = mappings.get(role)
+      const model = mapping === undefined ? defaultModel : selected.get(mapping)
       if (model === undefined) {
-        skipped.push(mapping.role)
+        skipped.push(role)
         continue
       }
-      const bot = mapping.role === 'chief'
-        ? state.bots.find((entry) => String(entry.name ?? '') === 'Chief')
-        : state.bots.find((entry) => String(entry.name ?? '').endsWith(` ${suffix[mapping.role] ?? ''}`))
-      if (bot === undefined || typeof bot.id !== 'string') {
-        skipped.push(mapping.role)
-        continue
-      }
+      const alias = `fledge-${model.provider_id}/${model.id}`
+      if (bot.model === alias) continue
       try {
-        await this.dsh(instance.bridge_port, token, 'update-bot', { id: bot.id, model: `fledge-${model.provider_id}/${model.id}` })
+        await this.dsh(instance.bridge_port, token, 'update-bot', { id: bot.id, model: alias })
         updated += 1
       } catch (error) {
-        skipped.push(mapping.role)
-        log.warn('bot model update failed', { repo: repoId, role: mapping.role, error: String(error) })
+        skipped.push(role)
+        log.warn('bot model update failed', { repo: repoId, role, error: String(error) })
       }
     }
     this.store.audit(instance.user_id, 'flybot.bot_models.applied', `${repoId} updated=${updated} skipped=${skipped.join(',')}`)
