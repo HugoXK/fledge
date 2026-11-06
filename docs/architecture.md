@@ -58,6 +58,12 @@ its design tokens are documented in [docs/ui.md](ui.md).
   per breakpoint) and `[id] { scroll-margin-top }` follows it, so an anchor is
   never hidden under the header when it wraps; the shell's controls keep a
   44px touch target.
+- **Redirect targets**: every `next=` / `returnTo` value goes through one helper
+  that returns a path on this site or the fallback. It validates the parsed
+  result, not the input, so a value that is a plain path before parsing and
+  `//host` after it (`/..//evil.com`) cannot become a protocol-relative
+  `Location`. `/lang/:locale` is the public entry point; the OAuth `next` and the
+  form `returnTo` values share the same rule.
 - **SQLite** via Node's built-in `node:sqlite` (WAL, foreign keys). The database
   file is the only state; the mail outbox is a development artifact.
 - **Sessions** are random 32-byte tokens, stored as SHA-256 hashes; the cookie is

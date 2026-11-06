@@ -8,6 +8,11 @@ server {
 
   client_max_body_size 25m;
 
+  # Named files so deploy/logrotate-fledge.conf rotates Fledge's logs instead of
+  # competing with the distribution's rotation of access.log/error.log.
+  access_log /var/log/nginx/fledge-access.log;
+  error_log  /var/log/nginx/fledge-error.log warn;
+
   location / {
     proxy_pass http://127.0.0.1:8080;
     proxy_http_version 1.1;

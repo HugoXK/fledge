@@ -3,7 +3,11 @@
 - `fledge.service` — systemd unit. The app runs as `fledge`, reads
   `/etc/fledge/fledge.env`, writes `/var/lib/fledge`.
 - `nginx.conf.example` — TLS reverse proxy with SSE buffering disabled for
-  `/v1/`.
+  `/v1/`. Its `access_log`/`error_log` are the names the logrotate sample rotates.
+- `journald-fledge.conf` — host-level journald drop-in
+  (`/etc/systemd/journald.conf.d/`) that caps the journal Fledge logs into; it is
+  not a unit drop-in.
+- `logrotate-fledge.conf` — `/etc/logrotate.d/` stanza for the nginx files above.
 
 Typical layout:
 

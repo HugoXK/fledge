@@ -18,6 +18,7 @@
     "check": "npm run lint && npm run typecheck && npm test && npm run build",
     "mail:outbox": "node scripts/outbox.mjs",
     "db:backup": "node scripts/backup.mjs",
+    "db:restore-drill": "node scripts/restore-drill.mjs",
     "role:set": "node scripts/set-role.mjs",
     "role:set:dev": "tsx scripts/set-role.ts",
     "evolution:export": "node scripts/evolution-shadow.mjs",
