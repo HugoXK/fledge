@@ -1129,3 +1129,31 @@ test('mergeCleanPrs merges only pull requests that pass every check', async () =
     await github.close()
   }
 })
+
+test('a job writes a durable event timeline from enqueue to finish', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'timeline-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_timeline', userId: user.id, owner: 'o', name: 'timeline', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const queued = await jobs.enqueue(repo, 'manual')
+    assert.equal(queued.ok, true)
+    const job = queued.job!
+    const secret = 'callback-secret'
+    store.run('UPDATE jobs SET callback_hash = ? WHERE id = ?', sha256Hex(secret), job.id)
+
+    const progress = await jobs.handleCallback(job.id, secret, { status: 'running', summary: 'halfway' })
+    assert.equal(progress.ok, true)
+    const finished = await jobs.handleCallback(job.id, secret, { status: 'succeeded', summary: 'done' })
+    assert.equal(finished.ok, true)
+
+    const kinds = store.listJobEvents(job.id).map((event) => event.kind)
+    assert.ok(kinds.includes('job.enqueued'))
+    assert.ok(kinds.includes('job.running'))
+    assert.ok(kinds.includes('job.progress'))
+    assert.ok(kinds.includes('job.succeeded'))
+  } finally {
+    store.close()
+  }
+})

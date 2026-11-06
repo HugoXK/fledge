@@ -53,6 +53,9 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
   private/HTTP permission.
 - Repository lifecycle banner and danger zone, PR delivery with maintainer merge,
   issue commands and a live inbox SSE stream.
+- Durable job events, personal and admin delivery metrics (7/30 days),
+  cost by repository and model, alerts, a read-only `/api/read/metrics` JSON
+  contract, a baseline shadow report (`npm run evolution:export -- --report`) and the first AgentDescent evolution ledger/ADR.
 - Product/Test stage sessions, a Fledge-driven delivery chain, grounded team
   attribution, token backfill and managed instance-token rotation.
 - Multiple repositories per user; per-repo fine-grained GitHub tokens, validated
@@ -76,7 +79,7 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 
 ### Verified
 
-- `npm run check`: lint, typecheck, 140 tests, production build — green.
+- `npm run check`: lint, typecheck, 156 tests, production build — green.
 - GitHub Actions: Node 22 and Node 24 green at the release commit.
 - A real platform-funded call with the alternate key returned 200 and deducted
   `$0.00001064` from the dev account's quota.

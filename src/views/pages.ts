@@ -1,12 +1,12 @@
 import type { Config } from '../config.js'
-import type { AuditRow, JobRow, ModelProviderRow, NotificationRow, ProviderModelRow, RepoInstanceRow, RepoRow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
+import type { AlertView, AuditRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, ProviderModelRow, RepoInstanceRow, RepoRow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
-import { WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
+import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
 import { STAGE_MODES } from '../lib/stages.js'
@@ -30,6 +30,66 @@ function csrf(viewer: Viewer): string {
 
 function infoTip(text: string): string {
   return `<span class="info-tip" tabindex="0" role="img" aria-label="${escapeHtml(text)}" data-tip="${escapeHtml(text)}">!</span>`
+}
+
+function durationText(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) return '—'
+  if (ms < 1000) return '<1s'
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`
+  if (ms < 86_400_000) return `${(ms / 3_600_000).toFixed(1)}h`
+  return `${(ms / 86_400_000).toFixed(1)}d`
+}
+
+function jobEventDetail(t: Translate, event: JobEventRow): string {
+  if (event.kind === 'team.role' && event.meta !== null) {
+    try {
+      const parsed = JSON.parse(event.meta) as { calls?: unknown; tool?: unknown; activity?: unknown }
+      const calls = typeof parsed.calls === 'number' ? parsed.calls : null
+      const tool = typeof parsed.tool === 'string' && parsed.tool !== '' ? parsed.tool : ''
+      const activity = typeof parsed.activity === 'string' && parsed.activity !== '' ? parsed.activity : ''
+      const bits = [calls === null ? '' : t(`${calls} 次调用`, `${calls} calls`), tool, activity].filter((value) => value !== '')
+      if (bits.length > 0) return bits.join(' · ')
+    } catch {}
+  }
+  return (event.meta ?? '—').slice(0, 240)
+}
+
+function alertText(t: Translate, alert: AlertView): string {
+  switch (alert.kind) {
+    case 'job_stalled':
+      return t(`任务 ${alert.jobId ?? ''} 已 ${alert.minutes ?? '?'} 分钟没有回调，可能已卡住`, `Job ${alert.jobId ?? ''} has not called back for ${alert.minutes ?? '?'} minutes and may be stuck`)
+    case 'job_slow':
+      return t(`任务 ${alert.jobId ?? ''} 已 ${alert.minutes ?? '?'} 分钟没有回调`, `Job ${alert.jobId ?? ''} has not called back for ${alert.minutes ?? '?'} minutes`)
+    case 'pr_stale':
+      return t(`PR 已打开 ${alert.hours ?? '?'} 小时`, `PR has been open for ${alert.hours ?? '?'} hours`)
+    case 'credential_invalid':
+      return t(`GitHub 凭据状态：${alert.state ?? 'unknown'}`, `GitHub credential state: ${alert.state ?? 'unknown'}`)
+    case 'budget_near_limit':
+      return t(
+        `30 天已用 ${quotaMoney(alert.spentCny ?? 0)} / ${quotaMoney(alert.budgetCny ?? 0)}`,
+        `spent ${quotaMoney(alert.spentCny ?? 0)} of ${quotaMoney(alert.budgetCny ?? 0)} in 30 days`,
+      )
+    default:
+      return alert.message
+  }
+}
+
+function alertHref(alert: AlertView): string {
+  if (alert.repoId !== undefined && alert.jobId !== undefined) return `/repos/${alert.repoId}/jobs/${alert.jobId}`
+  if (alert.repoId !== undefined) return `/repos/${alert.repoId}`
+  return ''
+}
+
+function alertRows(t: Translate, alerts: AlertView[]): string {
+  return alerts.map((alert) => {
+    const href = alertHref(alert)
+    const level = alert.level === 'critical' ? t('严重', 'Critical') : alert.level === 'warning' ? t('警告', 'Warning') : t('提示', 'Info')
+    const link = alert.prUrl !== undefined
+      ? `<a class="link" href="${escapeHtml(alert.prUrl)}" target="_blank" rel="noreferrer">PR</a>`
+      : href === '' ? '' : `<a class="link" href="${escapeHtml(href)}">${escapeHtml(t('打开', 'Open'))}</a>`
+    return `<tr><td><span class="badge ${alert.level === 'critical' ? 'bad' : alert.level === 'warning' ? 'busy' : ''}">${escapeHtml(level)}</span></td><td>${escapeHtml(alert.kind)}</td><td>${escapeHtml(alert.repoLabel ?? '')}${alert.repoLabel === undefined || alert.repoLabel === '' ? '' : ' · '}${escapeHtml(alertText(t, alert))}</td><td>${link}</td></tr>`
+  }).join('')
 }
 
 function maskEmail(email: string): string {
@@ -375,6 +435,19 @@ export function dashboardPage(input: {
   jobs: JobRow[]
   notifications: NotificationRow[]
   questions?: InboxQuestion[]
+  personal?: {
+    repos: number
+    jobs: number
+    succeeded: number
+    failed: number
+    prs: number
+    merged: number
+    costUsd: number
+    openWorkItems: number
+    lastJobAt: string | null
+  }
+  windowDays?: number
+  alerts?: AlertView[]
   reposPage?: number
   reposTotal?: number
   jobsPage?: number
@@ -384,6 +457,9 @@ export function dashboardPage(input: {
 }): string {
   const { config, locale, viewer, repos, jobs, notifications, notice, error } = input
   const questions = input.questions ?? []
+  const personal = input.personal
+  const windowDays = input.windowDays ?? 7
+  const alerts = input.alerts ?? []
   const reposPage = input.reposPage ?? 1
   const reposTotal = input.reposTotal ?? repos.length
   const jobsPage = input.jobsPage ?? 1
@@ -439,6 +515,39 @@ export function dashboardPage(input: {
     <div class="meter"><span style="width:${quota.unlimited ? '0' : Math.min(100, Math.max(0, (quota.usedCny / Math.max(0.0001, quota.initialCny)) * 100)).toFixed(2)}%"></span></div>
   </section>
   ${inboxSection(locale, viewer, questions, '/dashboard')}
+  ${alerts.length === 0 ? '' : `<section class="card">
+    <div class="row between"><h2>${escapeHtml(t('需要处理', 'Needs attention'))}</h2><span class="fine">${escapeHtml(t('只显示你自己的仓库和任务。', 'Only your repositories and jobs.'))}</span></div>
+    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('级别', 'Level'))}</th><th>${escapeHtml(t('类型', 'Kind'))}</th><th>${escapeHtml(t('详情', 'Detail'))}</th><th></th></tr></thead><tbody>${alertRows(t, alerts)}</tbody></table></div>
+  </section>`}
+
+  <section class="card">
+    <div class="row between">
+      <div>
+        <div class="eyebrow">${escapeHtml(t('我的交付', 'MY DELIVERY'))}</div>
+        <h2>${escapeHtml(t('交付与成本', 'Delivery and cost'))}</h2>
+        <p class="muted">${escapeHtml(t(`最近 ${windowDays} 天；只统计你自己的工作。缺失数据用 — 表示。`, `Last ${windowDays} days; your work only. Missing data is shown as —.`))}</p>
+      </div>
+      <div class="row">
+        <a class="btn ${windowDays === 7 ? '' : 'btn-ghost'}" href="/dashboard?window=7">${escapeHtml(t('7 天', '7 days'))}</a>
+        <a class="btn ${windowDays === 30 ? '' : 'btn-ghost'}" href="/dashboard?window=30">${escapeHtml(t('30 天', '30 days'))}</a>
+      </div>
+    </div>
+    ${personal !== undefined && personal.jobs === 0 ? `<p class="fine">${escapeHtml(t('还没有任务。先添加仓库并选择角色，然后运行一次。', 'No jobs yet. Add a repository, choose a role, and run one.'))} <a class="link" href="#add-repo">${escapeHtml(t('添加仓库', 'Add repository'))}</a></p>` : ''}
+    <div class="cols">
+      <div class="list">
+        <div class="list-row"><div class="list-main"><strong>${personal === undefined ? '—' : personal.jobs}</strong><small>${escapeHtml(t('任务', 'Jobs'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${personal === undefined || personal.jobs === 0 ? '—' : `${Math.round((personal.succeeded / personal.jobs) * 1000) / 10}%`}</strong><small>${escapeHtml(t('成功率', 'Success rate'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${personal === undefined ? '—' : personal.prs}</strong><small>${escapeHtml(t('PR', 'Pull requests'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${personal === undefined ? '—' : personal.merged}</strong><small>${escapeHtml(t('已合并 PR', 'Merged PRs'))}</small></div></div>
+      </div>
+      <div class="list">
+        <div class="list-row"><div class="list-main"><strong>${personal === undefined ? '—' : quotaMoney(personal.costUsd * config.quota.usdCny)}</strong><small>${escapeHtml(t('平台计费成本', 'Platform-billed cost'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${personal === undefined ? '—' : personal.openWorkItems}</strong><small>${escapeHtml(t('未完成工作项', 'Open work items'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${personal === undefined || personal.lastJobAt === null ? '—' : escapeHtml(humanTimeShort(personal.lastJobAt))}</strong><small>${escapeHtml(t('最近任务', 'Last job'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${personal === undefined ? '—' : personal.repos}</strong><small>${escapeHtml(t('仓库', 'Repositories'))}</small></div></div>
+      </div>
+    </div>
+  </section>
 
   <section class="cols">
     <div class="card">
@@ -461,9 +570,10 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; workState?: string; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const workItems = input.workItems ?? []
+  const workState = input.workState
   const prJobs = input.prJobs ?? []
   const models = input.models ?? []
   const repoModelIds = new Set(input.repoModelIds ?? [])
@@ -627,9 +737,10 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <p class="fine">${escapeHtml(t('GitHub 权限是 admin/maintain 时才能选 maintainer；其他权限只能选 developer。平台管理员不能替你改这个角色。', 'Maintainer is available only with GitHub admin/maintain permission; every other permission can only be developer. Platform admins cannot change this role for you.'))}</p>
       </section>`
     : ''
-  const workRows = workItems.length === 0
-    ? `<tr><td colspan="6" class="muted">${escapeHtml(t('还没有工作项。创建一个，或让任务自动生成。', 'No work items yet. Create one, or let a job create it.'))}</td></tr>`
-    : workItems.map((item) => {
+  const visibleWorkItems = workState === undefined ? workItems : workItems.filter((item) => item.state === workState)
+  const workRows = visibleWorkItems.length === 0
+    ? `<tr><td colspan="6" class="muted">${escapeHtml(workState === undefined ? t('还没有工作项。创建一个，或让任务自动生成。', 'No work items yet. Create one, or let a job create it.') : t(`没有状态为“${workItemStateLabel(t, workState)}”的工作项。`, `No work items are in “${workItemStateLabel(t, workState)}”.`))}</td></tr>`
+    : visibleWorkItems.map((item) => {
         const nextStates = WORK_ITEM_TRANSITIONS[item.state as WorkItemState] ?? []
         const stateOptions = nextStates.map((state) => `<option value="${state}">${escapeHtml(workItemStateLabel(t, state))}</option>`).join('')
         return `<tr>
@@ -646,8 +757,15 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           </div></td>
         </tr>`
       }).join('')
+  const workCounts = new Map<string, number>()
+  for (const item of workItems) workCounts.set(item.state, (workCounts.get(item.state) ?? 0) + 1)
+  const workBoard = `<section class="card" id="board">
+    <div class="row between"><h2>${escapeHtml(t('交付看板', 'Delivery board'))}</h2><span class="fine">${workState === undefined ? escapeHtml(t('按工作项状态汇总；点击状态可筛选下面的列表。', 'Grouped by state; click a state to filter the list below.')) : `<a class="link" href="/repos/${escapeHtml(repo.id)}#work">${escapeHtml(t('清除筛选', 'Clear filter'))}</a>`}</span></div>
+    <div class="table-scroll"><table><thead><tr>${WORK_ITEM_STATES.map((state) => `<th><a class="link" href="/repos/${escapeHtml(repo.id)}?workState=${state}#work">${escapeHtml(workItemStateLabel(t, state))}</a></th>`).join('')}</tr></thead><tbody><tr>${WORK_ITEM_STATES.map((state) => `<td><strong>${workCounts.get(state) ?? 0}</strong></td>`).join('')}</tr></tbody></table></div>
+  </section>`
+
   const workCard = `<section class="card" id="work">
-    <div class="row between"><h2>${escapeHtml(t('工作项', 'Work items'))}</h2><span class="fine">${escapeHtml(t('Issue / PR / 状态 / 优先级', 'Issue / PR / state / priority'))}</span></div>
+    <div class="row between"><h2>${escapeHtml(t('工作项', 'Work items'))}</h2><span class="fine">${workState === undefined ? escapeHtml(t('Issue / PR / 状态 / 优先级', 'Issue / PR / state / priority')) : escapeHtml(t(`筛选：${workItemStateLabel(t, workState)}`, `Filter: ${workItemStateLabel(t, workState)}`))}</span></div>
     <form method="post" action="/repos/${escapeHtml(repo.id)}/work" class="form">
       ${csrf(viewer)}
       <div class="row">
@@ -697,7 +815,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <button class="btn btn-danger" type="submit">${escapeHtml(t('删除仓库连接', 'Delete repository connection'))}</button>
     </form>
   </section>`
-  const body = `${repoHeader}${roleCard}${lifecycleBanner}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}${deliveryCard}${workCard}${dangerCard}
+  const body = `${repoHeader}${roleCard}${lifecycleBanner}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}${deliveryCard}${workBoard}${workCard}${dangerCard}
   <section class="cols">
     <div class="card" id="repo-settings">
       <h2>${escapeHtml(t('迭代目标', 'Iteration goal'))}</h2>
@@ -1484,11 +1602,13 @@ export function jobPage(input: {
   repo: RepoRow
   job: JobRow
   queuePosition?: number
+  events?: JobEventRow[]
   supportMode?: boolean
   notice?: string
   error?: string
 }): string {
   const { config, locale, viewer, repo, job, queuePosition, notice, error } = input
+  const events = input.events ?? []
   const supportMode = input.supportMode === true
   const t = translator(locale)
   const advanced = advancedViewer(viewer)
@@ -1567,6 +1687,12 @@ export function jobPage(input: {
       ${evidenceRows}
     </div>
   </section>
+  <section class="card">
+    <h2>${escapeHtml(t('时间线', 'Timeline'))}</h2>
+    ${events.length === 0
+      ? `<p class="muted">${escapeHtml(t('还没有任务事件。', 'No job events yet.'))}</p>`
+      : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('时间', 'Time'))}</th><th>${escapeHtml(t('事件', 'Event'))}</th><th>${escapeHtml(t('角色/步骤', 'Role/step'))}</th><th>${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${events.map((entry) => `<tr><td>${escapeHtml(humanTimeShort(entry.at))}</td><td><code>${escapeHtml(entry.kind)}</code></td><td>${escapeHtml([entry.role, entry.step].filter((value) => value !== null && value !== '').join(' · ') || '—')}</td><td>${escapeHtml(jobEventDetail(t, entry))}</td></tr>`).join('')}</tbody></table></div>`}
+  </section>
   ${advanced ? `<section class="card">
     <h2>${escapeHtml(t('团队参与', 'Team participation'))}</h2>
     ${teamRows}
@@ -1594,13 +1720,34 @@ export function metricsPage(input: {
   workItems: { total: number; open: number; merged: number; closed: number }
   attribution: { unattributedCount: number; unattributedUsd: number; attributedUsd: number }
   stages: { scope: number; verify: number; iterate: number; review: number; leadOnly: number; grounded: number }
+  delivery: {
+    jobs: number
+    succeeded: number
+    failed: number
+    successRate: number
+    prs: number
+    merged: number
+    mergeRate: number
+    changesRequested: number
+    reviewAverage: number | null
+    reviewCount: number
+    medianJobMs: number | null
+    medianMergeMs: number | null
+    medianReviewMs: number | null
+  }
+  daily: Array<{ day: string; jobs: number; succeeded: number; failed: number; merged: number }>
+  repoCosts: Array<{ repoId: string; label: string; costUsd: number; calls: number }>
+  modelCosts: Array<{ model: string; costUsd: number; calls: number }>
+  alerts: AlertView[]
+  windowDays?: number
   since: string
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, metrics, team, workItems, attribution, stages, since, notice, error } = input
+  const { config, locale, viewer, metrics, team, workItems, attribution, stages, delivery, daily, repoCosts, modelCosts, alerts, since, notice, error } = input
+  const windowDays = input.windowDays ?? 30
   const t = translator(locale)
-  const successRate = metrics.jobs === 0 ? 0 : Math.round((metrics.succeeded / metrics.jobs) * 1000) / 10
+  const successRate = metrics.jobs === 0 ? null : Math.round((metrics.succeeded / metrics.jobs) * 1000) / 10
   const cost = quotaMoney(metrics.costUsd * config.quota.usdCny)
   const eventRows = metrics.events.length === 0
     ? `<tr><td colspan="2" class="muted">${escapeHtml(t('还没有事件。', 'No events yet.'))}</td></tr>`
@@ -1610,9 +1757,13 @@ export function metricsPage(input: {
       <div>
         <div class="eyebrow">${escapeHtml(t('产品指标', 'PRODUCT METRICS'))}</div>
         <h1>${escapeHtml(t('漏斗与留存', 'Funnel & retention'))}</h1>
-        <p class="muted">${escapeHtml(t(`统计窗口从 ${since} 开始；只读，不会修改数据。`, `Window starts at ${since}; read-only.`))}</p>
+        <p class="muted">${escapeHtml(t(`最近 ${windowDays} 天，从 ${since} 开始；只读，不会修改数据。`, `Last ${windowDays} days starting ${since}; read-only.`))}</p>
       </div>
-      <a class="btn btn-ghost" href="/admin">${escapeHtml(t('返回管理', 'Back to admin'))}</a>
+      <div class="row">
+        <a class="btn ${windowDays === 7 ? '' : 'btn-ghost'}" href="/admin/metrics?window=7">${escapeHtml(t('7 天', '7 days'))}</a>
+        <a class="btn ${windowDays === 30 ? '' : 'btn-ghost'}" href="/admin/metrics?window=30">${escapeHtml(t('30 天', '30 days'))}</a>
+        <a class="btn btn-ghost" href="/admin">${escapeHtml(t('返回管理', 'Back to admin'))}</a>
+      </div>
     </div>
   </section>
   <section class="cols">
@@ -1630,7 +1781,7 @@ export function metricsPage(input: {
       <h2>${escapeHtml(t('质量与成本', 'Quality & cost'))}</h2>
       <div class="list">
         <div class="list-row"><div class="list-main"><strong>${metrics.jobs}</strong><small>${escapeHtml(t('任务总数', 'Jobs'))}</small></div></div>
-        <div class="list-row"><div class="list-main"><strong>${successRate}%</strong><small>${escapeHtml(t('成功率', 'Success rate'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${successRate === null ? '—' : `${successRate}%`}</strong><small>${escapeHtml(t('成功率', 'Success rate'))}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${metrics.failed}</strong><small>${escapeHtml(t('失败任务', 'Failed jobs'))}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(cost)}</strong><small>${escapeHtml(t('窗口内任务成本', 'Job cost in window'))}</small></div></div>
       </div>
@@ -1644,6 +1795,40 @@ export function metricsPage(input: {
       <div class="list-row"><div class="list-main"><strong>${team.leadOnly}</strong><small>${escapeHtml(t('只有 Lead 干活的任务', 'Lead-only jobs'))}</small></div></div>
     </div>
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('角色', 'Role'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('参与任务', 'Jobs'))}</th></tr></thead><tbody>${team.roles.length === 0 ? `<tr><td colspan="3" class="muted">${escapeHtml(t('还没有团队统计。', 'No team stats yet.'))}</td></tr>` : team.roles.map((entry) => `<tr><td>${escapeHtml(teamRoleLabel(t, entry.role))}</td><td>${entry.calls}</td><td>${entry.jobs}</td></tr>`).join('')}</tbody></table></div>
+  </section>
+  <section class="cols">
+    <div class="card">
+      <h2>${escapeHtml(t('交付效率', 'Delivery efficiency'))}</h2>
+      <div class="list">
+        <div class="list-row"><div class="list-main"><strong>${delivery.jobs === 0 ? '—' : `${delivery.successRate}%`}</strong><small>${escapeHtml(t(`成功率（${delivery.jobs} 个任务）`, `Success rate (${delivery.jobs} jobs)`))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${delivery.prs === 0 ? '—' : `${delivery.mergeRate}%`}</strong><small>${escapeHtml(t(`PR 合并率（${delivery.merged}/${delivery.prs}）`, `PR merge rate (${delivery.merged}/${delivery.prs})`))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${durationText(delivery.medianJobMs)}</strong><small>${escapeHtml(t('任务耗时中位数', 'Median job duration'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${durationText(delivery.medianMergeMs)}</strong><small>${escapeHtml(t('工作项创建到合并', 'Work item created to merged'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${durationText(delivery.medianReviewMs)}</strong><small>${escapeHtml(t('审核耗时中位数', 'Median review duration'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${delivery.reviewAverage === null ? '—' : delivery.reviewAverage}</strong><small>${escapeHtml(t(`平均审核分（${delivery.reviewCount} 次）`, `Average review score (${delivery.reviewCount})`))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${delivery.changesRequested}</strong><small>${escapeHtml(t('被要求修改', 'Changes requested'))}</small></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>${escapeHtml(t('告警', 'Alerts'))}</h2>
+      ${alerts.length === 0
+        ? `<p class="muted">${escapeHtml(t('当前没有需要处理的告警。', 'No alerts need attention.'))}</p>`
+        : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('级别', 'Level'))}</th><th>${escapeHtml(t('类型', 'Kind'))}</th><th>${escapeHtml(t('详情', 'Detail'))}</th><th></th></tr></thead><tbody>${alertRows(t, alerts)}</tbody></table></div>`}
+    </div>
+  </section>
+  <section class="cols">
+    <div class="card">
+      <h2>${escapeHtml(t('仓库成本', 'Cost by repository'))}</h2>
+      <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th></tr></thead><tbody>${repoCosts.length === 0 ? `<tr><td colspan="3" class="muted">${escapeHtml(t('还没有仓库成本数据。', 'No repository cost data yet.'))}</td></tr>` : repoCosts.map((row) => `<tr><td>${escapeHtml(row.label)}</td><td>${row.calls}</td><td>${escapeHtml(quotaMoney(row.costUsd * config.quota.usdCny))}</td></tr>`).join('')}</tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>${escapeHtml(t('模型成本', 'Cost by model'))}</h2>
+      <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('模型', 'Model'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th></tr></thead><tbody>${modelCosts.length === 0 ? `<tr><td colspan="3" class="muted">${escapeHtml(t('还没有模型成本数据。', 'No model cost data yet.'))}</td></tr>` : modelCosts.map((row) => `<tr><td><code>${escapeHtml(row.model)}</code></td><td>${row.calls}</td><td>${escapeHtml(quotaMoney(row.costUsd * config.quota.usdCny))}</td></tr>`).join('')}</tbody></table></div>
+    </div>
+  </section>
+  <section class="card">
+    <h2>${escapeHtml(t('每日趋势', 'Daily trend'))}</h2>
+    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('日期', 'Day'))}</th><th>${escapeHtml(t('任务', 'Jobs'))}</th><th>${escapeHtml(t('成功', 'Succeeded'))}</th><th>${escapeHtml(t('失败', 'Failed'))}</th><th>${escapeHtml(t('已合并 PR', 'Merged PRs'))}</th></tr></thead><tbody>${daily.length === 0 ? `<tr><td colspan="5" class="muted">${escapeHtml(t('还没有每日数据。', 'No daily data yet.'))}</td></tr>` : daily.map((row) => `<tr><td>${escapeHtml(row.day)}</td><td>${row.jobs}</td><td>${row.succeeded}</td><td>${row.failed}</td><td>${row.merged}</td></tr>`).join('')}</tbody></table></div>
   </section>
   <section class="card">
     <h2>${escapeHtml(t('工作项结果', 'Work item outcomes'))}</h2>

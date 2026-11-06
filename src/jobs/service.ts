@@ -144,6 +144,7 @@ export class Jobs {
     }
     this.store.audit(job.user_id, 'job.cancelled', `${jobId}: ${reason.slice(0, 300)}`)
     this.store.event('job_cancelled', { userId: job.user_id, repoId: job.repo_id, jobId })
+    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.cancelled', meta: reason })
     return { ok: true }
   }
 
@@ -167,6 +168,7 @@ export class Jobs {
     this.store.updateRepo(job.repo_id, { last_status: 'paused', ...(job.kind === 'review' ? { last_review_status: 'paused' } : {}) })
     this.store.audit(job.user_id, 'job.paused', jobId)
     this.store.event('job_paused', { userId: job.user_id, repoId: job.repo_id, jobId })
+    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.paused', meta: reason })
     return { ok: true }
   }
 
@@ -187,6 +189,8 @@ export class Jobs {
     if (!result.ok || result.job === undefined) return { ok: false, error: result.error ?? '恢复失败。' }
     this.store.updateJob(jobId, { status: 'cancelled', error: `resumed as ${result.job.id}`, finished_at: nowIso() })
     this.store.audit(job.user_id, 'job.resumed', `${jobId} -> ${result.job.id}`)
+    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.resumed', meta: `resumed as ${result.job.id}` })
+    this.store.recordJobEvent({ jobId: result.job.id, repoId: job.repo_id, userId: job.user_id, kind: 'job.resumed_from', meta: jobId })
     return { ok: true, job: result.job }
   }
 
@@ -388,6 +392,7 @@ export class Jobs {
       job.pr_url = options.prUrl ?? null
     }
     this.store.event('job_enqueued', { userId: user.id, repoId: repo.id, jobId: job.id, meta: `${kind}:${trigger}` })
+    this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.enqueued', step: kind, meta: `${kind}:${trigger}` })
     if (priorJobs === 0) this.store.event('first_job_start', { userId: user.id, repoId: repo.id, jobId: job.id })
     if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'queued' })
     else if (kind === 'iterate') this.store.updateRepo(repo.id, { last_run_at: nowIso(), last_status: 'queued' })
@@ -439,6 +444,7 @@ export class Jobs {
           return { ok: false, job: current, error: current.error ?? '任务失败' }
         }
         this.store.updateJob(job.id, { status: 'running', started_at: nowIso() })
+        this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.running', step: kind })
         if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'running' })
         else this.store.updateRepo(repo.id, { last_status: 'running' })
         return { ok: true, job: this.store.getJob(job.id) }
@@ -517,6 +523,7 @@ export class Jobs {
     revoke()
     this.store.audit(job.user_id, `job.${result.status}`, jobId)
     this.store.event(`job_${result.status}`, { userId: job.user_id, repoId: job.repo_id, jobId })
+    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: `job.${result.status}`, step: job.kind, meta: result.error ?? result.summary ?? null })
     if (result.status === 'succeeded' && prUrl !== null) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
     if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? job.error ?? '未知原因'}`)
     if (result.status === 'succeeded' || result.status === 'failed') {
@@ -723,6 +730,7 @@ export class Jobs {
         this.store.updateJobsPrState(prUrl, 'merged')
         this.store.audit(job.user_id, manual ? 'job.manually_merged' : 'job.auto_merged', `${job.id}: PR ${number} ${merged.sha ?? ''}`)
         this.store.event('job_auto_merged', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: `pr=${number}` })
+        this.store.recordJobEvent({ jobId: job.id, repoId: job.repo_id, userId: job.user_id, kind: 'job.merged', step: `pr=${number}`, meta: merged.sha ?? null })
         return { ok: true, message: '已合并。' }
       }
       this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: ${merged.message ?? 'merge rejected'}`)
@@ -872,6 +880,17 @@ export class Jobs {
       const observed = observedAttribution(stats)
       this.store.updateJob(jobId, { team_stats_json: JSON.stringify(stats), ...(observed === null ? {} : { attribution_json: JSON.stringify(observed) }) })
       this.store.event('team_stats', { userId: job.user_id, repoId: job.repo_id, jobId })
+      for (const entry of stats.filter((stat) => stat.calls > 0)) {
+        this.store.recordJobEvent({
+          jobId,
+          repoId: job.repo_id,
+          userId: job.user_id,
+          kind: 'team.role',
+          role: entry.role,
+          step: entry.step,
+          meta: JSON.stringify({ calls: entry.calls, tool: entry.tool, activity: entry.activity, label: entry.label, lastActivityAt: entry.lastActivityAt }),
+        })
+      }
       if (observed !== null && claimed !== null) {
         this.store.event('team_attribution_grounded', { userId: job.user_id, repoId: job.repo_id, jobId, meta: `claimed=${Object.values(claimed).join(',')};observed=${Object.values(observed).join(',')}`.slice(0, 500) })
       }
@@ -1196,6 +1215,14 @@ export class Jobs {
         if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_status: 'running' })
         else this.store.updateRepo(job.repo_id, { last_status: 'running' })
       }
+      this.store.recordJobEvent({
+        jobId,
+        repoId: job.repo_id,
+        userId: job.user_id,
+        kind: 'job.progress',
+        step: job.kind,
+        ...(summary === undefined ? {} : { meta: summary }),
+      })
       return { ok: true }
     }
     const revoke = (): void => {
@@ -1210,6 +1237,7 @@ export class Jobs {
         const detail = stage.errors.join('；')
         const meta = `stage:${stageMode}:${stage.errors.join('|')}`.slice(0, 500)
         this.store.event('stage_evidence_missing', { userId: job.user_id, repoId: job.repo_id, jobId, meta })
+        this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'stage.missing', step: job.kind, meta })
         this.store.audit(job.user_id, stageMode === 'enforced' ? 'job.stage_missing' : 'job.stage_missing_shadow', `${jobId}: ${detail}`.slice(0, 600))
         if (stageMode === 'enforced') {
           const message = `STAGE_EVIDENCE_MISSING: ${detail}`
