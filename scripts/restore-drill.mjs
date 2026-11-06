@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Restore drill: restore the newest online backup into a temp path and prove it
 // matches the source database. Reads the source read-only, never writes it.
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -41,6 +41,25 @@ function parseArgs(argv) {
 
 // A drill target may never land in the live data directory, so a typo cannot
 // overwrite the database it is meant to protect.
+// The path may not exist yet and any component may be a symlink, so resolve what
+// exists and append the rest: a link pointing into the live area is still inside it.
+function realTarget(candidate) {
+  const absolute = resolve(candidate)
+  const missing = []
+  let current = absolute
+  for (;;) {
+    try {
+      const real = realpathSync(current)
+      return missing.length === 0 ? real : join(real, ...missing)
+    } catch {
+      const parent = dirname(current)
+      if (parent === current) return absolute
+      missing.unshift(basename(current))
+      current = parent
+    }
+  }
+}
+
 function isInside(candidate, parent) {
   const rest = relative(parent, candidate)
   return rest === '' || (!rest.startsWith('..') && !isAbsolute(rest))
@@ -118,24 +137,28 @@ async function main() {
   const backupDir = resolve(args.backupDir ?? process.env.BACKUP_DIR ?? join(process.env.DATA_DIR ?? './data', 'backups'))
   const dataDir = resolve(process.env.DATA_DIR ?? './data')
   if (!existsSync(dbPath)) fail(2, `source database not found: ${dbPath}`)
-  if (dbPath === backupDir || dirname(dbPath) === backupDir) {
+  const realDbPath = realTarget(dbPath)
+  const realBackupDir = realTarget(backupDir)
+  const realDataDir = realTarget(dataDir)
+  if (realDbPath === realBackupDir || dirname(realDbPath) === realBackupDir) {
     fail(2, `refusing to use ${backupDir} as --backup-dir: it holds the source database (${basename(dbPath)})`)
   }
   // Every refusal runs before a database is opened or a directory is created.
   const requestedWorkDir = args.workDir === undefined ? null : resolve(args.workDir)
   if (requestedWorkDir !== null) {
-    if (isInside(requestedWorkDir, dataDir)) {
-      fail(2, `refusing to use ${requestedWorkDir} as --work-dir: it is inside DATA_DIR (${dataDir}), which holds the live database`)
+    const realWorkDir = realTarget(requestedWorkDir)
+    if (isInside(realWorkDir, realDataDir)) {
+      fail(2, `refusing to use ${requestedWorkDir} as --work-dir: it resolves inside DATA_DIR (${realDataDir}), which holds the live database`)
     }
-    if (requestedWorkDir === dbPath) {
+    if (realWorkDir === realDbPath) {
       fail(2, `refusing to use ${requestedWorkDir} as --work-dir: it is the source database itself`)
     }
     // Not every host exports DATA_DIR; the source database's own directory is
     // the live area either way, so a drill may never write into it.
-    if (isInside(requestedWorkDir, dirname(dbPath))) {
-      fail(2, `refusing to use ${requestedWorkDir} as --work-dir: it is inside ${dirname(dbPath)}, which holds the source database`)
+    if (isInside(realWorkDir, dirname(realDbPath))) {
+      fail(2, `refusing to use ${requestedWorkDir} as --work-dir: it resolves inside ${dirname(realDbPath)}, which holds the source database`)
     }
-    if (requestedWorkDir === backupDir) {
+    if (realWorkDir === realBackupDir) {
       fail(2, `refusing to use ${requestedWorkDir} as --work-dir: it holds the backups`)
     }
   }

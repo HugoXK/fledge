@@ -258,7 +258,8 @@ How it works and how to read it:
 - It refuses a `--work-dir` inside `DATA_DIR` (the live data directory), inside
   the source database's own directory, or one whose parent directory does not
   exist — `DATA_DIR` need not be exported for the source directory to be
-  refused. It never creates a missing parent and never creates a database at a
+  refused. Every one of those paths is resolved through symbolic links first, so
+  a link that points into the live area is refused too. It never creates a missing parent and never creates a database at a
   path that was refused, so a typo cannot write into the live area. The work
   directory is `0700`, the restored copy `0600`.
 - **A failed drill leaves no restore result.** The copy at

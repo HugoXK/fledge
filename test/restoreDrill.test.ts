@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, truncateSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, truncateSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -239,4 +239,22 @@ test('a work directory inside the source database directory is refused without D
   assert.equal(result.code, 2, `expected a refusal, got exit ${result.code}: ${result.stderr}`)
   assert.match(result.stderr, /refus/i)
   assert.equal(existsSync(workDir), false, 'a refused target must not be created')
+})
+
+test('a work directory that is a symlink into DATA_DIR is refused and leaves the mode alone', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dataDir = join(root, 'data')
+  const dbPath = join(dataDir, 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+  chmodSync(dataDir, 0o755)
+  const before = mode(dataDir)
+  const link = join(root, 'link-data')
+  symlinkSync(dataDir, link, 'dir')
+
+  const result = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', join(link, 'work')], { DATA_DIR: dataDir })
+  assert.equal(result.code, 2, `expected a refusal through the symlink, got exit ${result.code}: ${result.stderr}`)
+  assert.match(result.stderr, /DATA_DIR|refus/i)
+  assert.equal(existsSync(join(dataDir, 'work')), false, 'a refused target must not be created inside the live data directory')
+  assert.equal(mode(dataDir), before, 'a refused drill must not chmod the live data directory')
 })
