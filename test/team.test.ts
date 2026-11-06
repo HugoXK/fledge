@@ -197,6 +197,14 @@ test('team console reads live state and sends guidance', async () => {
     })
     assert.equal(formStopped.statusCode, 302)
     assert.match(String(formStopped.headers.location), new RegExp(`^/repos/${repo.id}/workspace\\?notice=`))
+    const hostileStop = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/team/stop`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, target: '', returnTo: '//evil.com' }),
+    })
+    assert.equal(hostileStop.statusCode, 302)
+    assert.match(String(hostileStop.headers.location), new RegExp(`^/repos/${repo.id}/team\\?notice=`), 'a hostile returnTo must fall back to the route fallback')
     const formStopCall = received.filter((entry) => entry.endpoint === 'send').at(-1)
     assert.match(String((formStopCall?.payload as { text?: string })?.text), /Human stop request/)
   } finally {
