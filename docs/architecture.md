@@ -47,6 +47,12 @@
 - **Bilingual UI** in Chinese and English. The locale is stored in the
   `fledge_lang` cookie, and the header switch shares the `hugoxk-lang`
   preference with the rest of the platform.
+- **Redirect targets**: every `next=` / `returnTo` value goes through one helper
+  that returns a path on this site or the fallback. It validates the parsed
+  result, not the input, so a value that is a plain path before parsing and
+  `//host` after it (`/..//evil.com`) cannot become a protocol-relative
+  `Location`. `/lang/:locale` is the public entry point; the OAuth `next` and the
+  form `returnTo` values share the same rule.
 - **SQLite** via Node's built-in `node:sqlite` (WAL, foreign keys). The database
   file is the only state; the mail outbox is a development artifact.
 - **Sessions** are random 32-byte tokens, stored as SHA-256 hashes; the cookie is
