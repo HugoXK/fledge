@@ -506,6 +506,9 @@ queued ──► running ──► succeeded
 - The repo records `last_run_at` and `last_status`; a scheduled job is skipped if
   another job for the repo is active.
 
+The claim/worker dispatch model, the `queued` meaning and the idempotent
+callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
+
 ## Trust boundaries
 
 | Boundary | Control |
