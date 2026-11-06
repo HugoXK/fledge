@@ -282,27 +282,36 @@ function jobPlainSummary(locale: Locale, t: Translate, job: JobRow, max = 160): 
 
 function jobRows(locale: Locale, jobs: JobRow[]): string {
   const t = translator(locale)
-  if (jobs.length === 0) return `<tr><td colspan="4" class="muted">${escapeHtml(t('还没有任务。', 'No jobs yet.'))}</td></tr>`
   return jobs
     .map((job) => {
       const summary = jobPlainSummary(locale, t, job)
       const attribution = jobAttribution(t, job)
       return `<tr data-job-id="${escapeHtml(job.id)}">
-        <td class="job-cell">
+        <td class="job-cell" data-label="${escapeHtml(t('任务', 'Job'))}">
           <a href="/repos/${escapeHtml(job.repo_id)}/jobs/${escapeHtml(job.id)}"><code>${escapeHtml(job.id)}</code></a> <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span>
           <small class="job-meta">${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(humanTimeShort(job.created_at))}</small>
         </td>
-        <td data-job-status>${badge(t, job.status)}${classifyFailure(job) === null ? '' : `<br /><small class="muted">${escapeHtml(failureLabel(t, classifyFailure(job)!.kind))}</small>`}</td>
-        <td class="job-links">${jobLinks(job)}</td>
-        <td data-job-summary class="job-summary"><span data-job-summary-text title="${escapeHtml(summary.full)}">${escapeHtml(summary.short)}</span>${attribution === '' ? '' : `<small class="muted" data-job-attribution>${escapeHtml(attribution)}</small>`}</td>
+        <td data-job-status data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, job.status)}${classifyFailure(job) === null ? '' : `<br /><small class="muted">${escapeHtml(failureLabel(t, classifyFailure(job)!.kind))}</small>`}</td>
+        <td class="job-links" data-label="${escapeHtml(t('PR / Issue', 'PR / Issue'))}">${jobLinks(job)}</td>
+        <td data-job-summary class="job-summary" data-label="${escapeHtml(t('摘要', 'Summary'))}"><span data-job-summary-text title="${escapeHtml(summary.full)}">${escapeHtml(summary.short)}</span>${attribution === '' ? '' : `<small class="muted" data-job-attribution>${escapeHtml(attribution)}</small>`}</td>
       </tr>`
     })
     .join('')
 }
 
-function jobTable(locale: Locale, jobs: JobRow[]): string {
+function jobTable(locale: Locale, jobs: JobRow[], emptyAction = ''): string {
   const t = translator(locale)
-  return `<div class="table-scroll"><table class="job-table"><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('PR / Issue', 'PR / Issue'))}</th><th>${escapeHtml(t('摘要', 'Summary'))}</th></tr></thead><tbody>${jobRows(locale, jobs)}</tbody></table></div>`
+  if (jobs.length === 0) {
+    return `<div class="state empty" role="status">
+      <span class="state-icon" aria-hidden="true">0</span>
+      <div class="state-body">
+        <strong>${escapeHtml(t('还没有任务。', 'No jobs yet.'))}</strong>
+        <p>${escapeHtml(t('添加仓库并选择角色后，运行一次；每个任务只会开一个 PR。', 'Add a repository, choose a role and run one job. Every job opens at most one pull request.'))}</p>
+        ${emptyAction === '' ? '' : `<div class="actions">${emptyAction}</div>`}
+      </div>
+    </div>`
+  }
+  return `<div class="table-scroll"><table class="job-table responsive"><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('PR / Issue', 'PR / Issue'))}</th><th>${escapeHtml(t('摘要', 'Summary'))}</th></tr></thead><tbody>${jobRows(locale, jobs)}</tbody></table></div>`
 }
 
 function jobList(locale: Locale, jobs: JobRow[], repoLabels: Map<string, string> = new Map()): string {
@@ -346,14 +355,14 @@ export function inboxSection(locale: Locale, viewer: Viewer, questions: InboxQue
           ${options === '' ? '' : `<div class="question-options">${options}</div>`}
           <div class="question-answer-row">
             <input class="question-custom" name="custom" placeholder="${escapeHtml(t('也可以填写自己的答案…', 'Or type your own answer…'))}" autocomplete="off" />
-            <button class="btn btn-small" type="submit">${escapeHtml(t('发送回答', 'Send answer'))}</button>
+            <button class="btn btn-small" type="submit" data-pending-label="${escapeHtml(t('发送中…', 'Sending…'))}">${escapeHtml(t('发送回答', 'Send answer'))}</button>
           </div>
           <p class="fine bad question-error" data-question-error hidden></p>
         </form>
       </div>`
     })
     .join('')
-  return `<section class="card inbox" id="inbox"${questions.length === 0 ? ' hidden' : ''}>
+  return `<section class="card inbox" id="inbox" aria-live="polite"${questions.length === 0 ? ' hidden' : ''}>
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('需要你处理', 'NEEDS YOUR INPUT'))}</div>
@@ -378,7 +387,7 @@ function noticeBlock(locale: Locale, viewer: Viewer, notifications: Notification
 
 export function landingPage(config: Config, viewer?: Viewer | null, devLogin = false, oauthConfigured = true, locale: Locale = 'zh'): string {
   const t = translator(locale)
-  const tokenForm = `<details class="card narrow" id="token-login" open style="margin:24px 0 0">
+  const tokenForm = `<details class="card narrow mt-5" id="token-login" open>
       <summary>${escapeHtml(t('使用 GitHub token 登录（备用）', 'Sign in with a GitHub token (fallback)'))}</summary>
       <form method="post" action="/auth/token" class="form">
         <label>${escapeHtml(t('GitHub token', 'GitHub token'))} <input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required autocomplete="off" /></label>
@@ -482,16 +491,14 @@ export function dashboardPage(input: {
   const jobsTotal = input.jobsTotal ?? jobs.length
   const t = translator(locale)
   const quota = quotaView(viewer.user, config)
-  const repoRows = repos.length === 0
-    ? `<tr><td colspan="5" class="muted">${escapeHtml(t('还没有仓库。先添加一个。', 'No repositories yet. Add one first.'))}</td></tr>`
-    : repos
+  const repoRows = repos
         .map(
           (repo) => `<tr data-repo-id="${escapeHtml(repo.id)}">
-            <td><a href="/repos/${escapeHtml(repo.id)}"><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></a>${repo.is_fork === 1 ? `<br /><small class="muted">${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}</small>` : ''} <span class="badge kind">${escapeHtml(repoRoleLabel(t, repo.repo_role))}</span>${repo.reviewer_enabled === 1 ? ' <span class="badge">reviewer</span>' : ''}${repo.repo_role === null ? `<br /><small class="muted">${escapeHtml(t('打开仓库选择角色', 'Open the repository to choose a role'))}</small>` : ''}</td>
-            <td>${repo.auto_iterate === 1 ? `<span class="badge good">${escapeHtml(t('自动', 'Auto'))}</span><br /><small class="muted">${escapeHtml(intervalLabel(repo.interval_minutes, t))}</small>` : `<span class="badge">${escapeHtml(t('手动', 'Manual'))}</span>`}</td>
-            <td>${badge(t, repo.last_status ?? 'idle')}</td>
-            <td>${escapeHtml(humanTimeShort(repo.last_run_at))}</td>
-            <td><a class="link" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('打开', 'Open'))}</a></td>
+            <td data-label="${escapeHtml(t('仓库', 'Repository'))}"><a href="/repos/${escapeHtml(repo.id)}"><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></a>${repo.is_fork === 1 ? `<br /><small class="muted">${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}</small>` : ''} <span class="badge kind">${escapeHtml(repoRoleLabel(t, repo.repo_role))}</span>${repo.reviewer_enabled === 1 ? ' <span class="badge">reviewer</span>' : ''}${repo.repo_role === null ? `<br /><small class="muted">${escapeHtml(t('打开仓库选择角色', 'Open the repository to choose a role'))}</small>` : ''}</td>
+            <td data-label="${escapeHtml(t('模式', 'Mode'))}">${repo.auto_iterate === 1 ? `<span class="badge good">${escapeHtml(t('自动', 'Auto'))}</span><br /><small class="muted">${escapeHtml(intervalLabel(repo.interval_minutes, t))}</small>` : `<span class="badge">${escapeHtml(t('手动', 'Manual'))}</span>`}</td>
+            <td data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, repo.last_status ?? 'idle')}</td>
+            <td data-label="${escapeHtml(t('上次运行', 'Last run'))}">${escapeHtml(humanTimeShort(repo.last_run_at))}</td>
+            <td data-label=""><a class="link" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('打开', 'Open'))}</a></td>
           </tr>`,
         )
         .join('')
@@ -510,7 +517,7 @@ export function dashboardPage(input: {
           <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval">${reviewIntervalOptions(t)}</select></label>
         </div>
         <p class="fine">${escapeHtml(t('添加后请选择你的角色；未选择前不会启动任务。', 'Choose your role after adding; jobs stay paused until you do.'))}</p>
-        <button class="btn" type="submit">${escapeHtml(t('添加仓库', 'Add repository'))}</button>
+        <button class="btn" type="submit" data-pending-label="${escapeHtml(t('添加中…', 'Adding…'))}">${escapeHtml(t('添加仓库', 'Add repository'))}</button>
       </form>`
   const body = `<section class="workspace-hero">
     <div class="workspace-intro">
@@ -528,7 +535,7 @@ export function dashboardPage(input: {
       <div class="quota-big">${quota.unlimited ? escapeHtml(t('不限额', 'Unlimited')) : quotaMoney(quota.remainingCny)}${quota.unlimited ? '' : `<small> / ${money(quota.initialCny)}</small>`}</div>
       <p class="muted">${escapeHtml(quota.unlimited ? t(`已用 ${quotaMoney(quota.usedCny)} · 平台额度不限额`, `Used ${quotaMoney(quota.usedCny)} · platform quota is unlimited`) : t(`已用 ${quotaMoney(quota.usedCny)} · 平台额度用完后可配置自己的模型 API`, `Used ${quotaMoney(quota.usedCny)} · add your own model API when the platform quota runs out`))}</p>
     </div>
-    <div class="meter"><span style="width:${quota.unlimited ? '0' : Math.min(100, Math.max(0, (quota.usedCny / Math.max(0.0001, quota.initialCny)) * 100)).toFixed(2)}%"></span></div>
+    <div class="meter"><span style="--meter: ${quota.unlimited ? '0' : Math.min(100, Math.max(0, (quota.usedCny / Math.max(0.0001, quota.initialCny)) * 100)).toFixed(2)}%"></span></div>
   </section>
   ${inboxSection(locale, viewer, questions, '/dashboard')}
   ${alerts.length === 0 ? '' : `<section class="card">
@@ -568,7 +575,16 @@ export function dashboardPage(input: {
   <section class="cols">
     <div class="card">
       <h2>${escapeHtml(t('仓库', 'Repositories'))}</h2>
-      <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('模式', 'Mode'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('上次运行', 'Last run'))}</th><th></th></tr></thead><tbody>${repoRows}</tbody></table></div>
+      ${repos.length === 0
+        ? `<div class="state empty" role="status">
+            <span class="state-icon" aria-hidden="true">0</span>
+            <div class="state-body">
+              <strong>${escapeHtml(t('还没有仓库。', 'No repositories yet.'))}</strong>
+              <p>${escapeHtml(t('先添加一个仓库并选择你的角色；未选择角色前不会启动任何任务。', 'Add a repository and choose your role first; no job starts before that.'))}</p>
+              <div class="actions"><a class="btn btn-small" href="#add-repo">${escapeHtml(t('添加仓库', 'Add repository'))}</a></div>
+            </div>
+          </div>`
+        : `<div class="table-scroll"><table class="responsive"><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('模式', 'Mode'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('上次运行', 'Last run'))}</th><th></th></tr></thead><tbody>${repoRows}</tbody></table></div>`}
       ${pager('/dashboard', 'reposPage', reposPage, reposTotal, 10, t, { jobsPage }, '#add-repo')}
     </div>
     <div class="card" id="add-repo">
@@ -580,7 +596,7 @@ export function dashboardPage(input: {
 
   <section class="card" id="jobs">
     <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
-    ${jobTable(locale, jobs)}
+    ${jobTable(locale, jobs, `<a class="btn btn-small" href="#add-repo">${escapeHtml(t('添加仓库', 'Add repository'))}</a>`)}
     ${pager('/dashboard', 'jobsPage', jobsPage, jobsTotal, 10, t, { reposPage }, '#jobs')}
   </section>`
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
@@ -689,7 +705,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <div class="row">
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
         ${advanced ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
-        ${roleMissing ? `<span class="badge busy">${escapeHtml(t('先选择角色', 'Choose a role first'))}</span>` : !runnable ? `<span class="badge busy">${escapeHtml(t('仓库不可运行', 'Not runnable'))}</span>` : `<form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button></form>
+        ${roleMissing ? `<span class="badge busy">${escapeHtml(t('先选择角色', 'Choose a role first'))}</span>` : !runnable ? `<span class="badge busy">${escapeHtml(t('仓库不可运行', 'Not runnable'))}</span>` : `<form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn" type="submit" data-pending-label="${escapeHtml(t('排队中…', 'Queueing…'))}">${escapeHtml(t('立即运行', 'Run now'))}</button></form>
         <form method="post" action="/repos/${escapeHtml(repo.id)}/plan">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('只出计划', 'Plan only'))}</button></form>`}
         ${!roleMissing && runnable && canReview && reviewerEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/review">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('立即审核', 'Review now'))}</button></form>` : ''}
       </div>
@@ -785,16 +801,16 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     <form method="post" action="/repos/${escapeHtml(repo.id)}/work" class="form">
       ${csrf(viewer)}
       <div class="row">
-        <label style="flex:1">${escapeHtml(t('标题', 'Title'))} <input name="title" required maxlength="200" /></label>
-        <label>${escapeHtml(t('优先级', 'Priority'))} <input name="priority" type="number" min="0" max="100" value="0" style="width:90px" /></label>
+        <label class="grow">${escapeHtml(t('标题', 'Title'))} <input name="title" required maxlength="200" /></label>
+        <label>${escapeHtml(t('优先级', 'Priority'))} <input name="priority" type="number" min="0" max="100" value="0" class="field-xs" /></label>
       </div>
       <div class="row">
-        <label style="flex:1">${escapeHtml(t('Issue URL（可选）', 'Issue URL (optional)'))} <input name="issueUrl" placeholder="https://github.com/owner/repo/issues/1" /></label>
+        <label class="grow">${escapeHtml(t('Issue URL（可选）', 'Issue URL (optional)'))} <input name="issueUrl" placeholder="https://github.com/owner/repo/issues/1" /></label>
       </div>
       <label>${escapeHtml(t('说明', 'Detail'))} <textarea name="detail" rows="3" placeholder="${escapeHtml(t('用户问题、现状、验收标准。', 'User problem, current state, acceptance criteria.'))}"></textarea></label>
       <button class="btn" type="submit">${escapeHtml(t('创建工作项', 'Create work item'))}</button>
     </form>
-    <div class="table-scroll" style="margin-top:14px"><table><thead><tr><th>${escapeHtml(t('工作项', 'Work item'))}</th><th>${escapeHtml(t('状态', 'State'))}</th><th>${escapeHtml(t('优先级', 'Priority'))}</th><th>Issue / PR</th><th>${escapeHtml(t('任务', 'Job'))}</th><th></th></tr></thead><tbody>${workRows}</tbody></table></div>
+    <div class="table-scroll mt-4"><table><thead><tr><th>${escapeHtml(t('工作项', 'Work item'))}</th><th>${escapeHtml(t('状态', 'State'))}</th><th>${escapeHtml(t('优先级', 'Priority'))}</th><th>Issue / PR</th><th>${escapeHtml(t('任务', 'Job'))}</th><th></th></tr></thead><tbody>${workRows}</tbody></table></div>
   </section>`;
   const prRows = prJobs.length === 0
     ? `<tr><td colspan="6" class="muted">${escapeHtml(t('没有待处理的 PR。', 'No pull requests waiting.'))}</td></tr>`
@@ -831,7 +847,12 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <button class="btn btn-danger" type="submit">${escapeHtml(t('删除仓库连接', 'Delete repository connection'))}</button>
     </form>
   </section>`
-  const body = `${repoHeader}${roleCard}${lifecycleBanner}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}${deliveryCard}${workBoard}${workCard}${dangerCard}
+  const repoState = roleMissing
+    ? `<div class="state disabled"><span class="state-icon" aria-hidden="true">!</span><div class="state-body"><strong>${escapeHtml(t('先选择角色，任务才会启动。', 'Choose a role before any job can start.'))}</strong><p>${escapeHtml(t('角色由你在这个 GitHub 仓库的权限决定；Fledge 不会替你选择。', 'Your role comes from your permission on this GitHub repository; Fledge will not choose it for you.'))}</p><div class="actions"><a class="link" href="#role">${escapeHtml(t('选择角色', 'Choose a role'))}</a></div></div></div>`
+    : activeJob
+      ? `<div class="state loading" role="status" aria-live="polite"><span class="state-icon" aria-hidden="true">…</span><div class="state-body"><strong>${escapeHtml(t('有任务正在运行。', 'A job is running.'))}</strong><p>${escapeHtml(t('同一仓库同时只跑一个任务；新任务会在它结束之后排队。下面的列表会随任务更新。', 'One job runs per repository; a new run queues after this one finishes. The list below updates with it.'))}</p><span class="skeleton"></span><span class="skeleton wide"></span></div></div>`
+      : ''
+  const body = `${repoHeader}${repoState}${roleCard}${lifecycleBanner}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}${deliveryCard}${workBoard}${workCard}${dangerCard}
   <section class="cols">
     <div class="card" id="repo-settings">
       <h2>${escapeHtml(t('迭代目标', 'Iteration goal'))}</h2>
@@ -855,8 +876,8 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </div>
         <label class="check"><input type="checkbox" name="planRequired" value="1" ${repo.plan_required === 1 ? 'checked' : ''} /> ${escapeHtml(t('先出计划，批准后执行', 'Plan first; execute only after approval'))}${infoTip(t('开启后“立即运行”先生成计划；maintainer 批准计划后才写代码。', 'When on, Run now creates a plan; code is written only after a maintainer approves it.'))}</label>
         <div class="row">
-          <label style="flex:1">${escapeHtml(t('允许修改路径（可选）', 'Allowed paths (optional)'))}${infoTip(t('逗号或换行分隔。批准计划时会填入执行 prompt；不是硬性沙箱。', 'Comma or newline separated. Included in the execution prompt at plan approval; not a hard sandbox.'))} <input name="allowPaths" value="${escapeHtml(repo.allow_paths)}" placeholder="src/, docs/" /></label>
-          <label style="flex:1">${escapeHtml(t('禁止修改路径（可选）', 'Forbidden paths (optional)'))} <input name="denyPaths" value="${escapeHtml(repo.deny_paths)}" placeholder=".github/, deploy/" /></label>
+          <label class="grow">${escapeHtml(t('允许修改路径（可选）', 'Allowed paths (optional)'))}${infoTip(t('逗号或换行分隔。批准计划时会填入执行 prompt；不是硬性沙箱。', 'Comma or newline separated. Included in the execution prompt at plan approval; not a hard sandbox.'))} <input name="allowPaths" value="${escapeHtml(repo.allow_paths)}" placeholder="src/, docs/" /></label>
+          <label class="grow">${escapeHtml(t('禁止修改路径（可选）', 'Forbidden paths (optional)'))} <input name="denyPaths" value="${escapeHtml(repo.deny_paths)}" placeholder=".github/, deploy/" /></label>
         </div>
         <div class="row">
           <label>${escapeHtml(t('合并方式', 'Merge method'))} <select name="mergeMethod">${['squash', 'merge', 'rebase'].map((method) => `<option value="${method}"${(repo.merge_method || 'squash') === method ? ' selected' : ''}>${method}</option>`).join('')}</select></label>
@@ -873,10 +894,10 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </div>
         <p class="fine">${escapeHtml(t('本月已用', 'Spent this month'))} ${escapeHtml(quotaMoney(repoSpendCny))}${repo.monthly_budget_cny > 0 ? ` / ${escapeHtml(quotaMoney(repo.monthly_budget_cny))}` : ''}</p>
         <div class="row">
-          <label style="flex:1">${escapeHtml(t('可用模型', 'Available models'))}${infoTip(t('提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。', 'Providers and models are managed in Settings; select only the models this repository may use.'))}
+          <label class="grow">${escapeHtml(t('可用模型', 'Available models'))}${infoTip(t('提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。', 'Providers and models are managed in Settings; select only the models this repository may use.'))}
             ${models.length === 0
               ? `<span class="muted">${escapeHtml(t('还没有模型。先到 Settings 添加提供方和模型。', 'No models yet. Add a provider and models in Settings.'))}</span>`
-              : `<span class="list">${[...new Set(models.map((model) => model.provider_label))].map((provider) => `<div style="margin-bottom:6px"><strong>${escapeHtml(provider)}</strong><br />${models.filter((model) => model.provider_label === provider).map((model) => `<label class="check"><input type="checkbox" name="modelIds" value="${escapeHtml(model.id)}" ${repoModelIds.has(model.id) ? 'checked' : ''} /> ${escapeHtml(model.label)} <small class="muted">${escapeHtml(model.model)}</small></label>`).join('')}</div>`).join('')}</span>`}
+              : `<span class="list">${[...new Set(models.map((model) => model.provider_label))].map((provider) => `<div class="mb-1"><strong>${escapeHtml(provider)}</strong><br />${models.filter((model) => model.provider_label === provider).map((model) => `<label class="check"><input type="checkbox" name="modelIds" value="${escapeHtml(model.id)}" ${repoModelIds.has(model.id) ? 'checked' : ''} /> ${escapeHtml(model.label)} <small class="muted">${escapeHtml(model.model)}</small></label>`).join('')}</div>`).join('')}</span>`}
           </label>
         </div>
         <label>${escapeHtml(t('默认模型', 'Default model'))} <select name="defaultModelId"><option value="">${escapeHtml(t('平台默认', 'Platform default'))}</option>${models.map((model) => `<option value="${escapeHtml(model.id)}"${repoDefaultModelId === model.id ? ' selected' : ''}>${escapeHtml(model.provider_label)} · ${escapeHtml(model.label)}${repoModelIds.has(model.id) ? '' : ' *'}</option>`).join('')}</select></label>
@@ -889,13 +910,13 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </details>` : ''}
         <button class="btn" type="submit">${escapeHtml(t('保存', 'Save'))}</button>
       </form>
-      ${repo.models_dirty === 1 ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/models/apply" style="margin-top:12px">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('应用模型并重启工作区', 'Apply models and restart workspace'))}</button><p class="fine">${escapeHtml(t('有运行中的任务时会拒绝重启。', 'Restart is refused while a job is running.'))}</p></form>` : ''}
+      ${repo.models_dirty === 1 ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/models/apply" class="mt-3">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('应用模型并重启工作区', 'Apply models and restart workspace'))}</button><p class="fine">${escapeHtml(t('有运行中的任务时会拒绝重启。', 'Restart is refused while a job is running.'))}</p></form>` : ''}
     </div>
     <div class="card" id="connection">
       <h2>${escapeHtml(t('连接', 'Connection'))}</h2>
       <p class="muted">${escapeHtml(t('GitHub token 已加密保存；页面不会显示明文。如果仓库或 token 变了，删除后重新添加。', 'The GitHub token is encrypted and never rendered in plain text. If the repository or token changes, delete and add it again.'))}</p>
       <p class="fine">${escapeHtml(t('审核最近运行', 'Last review'))} ${escapeHtml(repo.last_review_at === null ? t('尚未运行', 'Not run yet') : humanTimeShort(repo.last_review_at))}${reviewStatus}</p>
-      <div class="row" style="margin-bottom:12px">
+      <div class="row mb-3">
         <form method="post" action="/repos/${escapeHtml(repo.id)}/refresh">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('重新检测上游 / fork', 'Refresh upstream / fork'))}</button></form>
       </div>
       <p class="fine">${escapeHtml(t('平台只通过 GitHub API 读取元数据、创建 fork 和分支/PR；不会 clone 到公共磁盘。', 'The platform only uses the GitHub API to read metadata, create forks and open branches/PRs; it never clones to public disk.'))}</p>
@@ -1062,7 +1083,7 @@ export function teamPage(input: {
   ${stateErrorHtml}
   <p class="fine" data-team-control role="status" aria-live="polite"></p>
   <div class="banner bad" data-team-stale role="alert" hidden></div>
-  <section class="card" id="team-live" data-team-api="${ready ? `/api/repos/${escapeHtml(repo.id)}/team` : ''}" data-team-events="${ready ? `/api/repos/${escapeHtml(repo.id)}/team/events` : ''}" data-team-answer="/api/repos/${escapeHtml(repo.id)}/team/answer" data-team-stop-url="/api/repos/${escapeHtml(repo.id)}/team/stop" data-team-csrf="${escapeHtml(viewer.csrfToken)}" data-team-locale="${escapeHtml(locale)}">
+  <section class="card" id="team-live" aria-busy="false" data-team-api="${ready ? `/api/repos/${escapeHtml(repo.id)}/team` : ''}" data-team-events="${ready ? `/api/repos/${escapeHtml(repo.id)}/team/events` : ''}" data-team-answer="/api/repos/${escapeHtml(repo.id)}/team/answer" data-team-stop-url="/api/repos/${escapeHtml(repo.id)}/team/stop" data-team-csrf="${escapeHtml(viewer.csrfToken)}" data-team-locale="${escapeHtml(locale)}">
     <div class="row between"><h2>${escapeHtml(t('团队状态', 'Team status'))}</h2><span class="fine">${escapeHtml(t('实时更新', 'Live'))} · <span data-team-updated>—</span></span></div>
     <div class="team-grid">${roleCards}</div>
     ${sessionDetails}
@@ -1072,7 +1093,7 @@ export function teamPage(input: {
     <div data-team-timeline>${teamTimeline(t, state?.timeline)}</div>
   </section>
   <section class="cols">
-    <div class="card"><h2>${escapeHtml(t('待回答的问题', 'Open questions'))}</h2><div id="team-questions">${questionHtml}</div></div>
+    <div class="card"><h2>${escapeHtml(t('待回答的问题', 'Open questions'))}</h2><div id="team-questions" aria-live="polite">${questionHtml}</div></div>
     <div class="card"><h2>${escapeHtml(t('发送指导意见', 'Send guidance'))}</h2>${guidanceForm}</div>
   </section>
   <section class="card" id="jobs">
@@ -1137,8 +1158,8 @@ export function settingsPage(input: {
           <form method="post" action="/settings/providers/${escapeHtml(provider.id)}/models" class="form">
             ${csrf(viewer)}
             <div class="row">
-              <label style="flex:1">Model ID <input name="model" required maxlength="120" placeholder="deepseek-chat" /></label>
-              <label style="flex:1">${escapeHtml(t('显示名', 'Label'))} <input name="label" maxlength="120" placeholder="${escapeHtml(t('可选', 'optional'))}" /></label>
+              <label class="grow">Model ID <input name="model" required maxlength="120" placeholder="deepseek-chat" /></label>
+              <label class="grow">${escapeHtml(t('显示名', 'Label'))} <input name="label" maxlength="120" placeholder="${escapeHtml(t('可选', 'optional'))}" /></label>
             </div>
             <button class="btn" type="submit">${escapeHtml(t('添加模型并测试', 'Add model and test'))}</button>
           </form>
@@ -1150,8 +1171,8 @@ export function settingsPage(input: {
             <form method="post" action="/settings/providers/${escapeHtml(provider.id)}/update" class="form">
               ${csrf(viewer)}
               <div class="row">
-                <label style="flex:1">${escapeHtml(t('名称', 'Label'))} <input name="label" value="${escapeHtml(provider.label)}" maxlength="80" /></label>
-                <label style="flex:1">Base URL <input name="baseUrl" value="${escapeHtml(provider.base_url)}" /></label>
+                <label class="grow">${escapeHtml(t('名称', 'Label'))} <input name="label" value="${escapeHtml(provider.label)}" maxlength="80" /></label>
+                <label class="grow">Base URL <input name="baseUrl" value="${escapeHtml(provider.base_url)}" /></label>
               </div>
               <label>API Key <input name="apiKey" type="password" placeholder="${escapeHtml(t('留空不修改', 'Leave blank to keep'))}" autocomplete="off" /></label>
               ${canPrivate ? `<label class="check"><input type="checkbox" name="allowPrivate" value="1"${provider.allow_private === 1 ? ' checked' : ''} /> ${escapeHtml(t('允许 HTTP / 内网地址', 'Allow HTTP / private address'))}</label>` : ''}
@@ -1163,8 +1184,8 @@ export function settingsPage(input: {
     <form method="post" action="/settings/providers" class="form">
       ${csrf(viewer)}
       <div class="row">
-        <label style="flex:1">${escapeHtml(t('名称', 'Label'))} <input name="label" required maxlength="80" placeholder="DeepSeek / local" /></label>
-        <label style="flex:1">Base URL <input name="baseUrl" required placeholder="https://api.example.com/v1" autocomplete="off" /></label>
+        <label class="grow">${escapeHtml(t('名称', 'Label'))} <input name="label" required maxlength="80" placeholder="DeepSeek / local" /></label>
+        <label class="grow">Base URL <input name="baseUrl" required placeholder="https://api.example.com/v1" autocomplete="off" /></label>
       </div>
       <label>API Key <input name="apiKey" required type="password" placeholder="sk-…" autocomplete="off" /></label>
       ${config.allowPrivateModelUrls || viewer.user.allow_private_models === 1 || viewer.user.role === 'superadmin' ? `<label class="check"><input type="checkbox" name="allowPrivate" value="1" /> ${escapeHtml(t('允许 HTTP / 内网地址（Fledge 必须能访问）', 'Allow HTTP / private address (Fledge must be able to reach it)'))}</label>` : `<p class="fine">${escapeHtml(t('需要管理员在 Admin 中为你的账号开启“内网模型”权限，或由运维设置 ALLOW_PRIVATE_MODEL_URLS=true。', 'An admin must enable private models for your account in Admin, or the operator must set ALLOW_PRIVATE_MODEL_URLS=true.'))}</p>`}
@@ -1554,7 +1575,7 @@ export function workspacePage(input: {
           </a>`,
         )
         .join('')}</div>
-      ${repos.length > 4 ? `<p class="fine" style="margin:12px 0 0"><a href="/dashboard">${escapeHtml(t(`查看其余 ${repos.length - 4} 个仓库`, `View the other ${repos.length - 4} repositories`))}</a></p>` : ''}`
+      ${repos.length > 4 ? `<p class="fine mt-3"><a href="/dashboard">${escapeHtml(t(`查看其余 ${repos.length - 4} 个仓库`, `View the other ${repos.length - 4} repositories`))}</a></p>` : ''}`
   const initial = viewer.user.login.slice(0, 1).toUpperCase()
   const avatar = viewer.user.avatar_url === null || viewer.user.avatar_url === ''
     ? `<span class="workspace-avatar workspace-avatar-fallback" aria-hidden="true">${escapeHtml(initial)}</span>`
@@ -1592,7 +1613,7 @@ export function workspacePage(input: {
   <section class="card">
     <div class="row between"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2><a class="link" href="/dashboard">${escapeHtml(t('查看全部', 'View all'))}</a></div>
     ${jobList(locale, recent, reposById)}
-    ${jobsTotal > recent.length ? `<p class="fine" style="margin:12px 0 0"><a href="/dashboard#jobs">${escapeHtml(t(`查看其余 ${jobsTotal - recent.length} 个任务`, `View the other ${jobsTotal - recent.length} jobs`))}</a></p>` : ''}
+    ${jobsTotal > recent.length ? `<p class="fine mt-3"><a href="/dashboard#jobs">${escapeHtml(t(`查看其余 ${jobsTotal - recent.length} 个任务`, `View the other ${jobsTotal - recent.length} jobs`))}</a></p>` : ''}
   </section>`
   return layout({ title: t('工作区', 'Workspace'), viewer, body, config, locale, path: '/console', active: 'console', notice, error })
 }
@@ -1653,7 +1674,7 @@ export function jobPage(input: {
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('回滚', 'Rollback'))}</strong><small>${escapeHtml(evidence.rollback ?? '—')}</small></div></div>
       </div>`
   const retry = job.status === 'failed'
-    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/retry">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(job.checkpoint === null || job.checkpoint === '' ? t('重试这个任务', 'Retry this job') : t('从断点继续', 'Resume from checkpoint'))}</button></form>`
+    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/retry">${csrf(viewer)}<button class="btn" type="submit" data-pending-label="${escapeHtml(t('排队中…', 'Queueing…'))}">${escapeHtml(job.checkpoint === null || job.checkpoint === '' ? t('重试这个任务', 'Retry this job') : t('从断点继续', 'Resume from checkpoint'))}</button></form>`
     : ''
   const execute = job.kind === 'plan' && job.status === 'succeeded' && job.plan_approved_at !== null
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/execute">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('执行这个计划', 'Execute this plan'))}</button></form>`
@@ -1667,10 +1688,13 @@ export function jobPage(input: {
     ? `<section class="card">
         <div class="row between"><div><h2>${escapeHtml(t('计划审批', 'Plan approval'))}</h2><p class="muted">${job.plan_rejected_at !== null ? escapeHtml(t('计划已被拒绝。', 'This plan was rejected.')) : job.plan_approved_at !== null ? escapeHtml(t('计划已批准；可以执行。', 'This plan is approved and can be executed.')) : escapeHtml(t('等待 maintainer 批准计划。', 'Waiting for a maintainer to approve the plan.'))}</p></div><span class="badge ${job.plan_approved_at !== null ? 'good' : job.plan_rejected_at !== null ? 'bad' : 'busy'}">${job.plan_approved_at !== null ? escapeHtml(t('已批准', 'Approved')) : job.plan_rejected_at !== null ? escapeHtml(t('已拒绝', 'Rejected')) : escapeHtml(t('待批准', 'Pending'))}</span></div>
         ${repo.repo_role === 'maintainer' && job.plan_approved_at === null && job.plan_rejected_at === null ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/approve-plan" class="form">${csrf(viewer)}
-          <div class="row"><label style="flex:1">${escapeHtml(t('允许修改路径', 'Allowed paths'))} <input name="allowPaths" value="${escapeHtml(job.plan_allow_paths ?? repo.allow_paths)}" placeholder="src/, docs/" /></label><label style="flex:1">${escapeHtml(t('禁止修改路径', 'Forbidden paths'))} <input name="denyPaths" value="${escapeHtml(job.plan_deny_paths ?? repo.deny_paths)}" placeholder=".github/, deploy/" /></label></div>
+          <div class="row"><label class="grow">${escapeHtml(t('允许修改路径', 'Allowed paths'))} <input name="allowPaths" value="${escapeHtml(job.plan_allow_paths ?? repo.allow_paths)}" placeholder="src/, docs/" /></label><label class="grow">${escapeHtml(t('禁止修改路径', 'Forbidden paths'))} <input name="denyPaths" value="${escapeHtml(job.plan_deny_paths ?? repo.deny_paths)}" placeholder=".github/, deploy/" /></label></div>
           <div class="row"><button class="btn" type="submit">${escapeHtml(t('批准计划', 'Approve plan'))}</button><button class="btn btn-danger" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/reject-plan" data-confirm="${escapeHtml(t('拒绝这个计划？', 'Reject this plan?'))}">${escapeHtml(t('拒绝', 'Reject'))}</button></div>
         </form>` : job.plan_approved_at !== null ? `<p class="fine">${escapeHtml(t('批准人', 'Approved by'))} ${escapeHtml(job.plan_approved_by ?? '—')} · ${escapeHtml(t('允许路径', 'Allowed'))} ${escapeHtml(job.plan_allow_paths ?? '—')} · ${escapeHtml(t('禁止路径', 'Forbidden'))} ${escapeHtml(job.plan_deny_paths ?? '—')}</p>` : ''}
       </section>`
+    : ''
+  const jobLoading = job.status === 'queued' || job.status === 'running'
+    ? `<div class="state loading" role="status" aria-live="polite"><span class="state-icon" aria-hidden="true">…</span><div class="state-body"><strong>${escapeHtml(job.status === 'queued' ? t('任务已排队。', 'This job is queued.') : t('任务正在运行。', 'This job is running.'))}</strong><p>${escapeHtml(job.status === 'queued' ? t('前面的任务结束后会自动开始；这个页面会自动更新。', 'It starts as soon as the jobs ahead finish; this page updates by itself.') : t('团队的进度会写入下面的时间线；不需要手动刷新。', 'Team progress lands in the timeline below; no manual refresh needed.'))}</p><span class="skeleton"></span><span class="skeleton wide"></span></div></div>`
     : ''
   const body = `<section class="card">
     <div class="row between">
@@ -1689,6 +1713,7 @@ export function jobPage(input: {
       </div>
     </div>
   </section>
+  ${jobLoading}
   ${supportMode ? '' : planCard}
   <section class="cols">
     <div class="card">
@@ -1974,7 +1999,7 @@ export function agentWorkspacePage(input: {
         <iframe class="workspace-frame" src="/repos/${escapeHtml(repo.id)}/workspace/app/" title="${escapeHtml(t('Fledge 工作区', 'Fledge workspace'))}" allow="clipboard-read; clipboard-write"></iframe>
       </section>`
     : `<section class="card"><p class="muted">${escapeHtml(t('实例就绪后才能打开工作区。', 'The workspace opens after the instance is ready.'))}</p></section>`}
-  <p class="fine" style="text-align:right">Fledge · powered by FlyBot</p>`
+  <p class="fine text-right">Fledge · powered by FlyBot</p>`
   return layout({ title: `${t('工作区', 'Workspace')} · ${repo.upstream_name || repo.name}`, viewer, body, config, locale, path: `/repos/${repo.id}/workspace`, active: 'dashboard', notice, error })
 }
 

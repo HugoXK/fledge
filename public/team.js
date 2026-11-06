@@ -20,6 +20,10 @@
     return value
   }
 
+  const setBusy = (busy) => {
+    root.setAttribute('aria-busy', busy ? 'true' : 'false')
+  }
+
   const note = (text, bad = false) => {
     if (!control) return
     control.textContent = text
@@ -237,6 +241,7 @@
   }
 
   const applySnapshot = (data) => {
+    setBusy(false)
     applyBots(data.bots)
     renderQuestions(data.questions)
     renderTimeline(data.timeline)
@@ -250,11 +255,14 @@
   const startPolling = () => {
     if (polling !== null || !api) return
     const tick = async () => {
+      setBusy(true)
       try {
         const response = await fetch(api, { headers: { accept: 'application/json' } })
         if (response.ok) applySnapshot(await response.json())
       } catch {
         // Keep the last state; the next poll retries.
+      } finally {
+        setBusy(false)
       }
     }
     void tick()
@@ -263,6 +271,7 @@
 
   if (events && typeof EventSource !== 'undefined') {
     const source = new EventSource(events)
+    setBusy(true)
     source.addEventListener('snapshot', (event) => {
       try {
         applySnapshot(JSON.parse(event.data))

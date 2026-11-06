@@ -21,6 +21,13 @@
    through `src/version.ts`; a release bumps that file and `CHANGELOG.md`
    together.
 
+## UI
+
+The console is server-rendered from `src/views/` and styled by `public/app.css`.
+Its design tokens, component inventory, state classes and responsive tiers are
+documented in [ui.md](ui.md); a UI change updates that page in the same pull
+request.
+
 ## Components
 
 ```

@@ -80,6 +80,30 @@
     button.addEventListener('click', () => location.reload())
   })
 
+  const markBusy = (button) => {
+    if (!(button instanceof HTMLButtonElement) || button.dataset.busy === '1') return
+    button.dataset.busy = '1'
+    button.dataset.idleLabel = button.textContent || ''
+    button.classList.add('is-busy')
+    button.setAttribute('aria-busy', 'true')
+    // A disabled submit button would drop its name from the request, so keep it
+    // in the form and block the second click through aria-disabled + pointer-events.
+    button.setAttribute('aria-disabled', 'true')
+    const pending = button.dataset.pendingLabel ?? button.getAttribute('data-pending-label')
+    if (pending) button.textContent = pending
+  }
+
+  const clearBusy = () => {
+    document.querySelectorAll('[data-busy="1"]').forEach((button) => {
+      button.dataset.busy = '0'
+      button.classList.remove('is-busy')
+      button.removeAttribute('aria-busy')
+      button.removeAttribute('aria-disabled')
+      if (button.dataset.idleLabel) button.textContent = button.dataset.idleLabel
+    })
+  }
+  window.addEventListener('pageshow', clearBusy)
+
   document.addEventListener('submit', (event) => {
     const form = event.target
     if (!(form instanceof HTMLFormElement)) return
@@ -87,7 +111,9 @@
     if (message && !window.confirm(message)) {
       event.preventDefault()
       event.stopImmediatePropagation()
+      return
     }
+    markBusy(event.submitter)
   }, true)
 
   document.querySelectorAll('[data-goal-template]').forEach((select) => {

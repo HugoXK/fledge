@@ -63,13 +63,15 @@ export function layout(options: LayoutOptions): string {
   const notice = localizeMessage(locale, options.notice)
   const error = localizeMessage(locale, options.error)
   const preview = viewer !== undefined && viewer !== null && viewer.preview === true
+  const navItem = (key: string, href: string, label: string): string =>
+    `<a class="${active === key ? 'on' : ''}" href="${href}"${active === key ? ' aria-current="page"' : ''}>${escapeHtml(label)}</a>`
   const nav = viewer === undefined || viewer === null
     ? ''
     : `<nav class="nav" aria-label="${escapeHtml(t('主导航', 'Main navigation'))}">
-        <a class="${active === 'console' ? 'on' : ''}" href="/console">${escapeHtml(t('工作区', 'Workspace'))}</a>
-        <a class="${active === 'dashboard' ? 'on' : ''}" href="/dashboard">${escapeHtml(t('仓库', 'Repositories'))}</a>
-        <a class="${active === 'settings' ? 'on' : ''}" href="/settings">${escapeHtml(t('设置', 'Settings'))}</a>
-        ${!preview && (viewer.user.role === 'admin' || viewer.user.role === 'superadmin') ? `<a class="${active === 'admin' ? 'on' : ''}" href="/admin">${escapeHtml(t('管理', 'Admin'))}</a>` : ''}
+        ${navItem('console', '/console', t('工作区', 'Workspace'))}
+        ${navItem('dashboard', '/dashboard', t('仓库', 'Repositories'))}
+        ${navItem('settings', '/settings', t('设置', 'Settings'))}
+        ${!preview && (viewer.user.role === 'admin' || viewer.user.role === 'superadmin') ? navItem('admin', '/admin', t('管理', 'Admin')) : ''}
       </nav>`
   const accountAvatar = viewer !== undefined && viewer !== null && viewer.user.avatar_url !== null && viewer.user.avatar_url !== ''
     ? `<img src="${escapeHtml(viewer.user.avatar_url)}" alt="" width="24" height="24" />`
