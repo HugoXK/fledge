@@ -1782,6 +1782,29 @@ export class Store {
     return Number(row?.total ?? 0)
   }
 
+  usageAttribution(sinceIso: string): { unattributedCount: number; unattributedUsd: number; attributedUsd: number } {
+    const unattributed = this.get<{ n: number; total: number | null }>("SELECT COUNT(*) AS n, SUM(cost_usd) AS total FROM quota_ledger WHERE repo_id IS NULL AND job_id IS NULL AND at >= ?", sinceIso)
+    const attributed = this.get<{ total: number | null }>("SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE (repo_id IS NOT NULL OR job_id IS NOT NULL) AND at >= ?", sinceIso)
+    return {
+      unattributedCount: Number(unattributed?.n ?? 0),
+      unattributedUsd: Number(unattributed?.total ?? 0),
+      attributedUsd: Number(attributed?.total ?? 0),
+    }
+  }
+
+  stageMetrics(sinceIso: string): { scope: number; verify: number; iterate: number; review: number; leadOnly: number; grounded: number } {
+    const counts = new Map(this.all<{ kind: string; n: number }>('SELECT kind, COUNT(*) AS n FROM jobs WHERE created_at >= ? GROUP BY kind', sinceIso).map((row) => [row.kind, Number(row.n)]))
+    const events = new Map(this.all<{ name: string; n: number }>("SELECT name, COUNT(*) AS n FROM events WHERE at >= ? AND name IN ('team_participation_low', 'team_attribution_grounded') GROUP BY name", sinceIso).map((row) => [row.name, Number(row.n)]))
+    return {
+      scope: counts.get('scope') ?? 0,
+      verify: counts.get('verify') ?? 0,
+      iterate: counts.get('iterate') ?? 0,
+      review: counts.get('review') ?? 0,
+      leadOnly: events.get('team_participation_low') ?? 0,
+      grounded: events.get('team_attribution_grounded') ?? 0,
+    }
+  }
+
   usageTotal(userId: string): number {
     const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ?', userId)
     return Number(row?.total ?? 0)

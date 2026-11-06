@@ -383,3 +383,25 @@ test('the per-user private model permission persists', () => {
     store.close()
   }
 })
+
+test('usage attribution and stage metrics aggregate the window', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'metrics-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_metrics2', userId: user.id, owner: 'o', name: 'm', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.recordUsage(user.id, null, 0.5, null, repo.id)
+    store.recordUsage(user.id, null, 0.25, null, null)
+    store.event('team_participation_low', { userId: user.id, repoId: repo.id })
+    store.event('team_attribution_grounded', { userId: user.id, repoId: repo.id })
+    store.createJob({ id: 'job_scope_metric', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'scope' })
+    const attribution = store.usageAttribution('2000-01-01T00:00:00.000Z')
+    assert.equal(attribution.unattributedUsd, 0.25)
+    assert.equal(attribution.attributedUsd, 0.5)
+    const stages = store.stageMetrics('2000-01-01T00:00:00.000Z')
+    assert.equal(stages.scope, 1)
+    assert.equal(stages.leadOnly, 1)
+    assert.equal(stages.grounded, 1)
+  } finally {
+    store.close()
+  }
+})

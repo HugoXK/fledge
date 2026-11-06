@@ -2080,6 +2080,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       metrics: store.productMetrics(since),
       team: store.teamMetrics(since),
       workItems: store.workItemMetrics(since),
+      attribution: store.usageAttribution(since),
+      stages: store.stageMetrics(since),
       since,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),

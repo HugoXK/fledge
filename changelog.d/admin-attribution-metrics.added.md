@@ -1,0 +1,1 @@
+The admin metrics page now shows attributed versus unattributed model cost, scope/verify/iterate/review job counts, and Lead-only versus grounded-attribution events. Historical ledger rows without a repository or job remain explicitly unattributed.
