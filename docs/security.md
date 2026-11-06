@@ -188,6 +188,19 @@ per day. Test mail is rate-limited to one per minute.
   cookie, cookie isolation and an ownership check on every request; a raw DSH
   token must never appear in a browser URL.
 
+### Development GitHub PAT
+
+The GitHub PAT used by the maintenance routine is not managed by Fledge. To
+rotate it:
+
+1. Create a new classic PAT with `repo` scope in GitHub settings.
+2. Run `NEW_GITHUB_TOKEN=... node scripts/rotate-github-token.mjs` on the host
+   that holds `~/.dsh/bot/secrets.json` (override with `SECRETS_PATH` if needed).
+3. Revoke the old token in GitHub settings.
+
+The script validates the new token, writes a timestamped backup next to the
+secrets file and never prints the token. It does not revoke the old token.
+
 ### OAuth
 
 - `state` is a 32-byte random value; only its hash is stored, for 10 minutes.

@@ -1,0 +1,1 @@
+Added `scripts/rotate-github-token.mjs` to validate, back up and update the GitHub development PAT in `~/.dsh/bot/secrets.json` without printing it. The owner creates the replacement token in GitHub settings and must revoke the old token; Fledge never mints PATs.
