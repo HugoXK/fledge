@@ -1,1 +1,0 @@
-After applying a model change, every bot is now updated to its assigned model or the new repository default. Previously an unassigned bot kept its old provider/model reference, so the team could stall after the provider ids changed.
