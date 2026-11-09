@@ -171,7 +171,7 @@ Before an iterate job is enqueued, Fledge reads the upstream repository's open
 pull requests (`GET /repos/:owner/:name/pulls?state=open`, three pages) and looks
 for one that references the job's issue — in the pull request body, title or head
 branch, as a bare `#N` or as an `/issues/N` URL for that same repository. A
-cross-repository reference such as `other/repo#42` or
+cross-repository reference such as `other/repo#42`, `other/repo #42` or
 `https://github.com/other/repo/issues/42` never matches, because team pull
 requests routinely cite other repositories' issues. When one does match, no job
 is created: the caller gets `code: "DUPLICATE_WORK"` with the existing pull
