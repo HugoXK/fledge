@@ -48,9 +48,19 @@ test('only a real push falls back to HEAD~1', () => {
   const pushed = choose('push', {})
   assert.equal(pushed.ref, 'HEAD~1')
   assert.equal(pushed.fetch, '')
+})
+
+test('a scheduled or manual run measures the branch against its default branch, never HEAD~1', () => {
   for (const eventName of ['schedule', 'workflow_dispatch']) {
-    assert.equal(choose(eventName, {}).ref, 'HEAD~1')
+    const chosen = choose(eventName, { repository: { default_branch: 'main' } })
+    assert.equal(chosen.ref, 'origin/main')
+    assert.equal(chosen.fetch, 'main')
+    assert.notEqual(chosen.ref, 'HEAD~1', `${eventName} has no previous commit of its own to measure`)
   }
+  // The default branch is read from the event, not hard-coded.
+  const custom = choose('workflow_dispatch', { repository: { default_branch: 'trunk' } })
+  assert.equal(custom.ref, 'origin/trunk')
+  assert.equal(custom.fetch, 'trunk')
 })
 
 test('the base decides whether a T3 change is seen at all', () => {

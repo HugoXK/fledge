@@ -107,8 +107,9 @@ jobs:
   dependency-review:
     name: dependency-review
     # Reads the pull request's dependency diff, so it has nothing to compare on a
-    # push to main. `ci-ok` allows `skipped` for this job on push and merge_group
-    # only (scripts/ci-ok.mjs SKIPPABLE_ON).
+    # push, a nightly or a manual run, and nothing of its own in a merge group.
+    # `ci-ok` allows `skipped` for this job on exactly those events
+    # (scripts/ci-ok.mjs SKIPPABLE_ON).
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10

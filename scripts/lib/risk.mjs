@@ -90,5 +90,10 @@ export function chooseBase(eventName, event = {}) {
     if (sha !== '') return { ref: sha, fetch: `refs/heads/${branch}` }
     return { ref: `origin/${branch}`, fetch: branch }
   }
-  return { ref: 'HEAD~1', fetch: '' }
+  // Only a real push has a "previous commit on this branch" to measure. A
+  // scheduled or manual run gates no merge, but it must not report a tier from
+  // one commit either: measure the branch against the default branch instead.
+  if (eventName === 'push') return { ref: 'HEAD~1', fetch: '' }
+  const branch = String(event.repository?.default_branch ?? 'main')
+  return { ref: `origin/${branch}`, fetch: branch }
 }
