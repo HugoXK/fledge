@@ -209,6 +209,27 @@ server {
 }
 ```
 
+The app trusts only the hops named in `TRUST_PROXY`, never every hop.
+`$proxy_add_x_forwarded_for` appends `$remote_addr`, so the address nginx actually
+saw is the rightmost `X-Forwarded-For` entry, and that is the value Fledge uses as
+`request.ip`, as the rate-limit bucket key and for the `/metrics` loopback check.
+Everything to the left of it is caller-supplied and ignored, so a client cannot
+mint a new bucket by rotating the header.
+
+| Topology | `TRUST_PROXY` |
+|---|---|
+| nginx on the same host (the supported default shown above) | leave unset - defaults to `127.0.0.1,::1` |
+| Docker Compose as published (bridge network, nginx outside the app container) | the bridge gateway, for example `172.17.0.1`; or run the app with `network_mode: host` and keep the default |
+| another proxy in front of nginx | that proxy's address or CIDR, added to the list |
+
+The rule for every row is the same: **add the hop, do not loosen it.** A value
+that is not an address or CIDR is refused at startup - `true`, `false`, `*`,
+`all` and a `/0` range all fail with `TRUST_PROXY: ... is not a trusted hop`,
+because each of them trusts the caller-supplied left end of the header. A
+`TRUST_PROXY` that names the wrong hop fails closed: the real client address is
+not seen, so clients behind that proxy share one rate-limit bucket until the hop
+is corrected.
+
 Set `BASE_URL=https://fledge.example.com` so cookies are `Secure` and email links
 are absolute.
 
