@@ -888,6 +888,111 @@ test('the job page renders the durable timeline', () => {
   }
 })
 
+test('a blocked path guard never renders as Evidence passed', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'guard-page-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_guard_page', userId: user.id, owner: 'o', name: 'gp', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_guard_page', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob(job.id, {
+      pr_url: 'https://github.com/o/gp/pull/4',
+      pr_state: 'open',
+      verification_json: JSON.stringify({
+        ok: true,
+        checkedAt: '2026-11-09T17:00:00.000Z',
+        sha: 'a'.repeat(40),
+        prState: 'open',
+        draft: false,
+        mergeableState: 'clean',
+        checks: { total: 3, green: 3, failing: [], pending: [] },
+        combinedStatus: 'success',
+        reviews: { changesRequested: false, approvals: 1 },
+        testEvidence: { state: 'verified', claimed: true, greenChecks: ['test (22)'], failingChecks: [] },
+        reasons: [],
+      }),
+      path_guard_json: JSON.stringify({
+        ok: false,
+        checkedAt: '2026-11-09T17:00:00.000Z',
+        allow: [],
+        deny: ['src/'],
+        files: ['src/config.ts'],
+        violations: [{ file: 'src/config.ts', reason: 'denied' }],
+      }),
+    })
+    const page = jobPage({
+      config,
+      locale: 'en',
+      viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
+      repo,
+      job: store.getJob(job.id)!,
+    })
+    assert.doesNotMatch(page, /Evidence passed/, 'a blocked PR must not claim its evidence passed')
+    assert.match(page, /Blocked/)
+    assert.match(page, /src\/config\.ts: denied/)
+    assert.match(page, /blocked by the path guard/i)
+
+    const zh = jobPage({
+      config,
+      locale: 'zh',
+      viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
+      repo,
+      job: store.getJob(job.id)!,
+    })
+    assert.doesNotMatch(zh, /证据通过/, 'a blocked PR must not claim its evidence passed in Chinese either')
+    assert.match(zh, /路径守卫阻止/)
+    assert.match(zh, /src\/config\.ts: denied/)
+  } finally {
+    store.close()
+  }
+})
+
+test('a clean guard and passing evidence still render Evidence passed', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'guard-clean-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_guard_clean', userId: user.id, owner: 'o', name: 'gc', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_guard_clean', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob(job.id, {
+      pr_url: 'https://github.com/o/gc/pull/5',
+      pr_state: 'open',
+      verification_json: JSON.stringify({
+        ok: true,
+        checkedAt: '2026-11-09T17:00:00.000Z',
+        sha: 'b'.repeat(40),
+        prState: 'open',
+        draft: false,
+        mergeableState: 'clean',
+        checks: { total: 3, green: 3, failing: [], pending: [] },
+        combinedStatus: 'success',
+        reviews: { changesRequested: false, approvals: 1 },
+        testEvidence: { state: 'verified', claimed: true, greenChecks: ['test (22)'], failingChecks: [] },
+        reasons: [],
+      }),
+      path_guard_json: JSON.stringify({
+        ok: true,
+        checkedAt: '2026-11-09T17:00:00.000Z',
+        allow: [],
+        deny: ['src/'],
+        files: ['README.md'],
+        violations: [],
+      }),
+    })
+    const page = jobPage({
+      config,
+      locale: 'en',
+      viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
+      repo,
+      job: store.getJob(job.id)!,
+    })
+    assert.match(page, /Evidence passed/)
+    assert.doesNotMatch(page, /blocked by the path guard/i)
+  } finally {
+    store.close()
+  }
+})
+
 test('a failed job shows an actionable failure category and a recovery link', () => {
   const config = testConfig()
   const store = new Store(':memory:')
