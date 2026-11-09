@@ -60,7 +60,7 @@ export class GithubOAuth {
   }
 
   async exchangeCode(code: string): Promise<GithubToken> {
-    const response = await fetch('https://github.com/login/oauth/access_token', {
+    const response = await fetch(this.config.github.oauthTokenUrl, {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
       body: JSON.stringify({

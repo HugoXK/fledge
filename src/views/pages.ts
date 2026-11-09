@@ -6,6 +6,7 @@ import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { renderState, stateCell } from './states.js'
+import { oauthConfigured, tokenLoginEnabled } from '../auth/login.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
@@ -390,8 +391,11 @@ function noticeBlock(locale: Locale, viewer: Viewer, notifications: Notification
     .join('')}<form method="post" action="/notifications/read">${csrf(viewer)}<button class="link" type="submit">${escapeHtml(t('全部标为已读', 'Mark all read'))}</button></form></div>`
 }
 
-export function landingPage(config: Config, viewer?: Viewer | null, devLogin = false, oauthConfigured = true, locale: Locale = 'zh'): string {
+export function landingPage(config: Config, viewer?: Viewer | null, devLogin = false, locale: Locale = 'zh'): string {
   const t = translator(locale)
+  // The same two predicates the route guard calls; the page must not decide this alone.
+  const oauth = oauthConfigured(config)
+  const tokenLogin = tokenLoginEnabled(config)
   const tokenForm = `<details class="card narrow" id="token-login" open style="margin:24px 0 0">
       <summary>${escapeHtml(t('使用 GitHub token 登录（备用）', 'Sign in with a GitHub token (fallback)'))}</summary>
       <form method="post" action="/auth/token" class="form">
@@ -406,7 +410,7 @@ export function landingPage(config: Config, viewer?: Viewer | null, devLogin = f
       <h1>${escapeHtml(t('让仓库自己长大。', 'Let your repositories grow.'))}</h1>
       <p class="lede">${escapeHtml(t('把多个 GitHub 仓库交给 Fledge。FlyBot 会持续阅读代码、写失败的测试、修最小的根因，并开一个你可以审查的 PR。你只需要决定合不合。', 'Hand several GitHub repositories to Fledge. FlyBot reads the code, writes a failing test, fixes the smallest root cause and opens a pull request you can review. You only decide whether to merge.'))}</p>
       <div class="actions">
-        ${oauthConfigured ? `<a class="btn" href="/auth/github">${escapeHtml(t('使用 GitHub 登录', 'Sign in with GitHub'))}</a>` : `<a class="btn" href="#token-login">${escapeHtml(t('使用 GitHub token 登录', 'Sign in with a GitHub token'))}</a>`}
+        ${oauth ? `<a class="btn" href="/auth/github">${escapeHtml(t('使用 GitHub 登录', 'Sign in with GitHub'))}</a>` : `<a class="btn" href="#token-login">${escapeHtml(t('使用 GitHub token 登录', 'Sign in with a GitHub token'))}</a>`}
         ${devLogin ? `<a class="btn btn-ghost" href="/auth/dev">${escapeHtml(t('Dev 登录（本地）', 'Dev sign-in (local)'))}</a>` : ''}
         <a class="btn btn-ghost" href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">${escapeHtml(t('看源码', 'View source'))}</a>
       </div>
@@ -423,8 +427,8 @@ export function landingPage(config: Config, viewer?: Viewer | null, devLogin = f
     </aside>
     <div class="hero-note">
       <p class="fine">${escapeHtml(t('首次登录需要 GitHub 授权；没有权限时先签署《免责声明》和《信息安全承诺》，提交后可在状态页查看排队位置，不要重复提交。平台初始额度 1 元；用完后配置自己的模型 API 即可继续。', 'The first sign-in needs GitHub authorization. Without access, sign the Disclaimer and the Information Security Commitment first; after submitting, the status page shows your queue position. Do not submit twice. The platform starts with 1 CNY of quota; when it runs out, add your own model API to continue.'))}</p>
-      ${oauthConfigured ? '' : `<p class="fine">${escapeHtml(t('OAuth App 尚未配置；先用 GitHub token 登录（只用于确认身份，不会保存），部署后可在 .env 补 OAuth。', 'The OAuth App is not configured yet. Use the GitHub token fallback (identity only, never stored); add OAuth in .env after deployment.'))}</p>`}
-      ${oauthConfigured ? '' : tokenForm}
+      ${oauth ? '' : `<p class="fine">${escapeHtml(t('OAuth App 尚未配置；先用 GitHub token 登录（只用于确认身份，不会保存），部署后可在 .env 补 OAuth。', 'The OAuth App is not configured yet. Use the GitHub token fallback (identity only, never stored); add OAuth in .env after deployment.'))}</p>`}
+      ${tokenLogin ? tokenForm : ''}
     </div>
   </section>
   <section class="grid3">

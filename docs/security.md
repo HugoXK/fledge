@@ -210,13 +210,25 @@ secrets file and never prints the token. It does not revoke the old token.
 
 ### Token login
 
-When `GITHUB_CLIENT_ID` is empty, the landing page offers a GitHub token login.
+Token login is one rule, `tokenLoginEnabled = !oauthConfigured || allowTokenLoginOnly`,
+and both the `POST /auth/token` guard and the landing page call the same exported
+predicate, so the page never hides a route that still answers:
+
+- OAuth configured, `ALLOW_TOKEN_LOGIN_ONLY=false`: the route answers 403 and the
+  page shows no token form.
+- OAuth configured, `ALLOW_TOKEN_LOGIN_ONLY=true`: the fallback is deliberately
+  kept, so the token form stays visible next to the GitHub sign-in button.
+- OAuth not configured: the fallback is the only path, whatever
+  `ALLOW_TOKEN_LOGIN_ONLY` says.
+
 The token is used only for `GET /user` (identity) and is **not stored**; the
 repository token is supplied later, per repository. The route is rate-limited
-and writes `login.github-token` to the audit log. A production instance that has
-no OAuth app must set `ALLOW_TOKEN_LOGIN_ONLY=true` explicitly; the default is
-fail-closed. Configure an OAuth App to make
-OAuth the primary path.
+and writes `login.github-token` to the audit log. The code→token exchange is
+posted to `GITHUB_OAUTH_TOKEN_URL` (default
+`https://github.com/login/oauth/access_token`), which tests point at a fake
+server. A production instance that has no OAuth app must set
+`ALLOW_TOKEN_LOGIN_ONLY=true` explicitly; the default is fail-closed. Configure
+an OAuth App to make OAuth the primary path.
 
 ### Development login
 
