@@ -210,8 +210,8 @@ test('a merge_group run resolves the pull request from head_ref and still decide
 
 // --- the repair plan: one action, no loop -----------------------------------
 
-const greenRun = (id: number, attempt = 1) => ({ name: 'Review gate', path: '.github/workflows/review-gate.yml', id, run_attempt: attempt, conclusion: 'success', created_at: new Date(Date.UTC(2026, 10, 9, 7, 0, id)).toISOString() })
-const redRun = (id: number, attempt = 1) => ({ name: 'Review gate', path: '.github/workflows/review-gate.yml', id, run_attempt: attempt, conclusion: 'failure', created_at: new Date(Date.UTC(2026, 10, 9, 6, 0, id)).toISOString() })
+const greenRun = (id: number, attempt = 1) => ({ name: 'Review gate', path: '.github/workflows/review-gate.yml', id, status: 'completed', run_attempt: attempt, conclusion: 'success', created_at: new Date(Date.UTC(2026, 10, 9, 7, 0, id)).toISOString() })
+const redRun = (id: number, attempt = 1) => ({ name: 'Review gate', path: '.github/workflows/review-gate.yml', id, status: 'completed', run_attempt: attempt, conclusion: 'failure', created_at: new Date(Date.UTC(2026, 10, 9, 6, 0, id)).toISOString() })
 const failedGateJob = [{ name: 'review-gate', conclusion: 'failure' }, { name: 'pr-lint', conclusion: 'success' }]
 
 test('a rejection with no red at the SHA re-runs the newest first-attempt run', async () => {
@@ -286,6 +286,33 @@ test('the second identical trigger finds nothing on its first attempt and makes 
   assert.equal(plan.action, 'none')
 })
 
+test('a run that is still executing is never a re-run target', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  // A 409 on the re-run would exit 1 while the in-flight run may still publish
+  // its own conclusion, so only a completed run may be chosen.
+  const inFlight = { name: 'Review gate', path: '.github/workflows/review-gate.yml', id: 999, status: 'in_progress', run_attempt: 1, conclusion: null, created_at: '2026-11-09T08:00:00Z' }
+  const completed = { ...greenRun(998), created_at: '2026-11-09T07:00:00Z' }
+
+  const withCompleted = repairPlan({
+    expected: 'failure',
+    checkRuns: [{ name: 'review-gate', status: 'completed', conclusion: 'success' }],
+    runs: [completed, inFlight],
+    jobsFor: () => [],
+    currentRunId: '900',
+  })
+  assert.deepEqual(withCompleted, { action: 'rerun', ids: [998], reason: withCompleted.reason }, 'the oldest completed run repaints; the in-flight run is skipped')
+
+  const onlyInFlight = repairPlan({
+    expected: 'failure',
+    checkRuns: [{ name: 'review-gate', status: 'completed', conclusion: 'success' }],
+    runs: [inFlight],
+    jobsFor: () => [],
+    currentRunId: '900',
+  })
+  assert.equal(onlyInFlight.action, 'blocked')
+  assert.deepEqual(onlyInFlight.ids, [], 'no rerun may be posted for a run that has not completed')
+})
+
 // --- the repair CLI over a fake API -----------------------------------------
 
 test('a PASS repaints the stale failed run exactly once', async () => {
@@ -331,10 +358,10 @@ test('a comment verdict on a green tip repaints it, and then stops', async () =>
 // Four workflows publish runs at one SHA, and on a real tip `Dependency review`
 // is often the newest of them. Only the `Review gate` run paints `review-gate`.
 const fourRunsAtOneSha = () => [
-  { id: 42585100279, name: 'CI', path: '.github/workflows/ci.yml', run_attempt: 1, conclusion: 'success', created_at: '2026-11-09T06:58:00Z' },
-  { id: 42585100386, name: 'Review gate', path: '.github/workflows/review-gate.yml', run_attempt: 1, conclusion: 'success', created_at: '2026-11-09T07:00:00Z' },
-  { id: 42585100423, name: 'CodeQL', path: '.github/workflows/codeql.yml', run_attempt: 1, conclusion: 'success', created_at: '2026-11-09T07:01:00Z' },
-  { id: 42585100599, name: 'Dependency review', path: '.github/workflows/dependency-review.yml', run_attempt: 1, conclusion: 'success', created_at: '2026-11-09T07:02:00Z' },
+  { id: 42585100279, name: 'CI', path: '.github/workflows/ci.yml', status: 'completed', run_attempt: 1, conclusion: 'success', created_at: '2026-11-09T06:58:00Z' },
+  { id: 42585100386, name: 'Review gate', path: '.github/workflows/review-gate.yml', status: 'completed', run_attempt: 1, conclusion: 'success', created_at: '2026-11-09T07:00:00Z' },
+  { id: 42585100423, name: 'CodeQL', path: '.github/workflows/codeql.yml', status: 'completed', run_attempt: 1, conclusion: 'success', created_at: '2026-11-09T07:01:00Z' },
+  { id: 42585100599, name: 'Dependency review', path: '.github/workflows/dependency-review.yml', status: 'completed', run_attempt: 1, conclusion: 'success', created_at: '2026-11-09T07:02:00Z' },
 ]
 
 test('a rejection re-runs the newest Review gate run, never a newer run of another workflow', async () => {
@@ -448,6 +475,31 @@ test('exactly one job is named review-gate and the comment path is a different j
   assert.match(jobs.get('review-gate-comment')!, /##\[\[:space:\]\]\*Review/)
   assert.match(jobs.get('review-gate-comment')!, /Verdict:\[\[:space:\]\]\+\(PASS\|INC\|REQUEST_CHANGES\)/)
   assert.match(jobs.get('review-gate-comment')!, /github\.event\.issue\.number/)
+})
+
+test('the comment path only starts for a verdict an owner, member or collaborator posted', () => {
+  // A workflow `if:` cannot be behaviour-tested from node:test, so this locks the
+  // shape instead: the event test comes first, so on `pull_request_review` and
+  // `merge_group` the association test is never reached, and a stranger's
+  // `issue_comment` cannot start the actions: write job.
+  const comment = sections(workflow).get('review-gate-comment')!
+  const ifLine = comment.split('\n').find((line) => /^\s+if: /.test(line))
+  assert.ok(ifLine, 'the comment job must keep an if: guard')
+  const eventTest = `github.event_name == 'issue_comment'`
+  const prTest = 'github.event.issue.pull_request != null'
+  const association = `contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)`
+  assert.ok(ifLine.includes(eventTest), 'the guard must test the event first')
+  assert.ok(ifLine.includes(prTest), 'the comment path stays limited to pull requests')
+  assert.ok(ifLine.includes(association), 'a stranger comment must not start the actions: write job')
+  assert.ok(
+    ifLine.indexOf(eventTest) < ifLine.indexOf(association),
+    'the association must be tested only after the event is issue_comment',
+  )
+  // The guard belongs to the comment path only: the workflow still serves the
+  // other two events that publish `review-gate`.
+  for (const trigger of ['pull_request_review:', 'merge_group:']) {
+    assert.ok(workflow.includes(trigger), `the workflow must keep ${trigger}`)
+  }
 })
 
 test('the workflow keeps a top-level least-privilege permissions block', () => {

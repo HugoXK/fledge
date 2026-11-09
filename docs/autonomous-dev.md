@@ -170,8 +170,8 @@ The required checks are **`ci-ok`**, **`review-gate`** and **`pr-lint`**.
 writer, and any `risk:T*` label against the computed tier.
 
 `review-gate` runs on `pull_request`, `pull_request_review`, `merge_group` and on
-a verdict posted as a comment (`issue_comment`), and it parses the newest
-conclusion at the PR head:
+a verdict posted as a comment by an owner, member or collaborator
+(`issue_comment`), and it parses the newest conclusion at the PR head:
 
 ```
 Verdict: PASS at <sha>
@@ -213,7 +213,10 @@ evaluates the gate itself and re-runs at most one set of runs at the head:
 
 The comment path is the job `review-gate-comment`, never `review-gate`: its checks
 land on the default branch, and a skipped job would still publish a check run
-under the required name. By design, a PASS that arrives after a rejection at the
+under the required name. Its `if:` tests the event first and reaches the
+association test only for `issue_comment`, so a stranger cannot start the
+`actions: write` job and the other three events never evaluate the association.
+By design, a PASS that arrives after a rejection at the
 same SHA keeps the check red until a new commit moves the tip or one run at that
 SHA is re-run by hand — the newest conclusion at an unmoved tip is still the
 rejection.

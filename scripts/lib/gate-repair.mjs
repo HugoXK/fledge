@@ -10,6 +10,9 @@
 //   - only the newest check run of a name is standing. A re-run appends a new
 //     check run and leaves the superseded one behind; that older conclusion is
 //     history, never a standing red.
+//   - a completed run only. A run that is still executing cannot be re-run: the
+//     API answers 409, the step exits 1, and the in-flight run may still publish
+//     its own conclusion.
 //   - attempt 1 only. A re-run raises that run to `run_attempt == 2`, the filter
 //     stops matching it, and a second identical trigger therefore does nothing.
 //     A re-run that fails is still attempt 2 and is never re-run again.
@@ -29,6 +32,7 @@ function newestFirst(a, b) {
 function repairable(runs, currentRunId) {
   return (runs ?? [])
     .filter((run) => isGateRun(run))
+    .filter((run) => run.status === 'completed')
     .filter((run) => Number(run.run_attempt) === 1)
     .filter((run) => String(run.id) !== String(currentRunId ?? ''))
 }
