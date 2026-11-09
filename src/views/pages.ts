@@ -36,6 +36,11 @@ function infoTip(text: string): string {
   return `<span class="info-tip" tabindex="0" role="img" aria-label="${escapeHtml(text)}" data-tip="${escapeHtml(text)}">!</span>`
 }
 
+// Counts on the path-guard line are read as plain numbers in both languages.
+function formatCount(value: number): string {
+  return Number.isFinite(value) ? value.toLocaleString('en-US') : '—'
+}
+
 function durationText(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) return '—'
   if (ms < 1000) return '<1s'
@@ -1758,7 +1763,11 @@ export function jobPage(input: {
     ${pathGuard === null
       ? ''
       : `<h3 style="margin-top:16px">${escapeHtml(t('路径守卫', 'Path guard'))}</h3>
-        <p class="fine">${pathGuard.ok ? escapeHtml(t('改动文件都在允许范围内。', 'All changed files are within the allowed paths.')) : escapeHtml(t(`${pathGuard.violations.length} 个文件违反路径约束。`, `${pathGuard.violations.length} file(s) violate the path constraints.`))}${pathGuard.allow.length === 0 && pathGuard.deny.length === 0 ? ` · ${escapeHtml(t('未设置约束', 'no constraints set'))}` : ''}</p>
+        <p class="fine">${pathGuard.ok
+          ? escapeHtml(t('改动文件都在允许范围内。', 'All changed files are within the allowed paths.'))
+          : pathGuard.truncated === true
+            ? escapeHtml(t(`已检查 ${formatCount(pathGuard.checkedFiles)} / 报告 ${formatCount(pathGuard.reportedFiles)} 个文件`, `Checked ${formatCount(pathGuard.checkedFiles)} / ${formatCount(pathGuard.reportedFiles)} reported files`))
+            : escapeHtml(t(`${pathGuard.violations.length} 个文件违反路径约束。`, `${pathGuard.violations.length} file(s) violate the path constraints.`))}${pathGuard.allow.length === 0 && pathGuard.deny.length === 0 ? ` · ${escapeHtml(t('未设置约束', 'no constraints set'))}` : ''}</p>
         ${pathGuard.violations.length === 0 ? '' : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('文件', 'File'))}</th><th>${escapeHtml(t('原因', 'Reason'))}</th></tr></thead><tbody>${pathGuard.violations.map((violation) => `<tr><td><code>${escapeHtml(violation.file)}</code></td><td>${escapeHtml(violation.reason === 'denied' ? t('命中禁止路径', 'Denied path') : t('不在允许路径', 'Not allowed'))}</td></tr>`).join('')}</tbody></table></div>`}`}
   </section>`}
   <section class="card">

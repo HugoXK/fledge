@@ -58,6 +58,7 @@ export interface PullRequestInfo {
   mergeableState: string
   draft: boolean
   merged: boolean
+  changedFiles: number
 }
 
 export interface CheckRunInfo {
@@ -277,7 +278,7 @@ export class GithubClient {
     name: string,
     input: { title: string; head: string; base: string; body: string },
   ): Promise<PullRequestInfo> {
-    const pr = await this.request<{ number: number; html_url: string; title: string; state: string; head: { ref: string; sha: string }; base: { ref: string }; mergeable?: boolean | null; mergeable_state?: string; draft?: boolean; merged?: boolean }>(
+    const pr = await this.request<{ number: number; html_url: string; title: string; state: string; head: { ref: string; sha: string }; base: { ref: string }; mergeable?: boolean | null; mergeable_state?: string; draft?: boolean; merged?: boolean; changed_files?: number }>(
       'POST',
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls`,
       input,
@@ -294,6 +295,7 @@ export class GithubClient {
       mergeableState: pr.mergeable_state ?? 'unknown',
       draft: pr.draft === true,
       merged: pr.merged === true,
+      changedFiles: Number(pr.changed_files ?? 0),
     }
   }
 
@@ -309,6 +311,7 @@ export class GithubClient {
       mergeable_state: string
       draft: boolean
       merged: boolean
+      changed_files?: number
     }>(
       'GET',
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}`,
@@ -325,6 +328,7 @@ export class GithubClient {
       mergeableState: pr.mergeable_state,
       draft: pr.draft,
       merged: pr.merged,
+      changedFiles: Number(pr.changed_files ?? 0),
     }
   }
 
@@ -362,21 +366,43 @@ export class GithubClient {
       : []
   }
 
-  async listPullRequestFiles(owner: string, name: string, number: number, maxPages = 10): Promise<Array<{ filename: string; status: string; additions: number; deletions: number }>> {
+  // The changed-file listing is capped at 30 pages (3,000 files) so one huge
+  // pull request cannot cost unbounded requests. `complete` says whether the
+  // collected list reached the count the pull request reports; a caller that
+  // treats an incomplete list as a pass would let a file past the cap through.
+  async listPullRequestFiles(
+    owner: string,
+    name: string,
+    number: number,
+    reportedFiles = 0,
+    maxPages = 30,
+  ): Promise<{ files: Array<{ filename: string; status: string; additions: number; deletions: number }>; complete: boolean }> {
     const files: Array<{ filename: string; status: string; additions: number; deletions: number }> = []
+    let capped = true
     for (let page = 1; page <= maxPages; page += 1) {
       const batch = await this.request<Array<{ filename?: string; status?: string; additions?: number; deletions?: number }>>(
         'GET',
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/files?per_page=100&page=${page}`,
       )
-      if (!Array.isArray(batch) || batch.length === 0) break
+      if (!Array.isArray(batch) || batch.length === 0) {
+        capped = false
+        break
+      }
       for (const file of batch) {
         if (typeof file.filename !== 'string' || file.filename === '') continue
         files.push({ filename: file.filename, status: file.status ?? 'modified', additions: Number(file.additions ?? 0), deletions: Number(file.deletions ?? 0) })
       }
-      if (batch.length < 100) break
+      if (batch.length < 100) {
+        capped = false
+        break
+      }
+      if (reportedFiles > 0 && files.length >= reportedFiles) {
+        capped = false
+        break
+      }
     }
-    return files
+    const complete = reportedFiles > 0 ? files.length >= reportedFiles : !capped
+    return { files, complete }
   }
 
   async getBranchProtection(owner: string, name: string, branch: string): Promise<{ protected: boolean; requiredChecks: string[]; requiredApprovals: number } | null> {
