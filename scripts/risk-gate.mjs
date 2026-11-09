@@ -9,6 +9,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, readFileSync } from 'node:fs'
+import { mechanicalRelease } from './lib/mechanical-release.mjs'
 import { chooseBase, classify, limitsFor, loadRules, matchesPath } from './lib/risk.mjs'
 
 function arg(name, fallback) {
@@ -46,6 +47,11 @@ if (process.argv.includes('--print-base')) {
 const base = arg('--base', process.env.RISK_BASE ?? 'origin/main')
 const head = arg('--head', 'HEAD')
 const json = process.argv.includes('--json')
+// The mechanical daily minor release is keyed on its branch and title, which only
+// the caller knows. Defaults describe "not a release PR", so a five-file diff
+// without the key stays T3.
+const branch = arg('--branch', '')
+const title = arg('--title', '')
 
 function git(args) {
   return execFileSync('git', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
@@ -62,7 +68,8 @@ try {
 }
 
 const rules = loadRules()
-const result = classify(files, diff, rules)
+const mechanical = mechanicalRelease({ branch, title, files })
+const result = mechanical.mechanical ? { tier: 'T0', basis: mechanical.reason } : classify(files, diff, rules)
 const limits = limitsFor(result.tier, rules)
 const lines = []
 lines.push('Fledge risk tier')

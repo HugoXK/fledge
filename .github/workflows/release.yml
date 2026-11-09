@@ -13,6 +13,12 @@ permissions:
   contents: write
   packages: write
 
+# One publish at a time per ref, and never cancel a publish that is already
+# pushing an image: a cancelled run can leave a tag with no release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: release ${{ inputs.tag || github.ref_name }}
@@ -39,6 +45,21 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: node scripts/version.mjs check
+
+      # A tag off main would publish a commit nobody reviewed on the release line.
+      - name: Verify the tag is an ancestor of main
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          git fetch origin main --quiet
+          if ! git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" >/dev/null; then
+            echo "::error::${RELEASE_TAG} is not a tag in this repository"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "refs/tags/${RELEASE_TAG}" origin/main; then
+            echo "::error::${RELEASE_TAG} is not an ancestor of main; refusing to publish"
+            exit 1
+          fi
 
       - name: Build the image
         env:
