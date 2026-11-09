@@ -165,6 +165,23 @@ reuses the original branch and PR URL, skips a second PR/issue, and is deduped b
 `repo + PR + head SHA + reason` and by `X-GitHub-Delivery`. A repo with an active
 job skips the follow-up; arbitrary PRs with no Fledge job are ignored.
 
+## Duplicate-work preflight
+
+Before an iterate job is enqueued, Fledge reads the upstream repository's open
+pull requests (`GET /repos/:owner/:name/pulls?state=open`, three pages) and looks
+for one that references the job's issue — in the pull request body, title or head
+branch, as `#N` or as an `/issues/N` URL. When one does, no job is created: the
+caller gets `code: "DUPLICATE_WORK"` with the existing pull request's URL in
+`error`, the attempt is audited as `job.duplicate_work`, and the
+`job_duplicate_work` event is recorded. No branch is created and no second pull
+request is opened.
+
+The preflight is read-only and best-effort. It runs only for an iterate job that
+does not already carry a `prUrl` — a follow-up job owns its pull request — and a
+GitHub failure is logged and lets the job through, so an API outage cannot block
+dispatch. The issue number comes from the work item's issue URL, falling back to
+the goal text.
+
 ## Job endpoints
 
 These are called by the FlyBot bridge/agent, not by a browser.
