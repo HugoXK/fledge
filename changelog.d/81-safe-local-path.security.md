@@ -1,1 +1,0 @@
-`/lang/:locale?next=` no longer redirects to another host: a value such as `/..//evil.com` was an ordinary path before parsing and `//evil.com` afterwards, so the response carried a protocol-relative `Location`. Every `next=` and `returnTo` value is now checked after normalisation and falls back to the site instead.
