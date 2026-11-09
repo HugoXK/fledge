@@ -20,6 +20,8 @@ export interface DriveOpenReleasePr {
   files?: string[]
   blocked?: boolean
   checks?: DriveCheck[]
+  /** True only when the head branch lives in the base repository, never a fork. */
+  sameRepo?: boolean
 }
 
 export interface DriveMergedPr {

@@ -28,12 +28,15 @@ const RELEASE_PR_BRANCH = /^release\/v(\d+\.\d+\.\d+)$/
 // title merely starts with `release: v` — a docs-only `release: v9.9.9` — must
 // never be auto-merged as if the release routine had written it.
 function isMechanicalReleasePr(openReleasePr) {
+  if (openReleasePr?.sameRepo !== true) {
+    return { ok: false, reason: `release PR #${String(openReleasePr?.number ?? '?')} does not come from a branch in this repository` }
+  }
   const files = openReleasePr?.files
   if (!Array.isArray(files) || files.length === 0) {
     return { ok: false, reason: `release PR #${String(openReleasePr?.number ?? '?')} has no file list to judge` }
   }
   const identity = mechanicalRelease({ branch: openReleasePr?.branch, title: openReleasePr?.title, files: files.map((file) => String(file)) })
-  return identity.mechanical ? { ok: true, reason: identity.reason } : { ok: false, reason: identity.reason }
+  return identity.mechanical ? { ok: true, reason: identity.reason, version: identity.version } : { ok: false, reason: identity.reason }
 }
 
 function failingChecks(checks) {
@@ -61,6 +64,15 @@ function decide(state) {
     const identity = isMechanicalReleasePr(openReleasePr)
     if (!identity.ok) {
       return { action: 'report-blocked', reason: `release PR #${String(number)} is not the mechanical release: ${identity.reason}`, pr: number, headSha }
+    }
+    const nextVersion = String(plan?.nextVersion ?? '')
+    if (nextVersion === '' || identity.version !== nextVersion) {
+      return {
+        action: 'report-blocked',
+        reason: `release PR #${String(number)} is v${String(identity.version)} but the computed next is ${nextVersion === '' ? 'unreadable' : `v${nextVersion}`}`,
+        pr: number,
+        headSha,
+      }
     }
     // An empty list is not "all green": the workflow collects these checks before
     // decide runs, so zero of them means the collection did not happen and the

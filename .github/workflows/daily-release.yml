@@ -133,7 +133,7 @@ jobs:
             --arg next "$PLAN_NEXT" --arg reason "$PLAN_REASON" \
             '{
               plan: {shouldRelease: $should, nextVersion: $next, reason: $reason},
-              openReleasePr: (if $state.openPr == null then null else {number: $state.openPr.number, headSha: $state.openPr.head.sha, branch: $state.openPr.head.ref, title: $state.openPr.title, files: ($state.openFiles // []), blocked: ($state.mergeable == false), checks: ($state.openChecks // [])} end),
+              openReleasePr: (if $state.openPr == null then null else {number: $state.openPr.number, headSha: $state.openPr.head.sha, branch: $state.openPr.head.ref, title: $state.openPr.title, files: ($state.openFiles // []), blocked: ($state.mergeable == false), checks: ($state.openChecks // []), sameRepo: ($state.openPr.head.repo.full_name == $state.openPr.base.repo.full_name)} end),
               mergedPrs: [($state.mergedPrs // [])[] | {number, title, headRef: .head.ref, mergeCommitSha: .merge_commit_sha, mergedAt: .merged_at}],
               tags: $state.tags,
               ciOk: $state.ciOk,
@@ -152,16 +152,21 @@ jobs:
         if: ${{ steps.decide.outputs.action == 'enqueue' }}
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          RELEASE_PR: ${{ steps.decide.outputs.pr }}
+          RELEASE_HEAD_SHA: ${{ steps.decide.outputs.headSha }}
         run: |
           set -euo pipefail
-          gh pr merge "${{ steps.decide.outputs.pr }}" --auto --squash --match-head-commit "${{ steps.decide.outputs.headSha }}"
+          gh pr merge "$RELEASE_PR" --auto --squash --match-head-commit "$RELEASE_HEAD_SHA"
           echo 'enqueued the open release PR with auto-merge' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Report a blocked release PR
         if: ${{ steps.decide.outputs.action == 'report-blocked' }}
+        env:
+          RELEASE_REASON: ${{ steps.decide.outputs.reason }}
         run: |
-          echo "reason: ${{ steps.decide.outputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
-          echo '::error::${{ steps.decide.outputs.reason }} — not merging and not opening a second PR'
+          set -euo pipefail
+          printf 'reason: %s\n' "$RELEASE_REASON" >> "$GITHUB_STEP_SUMMARY"
+          printf '::error::%s — not merging and not opening a second PR\n' "$RELEASE_REASON"
 
       - name: Open the mechanical release PR
         if: ${{ steps.decide.outputs.action == 'open-pr' }}

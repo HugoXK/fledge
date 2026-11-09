@@ -52,7 +52,11 @@ export function buildState({ lastTag, lastTagCommittedAt, packageVersion, fragme
   // docs-only `release: v9.9.9` on a feature branch must not be auto-merged; the
   // path set is checked again in the drive, which has the file list.
   const candidate = openPrs.find((pr) => String(pr?.title ?? '').startsWith('release: v')) ?? null
-  const identity = candidate === null ? null : releaseIdentity({ branch: candidate?.head?.ref, title: candidate?.title })
+  // A release branch and title can be declared from a fork as easily as from this
+  // repository, so the candidate must also be a head in the base repository.
+  const headRepo = String(candidate?.head?.repo?.full_name ?? '')
+  const sameRepo = candidate !== null && headRepo !== '' && headRepo === String(candidate?.base?.repo?.full_name ?? '')
+  const identity = candidate === null || !sameRepo ? null : releaseIdentity({ branch: candidate?.head?.ref, title: candidate?.title })
   return {
     lastTag: String(lastTag ?? ''),
     lastTagCommittedAt: String(lastTagCommittedAt ?? ''),

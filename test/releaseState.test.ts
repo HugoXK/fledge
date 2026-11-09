@@ -42,7 +42,7 @@ test('the slurped page shape is flattened, so the open release PR is found', asy
   const dir = mkdtempSync(join(tmpdir(), 'fledge-state-'))
   try {
     const prs = writeJson(dir, 'prs.json', [PAGE_ONE, PAGE_TWO])
-    const open = writeJson(dir, 'open.json', [[{ number: 20, title: 'feat: not a release' }], [{ number: 21, title: 'release: v0.3.0', head: { ref: 'release/v0.3.0' } }]])
+    const open = writeJson(dir, 'open.json', [[{ number: 20, title: 'feat: not a release' }], [{ number: 21, title: 'release: v0.3.0', head: { ref: 'release/v0.3.0', repo: { full_name: 'o/r' } }, base: { repo: { full_name: 'o/r' } } }]])
     const checks = writeJson(dir, 'checks.json', { total_count: 1, check_runs: [{ id: 1, name: 'ci-ok', conclusion: 'success' }] })
     const out = await runState(['--prs', prs, '--open', open, '--checks', checks, '--tags-json', '["v0.2.4"]'])
     const state = JSON.parse(out) as { openPr: { number: number } | null; lastMerged: { number: number } | null; mergedPrs: unknown[] }

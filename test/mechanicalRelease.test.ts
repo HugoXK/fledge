@@ -14,6 +14,7 @@ const PLAIN_MERGE = { number: 7, title: 'feat: something', headRef: 'dev2/someth
 const MECH_FILES = ['CHANGELOG.md', 'changelog.d/1.added.md', 'package.json', 'package-lock.json', 'docker-compose.yml']
 const OPEN_RELEASE = {
   number: 141,
+  sameRepo: true,
   headSha: 'a'.repeat(40),
   branch: 'release/v0.3.0',
   title: 'release: v0.3.0',
@@ -178,6 +179,25 @@ test('an open release PR with a red check is reported and not merged', () => {
   assert.equal(decision.action, 'report-blocked')
   assert.deepEqual(decision.failing, ['review-gate'])
   assert.match(decision.reason, /review-gate/)
+})
+
+test('an open release PR from a fork is never enqueued as the mechanical release', () => {
+  const decision = decideDrive({ plan: PLAN_OK, openReleasePr: { ...OPEN_RELEASE, sameRepo: false }, tags: [], ciOk: 'success' })
+  assert.equal(decision.action, 'report-blocked')
+  assert.match(decision.reason, /does not come from a branch in this repository/)
+})
+
+test('an open release PR whose version is not the computed next is reported, not enqueued', () => {
+  // release/v9.9.9 passes the branch-and-title identity on a 0.3.0 main; the
+  // planner's next version is what decides.
+  const decision = decideDrive({
+    plan: PLAN_OK,
+    openReleasePr: { ...OPEN_RELEASE, branch: 'release/v9.9.9', title: 'release: v9.9.9' },
+    tags: [],
+    ciOk: 'success',
+  })
+  assert.equal(decision.action, 'report-blocked')
+  assert.match(decision.reason, /computed next is v0\.3\.0/)
 })
 
 test('an open release PR whose checks were never collected is not enqueued blind', () => {

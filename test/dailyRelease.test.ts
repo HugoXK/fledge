@@ -41,7 +41,7 @@ test('the push and the PR use RELEASE_TOKEN, never GITHUB_TOKEN', () => {
 })
 
 test('an open release PR is enqueued with --match-head-commit and never with --admin', () => {
-  assert.match(daily, /gh pr merge "\$\{\{ steps\.decide\.outputs\.pr \}\}" --auto --squash --match-head-commit/)
+  assert.match(daily, /gh pr merge "\$RELEASE_PR" --auto --squash --match-head-commit "\$RELEASE_HEAD_SHA"/)
   assert.equal(/--admin/.test(daily), false)
   assert.equal(/--admin/.test(release), false)
 })
@@ -73,6 +73,18 @@ test('the counts and the cross-check line go to the job summary', () => {
   assert.match(daily, /features:/)
   assert.match(daily, /fragments:/)
   assert.match(daily, /reason: \$\{\{ plan|decision\.reason/)
+})
+
+test('the blocked reason travels through env, never spliced into a run body', () => {
+  const step = daily.slice(daily.indexOf('Report a blocked release PR'), daily.indexOf('- name: Open the mechanical release PR'))
+  assert.match(step, /RELEASE_REASON: \$\{\{ steps\.decide\.outputs\.reason \}\}/)
+  assert.match(step, /printf 'reason: %s\\n' "\$RELEASE_REASON"/)
+  const runBody = step.slice(step.indexOf('run: |'))
+  assert.equal(runBody.includes('${{'), false, 'no expression is interpolated into the shell body')
+})
+
+test('the drive is told whether the open release PR comes from this repository', () => {
+  assert.match(daily, /sameRepo: \(\$state\.openPr\.head\.repo\.full_name == \$state\.openPr\.base\.repo\.full_name\)/)
 })
 
 test('each action runs only under its own condition, so a no-release night opens nothing', () => {

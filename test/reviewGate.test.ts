@@ -50,6 +50,9 @@ interface FakeState {
   failPaths: string[]
   author: string
   policy: string
+  headRepo: string
+  baseRepo: string
+  packageVersion: string
 }
 
 function initialState(): FakeState {
@@ -67,6 +70,9 @@ function initialState(): FakeState {
     failPaths: [],
     author: 'HugoXK',
     policy: JSON.stringify({ writers: ['HugoXK', 'HugoXK-bot'], requiredPass: 'HugoXK-bot' }),
+    headRepo: 'o/r',
+    baseRepo: 'o/r',
+    packageVersion: '0.3.0',
   }
 }
 
@@ -80,7 +86,7 @@ async function withFakeGitHub(state: FakeState, body: (env: Record<string, strin
       return
     }
     if (path === '/repos/o/r/pulls/7') {
-      json(response, 200, { number: 7, title: state.title, head: { sha: state.sha, ref: state.branch }, user: { login: state.author }, labels: [] })
+      json(response, 200, { number: 7, title: state.title, head: { sha: state.sha, ref: state.branch, repo: { full_name: state.headRepo } }, base: { sha: 'base-sha', ref: 'main', repo: { full_name: state.baseRepo } }, user: { login: state.author }, labels: [] })
       return
     }
     if (path === '/repos/o/r/pulls/7/files') {
@@ -97,6 +103,10 @@ async function withFakeGitHub(state: FakeState, body: (env: Record<string, strin
     }
     if (path === '/repos/o/r/contents/.github/agent/review-policy.json') {
       json(response, 200, { encoding: 'base64', content: Buffer.from(policy, 'utf8').toString('base64') })
+      return
+    }
+    if (path === '/repos/o/r/contents/package.json') {
+      json(response, 200, { encoding: 'base64', content: Buffer.from(JSON.stringify({ name: 'fledge', version: state.packageVersion }), 'utf8').toString('base64') })
       return
     }
     if (path === `/repos/o/r/commits/${state.sha}/check-runs`) {
@@ -152,6 +162,53 @@ test('the gate passes a T0 tip with no verdict, because no PASS is required', as
     const result = await runScript(gateScript, ['--pr', '7'], env)
     assert.equal(result.code, 0, result.stderr)
     assert.match(result.stdout, /review-gate: PASS/)
+  })
+})
+
+test('a same-repo release PR for the computed next still earns the T0 exemption', async () => {
+  const state = initialState()
+  state.title = 'release: v0.4.0'
+  state.branch = 'release/v0.4.0'
+  state.files = [
+    'CHANGELOG.md',
+    { filename: 'package.json', patch: '@@ -1,2 +1,2 @@\n-  "version": "0.3.0",\n+  "version": "0.4.0",\n' },
+    { filename: 'package-lock.json', patch: '@@ -1,2 +1,2 @@\n-  "version": "0.3.0",\n+  "version": "0.4.0",\n' },
+    { filename: 'docker-compose.yml', patch: '@@ -1,2 +1,2 @@\n-    image: fledge:0.3.0\n+    image: fledge:0.4.0\n' },
+  ]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /review-gate: PASS/)
+  })
+})
+
+test('a release-shaped PR from a fork is not the mechanical release and needs its PASS', async () => {
+  const state = initialState()
+  state.title = 'release: v0.4.0'
+  state.branch = 'release/v0.4.0'
+  state.headRepo = 'fork/r'
+  state.files = [
+    'CHANGELOG.md',
+    { filename: 'package.json', patch: '@@ -1,2 +1,2 @@\n-  "version": "0.3.0",\n+  "version": "0.4.0",\n' },
+    { filename: 'package-lock.json', patch: '@@ -1,2 +1,2 @@\n-  "version": "0.3.0",\n+  "version": "0.4.0",\n' },
+    { filename: 'docker-compose.yml', patch: '@@ -1,2 +1,2 @@\n-    image: fledge:0.3.0\n+    image: fledge:0.4.0\n' },
+  ]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /no conclusion at /)
+  })
+})
+
+test('a release PR whose version is not the computed next needs its PASS', async () => {
+  const state = initialState()
+  state.title = 'release: v9.9.9'
+  state.branch = 'release/v9.9.9'
+  state.files = ['CHANGELOG.md', 'package.json']
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /no conclusion at /)
   })
 })
 
@@ -580,6 +637,9 @@ const RELEASE_FILES = [
 
 test('the gate passes a mechanical release PR with no verdict, because the diff is the release shape', async () => {
   const state = initialState()
+  // The base is 0.2.4, so the computed next minor - and the only version the
+  // exemption accepts - is 0.3.0.
+  state.packageVersion = '0.2.4'
   state.files = RELEASE_FILES
   state.title = 'release: v0.3.0'
   state.branch = 'release/v0.3.0'

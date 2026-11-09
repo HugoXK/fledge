@@ -1,7 +1,8 @@
 export interface PullRequestPageEntry {
   number?: number
   title?: string
-  head?: { ref?: string; sha?: string }
+  head?: { ref?: string; sha?: string; repo?: { full_name?: string } }
+  base?: { repo?: { full_name?: string } }
   labels?: Array<{ name?: string }>
   merged_at?: string | null
 }
