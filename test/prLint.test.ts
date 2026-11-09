@@ -99,6 +99,9 @@ interface FakeState {
   policy: unknown
   comments: Array<Record<string, unknown>>
   reviews: Array<Record<string, unknown>>
+  // What the pull request API reports for size. The rule reads these and not
+  // `git diff --stat`, so a rebase cannot change the number behind its back.
+  size: { changed_files: number; additions: number; deletions: number }
 }
 
 function state(overrides: Partial<FakeState> = {}): FakeState {
@@ -108,6 +111,7 @@ function state(overrides: Partial<FakeState> = {}): FakeState {
     policy: POLICY,
     comments: [],
     reviews: [],
+    size: { changed_files: 1, additions: 1, deletions: 1 },
     ...overrides,
   }
 }
@@ -117,7 +121,7 @@ async function withFakeGitHub(current: FakeState, run: (env: Record<string, stri
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
     const path = url.pathname
     if (path === '/repos/o/r/pulls/7') {
-      json(response, 200, { number: 7, head: { sha: SHA }, user: { login: 'HugoXK' }, labels: [], body: current.body })
+      json(response, 200, { number: 7, head: { sha: SHA }, user: { login: 'HugoXK' }, labels: [], body: current.body, ...current.size })
       return
     }
     if (path === '/repos/o/r/pulls/7/files') {
@@ -254,5 +258,56 @@ test('the same tip passes when the verdict is written by a writer', async () => 
     const result = await runScript(gateScript, ['--pr', '7'], env)
     assert.equal(result.code, 0, result.stderr)
     assert.match(result.stdout, /review-gate: PASS/)
+  })
+})
+
+// --- the size rule: `>` 20 files or `>` 800 changed lines ------------------
+
+const LARGE_BODY = `Written-by: HugoXK
+Bot: Fledge Platform Dev-1
+
+Fixes #79
+
+Large-PR: one rule for the whole gate, reviewed as a unit.
+
+Ran:
+- \`npm run check\` — pass
+
+Not run: Docker image
+`
+
+test('a PR over 20 files fails the lint until the body carries a Large-PR: line', async () => {
+  const files = Array.from({ length: 21 }, (_, index) => `scripts/file-${String(index)}.mjs`)
+  await withFakeGitHub(state({ files, size: { changed_files: 21, additions: 10, deletions: 5 } }), async (env) => {
+    const result = await runScript(lintScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, '21 files with no Large-PR: line must fail')
+    assert.match(result.stderr, /Large-PR:/)
+    assert.match(result.stderr, /21 files/)
+  })
+})
+
+test('exactly 20 files and exactly 800 changed lines still pass without the line', async () => {
+  const files = Array.from({ length: 20 }, (_, index) => `scripts/file-${String(index)}.mjs`)
+  await withFakeGitHub(state({ files, size: { changed_files: 20, additions: 500, deletions: 300 } }), async (env) => {
+    const result = await runScript(lintScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, `the rule is > 20 and > 800, not >=: ${result.stderr}`)
+  })
+})
+
+test('deletions count: a small file count with 801 changed lines fails', async () => {
+  const files = ['scripts/one.mjs', 'scripts/two.mjs']
+  await withFakeGitHub(state({ files, size: { changed_files: 2, additions: 1, deletions: 800 } }), async (env) => {
+    const result = await runScript(lintScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'a deletion-only PR over 800 lines must fail without the line')
+    assert.match(result.stderr, /801 changed lines|Large-PR:/)
+  })
+})
+
+test('a Large-PR: line makes a 21-file PR pass, and it does not cap the size', async () => {
+  const files = Array.from({ length: 21 }, (_, index) => `scripts/file-${String(index)}.mjs`)
+  await withFakeGitHub(state({ body: LARGE_BODY, files, size: { changed_files: 21, additions: 900, deletions: 100 } }), async (env) => {
+    const result = await runScript(lintScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /pr-lint: ok/)
   })
 })

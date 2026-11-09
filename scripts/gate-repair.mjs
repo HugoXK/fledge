@@ -38,8 +38,13 @@ function stop(code, message) {
   if (code === 0) console.log(line)
   else console.error(line)
   if (process.env.GITHUB_STEP_SUMMARY !== undefined) {
+    // The summary is markdown rendered on the run page, and `message` can carry a
+    // response body from the API. A newline there would render as extra lines, so
+    // the summary gets one line with C0 controls replaced; the log above keeps the
+    // message unchanged, because sanitising a surface must not hide the error.
+    const summary = line.replace(/[\u0000-\u001f]+/g, ' ').trim()
     try {
-      appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${line}\n`)
+      appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary}\n`)
     } catch {
       // The summary is a convenience; it never changes the outcome.
     }

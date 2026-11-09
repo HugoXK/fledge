@@ -494,6 +494,24 @@ a.list-row:hover strong { color: var(--accent); }
   .lang a { min-height: var(--touch); padding: 5px 9px; display: grid; place-items: center; }
   .empty { align-items: flex-start; flex-direction: column; }
   .foot { flex-direction: column; align-items: flex-start; }
+  /* One job row becomes one card. The table carried a 330px column floor and
+     nowrap content needing 512px inside a card that boxes 240px at the
+     narrowest phone, so the right-hand columns sat behind a horizontal scroll.
+     Each cell now carries the column name it lost with the header row; the
+     same markup still lays out as a table from 641px up. */
+  .job-table { display: block; }
+  .job-table thead { display: none; }
+  .job-table tbody { display: block; }
+  .job-table tr { display: block; padding: 10px 0 12px; border-bottom: 1px solid var(--row-line); }
+  .job-table tr:last-child { border-bottom: none; }
+  .job-table td { display: block; padding: 0; border-bottom: 0; vertical-align: top; min-width: 0; max-width: none; white-space: normal; overflow-wrap: anywhere; }
+  .job-table td + td { margin-top: 8px; }
+  .job-table td::before { content: attr(data-label); display: block; margin-bottom: 3px; color: var(--muted-2); font-weight: 650; font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; }
+  .job-table td:not([data-label])::before { display: none; }
+  .job-table .job-cell,
+  .job-table .job-summary { min-width: 0; max-width: none; }
+  .job-table .job-links { white-space: normal; }
+  .job-table td code { white-space: normal; overflow-wrap: anywhere; }
 }
 
 @media (max-width: 420px) {
@@ -521,6 +539,19 @@ a.list-row:hover strong { color: var(--accent); }
 .info-tip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin-left: 4px; border: 1px solid var(--line); border-radius: 50%; color: var(--muted-2); font-size: 10px; line-height: 1; cursor: help; position: relative; vertical-align: middle; }
 .info-tip::after { content: attr(data-tip); position: absolute; left: 0; top: 130%; z-index: 60; width: 270px; max-width: min(270px, calc(100vw - 48px)); padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); color: var(--tip-ink); font-size: 11.5px; font-weight: 400; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; opacity: 0; pointer-events: none; transform: translateY(-3px); transition: opacity .12s ease; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
 .info-tip:hover::after, .info-tip:focus::after { opacity: 1; }
+
+/* Below the desktop layout neither box may widen the document. A grid item takes
+   its content's min-content width as an automatic minimum unless the track or
+   the item sets a zero floor, and an absolutely positioned 270px tooltip anchored
+   at the icon's left edge stays in the scrollable overflow while it is invisible
+   (opacity: 0). The hint moves to a viewport-anchored bar here: right-anchoring
+   instead would push the left half of the box off screen for an icon that sits
+   after its label text on a 360px viewport. Desktop keeps both rules untouched. */
+@media (max-width: 960px) {
+  .list { grid-template-columns: minmax(0, 1fr); }
+  .list-row { min-width: 0; }
+  .info-tip::after { position: fixed; left: 16px; right: 16px; top: auto; bottom: 16px; width: auto; max-width: calc(100vw - 32px); }
+}
 
 .provider-card {
   border: 1px solid var(--line);

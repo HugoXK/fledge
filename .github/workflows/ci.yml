@@ -5,13 +5,21 @@ on:
     branches: [main]
   pull_request:
   merge_group:
+  # A manual run for a branch that has no PR, and a nightly run on main so a
+  # dependency, runner image or upstream action change is not discovered by the
+  # next PR. 19:17 UTC is 03:17 Asia/Shanghai.
+  workflow_dispatch:
+  schedule:
+    - cron: '17 19 * * *'
 
 permissions:
   contents: read
 
 concurrency:
+  # A superseded pull request run is waste; a run on main is the record of a
+  # commit, so it is never cancelled by a later one.
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
@@ -96,6 +104,24 @@ jobs:
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
 
+  dependency-review:
+    name: dependency-review
+    # Reads the pull request's dependency diff, so it has nothing to compare on a
+    # push, a nightly or a manual run, and nothing of its own in a merge group.
+    # `ci-ok` allows `skipped` for this job on exactly those events
+    # (scripts/ci-ok.mjs SKIPPABLE_ON).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
   changelog:
     name: changelog
     runs-on: ubuntu-latest
@@ -131,13 +157,10 @@ jobs:
           node-version: 22
       - name: Pick the base
         id: base
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch origin "${{ github.event.pull_request.base.ref }}"
-            echo "ref=origin/${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=HEAD~1" >> "$GITHUB_OUTPUT"
-          fi
+        # The choice lives in scripts/lib/risk.mjs (chooseBase) so that
+        # merge_group measures against its base sha instead of HEAD~1, and so
+        # test/riskBase.test.ts covers it. The step fetches what it needs.
+        run: echo "ref=$(node scripts/risk-gate.mjs --print-base)" >> "$GITHUB_OUTPUT"
       - name: Compute the tier
         run: node scripts/risk-gate.mjs --base "${{ steps.base.outputs.ref }}"
 
@@ -159,21 +182,18 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [lint, typecheck, test, build, docker, audit, changelog, version, risk, restore-drill]
+    needs: [lint, typecheck, test, build, docker, audit, dependency-review, changelog, version, risk, restore-drill]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # `skipped` is a failure here unless the job is named in SKIPPABLE_ON for
+      # this event, and a required job missing from `needs` fails too.
       - name: Every required job passed
         env:
           NEEDS: ${{ toJSON(needs) }}
-        run: |
-          node -e '
-            const needs = JSON.parse(process.env.NEEDS)
-            const failed = Object.entries(needs).filter(([, value]) => value.result !== "success" && value.result !== "skipped")
-            for (const [name, value] of Object.entries(needs)) console.log(`${name}: ${value.result}`)
-            if (failed.length > 0) {
-              console.error("required jobs failed: " + failed.map(([name]) => name).join(", "))
-              process.exit(1)
-            }
-            console.log("ci-ok: every required job passed")
-          '
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: node scripts/ci-ok.mjs

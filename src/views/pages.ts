@@ -301,13 +301,13 @@ function jobRows(locale: Locale, jobs: JobRow[]): string {
       const summary = jobPlainSummary(locale, t, job)
       const attribution = jobAttribution(t, job)
       return `<tr data-job-id="${escapeHtml(job.id)}">
-        <td class="job-cell">
+        <td class="job-cell" data-label="${escapeHtml(t('任务', 'Job'))}">
           <a href="/repos/${escapeHtml(job.repo_id)}/jobs/${escapeHtml(job.id)}"><code>${escapeHtml(job.id)}</code></a> <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span>
           <small class="job-meta">${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(humanTimeShort(job.created_at))}</small>
         </td>
-        <td data-job-status>${badge(t, job.status)}${classifyFailure(job) === null ? '' : `<br /><small class="muted">${escapeHtml(failureLabel(t, classifyFailure(job)!.kind))}</small>`}</td>
-        <td class="job-links">${jobLinks(job)}</td>
-        <td data-job-summary class="job-summary"><span data-job-summary-text title="${escapeHtml(summary.full)}">${escapeHtml(summary.short)}</span>${attribution === '' ? '' : `<small class="muted" data-job-attribution>${escapeHtml(attribution)}</small>`}</td>
+        <td data-job-status data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, job.status)}${classifyFailure(job) === null ? '' : `<br /><small class="muted">${escapeHtml(failureLabel(t, classifyFailure(job)!.kind))}</small>`}</td>
+        <td class="job-links" data-label="${escapeHtml(t('PR / Issue', 'PR / Issue'))}">${jobLinks(job)}</td>
+        <td data-job-summary class="job-summary" data-label="${escapeHtml(t('摘要', 'Summary'))}"><span data-job-summary-text title="${escapeHtml(summary.full)}">${escapeHtml(summary.short)}</span>${attribution === '' ? '' : `<small class="muted" data-job-attribution>${escapeHtml(attribution)}</small>`}</td>
       </tr>`
     })
     .join('')

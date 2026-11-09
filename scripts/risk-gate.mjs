@@ -8,13 +8,39 @@
 // the job summary, and review-gate uses the same rules over the PR file list.
 
 import { execFileSync } from 'node:child_process'
-import { appendFileSync } from 'node:fs'
-import { classify, limitsFor, loadRules, matchesPath } from './lib/risk.mjs'
+import { appendFileSync, readFileSync } from 'node:fs'
+import { chooseBase, classify, limitsFor, loadRules, matchesPath } from './lib/risk.mjs'
 
 function arg(name, fallback) {
   const index = process.argv.indexOf(name)
   if (index === -1) return fallback
   return process.argv[index + 1] ?? fallback
+}
+
+function eventFromEnv() {
+  const path = process.env.GITHUB_EVENT_PATH ?? ''
+  if (path === '') return {}
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+// ci.yml asks for the base instead of deciding it in YAML, so the choice is
+// covered by test/riskBase.test.ts rather than by a shell branch nobody runs.
+if (process.argv.includes('--print-base')) {
+  const { ref, fetch } = chooseBase(process.env.GITHUB_EVENT_NAME ?? '', eventFromEnv())
+  if (fetch !== '' && !process.argv.includes('--no-fetch')) {
+    try {
+      execFileSync('git', ['fetch', '--no-tags', 'origin', fetch], { stdio: 'inherit' })
+    } catch (error) {
+      console.error(`risk-gate: cannot fetch ${fetch}: ${error.message}`)
+      process.exit(1)
+    }
+  }
+  console.log(ref)
+  process.exit(0)
 }
 
 const base = arg('--base', process.env.RISK_BASE ?? 'origin/main')
