@@ -51,12 +51,19 @@ export function buildState({ lastTag, lastTagCommittedAt, packageVersion, fragme
   // release routine writes a `release/vX.Y.Z` branch with a matching title, so a
   // docs-only `release: v9.9.9` on a feature branch must not be auto-merged; the
   // path set is checked again in the drive, which has the file list.
-  const candidate = openPrs.find((pr) => String(pr?.title ?? '').startsWith('release: v')) ?? null
-  // A release branch and title can be declared from a fork as easily as from this
-  // repository, so the candidate must also be a head in the base repository.
-  const headRepo = String(candidate?.head?.repo?.full_name ?? '')
-  const sameRepo = candidate !== null && headRepo !== '' && headRepo === String(candidate?.base?.repo?.full_name ?? '')
-  const identity = candidate === null || !sameRepo ? null : releaseIdentity({ branch: candidate?.head?.ref, title: candidate?.title })
+  //
+  // The same-repo test is part of the predicate, not a filter applied afterwards:
+  // `GET /pulls?state=open` lists newest first, so a fork PR titled `release: v…`
+  // found after the fact took the slot and demoted this repository's own release
+  // PR to a rejected candidate, which then made the whole night a no-op.
+  const titleMatched = openPrs.filter((pr) => String(pr?.title ?? '').startsWith('release: v'))
+  const isSameRepo = (pr) => {
+    const head = String(pr?.head?.repo?.full_name ?? '')
+    return head !== '' && head === String(pr?.base?.repo?.full_name ?? '')
+  }
+  const accepted = (pr) => isSameRepo(pr) && releaseIdentity({ branch: pr?.head?.ref, title: pr?.title }) !== null
+  const candidate = titleMatched.find(accepted) ?? null
+  const rejected = titleMatched.find((pr) => !accepted(pr)) ?? null
   return {
     lastTag: String(lastTag ?? ''),
     lastTagCommittedAt: String(lastTagCommittedAt ?? ''),
@@ -65,11 +72,40 @@ export function buildState({ lastTag, lastTagCommittedAt, packageVersion, fragme
     tags: Array.isArray(tags) ? tags.map(String) : [],
     dryRun: dryRun === true || dryRun === 'true',
     ciOk: latestConclusion(checks, 'ci-ok'),
-    openPr: identity === null ? null : candidate,
-    openPrRejected: candidate !== null && identity === null
-      ? { number: Number(candidate?.number ?? 0), title: String(candidate?.title ?? ''), branch: String(candidate?.head?.ref ?? '') }
-      : null,
+    openPr: candidate,
+    openPrRejected: rejected === null
+      ? null
+      : {
+          number: Number(rejected?.number ?? 0),
+          title: String(rejected?.title ?? ''),
+          branch: String(rejected?.head?.ref ?? ''),
+          repo: String(rejected?.head?.repo?.full_name ?? ''),
+        },
     lastMerged: mergedPrs.at(-1) ?? null,
     mergedPrs,
+  }
+}
+
+// The planner input is a projection of the state, and the projection is where the
+// night used to stop: `openPrRejected != null` was fed to the planner as
+// `openReleasePr: true`, so one outsider PR titled `release: v…` made every night
+// return `open-release-pr` — no error, no PR, no release. The planner is told only
+// about the accepted candidate; a rejected one is a notice the workflow writes to
+// its summary.
+export function plannerInput(state) {
+  const merged = Array.isArray(state?.mergedPrs) ? state.mergedPrs : []
+  return {
+    lastTag: String(state?.lastTag ?? ''),
+    packageVersion: String(state?.packageVersion ?? ''),
+    prs: merged.map((pr) => ({
+      number: Number(pr?.number ?? 0),
+      title: String(pr?.title ?? ''),
+      labels: (Array.isArray(pr?.labels) ? pr.labels : []).map((label) => String(label?.name ?? '')),
+      mergedAt: String(pr?.merged_at ?? pr?.mergedAt ?? ''),
+    })),
+    fragments: Number(state?.fragments ?? 0) > 0 ? ['fragment'] : [],
+    openReleasePr: state?.openPr !== null && state?.openPr !== undefined,
+    existingTags: Array.isArray(state?.tags) ? state.tags.map(String) : [],
+    lastTagCommittedAt: String(state?.lastTagCommittedAt ?? ''),
   }
 }

@@ -6,7 +6,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { buildState, latestConclusion } from '../scripts/lib/release-state.mjs'
+import { buildState, latestConclusion, plannerInput } from '../scripts/lib/release-state.mjs'
+import { planRelease } from '../scripts/release-plan.mjs'
+import { decideDrive } from '../scripts/lib/release-drive.mjs'
 
 // The daily release used to assemble its state in one `jq` expression inside the
 // workflow, and `gh api --paginate ... --slurp | jq -s 'add'` produced an array of
@@ -117,4 +119,106 @@ test('the workflow runs the tested module instead of an inline jq pipeline', () 
   assert.match(workflow, /node scripts\/release-state\.mjs/)
   assert.doesNotMatch(workflow, /gh api[^\n]*--slurp/)
   assert.doesNotMatch(workflow, /jq -s 'add/)
+})
+
+// #146 review `5829820145`: a foreign PR titled `release: v…` must be a notice,
+// never a reason the night does nothing. Two shapes were measured at `64709976`:
+// the plan turned `openPrRejected` into `openReleasePr: true`, and the title-only
+// `.find()` let a newer foreign PR take the slot of this repository's own PR.
+const MERGED_TWELVE = Array.from({ length: 12 }, (_, index) => ({
+  number: 300 + index,
+  title: index < 6 ? `feat: change ${index}` : `fix: change ${index}`,
+  merged_at: `2026-11-01T${String(10 + index).padStart(2, '0')}:00:00Z`,
+}))
+
+const FOREIGN_RELEASE_PR = {
+  number: 201,
+  title: 'release: v0.4.0',
+  head: { ref: 'release/v0.4.0', sha: 'f0e1', repo: { full_name: 'evil/fledge' } },
+  base: { repo: { full_name: 'HugoXK/fledge' } },
+}
+
+const OWN_RELEASE_PR = {
+  number: 199,
+  title: 'release: v0.4.0',
+  head: { ref: 'release/v0.4.0', sha: 'a0a0', repo: { full_name: 'HugoXK/fledge' } },
+  base: { repo: { full_name: 'HugoXK/fledge' } },
+}
+
+function stateWith({ openPages, closedPages = [MERGED_TWELVE], checks = [{ id: 9, name: 'ci-ok', conclusion: 'success' }] }: {
+  openPages: unknown[]
+  closedPages?: unknown[]
+  checks?: unknown[]
+}) {
+  return buildState({
+    lastTag: 'v0.3.0',
+    lastTagCommittedAt: '2026-10-31T00:00:00Z',
+    packageVersion: '0.3.0',
+    fragments: 3,
+    tags: ['v0.3.0'],
+    closedPages,
+    openPages,
+    checks,
+  })
+}
+
+test('a foreign release-shaped PR alone leaves the night releasable', () => {
+  const state = stateWith({ openPages: [[FOREIGN_RELEASE_PR]] })
+  assert.equal(state.openPr, null, 'a fork PR is never the release PR')
+  assert.equal(state.openPrRejected?.number, 201, 'it is recorded for the notice')
+  assert.match(String(state.openPrRejected?.repo ?? ''), /evil\/fledge/)
+
+  const input = plannerInput(state)
+  assert.equal(input.openReleasePr, false, 'a rejected candidate is not an open release PR')
+  const plan = planRelease(input)
+  assert.equal(plan.shouldRelease, true, 'the rule is met, so the night is not halted')
+  assert.equal(plan.nextVersion, '0.4.0')
+
+  const decision = decideDrive({
+    plan: { shouldRelease: plan.shouldRelease, nextVersion: plan.nextVersion, reason: plan.reason },
+    openReleasePr: null,
+    mergedPrs: [],
+    tags: state.tags,
+    ciOk: state.ciOk,
+    dryRun: false,
+  })
+  assert.equal(decision.action, 'open-pr')
+  assert.equal(decision.version, '0.4.0')
+})
+
+test('a newer foreign PR cannot shadow this repository\'s own release PR', () => {
+  // The open list is newest-created first, so the title-only `.find()` picked the
+  // fork PR and demoted the routine's own PR to `openPrRejected`: nothing was
+  // enqueued and nothing was replaced.
+  const state = stateWith({ openPages: [[FOREIGN_RELEASE_PR, OWN_RELEASE_PR]] })
+  assert.equal(state.openPr?.number, 199, 'the same-repo release PR keeps the slot')
+  assert.equal(state.openPrRejected?.number, 201, 'the foreign PR is the notice, not the candidate')
+  assert.equal(plannerInput(state).openReleasePr, true, 'the accepted candidate is the open release PR')
+
+  const decision = decideDrive({
+    plan: { shouldRelease: false, nextVersion: '0.4.0', reason: 'open-release-pr' },
+    openReleasePr: {
+      number: 199,
+      headSha: 'a0a0',
+      branch: 'release/v0.4.0',
+      title: 'release: v0.4.0',
+      files: ['CHANGELOG.md', 'changelog.d/80.added.md', 'package.json', 'package-lock.json', 'docker-compose.yml'],
+      blocked: false,
+      checks: [{ name: 'ci-ok', conclusion: 'success' }],
+      sameRepo: true,
+    },
+    mergedPrs: [],
+    tags: state.tags,
+    ciOk: 'success',
+    dryRun: false,
+  })
+  assert.equal(decision.action, 'enqueue', 'the routine enqueues its own PR')
+  assert.equal(decision.pr, 199)
+})
+
+test('the workflow plans from the tested projection, not an inline jq expression', () => {
+  assert.match(workflow, /import \{ plannerInput \} from "\.\/scripts\/lib\/release-state\.mjs"/)
+  assert.equal(workflow.includes('openReleasePr: (.openPr != null or .openPrRejected != null)'), false)
+  assert.match(workflow, /state\.openPrRejected/)
+  assert.match(workflow, /Notice: ignored pull request/)
 })

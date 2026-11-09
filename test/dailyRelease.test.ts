@@ -53,7 +53,11 @@ test('the workflow never deploys and never touches a live database', () => {
 })
 
 test('the merged PR labels are mapped to names, so the enhancement half can match', () => {
-  assert.match(daily, /labels: \[\.labels\[\]\.name\]/)
+  // The mapping moved out of YAML into the tested projection, so it is executed
+  // by a suite instead of being grepped: `plannerInput` reads `label.name`, which
+  // is what `planRelease` matches `enhancement` against.
+  assert.match(daily, /import \{ plannerInput \} from "\.\/scripts\/lib\/release-state\.mjs"/)
+  assert.match(readFileSync('scripts/lib/release-state.mjs', 'utf8'), /labels: \(Array\.isArray\(pr\?\.labels\) \? pr\.labels : \[\]\)\.map\(\(label\) => String\(label\?\.name/)
 })
 
 test('the mechanical release PR is keyed on its branch and title in the gate that reads them', () => {
@@ -81,6 +85,23 @@ test('the blocked reason travels through env, never spliced into a run body', ()
   assert.match(step, /printf 'reason: %s\\n' "\$RELEASE_REASON"/)
   const runBody = step.slice(step.indexOf('run: |'))
   assert.equal(runBody.includes('${{'), false, 'no expression is interpolated into the shell body')
+})
+
+test('no expression reaches a shell body anywhere in the workflow', () => {
+  // #146 review `5829820145` (non-blocking): six values were still interpolated
+  // into `run:` bodies. They were numeric or regex-constrained, but `env:` is the
+  // boundary the finding asked for, so every step now passes them that way.
+  const steps = daily.split(/^\s+- name: /m).slice(1)
+  assert.ok(steps.length >= 9)
+  for (const step of steps) {
+    const runIndex = step.indexOf('        run: |')
+    if (runIndex === -1) continue
+    const name = step.split('\n')[0]
+    // A step body ends at the next list item, which may be a `- uses:` step with
+    // no `name:` of its own.
+    const body = step.slice(runIndex).split(/\n      - /)[0] ?? ''
+    assert.equal(body.includes('${{'), false, `step "${name}" splices an expression into its run body`)
+  }
 })
 
 test('the drive is told whether the open release PR comes from this repository', () => {

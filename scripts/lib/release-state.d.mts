@@ -23,7 +23,7 @@ export interface ReleaseState {
   dryRun: boolean
   ciOk: string
   openPr: PullRequestPageEntry | null
-  openPrRejected: { number: number; title: string; branch: string } | null
+  openPrRejected: { number: number; title: string; branch: string; repo: string } | null
   lastMerged: PullRequestPageEntry | null
   mergedPrs: PullRequestPageEntry[]
 }
@@ -42,3 +42,13 @@ export declare function buildState(input: {
   openPages?: unknown
   checks?: unknown
 }): ReleaseState
+
+export declare function plannerInput(state: ReleaseState): {
+  lastTag: string
+  packageVersion: string
+  prs: Array<{ number: number; title: string; labels: string[]; mergedAt: string }>
+  fragments: string[]
+  openReleasePr: boolean
+  existingTags: string[]
+  lastTagCommittedAt: string
+}

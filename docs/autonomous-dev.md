@@ -305,6 +305,14 @@ the same logic inline in the workflow broke invisibly: `--slurp` plus
 `jq -s 'add'` produced an array of page arrays, and the first `.title` selection
 aborted the night before the planner ran.
 
+The release PR is identified by a title match **and** a head in this repository:
+the open list is newest-first, so a fork PR titled `release: v<next>` must not take
+the slot of the routine's own PR. Such a PR is written to the run summary as a
+notice and never counted as a release in flight — an outsider can neither stop the
+nightly nor be enqueued. The planner gets that projection from `plannerInput` in
+`scripts/lib/release-state.mjs`, where a test executes it instead of a `jq`
+expression in the workflow.
+
 `release.yml` publishes only a tag that is an ancestor of `main`, holds one run
 per ref (`concurrency: release-<ref>`, no cancel), and still runs the checks,
 builds and pushes the image, then creates or edits the GitHub release. It never
