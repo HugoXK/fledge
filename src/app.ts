@@ -2432,7 +2432,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const body = (request.body ?? {}) as Record<string, unknown>
     const result = await jobs.handleCallback(String((request.params as Record<string, string>).id), secret, body)
     if (!result.ok) return reply.code(result.status ?? 400).send({ error: result.error ?? 'callback rejected' })
-    return { ok: true }
+    return result.duplicate === true ? { ok: true, duplicate: true } : { ok: true }
   })
 
 

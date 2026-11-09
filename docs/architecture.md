@@ -62,6 +62,11 @@ its design tokens are documented in [docs/ui.md](ui.md).
   file is the only state; the mail outbox is a development artifact.
 - **Sessions** are random 32-byte tokens, stored as SHA-256 hashes; the cookie is
   HttpOnly/SameSite=Lax.
+- **Job terminal transitions** are conditional writes (`UPDATE … WHERE status IN
+  ('queued','running')`) inside a `BEGIN IMMEDIATE` transaction; the row that wins
+  stores a fingerprint of the reported result, so a replayed callback is a no-op
+  and a contradicting one is a conflict. Side effects run only in the winning
+  branch (`docs/decisions/0004`).
 - **OAuth**: GitHub OAuth App with `state` stored server-side for 10 minutes.
 - **Applications**: a new user starts as `onboarding`. Submitting the signed
   disclaimer and information-security agreement moves them to `pending` and

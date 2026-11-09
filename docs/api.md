@@ -262,8 +262,36 @@ as an event without blocking. On
 success, Fledge adds a collapsible automation block to the PR with the job,
 team and the attribution steps that actually happened, so humans can see which
 role claimed, implemented, tested and reviewed the change without a fabricated
-"pending" row. A finished job revokes its job-scoped model token, and later
-callbacks or credential reads return HTTP 409.
+"pending" row. A finished job revokes its job-scoped model token.
+
+### Callback idempotency
+
+A terminal callback is keyed by the state transition, not by a delivery id.
+Fledge normalises the report and stores a fingerprint of it on the job, so the
+answer distinguishes a replay from a contradiction:
+
+- the delivery that wins the transition (`queued`/`running` → `succeeded`/`failed`)
+  runs the side effects exactly once: the review follow-up enqueue, the
+  work-item move and the auto-merge;
+- replaying the same report after the job finished answers
+  `200 {"ok":true,"duplicate":true}` and writes no second event, notification or
+  merge;
+- a contradicting report (a different `prUrl`, a later `failed`, …) answers
+  `409 {"error":"job already finished"}` and changes nothing;
+- a terminal report that arrives after `JOB_TIMEOUT_MINUTES` (default 90) answers
+  `409 {"error":"job timed out"}`: the reaper owns that decision, so a late
+  success does not rewrite a timed-out run. The bridge does not retry a 409, so
+  that result is lost by design — see `bridge/README.md`;
+- a heartbeat (`{"status":"running"}`) is accepted only for a job that is
+  already `running`. For a `queued` job it answers 409 and does not refresh
+  `last_callback_at`, because a heartbeat may not promote a row that no worker
+  has been dispatched for;
+- a payload rejected with 400 (bad branch) does not refresh `last_callback_at`
+  either.
+
+Heartbeats extend the stall window (`JOB_STALL_MINUTES`, default 30) but never
+the hard timeout (`JOB_TIMEOUT_MINUTES`, default 90), and they never rewrite
+`started_at`. A credential read after the job finished still answers 409.
 
 ## Model gateway
 

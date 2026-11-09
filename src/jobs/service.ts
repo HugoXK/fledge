@@ -75,6 +75,31 @@ export interface CallbackPayload {
   followUps?: unknown
 }
 
+// The canonical form of a terminal report. Two deliveries that describe the same
+// result produce the same value, so a replay is a no-op while a contradicting
+// report is a conflict (docs/decisions/0004, section 2).
+function terminalFingerprint(input: {
+  status: string
+  branch?: string
+  prUrl?: string
+  issueUrl?: string
+  reviewScore?: number
+  evidence: Evidence | null
+  attribution: Attribution | null
+  followUps: ReviewFollowUp[]
+}): string {
+  return sha256Hex(JSON.stringify({
+    status: input.status,
+    branch: input.branch ?? null,
+    prUrl: input.prUrl ?? null,
+    issueUrl: input.issueUrl ?? null,
+    reviewScore: input.reviewScore ?? null,
+    evidence: input.evidence,
+    attribution: input.attribution,
+    followUps: input.followUps.map((entry) => ({ prUrl: entry.prUrl, branch: entry.branch, headSha: entry.headSha ?? null })),
+  }))
+}
+
 export class Jobs {
   private timer: NodeJS.Timeout | null = null
   private questionBusy = false
@@ -418,6 +443,12 @@ export class Jobs {
       htmlUrl: repo.fork_html_url ?? `https://github.com/${repo.owner}/${repo.name}`,
     }
     try {
+      // Mark the job running before dispatch: the bridge may send its first
+      // heartbeat as soon as the agent is up, and a queued row may not accept one.
+      this.store.updateJob(job.id, { status: 'running', started_at: nowIso() })
+      this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.running', step: kind })
+      if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'running' })
+      else this.store.updateRepo(repo.id, { last_status: 'running' })
       const result = await this.runner.run({
         job,
         repo,
@@ -439,16 +470,11 @@ export class Jobs {
         timeoutMinutes: this.config.runner.timeoutMinutes,
       })
       if (result.status === 'running') {
+        // The row is already running; a callback may have finished it while the
+        // runner was dispatching, so report whatever state it ended in.
         const current = this.store.getJob(job.id)
-        if (current !== undefined && current.status !== 'queued') {
-          if (current.status === 'succeeded' || current.status === 'running') return { ok: true, job: current }
-          return { ok: false, job: current, error: current.error ?? '任务失败' }
-        }
-        this.store.updateJob(job.id, { status: 'running', started_at: nowIso() })
-        this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.running', step: kind })
-        if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'running' })
-        else this.store.updateRepo(repo.id, { last_status: 'running' })
-        return { ok: true, job: this.store.getJob(job.id) }
+        if (current !== undefined && (current.status === 'succeeded' || current.status === 'running')) return { ok: true, job: current }
+        return { ok: false, job: current, error: current?.error ?? '任务失败' }
       }
       this.finish(job.id, { status: result.status === 'succeeded' ? 'succeeded' : 'failed', branch: result.branch, prUrl: result.prUrl, issueUrl: result.issueUrl, reviewScore: result.reviewScore, summary: result.summary, error: result.error }, revoke)
       return { ok: result.status === 'succeeded', job: this.store.getJob(job.id), ...(result.status === 'failed' ? { error: result.error ?? '任务失败' } : {}) }
@@ -495,16 +521,19 @@ export class Jobs {
     })
   }
 
-  private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }, revoke: () => void, attribution: Attribution | null = null, evidence: Evidence | null = null): void {
+  // Returns whether this call moved the row to a terminal state. Callers that
+  // perform side effects must only do so when it returns true.
+  private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }, revoke: () => void, attribution: Attribution | null = null, evidence: Evidence | null = null, fingerprint: string | null = null): boolean {
     const job = this.store.getJob(jobId)
-    if (job === undefined) return
-    if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'quota_exhausted') return
+    if (job === undefined) return false
+    if (job.status !== 'queued' && job.status !== 'running') return false
     const branch = result.branch ?? job.branch
     const prUrl = result.prUrl ?? job.pr_url
     const issueUrl = result.issueUrl ?? job.issue_url
     const reviewScore = result.reviewScore ?? job.review_score
-    this.store.updateJob(jobId, {
-      status: result.status,
+    // The guarded transition is the idempotency key: a lost update means another
+    // delivery already finalised the job and must own the side effects.
+    const claimed = this.store.claimJobTerminal(jobId, result.status, fingerprint, {
       branch,
       pr_url: prUrl,
       issue_url: issueUrl,
@@ -515,6 +544,7 @@ export class Jobs {
       error: (result.error ?? job.error ?? '').slice(0, 2000),
       finished_at: nowIso(),
     })
+    if (!claimed) return false
     this.syncWorkItemForJob(job, { status: result.status, prUrl, issueUrl })
     if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_at: nowIso(), last_review_status: result.status })
     else this.store.updateRepo(job.repo_id, { last_status: result.status })
@@ -564,6 +594,7 @@ export class Jobs {
     } else {
       void this.captureTeamStats(jobId, attribution).catch((error) => log.warn('team stats capture failed', { job: jobId, error: String(error) }))
     }
+    return true
   }
 
   private checkRepeatedFailures(job: JobRow): void {
@@ -1191,14 +1222,20 @@ export class Jobs {
     }
   }
 
-  async handleCallback(jobId: string, secret: string, payload: CallbackPayload): Promise<{ ok: boolean; status?: number; error?: string }> {
+  async handleCallback(jobId: string, secret: string, payload: CallbackPayload): Promise<{ ok: boolean; status?: number; error?: string; duplicate?: boolean }> {
     const job = this.store.getJob(jobId)
     if (job === undefined) return { ok: false, status: 404, error: 'job not found' }
     if (!safeEqual(sha256Hex(secret), job.callback_hash)) return { ok: false, status: 401, error: 'bad callback secret' }
-    if (job.status !== 'queued' && job.status !== 'running') return { ok: false, status: 409, error: 'job already finished' }
+    // Serialised per job inside this process; the guarded terminal transition in
+    // applyCallback covers a second process.
+    return this.withJobLock(jobId, () => this.applyCallback(jobId, payload))
+  }
+
+  private async applyCallback(jobId: string, payload: CallbackPayload): Promise<{ ok: boolean; status?: number; error?: string; duplicate?: boolean }> {
+    const job = this.store.getJob(jobId)
+    if (job === undefined) return { ok: false, status: 404, error: 'job not found' }
     const status = payload.status
     if (status !== 'succeeded' && status !== 'failed' && status !== 'running') return { ok: false, status: 400, error: 'invalid status' }
-    this.store.touchJobCallback(jobId)
     const branch = typeof payload.branch === 'string' ? payload.branch.slice(0, 300) : undefined
     const prUrl = typeof payload.prUrl === 'string' && payload.prUrl.startsWith('https://') ? payload.prUrl.slice(0, 500) : undefined
     const issueUrl = typeof payload.issueUrl === 'string' && payload.issueUrl.startsWith('https://') ? payload.issueUrl.slice(0, 500) : undefined
@@ -1227,6 +1264,20 @@ export class Jobs {
           }]
         }).slice(0, 10)
       : []
+    const fingerprint = terminalFingerprint({ status, branch, prUrl, issueUrl, reviewScore, evidence, attribution, followUps })
+    // A finished job answers a replay with the same fingerprint as a no-op and
+    // any other terminal report as a conflict; see docs/decisions/0004.
+    if (job.status !== 'queued' && job.status !== 'running') {
+      if (job.callback_fingerprint !== null && job.callback_fingerprint === fingerprint) return { ok: true, duplicate: true }
+      return { ok: false, status: 409, error: 'job already finished' }
+    }
+    // A terminal report after the hard timeout cannot finalise the job; the reaper
+    // owns that decision, so a late success does not rewrite a timed-out run.
+    if (status !== 'running' && this.pastHardTimeout(job)) return { ok: false, status: 409, error: 'job timed out' }
+    // A queued job has no dispatched worker yet, so a heartbeat may not promote it.
+    if (status === 'running' && job.status !== 'running') return { ok: false, status: 409, error: 'job not dispatched' }
+    // Only a callback that will be acted on may refresh the stall window.
+    this.store.touchJobCallback(jobId)
     if (status === 'running') {
       this.store.updateJob(jobId, {
         status: 'running',
@@ -1240,10 +1291,6 @@ export class Jobs {
         ...(evidence === null ? {} : { evidence_json: JSON.stringify(evidence) }),
         ...(checkpoint === undefined ? {} : { checkpoint }),
       })
-      if (job.status === 'queued') {
-        if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_status: 'running' })
-        else this.store.updateRepo(job.repo_id, { last_status: 'running' })
-      }
       this.store.recordJobEvent({
         jobId,
         repoId: job.repo_id,
@@ -1271,13 +1318,19 @@ export class Jobs {
         if (stageMode === 'enforced') {
           const message = `STAGE_EVIDENCE_MISSING: ${detail}`
           this.store.notify(job.user_id, 'job', `${job.kind} 任务 ${jobId} 缺少阶段证据：${detail}`)
-          this.finish(jobId, { status: 'failed', branch, prUrl, issueUrl, summary, error: message }, revoke, attribution, evidence)
+          this.finish(jobId, { status: 'failed', branch, prUrl, issueUrl, summary, error: message }, revoke, attribution, evidence, fingerprint)
           return { ok: false, status: 422, error: message }
         }
       }
     }
+    const claimed = this.finish(jobId, { status, branch, prUrl, issueUrl, reviewScore, summary, error }, revoke, attribution, evidence, fingerprint)
+    if (!claimed) {
+      // Another delivery won the transition while this one was in flight.
+      const latest = this.store.getJob(jobId)
+      if (latest !== undefined && latest.callback_fingerprint !== null && latest.callback_fingerprint === fingerprint) return { ok: true, duplicate: true }
+      return { ok: false, status: 409, error: 'job already finished' }
+    }
     if (checkpoint !== undefined) this.store.updateJob(jobId, { checkpoint })
-    this.finish(jobId, { status, branch, prUrl, issueUrl, reviewScore, summary, error }, revoke, attribution, evidence)
     if (status === 'succeeded' && followUps.length > 0) {
       await this.queueReviewFollowUps(job, followUps)
       await this.releasePendingFollowups(job.repo_id)
@@ -1297,6 +1350,26 @@ export class Jobs {
     }
     if (status === 'succeeded' && prUrl !== undefined) await this.maybeAutoMerge(job, prUrl)
     return { ok: true }
+  }
+
+  private jobLocks = new Map<string, Promise<void>>()
+
+  private async withJobLock<T>(jobId: string, run: () => Promise<T>): Promise<T> {
+    const previous = this.jobLocks.get(jobId) ?? Promise.resolve()
+    const current = previous.then(run, run)
+    const tail = current.then(() => undefined, () => undefined)
+    this.jobLocks.set(jobId, tail)
+    try {
+      return await current
+    } finally {
+      if (this.jobLocks.get(jobId) === tail) this.jobLocks.delete(jobId)
+    }
+  }
+
+  private pastHardTimeout(job: JobRow): boolean {
+    const startedAt = Date.parse(job.started_at ?? job.created_at)
+    if (!Number.isFinite(startedAt)) return false
+    return startedAt + this.config.runner.timeoutMinutes * 60_000 < Date.now()
   }
 
   private async queueReviewFollowUps(job: JobRow, followUps: ReviewFollowUp[]): Promise<void> {
