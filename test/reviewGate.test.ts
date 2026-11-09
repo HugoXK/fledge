@@ -575,7 +575,7 @@ const RELEASE_FILES = [
   { filename: 'changelog.d/80-daily-release-drive.added.md', patch: '@@ -1 +0,0 @@\n-a fragment\n' },
   { filename: 'package.json', patch: '@@ -2,3 +2,3 @@\n-  "version": "0.2.4",\n+  "version": "0.3.0",\n' },
   { filename: 'package-lock.json', patch: '@@ -1,4 +1,4 @@\n-  "version": "0.2.4",\n+  "version": "0.3.0",\n' },
-  { filename: 'docker-compose.yml', patch: '@@ -3,3 +3,3 @@\n-    image: ghcr.io/hugoxk/fledge:v0.2.4\n+    image: ghcr.io/hugoxk/fledge:v0.3.0\n' },
+  { filename: 'docker-compose.yml', patch: '@@ -3,3 +3,3 @@\n-    image: fledge:0.2.4\n+    image: fledge:0.3.0\n' },
 ]
 
 test('the gate passes a mechanical release PR with no verdict, because the diff is the release shape', async () => {
@@ -643,6 +643,64 @@ test('a release identity whose package.json patch the API omitted stays T3', asy
   await withFakeGitHub(state, async (env) => {
     const result = await runScript(gateScript, ['--pr', '7'], env)
     assert.equal(result.code, 1, 'an unjudgeable diff fails closed')
+    assert.match(result.stderr, /no conclusion at /)
+  })
+})
+
+test('a release identity that appends a second key on the version line stays T3', async () => {
+  // #146 finding 1, the reviewer's own bypass: move the version field to the last
+  // line of the object and append a second "scripts" key on that same line. The
+  // JSON is valid and last-key-wins, and the unanchored pattern still matched it,
+  // so review-gate granted T0 with no PASS while a preinstall script would run.
+  const state = initialState()
+  state.files = [
+    ...RELEASE_FILES.filter((file) => file.filename !== 'package.json'),
+    {
+      filename: 'package.json',
+      patch: '@@ -2,3 +2,3 @@\n-  "version": "0.2.4",\n+  "version": "0.3.0", "scripts": { "preinstall": "node evil.mjs" },\n',
+    },
+  ]
+  state.title = 'release: v0.3.0'
+  state.branch = 'release/v0.3.0'
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'a same-line second key must not earn the exemption')
+    assert.match(result.stderr, /no conclusion at /)
+  })
+})
+
+test('a release identity that bumps to a different version than it names stays T3', async () => {
+  const state = initialState()
+  state.files = [
+    ...RELEASE_FILES.filter((file) => file.filename !== 'package.json'),
+    {
+      filename: 'package.json',
+      patch: '@@ -2,3 +2,3 @@\n-  "version": "0.2.4",\n+  "version": "9.9.9",\n',
+    },
+  ]
+  state.title = 'release: v0.3.0'
+  state.branch = 'release/v0.3.0'
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'the added version must equal the version the identity names')
+    assert.match(result.stderr, /no conclusion at /)
+  })
+})
+
+test('a release identity whose compose image is not fledge:<version> stays T3', async () => {
+  const state = initialState()
+  state.files = [
+    ...RELEASE_FILES.filter((file) => file.filename !== 'docker-compose.yml'),
+    {
+      filename: 'docker-compose.yml',
+      patch: '@@ -3,3 +3,4 @@\n-    image: fledge:0.2.4\n+    image: ghcr.io/someone-else/fledge:v0.3.0\n+    privileged: true\n',
+    },
+  ]
+  state.title = 'release: v0.3.0'
+  state.branch = 'release/v0.3.0'
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'the compose image must be exactly fledge:<version>')
     assert.match(result.stderr, /no conclusion at /)
   })
 })

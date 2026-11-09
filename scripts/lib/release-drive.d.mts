@@ -15,13 +15,25 @@ export interface DriveCheck {
 export interface DriveOpenReleasePr {
   number: number
   headSha: string
+  branch?: string
+  title?: string
+  files?: string[]
   blocked?: boolean
   checks?: DriveCheck[]
+}
+
+export interface DriveMergedPr {
+  number: number
+  title: string
+  headRef?: string
+  mergeCommitSha?: string
+  mergedAt?: string
 }
 
 export interface DriveState {
   plan?: DrivePlan
   openReleasePr?: DriveOpenReleasePr | null
+  mergedPrs?: DriveMergedPr[]
   lastMergedPr?: { number: number; title: string; headRef: string } | null
   tags?: string[]
   ciOk?: string
@@ -34,9 +46,11 @@ export interface DriveDecision {
   pr?: number
   headSha?: string
   tag?: string
+  sha?: string
   version?: string
   failing?: string[]
   dryRun?: boolean
+  wouldHave?: string
 }
 
 export declare function decideDrive(state: DriveState): DriveDecision

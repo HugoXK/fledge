@@ -42,7 +42,7 @@ test('the slurped page shape is flattened, so the open release PR is found', asy
   const dir = mkdtempSync(join(tmpdir(), 'fledge-state-'))
   try {
     const prs = writeJson(dir, 'prs.json', [PAGE_ONE, PAGE_TWO])
-    const open = writeJson(dir, 'open.json', [[{ number: 20, title: 'feat: not a release' }], [{ number: 21, title: 'release: v0.3.0' }]])
+    const open = writeJson(dir, 'open.json', [[{ number: 20, title: 'feat: not a release' }], [{ number: 21, title: 'release: v0.3.0', head: { ref: 'release/v0.3.0' } }]])
     const checks = writeJson(dir, 'checks.json', { total_count: 1, check_runs: [{ id: 1, name: 'ci-ok', conclusion: 'success' }] })
     const out = await runState(['--prs', prs, '--open', open, '--checks', checks, '--tags-json', '["v0.2.4"]'])
     const state = JSON.parse(out) as { openPr: { number: number } | null; lastMerged: { number: number } | null; mergedPrs: unknown[] }
@@ -52,6 +52,23 @@ test('the slurped page shape is flattened, so the open release PR is found', asy
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('a title that starts with "release: v" is not the release PR without the release branch', () => {
+  // #146 finding 5: a docs-only `release: v9.9.9` on a feature branch must never
+  // be picked up as the release PR, because the drive would enqueue it.
+  const state = buildState({
+    lastTag: 'v0.2.4',
+    packageVersion: '0.2.4',
+    fragments: 1,
+    tags: ['v0.2.4'],
+    closedPages: [[]],
+    openPages: [[{ number: 41, title: 'release: v9.9.9', head: { ref: 'dev2/docs-only' } }]],
+    checks: [],
+  })
+  assert.equal(state.openPr, null, 'a self-declared release title is not the release PR')
+  assert.equal(state.openPrRejected?.number, 41, 'the rejected candidate is recorded rather than silently dropped')
+  assert.match(String(state.openPrRejected?.branch ?? ''), /dev2\/docs-only/)
 })
 
 test('a single flat page is accepted as well', () => {

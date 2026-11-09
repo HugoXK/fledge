@@ -12,9 +12,10 @@
 //   (c) every changed path is inside the mechanical set
 //
 // The fourth condition (the version/changelog consistency check) is
-// `node scripts/version.mjs check` and `node scripts/changelog.mjs check`, which
-// pr-lint runs separately; a caller that skips them must not treat the identity
-// alone as a pass.
+// `node scripts/version.mjs check` and `node scripts/changelog.mjs check`. They
+// run as their own CI jobs (`version`, `changelog`), not inside pr-lint, so the
+// identity plus the diff shape below are this module's whole claim; a caller
+// that skips those jobs must not treat the identity alone as a pass.
 
 export const MECHANICAL_PATHS = ['CHANGELOG.md', 'changelog.d/', 'package.json', 'package-lock.json', 'docker-compose.yml']
 
@@ -59,14 +60,28 @@ export function mechanicalRelease({ branch, title, files } = {}) {
 // its own it would let anyone claim the T0 exemption and merge a dependency
 // change in package.json or an image/env change in docker-compose.yml with no
 // PASS. It only counts when the diff has the shape the release routine writes:
-// the version fields in package.json / package-lock.json and the image tag in
-// docker-compose.yml, with any content allowed in CHANGELOG.md and changelog.d/.
-// A file whose patch the API did not return cannot be judged, so it fails closed.
-const VERSION_FIELD = /"version":\s*"\d+\.\d+\.\d+"/
-const IMAGE_TAG = /^\s*image:\s*\S+\s*$/
+// the version fields in package.json / package-lock.json bumped to exactly the
+// version the identity names, and the image tag in docker-compose.yml set to
+// exactly `fledge:<version>`, with any content allowed in CHANGELOG.md and
+// changelog.d/. A file whose patch the API did not return cannot be judged, so
+// it fails closed.
+//
+// Every pattern below is anchored to the whole line. Unanchored, a line that
+// merely *contains* a version literal passes, and `bumpVersions` only rewrites
+// `"version": "<previous>"` inside a line — so a patch that appends a second
+// `"scripts"` key, or any other field, on the same line would earn T0 while
+// `postinstall`/`preinstall` ran on green `ci:ok`. Anchoring plus the exact
+// version check is what makes the shape unforgeable by formatting.
+const VERSION_FIELD = /^\s*"version":\s*"\d+\.\d+\.\d+",?\s*$/
+const IMAGE_TAG = /^\s*image:\s*fledge:\d+\.\d+\.\d+\s*$/
+const VERSION_LITERAL = /"version":\s*"(\d+\.\d+\.\d+)"/
 
-export function mechanicalDiffShape(files) {
+export function mechanicalDiffShape(files, version) {
+  const wanted = String(version ?? '')
   const list = Array.isArray(files) ? files : []
+  if (!/^\d+\.\d+\.\d+$/.test(wanted)) {
+    return { shaped: false, reason: 'no release version to judge the diff against' }
+  }
   for (const file of list) {
     const name = String(file?.filename ?? '')
     if (name === '') return { shaped: false, reason: 'a changed file has no name' }
@@ -76,13 +91,24 @@ export function mechanicalDiffShape(files) {
     for (const line of patch.split('\n')) {
       if (!line.startsWith('+') && !line.startsWith('-')) continue
       if (line.startsWith('+++') || line.startsWith('---')) continue
+      const added = line.startsWith('+')
       const body = line.slice(1)
-      const allowed = name === 'docker-compose.yml' ? IMAGE_TAG.test(body) : VERSION_FIELD.test(body)
-      if (!allowed) {
-        const shown = body.trim().slice(0, 80)
-        return { shaped: false, reason: `${name} changes more than the version: ${shown}` }
+      const shown = body.trim().slice(0, 80)
+      if (name === 'docker-compose.yml') {
+        if (!IMAGE_TAG.test(body)) return { shaped: false, reason: `${name} changes more than the image tag: ${shown}` }
+        if (added && body.trim() !== `image: fledge:${wanted}`) {
+          return { shaped: false, reason: `${name} sets an image that is not fledge:${wanted}: ${shown}` }
+        }
+        continue
+      }
+      if (!VERSION_FIELD.test(body)) return { shaped: false, reason: `${name} changes more than the version: ${shown}` }
+      if (added) {
+        const literal = VERSION_LITERAL.exec(body)?.[1] ?? ''
+        if (literal !== wanted) {
+          return { shaped: false, reason: `${name} adds version ${literal === '' ? '(none)' : literal}, not ${wanted}: ${shown}` }
+        }
       }
     }
   }
-  return { shaped: true, reason: 'version fields and the image tag only' }
+  return { shaped: true, reason: `the version fields at ${wanted} and the fledge:${wanted} image tag only` }
 }

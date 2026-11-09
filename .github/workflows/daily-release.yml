@@ -83,7 +83,7 @@ jobs:
         id: plan
         run: |
           set -euo pipefail
-          jq '{lastTag, packageVersion, prs: [.mergedPrs[] | {number, title, labels: [.labels[].name], mergedAt: .merged_at}], fragments: (if .fragments > 0 then ["fragment"] else [] end), openReleasePr: (.openPr != null), existingTags: .tags, lastTagCommittedAt}' /tmp/state.json > /tmp/plan-input.json
+          jq '{lastTag, packageVersion, prs: [.mergedPrs[] | {number, title, labels: [.labels[].name], mergedAt: .merged_at}], fragments: (if .fragments > 0 then ["fragment"] else [] end), openReleasePr: (.openPr != null or .openPrRejected != null), existingTags: .tags, lastTagCommittedAt}' /tmp/state.json > /tmp/plan-input.json
           node --input-type=module -e '
             import { readFileSync, appendFileSync } from "node:fs"
             import { planRelease } from "./scripts/release-plan.mjs"
@@ -94,8 +94,11 @@ jobs:
             appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Daily minor release\n\n- merged PRs since ${input.lastTag || "(no tag)"}: **${result.total}** (need 10)\n- features: **${result.features}** (need 5)\n- fragments: **${result.fragments}** (need 1)\n- next version: **${result.nextVersion}**\n- decision: **${result.shouldRelease ? "release" : "no release"}** — ${result.reason}\n\n`)
           '
 
-      - name: Check the required checks on the open release PR
-        if: ${{ steps.plan.outputs.shouldRelease == 'true' }}
+      # This step must run whenever a release PR is open, not only when the plan
+      # says "release tonight": `shouldRelease` is false exactly when a release PR
+      # is already in flight, so gating the collection on it meant the drive
+      # enqueued a PR whose checks nobody had read.
+      - name: Collect the open release PR's checks and files
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
@@ -103,14 +106,17 @@ jobs:
           jq -r '.openPr.number // empty' /tmp/state.json > /tmp/open-number.txt
           NUMBER="$(cat /tmp/open-number.txt)"
           if [ -z "$NUMBER" ]; then
-            jq '. + {checks: []}' /tmp/state.json > /tmp/state2.json && mv /tmp/state2.json /tmp/state.json
+            jq '. + {openChecks: [], openFiles: [], mergeable: null}' /tmp/state.json > /tmp/state2.json && mv /tmp/state2.json /tmp/state.json
             exit 0
           fi
           SHA="$(jq -r '.openPr.head.sha' /tmp/state.json)"
           gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?per_page=100" > /tmp/open-checks.json
+          # The file list is what proves the open PR is the mechanical release and
+          # not a docs-only PR that merely titled itself `release: vX.Y.Z`.
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${NUMBER}/files?per_page=100" | jq -s 'flatten | map(.filename)' > /tmp/open-files.json
           MERGEABLE="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${NUMBER}" | jq -r '.mergeable')"
-          jq --slurpfile checks /tmp/open-checks.json --arg mergeable "$MERGEABLE" \
-            '. + {openChecks: $checks[0].check_runs, mergeable: $mergeable}' /tmp/state.json > /tmp/state2.json
+          jq --slurpfile checks /tmp/open-checks.json --slurpfile files /tmp/open-files.json --arg mergeable "$MERGEABLE" \
+            '. + {openChecks: $checks[0].check_runs, openFiles: $files[0], mergeable: $mergeable}' /tmp/state.json > /tmp/state2.json
           mv /tmp/state2.json /tmp/state.json
 
       - name: Decide
@@ -127,8 +133,8 @@ jobs:
             --arg next "$PLAN_NEXT" --arg reason "$PLAN_REASON" \
             '{
               plan: {shouldRelease: $should, nextVersion: $next, reason: $reason},
-              openReleasePr: (if $state.openPr == null then null else {number: $state.openPr.number, headSha: $state.openPr.head.sha, blocked: ($state.mergeable == false), checks: ($state.openChecks // [])} end),
-              lastMergedPr: (if $state.lastMerged == null then null else {number: $state.lastMerged.number, title: $state.lastMerged.title, headRef: $state.lastMerged.head.ref} end),
+              openReleasePr: (if $state.openPr == null then null else {number: $state.openPr.number, headSha: $state.openPr.head.sha, branch: $state.openPr.head.ref, title: $state.openPr.title, files: ($state.openFiles // []), blocked: ($state.mergeable == false), checks: ($state.openChecks // [])} end),
+              mergedPrs: [($state.mergedPrs // [])[] | {number, title, headRef: .head.ref, mergeCommitSha: .merge_commit_sha, mergedAt: .merged_at}],
               tags: $state.tags,
               ciOk: $state.ciOk,
               dryRun: $state.dryRun
@@ -137,7 +143,7 @@ jobs:
             import { readFileSync, appendFileSync } from "node:fs"
             import { decideDrive } from "./scripts/lib/release-drive.mjs"
             const decision = decideDrive(JSON.parse(readFileSync("/tmp/drive-input.json", "utf8")))
-            appendFileSync(process.env.GITHUB_OUTPUT, `action=${decision.action}\nreason=${decision.reason}\ntag=${decision.tag ?? ""}\nheadSha=${decision.headSha ?? ""}\npr=${decision.pr ?? ""}\nversion=${decision.version ?? ""}\n`)
+            appendFileSync(process.env.GITHUB_OUTPUT, `action=${decision.action}\nreason=${decision.reason}\ntag=${decision.tag ?? ""}\nsha=${decision.sha ?? ""}\nheadSha=${decision.headSha ?? ""}\npr=${decision.pr ?? ""}\nversion=${decision.version ?? ""}\n`)
             console.log(JSON.stringify(decision))
             appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- action: **${decision.action}** — ${decision.reason}\n`)
           '
@@ -208,9 +214,23 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.decide.outputs.tag }}"
+          SHA="${{ steps.decide.outputs.sha }}"
+          # The tag names the release PR's squash commit, never HEAD: one unrelated
+          # merge after the release PR used to mean HEAD was tagged with the wrong
+          # tree. Proving it is an ancestor of main keeps a rewritten or foreign sha
+          # from being published.
+          if [ -z "$SHA" ]; then
+            echo "::error::no merge commit sha for ${TAG}; refusing to tag HEAD"
+            exit 1
+          fi
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::${SHA} is not on main; refusing to tag ${TAG}"
+            exit 1
+          fi
           # A tag pushed with GITHUB_TOKEN does not start another workflow, so the
           # publish run is dispatched explicitly with the tag the release PR set.
-          git tag -a "$TAG" -m "Fledge $TAG" HEAD
+          git tag -a "$TAG" -m "Fledge $TAG" "$SHA"
           git push origin "$TAG"
           gh workflow run release.yml --ref main -f "tag=${TAG}"
           echo "tagged ${TAG} and dispatched release.yml" >> "$GITHUB_STEP_SUMMARY"

@@ -7,6 +7,8 @@
 // planner ran. Flattening is a function here and is executed by the suite, so the
 // shape is pinned instead of being grepped out of YAML.
 
+import { releaseIdentity } from './mechanical-release.mjs'
+
 export function flattenPages(value) {
   if (!Array.isArray(value)) return []
   const out = []
@@ -45,6 +47,12 @@ export function buildState({ lastTag, lastTagCommittedAt, packageVersion, fragme
     .filter((pr) => pr?.merged_at !== null && pr?.merged_at !== undefined)
     .sort((a, b) => mergedAt(a) - mergedAt(b))
   const openPrs = flattenPages(openPages)
+  // A PR whose title merely starts with `release: v` is not the release PR. The
+  // release routine writes a `release/vX.Y.Z` branch with a matching title, so a
+  // docs-only `release: v9.9.9` on a feature branch must not be auto-merged; the
+  // path set is checked again in the drive, which has the file list.
+  const candidate = openPrs.find((pr) => String(pr?.title ?? '').startsWith('release: v')) ?? null
+  const identity = candidate === null ? null : releaseIdentity({ branch: candidate?.head?.ref, title: candidate?.title })
   return {
     lastTag: String(lastTag ?? ''),
     lastTagCommittedAt: String(lastTagCommittedAt ?? ''),
@@ -53,7 +61,10 @@ export function buildState({ lastTag, lastTagCommittedAt, packageVersion, fragme
     tags: Array.isArray(tags) ? tags.map(String) : [],
     dryRun: dryRun === true || dryRun === 'true',
     ciOk: latestConclusion(checks, 'ci-ok'),
-    openPr: openPrs.find((pr) => String(pr?.title ?? '').startsWith('release: v')) ?? null,
+    openPr: identity === null ? null : candidate,
+    openPrRejected: candidate !== null && identity === null
+      ? { number: Number(candidate?.number ?? 0), title: String(candidate?.title ?? ''), branch: String(candidate?.head?.ref ?? '') }
+      : null,
     lastMerged: mergedPrs.at(-1) ?? null,
     mergedPrs,
   }

@@ -148,7 +148,7 @@ export async function evaluateGate({ api, repo, policy, prNumber, tier: tierOver
   // earned, not declared: the identity must match *and* the diff must have the
   // shape the release routine writes, or the tier stays what the paths say (T3).
   const identity = mechanicalRelease({ branch: pr.head?.ref, title: pr.title, files: files.map((file) => String(file.filename)) })
-  const shape = identity.mechanical ? mechanicalDiffShape(files) : { shaped: false, reason: identity.reason }
+  const shape = identity.mechanical ? mechanicalDiffShape(files, identity.version) : { shaped: false, reason: identity.reason }
   const declaredTier = String(tierOverride ?? tierForFiles(files.map((file) => file.filename), loadRules()).tier).toUpperCase()
   const tier = tierOverride === undefined && shape.shaped ? 'T0' : declaredTier
   if (!['T0', 'T1', 'T2', 'T3'].includes(tier)) return failed(`unknown tier ${tier}`, 'error')

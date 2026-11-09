@@ -25,4 +25,4 @@ export interface DiffShapeResult {
 export declare function releaseIdentity(input?: { branch?: string; title?: string }): ReleaseIdentity | null
 export declare function isMechanicalPath(path: string): boolean
 export declare function mechanicalRelease(input?: { branch?: string; title?: string; files?: string[] }): MechanicalReleaseResult
-export declare function mechanicalDiffShape(files: ChangedFile[]): DiffShapeResult
+export declare function mechanicalDiffShape(files: ChangedFile[], version: string): DiffShapeResult

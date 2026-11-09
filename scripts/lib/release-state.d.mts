@@ -22,6 +22,7 @@ export interface ReleaseState {
   dryRun: boolean
   ciOk: string
   openPr: PullRequestPageEntry | null
+  openPrRejected: { number: number; title: string; branch: string } | null
   lastMerged: PullRequestPageEntry | null
   mergedPrs: PullRequestPageEntry[]
 }
