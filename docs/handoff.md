@@ -90,8 +90,8 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 
 ### Verified
 
-- `npm run check`: lint, typecheck, 244 tests, production build — green.
-- `npm run check`: lint, typecheck, 244 tests, production build — green.
+- `npm run check`: lint, typecheck, 242 tests, production build — green.
+- `npm run check`: lint, typecheck, 242 tests, production build — green.
 - GitHub Actions: Node 22 and Node 24 green at the release commit.
 - A real platform-funded call with the alternate key returned 200 and deducted
   `$0.00001064` from the dev account's quota.

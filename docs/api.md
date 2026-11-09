@@ -170,9 +170,12 @@ job skips the follow-up; arbitrary PRs with no Fledge job are ignored.
 Before an iterate job is enqueued, Fledge reads the upstream repository's open
 pull requests (`GET /repos/:owner/:name/pulls?state=open`, three pages) and looks
 for one that references the job's issue — in the pull request body, title or head
-branch, as `#N` or as an `/issues/N` URL. When one does, no job is created: the
-caller gets `code: "DUPLICATE_WORK"` with the existing pull request's URL in
-`error`, the attempt is audited as `job.duplicate_work`, and the
+branch, as a bare `#N` or as an `/issues/N` URL for that same repository. A
+cross-repository reference such as `other/repo#42` or
+`https://github.com/other/repo/issues/42` never matches, because team pull
+requests routinely cite other repositories' issues. When one does match, no job
+is created: the caller gets `code: "DUPLICATE_WORK"` with the existing pull
+request's URL in `error`, the attempt is audited as `job.duplicate_work`, and the
 `job_duplicate_work` event is recorded. No branch is created and no second pull
 request is opened.
 
@@ -180,7 +183,8 @@ The preflight is read-only and best-effort. It runs only for an iterate job that
 does not already carry a `prUrl` — a follow-up job owns its pull request — and a
 GitHub failure is logged and lets the job through, so an API outage cannot block
 dispatch. The issue number comes from the work item's issue URL, falling back to
-the goal text.
+the goal text, and is read only from a reference to the same repository; a
+dispatch with no such reference makes no GitHub call.
 
 ## Job endpoints
 

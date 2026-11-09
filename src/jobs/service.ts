@@ -238,17 +238,18 @@ export class Jobs {
   }
 
   private async duplicatePreflight(repo: RepoRow, goal: string, workItemId?: string): Promise<{ ok: boolean; error?: string; code?: string }> {
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    const repository = `${owner}/${name}`
     const item = workItemId === undefined ? undefined : this.store.getWorkItem(workItemId)
-    const issue = issueNumberFromText(item?.issue_url ?? goal)
+    const issue = issueNumberFromText(item?.issue_url ?? goal, repository)
     if (issue === null) return { ok: true }
     try {
       const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
       const client = new GithubClient(token, this.config.github.apiBase)
-      const owner = repo.upstream_owner || repo.owner
-      const name = repo.upstream_name || repo.name
-      const duplicate = findDuplicatePullRequest(issue, await client.listOpenPullRequests(owner, name))
+      const duplicate = findDuplicatePullRequest(issue, repository, await client.listOpenPullRequests(owner, name))
       if (duplicate === null) return { ok: true }
-      this.store.audit(repo.user_id, 'job.duplicate_work', `${owner}/${name} issue #${issue} -> ${duplicate.url}`)
+      this.store.audit(repo.user_id, 'job.duplicate_work', `${repository} issue #${issue} -> ${duplicate.url}`)
       this.store.event('job_duplicate_work', { userId: repo.user_id, repoId: repo.id, meta: `issue=${issue};pr=${duplicate.url}`.slice(0, 400) })
       return { ok: false, code: 'DUPLICATE_WORK', error: `已有 PR 覆盖这个 issue：${duplicate.url}` }
     } catch (error) {

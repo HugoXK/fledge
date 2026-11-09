@@ -1355,3 +1355,47 @@ test('an iterate job with an existing issue PR is rejected as duplicate', async 
     await github.close()
   }
 })
+
+test('a rejected pull request preflight fails open and still starts the job', async () => {
+  const github = await startFakeServer((request, response) => {
+    if ((request.url ?? '').includes('/pulls?state=open')) return json(response, 403, { message: 'Resource not accessible by integration' })
+    return json(response, 404, { message: 'Not Found' })
+  })
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'forbidden-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_forbidden', userId: user.id, owner: 'o', name: 'dup', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_forbidden', repoId: repo.id, userId: user.id, title: 'Fix #42', detail: '', issueUrl: 'https://github.com/o/dup/issues/42' })
+    const result = await jobs.enqueue(repo, 'manual', 'Fix this issue', 'iterate', { workItemId: item.id })
+    assert.equal(result.ok, true)
+    assert.equal(store.listJobsForRepo(repo.id).length, 1)
+    assert.equal(store.listAudit().filter((row) => row.action === 'job.duplicate_work').length, 0)
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
+
+test('a dispatch without an issue reference makes no GitHub call', async () => {
+  const requested: string[] = []
+  const github = await startFakeServer((request, response) => {
+    requested.push(request.url ?? '')
+    return json(response, 404, { message: 'Not Found' })
+  })
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'noref-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_noref', userId: user.id, owner: 'o', name: 'dup', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const result = await jobs.enqueue(repo, 'manual', 'Improve the landing page copy', 'iterate')
+    assert.equal(result.ok, true)
+    assert.deepEqual(requested, [])
+    assert.equal(store.listJobsForRepo(repo.id).length, 1)
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
