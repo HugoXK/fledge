@@ -1,0 +1,417 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { json, startFakeServer } from './helpers.js'
+
+const execFileAsync = promisify(execFile)
+const gateScript = fileURLToPath(new URL('../scripts/review-gate.mjs', import.meta.url))
+const repairScript = fileURLToPath(new URL('../scripts/gate-repair.mjs', import.meta.url))
+const workflowPath = fileURLToPath(new URL('../.github/workflows/review-gate.yml', import.meta.url))
+const workflow = readFileSync(workflowPath, 'utf8')
+
+const SHA = '0123456789abcdef0123456789abcdef01234567'
+const OTHER_SHA = 'fedcba9876543210fedcba9876543210fedcba98'
+
+interface RunResult {
+  code: number
+  stdout: string
+  stderr: string
+}
+
+async function runScript(script: string, args: string[], env: Record<string, string>): Promise<RunResult> {
+  try {
+    const result = await execFileAsync(process.execPath, [script, ...args], { env: { ...process.env, ...env }, encoding: 'utf8' })
+    return { code: 0, stdout: result.stdout, stderr: result.stderr }
+  } catch (error) {
+    const failure = error as { code?: number; stdout?: string; stderr?: string }
+    return { code: failure.code ?? -1, stdout: failure.stdout ?? '', stderr: failure.stderr ?? '' }
+  }
+}
+
+const PASS_BODY = `Verdict: PASS at ${SHA}\nWritten-by: HugoXK-bot\nPosted-by: HugoXK-bot\n\nRan:\n- \`npm run check\` — pass\n\nNot run: Docker image\n`
+const REJECT_BODY = `Verdict: REQUEST_CHANGES at ${SHA}\nWritten-by: HugoXK-bot\nPosted-by: HugoXK-bot\n\nRan:\n- \`npm run check\` — fail\n\nNot run: Docker image\n`
+
+interface FakeState {
+  files: string[]
+  comments: Array<Record<string, unknown>>
+  reviews: Array<Record<string, unknown>>
+  checkRuns: Array<Record<string, unknown>>
+  runs: Array<Record<string, unknown>>
+  jobs: Record<string, Array<Record<string, unknown>>>
+  sha: string
+  posts: string[]
+  failPaths: string[]
+}
+
+function initialState(): FakeState {
+  return {
+    files: ['src/app.ts'],
+    comments: [],
+    reviews: [],
+    checkRuns: [],
+    runs: [],
+    jobs: {},
+    sha: SHA,
+    posts: [],
+    failPaths: [],
+  }
+}
+
+async function withFakeGitHub(state: FakeState, body: (env: Record<string, string>, state: FakeState) => Promise<void>): Promise<void> {
+  const policy = JSON.stringify({ writers: ['HugoXK', 'HugoXK-bot'], requiredPass: 'HugoXK-bot', selfReview: ['HugoXK-bot'] })
+  const server = await startFakeServer((request, response) => {
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+    const path = url.pathname
+    if (state.failPaths.includes(path)) {
+      json(response, 500, { message: 'boom' })
+      return
+    }
+    if (path === '/repos/o/r/pulls/7') {
+      json(response, 200, { number: 7, head: { sha: state.sha }, user: { login: 'HugoXK' }, labels: [] })
+      return
+    }
+    if (path === '/repos/o/r/pulls/7/files') {
+      json(response, 200, state.files.map((filename) => ({ filename })))
+      return
+    }
+    if (path === '/repos/o/r/pulls/7/reviews') {
+      json(response, 200, state.reviews)
+      return
+    }
+    if (path === '/repos/o/r/issues/7/comments') {
+      json(response, 200, state.comments)
+      return
+    }
+    if (path === '/repos/o/r/contents/.github/agent/review-policy.json') {
+      json(response, 200, { encoding: 'base64', content: Buffer.from(policy, 'utf8').toString('base64') })
+      return
+    }
+    if (path === `/repos/o/r/commits/${state.sha}/check-runs`) {
+      json(response, 200, { total_count: state.checkRuns.length, check_runs: state.checkRuns })
+      return
+    }
+    if (path === '/repos/o/r/actions/runs') {
+      json(response, 200, { total_count: state.runs.length, workflow_runs: state.runs })
+      return
+    }
+    const jobs = /^\/repos\/o\/r\/actions\/runs\/(\d+)\/jobs$/.exec(path)
+    if (jobs !== null) {
+      json(response, 200, { total_count: (state.jobs[jobs[1]!] ?? []).length, jobs: state.jobs[jobs[1]!] ?? [] })
+      return
+    }
+    const rerun = /^\/repos\/o\/r\/actions\/runs\/(\d+)\/rerun$/.exec(path)
+    if (rerun !== null) {
+      state.posts.push(rerun[1]!)
+      response.writeHead(202)
+      response.end()
+      return
+    }
+    json(response, 404, { message: `unexpected ${request.method} ${path}` })
+  })
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-gate-'))
+  const eventPath = join(dir, 'event.json')
+  writeFileSync(eventPath, JSON.stringify({ pull_request: { number: 7 } }))
+  try {
+    await body({ GITHUB_TOKEN: 'test-token', GITHUB_REPOSITORY: 'o/r', GITHUB_API_URL: server.url, GITHUB_EVENT_PATH: eventPath, GITHUB_RUN_ID: '900' }, state)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    await server.close()
+  }
+}
+
+// --- the gate still maps a tip to the same conclusion ------------------------
+
+test('the gate passes a T0 tip with no verdict, because no PASS is required', async () => {
+  const state = initialState()
+  state.files = ['docs/deploy.md']
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /review-gate: PASS/)
+  })
+})
+
+test('the gate fails a T2 tip with no verdict and records that a verdict is what is missing', async () => {
+  const state = initialState()
+  const output = join(mkdtempSync(join(tmpdir(), 'fledge-gate-out-')), 'output')
+  writeFileSync(output, '')
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], { ...env, GITHUB_OUTPUT: output })
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /no conclusion at /)
+    assert.match(readFileSync(output, 'utf8'), /^kind=verdict$/m)
+  })
+})
+
+test('the gate passes a T2 tip that carries a valid PASS at the tip', async () => {
+  const state = initialState()
+  state.reviews = [{ body: PASS_BODY, state: 'APPROVED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /PASS/)
+  })
+})
+
+test('the gate fails a T2 tip whose newest verdict is a rejection', async () => {
+  const state = initialState()
+  state.comments = [{ body: REJECT_BODY, created_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /newest conclusion is REQUEST_CHANGES/)
+  })
+})
+
+test('the gate fails a verdict written for a different SHA', async () => {
+  const state = initialState()
+  state.comments = [{
+    body: `Verdict: PASS at ${OTHER_SHA}\nWritten-by: HugoXK-bot\nPosted-by: HugoXK-bot\n\nRan:\n- \`npm run check\` — pass\n\nNot run: Docker\n`,
+    created_at: '2026-11-09T07:00:00Z',
+    user: { login: 'HugoXK-bot' },
+    author_association: 'COLLABORATOR',
+  }]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /newest conclusion is for /)
+  })
+})
+
+test('a merge_group run resolves the pull request from head_ref and still decides', async () => {
+  const state = initialState()
+  state.files = ['src/app.ts']
+  await withFakeGitHub(state, async (env) => {
+    const dir = mkdtempSync(join(tmpdir(), 'fledge-gate-mg-'))
+    const eventPath = join(dir, 'merge-group.json')
+    writeFileSync(eventPath, JSON.stringify({ merge_group: { head_ref: 'refs/heads/gh-readonly-queue/main/pr-7-abc', base_ref: 'refs/heads/main', base_sha: SHA } }))
+    try {
+      const result = await runScript(gateScript, [], { ...env, GITHUB_EVENT_PATH: eventPath })
+      assert.equal(result.code, 1, 'a T2 merge-group tip without a verdict must stay red')
+      assert.match(result.stderr, /no conclusion at /)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// --- the repair plan: one action, no loop -----------------------------------
+
+const greenRun = (id: number, attempt = 1) => ({ id, run_attempt: attempt, conclusion: 'success', created_at: new Date(Date.UTC(2026, 10, 9, 7, 0, id)).toISOString() })
+const redRun = (id: number, attempt = 1) => ({ id, run_attempt: attempt, conclusion: 'failure', created_at: new Date(Date.UTC(2026, 10, 9, 6, 0, id)).toISOString() })
+const failedGateJob = [{ name: 'review-gate', conclusion: 'failure' }, { name: 'pr-lint', conclusion: 'success' }]
+
+test('a rejection with no red at the SHA re-runs the newest first-attempt run', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const plan = repairPlan({
+    expected: 'failure',
+    checkRuns: [{ name: 'review-gate', status: 'completed', conclusion: 'success' }],
+    runs: [greenRun(1), greenRun(2)],
+    jobsFor: () => [],
+    currentRunId: '900',
+  })
+  assert.deepEqual(plan, { action: 'rerun', ids: [2], reason: plan.reason })
+})
+
+test('a rejection that is already red does nothing', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const plan = repairPlan({
+    expected: 'failure',
+    checkRuns: [{ name: 'review-gate', status: 'completed', conclusion: 'failure' }],
+    runs: [greenRun(1)],
+    jobsFor: () => [],
+    currentRunId: '900',
+  })
+  assert.equal(plan.action, 'none')
+  assert.deepEqual(plan.ids, [])
+})
+
+test('a PASS re-runs the failed run whose own gate job failed, and never the current run', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const state = {
+    expected: 'success' as const,
+    checkRuns: [{ name: 'review-gate', status: 'completed', conclusion: 'failure' }],
+    runs: [redRun(1), redRun(2), redRun(900)],
+    jobsFor: (id: number | string) => (id === 900 ? [] : failedGateJob),
+    currentRunId: '900',
+  }
+  const plan = repairPlan(state)
+  assert.equal(plan.action, 'rerun')
+  assert.deepEqual([...plan.ids].sort((a, b) => Number(a) - Number(b)), [1, 2])
+})
+
+test('a failed run whose gate job passed is not re-run, and a red that cannot be repainted blocks', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const notOurFailure = repairPlan({
+    expected: 'success',
+    checkRuns: [{ name: 'review-gate', status: 'completed', conclusion: 'success' }],
+    runs: [redRun(1)],
+    jobsFor: () => [{ name: 'review-gate', conclusion: 'success' }, { name: 'pr-lint', conclusion: 'failure' }],
+    currentRunId: '900',
+  })
+  assert.equal(notOurFailure.action, 'none')
+
+  const exhausted = repairPlan({
+    expected: 'success',
+    checkRuns: [{ name: 'review-gate', status: 'completed', conclusion: 'failure' }],
+    runs: [redRun(1, 2)],
+    jobsFor: () => failedGateJob,
+    currentRunId: '900',
+  })
+  assert.equal(exhausted.action, 'blocked')
+})
+
+test('the second identical trigger finds nothing on its first attempt and makes no write', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const plan = repairPlan({
+    expected: 'failure',
+    checkRuns: [{ name: 'review-gate', status: 'completed', conclusion: 'failure' }],
+    runs: [greenRun(1, 2), greenRun(2, 2)],
+    jobsFor: () => [],
+    currentRunId: '900',
+  })
+  assert.equal(plan.action, 'none')
+})
+
+// --- the repair CLI over a fake API -----------------------------------------
+
+test('a PASS repaints the stale failed run exactly once', async () => {
+  const state = initialState()
+  state.reviews = [{ body: PASS_BODY, state: 'APPROVED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  state.checkRuns = [{ name: 'review-gate', status: 'completed', conclusion: 'failure' }]
+  state.runs = [redRun(11)]
+  state.jobs = { 11: failedGateJob }
+  await withFakeGitHub(state, async (env) => {
+    const first = await runScript(repairScript, ['--pr', '7'], env)
+    assert.equal(first.code, 0, first.stderr)
+    assert.deepEqual(state.posts, ['11'], 'the stale failed run must be re-run once')
+  })
+})
+
+test('the same PASS again makes no second re-run request', async () => {
+  const state = initialState()
+  state.reviews = [{ body: PASS_BODY, state: 'APPROVED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  // The re-run landed: the run is attempt 2 and its check is green.
+  state.checkRuns = [{ name: 'review-gate', status: 'completed', conclusion: 'success' }]
+  state.runs = [{ ...redRun(11), run_attempt: 2, conclusion: 'success' }]
+  state.jobs = { 11: failedGateJob }
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(repairScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.deepEqual(state.posts, [], 'a repeated identical verdict must not issue a second re-run')
+    assert.match(result.stdout, /nothing to do/)
+  })
+})
+
+test('a comment verdict on a green tip repaints it, and then stops', async () => {
+  const state = initialState()
+  state.comments = [{ body: REJECT_BODY, created_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  state.checkRuns = [{ name: 'review-gate', status: 'completed', conclusion: 'success' }]
+  state.runs = [greenRun(21)]
+  await withFakeGitHub(state, async (env) => {
+    const first = await runScript(repairScript, ['--pr', '7'], env)
+    assert.equal(first.code, 0, first.stderr)
+    assert.deepEqual(state.posts, ['21'], 'the rejection must repaint the run that is green at the tip')
+  })
+})
+
+test('a gate that cannot decide re-runs nothing', async () => {
+  const state = initialState()
+  // The gate cannot read the verdicts at all: re-running any run would only
+  // reproduce that, so the repair step must leave the SHA alone.
+  state.failPaths = ['/repos/o/r/issues/7/comments']
+  state.checkRuns = [{ name: 'review-gate', status: 'completed', conclusion: 'success' }]
+  state.runs = [greenRun(1)]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(repairScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /gate-repair: skipped/)
+    assert.deepEqual(state.posts, [], 'a gate that could not decide must not trigger a re-run')
+  })
+})
+
+test('a SHA whose runs are all on attempt 2 fails loudly instead of looping', async () => {
+  const state = initialState()
+  state.reviews = [{ body: PASS_BODY, state: 'APPROVED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  state.checkRuns = [{ name: 'review-gate', status: 'completed', conclusion: 'failure' }]
+  state.runs = [{ ...redRun(31, 2) }]
+  state.jobs = { 31: failedGateJob }
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(repairScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, new RegExp(SHA))
+    assert.deepEqual(state.posts, [])
+  })
+})
+
+// --- the workflow itself ----------------------------------------------------
+
+function sections(text: string): Map<string, string> {
+  const out = new Map<string, string>()
+  const jobsText = text.slice(text.indexOf('\njobs:') + 1)
+  const matches = [...jobsText.matchAll(/^ {2}([a-z0-9-]+):$/gm)]
+  for (let i = 0; i < matches.length; i += 1) {
+    const start = matches[i]!.index ?? 0
+    const end = i + 1 < matches.length ? matches[i + 1]!.index ?? jobsText.length : jobsText.length
+    out.set(matches[i]![1]!, jobsText.slice(start, end))
+  }
+  return out
+}
+
+test('the workflow keeps the three merge events and adds only issue_comment', () => {
+  const onBlock = workflow.slice(workflow.indexOf('\non:'), workflow.indexOf('\njobs:'))
+  for (const trigger of ['pull_request:', 'pull_request_review:', 'merge_group:', 'issue_comment:']) {
+    assert.ok(onBlock.includes(trigger), `on: must keep ${trigger}`)
+  }
+  assert.doesNotMatch(workflow, /pull_request_target/, 'pull_request_target must never be used')
+})
+
+test('exactly one job is named review-gate and the comment path is a different job', () => {
+  const byName = [...workflow.matchAll(/^ {4}name: (.+)$/gm)].map((match) => match[1]!.trim())
+  assert.equal(byName.filter((name) => name === 'review-gate').length, 1)
+  const jobs = sections(workflow)
+  assert.ok(jobs.has('review-gate'))
+  assert.ok(jobs.has('review-gate-comment'))
+  assert.match(jobs.get('review-gate-comment')!, /issue_comment/)
+  assert.match(jobs.get('review-gate-comment')!, /github\.event\.issue\.pull_request/)
+  assert.match(jobs.get('review-gate-comment')!, /\^Verdict: \(PASS\|INC\|REQUEST_CHANGES\) at/)
+  assert.match(jobs.get('review-gate-comment')!, /github\.event\.issue\.number/)
+})
+
+test('the review-gate job is never skipped on an event that publishes it for a pull request', () => {
+  const gate = sections(workflow).get('review-gate')!
+  assert.match(gate, /if: github\.event_name != 'issue_comment'/)
+})
+
+test('every checkout in this workflow is pinned to a base ref, never the pull request head', () => {
+  const lines = workflow.split('\n')
+  let checked = 0
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!lines[i]!.includes('uses: actions/checkout@')) continue
+    checked += 1
+    const indent = lines[i]!.search(/\S/)
+    const block = [lines[i]!]
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const lineIndent = lines[j]!.search(/\S/)
+      if (lines[j]!.trim() !== '' && lineIndent <= indent) break
+      block.push(lines[j]!)
+    }
+    const text = block.join('\n')
+    assert.match(text, /ref: \$\{\{/, `checkout at line ${i + 1} must pin a ref`)
+    assert.match(text, /base\.sha|base_sha|default_branch/, `checkout at line ${i + 1} must pin the base side`)
+    assert.doesNotMatch(text, /pull_request\.head/, `checkout at line ${i + 1} must not check out the head`)
+  }
+  assert.ok(checked >= 4, `expected at least four checkouts, found ${checked}`)
+})
+
+test('actions: write is granted only to the two jobs that re-run a workflow run', () => {
+  for (const [name, body] of sections(workflow)) {
+    if (name === 'review-gate-repair' || name === 'review-gate-comment') assert.match(body, /actions: write/, `${name} needs actions: write`)
+    else assert.doesNotMatch(body, /actions: write/, `${name} must not hold actions: write`)
+  }
+})
