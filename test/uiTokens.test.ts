@@ -125,3 +125,18 @@ test('docs/architecture.md links to the UI token contract', () => {
   const architecture = readFileSync(new URL('../docs/architecture.md', import.meta.url), 'utf8')
   assert.match(architecture, /\(ui\.md\)|docs\/ui\.md/, 'docs/architecture.md must point at docs/ui.md')
 })
+
+// 5. The workspace frame is a --header-h consumer like the anchors: it must
+//    subtract the measured header, not a private constant, while the 620px floor
+//    that keeps short viewports usable stays in the rule.
+test('the workspace frame derives its height from --header-h and keeps its 620px floor', () => {
+  const rule = /\.workspace-frame\s*\{([^}]*)\}/.exec(cssSource)
+  assert.ok(rule !== null, 'public/app.css must keep a .workspace-frame rule')
+  const body = rule[1] ?? ''
+  const height = /(?:^|;)\s*height:\s*([^;]+);/.exec(body)
+  assert.ok(height !== null, '.workspace-frame must declare a height')
+  const value = (height[1] ?? '').trim()
+  assert.match(value, /^calc\(\s*100vh\s*-\s*var\(\s*--header-h\s*\)\s*\)$/, `.workspace-frame height must be calc(100vh - var(--header-h)), got ${value}`)
+  assert.doesNotMatch(value, /\d+px/, 'the frame must not subtract a private pixel constant')
+  assert.match(body, /min-height:\s*620px/, 'the 620px floor must stay')
+})
