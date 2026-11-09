@@ -9,13 +9,13 @@ import { sendNotificationWebhook } from '../lib/webhook.js'
 import { log } from '../lib/log.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
-import { parseEvidence, type Evidence } from '../lib/evidence.js'
+import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
 import { classifyFailure } from '../lib/failure.js'
 import { retryDecision } from '../lib/retry.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
-import type { VerificationResult } from '../lib/verification.js'
+import { evaluateTestEvidence, type VerificationResult } from '../lib/verification.js'
 import { observedAttribution } from '../lib/teamStats.js'
 import { decryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
@@ -803,6 +803,8 @@ export class Jobs {
       const approvals = [...latest.values()].filter((state) => state === 'APPROVED').length
       const failing = checks.filter((run) => run.status === 'completed' && !['success', 'neutral', 'skipped'].includes(run.conclusion ?? '')).map((run) => run.name)
       const pending = checks.filter((run) => run.status !== 'completed').map((run) => run.name)
+      const claimedTest = parseEvidenceJson(job.evidence_json)?.testGreen !== undefined
+      const testEvidence = evaluateTestEvidence(claimedTest, checks)
       const reasons: string[] = []
       if (pr.merged) reasons.push('PR is already merged.')
       else if (pr.state !== 'open') reasons.push(`PR is ${pr.state}.`)
@@ -812,6 +814,7 @@ export class Jobs {
       if (pending.length > 0) reasons.push(`Pending checks: ${pending.join(', ')}`)
       if (combined.count > 0 && combined.state !== 'success') reasons.push(`Commit status is ${combined.state}.`)
       if (changesRequested) reasons.push('Changes requested.')
+      if (testEvidence.state === 'contradicted') reasons.push('Test evidence is contradicted by the check runs.')
       const verification: VerificationResult = {
         ok: reasons.length === 0,
         checkedAt: nowIso(),
@@ -822,6 +825,7 @@ export class Jobs {
         checks: { total: checks.length, green: checks.length - failing.length - pending.length, failing, pending },
         combinedStatus: combined.state,
         reviews: { changesRequested, approvals },
+        testEvidence,
         reasons,
       }
       const guard = await this.pathGuardFor(client, owner, name, number, job, repo)

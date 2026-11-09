@@ -1,6 +1,13 @@
 import type { JobRow } from '../db.js'
 import type { PathGuardResult } from './pathGuard.js'
 
+export interface TestEvidence {
+  state: 'verified' | 'unverified' | 'contradicted'
+  claimed: boolean
+  greenChecks: string[]
+  failingChecks: string[]
+}
+
 export interface VerificationResult {
   ok: boolean
   checkedAt: string
@@ -11,12 +18,26 @@ export interface VerificationResult {
   checks: { total: number; green: number; failing: string[]; pending: string[] }
   combinedStatus: string
   reviews: { changesRequested: boolean; approvals: number }
+  testEvidence: TestEvidence
   reasons: string[]
 }
 
 export interface MergeReadiness {
   state: 'ready' | 'blocked' | 'unknown'
   reasons: string[]
+}
+
+const TEST_CHECK = /test|spec|pytest|jest|vitest|mocha|cargo|go[- ]test/i
+const GREEN = new Set(['success', 'neutral', 'skipped'])
+
+export function evaluateTestEvidence(claimed: boolean, checks: Array<{ name: string; status: string; conclusion: string | null }>): TestEvidence {
+  const greenChecks = checks.filter((check) => check.status === 'completed' && GREEN.has(check.conclusion ?? '') && TEST_CHECK.test(check.name)).map((check) => check.name)
+  const failingChecks = checks.filter((check) => check.status === 'completed' && !GREEN.has(check.conclusion ?? '') && TEST_CHECK.test(check.name)).map((check) => check.name)
+  if (!claimed) return { state: 'unverified', claimed: false, greenChecks, failingChecks }
+  if (failingChecks.length > 0) return { state: 'contradicted', claimed: true, greenChecks, failingChecks }
+  if (greenChecks.length > 0) return { state: 'verified', claimed: true, greenChecks, failingChecks }
+  if (checks.length === 0) return { state: 'contradicted', claimed: true, greenChecks, failingChecks }
+  return { state: 'unverified', claimed: true, greenChecks, failingChecks }
 }
 
 export function parseVerification(value: string | null): VerificationResult | null {

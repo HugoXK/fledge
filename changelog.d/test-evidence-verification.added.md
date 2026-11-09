@@ -1,0 +1,1 @@
+Fledge now cross-checks the agent's claimed test evidence against the pull request's check runs. A green test claim with a failing test check is marked contradicted and blocks auto-merge; a claim with no matching test check is left unverified and shown in the job verification card. The verification snapshot records the test evidence state and the green/failing check names.

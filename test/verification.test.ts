@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mergeReadiness, parsePathGuard, parseVerification } from '../src/lib/verification.js'
+import { evaluateTestEvidence, mergeReadiness, parsePathGuard, parseVerification } from '../src/lib/verification.js'
 
 const base = { pr_url: 'https://github.com/o/r/pull/1', path_guard_json: null, verification_json: null, status: 'succeeded' as const, pr_state: 'open' }
 
@@ -22,4 +22,13 @@ test('verified evidence decides ready or blocked', () => {
   assert.equal(parsePathGuard(null), null)
   const blocked = { ...ok, ok: false, reasons: ['Failing checks: ci'] }
   assert.equal(mergeReadiness({ ...base, verification_json: JSON.stringify(blocked) }).state, 'blocked')
+})
+
+test('claimed test evidence must agree with the check runs', () => {
+  const green = [{ name: 'test (22)', status: 'completed', conclusion: 'success' }]
+  assert.equal(evaluateTestEvidence(true, green).state, 'verified')
+  assert.equal(evaluateTestEvidence(true, [{ name: 'test (22)', status: 'completed', conclusion: 'failure' }]).state, 'contradicted')
+  assert.equal(evaluateTestEvidence(true, [{ name: 'lint', status: 'completed', conclusion: 'success' }]).state, 'unverified')
+  assert.equal(evaluateTestEvidence(false, green).state, 'unverified')
+  assert.equal(evaluateTestEvidence(true, []).state, 'contradicted')
 })

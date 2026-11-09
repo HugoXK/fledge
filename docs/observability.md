@@ -6,6 +6,8 @@
 loopback-only; with a token, send `Authorization: Bearer <token>` or
 `?token=<token>`. Keep the token out of URLs in production logs where possible.
 
+Test evidence is also checked against the PR check runs: a claimed green test with a failing test check is contradicted and blocks auto-merge.
+
 Core series:
 
 - `fledge_http_requests_total{method,route,status}` and
