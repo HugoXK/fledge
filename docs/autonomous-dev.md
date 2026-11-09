@@ -238,6 +238,18 @@ git commit -m "release: v0.1.1"
 git tag v0.1.1
 ```
 
+The nightly minor release is planned by `scripts/release-plan.mjs`, a pure
+function with no I/O, no clock and no environment. It takes the latest tag, the
+package version, the merged pull requests since that tag (number, title, labels,
+`mergedAt`), the `changelog.d/` fragments, whether a release pull request is
+open and the existing tags; it returns the counts, the next minor version, a
+named reason and `shouldRelease`. It releases only when at least 10 pull
+requests merged since the tag, at least 5 of them are features, at least one
+fragment exists, the package version matches the tag and no release pull request
+or `v<next>` tag already exists. Every other case is a reason and no release;
+nothing is guessed. `git log` may only cross-check the pull-request numbers, and
+a disagreement never changes the decision.
+
 The release workflow runs `npm run check`, builds the image, publishes it to
 GHCR and creates the GitHub release from the changelog. The tag must point at a
 commit whose `CHANGELOG.md` has the matching section.
