@@ -52,6 +52,12 @@ its design tokens are documented in [docs/ui.md](ui.md).
 - **Bilingual UI** in Chinese and English. The locale is stored in the
   `fledge_lang` cookie, and the header switch shares the `hugoxk-lang`
   preference with the rest of the platform.
+- **Shell** (`src/views/layout.ts`, `public/app.css`): the main nav marks the
+  current section with `aria-current="page"`, derived from the route and
+  overridable with `active`. The sticky header owns `--header-h` (re-declared
+  per breakpoint) and `[id] { scroll-margin-top }` follows it, so an anchor is
+  never hidden under the header when it wraps; the shell's controls keep a
+  44px touch target.
 - **Redirect targets**: every `next=` / `returnTo` value goes through one helper
   that returns a path on this site or the fallback. It validates the parsed
   result, not the input, so a value that is a plain path before parsing and
