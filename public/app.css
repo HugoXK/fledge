@@ -540,6 +540,19 @@ a.list-row:hover strong { color: var(--accent); }
 .info-tip::after { content: attr(data-tip); position: absolute; left: 0; top: 130%; z-index: 60; width: 270px; max-width: min(270px, calc(100vw - 48px)); padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); color: var(--tip-ink); font-size: 11.5px; font-weight: 400; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; opacity: 0; pointer-events: none; transform: translateY(-3px); transition: opacity .12s ease; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
 .info-tip:hover::after, .info-tip:focus::after { opacity: 1; }
 
+/* Below the desktop layout neither box may widen the document. A grid item takes
+   its content's min-content width as an automatic minimum unless the track or
+   the item sets a zero floor, and an absolutely positioned 270px tooltip anchored
+   at the icon's left edge stays in the scrollable overflow while it is invisible
+   (opacity: 0). The hint moves to a viewport-anchored bar here: right-anchoring
+   instead would push the left half of the box off screen for an icon that sits
+   after its label text on a 360px viewport. Desktop keeps both rules untouched. */
+@media (max-width: 960px) {
+  .list { grid-template-columns: minmax(0, 1fr); }
+  .list-row { min-width: 0; }
+  .info-tip::after { position: fixed; left: 16px; right: 16px; top: auto; bottom: 16px; width: auto; max-width: calc(100vw - 32px); }
+}
+
 .provider-card {
   border: 1px solid var(--line);
   border-radius: 12px;
