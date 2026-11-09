@@ -1302,3 +1302,31 @@ test('open operational alerts notify the owner once and clear after resolution',
     store.close()
   }
 })
+
+test('a claimed green test is contradicted when the test check fails', async () => {
+  const github = await startFakeServer((request, response) => {
+    const path = request.url ?? ''
+    if (path.includes('/pulls/8/files')) return json(response, 200, [{ filename: 'src/x.ts', status: 'modified', additions: 1, deletions: 0 }])
+    if (path.includes('/pulls/8/reviews')) return json(response, 200, [])
+    if (path.includes('/commits/sha8/check-runs')) return json(response, 200, { check_runs: [{ name: 'test (22)', status: 'completed', conclusion: 'failure' }] })
+    if (path.includes('/commits/sha8/status')) return json(response, 200, { state: 'success', statuses: [] })
+    if (path.includes('/pulls/8')) return json(response, 200, { number: 8, html_url: 'https://github.com/o/evidence/pull/8', title: 'fix', state: 'open', head: { ref: 'fledge/x', sha: 'sha8' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false })
+    return json(response, 404, { message: 'Not Found' })
+  })
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'evidence-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_evidence', userId: user.id, owner: 'o', name: 'evidence', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', roleCheckedAt: new Date().toISOString(), upstreamHtmlUrl: 'https://github.com', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_evidence', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(job.id, { status: 'succeeded', branch: 'fledge/x', pr_url: 'https://github.com/o/evidence/pull/8', evidence_json: JSON.stringify({ testGreen: 'tests pass' }) })
+    const result = await jobs.recheck(job.id)
+    assert.equal(result.ok, false)
+    const verification = JSON.parse(store.getJob(job.id)?.verification_json ?? '{}') as { testEvidence?: { state?: string } }
+    assert.equal(verification.testEvidence?.state, 'contradicted')
+  } finally {
+    store.close()
+    await github.close()
+  }
+})

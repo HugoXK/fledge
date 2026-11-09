@@ -329,7 +329,9 @@ stored on the job, notified, audited and blocks the merge. The delivery list
 shows the changed files that caused the block.
 
 The same pass records a verification snapshot: PR state, head SHA, check runs,
-combined commit status, reviews and the reasons a merge is not ready. The job
+combined commit status, reviews, claimed test evidence against the check runs,
+and the reasons a merge is not ready. A claimed green test with a failing test
+check is contradicted and blocks the merge. The job
 page and the delivery list show `ready`, `blocked` or `not verified`, and
 `POST /repos/:id/jobs/:jobId/recheck` refreshes it on demand. Verification never
 replaces the merge gate's own re-check at the tip.
