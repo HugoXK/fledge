@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
+import { isIP } from 'node:net'
 import { resolve } from 'node:path'
 
 export type RunnerMode = 'mock' | 'flybot'
@@ -9,6 +10,9 @@ export interface Config {
   env: 'development' | 'production' | 'test'
   port: number
   host: string
+  // Hops allowed to append X-Forwarded-For. Never empty, never a wildcard: see
+  // parseTrustProxy and docs/deploy.md for the topology each list belongs to.
+  trustProxy: string[]
   baseUrl: string
   sessionSecret: string
   tokenEncryptionKey: string
@@ -154,6 +158,35 @@ function secret(name: string, bytes: number): string {
   return randomBytes(bytes).toString('base64')
 }
 
+const DEFAULT_TRUST_PROXY = '127.0.0.1,::1'
+
+function isAddressOrCidr(value: string): boolean {
+  const parts = value.split('/')
+  if (parts.length > 2) return false
+  const address = parts[0] ?? ''
+  const version = isIP(address)
+  if (version === 0) return false
+  const prefix = parts[1]
+  if (prefix === undefined) return true
+  if (!/^\d{1,3}$/.test(prefix)) return false
+  const bits = Number(prefix)
+  // A /0 range trusts every caller, which is the one thing this option exists
+  // to prevent.
+  return bits >= 1 && bits <= (version === 4 ? 32 : 128)
+}
+
+export function parseTrustProxy(raw: string): string[] {
+  const source = raw.trim() === '' ? DEFAULT_TRUST_PROXY : raw
+  const hops = source.split(',').map((hop) => hop.trim()).filter((hop) => hop !== '')
+  if (hops.length === 0) throw new Error('TRUST_PROXY: no trusted hops. Name the proxy address or CIDR that may append X-Forwarded-For, for example 127.0.0.1,::1.')
+  for (const hop of hops) {
+    if (!isAddressOrCidr(hop)) {
+      throw new Error(`TRUST_PROXY: "${hop}" is not a trusted hop. Name the proxy address or CIDR that may append X-Forwarded-For (for example 127.0.0.1,::1). true, false, "*", "all" and a /0 range are refused because they trust the caller-supplied left end of the header.`)
+    }
+  }
+  return hops
+}
+
 export function loadConfig(overrides: Partial<Config> = {}): Config {
   loadDotEnv()
   const rawEnv = text('NODE_ENV', 'production').toLowerCase()
@@ -166,6 +199,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     env,
     port: number('PORT', 8080),
     host: text('HOST', '0.0.0.0'),
+    trustProxy: parseTrustProxy(text('TRUST_PROXY', DEFAULT_TRUST_PROXY)),
     baseUrl: text('BASE_URL', 'http://localhost:8080').replace(/\/$/, ''),
     sessionSecret: secret('SESSION_SECRET', 32),
     tokenEncryptionKey: encryptionKey,
