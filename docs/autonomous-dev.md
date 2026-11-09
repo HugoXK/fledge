@@ -164,6 +164,19 @@ The required checks are **`ci-ok`**, **`review-gate`** and **`pr-lint`**.
 - `changelog` (fragments are well formed)
 - `version` (`package.json`, lockfile, changelog, compose and tag agree)
 - `risk` (the tier report succeeds)
+- `action-pins` (every `uses:` is a 40-hex commit pin with its tag comment)
+
+Every action a workflow runs is pinned to a 40-hex commit with the tag it came
+from in a trailing comment, and the `action-pins` job fails the build on a
+floating tag: a tag is a pointer the action's owner can move, and whatever it
+points at runs on our runner with our token. To re-pin one, resolve the tag the
+same way CI would and paste the commit, never the tag:
+
+```sh
+git ls-remote --tags https://github.com/<owner>/<repo>.git | grep 'refs/tags/v<major>'
+# take the peeled `^{}` sha for an annotated tag, the plain sha for a lightweight one
+node scripts/action-pins.mjs   # checks the tree: 40-hex pin plus `# <version>` comment
+```
 
 `pr-lint` checks the PR body (`Written-by:`, `Fixes #N` / `No-issue:`, `Ran:`,
 `Not run:`), the changelog fragment and docs obligations, the `Written-by`
