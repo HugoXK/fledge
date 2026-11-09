@@ -334,6 +334,23 @@ export class GithubClient {
       : []
   }
 
+  async listPullRequestFiles(owner: string, name: string, number: number, maxPages = 10): Promise<Array<{ filename: string; status: string; additions: number; deletions: number }>> {
+    const files: Array<{ filename: string; status: string; additions: number; deletions: number }> = []
+    for (let page = 1; page <= maxPages; page += 1) {
+      const batch = await this.request<Array<{ filename?: string; status?: string; additions?: number; deletions?: number }>>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/files?per_page=100&page=${page}`,
+      )
+      if (!Array.isArray(batch) || batch.length === 0) break
+      for (const file of batch) {
+        if (typeof file.filename !== 'string' || file.filename === '') continue
+        files.push({ filename: file.filename, status: file.status ?? 'modified', additions: Number(file.additions ?? 0), deletions: Number(file.deletions ?? 0) })
+      }
+      if (batch.length < 100) break
+    }
+    return files
+  }
+
   async getBranchProtection(owner: string, name: string, branch: string): Promise<{ protected: boolean; requiredChecks: string[]; requiredApprovals: number } | null> {
     try {
       const result = await this.request<{

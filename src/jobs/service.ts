@@ -10,7 +10,11 @@ import { log } from '../lib/log.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, type Evidence } from '../lib/evidence.js'
+import { classifyFailure } from '../lib/failure.js'
+import { retryDecision } from '../lib/retry.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
+import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
+import type { VerificationResult } from '../lib/verification.js'
 import { observedAttribution } from '../lib/teamStats.js'
 import { decryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
@@ -298,7 +302,7 @@ export class Jobs {
     void sendNotificationWebhook(this.config, 'repo.credential_invalid', { text: `${repo.owner}/${repo.name}: GitHub token is invalid`, repoId: repo.id, error: message.slice(0, 300) })
   }
 
-  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number } = {}): Promise<EnqueueResult> {
+  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string } = {}): Promise<EnqueueResult> {
     if (repo.enabled !== 1) return { ok: false, error: '这个仓库已停用', code: 'REPO_DISABLED' }
     if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
       return { ok: false, error: '请先选择你在这个仓库的角色。', code: 'ROLE_REQUIRED' }
@@ -391,8 +395,8 @@ export class Jobs {
     if (this.store.activeJobForRepo(repo.id) !== undefined) {
       return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
     }
-    if (this.store.countActiveJobs() >= 2) {
-      return { ok: false, error: '平台当前已有 2 个任务在运行，请稍后再试。', code: 'JOB_LIMIT' }
+    if (this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) {
+      return { ok: false, error: `平台当前已有 ${this.config.runner.maxActiveJobs} 个任务在运行，请稍后再试。`, code: 'JOB_LIMIT' }
     }
 
     const platformToken = `flg_${randomToken(32)}`
@@ -408,7 +412,7 @@ export class Jobs {
     })
     const priorJobs = this.store.listJobs(user.id, 1).length
     const priority = options.priority ?? (trigger === 'followup' ? 20 : trigger === 'manual' ? 10 : 0)
-    const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha })
+    const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null })
     if (options.workItemId !== undefined) {
       this.store.updateWorkItem(options.workItemId, { state: 'in_progress', job_id: job.id, assignee_user_id: user.id })
     }
@@ -587,6 +591,7 @@ export class Jobs {
     if (result.status === 'failed') {
       this.store.incrementRepoFailures(job.repo_id)
       this.checkRepeatedFailures(job)
+      this.scheduleRetry(this.store.getJob(jobId) ?? job)
     }
     if (result.status === 'succeeded') {
       void this.afterSucceeded(job, prUrl ?? undefined, issueUrl ?? undefined, attribution).catch((error) => log.warn('post-job side effects failed', { job: jobId, error: String(error) }))
@@ -595,6 +600,76 @@ export class Jobs {
       void this.captureTeamStats(jobId, attribution).catch((error) => log.warn('team stats capture failed', { job: jobId, error: String(error) }))
     }
     return true
+  }
+
+  private scheduleRetry(job: JobRow): void {
+    if (job.kind !== 'iterate' && job.kind !== 'verify') return
+    const repo = this.store.getRepo(job.repo_id)
+    if (repo === undefined || repo.enabled !== 1) return
+    const failure = classifyFailure({ status: 'failed', error: job.error, kind: job.kind })
+    const decision = retryDecision(failure?.kind, job.retry_attempt)
+    if (!decision.retry) return
+    const key = `retry_pending:${job.id}`
+    if (this.store.getSetting(key) !== undefined) return
+    const dueAt = new Date(Date.now() + decision.delayMs).toISOString()
+    this.store.setSetting(key, JSON.stringify({
+      dueAt,
+      attempt: job.retry_attempt + 1,
+      goal: job.goal,
+      kind: job.kind,
+      branch: job.branch,
+      prUrl: job.pr_url,
+      baseBranch: job.base_branch,
+      workItemId: job.work_item_id,
+      priority: job.priority,
+    }))
+    this.store.audit(job.user_id, 'job.retry_scheduled', `${job.id}: ${decision.reason}, due ${dueAt}`)
+    this.store.recordJobEvent({ jobId: job.id, repoId: job.repo_id, userId: job.user_id, kind: 'job.retry_scheduled', step: job.kind, meta: `${decision.reason}; due ${dueAt}` })
+    this.store.notify(job.user_id, 'job', `任务 ${job.id} 属于临时失败，将在约 ${Math.round(decision.delayMs / 60_000)} 分钟后自动重试。`)
+  }
+
+  private async releaseDueRetries(): Promise<void> {
+    for (const row of this.store.listSettings('retry_pending:')) {
+      const jobId = row.key.slice('retry_pending:'.length)
+      let input: { dueAt: string; attempt: number; goal: string; kind: JobKind; branch: string | null; prUrl: string | null; baseBranch: string | null; workItemId: string | null; priority: number }
+      try {
+        input = JSON.parse(row.value) as typeof input
+      } catch {
+        this.store.deleteSetting(row.key)
+        continue
+      }
+      if (Date.parse(input.dueAt) > Date.now()) continue
+      const original = this.store.getJob(jobId)
+      if (original === undefined) {
+        this.store.deleteSetting(row.key)
+        continue
+      }
+      const repo = this.store.getRepo(original.repo_id)
+      if (repo === undefined || repo.enabled !== 1) {
+        this.store.deleteSetting(row.key)
+        continue
+      }
+      if (this.store.activeJobForRepo(repo.id) !== undefined) continue
+      if (!this.userReadyForScheduling(repo.user_id) || !this.instanceReady(repo.id)) continue
+      const result = await this.enqueue(repo, 'schedule', input.goal, input.kind, {
+        ...(input.branch === null ? {} : { branch: input.branch }),
+        ...(input.prUrl === null ? {} : { prUrl: input.prUrl }),
+        ...(input.baseBranch === null ? {} : { baseBranch: input.baseBranch }),
+        ...(input.workItemId === null ? {} : { workItemId: input.workItemId }),
+        priority: input.priority,
+        retryAttempt: input.attempt,
+        retryOf: original.id,
+      })
+      if (result.ok) {
+        this.store.deleteSetting(row.key)
+        this.store.audit(repo.user_id, 'job.retry_started', `${original.id} -> ${result.job?.id ?? ''}`)
+        this.store.recordJobEvent({ jobId: original.id, repoId: repo.id, userId: repo.user_id, kind: 'job.retry_started', step: original.kind, meta: result.job?.id ?? null })
+        log.info('retry started', { job: original.id, retry: result.job?.id })
+      } else if (result.code !== 'JOB_ACTIVE' && result.code !== 'INSTANCE_NOT_READY') {
+        this.store.deleteSetting(row.key)
+        this.store.audit(repo.user_id, 'job.retry_dropped', `${original.id}: ${result.code ?? result.error ?? 'unknown'}`)
+      }
+    }
   }
 
   private checkRepeatedFailures(job: JobRow): void {
@@ -683,6 +758,92 @@ export class Jobs {
     return repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)
   }
 
+  private async pathGuardFor(
+    client: GithubClient,
+    owner: string,
+    name: string,
+    number: number,
+    job: JobRow,
+    repo: RepoRow,
+  ): Promise<PathGuardResult> {
+    const allow = job.plan_allow_paths ?? repo.allow_paths
+    const deny = job.plan_deny_paths ?? repo.deny_paths
+    if (splitPathPatterns(allow).length === 0 && splitPathPatterns(deny).length === 0) {
+      return { ok: true, checkedAt: nowIso(), allow: [], deny: [], files: [], violations: [] }
+    }
+    const files = await client.listPullRequestFiles(owner, name, number)
+    return checkPathGuard(files.map((file) => file.filename), allow, deny)
+  }
+
+  async verifyPullRequest(job: JobRow, prUrl: string): Promise<{ ok: boolean; message?: string }> {
+    const repo = this.store.getRepo(job.repo_id)
+    if (repo === undefined) return { ok: false, message: '仓库不存在。' }
+    const parsed = parsePrUrl(repo, prUrl, this.config.github.apiBase)
+    if (!parsed.ok) return { ok: false, message: parsed.reason }
+    const { owner, name, number } = parsed.ref
+    try {
+      const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
+      const client = new GithubClient(token, this.config.github.apiBase)
+      const pr = await client.getPullRequest(owner, name, number)
+      const checks = await client.listCheckRuns(owner, name, pr.headSha)
+      const combined = await client.getCombinedStatus(owner, name, pr.headSha)
+      const reviews = await client.listReviews(owner, name, number)
+      const latest = new Map<string, string>()
+      for (const review of reviews.sort((a, b) => a.submittedAt.localeCompare(b.submittedAt))) {
+        if (review.user !== '') latest.set(review.user, review.state)
+      }
+      const changesRequested = [...latest.values()].includes('CHANGES_REQUESTED')
+      const approvals = [...latest.values()].filter((state) => state === 'APPROVED').length
+      const failing = checks.filter((run) => run.status === 'completed' && !['success', 'neutral', 'skipped'].includes(run.conclusion ?? '')).map((run) => run.name)
+      const pending = checks.filter((run) => run.status !== 'completed').map((run) => run.name)
+      const reasons: string[] = []
+      if (pr.merged) reasons.push('PR is already merged.')
+      else if (pr.state !== 'open') reasons.push(`PR is ${pr.state}.`)
+      if (pr.draft) reasons.push('PR is a draft.')
+      if (checks.length === 0) reasons.push('No check runs.')
+      if (failing.length > 0) reasons.push(`Failing checks: ${failing.join(', ')}`)
+      if (pending.length > 0) reasons.push(`Pending checks: ${pending.join(', ')}`)
+      if (combined.count > 0 && combined.state !== 'success') reasons.push(`Commit status is ${combined.state}.`)
+      if (changesRequested) reasons.push('Changes requested.')
+      const verification: VerificationResult = {
+        ok: reasons.length === 0,
+        checkedAt: nowIso(),
+        sha: pr.headSha,
+        prState: pr.state,
+        draft: pr.draft,
+        mergeableState: pr.mergeableState,
+        checks: { total: checks.length, green: checks.length - failing.length - pending.length, failing, pending },
+        combinedStatus: combined.state,
+        reviews: { changesRequested, approvals },
+        reasons,
+      }
+      const guard = await this.pathGuardFor(client, owner, name, number, job, repo)
+      this.store.updateJob(job.id, { verification_json: JSON.stringify(verification), path_guard_json: JSON.stringify(guard) })
+      if (!guard.ok) {
+        const detail = guard.violations.map((violation) => `${violation.file}: ${violation.reason}`).join('; ').slice(0, 1000)
+        this.store.audit(job.user_id, 'job.path_guard_violation', `${job.id}: ${detail}`)
+        this.store.event('job_path_guard_violation', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: detail })
+        this.store.notify(job.user_id, 'job', `任务 ${job.id} 改动了受保护路径：${detail}`)
+      }
+      if (!verification.ok) {
+        this.store.audit(job.user_id, 'job.verification_failed', `${job.id}: ${verification.reasons.join('; ').slice(0, 500)}`)
+        this.store.event('job_verification_failed', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: verification.reasons.join('|').slice(0, 400) })
+      }
+      const problems = [...verification.reasons, ...guard.violations.map((violation) => `${violation.file}: ${violation.reason}`)]
+      return { ok: verification.ok && guard.ok, ...(problems.length === 0 ? {} : { message: problems.join('; ') }) }
+    } catch (error) {
+      log.warn('pull request verification failed', { job: job.id, prUrl, error: String(error) })
+      return { ok: false, message: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  async recheck(jobId: string): Promise<{ ok: boolean; message?: string }> {
+    const job = this.store.getJob(jobId)
+    if (job === undefined) return { ok: false, message: '任务不存在。' }
+    if (job.pr_url === null) return { ok: false, message: '这个任务还没有 PR。' }
+    return this.verifyPullRequest(job, job.pr_url)
+  }
+
   private async tryMerge(job: JobRow, prUrl: string, manual: boolean): Promise<{ ok: boolean; message?: string }> {
     if (job.kind !== 'iterate') return { ok: false, message: '只有 iterate 任务可以合并。' }
     let repo = this.store.getRepo(job.repo_id)
@@ -727,6 +888,14 @@ export class Jobs {
         return { ok: false, message: 'PR 已合并。' }
       }
       if (pr.state !== 'open' || pr.draft) return { ok: false, message: 'PR 不是 open 状态。' }
+      const guard = await this.pathGuardFor(client, owner, name, number, job, repo)
+      this.store.updateJob(job.id, { path_guard_json: JSON.stringify(guard) })
+      if (!guard.ok) {
+        const detail = guard.violations.map((violation) => `${violation.file}: ${violation.reason}`).join('; ').slice(0, 1000)
+        this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: path guard ${detail}`)
+        this.store.notify(job.user_id, 'job', `任务 ${job.id} 的 PR 改动了受保护路径，已阻止合并：${detail}`)
+        return { ok: false, message: `改动包含受保护路径：${detail}` }
+      }
       if (pr.mergeable === false || ['blocked', 'dirty', 'behind', 'unknown'].includes(pr.mergeableState)) {
         this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: PR ${number} is ${pr.mergeableState}`)
         return { ok: false, message: `PR 当前不可合并（${pr.mergeableState}）。` }
@@ -795,6 +964,13 @@ export class Jobs {
       log.warn('merge failed', { job: job.id, pr: number, error: String(error) })
       return { ok: false, message: error instanceof Error ? error.message : String(error) }
     }
+  }
+
+  private async verifyAndMaybeMerge(jobId: string): Promise<void> {
+    const current = this.store.getJob(jobId)
+    if (current === undefined || current.pr_url === null) return
+    await this.verifyPullRequest(current, current.pr_url)
+    if (current.kind === 'iterate') await this.maybeAutoMerge(current, current.pr_url)
   }
 
   private async maybeAutoMerge(job: JobRow, prUrl: string): Promise<void> {
@@ -1348,7 +1524,7 @@ export class Jobs {
         this.store.audit(job.user_id, 'work_item.review_outcome', `${item.id}: ${outcome} score=${reviewScore ?? '-'}`)
       }
     }
-    if (status === 'succeeded' && prUrl !== undefined) await this.maybeAutoMerge(job, prUrl)
+    if (status === 'succeeded') await this.verifyAndMaybeMerge(jobId)
     return { ok: true }
   }
 
@@ -1488,11 +1664,12 @@ export class Jobs {
       await this.instances.healthSweep().catch((error) => log.warn('instance health sweep failed', { error: String(error) }))
     }
     await this.releaseAllPendingFollowups().catch((error) => log.warn('pending follow-up recovery failed', { error: String(error) }))
+    await this.releaseDueRetries().catch((error) => log.warn('due retry release failed', { error: String(error) }))
     await this.notifyQuestions().catch((error) => log.warn('question notification pass failed', { error: String(error) }))
     await this.maybeSendDigests().catch((error) => log.warn('daily digest pass failed', { error: String(error) }))
-    if (this.store.countActiveJobs() >= 2) return
+    if (this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) return
     for (const listed of this.store.listReviewRepos()) {
-      if (this.store.countActiveJobs() >= 2) break
+      if (this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) break
       let repo = listed
       if (!this.roleFresh(repo)) {
         const refreshed = await this.refreshRepoAccess(repo)
@@ -1509,7 +1686,7 @@ export class Jobs {
       log.info('scheduled review', { repo: `${repo.owner}/${repo.name}`, ok: result.ok, job: result.job?.id })
     }
     for (const listed of this.store.listAutoRepos()) {
-      if (this.store.countActiveJobs() >= 2) break
+      if (this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) break
       let repo = listed
       if (repo.auto_merge === 1 && repo.repo_role === 'maintainer' && !this.roleFresh(repo)) {
         const refreshed = await this.refreshRepoAccess(repo)

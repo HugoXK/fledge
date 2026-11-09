@@ -54,6 +54,7 @@ export interface Config {
     bridgeToken: string
     timeoutMinutes: number
     stallMinutes: number
+    maxActiveJobs: number
   }
   digest: {
     hour: number
@@ -192,6 +193,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       bridgeToken: text('FLYBOT_BRIDGE_TOKEN'),
       timeoutMinutes: number('JOB_TIMEOUT_MINUTES', 90),
       stallMinutes: number('JOB_STALL_MINUTES', 30),
+      maxActiveJobs: Math.max(1, number('PLATFORM_MAX_ACTIVE_JOBS', 2)),
     },
     digest: {
       hour: Math.min(23, Math.max(0, number('DIGEST_HOUR', 9))),

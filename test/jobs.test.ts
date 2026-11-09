@@ -189,8 +189,33 @@ test('a successful callback stores attribution and posts a PR automation comment
   const comments: Array<{ path: string; body: string }> = []
   const github = await startFakeServer(async (request, response) => {
     const body = (await readBody(request)).toString('utf8')
-    comments.push({ path: request.url ?? '', body })
-    json(response, 201, { id: 1 })
+    const path = request.url ?? ''
+    if (path.includes('/comments')) {
+      comments.push({ path, body })
+      json(response, 201, { id: 1 })
+      return
+    }
+    if (path.includes('/pulls/42/files')) {
+      json(response, 200, [{ filename: 'src/x.ts', status: 'modified', additions: 1, deletions: 0 }])
+      return
+    }
+    if (path.includes('/pulls/42/reviews')) {
+      json(response, 200, [])
+      return
+    }
+    if (path.includes('/commits/sha1/check-runs')) {
+      json(response, 200, { check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] })
+      return
+    }
+    if (path.includes('/commits/sha1/status')) {
+      json(response, 200, { state: 'success', statuses: [] })
+      return
+    }
+    if (path.includes('/pulls/42')) {
+      json(response, 200, { number: 42, html_url: 'https://github.com/owner/repo/pull/42', title: 'Fix', state: 'open', head: { ref: 'fledge/x', sha: 'sha1' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false })
+      return
+    }
+    json(response, 404, { message: 'not found' })
   })
   const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
   const store = new Store(':memory:')
@@ -1153,6 +1178,73 @@ test('a job writes a durable event timeline from enqueue to finish', async () =>
     assert.ok(kinds.includes('job.running'))
     assert.ok(kinds.includes('job.progress'))
     assert.ok(kinds.includes('job.succeeded'))
+  } finally {
+    store.close()
+  }
+})
+
+test('manual merge is blocked when the PR changes a forbidden path', async () => {
+  const github = await startFakeServer((request, response) => {
+    const path = request.url ?? ''
+    if (path.includes('/pulls/7/files')) {
+      json(response, 200, [
+        { filename: 'src/ok.ts', status: 'modified', additions: 1, deletions: 0 },
+        { filename: '.github/workflows/ci.yml', status: 'modified', additions: 1, deletions: 0 },
+      ])
+      return
+    }
+    if (path.includes('/pulls/7')) {
+      json(response, 200, { number: 7, html_url: 'https://github.com/owner/guarded/pull/7', title: 'Fix', state: 'open', head: { ref: 'fledge/x', sha: 'sha7' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false })
+      return
+    }
+    json(response, 404, { message: 'not found' })
+  })
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'path-guard-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_path_guard', userId: user.id, owner: 'owner', name: 'guarded', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440, allowPaths: 'src/', denyPaths: '.github/', upstreamHtmlUrl: 'https://github.com' })
+    store.updateRepo(repo.id, { role_checked_at: new Date().toISOString() })
+    const job = store.createJob({ id: 'job_path_guard', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate' })
+    store.updateJob(job.id, { pr_url: 'https://github.com/owner/guarded/pull/7', branch: 'fledge/x', status: 'succeeded' })
+    const result = await jobs.manualMerge(store.getRepo(repo.id)!, store.getJob(job.id)!)
+    assert.equal(result.ok, false)
+    assert.match(result.message ?? '', /受保护路径|path/i)
+    const guard = JSON.parse(store.getJob(job.id)?.path_guard_json ?? '{}') as { ok?: boolean; violations?: unknown[] }
+    assert.equal(guard.ok, false)
+    assert.equal(guard.violations?.length, 1)
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
+
+test('transient failures schedule one durable retry and permanent failures do not', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'retry-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_retry', userId: user.id, owner: 'o', name: 'retry', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const secret = 'retry-secret'
+    store.createJob({ id: 'job_retry', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate' })
+    store.updateJob('job_retry', { status: 'running' })
+    const result = await jobs.handleCallback('job_retry', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    assert.equal(result.ok, true)
+    const pending = store.listSettings('retry_pending:')
+    assert.equal(pending.length, 1)
+    assert.match(pending[0]?.value ?? '', /"attempt":1/)
+
+    store.createJob({ id: 'job_retry_quota', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate' })
+    store.updateJob('job_retry_quota', { status: 'running' })
+    await jobs.handleCallback('job_retry_quota', secret, { status: 'failed', error: '平台额度已用完' })
+    assert.equal(store.listSettings('retry_pending:').length, 1)
+
+    store.createJob({ id: 'job_retry_limited', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', retryAttempt: 2 })
+    store.updateJob('job_retry_limited', { status: 'running' })
+    await jobs.handleCallback('job_retry_limited', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    assert.equal(store.listSettings('retry_pending:').length, 1)
   } finally {
     store.close()
   }
