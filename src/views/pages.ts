@@ -1338,6 +1338,7 @@ export function adminPage(input: {
   auditTotal: number
   perPage: number
   activity?: Map<string, { repos: number; jobs: number; lastJobAt: string | null }>
+  mailFailedUsers?: Set<string>
   superadmin?: boolean
   preview?: boolean
   showAudit?: boolean
@@ -1346,6 +1347,7 @@ export function adminPage(input: {
   error?: string
 }): string {
   const { config, locale, viewer, users, jobs, jobsPage, jobsTotal, audit, auditPage, auditTotal, perPage, activity, notice, error } = input
+  const mailFailedUsers = input.mailFailedUsers ?? new Set<string>()
   const superadmin = input.superadmin === true
   const preview = input.preview === true
   const showAudit = input.showAudit !== false
@@ -1364,6 +1366,7 @@ export function adminPage(input: {
             <td><b>#${index + 1}</b><br /><small class="muted">${escapeHtml(humanTimeShort(user.application_submitted_at ?? user.created_at))}</small></td>
             <td>${badge(t, user.status)}<br /><small class="muted">${escapeHtml(t('签署：', 'Signed: '))}${escapeHtml(user.disclaimer_name ?? '—')}<br />${escapeHtml(t('免责', 'Disclaimer'))} ${escapeHtml(humanTimeShort(user.disclaimer_accepted_at))}<br />${escapeHtml(t('信息安全', 'Security'))} ${escapeHtml(humanTimeShort(user.security_accepted_at))}<br />IP ${escapeHtml(user.application_ip ?? '—')}</small></td>
             <td class="row">
+              ${mailFailedUsers.has(user.id) ? `<span class="badge bad">${escapeHtml(t('审批邮件发送失败', 'Approval mail not delivered'))}</span><form method="post" action="/admin/users/${escapeHtml(user.id)}/resend-approval">${csrf(viewer)}<button class="link" type="submit">${escapeHtml(t('重新发送审批邮件', 'Resend approval mail'))}</button></form>` : ''}
               <form method="post" action="/admin/users/${escapeHtml(user.id)}/approve">${csrf(viewer)}<button class="link good" type="submit">${escapeHtml(t('批准', 'Approve'))}</button></form>
               <form method="post" action="/admin/users/${escapeHtml(user.id)}/reject">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('拒绝', 'Reject'))}</button></form>
             </td>
@@ -1502,6 +1505,7 @@ export function applicationStatusPage(input: {
   total: number
   notice?: string
   error?: string
+  mailFailed?: boolean
 }): string {
   const { config, locale, viewer, position, total, notice, error } = input
   const t = translator(locale)
@@ -1512,6 +1516,7 @@ export function applicationStatusPage(input: {
     <div class="eyebrow">${escapeHtml(rejected ? t('申请已结束', 'APPLICATION CLOSED') : t('等待审批', 'WAITING FOR APPROVAL'))}</div>
     <h1>${escapeHtml(rejected ? t('申请未通过', 'Application not approved') : t('申请已提交，正在排队', 'Application submitted; you are in the queue'))}</h1>
     <p>${escapeHtml(t(`@${viewer.user.login}，${rejected ? '这次申请没有通过。如果情况有变化，请联系管理员；不要重复提交。' : '管理员审批后会发邮件通知，本页每 10 秒自动刷新。不要重复提交申请。'}`, `@${viewer.user.login}, ${rejected ? 'this application was not approved. If your situation changes, contact the administrator; do not submit again.' : 'you will receive email after the administrator reviews it. This page refreshes every 10 seconds. Do not submit again.'}`))}</p>
+    ${input.mailFailed === true && !rejected ? `<div class="banner bad" role="status">${escapeHtml(t('审批邮件未送达管理员：SMTP 发送失败。管理员可以在 /admin 的待审批列表里重新发送，你的排队位置不受影响。', 'The approval mail did not reach the administrator: the SMTP send failed. An admin can resend it from the pending list on /admin; your queue position is unchanged.'))}</div>` : ''}
     <p class="fine">${escapeHtml(t('Fledge 的审批只覆盖 Fledge；FlyBot、Bot Social 和 ScienceDiscovery 需要各自的授权。', 'Fledge approval covers Fledge only; FlyBot, Bot Social and ScienceDiscovery each require their own authorization.'))}</p>
     <div class="flow">
       <div class="flow-step"><span>01 / GitHub</span><b>${escapeHtml(t('登录', 'Sign in'))}</b><small>${escapeHtml(t('已完成', 'Done'))}</small></div>
