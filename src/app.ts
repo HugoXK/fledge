@@ -1404,6 +1404,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已重新排队。')}`)
   })
 
+  app.post('/repos/:id/jobs/:jobId/recheck', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const result = await jobs.recheck(job.id)
+    store.audit(viewer.user.id, 'job.pr_rechecked', `${job.id}: ${result.ok ? 'ok' : (result.message ?? 'failed')}`)
+    const key = result.ok ? 'notice' : 'error'
+    const message = result.ok ? 'PR 证据与路径检查通过。' : (result.message ?? '重新检查失败。')
+    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${key}=${encodeURIComponent(message)}`)
+  })
+
   app.post('/repos/:id/jobs/:jobId/merge', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))

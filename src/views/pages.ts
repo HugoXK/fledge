@@ -10,6 +10,7 @@ import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRo
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
+import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
 import { classifyFailure, failureLabel, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { STAGE_MODES } from '../lib/stages.js'
 import type { InstallationRepo } from '../repos/app.js'
@@ -107,6 +108,17 @@ function failureActionLabel(t: Translate, action: FailureAction): string {
   if (action === 'repo') return t('打开仓库', 'Open repository')
   if (action === 'refresh') return t('刷新仓库', 'Refresh repository')
   return ''
+}
+
+function readinessLabel(t: Translate, state: 'ready' | 'blocked' | 'unknown'): string {
+  if (state === 'ready') return t('可合并', 'Ready')
+  if (state === 'blocked') return t('被阻止', 'Blocked')
+  return t('未核实', 'Not verified')
+}
+
+function readinessBadge(t: Translate, state: 'ready' | 'blocked' | 'unknown'): string {
+  const cls = state === 'ready' ? 'good' : state === 'blocked' ? 'bad' : 'busy'
+  return `<span class="badge ${cls}">${escapeHtml(readinessLabel(t, state))}</span>`
 }
 
 function maskEmail(email: string): string {
@@ -799,16 +811,18 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     <div class="table-scroll" style="margin-top:14px"><table><thead><tr><th>${escapeHtml(t('工作项', 'Work item'))}</th><th>${escapeHtml(t('状态', 'State'))}</th><th>${escapeHtml(t('优先级', 'Priority'))}</th><th>Issue / PR</th><th>${escapeHtml(t('任务', 'Job'))}</th><th></th></tr></thead><tbody>${workRows}</tbody></table></div>
   </section>`;
   const prRows = prJobs.length === 0
-    ? stateCell(6, { kind: 'empty', title: t('没有待处理的 PR。', 'No pull requests waiting.'), body: t('任务产出 PR 后会出现在这里；没有就是真的没有在等。', 'A pull request appears here once a job opens one; an empty list means nothing is waiting.'), action: { href: `/repos/${escapeHtml(repo.id)}`, label: t('回到仓库', 'Back to repository') } })
+    ? stateCell(7, { kind: 'empty', title: t('没有待处理的 PR。', 'No pull requests waiting.'), body: t('任务产出 PR 后会出现在这里；没有就是真的没有在等。', 'A pull request appears here once a job opens one; an empty list means nothing is waiting.'), action: { href: `/repos/${escapeHtml(repo.id)}`, label: t('回到仓库', 'Back to repository') } })
     : prJobs.map((job) => {
         const number = /\/pull\/(\d+)/.exec(job.pr_url ?? '')?.[1] ?? ''
-        return `<tr><td><a href="${escapeHtml(job.pr_url ?? '')}" target="_blank" rel="noreferrer">#${escapeHtml(number)}</a></td><td>${badge(t, job.status)}</td><td>${job.review_score === null ? '—' : job.review_score}</td><td>${escapeHtml(quotaMoney(job.cost_usd * config.quota.usdCny))}</td><td>${escapeHtml(humanTimeShort(job.created_at))}</td><td>${repo.repo_role === 'maintainer' ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/merge">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('合并', 'Merge'))}</button></form>` : ''}</td></tr>`
+        const readiness = mergeReadiness(job)
+        const reasons = readiness.reasons.slice(0, 2).join(' · ')
+        return `<tr><td><a href="${escapeHtml(job.pr_url ?? '')}" target="_blank" rel="noreferrer">#${escapeHtml(number)}</a></td><td>${badge(t, job.status)}</td><td>${readinessBadge(t, readiness.state)}${reasons === '' ? '' : `<br /><small class="muted">${escapeHtml(reasons)}</small>`}</td><td>${job.review_score === null ? '—' : job.review_score}</td><td>${escapeHtml(quotaMoney(job.cost_usd * config.quota.usdCny))}</td><td>${escapeHtml(humanTimeShort(job.created_at))}</td><td><div class="row"><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('重新核实', 'Re-check'))}</button></form>${repo.repo_role === 'maintainer' ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/merge">${csrf(viewer)}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('合并', 'Merge'))}</button></form>` : ''}</div></td></tr>`
       }).join('')
   const deliveryCard = `<section class="card" id="delivery"><h2>${escapeHtml(t('待处理 PR', 'Pull requests to decide'))}</h2>
     ${repo.auto_merge === 0 && prJobs.length >= 3 ? `<div class="banner">${escapeHtml(t(`有 ${prJobs.length} 个 PR 等待合并。如果检查一直全绿，可在仓库设置里开启自动合并。`, `${prJobs.length} pull requests are waiting. If checks stay green, enable auto-merge in repository settings.`))} <a class="link" href="#repo-settings">${escapeHtml(t('去设置', 'Open settings'))}</a></div>` : ''}
     <p class="muted">${escapeHtml(t('合并前会重新检查 PR 状态、checks、commit status、reviews 和 branch protection。', 'Merging re-checks the PR state, checks, commit status, reviews and branch protection.'))}</p>
     ${repo.repo_role === 'maintainer' && prJobs.length > 0 ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/delivery/merge-clean" data-confirm="${escapeHtml(t('逐个重新检查并合并所有 clean PR？有阻塞的会跳过。', 'Re-check and merge all clean PRs? Blocked PRs are skipped.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('合并所有 clean PR', 'Merge all clean PRs'))}</button></form>` : ''}
-    <div class="table-scroll"><table><thead><tr><th>PR</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('审核分', 'Review'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th><th>${escapeHtml(t('创建', 'Created'))}</th><th></th></tr></thead><tbody>${prRows}</tbody></table></div></section>`
+    <div class="table-scroll"><table><thead><tr><th>PR</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('核实', 'Verified'))}</th><th>${escapeHtml(t('审核分', 'Review'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th><th>${escapeHtml(t('创建', 'Created'))}</th><th></th></tr></thead><tbody>${prRows}</tbody></table></div></section>`
   const lifecycleItems: string[] = []
   if (!repoEnabled) lifecycleItems.push(t('仓库已停用：不会自动或手动运行任务。', 'Repository disabled: no jobs run automatically or manually.'))
   if (flybotAvailable && instance?.status !== 'ready') lifecycleItems.push(t(`FlyBot ${instance === undefined ? '未创建' : statusLabel(t, instance.status)}：任务不会运行。`, `FlyBot is ${instance === undefined ? 'not created' : statusLabel(t, instance.status)}: jobs will not run.`))
@@ -1633,6 +1647,9 @@ export function jobPage(input: {
   const evidence = parseEvidenceJson(job.evidence_json)
   const failure = classifyFailure(job)
   const failureLink = failure === null ? '' : failureHref(failure.action, repo.id)
+  const verification = parseVerification(job.verification_json)
+  const pathGuard = parsePathGuard(job.path_guard_json)
+  const readiness = mergeReadiness(job)
   const attribution = jobAttribution(t, job)
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
@@ -1657,6 +1674,7 @@ export function jobPage(input: {
   const retry = job.status === 'failed'
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/retry">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(job.checkpoint === null || job.checkpoint === '' ? t('重试这个任务', 'Retry this job') : t('从断点继续', 'Resume from checkpoint'))}</button></form>`
     : ''
+  const recheck = job.pr_url === null || supportMode ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('重新核实 PR', 'Re-check PR'))}</button></form>`
   const execute = job.kind === 'plan' && job.status === 'succeeded' && job.plan_approved_at !== null
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/execute">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('执行这个计划', 'Execute this plan'))}</button></form>`
     : ''
@@ -1690,6 +1708,7 @@ export function jobPage(input: {
         ${advanced && !supportMode ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
         ${supportMode ? '' : control}
         ${supportMode ? '' : execute}
+        ${supportMode ? '' : recheck}
         ${supportMode ? '' : retry}
       </div>
     </div>
@@ -1712,6 +1731,26 @@ export function jobPage(input: {
       ${evidenceRows}
     </div>
   </section>
+  ${supportMode ? '' : `<section class="card">
+    <h2>${escapeHtml(t('PR 核实', 'PR verification'))}</h2>
+    <div class="row between">
+      <div>${readinessBadge(t, readiness.state)}${readiness.reasons.length === 0 ? '' : `<p class="fine">${escapeHtml(readiness.reasons.slice(0, 6).join(' · '))}</p>`}</div>
+      ${recheck}
+    </div>
+    ${verification === null
+      ? `<p class="muted">${escapeHtml(t('还没有核实记录。任务回调后会自动核实；也可以现在重新检查。', 'No verification yet. It runs after a job callback; you can also re-check now.'))}</p>`
+      : `<div class="list">
+          <div class="list-row"><div class="list-main"><strong>${escapeHtml(verification.ok ? t('证据通过', 'Evidence passed') : t('证据未通过', 'Evidence failed'))}</strong><small>${escapeHtml(t('核实时间', 'Checked'))} ${escapeHtml(humanTimeShort(verification.checkedAt))} · ${escapeHtml(t('基于', 'At'))} <code>${escapeHtml(verification.sha.slice(0, 12))}</code></small></div></div>
+          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('检查', 'Checks'))}</strong><small>${verification.checks.green}/${verification.checks.total} ${escapeHtml(t('通过', 'green'))}${verification.checks.failing.length === 0 ? '' : ` · ${escapeHtml(t('失败', 'failing'))}: ${escapeHtml(verification.checks.failing.join(', '))}`}${verification.checks.pending.length === 0 ? '' : ` · ${escapeHtml(t('等待', 'pending'))}: ${escapeHtml(verification.checks.pending.join(', '))}`}</small></div></div>
+          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('审核', 'Reviews'))}</strong><small>${escapeHtml(t(`批准 ${verification.reviews.approvals} 个`, `${verification.reviews.approvals} approval(s)`))}${verification.reviews.changesRequested ? ` · ${escapeHtml(t('有 changes requested', 'changes requested'))}` : ''}</small></div></div>
+          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('PR 状态', 'PR state'))}</strong><small>${escapeHtml(verification.prState)} · ${escapeHtml(verification.mergeableState)} · ${escapeHtml(verification.combinedStatus)}</small></div></div>
+        </div>`}
+    ${pathGuard === null
+      ? ''
+      : `<h3 style="margin-top:16px">${escapeHtml(t('路径守卫', 'Path guard'))}</h3>
+        <p class="fine">${pathGuard.ok ? escapeHtml(t('改动文件都在允许范围内。', 'All changed files are within the allowed paths.')) : escapeHtml(t(`${pathGuard.violations.length} 个文件违反路径约束。`, `${pathGuard.violations.length} file(s) violate the path constraints.`))}${pathGuard.allow.length === 0 && pathGuard.deny.length === 0 ? ` · ${escapeHtml(t('未设置约束', 'no constraints set'))}` : ''}</p>
+        ${pathGuard.violations.length === 0 ? '' : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('文件', 'File'))}</th><th>${escapeHtml(t('原因', 'Reason'))}</th></tr></thead><tbody>${pathGuard.violations.map((violation) => `<tr><td><code>${escapeHtml(violation.file)}</code></td><td>${escapeHtml(violation.reason === 'denied' ? t('命中禁止路径', 'Denied path') : t('不在允许路径', 'Not allowed'))}</td></tr>`).join('')}</tbody></table></div>`}`}
+  </section>`}
   <section class="card">
     <h2>${escapeHtml(t('时间线', 'Timeline'))}</h2>
     ${events.length === 0

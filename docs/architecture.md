@@ -312,6 +312,31 @@ The admin metrics page aggregates the same categories for the selected window.
 The classifier lives in `src/lib/failure.ts`; it does not change job state or
 hide the original error.
 
+### Enforcement: path guard, evidence verification and merge readiness
+
+Plan path constraints are now enforced, not only included in the prompt. After a
+successful iterate callback and again before merge, Fledge reads the pull
+request's changed files and matches them against the job's allowed and denied
+paths (deny wins; an empty allow list means no allow restriction). A violation is
+stored on the job, notified, audited and blocks the merge. The delivery list
+shows the changed files that caused the block.
+
+The same pass records a verification snapshot: PR state, head SHA, check runs,
+combined commit status, reviews and the reasons a merge is not ready. The job
+page and the delivery list show `ready`, `blocked` or `not verified`, and
+`POST /repos/:id/jobs/:jobId/recheck` refreshes it on demand. Verification never
+replaces the merge gate's own re-check at the tip.
+
+### Retry policy and capacity
+
+`src/lib/retry.ts` classifies transient failures (bridge, model, GitHub,
+timeout, stalled) separately from permanent ones (quota, credential, stage
+evidence, workflow, review, path). A transient failure schedules at most two
+durable retries with 1 and 2 minute delays, stored under `retry_pending:` in
+settings; the scheduler releases a due retry only when the repository has no
+active job and its instance is ready. Permanent failures stay manual. Platform
+concurrency is `PLATFORM_MAX_ACTIVE_JOBS` (default 2), not a hard-coded literal.
+
 ### Agent workspace
 
 The owner-accessible workspace is path-based to avoid a wildcard certificate:

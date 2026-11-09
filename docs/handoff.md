@@ -58,6 +58,10 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
   contract, a baseline shadow report (`npm run evolution:export -- --report`) and the first AgentDescent evolution ledger/ADR.
 - Failed jobs show an actionable failure category and recovery link, with an
   admin failure breakdown for the window.
+- Plan path constraints are enforced against the PR diff, PR evidence is
+  verified against GitHub, the delivery list shows ready/blocked/not-verified,
+  and transient failures retry with bounded backoff.
+- Platform concurrency is configurable with `PLATFORM_MAX_ACTIVE_JOBS`.
 - Product/Test stage sessions, a Fledge-driven delivery chain, grounded team
   attribution, token backfill and managed instance-token rotation.
 - Multiple repositories per user; per-repo fine-grained GitHub tokens, validated
@@ -81,8 +85,8 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 
 ### Verified
 
-- `npm run check`: lint, typecheck, 161 tests, production build — green.
-- `npm run check`: lint, typecheck, 161 tests, production build — green.
+- `npm run check`: lint, typecheck, 226 tests, production build — green.
+- `npm run check`: lint, typecheck, 226 tests, production build — green.
 - GitHub Actions: Node 22 and Node 24 green at the release commit.
 - A real platform-funded call with the alternate key returned 200 and deducted
   `$0.00001064` from the dev account's quota.

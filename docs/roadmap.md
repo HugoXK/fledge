@@ -111,6 +111,8 @@ execution (LangSmith/Langfuse, OpenTelemetry, Temporal/DBOS):
 - [x] Windowed personal and admin delivery metrics, cost by repository/model and alerts.
 - [x] Read-only `/api/read/metrics` contract for an external control room.
 - [x] Artifact/evaluation/promotion ledger tables and the AgentDescent shadow-evolution ADR.
+- [x] Path guard, pull-request evidence verification and merge readiness.
+- [x] Durable retry policy for transient failures and configurable platform concurrency.
 - [ ] Shadow evaluation of the playbook on a held-out job set.
 - [ ] First human-approved, canary-tested playbook promotion.
 - [ ] Per-repository policy evolution (goal/model/stage mode) with opt-in.

@@ -224,6 +224,10 @@ export interface JobRow {
   plan_deny_paths: string | null
   base_sha: string | null
   callback_fingerprint: string | null
+  path_guard_json: string | null
+  verification_json: string | null
+  retry_attempt: number
+  retry_of: string | null
   last_callback_at: string | null
   created_at: string
   started_at: string | null
@@ -545,6 +549,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   plan_deny_paths TEXT,
   base_sha TEXT,
   callback_fingerprint TEXT,
+  path_guard_json TEXT,
+  verification_json TEXT,
+  retry_attempt INTEGER NOT NULL DEFAULT 0,
+  retry_of TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   last_callback_at TEXT,
@@ -798,9 +806,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 28) {
+    if (previousVersion > 29) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (28)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (29)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -815,7 +823,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 28)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 29)};`)
   }
 
   migrateIndexes(): void {
@@ -940,6 +948,10 @@ export class Store {
     if (!jobColumns.has('plan_deny_paths')) this.run('ALTER TABLE jobs ADD COLUMN plan_deny_paths TEXT')
     if (!jobColumns.has('base_sha')) this.run('ALTER TABLE jobs ADD COLUMN base_sha TEXT')
     if (!jobColumns.has('callback_fingerprint')) this.run('ALTER TABLE jobs ADD COLUMN callback_fingerprint TEXT')
+    if (!jobColumns.has('path_guard_json')) this.run('ALTER TABLE jobs ADD COLUMN path_guard_json TEXT')
+    if (!jobColumns.has('verification_json')) this.run('ALTER TABLE jobs ADD COLUMN verification_json TEXT')
+    if (!jobColumns.has('retry_attempt')) this.run('ALTER TABLE jobs ADD COLUMN retry_attempt INTEGER NOT NULL DEFAULT 0')
+    if (!jobColumns.has('retry_of')) this.run('ALTER TABLE jobs ADD COLUMN retry_of TEXT')
     if (!jobColumns.has('last_callback_at')) this.run('ALTER TABLE jobs ADD COLUMN last_callback_at TEXT')
     if (!jobColumns.has('pr_state')) this.run('ALTER TABLE jobs ADD COLUMN pr_state TEXT')
     const tokenColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(api_tokens)').map((row) => row.name))
@@ -1959,10 +1971,10 @@ export class Store {
     this.run('DELETE FROM repo_instances WHERE repo_id = ?', repoId)
   }
 
-  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null }): JobRow {
+  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null }): JobRow {
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, base_branch, work_item_id, priority, base_sha, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, base_branch, work_item_id, priority, base_sha, retry_attempt, retry_of, created_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -1975,6 +1987,8 @@ export class Store {
       input.workItemId ?? null,
       input.priority ?? 0,
       input.baseSha ?? null,
+      input.retryAttempt ?? 0,
+      input.retryOf ?? null,
       nowIso(),
     )
     return this.getJob(input.id)!
@@ -2102,7 +2116,7 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority DESC, created_at ASC")
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'retry_attempt' | 'retry_of'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
