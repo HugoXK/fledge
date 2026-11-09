@@ -1,0 +1,1 @@
+Opening a page that needs a session while signed out now goes to GitHub sign-in and comes back to the page you asked for, instead of showing a "出错了" 401 error page that dead-ends; API clients and form submissions still get the 401 so a machine caller keeps its status code and a post keeps its body.

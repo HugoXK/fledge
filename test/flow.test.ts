@@ -158,7 +158,9 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     assert.equal(store.getRepo(repo.id)?.goal, 'changed with csrf')
 
     const anonymous = await built.app.inject({ method: 'GET', url: '/dashboard' })
-    assert.equal(anonymous.statusCode, 401)
+    assert.equal(anonymous.statusCode, 302)
+    assert.equal(String(anonymous.headers.location), '/auth/github?next=%2Fdashboard')
+    assert.equal(anonymous.body.includes('仓库'), false)
 
     const pending = makeUser(store, { login: 'pending-user', status: 'pending' })
     const approvals = new Approvals(store, config, mailer)
