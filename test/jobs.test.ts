@@ -1280,3 +1280,25 @@ test('the auto-merge reconciler merges an open Fledge PR once checks are green',
     await github.close()
   }
 })
+
+test('open operational alerts notify the owner once and clear after resolution', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'ops-alert-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_ops_alert', userId: user.id, owner: 'o', name: 'ops', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440, monthlyBudgetCny: 1 })
+    store.recordUsage(user.id, null, 0.9, null, repo.id)
+    assert.equal(store.listNotifications(user.id).length, 0)
+    assert.equal(await jobs.notifyOpsAlerts(), 1)
+    assert.equal(store.listNotifications(user.id).length, 1)
+    assert.equal(await jobs.notifyOpsAlerts(), 0)
+    assert.equal(store.listNotifications(user.id).length, 1)
+    store.updateRepo(repo.id, { monthly_budget_cny: 0 })
+    assert.equal(await jobs.notifyOpsAlerts(), 0)
+    store.updateRepo(repo.id, { monthly_budget_cny: 1 })
+    assert.equal(await jobs.notifyOpsAlerts(), 1)
+  } finally {
+    store.close()
+  }
+})

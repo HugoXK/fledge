@@ -1,0 +1,1 @@
+Stalled jobs, stale pull requests, invalid GitHub credentials and budgets near their limit now notify the repository owner in Fledge and through the optional notification webhook. The scheduler deduplicates each alert for `OPS_ALERT_COOLDOWN_MINUTES`, clears the marker when the alert resolves, and exposes `fledge_ops_alerts_open` on `/metrics`.

@@ -356,7 +356,7 @@ Shutdown stops the scheduler, waits up to `SHUTDOWN_GRACE_SECONDS` for active
 jobs, closes HTTP, flushes traces and closes SQLite. Startup removes orphan
 retry/follow-up settings, orphan job events and instances.
 
-GitHub calls go through a per-token budget (`GITHUB_REQUESTS_PER_MINUTE`) and
+Open operational alerts are delivered to the repository owner in-app and via the optional notification webhook on the scheduler tick, with `OPS_ALERT_COOLDOWN_MINUTES` deduplication. GitHub calls go through a per-token budget (`GITHUB_REQUESTS_PER_MINUTE`) and
 honor `Retry-After` / `X-RateLimit-Reset` before retrying. GitHub webhooks are
 claimed by `X-GitHub-Delivery` in `webhook_deliveries`; a duplicate is a no-op
 and a failed delivery can be retried. Opening checks or approving a review
