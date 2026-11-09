@@ -35,6 +35,14 @@ Set `OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP collector (for example
 `http://127.0.0.1:4318`). Fledge exports JSON spans for HTTP requests, GitHub
 calls and bridge dispatches. With an empty endpoint tracing is a no-op.
 
+## Operational alerts
+
+`Jobs.notifyOpsAlerts()` runs on the scheduler tick. Stalled jobs, stale PRs,
+invalid credentials and budgets near their limit are notified to the repository
+owner in-app, posted to the optional notification webhook as `ops.alert`, and
+deduplicated for `OPS_ALERT_COOLDOWN_MINUTES`. Resolving an alert clears its
+marker, so a later recurrence notifies again.
+
 ## Shutdown and recovery
 
 On `SIGTERM`/`SIGINT` Fledge stops scheduling, waits up to

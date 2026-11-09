@@ -44,6 +44,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     otel: { endpoint: '', serviceName: 'fledge' },
     shutdown: { graceSeconds: 0 },
     autoMerge: { reconcileMinutes: 5 },
+    ops: { alertCooldownMinutes: 360 },
   })
   return {
     ...base,
@@ -57,6 +58,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     otel: { ...base.otel, ...overrides.otel },
     shutdown: { ...base.shutdown, ...overrides.shutdown },
     autoMerge: { ...base.autoMerge, ...overrides.autoMerge },
+    ops: { ...base.ops, ...overrides.ops },
   }
 }
 

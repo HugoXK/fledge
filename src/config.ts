@@ -70,6 +70,9 @@ export interface Config {
   autoMerge: {
     reconcileMinutes: number
   }
+  ops: {
+    alertCooldownMinutes: number
+  }
   digest: {
     hour: number
     timeZone: string
@@ -222,6 +225,9 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     autoMerge: {
       reconcileMinutes: Math.max(1, number('AUTO_MERGE_RECONCILE_MINUTES', 5)),
+    },
+    ops: {
+      alertCooldownMinutes: Math.max(0, number('OPS_ALERT_COOLDOWN_MINUTES', 360)),
     },
     digest: {
       hour: Math.min(23, Math.max(0, number('DIGEST_HOUR', 9))),

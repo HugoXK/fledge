@@ -1238,6 +1238,39 @@ export class Jobs {
     return result
   }
 
+  async notifyOpsAlerts(): Promise<number> {
+    const alerts = this.store.alerts({ usdCny: this.config.quota.usdCny })
+    const current = new Set<string>()
+    let sent = 0
+    for (const alert of alerts) {
+      const key = `ops_alert_notified:${alert.kind}:${alert.repoId ?? ''}:${alert.jobId ?? ''}:${alert.prUrl ?? ''}`.slice(0, 300)
+      current.add(key)
+      const repo = alert.repoId === undefined ? undefined : this.store.getRepo(alert.repoId)
+      const user = repo === undefined ? undefined : this.store.userById(repo.user_id)
+      if (user === undefined || user.status !== 'approved') continue
+      const previous = this.store.getSetting(key)
+      const previousAt = previous === undefined ? 0 : Date.parse(previous)
+      if (Number.isFinite(previousAt) && Date.now() - previousAt < this.config.ops.alertCooldownMinutes * 60_000) continue
+      this.store.notify(user.id, 'ops', alert.message)
+      this.store.event('ops_alert_notified', { userId: user.id, repoId: alert.repoId ?? null, jobId: alert.jobId ?? null, meta: `${alert.kind}:${alert.level}` })
+      this.store.setSetting(key, nowIso())
+      sent += 1
+      void sendNotificationWebhook(this.config, 'ops.alert', {
+        text: alert.message,
+        kind: alert.kind,
+        level: alert.level,
+        repoId: alert.repoId ?? null,
+        jobId: alert.jobId ?? null,
+        prUrl: alert.prUrl ?? null,
+      })
+    }
+    for (const row of this.store.listSettings('ops_alert_notified:')) {
+      if (!current.has(row.key)) this.store.deleteSetting(row.key)
+    }
+    setGauge('fledge_ops_alerts_open', alerts.length, {}, 'Open operational alerts')
+    return sent
+  }
+
   private async notifyQuestions(): Promise<void> {
     if (this.instances === undefined || this.config.flybot.instanceImage === '' || this.questionBusy) return
     this.questionBusy = true
@@ -1705,6 +1738,7 @@ export class Jobs {
     await this.releaseDueRetries().catch((error) => log.warn('due retry release failed', { error: String(error) }))
     await this.reconcileAutoMerge().catch((error) => log.warn('auto-merge reconcile failed', { error: String(error) }))
     await this.notifyQuestions().catch((error) => log.warn('question notification pass failed', { error: String(error) }))
+    await this.notifyOpsAlerts().catch((error) => log.warn('ops alert pass failed', { error: String(error) }))
     await this.maybeSendDigests().catch((error) => log.warn('daily digest pass failed', { error: String(error) }))
     if (this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) return
     for (const listed of this.store.listReviewRepos()) {
