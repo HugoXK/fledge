@@ -18,6 +18,7 @@ export interface Config {
     scopes: string
     adminLogin: string
     apiBase: string
+    oauthTokenUrl: string
     requestsPerMinute: number
   }
   githubApp: {
@@ -174,6 +175,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       scopes: text('GITHUB_OAUTH_SCOPES', 'read:user user:email'),
       adminLogin: text('ADMIN_GITHUB_LOGIN'),
       apiBase: text('GITHUB_API_BASE', 'https://api.github.com').replace(/\/$/, ''),
+      oauthTokenUrl: text('GITHUB_OAUTH_TOKEN_URL', 'https://github.com/login/oauth/access_token'),
       requestsPerMinute: Math.max(1, number('GITHUB_REQUESTS_PER_MINUTE', 120)),
     },
     githubApp: {

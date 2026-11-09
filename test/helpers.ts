@@ -38,6 +38,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
       scopes: 'read:user user:email',
       adminLogin: 'admin',
       apiBase: 'https://api.github.com',
+      oauthTokenUrl: 'https://github.com/login/oauth/access_token',
       requestsPerMinute: 120,
     },
     metrics: { token: '' },

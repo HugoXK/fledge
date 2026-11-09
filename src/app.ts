@@ -8,6 +8,7 @@ import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
 import { openStore, type JobRow, type RepoRow, type Store, type UserRow } from './db.js'
 import { GithubOAuth } from './auth/github.js'
+import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
 import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions } from './auth/session.js'
 import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
@@ -374,7 +375,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (viewer.user.status === 'onboarding') return reply.redirect('/apply')
       return reply.redirect('/apply/status')
     }
-    return reply.type('text/html').send(landingPage(config, null, config.env !== 'production' && config.devLogin.login !== '', config.github.clientId !== '' && config.github.clientSecret !== '', locale))
+    return reply.type('text/html').send(landingPage(config, null, config.env !== 'production' && config.devLogin.login !== '', locale))
   })
 
   app.get('/auth/dev', async (request, reply) => {
@@ -400,7 +401,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/auth/token', async (request, reply) => {
-    if (config.github.clientId !== '' && config.github.clientSecret !== '' && !config.allowTokenLoginOnly) {
+    if (!tokenLoginEnabled(config)) {
       const t = translator(request.locale ?? 'zh')
       return htmlPage(reply, 403, errorPage(config, request.viewer ?? null, 'OAuth 已启用', '这个部署已经启用 GitHub OAuth，请使用 GitHub 登录。', request.locale, { href: '/auth/github', label: t('使用 GitHub 登录', 'Sign in with GitHub') }))
     }
@@ -436,7 +437,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/auth/github', async (request, reply) => {
     if (!loginLimiter.take(`login:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
-    if (config.github.clientId === '' || config.github.clientSecret === '') {
+    if (!oauthConfigured(config)) {
       return htmlPage(reply, 503, errorPage(config, request.viewer ?? null, 'GitHub OAuth 未配置', '请先在 .env 设置 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET。', request.locale))
     }
     const state = randomToken(32)
@@ -447,7 +448,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.get('/auth/github/reauthorize', async (request, reply) => {
     const viewer = requireApproved(request)
     if (!loginLimiter.take(`reauth:${viewer.user.id}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
-    if (config.github.clientId === '' || config.github.clientSecret === '') return reply.redirect('/settings?error=' + encodeURIComponent('GitHub OAuth 未配置。'))
+    if (!oauthConfigured(config)) return reply.redirect('/settings?error=' + encodeURIComponent('GitHub OAuth 未配置。'))
     const state = randomToken(32)
     store.createOAuthState(sha256Hex(state), addMinutes(20), safeLocalPath(queryText(request, 'next'), '/dashboard'))
     const scopes = [...new Set(`${config.github.scopes} repo`.split(/\s+/).filter(Boolean))].join(' ')
