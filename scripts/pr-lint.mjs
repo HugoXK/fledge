@@ -6,6 +6,7 @@
 // Runs on pull_request, pull_request_review and merge_group.
 
 import { readFileSync } from 'node:fs'
+import { checkBody } from './lib/pr-body.mjs'
 import { tierForFiles, loadRules } from './lib/risk.mjs'
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
@@ -104,24 +105,15 @@ function covers(path, doc) {
   return path.startsWith(doc.endsWith('/') ? doc : `${doc}/`)
 }
 
-function firstLine(body) {
-  return String(body ?? '').split(/\r?\n/).find((line) => line.trim() !== '') ?? ''
-}
-
 const pr = await api(`/repos/${REPO}/pulls/${prNumber}`).catch((error) => fail(error.message))
 const files = await paginate(`/repos/${REPO}/pulls/${prNumber}/files`).catch((error) => fail(error.message))
 const body = String(pr.body ?? '')
 const paths = files.map((file) => file.filename)
-const errors = []
+const errors = checkBody(body, POLICY)
 
-if (!/^Written-by:\s*\S+/.test(firstLine(body).trim())) {
-  errors.push('the PR body must start with "Written-by: <name>"')
-}
 if (!INVESTIGATE_PATH.test(body) && !/(^|\n)\s*Fixes #\d+\b/.test(body)) {
   errors.push('the PR body needs "Fixes #N", "No-issue:" or "Investigates:"')
 }
-if (!/(^|\n)\s*Ran[^\n:]*[:：]/.test(body)) errors.push('the PR body needs a "Ran:" section')
-if (!/(^|\n)\s*Not run[^\n:]*[:：]/i.test(body)) errors.push('the PR body needs a "Not run:" section')
 
 const fragmentAdded = files.some((file) => file.status === 'added' && /^changelog\.d\/[^/]+\.(added|changed|deprecated|removed|fixed|security)\.md$/.test(file.filename))
 if (paths.some((path) => path.startsWith('src/')) && !fragmentAdded && !/(^|\n)\s*Changelog-not-needed\s*:/i.test(body)) {
@@ -140,11 +132,6 @@ const computed = tierForFiles(paths, rules).tier
 const labels = (pr.labels ?? []).map((label) => label.name)
 for (const label of labels.filter((name) => /^risk:T[0-3]$/.test(name))) {
   if (label !== `risk:${computed}`) errors.push(`label ${label} does not match the computed tier risk:${computed}`)
-}
-
-const writer = /^\s*Written-by:\s*(.+)$/im.exec(body)?.[1]?.trim() ?? ''
-if (writer !== '' && !POLICY.writers.map((name) => String(name).toLowerCase()).includes(writer.toLowerCase())) {
-  errors.push(`Written-by "${writer}" is not in .github/agent/review-policy.json`)
 }
 
 if (errors.length > 0) {
