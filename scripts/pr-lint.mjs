@@ -6,6 +6,7 @@
 // Runs on pull_request, pull_request_review and merge_group.
 
 import { readFileSync } from 'node:fs'
+import { mechanicalRelease } from './lib/mechanical-release.mjs'
 import { checkBody } from './lib/pr-body.mjs'
 import { tierForFiles, loadRules } from './lib/risk.mjs'
 
@@ -109,6 +110,12 @@ const pr = await api(`/repos/${REPO}/pulls/${prNumber}`).catch((error) => fail(e
 const files = await paginate(`/repos/${REPO}/pulls/${prNumber}/files`).catch((error) => fail(error.message))
 const body = String(pr.body ?? '')
 const paths = files.map((file) => file.filename)
+// The mechanical daily minor release (#80) is keyed on identity, not on the file
+// set: branch release/vX.Y.Z, title "release: vX.Y.Z" and every changed path
+// inside the five allowed paths. Only that shape skips the size rule and the risk
+// label: a PR that merely touches the same files stays T3.
+const mechanical = mechanicalRelease({ branch: pr.head?.ref, title: pr.title, files: paths })
+
 const errors = checkBody(body, POLICY)
 
 if (!INVESTIGATE_PATH.test(body) && !/(^|\n)\s*Fixes #\d+\b/.test(body)) {
@@ -116,11 +123,11 @@ if (!INVESTIGATE_PATH.test(body) && !/(^|\n)\s*Fixes #\d+\b/.test(body)) {
 }
 
 const fragmentAdded = files.some((file) => file.status === 'added' && /^changelog\.d\/[^/]+\.(added|changed|deprecated|removed|fixed|security)\.md$/.test(file.filename))
-if (paths.some((path) => path.startsWith('src/')) && !fragmentAdded && !/(^|\n)\s*Changelog-not-needed\s*:/i.test(body)) {
+if (!mechanical.mechanical && paths.some((path) => path.startsWith('src/')) && !fragmentAdded && !/(^|\n)\s*Changelog-not-needed\s*:/i.test(body)) {
   errors.push('a src/ change needs a changelog.d fragment or "Changelog-not-needed:"')
 }
 
-for (const group of DOCS_GROUPS) {
+for (const group of mechanical.mechanical ? [] : DOCS_GROUPS) {
   if (!paths.some((path) => group.match.test(path))) continue
   if (group.docs.some((doc) => paths.some((path) => covers(path, doc)))) continue
   if (/(^|\n)\s*Docs-not-needed\s*:/i.test(body)) continue
@@ -134,12 +141,12 @@ for (const group of DOCS_GROUPS) {
 // deletions count. `>` not `>=`.
 const changedFiles = Number(pr.changed_files ?? files.length)
 const changedLines = Number(pr.additions ?? 0) + Number(pr.deletions ?? 0)
-if ((changedFiles > 20 || changedLines > 800) && !/(^|\n)\s*Large-PR\s*:/i.test(body)) {
+if (!mechanical.mechanical && (changedFiles > 20 || changedLines > 800) && !/(^|\n)\s*Large-PR\s*:/i.test(body)) {
   errors.push(`a PR over 20 files or 800 changed lines needs a "Large-PR:" line (${String(changedFiles)} files, ${String(changedLines)} changed lines)`)
 }
 
 const rules = loadRules()
-const computed = tierForFiles(paths, rules).tier
+const computed = mechanical.mechanical ? 'T0' : tierForFiles(paths, rules).tier
 const labels = (pr.labels ?? []).map((label) => label.name)
 for (const label of labels.filter((name) => /^risk:T[0-3]$/.test(name))) {
   if (label !== `risk:${computed}`) errors.push(`label ${label} does not match the computed tier risk:${computed}`)
@@ -155,4 +162,5 @@ if (errors.length > 0) {
   process.exit(1)
 }
 
-console.log(`pr-lint: ok (#${prNumber}, ${computed}, ${paths.length} files)`)
+if (mechanical.mechanical) console.log(`pr-lint: ok (#${prNumber}, mechanical release v${mechanical.version}, ${paths.length} files)`)
+else console.log(`pr-lint: ok (#${prNumber}, ${computed}, ${paths.length} files)`)
