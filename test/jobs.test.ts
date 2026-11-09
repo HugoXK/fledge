@@ -1340,7 +1340,7 @@ test('an iterate job with an existing issue PR is rejected as duplicate', async 
   })
   const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
   const store = new Store(':memory:')
-  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  const jobs = new Jobs(store, config, { name: 'flybot', async run() { return { status: 'running' } } }, new MemoryMailer())
   try {
     const user = makeUser(store, { login: 'dup-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_dup', userId: user.id, owner: 'o', name: 'dup', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
@@ -1358,12 +1358,15 @@ test('an iterate job with an existing issue PR is rejected as duplicate', async 
 
 test('a rejected pull request preflight fails open and still starts the job', async () => {
   const github = await startFakeServer((request, response) => {
-    if ((request.url ?? '').includes('/pulls?state=open')) return json(response, 403, { message: 'Resource not accessible by integration' })
+    const path = request.url ?? ''
+    if (path.includes('/pulls?state=open')) return json(response, 403, { message: 'Resource not accessible by integration' })
+    if (path.includes('/branches/main')) return json(response, 200, { name: 'main', commit: { sha: 'sha-main' } })
+    if (path.includes('/contents/')) return json(response, 200, [])
     return json(response, 404, { message: 'Not Found' })
   })
   const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
   const store = new Store(':memory:')
-  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  const jobs = new Jobs(store, config, { name: 'flybot', async run() { return { status: 'running' } } }, new MemoryMailer())
   try {
     const user = makeUser(store, { login: 'forbidden-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_forbidden', userId: user.id, owner: 'o', name: 'dup', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
@@ -1372,6 +1375,32 @@ test('a rejected pull request preflight fails open and still starts the job', as
     assert.equal(result.ok, true)
     assert.equal(store.listJobsForRepo(repo.id).length, 1)
     assert.equal(store.listAudit().filter((row) => row.action === 'job.duplicate_work').length, 0)
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
+
+test('a non-flybot runner makes no duplicate lookup', async () => {
+  // #113 review F3: the duplicate preflight used to run before the `runner.name
+  // !== 'flybot'` guard the sibling preflight has, so a deployment with another
+  // runner decrypted the repo token and made GitHub reads it never made before.
+  const requested: string[] = []
+  const github = await startFakeServer((request, response) => {
+    requested.push(request.url ?? '')
+    return json(response, 404, { message: 'Not Found' })
+  })
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'capture', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'other-runner-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_other_runner', userId: user.id, owner: 'o', name: 'dup', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_other_runner', repoId: repo.id, userId: user.id, title: 'Fix #42', detail: '', issueUrl: 'https://github.com/o/dup/issues/42' })
+    const result = await jobs.enqueue(repo, 'manual', 'Fix this issue', 'iterate', { workItemId: item.id })
+    assert.equal(result.ok, true)
+    assert.equal(requested.filter((url) => url.includes('/pulls?state=open')).length, 0, 'no duplicate lookup for a non-flybot runner')
+    assert.equal(store.listJobsForRepo(repo.id).length, 1, 'the job is still created')
   } finally {
     store.close()
     await github.close()

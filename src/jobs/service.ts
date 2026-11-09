@@ -238,6 +238,11 @@ export class Jobs {
   }
 
   private async duplicatePreflight(repo: RepoRow, goal: string, workItemId?: string): Promise<{ ok: boolean; error?: string; code?: string }> {
+    // Only the FlyBot runner reads the upstream repository; the sibling
+    // `preflight` has the same guard at its first line. Without it a deployment
+    // on another runner decrypted the repo token and made GitHub reads it never
+    // made before this feature.
+    if (this.runner.name !== 'flybot') return { ok: true }
     const owner = repo.upstream_owner || repo.owner
     const name = repo.upstream_name || repo.name
     const repository = `${owner}/${name}`

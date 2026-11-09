@@ -18,11 +18,15 @@ function escapeRegExp(value: string): string {
 // cross-repository references.
 const BARE_REFERENCE = /#(\d+)\b/g
 const ANY_ISSUE_URL = /\/issues\/(\d+)\b/
-const REPOSITORY_PATH = /[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
+// The start is anchored to a delimiter so the scan is linear: a bare
+// `[class]+/[class]+$` retries every split point from every position, which is
+// quadratic on a slash-less run (65,538 chars measured 5,942 ms), and a pull
+// request body is stored whole and matched once per `#N`.
+const REPOSITORY_PATH = /(?:^|[^A-Za-z0-9_.-])([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/
 
 function repositoryPathBefore(text: string, index: number): string | null {
   const match = REPOSITORY_PATH.exec(text.slice(0, index).trimEnd())
-  return match === null ? null : match[0]
+  return match === null ? null : (match[1] ?? null)
 }
 
 function bareReferences(text: string, repository?: string): number[] {
@@ -38,11 +42,11 @@ function bareReferences(text: string, repository?: string): number[] {
 }
 
 function sameRepoReference(repository: string, issueNumber: number): RegExp {
-  return new RegExp(`(?:^|[^A-Za-z0-9_.-])${escapeRegExp(repository)}/issues/${issueNumber}\\b`)
+  return new RegExp(`(?:^|[^A-Za-z0-9_.-])${escapeRegExp(repository)}/issues/${issueNumber}\\b`, 'i')
 }
 
 function sameRepoIssueUrl(repository: string): RegExp {
-  return new RegExp(`(?:^|[^A-Za-z0-9_.-])${escapeRegExp(repository)}/issues/(\\d+)\\b`)
+  return new RegExp(`(?:^|[^A-Za-z0-9_.-])${escapeRegExp(repository)}/issues/(\\d+)\\b`, 'i')
 }
 
 function referenceNumber(match: RegExpExecArray | null): number | null {
