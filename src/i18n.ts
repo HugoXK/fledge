@@ -175,6 +175,45 @@ export function localizeMessage(locale: Locale, message: string | undefined): st
   return MESSAGES[message] ?? message
 }
 
+// A notification row is written as a finished sentence by the code that produced
+// the event, so its stored text is in the writer's language, not the reader's:
+// the quota path writes Chinese and the ops alerts write English. The dashboard
+// knows the locale at render time, so the sentence is rebuilt here from the
+// template it matches; a message no template knows is returned unchanged.
+type Localizer = (match: RegExpExecArray) => string
+
+const ZH_TO_EN: ReadonlyArray<readonly [RegExp, Localizer]> = [
+  [/^(.+) 的 GitHub token 权限不足，自动迭代已暂停；请重新授权后手动开启。$/, (m) => `${m[1]}: the GitHub token is missing permissions, so auto-iteration is paused. Re-authorize GitHub and start it again manually.`],
+  [/^(审核|任务) (\S+) 启动失败：([\s\S]+)$/, (m) => `The ${m[1] === '审核' ? 'review job' : 'job'} ${m[2]} failed to start: ${m[3]}`],
+  [/^(审核|任务) (\S+) 失败：([\s\S]+)$/, (m) => `The ${m[1] === '审核' ? 'review job' : 'job'} ${m[2]} failed: ${m[3]}`],
+  [/^(iterate|review) 任务 (\S+) 缺少阶段证据：([\s\S]+)$/, (m) => `The ${m[1]} job ${m[2]} is missing stage evidence: ${m[3]}`],
+  [/^任务 (\S+) 成本 ([\d.]+) 元，超过单任务预算 ([\d.]+) 元。$/, (m) => `Job ${m[1]} cost ${m[2]} CNY, over its ${m[3]} CNY single-job budget.`],
+  [/^任务 (\S+) 属于临时失败，将在约 (\d+) 分钟后自动重试。$/, (m) => `Job ${m[1]} hit a temporary failure; it will retry automatically in about ${m[2]} minutes.`],
+  [/^任务 (\S+) 的 PR 改动了受保护路径，已阻止合并：([\s\S]+)$/, (m) => `The PR for job ${m[1]} changed protected paths, so the merge was blocked: ${m[2]}`],
+  [/^任务 (\S+) 改动了受保护路径：([\s\S]+)$/, (m) => `Job ${m[1]} changed protected paths: ${m[2]}`],
+  [/^(.+) 连续 3 个任务失败，自动迭代已暂停；请检查 bridge、GitHub 凭据和模型额度后手动重新开启。$/, (m) => `${m[1]} failed 3 jobs in a row, so auto-iteration is paused. Check the bridge, the GitHub credential and the model quota, then start it again manually.`],
+  [/^(.+) 的本次任务只有 Lead 参与，其他团队角色没有实际介入。$/, (m) => `Only the Lead took part in this job for ${m[1]}; no other team role was involved.`],
+  [/^(.+) 团队提问：([\s\S]+)$/, (m) => `${m[1]} team question: ${m[2]}`],
+  [/^平台额度已用完，请(?:到|在) Settings → Model 配置你自己的模型 API。(?:后重试。)?$/, () => 'Platform quota is used up. Configure your own model API in Settings → Model.'],
+  [/^平台额度已用完，请在 Settings → Model 配置自己的模型 API。$/, () => 'Platform quota is used up. Configure your own model API in Settings → Model.'],
+]
+
+const EN_TO_ZH: ReadonlyArray<readonly [RegExp, Localizer]> = [
+  [/^job (\S+) has no callback for (\d+)m$/, (m) => `任务 ${m[1]} 已有 ${m[2]} 分钟没有回报。`],
+  [/^PR (\S+) has been open for (\d+)h$/, (m) => `PR ${m[1]} 已开启 ${m[2]} 小时。`],
+  [/^(.+): GitHub credential is (.+)$/, (m) => `${m[1]}：GitHub 凭据状态为 ${m[2]}。`],
+  [/^(.+): spent ([\d.]+) of ([\d.]+) CNY in 30 days$/, (m) => `${m[1]}：30 天已花费 ${m[2]} / ${m[3]} 元。`],
+]
+
+export function localizeNotification(locale: Locale, message: string): string {
+  const table = locale === 'zh' ? EN_TO_ZH : ZH_TO_EN
+  for (const [pattern, build] of table) {
+    const match = pattern.exec(message)
+    if (match !== null) return build(match)
+  }
+  return message
+}
+
 declare module 'fastify' {
   interface FastifyRequest {
     locale?: Locale

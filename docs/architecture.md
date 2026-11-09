@@ -539,6 +539,19 @@ issue/PR links, summary or question, and a link to the repository inbox or job p
 contain tokens or model keys. Approval and quota mail are transactional and are
 not controlled by the digest/job switches.
 
+### In-app notifications
+
+A notification row keeps the `kind` and stores the `message` exactly as the
+producer wrote it, so `src/jobs/service.ts` and `src/gateway/notifier.ts` write
+Chinese while the ops alerts in `src/db.ts` write English. The dashboard is the
+only reader, and it knows the reader's locale at render time: `noticeBlock`
+(`src/views/pages.ts`) passes the stored sentence through
+`localizeNotification` (`src/i18n.ts`), which rebuilds the sentence in the
+reader's language from the template it matches — both directions, with the
+interpolated job id, repo label, minutes and similar facts kept as data. A
+message no template knows, including every row written before this change,
+renders verbatim. Nothing is rewritten in the database and no column was added.
+
 ### Operational alerts
 
 A failed job also feeds the ops signal: three consecutive failures in one
@@ -584,7 +597,7 @@ generated per job, stored as a hash, and never appears in the UI.
 | `jobs` | lifecycle, kind (iterate/review), branch, issue/PR URL, review score, summary, cost, job-scoped token hash |
 | `api_tokens` | `flg_` tokens (PAT or job), hashed |
 | `quota_ledger` | per-request cost records |
-| `notifications` | in-app messages (quota, job failure) |
+| `notifications` | in-app messages (quota, job failure), stored as written and localized at render |
 | `audit_log` | who changed what |
 | `settings` | small key/value flags (e.g. quota notice dedupe) |
 

@@ -15,7 +15,7 @@ import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verifi
 import { classifyFailure, failureLabel, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { STAGE_MODES } from '../lib/stages.js'
 import type { InstallationRepo } from '../repos/app.js'
-import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
+import { localizeMessage, localizeNotification, translator, type Locale, type Translate } from '../i18n.js'
 import { parseTeam, type TeamLiveState, type TeamQuestionState } from '../flybot/instances.js'
 import type { ChiefMessage } from '../lib/chiefTranscript.js'
 
@@ -387,7 +387,7 @@ function noticeBlock(locale: Locale, viewer: Viewer, notifications: Notification
   if (unread.length === 0) return ''
   return `<div class="card notices"><h2>${escapeHtml(t('通知', 'Notifications'))}</h2>${unread
     .slice(0, 3)
-    .map((entry) => `<div class="notice"><span>${escapeHtml(entry.message)}</span><small>${escapeHtml(humanTimeShort(entry.created_at))}</small></div>`)
+    .map((entry) => `<div class="notice"><span>${escapeHtml(localizeNotification(locale, entry.message))}</span><small>${escapeHtml(humanTimeShort(entry.created_at))}</small></div>`)
     .join('')}<form method="post" action="/notifications/read">${csrf(viewer)}<button class="link" type="submit">${escapeHtml(t('全部标为已读', 'Mark all read'))}</button></form></div>`
 }
 

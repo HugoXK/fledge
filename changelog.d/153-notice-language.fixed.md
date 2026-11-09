@@ -1,0 +1,1 @@
+In-app notifications now render in the language of the console that shows them: the quota, job, team and ops banners are rebuilt from the producer's template at render time, so an English dashboard no longer shows Chinese rows and a Chinese dashboard no longer shows English ones.
