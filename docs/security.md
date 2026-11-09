@@ -345,8 +345,14 @@ treat it as a secret.
 
 ### Rate limits
 
-- Login: 30 requests/minute per IP.
-- Job callbacks: 120 requests/minute per IP.
+- Login: 30 requests/minute per client address.
+- Job callbacks: 120 requests/minute per client address.
+- A client address is the one the trusted local proxy appended to
+  `X-Forwarded-For`; a caller-supplied left end cannot open a new bucket. IPv6
+  clients are bucketed by their /64, because one host usually controls the whole
+  prefix.
+- `/metrics` shares the 120/minute API bucket, so the unauthenticated 401/403
+  path is not free to hammer.
 - The model gateway should be rate-limited at the reverse proxy per token if the
   platform is exposed to many users.
 

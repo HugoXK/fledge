@@ -21,7 +21,7 @@ import { failureBreakdown } from './lib/failure.js'
 import { Jobs } from './jobs/service.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
-import { RateLimiter } from './lib/rateLimit.js'
+import { rateLimitKey, RateLimiter } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
@@ -198,7 +198,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   const app = Fastify({
     logger: false,
-    trustProxy: true,
+    // Only the local nginx hop may add X-Forwarded-For; the caller-supplied left
+    // end of that header never becomes request.ip. See docs/deploy.md.
+    trustProxy: ['127.0.0.1', '::1', '::ffff:127.0.0.1'],
     bodyLimit: 20 * 1024 * 1024,
     routerOptions: { ignoreTrailingSlash: true },
   })
@@ -327,6 +329,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/metrics', async (request, reply) => {
+    if (!apiLimiter.take(`metrics:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
     const loopback = request.ip === '127.0.0.1' || request.ip === '::1' || request.ip === '::ffff:127.0.0.1'
     const header = String(request.headers.authorization ?? '')
     const bearer = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : ''
@@ -405,7 +408,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const t = translator(request.locale ?? 'zh')
       return htmlPage(reply, 403, errorPage(config, request.viewer ?? null, 'OAuth 已启用', '这个部署已经启用 GitHub OAuth，请使用 GitHub 登录。', request.locale, { href: '/auth/github', label: t('使用 GitHub 登录', 'Sign in with GitHub') }))
     }
-    if (!loginLimiter.take(`token:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!loginLimiter.take(`token:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const token = (form(request).token ?? '').trim()
     if (token === '') return htmlPage(reply, 400, messagePage(config, '缺少 token', '请填写一个 GitHub token。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
     let profile
@@ -436,7 +439,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/auth/github', async (request, reply) => {
-    if (!loginLimiter.take(`login:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!loginLimiter.take(`login:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     if (!oauthConfigured(config)) {
       return htmlPage(reply, 503, errorPage(config, request.viewer ?? null, 'GitHub OAuth 未配置', '请先在 .env 设置 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET。', request.locale))
     }
@@ -456,7 +459,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/auth/github/callback', async (request, reply) => {
-    if (!loginLimiter.take(`callback:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!loginLimiter.take(`callback:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const query = request.query as Record<string, string | undefined>
     const code = query.code ?? ''
     const state = query.state ?? ''
@@ -2474,7 +2477,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/approve/:token', async (request, reply) => {
-    if (!loginLimiter.take(`approve:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!loginLimiter.take(`approve:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const token = String((request.params as Record<string, string>).token)
     const result = await approvals.apply(token, 'email-link')
     if (!result.ok) return htmlPage(reply, 400, messagePage(config, '无法处理', result.reason, request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
@@ -2482,7 +2485,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/api/jobs/:id/credential', async (request, reply) => {
-    if (!apiLimiter.take(`credential:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
+    if (!apiLimiter.take(`credential:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
     const secret = bearerSecret(request)
     const result = await jobs.credential(String((request.params as Record<string, string>).id), secret)
     if (!result.ok) return reply.code(result.status ?? 400).send({ error: result.error ?? 'unauthorized' })
@@ -2503,7 +2506,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/api/jobs/:id/callback', async (request, reply) => {
-    if (!apiLimiter.take(`callback:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
+    if (!apiLimiter.take(`callback:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
     const secret = bearerSecret(request)
     const body = (request.body ?? {}) as Record<string, unknown>
     const result = await jobs.handleCallback(String((request.params as Record<string, string>).id), secret, body)
@@ -2707,7 +2710,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   }
 
   app.post('/api/github/webhook', async (request, reply) => {
-    if (!apiLimiter.take(`webhook:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
+    if (!apiLimiter.take(`webhook:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
     if (!githubApp.configured || config.githubApp.webhookSecret === '') return reply.code(503).send({ error: 'GitHub App webhook is not configured' })
     const signature = String(request.headers['x-hub-signature-256'] ?? '')
     const raw = (request as FastifyRequest & { rawBody?: Buffer }).rawBody
@@ -2744,7 +2747,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
 
   app.post('/api/inbound/email', async (request, reply) => {
-    if (!apiLimiter.take(`inbound:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
+    if (!apiLimiter.take(`inbound:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
     if (config.inboundEmailSecret === '') return reply.code(503).send({ error: 'inbound email is not configured' })
     const provided = String(request.headers['x-fledge-email-secret'] ?? '')
     if (!safeEqual(provided, config.inboundEmailSecret)) return reply.code(401).send({ error: 'bad inbound email secret' })

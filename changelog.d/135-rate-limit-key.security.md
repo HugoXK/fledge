@@ -1,0 +1,1 @@
+The rate-limit buckets behind token login, sign-in, the OAuth callback, approval and the job/webhook APIs now key on the client address the trusted local proxy saw, so rotating a caller-supplied `X-Forwarded-For` no longer mints a fresh bucket, IPv6 clients are bucketed by their /64, and `/metrics` shares the API bucket instead of answering unauthenticated requests for free.

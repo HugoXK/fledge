@@ -209,6 +209,16 @@ server {
 }
 ```
 
+The app trusts only those loopback hops - the `trustProxy` list in `src/app.ts`
+(`127.0.0.1`, `::1`, `::ffff:127.0.0.1`) - not every hop. `$proxy_add_x_forwarded_for`
+appends `$remote_addr`, so the address nginx actually saw is the rightmost
+`X-Forwarded-For` entry, and that is the value Fledge uses as `request.ip`, as the
+rate-limit bucket key and for the `/metrics` loopback check. Everything to the
+left of it is caller-supplied and ignored, so a client cannot mint a new bucket
+by rotating the header. If your deployment puts another proxy in front of this
+one, name that hop in the same list instead of loosening it: `trustProxy: true`
+takes the caller-supplied left end of the header.
+
 Set `BASE_URL=https://fledge.example.com` so cookies are `Secure` and email links
 are absolute.
 
