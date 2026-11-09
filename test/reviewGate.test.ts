@@ -35,6 +35,10 @@ async function runScript(script: string, args: string[], env: Record<string, str
 
 const PASS_BODY = `Verdict: PASS at ${SHA}\nWritten-by: HugoXK-bot\nPosted-by: HugoXK-bot\n\nRan:\n- \`npm run check\` — pass\n\nNot run: Docker image\n`
 const REJECT_BODY = `Verdict: REQUEST_CHANGES at ${SHA}\nWritten-by: HugoXK-bot\nPosted-by: HugoXK-bot\n\nRan:\n- \`npm run check\` — fail\n\nNot run: Docker image\n`
+// The block this repo posts now: the account and the Bot identity, no hand-asserted poster.
+const TWO_LINE_PASS = `Verdict: PASS at ${SHA}\nWritten-by: HugoXK-bot\nAuthor: Fledge Platform Reviewer\n\nRan:\n- \`npm run check\` — pass\n\nNot run: Docker image\n`
+// Every line a body can assert, claiming to be the reviewer. Only the login can decide.
+const FORGED_PASS = `Verdict: PASS at ${SHA}\nWritten-by: HugoXK-bot\nAuthor: Fledge Platform Reviewer\nPosted-by: HugoXK-bot\n\nRan:\n- \`npm run check\` — pass\n\nNot run: Docker image\n`
 
 interface FakeState {
   files: Array<string | { filename: string; patch?: string }>
@@ -153,6 +157,49 @@ async function withFakeGitHub(state: FakeState, body: (env: Record<string, strin
   }
 }
 
+// The expiry of the legacy comment path can only be tested by standing past its
+// date, and the CLI reads the wall clock. These cases call the decision directly
+// with an explicit `now`, over the same fake state the subprocess cases use.
+//
+// scripts/lib/review-gate.mjs ships no declaration file and this issue pins the
+// change to the gate, its docs and this suite, so the import goes through a
+// variable and the shape is typed here (the same pattern as hasRan below).
+const REVIEW_GATE_MODULE = '../scripts/lib/review-gate.mjs'
+interface GateOutcome {
+  ok: boolean
+  message: string
+}
+const { evaluateGate, COMMENT_VERDICT_FALLBACK_UNTIL } = (await import(REVIEW_GATE_MODULE)) as {
+  evaluateGate: (options: {
+    api: (path: string) => Promise<unknown>
+    repo: string
+    policy: { writers: string[]; requiredPass?: string; selfReview?: string[] }
+    prNumber: number
+    tier?: string
+    sha?: string
+    now?: number
+  }) => Promise<GateOutcome>
+  COMMENT_VERDICT_FALLBACK_UNTIL: string
+}
+
+function fakeGateApi(state: FakeState): (path: string) => Promise<unknown> {
+  return async (path: string) => {
+    const url = new URL(path, 'http://127.0.0.1')
+    const pathname = url.pathname
+    if (pathname === '/repos/o/r/pulls/7') {
+      return { number: 7, title: state.title, head: { sha: state.sha, ref: state.branch, repo: { full_name: state.headRepo } }, base: { sha: 'base-sha', ref: 'main', repo: { full_name: state.baseRepo } }, user: { login: state.author }, labels: [] }
+    }
+    if (pathname === '/repos/o/r/pulls/7/files') return state.files.map((file) => (typeof file === 'string' ? { filename: file } : file))
+    if (pathname === '/repos/o/r/pulls/7/reviews') return state.reviews
+    if (pathname === '/repos/o/r/issues/7/comments') return state.comments
+    throw new Error(`unexpected ${pathname}`)
+  }
+}
+
+async function runGateDirect(state: FakeState, now: number): Promise<GateOutcome> {
+  return evaluateGate({ api: fakeGateApi(state), repo: 'o/r', policy: JSON.parse(state.policy), prNumber: 7, tier: 'T3', now })
+}
+
 // --- the gate still maps a tip to the same conclusion ------------------------
 
 test('the gate passes a T0 tip with no verdict, because no PASS is required', async () => {
@@ -229,6 +276,62 @@ test('the gate passes a T2 tip that carries a valid PASS at the tip', async () =
     assert.equal(result.code, 0, result.stderr)
     assert.match(result.stdout, /PASS/)
   })
+})
+
+test('a review object by the required account passes without a Posted-by line', async () => {
+  // The defect: the current two-line block fails the gate it is written for, on
+  // a line the platform already answers. Identity is review.user.login.
+  const state = initialState()
+  state.reviews = [{ body: TWO_LINE_PASS, state: 'APPROVED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /PASS/)
+  })
+})
+
+test('a review object from another login is refused on that login, never promoted by its body lines', async () => {
+  // Every body line claims the reviewer; only review.user.login decides. The
+  // same body posted by the required account still passes, so the failure below
+  // is the login and not the text.
+  const forged = initialState()
+  forged.reviews = [{ body: FORGED_PASS, state: 'APPROVED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'mallory' }, author_association: 'COLLABORATOR' }]
+  await withFakeGitHub(forged, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'a foreign login cannot PASS, however many lines it writes')
+    assert.match(result.stderr, /must come from a review by HugoXK-bot, not mallory/)
+  })
+
+  const genuine = initialState()
+  genuine.reviews = [{ body: FORGED_PASS, state: 'APPROVED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  await withFakeGitHub(genuine, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, 'the same body from the required account is the control')
+  })
+})
+
+test('the legacy comment verdict path closes on the named constant', async () => {
+  assert.equal(COMMENT_VERDICT_FALLBACK_UNTIL, '2026-12-14T00:00:00.000Z', 'the fallback date is one named constant, and this test is where it changes')
+
+  // Before the date the old shape still works, so #146-era verdicts stay valid.
+  const before = initialState()
+  before.comments = [{ body: PASS_BODY, created_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  const open = await runGateDirect(before, Date.parse('2026-11-20T00:00:00Z'))
+  assert.equal(open.ok, true, open.message)
+
+  // After it, a comment-shaped PASS fails closed: it is not a review object.
+  const after = initialState()
+  after.comments = before.comments
+  const closed = await runGateDirect(after, Date.parse('2027-01-01T00:00:00Z'))
+  assert.equal(closed.ok, false, 'the legacy path must not outlive its date')
+  assert.match(closed.message, /comment-shaped verdict path closed on 2026-12-14/)
+
+  // The constant gates the comment fallback only: a review object at the same
+  // instant still passes, or every real verdict would expire with it.
+  const reviewed = initialState()
+  reviewed.reviews = [{ body: TWO_LINE_PASS, state: 'APPROVED', submitted_at: '2029-01-01T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  const stillPasses = await runGateDirect(reviewed, Date.parse('2029-01-02T00:00:00Z'))
+  assert.equal(stillPasses.ok, true, stillPasses.message)
 })
 
 test('the tip author may never PASS its own tip, not even the reviewer identity', async () => {
