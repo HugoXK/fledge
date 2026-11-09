@@ -166,6 +166,8 @@ export function localizeMessage(locale: Locale, message: string | undefined): st
   if (connected !== null) return `Connected ${connected[1]} ${connected[1] === '1' ? 'repository' : 'repositories'}.`
   const fork = /^已创建 fork (.+)。$/.exec(message)
   if (fork !== null) return `Created fork ${fork[1]}.`
+  const duplicateWork = /^已有 PR 覆盖这个 issue：(.+)$/.exec(message)
+  if (duplicateWork !== null) return `A pull request already covers this issue: ${duplicateWork[1]}`
   const mailFailed = /^测试邮件发送失败：(.+)$/.exec(message)
   if (mailFailed !== null) return `Test email failed: ${mailFailed[1]}`
   const connectFailed = /^连接失败：(.+)$/.exec(message)

@@ -11,24 +11,27 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-// `#N` counts only when the `#` does not continue a repository path, and an
-// `/issues/N` URL counts only for the target repository; `other/repo#42`,
+// `#N` counts when no repository path stands before it, and an `/issues/N` URL
+// counts only for the target repository. A path that names the target
+// repository still counts (GitHub paths are case-insensitive); `other/repo#42`,
 // `other/repo #42` and `https://github.com/other/repo/issues/42` are
 // cross-repository references.
 const BARE_REFERENCE = /#(\d+)\b/g
 const ANY_ISSUE_URL = /\/issues\/(\d+)\b/
-const REPOSITORY_PATH_BEFORE_REFERENCE = /[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
+const REPOSITORY_PATH = /[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 
-function followsRepositoryPath(text: string, index: number): boolean {
-  return REPOSITORY_PATH_BEFORE_REFERENCE.test(text.slice(0, index).trimEnd())
+function repositoryPathBefore(text: string, index: number): string | null {
+  const match = REPOSITORY_PATH.exec(text.slice(0, index).trimEnd())
+  return match === null ? null : match[0]
 }
 
-function bareReferences(text: string): number[] {
+function bareReferences(text: string, repository?: string): number[] {
   const numbers: number[] = []
   for (const match of text.matchAll(BARE_REFERENCE)) {
     const value = Number(match[1])
     if (!Number.isInteger(value) || value <= 0) continue
-    if (followsRepositoryPath(text, match.index ?? 0)) continue
+    const path = repositoryPathBefore(text, match.index ?? 0)
+    if (path !== null && repository !== undefined && path.toLowerCase() !== repository.toLowerCase()) continue
     numbers.push(value)
   }
   return numbers
@@ -50,14 +53,14 @@ function referenceNumber(match: RegExpExecArray | null): number | null {
 
 export function issueNumberFromText(text: string, repository?: string): number | null {
   if (repository === undefined) return referenceNumber(ANY_ISSUE_URL.exec(text)) ?? bareReferences(text)[0] ?? null
-  return referenceNumber(sameRepoIssueUrl(repository).exec(text)) ?? bareReferences(text)[0] ?? null
+  return referenceNumber(sameRepoIssueUrl(repository).exec(text)) ?? bareReferences(text, repository)[0] ?? null
 }
 
 export function findDuplicatePullRequest(issueNumber: number, repository: string, pulls: OpenPullRequest[]): OpenPullRequest | null {
   const sameRepo = sameRepoReference(repository, issueNumber)
   for (const pull of pulls) {
     for (const text of [pull.title, pull.body, pull.head]) {
-      if (sameRepo.test(text) || bareReferences(text).includes(issueNumber)) return pull
+      if (sameRepo.test(text) || bareReferences(text, repository).includes(issueNumber)) return pull
     }
   }
   return null

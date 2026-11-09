@@ -32,6 +32,15 @@ test('duplicate pull requests are detected inside the target repository', () => 
   assert.equal(findDuplicatePullRequest(99, 'o/dup', pulls), null)
 })
 
+test('a path that names the target repository still counts as a reference', () => {
+  assert.equal(issueNumberFromText('HugoXK/fledge #42', 'HugoXK/fledge'), 42)
+  assert.equal(issueNumberFromText('HugoXK/fledge#42', 'HugoXK/fledge'), 42)
+  assert.equal(issueNumberFromText('hugoxk/fledge#42', 'HugoXK/fledge'), 42)
+  assert.equal(issueNumberFromText('and/or #42'), 42)
+  const pulls = [pull(7, { title: 'HugoXK/fledge #42' })]
+  assert.equal(findDuplicatePullRequest(42, 'HugoXK/fledge', pulls)?.number, 7)
+})
+
 test('a repository path before the reference marks it cross-repository even with a space', () => {
   assert.equal(issueNumberFromText('Blocked by other/repo #42', 'o/dup'), null)
   assert.equal(issueNumberFromText('Upstream https://github.com/other/repo #42', 'o/dup'), null)

@@ -35,6 +35,10 @@ test('redirect messages and dynamic counts are localized', () => {
   assert.equal(localizeMessage('en', '已接入 2 个仓库。'), 'Connected 2 repositories.')
   assert.equal(localizeMessage('en', '已接入 1 个仓库。'), 'Connected 1 repository.')
   assert.equal(localizeMessage('en', '已创建 fork acme/demo。'), 'Created fork acme/demo.')
+  assert.equal(
+    localizeMessage('en', '已有 PR 覆盖这个 issue：https://github.com/acme/demo/pull/7'),
+    'A pull request already covers this issue: https://github.com/acme/demo/pull/7',
+  )
   assert.equal(localizeMessage('en', '设置已保存；团队规则已按新目标更新。'), 'Settings saved; the team playbook now follows the new goal.')
   assert.equal(localizeMessage('en', '计划任务已排队，不会写代码或开 PR。'), 'Plan queued. It will not write code or open a PR.')
 })
