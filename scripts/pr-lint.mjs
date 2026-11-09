@@ -127,6 +127,17 @@ for (const group of DOCS_GROUPS) {
   errors.push(`the changed module owns ${group.docs.join(' or ')}; update it or add "Docs-not-needed:"`)
 }
 
+// One size rule, no warning: over 20 files or over 800 changed lines the body
+// must carry a `Large-PR:` line, which makes the size visible where the reviewer
+// reads it without capping it. The counts come from the pull request API rather
+// than `git diff --stat`, so a rebase cannot change the number silently, and
+// deletions count. `>` not `>=`.
+const changedFiles = Number(pr.changed_files ?? files.length)
+const changedLines = Number(pr.additions ?? 0) + Number(pr.deletions ?? 0)
+if ((changedFiles > 20 || changedLines > 800) && !/(^|\n)\s*Large-PR\s*:/i.test(body)) {
+  errors.push(`a PR over 20 files or 800 changed lines needs a "Large-PR:" line (${String(changedFiles)} files, ${String(changedLines)} changed lines)`)
+}
+
 const rules = loadRules()
 const computed = tierForFiles(paths, rules).tier
 const labels = (pr.labels ?? []).map((label) => label.name)

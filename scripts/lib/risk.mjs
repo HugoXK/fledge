@@ -73,3 +73,22 @@ export function classify(files, diffText = '', rules = loadRules()) {
 export function limitsFor(tier, rules = loadRules()) {
   return rules.limits?.[tier] ?? null
 }
+
+// Which ref the tier is measured against. `merge_group` used to fall into the
+// push branch and diff `HEAD~1` — the queue's synthetic merge commit — so the
+// report described whatever the last commit happened to touch instead of the
+// pull request. `fetch` names what has to be fetched before the ref can be
+// diffed; an empty string means it is already local.
+export function chooseBase(eventName, event = {}) {
+  if (eventName === 'pull_request') {
+    const ref = String(event.pull_request?.base?.ref ?? 'main')
+    return { ref: `origin/${ref}`, fetch: ref }
+  }
+  if (eventName === 'merge_group') {
+    const branch = String(event.merge_group?.base_ref ?? 'refs/heads/main').replace(/^refs\/heads\//, '')
+    const sha = String(event.merge_group?.base_sha ?? '')
+    if (sha !== '') return { ref: sha, fetch: `refs/heads/${branch}` }
+    return { ref: `origin/${branch}`, fetch: branch }
+  }
+  return { ref: 'HEAD~1', fetch: '' }
+}
