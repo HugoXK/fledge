@@ -5,7 +5,7 @@
 // be" (an interrupted or truncated backup) from "the live instance has written
 // since" (normal drift). It describes bytes and counts, never row data.
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, createReadStream, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { basename } from 'node:path'
 
@@ -16,8 +16,12 @@ export function manifestPath(copyPath) {
   return `${copyPath}.json`
 }
 
-export function sha256File(path) {
-  return createHash('sha256').update(readFileSync(path)).digest('hex')
+// Streamed, so the hash costs the same memory whatever the file's size:
+// readFileSync refused anything above 2 GiB and buffered the whole file below it.
+export async function sha256File(path) {
+  const hash = createHash('sha256')
+  for await (const chunk of createReadStream(path)) hash.update(chunk)
+  return hash.digest('hex')
 }
 
 // The same facts the drill reads back from a restored copy: schema version and
@@ -39,13 +43,13 @@ export function databaseFacts(path) {
   }
 }
 
-export function writeManifest(copyPath) {
+export async function writeManifest(copyPath) {
   const facts = databaseFacts(copyPath)
   const manifest = {
     copy: basename(copyPath),
     createdAt: new Date().toISOString(),
     size: statSync(copyPath).size,
-    sha256: sha256File(copyPath),
+    sha256: await sha256File(copyPath),
     schemaVersion: facts.schemaVersion,
     tables: facts.tables,
   }
