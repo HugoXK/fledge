@@ -1249,3 +1249,34 @@ test('transient failures schedule one durable retry and permanent failures do no
     store.close()
   }
 })
+
+test('the auto-merge reconciler merges an open Fledge PR once checks are green', async () => {
+  const merges: string[] = []
+  const github = await startFakeServer((request, response) => {
+    const method = request.method ?? 'GET'
+    const path = request.url ?? ''
+    if (method === 'GET' && path === '/repos/o/reconcile/pulls/3') return json(response, 200, { number: 3, html_url: 'https://github.com/o/reconcile/pull/3', title: 'fix', state: 'open', head: { ref: 'fledge/x', sha: 'sha3' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false })
+    if (method === 'GET' && path === '/repos/o/reconcile/commits/sha3/check-runs?per_page=100') return json(response, 200, { check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] })
+    if (method === 'GET' && path === '/repos/o/reconcile/commits/sha3/status') return json(response, 200, { state: 'success', statuses: [] })
+    if (method === 'GET' && path === '/repos/o/reconcile/pulls/3/reviews?per_page=100') return json(response, 200, [])
+    if (method === 'GET' && path === '/repos/o/reconcile/branches/main/protection') return json(response, 200, { required_status_checks: { contexts: ['ci'] }, required_pull_request_reviews: { required_approving_review_count: 0 } })
+    if (method === 'PUT' && path === '/repos/o/reconcile/pulls/3/merge') { merges.push(path); return json(response, 200, { merged: true, sha: 'merged3' }) }
+    if (method === 'POST' && path === '/repos/o/reconcile/issues/3/comments') return json(response, 200, {})
+    return json(response, 404, { message: 'Not Found' })
+  })
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'reconcile-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_reconcile', userId: user.id, owner: 'o', name: 'reconcile', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, roleCheckedAt: new Date().toISOString(), upstreamHtmlUrl: 'https://github.com', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_reconcile', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(job.id, { status: 'succeeded', branch: 'fledge/x', pr_url: 'https://github.com/o/reconcile/pull/3', pr_state: 'open', finished_at: new Date().toISOString() })
+    await jobs.reconcileAutoMerge()
+    assert.equal(merges.length, 1)
+    assert.equal(store.getJob(job.id)?.pr_state, 'merged')
+  } finally {
+    store.close()
+    await github.close()
+  }
+})

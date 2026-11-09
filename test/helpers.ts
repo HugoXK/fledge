@@ -1,4 +1,5 @@
 import http from 'node:http'
+import { resetGithubBudget } from '../src/lib/githubBudget.js'
 import type { AddressInfo } from 'node:net'
 import { randomBytes } from 'node:crypto'
 import { loadConfig, type Config } from '../src/config.js'
@@ -15,6 +16,7 @@ export class MemoryMailer implements Mailer {
 }
 
 export function testConfig(overrides: Partial<Config> = {}): Config {
+  resetGithubBudget()
   const base = loadConfig({
     env: 'test',
     baseUrl: 'http://127.0.0.1:9999',
@@ -36,7 +38,12 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
       scopes: 'read:user user:email',
       adminLogin: 'admin',
       apiBase: 'https://api.github.com',
+      requestsPerMinute: 120,
     },
+    metrics: { token: '' },
+    otel: { endpoint: '', serviceName: 'fledge' },
+    shutdown: { graceSeconds: 0 },
+    autoMerge: { reconcileMinutes: 5 },
   })
   return {
     ...base,
@@ -46,6 +53,10 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     llm: { ...base.llm, ...overrides.llm },
     quota: { ...base.quota, ...overrides.quota },
     runner: { ...base.runner, ...overrides.runner },
+    metrics: { ...base.metrics, ...overrides.metrics },
+    otel: { ...base.otel, ...overrides.otel },
+    shutdown: { ...base.shutdown, ...overrides.shutdown },
+    autoMerge: { ...base.autoMerge, ...overrides.autoMerge },
   }
 }
 

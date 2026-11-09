@@ -19,7 +19,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/auth/github/reauthorize` | approved | Re-authorize with repo scope for user-attributed App writes |
 | GET | `/repos/new` | approved | GitHub App installations and repository picker |
 | POST | `/repos/app` | approved + CSRF | Connect repositories through an installation |
-| POST | `/api/github/webhook` | GitHub signature | GitHub App webhook ingestion and CI/review follow-up |
+| POST | `/api/github/webhook` | GitHub signature + delivery id | GitHub App webhook ingestion, replay dedupe and CI/review/auto-merge follow-up |
 | POST | `/auth/token` | public, rate-limited | Sign in with a GitHub token when OAuth is not configured |
 | POST | `/auth/logout` | session + CSRF | Sign out |
 | GET | `/apply` | session | Disclaimer and information-security signature |
@@ -31,6 +31,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/repos` | approved + CSRF | Add an upstream repository; Fledge checks or creates the user's fork |
 | GET | `/repos/:id` | owner | Repo detail, including the selected role, delivery board and allowed roles (`?workState=...` filters the work-item list) |
 | GET | `/readyz` | public | Database and per-repository instance readiness summary |
+| GET | `/metrics` | loopback or bearer token | Prometheus metrics (`METRICS_TOKEN`) |
 | GET | `/api/read/metrics` | approved | Read-only metrics: a super admin gets the global window, users get their own personal window (`?window=7 or 30`) |
 | POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job; plan-first repositories enqueue a plan |
 | POST | `/repos/:id/work` | owner + CSRF | Create a work item |

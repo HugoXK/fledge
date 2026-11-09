@@ -1,4 +1,7 @@
 import { log } from '../lib/log.js'
+import { incCounter, observeHistogram } from '../lib/metrics.js'
+import { endSpan, startSpan } from '../lib/otel.js'
+import { acquireGithubBudget, noteGithubRateLimit } from '../lib/githubBudget.js'
 
 const DEFAULT_API = 'https://api.github.com'
 const SEGMENT = /^[A-Za-z0-9_.-]+$/
@@ -128,30 +131,55 @@ export class GithubClient {
   ) {}
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const span = startSpan('github.request', { method, path: path.split('?')[0] ?? path })
+    const startedAt = Date.now()
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const response = await fetch(`${this.apiBase.replace(/\/$/, '')}${path}`, {
-        method,
-        headers: {
-          authorization: `Bearer ${this.token}`,
-          accept: 'application/vnd.github+json',
-          'x-github-api-version': '2022-11-28',
-          'user-agent': 'fledge/0.1',
-          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal: AbortSignal.timeout(30_000),
-      })
+      let response: Response
+      await acquireGithubBudget(this.token)
+      try {
+        response = await fetch(`${this.apiBase.replace(/\/$/, '')}${path}`, {
+          method,
+          headers: {
+            authorization: `Bearer ${this.token}`,
+            accept: 'application/vnd.github+json',
+            'x-github-api-version': '2022-11-28',
+            'user-agent': 'fledge/0.1',
+            ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          signal: AbortSignal.timeout(30_000),
+        })
+      } catch (error) {
+        incCounter('fledge_github_requests_total', { method, status: 0 }, 1, 'GitHub API requests')
+        endSpan(span, 'ERROR', error instanceof Error ? error.message : String(error), { status: 0 })
+        throw error
+      }
+      incCounter('fledge_github_requests_total', { method, status: response.status }, 1, 'GitHub API requests')
+      observeHistogram('fledge_github_request_seconds', (Date.now() - startedAt) / 1000, { method }, 'GitHub request duration')
       const text = await response.text()
-      if (response.ok) return (text === '' ? {} : JSON.parse(text)) as T
+      if (response.ok) {
+        endSpan(span, 'OK', undefined, { status: response.status })
+        return (text === '' ? {} : JSON.parse(text)) as T
+      }
       let message = text.slice(0, 300)
       try {
         const parsed = JSON.parse(text) as { message?: string }
         if (parsed.message !== undefined) message = parsed.message
       } catch {}
       const retryable = response.status === 429 || (method === 'GET' && response.status >= 500) || (response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.get('retry-after') !== null || /rate limit/i.test(message)))
-      if (!retryable || attempt === 2) throw new GithubError(response.status, message)
+      if (!retryable || attempt === 2) {
+        endSpan(span, 'ERROR', message, { status: response.status })
+        throw new GithubError(response.status, message)
+      }
       const retryAfter = Number(response.headers.get('retry-after'))
-      await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 10_000) : Math.min(500 * 2 ** attempt, 5_000))
+      const reset = Number(response.headers.get('x-ratelimit-reset'))
+      const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.min(retryAfter * 1000, 10_000)
+        : Number.isFinite(reset) && reset > 0
+          ? Math.min(Math.max(0, reset * 1000 - Date.now()), 10_000)
+          : Math.min(500 * 2 ** attempt, 5_000)
+      noteGithubRateLimit(this.token, waitMs)
+      await sleep(waitMs)
     }
     throw new GithubError(500, 'GitHub request failed')
   }

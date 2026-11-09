@@ -344,6 +344,25 @@ settings; the scheduler releases a due retry only when the repository has no
 active job and its instance is ready. Permanent failures stay manual. Platform
 concurrency is `PLATFORM_MAX_ACTIVE_JOBS` (default 2), not a hard-coded literal.
 
+### Metrics, traces, shutdown and webhook replay
+
+`/metrics` exposes Prometheus counters, gauges and histograms for HTTP, jobs,
+retries, merges, path guard, evidence verification, GitHub and the bridge. It is
+loopback-only unless `METRICS_TOKEN` is set. Optional OTLP/HTTP JSON tracing is
+enabled with `OTEL_EXPORTER_OTLP_ENDPOINT`; HTTP requests, GitHub calls and
+bridge dispatches emit spans.
+
+Shutdown stops the scheduler, waits up to `SHUTDOWN_GRACE_SECONDS` for active
+jobs, closes HTTP, flushes traces and closes SQLite. Startup removes orphan
+retry/follow-up settings, orphan job events and instances.
+
+GitHub calls go through a per-token budget (`GITHUB_REQUESTS_PER_MINUTE`) and
+honor `Retry-After` / `X-RateLimit-Reset` before retrying. GitHub webhooks are
+claimed by `X-GitHub-Delivery` in `webhook_deliveries`; a duplicate is a no-op
+and a failed delivery can be retried. Opening checks or approving a review
+triggers an auto-merge reconcile, and the scheduler re-checks open Fledge PRs at
+most every `AUTO_MERGE_RECONCILE_MINUTES`.
+
 ### Agent workspace
 
 The owner-accessible workspace is path-based to avoid a wildcard certificate:

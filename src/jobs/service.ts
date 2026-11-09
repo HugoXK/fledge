@@ -12,6 +12,7 @@ import { attributionSentence, parseAttribution, type Attribution } from '../lib/
 import { parseEvidence, type Evidence } from '../lib/evidence.js'
 import { classifyFailure } from '../lib/failure.js'
 import { retryDecision } from '../lib/retry.js'
+import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
 import type { VerificationResult } from '../lib/verification.js'
@@ -109,6 +110,7 @@ export class Jobs {
   private questionBusy = false
   private readonly followUpLocks = new Set<string>()
   private ticking = false
+  private stopped = false
   private lastPruneAt = 0
   private readonly credentialCache = new Map<string, { at: number }>()
   private readonly quotaNotifier: QuotaNotifier
@@ -549,6 +551,10 @@ export class Jobs {
       finished_at: nowIso(),
     })
     if (!claimed) return false
+    incCounter('fledge_jobs_total', { status: result.status, kind: job.kind }, 1, 'Jobs by terminal status')
+    const started = Date.parse(job.started_at ?? job.created_at)
+    const ended = Date.parse(nowIso())
+    if (Number.isFinite(started) && Number.isFinite(ended)) observeHistogram('fledge_job_seconds', Math.max(0, (ended - started) / 1000), { kind: job.kind, status: result.status }, 'Job duration')
     this.syncWorkItemForJob(job, { status: result.status, prUrl, issueUrl })
     if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_at: nowIso(), last_review_status: result.status })
     else this.store.updateRepo(job.repo_id, { last_status: result.status })
@@ -623,6 +629,7 @@ export class Jobs {
       workItemId: job.work_item_id,
       priority: job.priority,
     }))
+    incCounter('fledge_retries_total', { kind: failure?.kind ?? 'unknown' }, 1, 'Scheduled retries')
     this.store.audit(job.user_id, 'job.retry_scheduled', `${job.id}: ${decision.reason}, due ${dueAt}`)
     this.store.recordJobEvent({ jobId: job.id, repoId: job.repo_id, userId: job.user_id, kind: 'job.retry_scheduled', step: job.kind, meta: `${decision.reason}; due ${dueAt}` })
     this.store.notify(job.user_id, 'job', `任务 ${job.id} 属于临时失败，将在约 ${Math.round(decision.delayMs / 60_000)} 分钟后自动重试。`)
@@ -820,12 +827,14 @@ export class Jobs {
       const guard = await this.pathGuardFor(client, owner, name, number, job, repo)
       this.store.updateJob(job.id, { verification_json: JSON.stringify(verification), path_guard_json: JSON.stringify(guard) })
       if (!guard.ok) {
+        incCounter('fledge_path_guard_blocked_total', {}, 1, 'Pull requests blocked by path guard')
         const detail = guard.violations.map((violation) => `${violation.file}: ${violation.reason}`).join('; ').slice(0, 1000)
         this.store.audit(job.user_id, 'job.path_guard_violation', `${job.id}: ${detail}`)
         this.store.event('job_path_guard_violation', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: detail })
         this.store.notify(job.user_id, 'job', `任务 ${job.id} 改动了受保护路径：${detail}`)
       }
       if (!verification.ok) {
+        incCounter('fledge_verification_failed_total', {}, 1, 'Pull request verification failures')
         this.store.audit(job.user_id, 'job.verification_failed', `${job.id}: ${verification.reasons.join('; ').slice(0, 500)}`)
         this.store.event('job_verification_failed', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: verification.reasons.join('|').slice(0, 400) })
       }
@@ -891,6 +900,7 @@ export class Jobs {
       const guard = await this.pathGuardFor(client, owner, name, number, job, repo)
       this.store.updateJob(job.id, { path_guard_json: JSON.stringify(guard) })
       if (!guard.ok) {
+        incCounter('fledge_path_guard_blocked_total', {}, 1, 'Pull requests blocked by path guard')
         const detail = guard.violations.map((violation) => `${violation.file}: ${violation.reason}`).join('; ').slice(0, 1000)
         this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: path guard ${detail}`)
         this.store.notify(job.user_id, 'job', `任务 ${job.id} 的 PR 改动了受保护路径，已阻止合并：${detail}`)
@@ -951,6 +961,7 @@ export class Jobs {
         if (workItem !== undefined) {
           this.store.updateWorkItem(workItem.id, { state: 'merged', pr_state: 'merged', merged_at: nowIso(), merge_commit: merged.sha ?? null })
         }
+        incCounter('fledge_merges_total', { result: 'merged' }, 1, 'Pull request merge results')
         this.store.updateJobsPrState(prUrl, 'merged')
         this.store.audit(job.user_id, manual ? 'job.manually_merged' : 'job.auto_merged', `${job.id}: PR ${number} ${merged.sha ?? ''}`)
         this.store.event('job_auto_merged', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: `pr=${number}` })
@@ -971,6 +982,31 @@ export class Jobs {
     if (current === undefined || current.pr_url === null) return
     await this.verifyPullRequest(current, current.pr_url)
     if (current.kind === 'iterate') await this.maybeAutoMerge(current, current.pr_url)
+  }
+
+  async reconcilePr(repo: RepoRow, prUrl: string): Promise<void> {
+    const job = this.store.latestJobByPrUrl(repo.user_id, prUrl)
+    if (job === undefined) return
+    await this.verifyAndMaybeMerge(job.id)
+  }
+
+  async reconcileAutoMerge(): Promise<void> {
+    let candidates = 0
+    for (const repo of this.store.listAutoMergeRepos()) {
+      if (repo.repo_role !== 'maintainer') continue
+      for (const job of this.store.listPrJobsForRepo(repo.id, 20)) {
+        if (job.pr_url === null || job.pr_state === 'merged' || job.pr_state === 'closed') continue
+        const key = `merge_reconcile:${job.id}`
+        const last = this.store.getSetting(key)
+        const lastAt = last === undefined ? 0 : Date.parse(last)
+        if (Number.isFinite(lastAt) && Date.now() - lastAt < this.config.autoMerge.reconcileMinutes * 60_000) continue
+        this.store.setSetting(key, nowIso())
+        candidates += 1
+        await this.verifyAndMaybeMerge(job.id)
+        this.store.audit(job.user_id, 'merge.reconciled', job.id)
+      }
+    }
+    setGauge('fledge_auto_merge_candidates', candidates, {}, 'Auto-merge candidates checked this pass')
   }
 
   private async maybeAutoMerge(job: JobRow, prUrl: string): Promise<void> {
@@ -1626,7 +1662,7 @@ export class Jobs {
   }
 
   async tick(): Promise<void> {
-    if (this.ticking) return
+    if (this.stopped || this.ticking) return
     this.ticking = true
     try {
       await this.tickOnce()
@@ -1637,6 +1673,8 @@ export class Jobs {
 
   private async tickOnce(): Promise<void> {
     const handled = new Set<string>()
+    setGauge('fledge_jobs_active', this.store.countActiveJobs(), {}, 'Active jobs')
+    setGauge('fledge_jobs_queued', this.store.listQueuedJobs().length, {}, 'Queued jobs')
     const stalledBefore = addMinutes(-this.config.runner.stallMinutes)
     for (const job of this.store.stalledRunningJobs(stalledBefore)) {
       handled.add(job.id)
@@ -1665,6 +1703,7 @@ export class Jobs {
     }
     await this.releaseAllPendingFollowups().catch((error) => log.warn('pending follow-up recovery failed', { error: String(error) }))
     await this.releaseDueRetries().catch((error) => log.warn('due retry release failed', { error: String(error) }))
+    await this.reconcileAutoMerge().catch((error) => log.warn('auto-merge reconcile failed', { error: String(error) }))
     await this.notifyQuestions().catch((error) => log.warn('question notification pass failed', { error: String(error) }))
     await this.maybeSendDigests().catch((error) => log.warn('daily digest pass failed', { error: String(error) }))
     if (this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) return
@@ -1728,6 +1767,7 @@ export class Jobs {
 
   start(): void {
     if (this.timer !== null) return
+    this.stopped = false
     this.timer = setInterval(() => {
       this.tick().catch((error) => log.error('scheduler tick failed', { error: String(error) }))
     }, 60_000)
@@ -1736,8 +1776,18 @@ export class Jobs {
   }
 
   stop(): void {
+    this.stopped = true
     if (this.timer !== null) clearInterval(this.timer)
     this.timer = null
+  }
+
+  async drain(timeoutMs: number): Promise<void> {
+    this.stop()
+    const deadline = Date.now() + Math.max(0, timeoutMs)
+    while (this.store.countActiveJobs() > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    }
+    if (this.store.countActiveJobs() > 0) log.warn('shutdown grace expired with active jobs', { active: this.store.countActiveJobs() })
   }
 }
 

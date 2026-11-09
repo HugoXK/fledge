@@ -1,5 +1,7 @@
 import type { Config } from '../config.js'
 import { log } from '../lib/log.js'
+import { incCounter, observeHistogram } from '../lib/metrics.js'
+import { endSpan, startSpan } from '../lib/otel.js'
 import type { Runner, RunnerContext, RunnerResult } from './runner.js'
 
 interface BridgePayload {
@@ -102,6 +104,8 @@ export class FlyBotRunner implements Runner {
   constructor(private readonly config: Config) {}
 
   async run(context: RunnerContext): Promise<RunnerResult> {
+    const span = startSpan('bridge.dispatch', { kind: context.kind, job: context.job.id })
+    const startedAt = Date.now()
     const bridgeUrl = context.flybot?.url ?? this.config.runner.bridgeUrl
     const bridgeToken = context.flybot?.token ?? this.config.runner.bridgeToken
     if (bridgeUrl === '' || bridgeToken === '') {
@@ -145,14 +149,27 @@ export class FlyBotRunner implements Runner {
         'Do not print the GitHub token or the job token. Do not force-push. Do not merge; Fledge handles maintainer-enabled auto-merge.',
       ].join('\n'),
     }
-    const response = await fetch(bridgeUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${bridgeToken}` },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(20_000),
-    })
+    let response: Response
+    try {
+      response = await fetch(bridgeUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${bridgeToken}` },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(20_000),
+      })
+    } catch (error) {
+      incCounter('fledge_bridge_requests_total', { status: 0 }, 1, 'FlyBot bridge requests')
+      endSpan(span, 'ERROR', error instanceof Error ? error.message : String(error), { status: 0 })
+      throw error
+    }
     const text = await response.text()
-    if (!response.ok) throw new Error(`FlyBot bridge ${response.status}: ${text.slice(0, 300)}`)
+    incCounter('fledge_bridge_requests_total', { status: response.status }, 1, 'FlyBot bridge requests')
+    observeHistogram('fledge_bridge_request_seconds', (Date.now() - startedAt) / 1000, { kind: context.kind }, 'Bridge request duration')
+    if (!response.ok) {
+      endSpan(span, 'ERROR', `bridge ${response.status}`, { status: response.status })
+      throw new Error(`FlyBot bridge ${response.status}: ${text.slice(0, 300)}`)
+    }
+    endSpan(span, 'OK', undefined, { status: response.status })
     log.info('job handed to FlyBot bridge', { job: context.job.id, kind: context.kind, status: response.status })
     return { status: 'running' }
   }
