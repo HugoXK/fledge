@@ -5,6 +5,7 @@
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
+import { manifestPath, writeManifest } from './lib/backup-manifest.mjs'
 
 const require = createRequire(import.meta.url)
 const { DatabaseSync, backup } = require('node:sqlite')
@@ -47,7 +48,11 @@ function prune(dir, keep) {
     .map((path) => ({ path, mtime: statSync(path).mtimeMs }))
     .sort((left, right) => right.mtime - left.mtime)
   const stale = copies.slice(keep)
-  for (const copy of stale) rmSync(copy.path, { force: true })
+  for (const copy of stale) {
+    rmSync(copy.path, { force: true })
+    // A manifest describes exactly one copy, so it goes with it.
+    rmSync(manifestPath(copy.path), { force: true })
+  }
   return stale.length
 }
 
@@ -93,8 +98,14 @@ if (integrity.length !== 1 || integrity[0] !== 'ok') {
   fail(1, `backup is corrupt: integrity_check reported ${integrity.slice(0, 3).join('; ') || 'no result'}`)
 }
 
+// The manifest is what lets a later drill prove the file on disk is still the
+// database this run wrote, so it is written after the integrity check and
+// before pruning may delete this copy.
+const manifest = writeManifest(target)
+
 const pruned = prune(outDir, keep)
 process.stdout.write(`backup=${target}\n`)
+process.stdout.write(`manifest=${manifest}\n`)
 process.stdout.write('integrity=ok\n')
 process.stdout.write(`retention=keep:${keep} pruned=${pruned}\n`)
 process.stdout.write('backup: OK\n')
