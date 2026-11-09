@@ -11,7 +11,8 @@
 //     token in the same file still fails.
 //
 // A hit exits 1. A scan that cannot run (no git, unreadable whitelist) also
-// exits 1: an unscanned repository must never look clean.
+// exits 1. A tracked file the scan cannot read exits 2: the scope itself is
+// incomplete, so the run must not report the same "clean" a full scan reports.
 
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -117,8 +118,10 @@ export function scan(root, allowlist) {
     let text
     try {
       text = readFileSync(resolve(root, file), 'utf8')
-    } catch {
-      skipped.push(file)
+    } catch (error) {
+      // A tracked file the scan cannot read is not "nothing to see": the scope
+      // it was supposed to cover is unknown, so the caller must not report clean.
+      skipped.push({ file, reason: error?.code ?? 'unreadable' })
       continue
     }
     if (isBinary(text)) continue
@@ -148,10 +151,20 @@ function main() {
     // hit; the value itself never reaches the log.
     console.error(`${item.file}:${String(item.line)}: ${item.rule} prefix=${item.prefix} length=${String(item.length)}`)
   }
-  for (const file of result.skipped) console.error(`secret:scan: skipped unreadable ${file}`)
+  for (const item of result.skipped) {
+    console.error(`secret:scan: could not read ${item.file} (${item.reason})`)
+  }
   if (result.findings.length > 0) {
     console.error(`secret:scan: ${String(result.findings.length)} suspected value(s) in tracked files`)
     process.exit(1)
+  }
+  if (result.skipped.length > 0) {
+    // Refused, not clean: exit 2 says "the scope was not fully scanned", which is
+    // a different answer from "scanned, found nothing" and from "found a value".
+    console.error(
+      `secret:scan: refused — ${String(result.skipped.length)} tracked file(s) could not be scanned, so "no suspected value" cannot be claimed`,
+    )
+    process.exit(2)
   }
   console.log('secret:scan: no suspected value in the tracked files')
 }

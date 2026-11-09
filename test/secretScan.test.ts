@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile, execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -90,6 +90,39 @@ test('the whitelist is per line: a second token in the same file still fails', a
     assert.equal(result.code, 1, 'whitelisting line 1 must not whitelist line 2')
     assert.match(result.stderr, /test\/fixture\.ts:2/)
     assert.doesNotMatch(result.stderr, /test\/fixture\.ts:1/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a tracked file the scan cannot read is a refusal, not a clean result', async () => {
+  // A tracked symlink that points nowhere: git tracks it, readFileSync cannot
+  // read it. Before this rule the run printed "skipped unreadable" and exited 0,
+  // which is exactly the false clean an unscanned tree must never produce.
+  const dir = makeRepo({ 'src/config.ts': 'export const port = 8080\n' })
+  try {
+    symlinkSync('../../does-not-exist', join(dir, 'linked-secret.ts'))
+    execFileSyncGit(dir)
+    const result = await runScan(dir)
+    assert.equal(result.code, 2, 'an unscanned tracked file must not exit 0')
+    assert.match(result.stderr, /could not read linked-secret\.ts \(ENOENT\)/)
+    assert.match(result.stderr, /refused/)
+    assert.doesNotMatch(result.stdout, /no suspected value/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a finding still exits 1 even when another file could not be read', async () => {
+  const token = 'ghp_' + 'D1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'
+  const dir = makeRepo({ 'src/config.ts': `export const token = '${token}'\n` })
+  try {
+    symlinkSync('../../does-not-exist', join(dir, 'linked-secret.ts'))
+    execFileSyncGit(dir)
+    const result = await runScan(dir)
+    assert.equal(result.code, 1, 'a real hit is the more urgent answer than the refusal')
+    assert.match(result.stderr, /src\/config\.ts:1/)
+    assert.match(result.stderr, /could not read linked-secret\.ts/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

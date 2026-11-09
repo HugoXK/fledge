@@ -38,5 +38,9 @@ predates this inventory — it is not a value.
 - Per-user OAuth tokens and per-repository fine-grained tokens: they live in the
   database encrypted with `TOKEN_ENCRYPTION_KEY` and are rotated by their owner
   through the UI, not on this host.
-- The two token-shaped test fixtures: they are fake, and they are whitelisted by
-  exact file and line in `scripts/secret-scan-allowlist.json`.
+- The three token-shaped test fixtures (`test/crypto.test.ts:32`,
+  `test/transcript.test.ts:52` and `test/transcript.test.ts:66`): they are fake,
+  and they are whitelisted by exact file and line in
+  `scripts/secret-scan-allowlist.json`. Three lines, not two: the transcript
+  suite needs a token-shaped string both to carry in a user message and to prove
+  the redaction removes it.

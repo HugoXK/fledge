@@ -207,20 +207,25 @@ run: `401` for the old and `200` for the new is the only pair that counts. A lon
 `401` is not evidence — a proxy, a rate limit or a typo produces one too — so any
 other outcome is **INCONCLUSIVE** and must be re-run, not recorded as done.
 
-Exit codes, shared with `npm run secret:scan`:
+Exit codes of `npm run secret:scan`, the tool this section documents:
 
 | code | meaning |
 |---|---|
-| `2` | the old value is still live |
-| `1` | a suspected real value in a tracked file, or any other error |
-| `0` | nothing found |
+| `2` | refused: a tracked file could not be read, so the run cannot say the tree is clean |
+| `1` | a suspected real value in a tracked file, or an error that stopped the scan (no git, unreadable allowlist) |
+| `0` | every tracked file was scanned and nothing was found |
+
+The rotation script keeps its own codes and documents them next to it; this table
+deliberately names no code that `secret:scan` cannot produce.
 
 `npm run secret:scan` scans only the files git tracks (`git ls-files`), prints
 `file:line` with the first 4 characters and the length of a hit and never the
-value, and fails closed: a scan that cannot run exits `1` rather than looking
-clean. The inventory is `docs/secrets.md`; the per-line whitelist for the two
-fake test fixtures is `scripts/secret-scan-allowlist.json`. Never whitelist a
-directory.
+value, and fails closed: a scan that cannot complete exits non-zero rather than
+looking clean — `2` when a tracked file could not be read, `1` when the scan
+could not start. Only a complete, empty scan exits `0`. The inventory is
+`docs/secrets.md`; the per-line whitelist for the three fake test fixtures is
+`scripts/secret-scan-allowlist.json` (`test/crypto.test.ts:32`,
+`test/transcript.test.ts:52` and `:66`). Never whitelist a directory.
 
 ### OAuth
 

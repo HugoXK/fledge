@@ -21,9 +21,15 @@ export interface Finding {
   length: number
 }
 
+export interface Skipped {
+  file: string
+  // The fs error code, e.g. ENOENT for a tracked symlink that points nowhere.
+  reason: string
+}
+
 export interface ScanResult {
   findings: Finding[]
-  skipped: string[]
+  skipped: Skipped[]
 }
 
 export declare const RULES: Rule[]
