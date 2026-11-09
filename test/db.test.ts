@@ -150,7 +150,7 @@ test('the role backfill runs once and future schema versions are refused', () =>
     const reopened = new Store(path)
     assert.equal(reopened.getRepo(repo.id)?.repo_role, 'maintainer')
     assert.notEqual(reopened.getRepo(repo.id)?.role_checked_at, null)
-    reopened.db.exec('PRAGMA user_version = 30;')
+    reopened.db.exec('PRAGMA user_version = 31;')
     reopened.close()
 
     assert.throws(() => new Store(path), /newer than this build/)
@@ -495,6 +495,36 @@ test('alerts surface stalled jobs, stale PRs and near-budget repositories', () =
     assert.ok(alerts.some((alert) => alert.kind === 'budget_near_limit' && (alert.spentCny ?? 0) >= 0.9))
     assert.ok(alerts.some((alert) => alert.kind === 'credential_invalid' && alert.state === 'invalid'))
     assert.equal(store.alerts({ usdCny: 1, userId: 'someone-else' }).length, 0)
+  } finally {
+    store.close()
+  }
+})
+
+test('webhook deliveries are claimed once and can be retried after failure', () => {
+  const store = new Store(':memory:')
+  try {
+    assert.equal(store.claimWebhookDelivery('delivery-1', 'check_suite', 'completed'), true)
+    assert.equal(store.claimWebhookDelivery('delivery-1', 'check_suite', 'completed'), false)
+    store.finishWebhookDelivery('delivery-1', 'processed')
+    assert.equal(store.claimWebhookDelivery('delivery-1', 'check_suite', 'completed'), false)
+    assert.equal(store.claimWebhookDelivery('delivery-2', 'check_suite', 'completed'), true)
+    store.finishWebhookDelivery('delivery-2', 'failed', 'boom')
+    assert.equal(store.claimWebhookDelivery('delivery-2', 'check_suite', 'completed'), true)
+  } finally {
+    store.close()
+  }
+})
+
+test('orphan cleanup removes pending work for missing jobs and repositories', () => {
+  const store = new Store(':memory:')
+  try {
+    store.setSetting('retry_pending:job_missing', '{"dueAt":"2000-01-01T00:00:00.000Z"}')
+    store.setSetting('pending_followup:repo_missing:1', '{}')
+    const result = store.cleanupOrphans()
+    assert.equal(result.retries, 1)
+    assert.equal(result.followups, 1)
+    assert.equal(store.getSetting('retry_pending:job_missing'), undefined)
+    assert.equal(store.getSetting('pending_followup:repo_missing:1'), undefined)
   } finally {
     store.close()
   }

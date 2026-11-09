@@ -33,6 +33,9 @@ import { parseStageMode } from './lib/stages.js'
 import { issuePriority, issueState, shouldTriage } from './lib/issueIntake.js'
 import { parseIssueCommand } from './lib/issueCommands.js'
 import { VERSION } from './version.js'
+import { incCounter, observeHistogram, renderMetrics } from './lib/metrics.js'
+import { configureOtel, endSpan, shutdownOtel, startSpan, type SpanHandle } from './lib/otel.js'
+import { configureGithubBudget } from './lib/githubBudget.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -165,6 +168,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   assertProductionConfig(config)
   const store = options.store ?? openStore(config.dbPath)
   store.ensureSuperadmin(config.github.adminLogin)
+  const orphans = store.cleanupOrphans()
+  if (orphans.retries + orphans.followups + orphans.jobEvents + orphans.instances > 0) {
+    log.info('orphan cleanup', orphans)
+  }
   const mailer = options.mailer ?? createMailer(config)
   const runner = options.runner ?? createRunner(config)
   const oauth = new GithubOAuth(config)
@@ -185,6 +192,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     bodyLimit: 20 * 1024 * 1024,
     routerOptions: { ignoreTrailingSlash: true },
   })
+  configureOtel(config.otel)
+  configureGithubBudget(config.github.requestsPerMinute)
+  const otelSpans = new WeakMap<FastifyRequest, SpanHandle>()
+  app.addHook('onResponse', async (request, reply) => {
+    const span = otelSpans.get(request)
+    if (span !== undefined) endSpan(span, reply.statusCode >= 500 ? 'ERROR' : 'OK', reply.statusCode >= 500 ? `HTTP ${reply.statusCode}` : undefined, { status: reply.statusCode })
+    const route = request.routeOptions?.url ?? 'unknown'
+    const method = request.method
+    incCounter('fledge_http_requests_total', { method, route, status: reply.statusCode }, 1, 'HTTP requests')
+    observeHistogram('fledge_http_request_seconds', reply.elapsedTime / 1000, { method, route }, 'HTTP request duration')
+  })
   await app.register(fastifyCookie)
   await app.register(fastifyFormbody)
   await app.register(fastifyStatic, { root: join(process.cwd(), 'public'), prefix: '/assets/', decorateReply: false })
@@ -192,6 +210,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.addHook('onRequest', async (request) => {
     request.viewer = sessions.read(request) ?? undefined
     request.locale = resolveLocale(request)
+    otelSpans.set(request, startSpan('http.request', { method: request.method, path: request.url.split('?')[0] ?? request.url }))
   })
 
   app.addHook('preParsing', async (request, _reply, payload) => {
@@ -295,6 +314,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     void dshCookie(instance).then((cookie) => {
       proxyWorkspaceUpgrade(request, socket as import('node:net').Socket, head, instance, match[2] ?? '', cookie)
     }).catch(() => fail('502 Bad Gateway'))
+  })
+
+  app.get('/metrics', async (request, reply) => {
+    const loopback = request.ip === '127.0.0.1' || request.ip === '::1' || request.ip === '::ffff:127.0.0.1'
+    const header = String(request.headers.authorization ?? '')
+    const bearer = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : ''
+    const queryToken = queryText(request, 'token') ?? ''
+    if (config.metrics.token !== '' && bearer !== config.metrics.token && queryToken !== config.metrics.token) {
+      return reply.code(401).send({ error: 'metrics token required' })
+    }
+    if (config.metrics.token === '' && !loopback) return reply.code(403).send({ error: 'metrics are loopback-only without METRICS_TOKEN' })
+    return reply.type('text/plain; version=0.0.4; charset=utf-8').send(renderMetrics())
   })
 
   app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: VERSION, time: new Date().toISOString() }))
@@ -2458,20 +2489,26 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (repo === undefined) return
     const pulls: Array<{ number?: number; html_url?: string; head?: { ref?: string; sha?: string }; base?: { ref?: string } }> = []
     let reason = ''
+    let reconcile = false
     if (event === 'check_run') {
       const check = typeof body.check_run === 'object' && body.check_run !== null ? (body.check_run as Record<string, unknown>) : {}
-      if (check.conclusion !== 'failure' && check.conclusion !== 'timed_out' && check.conclusion !== 'cancelled') return
-      reason = `check ${String(check.name ?? 'check')} ${String(check.conclusion)}`
+      const conclusion = String(check.conclusion ?? '')
+      if (!['failure', 'timed_out', 'cancelled', 'success', 'neutral', 'skipped'].includes(conclusion)) return
+      reconcile = ['success', 'neutral', 'skipped'].includes(conclusion)
+      reason = `check ${String(check.name ?? 'check')} ${conclusion}`
       if (Array.isArray(check.pull_requests)) pulls.push(...(check.pull_requests as typeof pulls))
     } else if (event === 'check_suite') {
       const suite = typeof body.check_suite === 'object' && body.check_suite !== null ? (body.check_suite as Record<string, unknown>) : {}
-      if (suite.conclusion !== 'failure' && suite.conclusion !== 'timed_out' && suite.conclusion !== 'cancelled') return
-      reason = `check suite ${String(suite.conclusion)}`
+      const conclusion = String(suite.conclusion ?? '')
+      if (!['failure', 'timed_out', 'cancelled', 'success', 'neutral', 'skipped'].includes(conclusion)) return
+      reconcile = ['success', 'neutral', 'skipped'].includes(conclusion)
+      reason = `check suite ${conclusion}`
       if (Array.isArray(suite.pull_requests)) pulls.push(...(suite.pull_requests as typeof pulls))
     } else if (event === 'pull_request_review') {
       const review = typeof body.review === 'object' && body.review !== null ? (body.review as Record<string, unknown>) : {}
-      if (review.state !== 'changes_requested') return
-      reason = 'review requested changes'
+      if (review.state !== 'changes_requested' && review.state !== 'approved') return
+      reconcile = review.state === 'approved'
+      reason = review.state === 'approved' ? 'review approved' : 'review requested changes'
       const pull = typeof body.pull_request === 'object' && body.pull_request !== null ? (body.pull_request as typeof pulls[number]) : undefined
       if (pull !== undefined) pulls.push(pull)
     } else {
@@ -2486,6 +2523,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const headSha = typeof pull.head?.sha === 'string' ? pull.head.sha : ''
       if (branch === '') continue
       if (store.latestJobByPrUrl(repo.user_id, prUrl) === undefined) continue
+      if (reconcile) {
+        await jobs.reconcilePr(repo, prUrl)
+        log.info('github merge reconcile', { repo: `${repo.owner}/${repo.name}`, pr: number, reason })
+        continue
+      }
       const result = await jobs.followUp(repo, { prUrl, branch, baseBranch, reason, headSha })
       log.info('github follow-up', { repo: `${repo.owner}/${repo.name}`, pr: number, ok: result.ok, code: result.code, job: result.job?.id })
     }
@@ -2642,9 +2684,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const action = typeof body.action === 'string' ? body.action : ''
     const repository = typeof body.repository === 'object' && body.repository !== null ? (body.repository as Record<string, unknown>) : {}
     const fullName = typeof repository.full_name === 'string' ? repository.full_name : ''
-    const deliveryKey = `webhook_delivery:${delivery}`
-    if (delivery !== '' && store.getSetting(deliveryKey) !== undefined) return { ok: true }
-    if (delivery !== '') store.setSetting(deliveryKey, new Date().toISOString())
+    if (delivery !== '' && !store.claimWebhookDelivery(delivery, event, action)) return { ok: true, duplicate: true }
     store.event('github_webhook', { meta: `${event}:${action}:${fullName}:${delivery}`.slice(0, 300) })
     if (event === 'installation') {
       const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
@@ -2656,9 +2696,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       }
       if (action === 'deleted' && Number.isFinite(installationId)) store.deleteInstallation(installationId)
     }
-    await handleWorkItemEvent(event, body).catch((error) => log.warn('github work item sync failed', { event, error: String(error) }))
-    await handleIssueCommand(event, body).catch((error) => log.warn('github issue command failed', { event, error: String(error) }))
-    await handleGithubFollowup(event, body).catch((error) => log.warn('github follow-up failed', { event, error: String(error) }))
+    try {
+      await handleWorkItemEvent(event, body)
+      await handleIssueCommand(event, body)
+      await handleGithubFollowup(event, body)
+      if (delivery !== '') store.finishWebhookDelivery(delivery, 'processed')
+    } catch (error) {
+      if (delivery !== '') store.finishWebhookDelivery(delivery, 'failed', String(error))
+      throw error
+    }
     return { ok: true }
   })
 
@@ -2750,9 +2796,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     sessions,
     instances,
     close: async () => {
-      jobs.stop()
+      await jobs.drain(config.shutdown.graceSeconds * 1000)
       clearInterval(sweeper)
       await app.close()
+      await shutdownOtel()
       store.close()
     },
   }

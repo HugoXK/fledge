@@ -113,6 +113,8 @@ execution (LangSmith/Langfuse, OpenTelemetry, Temporal/DBOS):
 - [x] Artifact/evaluation/promotion ledger tables and the AgentDescent shadow-evolution ADR.
 - [x] Path guard, pull-request evidence verification and merge readiness.
 - [x] Durable retry policy for transient failures and configurable platform concurrency.
+- [x] Prometheus metrics, optional OTLP traces, graceful drain, orphan cleanup,
+      webhook replay store, GitHub API budget and auto-merge reconciliation.
 - [ ] Shadow evaluation of the playbook on a held-out job set.
 - [ ] First human-approved, canary-tested playbook promotion.
 - [ ] Per-repository policy evolution (goal/model/stage mode) with opt-in.

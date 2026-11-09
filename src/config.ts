@@ -18,6 +18,7 @@ export interface Config {
     scopes: string
     adminLogin: string
     apiBase: string
+    requestsPerMinute: number
   }
   githubApp: {
     id: string
@@ -55,6 +56,19 @@ export interface Config {
     timeoutMinutes: number
     stallMinutes: number
     maxActiveJobs: number
+  }
+  metrics: {
+    token: string
+  }
+  otel: {
+    endpoint: string
+    serviceName: string
+  }
+  shutdown: {
+    graceSeconds: number
+  }
+  autoMerge: {
+    reconcileMinutes: number
   }
   digest: {
     hour: number
@@ -157,6 +171,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       scopes: text('GITHUB_OAUTH_SCOPES', 'read:user user:email'),
       adminLogin: text('ADMIN_GITHUB_LOGIN'),
       apiBase: text('GITHUB_API_BASE', 'https://api.github.com').replace(/\/$/, ''),
+      requestsPerMinute: Math.max(1, number('GITHUB_REQUESTS_PER_MINUTE', 120)),
     },
     githubApp: {
       id: text('GITHUB_APP_ID'),
@@ -194,6 +209,19 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       timeoutMinutes: number('JOB_TIMEOUT_MINUTES', 90),
       stallMinutes: number('JOB_STALL_MINUTES', 30),
       maxActiveJobs: Math.max(1, number('PLATFORM_MAX_ACTIVE_JOBS', 2)),
+    },
+    metrics: {
+      token: text('METRICS_TOKEN'),
+    },
+    otel: {
+      endpoint: text('OTEL_EXPORTER_OTLP_ENDPOINT').replace(/\/$/, ''),
+      serviceName: text('OTEL_SERVICE_NAME', 'fledge'),
+    },
+    shutdown: {
+      graceSeconds: Math.max(0, number('SHUTDOWN_GRACE_SECONDS', 20)),
+    },
+    autoMerge: {
+      reconcileMinutes: Math.max(1, number('AUTO_MERGE_RECONCILE_MINUTES', 5)),
     },
     digest: {
       hour: Math.min(23, Math.max(0, number('DIGEST_HOUR', 9))),

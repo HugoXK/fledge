@@ -708,6 +708,18 @@ CREATE TABLE IF NOT EXISTS repo_bot_models (
   PRIMARY KEY (repo_id, role)
 );
 
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  delivery_id TEXT PRIMARY KEY,
+  event TEXT NOT NULL,
+  action TEXT,
+  received_at TEXT NOT NULL,
+  processed_at TEXT,
+  status TEXT NOT NULL DEFAULT 'processing',
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS webhook_deliveries_at_idx ON webhook_deliveries(received_at);
+CREATE INDEX IF NOT EXISTS webhook_deliveries_status_idx ON webhook_deliveries(status, received_at);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -806,9 +818,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 29) {
+    if (previousVersion > 30) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (29)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (30)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -823,7 +835,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 29)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 30)};`)
   }
 
   migrateIndexes(): void {
@@ -1914,6 +1926,10 @@ export class Store {
     this.run('DELETE FROM repos WHERE id = ?', id)
   }
 
+  listAutoMergeRepos(): RepoRow[] {
+    return this.all<RepoRow>('SELECT * FROM repos WHERE enabled = 1 AND auto_merge = 1 ORDER BY created_at ASC')
+  }
+
   listAutoRepos(): RepoRow[] {
     return this.all<RepoRow>("SELECT * FROM repos WHERE enabled = 1 AND auto_iterate = 1 ORDER BY CASE WHEN last_run_at IS NULL THEN 0 ELSE 1 END, last_run_at ASC, created_at ASC")
   }
@@ -2210,6 +2226,54 @@ export class Store {
     return this.all<ApiTokenRow>('SELECT * FROM api_tokens WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC', userId)
   }
 
+  claimWebhookDelivery(deliveryId: string, event: string, action: string | null): boolean {
+    const existing = this.get<{ status: string; received_at: string }>('SELECT status, received_at FROM webhook_deliveries WHERE delivery_id = ?', deliveryId)
+    if (existing !== undefined && existing.status === 'processing' && Date.now() - Date.parse(existing.received_at) > 5 * 60_000) {
+      this.run("UPDATE webhook_deliveries SET received_at = ?, processed_at = NULL, error = NULL WHERE delivery_id = ?", nowIso(), deliveryId)
+      return true
+    }
+    if (existing === undefined) {
+      this.run('INSERT INTO webhook_deliveries (delivery_id, event, action, received_at, processed_at, status, error) VALUES (?, ?, ?, ?, NULL, ?, NULL)', deliveryId, event, action, nowIso(), 'processing')
+      return true
+    }
+    if (existing.status === 'failed') {
+      this.run("UPDATE webhook_deliveries SET status = 'processing', received_at = ?, processed_at = NULL, error = NULL WHERE delivery_id = ?", nowIso(), deliveryId)
+      return true
+    }
+    return false
+  }
+
+  finishWebhookDelivery(deliveryId: string, status: 'processed' | 'ignored' | 'failed', error: string | null = null): void {
+    this.run('UPDATE webhook_deliveries SET status = ?, processed_at = ?, error = ? WHERE delivery_id = ?', status, nowIso(), error === null ? null : error.slice(0, 1000), deliveryId)
+  }
+
+  cleanupOrphans(): { retries: number; followups: number; jobEvents: number; instances: number } {
+    const jobs = new Set(this.all<{ id: string }>('SELECT id FROM jobs').map((row) => row.id))
+    const repos = new Set(this.all<{ id: string }>('SELECT id FROM repos').map((row) => row.id))
+    let retries = 0
+    for (const row of this.listSettings('retry_pending:')) {
+      if (jobs.has(row.key.slice('retry_pending:'.length))) continue
+      this.deleteSetting(row.key)
+      retries += 1
+    }
+    let followups = 0
+    for (const row of this.listSettings('merge_reconcile:')) {
+      if (jobs.has(row.key.slice('merge_reconcile:'.length))) continue
+      this.deleteSetting(row.key)
+      followups += 1
+    }
+    for (const row of this.listSettings('pending_followup:')) {
+      const repoId = row.key.split(':')[1] ?? ''
+      if (repos.has(repoId)) continue
+      this.deleteSetting(row.key)
+      followups += 1
+    }
+    const jobEvents = this.runChanges('DELETE FROM job_events WHERE job_id NOT IN (SELECT id FROM jobs)')
+    const instances = this.runChanges('DELETE FROM repo_instances WHERE repo_id NOT IN (SELECT id FROM repos)')
+    this.deleteExpiredJobTokens()
+    return { retries, followups, jobEvents, instances }
+  }
+
   pruneOldData(): void {
     const now = Date.now()
     const cutoff = (days: number): string => new Date(now - days * 86_400_000).toISOString()
@@ -2220,6 +2284,7 @@ export class Store {
     this.run('DELETE FROM notifications WHERE read_at IS NULL AND created_at < ?', cutoff(90))
     this.run('DELETE FROM events WHERE at < ?', cutoff(90))
     this.run('DELETE FROM job_events WHERE at < ?', cutoff(365))
+    this.run('DELETE FROM webhook_deliveries WHERE received_at < ?', cutoff(30))
     this.run("DELETE FROM jobs WHERE status IN ('succeeded', 'failed', 'quota_exhausted') AND finished_at IS NOT NULL AND finished_at < ?", cutoff(365))
     this.run('DELETE FROM audit_log WHERE at < ?', cutoff(365))
     this.run('DELETE FROM quota_ledger WHERE at < ?', cutoff(730))
@@ -2232,6 +2297,7 @@ export class Store {
       ['digest_sent:', cutoff(14)],
       ['email_test:', cutoff(1)],
       ['webhook_delivery:', cutoff(30)],
+      ['merge_reconcile:', cutoff(30)],
       ['email_reply:', cutoff(7)],
       ['github_app_state:', cutoff(1)],
       ['installation_sender:', cutoff(30)],

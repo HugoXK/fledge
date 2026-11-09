@@ -141,10 +141,25 @@ jobs:
       - name: Compute the tier
         run: node scripts/risk-gate.mjs --base "${{ steps.base.outputs.ref }}"
 
+  restore-drill:
+    name: restore-drill
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run db:restore-drill:ci
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [lint, typecheck, test, build, docker, audit, changelog, version, risk]
+    needs: [lint, typecheck, test, build, docker, audit, changelog, version, risk, restore-drill]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
