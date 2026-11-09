@@ -1,0 +1,1 @@
+Anchor links no longer land under the sticky header. The header height is now measured from the rendered element on load and on resize, and the no-JS fallbacks rise to 90 / 215 / 276 px so a jump target keeps at least a line of body text below the header even without JavaScript.
