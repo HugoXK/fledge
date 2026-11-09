@@ -1,6 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { Store } from '../src/db.js'
+import { Jobs } from '../src/jobs/service.js'
+import type { Runner } from '../src/jobs/runner.js'
 import { checkPathGuard, matchesPath, splitPathPatterns } from '../src/lib/pathGuard.js'
+import { encryptSecret } from '../src/lib/secrets.js'
+import { GithubClient } from '../src/repos/github.js'
+import { jobPage } from '../src/views/pages.js'
+import { json, makeUser, MemoryMailer, startFakeServer, testConfig } from './helpers.js'
 
 test('path patterns split on commas and newlines and match prefixes', () => {
   assert.deepEqual(splitPathPatterns('src/, docs/*.md\n.github/'), ['src/', 'docs/*.md', '.github/'])
@@ -23,4 +30,94 @@ test('deny wins and allow is enforced when present', () => {
   const open = checkPathGuard(['anything/at/all.ts'], '', '')
   assert.equal(open.ok, true)
   assert.deepEqual(open.violations, [])
+})
+
+test('the file list reports itself incomplete when the page cap cuts it off', async () => {
+  const github = await startFakeServer((request, response) => {
+    const url = new URL(request.url ?? '/', 'http://fake')
+    if (url.pathname === '/repos/o/r/pulls/9/files') {
+      const page = Number(url.searchParams.get('page') ?? '1')
+      return json(response, 200, Array.from({ length: 100 }, (_, index) => ({ filename: `page-${page}/file-${index}.ts`, status: 'modified', additions: 1, deletions: 0 })))
+    }
+    return json(response, 404, { message: 'Not Found' })
+  })
+  try {
+    const client = new GithubClient('token', github.url)
+    const capped = await client.listPullRequestFiles('o', 'r', 9, 1000, 2)
+    assert.equal(capped.files.length, 200, 'the client stops at the page cap')
+    assert.equal(capped.complete, false, 'a list cut by the page cap is not complete')
+    const finished = await client.listPullRequestFiles('o', 'r', 9, 200, 2)
+    assert.equal(finished.files.length, 200)
+    assert.equal(finished.complete, true, 'a list that reached the reported count is complete')
+  } finally {
+    await github.close()
+  }
+})
+
+test('a change list longer than the fetch cap is never reported as within the allowed paths', async () => {
+  const pageFiles = (page: number) => {
+    if (page <= 10) return Array.from({ length: 100 }, (_, index) => ({ filename: `src/allowed/page-${page}/file-${index}.ts`, status: 'modified', additions: 1, deletions: 0 }))
+    if (page === 11) {
+      return [
+        ...Array.from({ length: 99 }, (_, index) => ({ filename: `src/allowed/page-11/file-${index}.ts`, status: 'modified', additions: 1, deletions: 0 })),
+        { filename: 'src/secret.ts', status: 'added', additions: 1, deletions: 0 },
+      ]
+    }
+    return []
+  }
+  const github = await startFakeServer((request, response) => {
+    const url = new URL(request.url ?? '/', 'http://fake')
+    if (url.pathname === '/repos/o/r/pulls/9/files') return json(response, 200, pageFiles(Number(url.searchParams.get('page') ?? '1')))
+    if (url.pathname === '/repos/o/r/pulls/9/reviews') return json(response, 200, [])
+    if (url.pathname === '/repos/o/r/commits/sha9/check-runs') return json(response, 200, { check_runs: [{ name: 'ci-ok', status: 'completed', conclusion: 'success' }] })
+    if (url.pathname === '/repos/o/r/commits/sha9/status') return json(response, 200, { state: 'success', statuses: [] })
+    if (url.pathname === '/repos/o/r/pulls/9') {
+      return json(response, 200, { number: 9, html_url: 'https://github.com/o/r/pull/9', title: 'a large change', state: 'open', head: { ref: 'fledge/big', sha: 'sha9' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false, changed_files: 1100 })
+    }
+    return json(response, 404, { message: 'Not Found' })
+  })
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'noop', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'path-guard-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_path_guard_big', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', roleCheckedAt: new Date().toISOString(), upstreamHtmlUrl: 'https://github.com', goal: '', autoIterate: false, intervalMinutes: 1440, deny_paths: 'src/secret.ts' })
+    const job = store.createJob({ id: 'job_path_guard_big', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(job.id, { status: 'succeeded', branch: 'fledge/big', pr_url: 'https://github.com/o/r/pull/9' })
+    const result = await jobs.recheck(job.id)
+    const guard = JSON.parse(store.getJob(job.id)?.path_guard_json ?? '{}') as { ok?: boolean; checkedFiles?: number; reportedFiles?: number; violations?: Array<{ file: string }> }
+    assert.equal(guard.ok, false, 'a denied file beyond the first 1,000 entries must block the merge')
+    assert.equal(guard.checkedFiles, 1100)
+    assert.equal(guard.reportedFiles, 1100)
+    assert.deepEqual(guard.violations?.map((violation) => violation.file), ['src/secret.ts'])
+    assert.equal(result.ok, false)
+    const page = jobPage({ config, locale: 'en', viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' }, repo, job: store.getJob(job.id)! })
+    assert.doesNotMatch(page, /All changed files are within the allowed paths/)
+    assert.match(page, /src\/secret\.ts/)
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
+
+test('a list that hits the hard cap is refused and the page shows examined-versus-reported', () => {
+  const truncated = checkPathGuard(['src/a.ts'], '', '', '2026-01-01T00:00:00.000Z', 1100)
+  assert.equal(truncated.ok, false, 'an incomplete list is never ok')
+  assert.equal(truncated.truncated, true)
+  assert.equal(truncated.checkedFiles, 1)
+  assert.equal(truncated.reportedFiles, 1100)
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'path-guard-page', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_path_guard_page', userId: user.id, owner: 'o', name: 'pg', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_path_guard_page', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob(job.id, { path_guard_json: JSON.stringify(truncated) })
+    const page = jobPage({ config, locale: 'en', viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' }, repo, job: store.getJob(job.id)! })
+    assert.doesNotMatch(page, /All changed files are within the allowed paths/)
+    assert.match(page, /Checked 1 \/ 1,100 reported files/)
+  } finally {
+    store.close()
+  }
 })
