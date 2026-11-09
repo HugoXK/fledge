@@ -223,7 +223,7 @@ test('a successful callback stores attribution and posts a PR automation comment
   const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer)
   try {
     const user = makeUser(store, { login: 'attribution-user', status: 'approved' })
-    const repo = store.createRepo({ id: 'repo_attr', userId: user.id, owner: 'owner', name: 'repo', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repo = store.createRepo({ id: 'repo_attr', userId: user.id, owner: 'owner', name: 'repo', defaultBranch: 'main', upstreamHtmlUrl: 'https://github.com/owner/repo', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const secret = 'callback-secret'
     store.createJob({ id: 'job_attr', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '' })
     store.updateJob('job_attr', { status: 'running' })

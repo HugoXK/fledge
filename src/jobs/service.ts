@@ -22,7 +22,7 @@ import { decryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../l
 import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
 import { GithubApp } from '../repos/app.js'
-import { parsePrUrl } from './prUrl.js'
+import { parseIssueUrl, parsePrUrl } from './prUrl.js'
 import { repoGithubToken } from '../repos/token.js'
 import { parseTeam } from '../flybot/instances.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
@@ -87,8 +87,8 @@ export interface CallbackPayload {
 function terminalFingerprint(input: {
   status: string
   branch?: string
-  prUrl?: string
-  issueUrl?: string
+  prUrl?: string | null
+  issueUrl?: string | null
   reviewScore?: number
   evidence: Evidence | null
   attribution: Attribution | null
@@ -554,13 +554,15 @@ export class Jobs {
 
   // Returns whether this call moved the row to a terminal state. Callers that
   // perform side effects must only do so when it returns true.
-  private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }, revoke: () => void, attribution: Attribution | null = null, evidence: Evidence | null = null, fingerprint: string | null = null): boolean {
+  private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string | null; issueUrl?: string | null; reviewScore?: number; summary?: string; error?: string }, revoke: () => void, attribution: Attribution | null = null, evidence: Evidence | null = null, fingerprint: string | null = null): boolean {
     const job = this.store.getJob(jobId)
     if (job === undefined) return false
     if (job.status !== 'queued' && job.status !== 'running') return false
     const branch = result.branch ?? job.branch
-    const prUrl = result.prUrl ?? job.pr_url
-    const issueUrl = result.issueUrl ?? job.issue_url
+    // undefined means "not reported, keep the column"; null means "reported but
+    // unplaceable, store no link" (a rejected callback URL must not linger).
+    const prUrl = result.prUrl === undefined ? job.pr_url : result.prUrl
+    const issueUrl = result.issueUrl === undefined ? job.issue_url : result.issueUrl
     const reviewScore = result.reviewScore ?? job.review_score
     // The guarded transition is the idempotency key: a lost update means another
     // delivery already finalised the job and must own the side effects.
@@ -1212,7 +1214,7 @@ export class Jobs {
     }
   }
 
-  private async sendJobEmail(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; prUrl?: string; issueUrl?: string; reviewScore?: number; summary?: string; error?: string }): Promise<void> {
+  private async sendJobEmail(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; prUrl?: string | null; issueUrl?: string | null; reviewScore?: number; summary?: string; error?: string }): Promise<void> {
     if (result.status === 'quota_exhausted') return
     const user = this.store.userById(job.user_id)
     if (user === undefined || user.email_job_updates !== 1) return
@@ -1225,8 +1227,8 @@ export class Jobs {
       jobId: job.id,
       kind: job.kind,
       teamUrl: `${this.config.baseUrl}/repos/${repo.id}/jobs/${job.id}`,
-      issueUrl: result.issueUrl ?? job.issue_url,
-      prUrl: result.prUrl ?? job.pr_url,
+      issueUrl: result.issueUrl === undefined ? job.issue_url : result.issueUrl,
+      prUrl: result.prUrl === undefined ? job.pr_url : result.prUrl,
       summary: result.summary ?? job.summary ?? '',
       error: result.error ?? job.error ?? '',
       reviewScore: result.reviewScore ?? job.review_score,
@@ -1510,9 +1512,24 @@ export class Jobs {
     if (job === undefined) return { ok: false, status: 404, error: 'job not found' }
     const status = payload.status
     if (status !== 'succeeded' && status !== 'failed' && status !== 'running') return { ok: false, status: 400, error: 'invalid status' }
+    const repoRow = this.store.getRepo(job.repo_id)
+    // A callback link is stored only when it belongs to this job's repository.
+    // prOrigin() derives that origin from the row (recorded html_url first, else
+    // the configured API base), so no host is written down here. An absent field
+    // leaves the column alone; a present value that cannot be placed is null.
+    const repoLink = (value: unknown, kind: 'pull' | 'issues'): string | null | undefined => {
+      if (typeof value !== 'string') return undefined
+      // The callback contract is https-only, and a value longer than the column
+      // bound cannot be stored intact.
+      if (repoRow === undefined || value.length > 500 || !value.startsWith('https://')) return null
+      const parsed = kind === 'pull'
+        ? parsePrUrl(repoRow, value, this.config.github.apiBase)
+        : parseIssueUrl(repoRow, value, this.config.github.apiBase)
+      return parsed.ok ? value : null
+    }
     const branch = typeof payload.branch === 'string' ? payload.branch.slice(0, 300) : undefined
-    const prUrl = typeof payload.prUrl === 'string' && payload.prUrl.startsWith('https://') ? payload.prUrl.slice(0, 500) : undefined
-    const issueUrl = typeof payload.issueUrl === 'string' && payload.issueUrl.startsWith('https://') ? payload.issueUrl.slice(0, 500) : undefined
+    const prUrl = repoLink(payload.prUrl, 'pull')
+    const issueUrl = repoLink(payload.issueUrl, 'issues')
     const reviewScore = typeof payload.reviewScore === 'number' && Number.isFinite(payload.reviewScore) ? Math.max(0, Math.min(100, Math.round(payload.reviewScore))) : undefined
     const summary = progressSummary(payload.summary)
     const error = typeof payload.error === 'string' ? payload.error.slice(0, 2000) : undefined
@@ -1526,9 +1543,9 @@ export class Jobs {
       ? payload.followUps.flatMap((entry) => {
           if (entry === null || typeof entry !== 'object') return []
           const value = entry as Record<string, unknown>
-          const prUrl = typeof value.prUrl === 'string' && value.prUrl.startsWith('https://') ? value.prUrl.slice(0, 500) : ''
+          const prUrl = repoLink(value.prUrl, 'pull')
           const branch = typeof value.branch === 'string' ? value.branch.trim().slice(0, 300) : ''
-          if (prUrl === '' || branch === '') return []
+          if (prUrl === null || prUrl === undefined || branch === '') return []
           return [{
             prUrl,
             branch,
@@ -1580,8 +1597,7 @@ export class Jobs {
       if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     }
     if (status === 'succeeded') {
-      const repo = this.store.getRepo(job.repo_id)
-      const stageMode = parseStageMode(repo?.stage_mode) ?? 'off'
+      const stageMode = parseStageMode(repoRow?.stage_mode) ?? 'off'
       const stage = checkStage(stageMode, job.kind, evidence, attribution, reviewScore)
       if (!stage.ok) {
         const detail = stage.errors.join('；')

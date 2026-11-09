@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, truncateSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -117,6 +117,56 @@ test('a corrupt backup exits non-zero instead of reporting a successful drill', 
   assert.match(second.stderr, /corrupt|mismatch/i, `stderr must say why, got: ${second.stderr}`)
   assert.ok(second.stderr.includes(files[0]!), `stderr must name the corrupt file, got: ${second.stderr}`)
   assert.deepEqual(readdirSync(scratch), [], 'a failed drill must remove its temp directory and the copy of production data inside it')
+})
+
+test('a manifest-less copy that holds no schema is refused instead of reporting a successful drill', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+  seed(dbPath)
+
+  const fresh = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir, '--fresh'])
+  assert.equal(fresh.code, 0, fresh.stderr)
+  const files = backups(backupDir)
+  assert.equal(files.length, 1, `expected one backup, found ${files.join(', ')}`)
+  // Remove the two ways a truncation is normally caught: the manifest bytes and
+  // the schema itself. What is left is a 0-byte file that compares equal to
+  // itself and whose `PRAGMA integrity_check` answers `ok`.
+  for (const name of readdirSync(backupDir).filter((entry) => entry.endsWith('.json'))) rmSync(join(backupDir, name))
+  truncateSync(join(backupDir, files[0]!), 0)
+  rmSync(join(workDir, 'restored.db'), { force: true })
+
+  const result = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir])
+  assert.notEqual(result.code, 0, 'a manifest-less copy with no schema must not be reported as a successful drill')
+  assert.doesNotMatch(result.stdout, /^restore-drill: OK$/m, 'a copy that holds no tables must never be reported as OK')
+  assert.match(result.stderr, /no tables|no schema/i, `stderr must say the copy holds no tables, got: ${result.stderr}`)
+  assert.match(result.stderr, /size|sha256|user_version|per-table/i, `stderr must name the checks that were skipped, got: ${result.stderr}`)
+  assert.equal(existsSync(join(workDir, 'restored.db')), false,
+    'a refused copy must not be left at the path docs/deploy.md restores from')
+  assert.equal(existsSync(join(workDir, 'restored.db.failed')), true,
+    'the refused copy is kept under a name no restore step picks up')
+})
+
+test('a manifest-less copy that still carries its schema keeps passing', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+  seed(dbPath)
+
+  const fresh = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir, '--fresh'])
+  assert.equal(fresh.code, 0, fresh.stderr)
+  for (const name of readdirSync(backupDir).filter((entry) => entry.endsWith('.json'))) rmSync(join(backupDir, name))
+  rmSync(join(workDir, 'restored.db'), { force: true })
+
+  // A copy written before manifests existed is still a backup. Refusing it would
+  // turn every legacy copy into a red drill, so this path must stay green.
+  const result = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir])
+  assert.equal(result.code, 0, `a manifest-less copy that holds its schema must keep passing: ${result.stderr}`)
+  assert.match(result.stdout, /^manifest=missing$/m)
+  assert.match(result.stdout, /^restore-drill: OK$/m)
+  assert.equal(existsSync(join(workDir, 'restored.db')), true)
 })
 
 test('a failed drill leaves no copy at the path the restore instructions copy over the live database', () => {

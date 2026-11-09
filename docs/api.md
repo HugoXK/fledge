@@ -266,6 +266,18 @@ team and the attribution steps that actually happened, so humans can see which
 role claimed, implemented, tested and reviewed the change without a fabricated
 "pending" row. A finished job revokes its job-scoped model token.
 
+A `prUrl` or `issueUrl` is stored only when it names this job's repository:
+`https`, the origin `prOrigin` derives from the repository row (its
+`upstream_html_url`, else `fork_html_url`, else the web host behind
+`GITHUB_API_BASE`, which drops the `api.` label and any path) and the path
+`<owner>/<name>/pull/<n>` or `<owner>/<name>/issues/<n>`. That is the same
+origin rule the merge path uses, so the accepted host is never a literal
+`github.com`. A present value that cannot be placed is treated as no link
+(`pr_url`/`issue_url` become `NULL`) and the callback still answers
+`200 {"ok":true}`, because a `400` would make the bridge retry the same delivery
+forever; a field that is absent leaves the stored value alone. The same rule
+applies to `followUps[].prUrl`: an unplaceable entry is dropped, not queued.
+
 ### Callback idempotency
 
 A terminal callback is keyed by the state transition, not by a delivery id.

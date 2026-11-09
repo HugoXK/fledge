@@ -18,6 +18,25 @@
     // Storage can be unavailable in private modes; the server-rendered locale still works.
   }
 
+  // The sticky header is content-driven: the locale, the wrapping and the
+  // reader's default font size all change its height, so the offset typed into
+  // app.css is only the no-JS fallback. Let the rendered header win, and observe
+  // the element itself: a web font swapping in or a longer nav label can change
+  // its height with no resize event at all. Browsers without ResizeObserver keep
+  // the resize trigger.
+  const header = document.querySelector('.top')
+  if (header) {
+    const syncHeaderOffset = () => {
+      root.style.setProperty('--header-h', `${Math.ceil(header.offsetHeight)}px`)
+    }
+    syncHeaderOffset()
+    if (typeof ResizeObserver === 'function') {
+      new ResizeObserver(syncHeaderOffset).observe(header)
+    } else {
+      window.addEventListener('resize', syncHeaderOffset)
+    }
+  }
+
 
   document.querySelectorAll('[data-auto-group]').forEach((group) => {
     const toggle = group.querySelector('input[name="auto"]')

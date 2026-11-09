@@ -62,8 +62,11 @@
   --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
   /* Height of the sticky header; re-declared per breakpoint because the header
-     wraps the nav onto its own row below 960px. */
-  --header-h: 84px;
+     wraps the nav onto its own row below 960px. These are the no-JS fallback:
+     public/app.js overwrites --header-h from the rendered header, and every
+     value keeps at least 20px (one line of body text) over the measured
+     height, so an anchor target still clears the header with the script off. */
+  --header-h: 90px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --touch: 44px;
   --content: 1180px;
@@ -462,7 +465,7 @@ a.list-row:hover strong { color: var(--accent); }
   .loop-card { max-width: 620px; }
   .hero-note { margin-top: 4px; }
   .cols, .stats { grid-template-columns: minmax(0, 1fr); }
-  :root { --header-h: 200px; }
+  :root { --header-h: 215px; }
   .top-inner { padding: 10px 16px; gap: 10px 14px; }
   .nav { order: 4; width: 100%; gap: 16px; padding-top: 4px; border-top: 1px solid var(--line); }
   .nav a { padding: 10px 0; min-height: var(--touch); }
@@ -495,9 +498,10 @@ a.list-row:hover strong { color: var(--accent); }
 
 @media (max-width: 420px) {
   /* Below ~410px the language switch and the account row each take their own
-     row, so the sticky header grows again. Measured header height is 195px (zh)
-     and 256px (en) at 320-360, and the offset takes the taller of the two. */
-  :root { --header-h: 260px; }
+     row, so the sticky header grows again. The measured header at 320-360px is
+     255.9px, so the fallback keeps 20px of headroom over it; public/app.js
+     replaces the value with the height it measures. */
+  :root { --header-h: 276px; }
   .top-inner { padding: 10px 12px; }
 }
 
@@ -506,7 +510,7 @@ a.list-row:hover strong { color: var(--accent); }
   * { transition: none !important; animation: none !important; }
 }
 
-.workspace-frame { width: 100%; height: calc(100vh - 230px); min-height: 620px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+.workspace-frame { width: 100%; height: calc(100vh - var(--header-h)); min-height: 620px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
 .workspace-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
 .add-choice { border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 12px; }

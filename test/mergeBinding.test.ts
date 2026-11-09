@@ -158,8 +158,11 @@ test('a prUrl from another host is rejected before any GitHub call', async () =>
   try {
     const secret = 'host-secret'
     startJob(s.store, s.repo, 'job_host', secret, 'fledge/job-a')
+    // A row written before the callback filter can still hold a foreign URL, so
+    // seed it directly: the merge path must keep refusing such a value.
+    s.store.updateJob('job_host', { pr_url: 'https://evil.example/o/r/pull/12' })
 
-    const result = await s.jobs.handleCallback('job_host', secret, { status: 'succeeded', prUrl: 'https://evil.example/o/r/pull/12', summary: 'done' })
+    const result = await s.jobs.handleCallback('job_host', secret, { status: 'succeeded', summary: 'done' })
     assert.equal(result.ok, true)
     assert.equal(github.merges.length, 0)
     assert.deepEqual(github.requests, [], 'a foreign host must be rejected before any GitHub call')
@@ -189,7 +192,10 @@ test('a prUrl that only looks like the repository host is rejected before any Gi
       const id = `job_lookalike_${index}`
       const secret = `lookalike-secret-${index}`
       startJob(s.store, s.repo, id, secret, 'fledge/job-a')
-      const result = await s.jobs.handleCallback(id, secret, { status: 'succeeded', prUrl, summary: 'done' })
+      // A row written before the callback filter can still hold this URL; seed
+      // it directly to prove the merge path keeps refusing it.
+      s.store.updateJob(id, { pr_url: prUrl })
+      const result = await s.jobs.handleCallback(id, secret, { status: 'succeeded', summary: 'done' })
       assert.equal(result.ok, true, `${prUrl} must still finish the job`)
       assert.notEqual(s.store.getJob(id)?.pr_state, 'merged', `${prUrl} must not merge`)
     }
@@ -282,7 +288,9 @@ test('the host and the repository path must both match', async () => {
     startJob(s.store, s.repo, 'job_origin', secret, 'fledge/job-a')
 
     // Same host, another repository: the number belongs to a different repo.
-    const otherRepo = await s.jobs.handleCallback('job_origin', secret, { status: 'succeeded', prUrl: 'https://github.example/other/repo/pull/1', summary: 'done' })
+    // Seed the row directly because the callback filter would drop the value.
+    s.store.updateJob('job_origin', { pr_url: 'https://github.example/other/repo/pull/1' })
+    const otherRepo = await s.jobs.handleCallback('job_origin', secret, { status: 'succeeded', summary: 'done' })
     assert.equal(otherRepo.ok, true)
     assert.equal(github.merges.length, 0)
     assert.deepEqual(github.requests, [], 'a foreign repository path must be rejected before any GitHub call')
@@ -317,8 +325,11 @@ test('an unparseable API base with no recorded html_url fails closed', async () 
   try {
     const secret = 'closed-secret'
     startJob(s.store, s.repo, 'job_closed', secret, 'fledge/job-a')
+    // Seed the row directly: the callback filter refuses a value it cannot place,
+    // and the merge path must also refuse this row from before the fix.
+    s.store.updateJob('job_closed', { pr_url: `${github.url.replace('http:', 'https:')}/o/r/pull/12` })
 
-    const result = await s.jobs.handleCallback('job_closed', secret, { status: 'succeeded', prUrl: `${github.url.replace('http:', 'https:')}/o/r/pull/12`, summary: 'done' })
+    const result = await s.jobs.handleCallback('job_closed', secret, { status: 'succeeded', summary: 'done' })
     assert.equal(result.ok, true)
     assert.equal(github.merges.length, 0)
     assert.deepEqual(github.requests, [], 'an unknown origin must be rejected before any GitHub call')
