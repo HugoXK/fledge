@@ -1,12 +1,16 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { startFakeServer, json } from './helpers.js'
 
 const run = promisify(execFile)
-const SCRIPT = '/home/xuke/work/fledge-dev-2/.ui-evidence/w80c/scripts/pr-lint.mjs'
-const CWD = '/home/xuke/work/fledge-dev-2/.ui-evidence/w80c'
+// The checkout path is whatever the runner cloned this file into; resolving it
+// from this module keeps the suite runnable outside the author's worktree.
+const CWD = fileURLToPath(new URL('..', import.meta.url))
+const SCRIPT = join(CWD, 'scripts', 'pr-lint.mjs')
 
 const BODY = [
   'Written-by: HugoXK',

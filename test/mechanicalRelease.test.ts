@@ -4,9 +4,11 @@ import { execFileSync } from 'node:child_process'
 import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { decideDrive } from '../scripts/lib/release-drive.mjs'
 import { isMechanicalPath, mechanicalRelease, releaseIdentity } from '../scripts/lib/mechanical-release.mjs'
 
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const PLAN_OK = { shouldRelease: true, nextVersion: '0.3.0', reason: 'ok' }
 const PLAIN_MERGE = { number: 7, title: 'feat: something', headRef: 'dev2/something' }
 
@@ -32,7 +34,7 @@ function gitRepo(): string {
   // risk-gate reads the rules from the working directory, so the fixture carries
   // the repository's real rules rather than a copy that could drift.
   mkdirSync(join(dir, '.github', 'agent'), { recursive: true })
-  copyFileSync('/home/xuke/work/fledge-dev-2/.ui-evidence/w80c/.github/agent/risk-rules.json', join(dir, '.github', 'agent', 'risk-rules.json'))
+  copyFileSync(join(ROOT, '.github', 'agent', 'risk-rules.json'), join(dir, '.github', 'agent', 'risk-rules.json'))
   return dir
 }
 
@@ -79,7 +81,7 @@ test('the mechanical class needs branch, title and file set together', () => {
 
 test('risk-gate reports the same five-file diff as T3 without the branch and title', () => {
   const dir = gitRepo()
-  const script = '/home/xuke/work/fledge-dev-2/.ui-evidence/w80c/scripts/risk-gate.mjs'
+  const script = join(ROOT, 'scripts', 'risk-gate.mjs')
   const run = (extra: string[]): string =>
     execFileSync('node', [script, '--base', 'HEAD~1', '--head', 'HEAD', ...extra], { cwd: dir, encoding: 'utf8' })
 
