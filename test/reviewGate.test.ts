@@ -92,7 +92,18 @@ async function withFakeGitHub(state: FakeState, body: (env: Record<string, strin
       return
     }
     if (path === `/repos/o/r/commits/${state.sha}/check-runs`) {
-      json(response, 200, { total_count: state.checkRuns.length, check_runs: state.checkRuns })
+      const filter = url.searchParams.get('filter')
+      let checks = state.checkRuns
+      if (filter === 'latest') {
+        // The fake lists checks oldest first, like the API does; `filter=latest`
+        // returns only the newest check run of each name.
+        const latest = new Map<string, Record<string, unknown>>()
+        for (const check of checks) latest.set(String(check.name), check)
+        checks = [...latest.values()]
+      }
+      const name = url.searchParams.get('check_name')
+      if (name !== null) checks = checks.filter((check) => check.name === name)
+      json(response, 200, { total_count: checks.length, check_runs: checks })
       return
     }
     if (path === '/repos/o/r/actions/runs') {
@@ -138,13 +149,10 @@ test('the gate passes a T0 tip with no verdict, because no PASS is required', as
 
 test('the gate fails a T2 tip with no verdict and records that a verdict is what is missing', async () => {
   const state = initialState()
-  const output = join(mkdtempSync(join(tmpdir(), 'fledge-gate-out-')), 'output')
-  writeFileSync(output, '')
   await withFakeGitHub(state, async (env) => {
-    const result = await runScript(gateScript, ['--pr', '7'], { ...env, GITHUB_OUTPUT: output })
+    const result = await runScript(gateScript, ['--pr', '7'], env)
     assert.equal(result.code, 1)
     assert.match(result.stderr, /no conclusion at /)
-    assert.match(readFileSync(output, 'utf8'), /^kind=verdict$/m)
   })
 })
 
@@ -202,8 +210,8 @@ test('a merge_group run resolves the pull request from head_ref and still decide
 
 // --- the repair plan: one action, no loop -----------------------------------
 
-const greenRun = (id: number, attempt = 1) => ({ id, run_attempt: attempt, conclusion: 'success', created_at: new Date(Date.UTC(2026, 10, 9, 7, 0, id)).toISOString() })
-const redRun = (id: number, attempt = 1) => ({ id, run_attempt: attempt, conclusion: 'failure', created_at: new Date(Date.UTC(2026, 10, 9, 6, 0, id)).toISOString() })
+const greenRun = (id: number, attempt = 1) => ({ name: 'Review gate', path: '.github/workflows/review-gate.yml', id, run_attempt: attempt, conclusion: 'success', created_at: new Date(Date.UTC(2026, 10, 9, 7, 0, id)).toISOString() })
+const redRun = (id: number, attempt = 1) => ({ name: 'Review gate', path: '.github/workflows/review-gate.yml', id, run_attempt: attempt, conclusion: 'failure', created_at: new Date(Date.UTC(2026, 10, 9, 6, 0, id)).toISOString() })
 const failedGateJob = [{ name: 'review-gate', conclusion: 'failure' }, { name: 'pr-lint', conclusion: 'success' }]
 
 test('a rejection with no red at the SHA re-runs the newest first-attempt run', async () => {
@@ -320,6 +328,60 @@ test('a comment verdict on a green tip repaints it, and then stops', async () =>
   })
 })
 
+// Four workflows publish runs at one SHA, and on a real tip `Dependency review`
+// is often the newest of them. Only the `Review gate` run paints `review-gate`.
+const fourRunsAtOneSha = () => [
+  { id: 42585100279, name: 'CI', path: '.github/workflows/ci.yml', run_attempt: 1, conclusion: 'success', created_at: '2026-11-09T06:58:00Z' },
+  { id: 42585100386, name: 'Review gate', path: '.github/workflows/review-gate.yml', run_attempt: 1, conclusion: 'success', created_at: '2026-11-09T07:00:00Z' },
+  { id: 42585100423, name: 'CodeQL', path: '.github/workflows/codeql.yml', run_attempt: 1, conclusion: 'success', created_at: '2026-11-09T07:01:00Z' },
+  { id: 42585100599, name: 'Dependency review', path: '.github/workflows/dependency-review.yml', run_attempt: 1, conclusion: 'success', created_at: '2026-11-09T07:02:00Z' },
+]
+
+test('a rejection re-runs the newest Review gate run, never a newer run of another workflow', async () => {
+  const state = initialState()
+  state.comments = [{ body: REJECT_BODY, created_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  state.checkRuns = [{ id: 1, name: 'review-gate', status: 'completed', conclusion: 'success' }]
+  state.runs = fourRunsAtOneSha()
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(repairScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.deepEqual(state.posts, ['42585100386'], 'only a Review gate run can repaint review-gate')
+  })
+})
+
+test('a rejection is not hidden by the failure an earlier re-run superseded', async () => {
+  const state = initialState()
+  state.comments = [{ body: REJECT_BODY, created_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  // The re-run landed: its success is the newest check; the pre-re-run failure
+  // is still returned by `filter=all` and is history, not a standing red.
+  state.checkRuns = [
+    { id: 129052914671, name: 'review-gate', status: 'completed', conclusion: 'failure', started_at: '2026-11-09T06:00:00Z' },
+    { id: 129123972768, name: 'review-gate', status: 'completed', conclusion: 'success', started_at: '2026-11-09T07:00:00Z' },
+  ]
+  state.runs = [greenRun(42585100386)]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(repairScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.deepEqual(state.posts, ['42585100386'], 'the tip is green right now, so the rejection must repaint it')
+  })
+})
+
+test('a PASS is not blocked by a failure its re-run already superseded', async () => {
+  const state = initialState()
+  state.reviews = [{ body: PASS_BODY, state: 'APPROVED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  state.checkRuns = [
+    { id: 129052914671, name: 'review-gate', status: 'completed', conclusion: 'failure', started_at: '2026-11-09T06:00:00Z' },
+    { id: 129123972768, name: 'review-gate', status: 'completed', conclusion: 'success', started_at: '2026-11-09T07:00:00Z' },
+  ]
+  state.runs = [{ ...greenRun(42585100386, 2) }]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(repairScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.deepEqual(state.posts, [], 'a green newest check needs no re-run')
+    assert.match(result.stdout, /nothing to do/)
+  })
+})
+
 test('a gate that cannot decide re-runs nothing', async () => {
   const state = initialState()
   // The gate cannot read the verdicts at all: re-running any run would only
@@ -379,8 +441,21 @@ test('exactly one job is named review-gate and the comment path is a different j
   assert.ok(jobs.has('review-gate-comment'))
   assert.match(jobs.get('review-gate-comment')!, /issue_comment/)
   assert.match(jobs.get('review-gate-comment')!, /github\.event\.issue\.pull_request/)
-  assert.match(jobs.get('review-gate-comment')!, /\^Verdict: \(PASS\|INC\|REQUEST_CHANGES\) at/)
+  // The match must use the first non-empty line and the same shapes and case
+  // handling as parseConclusion, or a heading-form verdict never repaints.
+  assert.match(jobs.get('review-gate-comment')!, /awk 'NF \{ print; exit \}'/)
+  assert.match(jobs.get('review-gate-comment')!, /grep -qiE/)
+  assert.match(jobs.get('review-gate-comment')!, /##\[\[:space:\]\]\*Review/)
+  assert.match(jobs.get('review-gate-comment')!, /Verdict:\[\[:space:\]\]\+\(PASS\|INC\|REQUEST_CHANGES\)/)
   assert.match(jobs.get('review-gate-comment')!, /github\.event\.issue\.number/)
+})
+
+test('the workflow keeps a top-level least-privilege permissions block', () => {
+  const block = workflow.slice(workflow.indexOf('\npermissions:'), workflow.indexOf('\njobs:'))
+  assert.match(block, /contents: read/)
+  assert.match(block, /pull-requests: read/)
+  assert.match(block, /issues: read/)
+  assert.doesNotMatch(block, /actions: write|write-all/, 'the default must stay read-only')
 })
 
 test('the review-gate job is never skipped on an event that publishes it for a pull request', () => {

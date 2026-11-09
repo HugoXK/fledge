@@ -201,8 +201,12 @@ evaluates the gate itself and re-runs at most one set of runs at the head:
 
 - a PASS re-runs the failed first-attempt runs whose own `review-gate` job
   failed, which clears the pre-PASS red that would otherwise block the merge;
-- a rejection re-runs the newest first-attempt run at the SHA, so a run that is
-  currently green turns red;
+- a rejection re-runs the newest first-attempt run of the `Review gate`
+  workflow at the SHA, so a run that is currently green turns red. A run of any
+  other workflow at the same SHA is never a target: re-running it paints no
+  `review-gate` check;
+- only the newest check run of each name stands at the SHA, so a superseded
+  failure left behind by an earlier re-run is history, not a standing red;
 - a re-run is attempt 2 and is never a target again, so posting the same verdict
   twice writes nothing, and a SHA whose runs have all been re-run fails with its
   name instead of looping.

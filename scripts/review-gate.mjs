@@ -7,8 +7,7 @@
 //
 // The decision itself lives in scripts/lib/review-gate.mjs, so the required
 // check and the rollup-repair step (scripts/gate-repair.mjs) judge a tip with one
-// implementation. This file only wires the event, the API and the exit code, and
-// publishes `kind`/`conclusion` to GITHUB_OUTPUT for the repair job to gate on.
+// implementation. This file only wires the event, the API and the exit code.
 //
 // By design, not a bug: a PASS that arrives after a REQUEST_CHANGES at the same
 // SHA still exits 1 here, because a verdict is only read at the tip and the tip
@@ -64,9 +63,4 @@ const line = `review-gate: ${outcome.ok ? 'PASS' : 'FAIL'} — ${outcome.message
 if (outcome.ok) console.log(line)
 else console.error(line)
 if (process.env.GITHUB_STEP_SUMMARY !== undefined) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${line}\n`)
-if (process.env.GITHUB_OUTPUT !== undefined) {
-  // `kind` lets the repair job be a real skipped job when the gate could not
-  // decide: re-running a run for an error or a hold would only reproduce it.
-  appendFileSync(process.env.GITHUB_OUTPUT, `kind=${outcome.kind}\nconclusion=${outcome.ok ? 'success' : 'failure'}\n`)
-}
 process.exit(outcome.ok ? 0 : 1)

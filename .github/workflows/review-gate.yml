@@ -8,6 +8,13 @@ on:
   issue_comment:
     types: [created]
 
+# Default-deny for the whole workflow; each job narrows or widens only what it
+# needs below.
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
 # The gate never checks out the pull request head: the policy comes from the base
 # ref, and the tier and the verdicts from the API. A pull request that stubs
 # scripts/review-gate.mjs must not be the thing that judges its own tip.
@@ -37,7 +44,6 @@ jobs:
         with:
           node-version: 22
       - name: Read the newest conclusion at the tip
-        id: gate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/review-gate.mjs
@@ -89,7 +95,10 @@ jobs:
         env:
           BODY: ${{ github.event.comment.body }}
         run: |
-          if printf '%s' "$BODY" | head -n 1 | grep -qE '^Verdict: (PASS|INC|REQUEST_CHANGES) at'; then
+          # The same shapes scripts/lib/review-gate.mjs reads: `Verdict: ...` or a
+          # `## Review — PASS` heading, on the first non-empty line, any case.
+          line=$(printf '%s' "$BODY" | awk 'NF { print; exit }')
+          if printf '%s' "$line" | grep -qiE '^(Verdict:[[:space:]]+(PASS|INC|REQUEST_CHANGES)[[:space:]]+at[[:space:]]|##[[:space:]]*Review[[:space:]]*(—|:|-)[[:space:]]*(PASS|FAIL|INC|REQUEST_CHANGES)\b)'; then
             echo "match=true" >> "$GITHUB_OUTPUT"
           else
             echo "match=false" >> "$GITHUB_OUTPUT"
