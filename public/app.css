@@ -494,6 +494,24 @@ a.list-row:hover strong { color: var(--accent); }
   .lang a { min-height: var(--touch); padding: 5px 9px; display: grid; place-items: center; }
   .empty { align-items: flex-start; flex-direction: column; }
   .foot { flex-direction: column; align-items: flex-start; }
+  /* One job row becomes one card. The table carried a 330px column floor and
+     nowrap content needing 512px inside a card that boxes 240px at the
+     narrowest phone, so the right-hand columns sat behind a horizontal scroll.
+     Each cell now carries the column name it lost with the header row; the
+     same markup still lays out as a table from 641px up. */
+  .job-table { display: block; }
+  .job-table thead { display: none; }
+  .job-table tbody { display: block; }
+  .job-table tr { display: block; padding: 10px 0 12px; border-bottom: 1px solid var(--row-line); }
+  .job-table tr:last-child { border-bottom: none; }
+  .job-table td { display: block; padding: 0; border-bottom: 0; vertical-align: top; min-width: 0; max-width: none; white-space: normal; overflow-wrap: anywhere; }
+  .job-table td + td { margin-top: 8px; }
+  .job-table td::before { content: attr(data-label); display: block; margin-bottom: 3px; color: var(--muted-2); font-weight: 650; font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; }
+  .job-table td:not([data-label])::before { display: none; }
+  .job-table .job-cell,
+  .job-table .job-summary { min-width: 0; max-width: none; }
+  .job-table .job-links { white-space: normal; }
+  .job-table td code { white-space: normal; overflow-wrap: anywhere; }
 }
 
 @media (max-width: 420px) {

@@ -262,7 +262,12 @@ greetings, memory reviews or guidance turns.
 
 The dashboard paginates repositories and jobs at ten per page; a repository page
 and the team console paginate their job tables at ten per page, with the page
-number clamped to the available pages. Add repository presents two explicit
+number clamped to the available pages. The shared job table is one markup for
+every width: it lays out as a table from 641px up and, below 641px, each row
+becomes a card whose cells carry their column name in a `data-label` attribute
+(`public/app.css`, the `max-width: 640px` block). The cells therefore never sit
+behind a horizontal scroll on a phone, and a new column must emit `data-label`
+in `jobRows` to stay readable there. Add repository presents two explicit
 alternatives: the GitHub App installation path (recommended) and a collapsed
 fine-grained token form; users pick one, not both. The App repository picker
 carries the same task template, goal, auto-iterate interval and reviewer
