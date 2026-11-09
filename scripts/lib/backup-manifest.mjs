@@ -68,5 +68,8 @@ export function readManifest(copyPath) {
     && typeof manifest.schemaVersion === 'number'
     && typeof manifest.tables === 'object' && manifest.tables !== null
   if (!usable) throw new Error(`not a backup manifest: ${path}`)
+  // A manifest describes exactly one file: a copy renamed away from its manifest
+  // is not the copy that manifest vouches for.
+  if (manifest.copy !== basename(copyPath)) throw new Error(`the manifest describes ${String(manifest.copy)}, not ${basename(copyPath)}`)
   return manifest
 }

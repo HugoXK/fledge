@@ -1,8 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, truncateSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,18 +23,15 @@ interface RunResult {
   stderr: string
 }
 
+// stderr matters on a green run too: the drill reports drift it could not read
+// there while still exiting 0.
 function run(script: string, args: string[], env: Record<string, string> = {}): RunResult {
-  try {
-    const stdout = execFileSync(process.execPath, [script, ...args], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ...env },
-    })
-    return { code: 0, stdout, stderr: '' }
-  } catch (error) {
-    const failure = error as { status?: number | null; stdout?: string; stderr?: string }
-    return { code: failure.status ?? -1, stdout: failure.stdout ?? '', stderr: failure.stderr ?? '' }
-  }
+  const result = spawnSync(process.execPath, [script, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, ...env },
+  })
+  return { code: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
 }
 
 function runDrill(args: string[], env: Record<string, string> = {}): RunResult {
@@ -137,9 +134,8 @@ test('a copy without a manifest still passes the exact check and warns instead o
   const backup = run(backupScript, ['--db', dbPath, '--backup-dir', backupDir])
   assert.equal(backup.code, 0, backup.stderr)
   const copy = onlyCopy(backupDir)
-  // An older backup tool wrote the copy only.
-  writeFileSync(`${copy}.json`, '', { flag: 'w' })
-  execFileSync(process.execPath, ['-e', `require('node:fs').rmSync(${JSON.stringify(`${copy}.json`)})`])
+  // An older backup tool wrote the copy only, with no sidecar.
+  rmSync(`${copy}.json`)
   addJobs(dbPath, ['job_drift_3'])
 
   const result = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir])
@@ -279,6 +275,31 @@ test('--fresh writes a manifest for the copy it takes, so the drill is exact on 
   assert.ok(rpo !== null, result.stdout)
   assert.ok(Number(rpo[1]) < 5, `a fresh copy restores with RPO near zero, got ${rpo[1]}s`)
   assert.equal(manifests(backupDir).length, 1)
+})
+
+test('a live source that cannot be read never fails the drill, its copy or its exit status', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drift-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+  seed(dbPath)
+
+  const backup = run(backupScript, ['--db', dbPath, '--backup-dir', backupDir])
+  assert.equal(backup.code, 0, backup.stderr)
+  // The operator restores *because* the live database is damaged: this is the
+  // disaster path, and the source must never be able to fail a good copy.
+  rmSync(`${dbPath}-wal`, { force: true })
+  rmSync(`${dbPath}-shm`, { force: true })
+  writeFileSync(dbPath, Buffer.from('not a SQLite database, and the drill must not care', 'utf8'))
+
+  const result = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir])
+  assert.equal(result.code, 0, `a damaged source must not fail a verified copy:\n${result.stderr}`)
+  assert.match(result.stdout, /^schema_drift=unavailable$/m, result.stdout)
+  assert.match(result.stdout, /^source_drift=unavailable$/m, result.stdout)
+  assert.match(result.stdout, /^restore-drill: OK$/m, result.stdout)
+  assert.match(result.stderr, /drift is not reported/, result.stderr)
+  assert.equal(existsSync(join(workDir, 'restored.db')), true, 'the verified copy stays where the runbook restores it from')
+  assert.equal(existsSync(join(workDir, 'restored.db.failed')), false, 'a damaged source must never mark a good copy failed')
 })
 
 test('retention deletes a copy together with its manifest', () => {

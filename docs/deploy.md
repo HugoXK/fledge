@@ -265,12 +265,16 @@ How it works and how to read it:
   the manifest, which is what catches a copy that was truncated or interrupted
   at backup time. A copy written before manifests existed still passes the byte
   comparison and prints `manifest=missing` as a warning.
-- **The live source is reported, never required to match.** Each shared table
-  prints `source_table=<table> source=<n> restored=<n>`, `schema_drift` names a
-  table the source has and the copy does not (or the reverse), and `source_drift`
-  is the total difference. Writes — and deletes, so an older copy can legitimately
-  hold more rows — since the copy was taken are normal: they are printed as
-  information and never fail the drill.
+- **The live source is reported, never required to match or even to be
+  readable.** Each shared table prints `source_table=<table> source=<n>
+  restored=<n>`, `schema_drift` names a table the source has and the copy does
+  not (or the reverse), and `source_drift` is the total difference. Writes — and
+  deletes, so an older copy can legitimately hold more rows — since the copy was
+  taken are normal: they are printed as information and never fail the drill.
+  If the live database cannot be opened or read at all, the drill prints
+  `schema_drift=unavailable` and `source_drift=unavailable` with the reason on
+  stderr and still reports the restored copy. That is the case an operator
+  restores *because* of, so it can never be the reason a good copy is refused.
 - It refuses a `--backup-dir` or `--work-dir` that holds the source database,
   and exits non-zero — naming the file and the table — when the copy is corrupt
   or does not match its manifest. The source database is opened read-only and

@@ -102,7 +102,17 @@ async function writeBackup(sourcePath, dir) {
   }
   chmodSync(target, 0o600)
   // A copy taken by the drill is a normal backup: it gets the same manifest, so
-  // the checks below are exact on the very first run of an instance.
+  // the checks below are exact on the very first run of an instance. The manifest
+  // records what this run wrote, so the copy is verified before it is described -
+  // a manifest over a file that cannot be opened would launder a bad backup - and
+  // an unreadable copy is removed rather than left looking usable.
+  try {
+    const fresh = openRestored(target, target)
+    fresh.close()
+  } catch (error) {
+    rmSync(target, { force: true })
+    throw error
+  }
   writeManifest(target)
   return target
 }
@@ -192,32 +202,40 @@ function verifyManifestDatabase(manifest, backupPath, restored, restoredTables, 
 // 3. The live source only informs. A serving instance writes after the copy is
 // taken, and a migration may add a table, so neither is a failure: a red drill
 // must mean "this backup is bad", never "the database moved on".
+// The source is the one part of this drill that is allowed to be broken: an
+// operator runs a drill *because* the live database may be damaged, so a source
+// that cannot be opened or read is reported and never fails a verified copy.
 function reportSourceDrift(dbPath, restoredTables, restoredCounts) {
-  const source = new DatabaseSync(dbPath, { readOnly: true })
   try {
-    const sourceTables = tableNames(source)
-    const sourceSet = new Set(sourceTables)
-    const restoredSet = new Set(restoredTables)
-    const schemaNotes = []
-    let drift = 0
-    for (const table of [...new Set([...sourceTables, ...restoredTables])].sort()) {
-      if (!sourceSet.has(table)) {
-        schemaNotes.push(`extra:${table}`)
-        continue
+    const source = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      const sourceTables = tableNames(source)
+      const sourceSet = new Set(sourceTables)
+      const restoredSet = new Set(restoredTables)
+      const schemaNotes = []
+      let drift = 0
+      for (const table of [...new Set([...sourceTables, ...restoredTables])].sort()) {
+        if (!sourceSet.has(table)) {
+          schemaNotes.push(`extra:${table}`)
+          continue
+        }
+        if (!restoredSet.has(table)) {
+          schemaNotes.push(`missing:${table}`)
+          continue
+        }
+        const live = rowCount(source, table)
+        const copy = restoredCounts.get(table) ?? 0
+        drift += live - copy
+        process.stdout.write(`source_table=${table} source=${live} restored=${copy}\n`)
       }
-      if (!restoredSet.has(table)) {
-        schemaNotes.push(`missing:${table}`)
-        continue
-      }
-      const live = rowCount(source, table)
-      const copy = restoredCounts.get(table) ?? 0
-      drift += live - copy
-      process.stdout.write(`source_table=${table} source=${live} restored=${copy}\n`)
+      process.stdout.write(`schema_drift=${schemaNotes.length === 0 ? 'none' : schemaNotes.join(',')}\n`)
+      process.stdout.write(`source_drift=${drift > 0 ? '+' : ''}${drift}\n`)
+    } finally {
+      source.close()
     }
-    process.stdout.write(`schema_drift=${schemaNotes.length === 0 ? 'none' : schemaNotes.join(',')}\n`)
-    process.stdout.write(`source_drift=${drift > 0 ? '+' : ''}${drift}\n`)
-  } finally {
-    source.close()
+  } catch (error) {
+    process.stdout.write('schema_drift=unavailable\nsource_drift=unavailable\n')
+    process.stderr.write(`restore-drill: the live source could not be read, so drift is not reported and the restore stands: ${error instanceof Error ? error.message : String(error)}\n`)
   }
 }
 
