@@ -1,0 +1,25 @@
+{
+  "source": "HugoXK/fledge#94, reviewer re-measure of the rendered header",
+  "method": "document.querySelector('.top').offsetHeight in Chromium, over the 46 + 28 renders recorded in #94 (locale and default-font-size variants at the three breakpoint widths); the tallest header seen per breakpoint is the value below.",
+  "headroom": 20,
+  "renders": [
+    {
+      "breakpoint": "@media (max-width: 420px)",
+      "media": "(max-width: 420px)",
+      "viewport": "320-360",
+      "measured": 255.9
+    },
+    {
+      "breakpoint": "@media (max-width: 960px)",
+      "media": "(max-width: 960px)",
+      "viewport": "390-960",
+      "measured": 194.9
+    },
+    {
+      "breakpoint": "wide",
+      "media": null,
+      "viewport": "1280",
+      "measured": 69.9
+    }
+  ]
+}
