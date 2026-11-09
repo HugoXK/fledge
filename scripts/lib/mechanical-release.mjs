@@ -54,3 +54,35 @@ export function mechanicalRelease({ branch, title, files } = {}) {
   }
   return { mechanical: true, version: identity.version, reason: `mechanical release v${identity.version}` }
 }
+
+// The identity is declared by the author — a branch name and a PR title — so on
+// its own it would let anyone claim the T0 exemption and merge a dependency
+// change in package.json or an image/env change in docker-compose.yml with no
+// PASS. It only counts when the diff has the shape the release routine writes:
+// the version fields in package.json / package-lock.json and the image tag in
+// docker-compose.yml, with any content allowed in CHANGELOG.md and changelog.d/.
+// A file whose patch the API did not return cannot be judged, so it fails closed.
+const VERSION_FIELD = /"version":\s*"\d+\.\d+\.\d+"/
+const IMAGE_TAG = /^\s*image:\s*\S+\s*$/
+
+export function mechanicalDiffShape(files) {
+  const list = Array.isArray(files) ? files : []
+  for (const file of list) {
+    const name = String(file?.filename ?? '')
+    if (name === '') return { shaped: false, reason: 'a changed file has no name' }
+    if (name === 'CHANGELOG.md' || name.startsWith('changelog.d/')) continue
+    const patch = String(file?.patch ?? '')
+    if (patch === '') return { shaped: false, reason: `${name} has no patch to judge` }
+    for (const line of patch.split('\n')) {
+      if (!line.startsWith('+') && !line.startsWith('-')) continue
+      if (line.startsWith('+++') || line.startsWith('---')) continue
+      const body = line.slice(1)
+      const allowed = name === 'docker-compose.yml' ? IMAGE_TAG.test(body) : VERSION_FIELD.test(body)
+      if (!allowed) {
+        const shown = body.trim().slice(0, 80)
+        return { shaped: false, reason: `${name} changes more than the version: ${shown}` }
+      }
+    }
+  }
+  return { shaped: true, reason: 'version fields and the image tag only' }
+}

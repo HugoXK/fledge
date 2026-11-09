@@ -37,7 +37,9 @@ const PASS_BODY = `Verdict: PASS at ${SHA}\nWritten-by: HugoXK-bot\nPosted-by: H
 const REJECT_BODY = `Verdict: REQUEST_CHANGES at ${SHA}\nWritten-by: HugoXK-bot\nPosted-by: HugoXK-bot\n\nRan:\n- \`npm run check\` — fail\n\nNot run: Docker image\n`
 
 interface FakeState {
-  files: string[]
+  files: Array<string | { filename: string; patch?: string }>
+  title: string
+  branch: string
   comments: Array<Record<string, unknown>>
   reviews: Array<Record<string, unknown>>
   checkRuns: Array<Record<string, unknown>>
@@ -51,6 +53,8 @@ interface FakeState {
 function initialState(): FakeState {
   return {
     files: ['src/app.ts'],
+    title: 'feat: something',
+    branch: 'dev2/something',
     comments: [],
     reviews: [],
     checkRuns: [],
@@ -72,11 +76,11 @@ async function withFakeGitHub(state: FakeState, body: (env: Record<string, strin
       return
     }
     if (path === '/repos/o/r/pulls/7') {
-      json(response, 200, { number: 7, head: { sha: state.sha }, user: { login: 'HugoXK' }, labels: [] })
+      json(response, 200, { number: 7, title: state.title, head: { sha: state.sha, ref: state.branch }, user: { login: 'HugoXK' }, labels: [] })
       return
     }
     if (path === '/repos/o/r/pulls/7/files') {
-      json(response, 200, state.files.map((filename) => ({ filename })))
+      json(response, 200, state.files.map((file) => (typeof file === 'string' ? { filename: file } : file)))
       return
     }
     if (path === '/repos/o/r/pulls/7/reviews') {
@@ -541,4 +545,86 @@ test('actions: write is granted only to the two jobs that re-run a workflow run'
     if (name === 'review-gate-repair' || name === 'review-gate-comment') assert.match(body, /actions: write/, `${name} needs actions: write`)
     else assert.doesNotMatch(body, /actions: write/, `${name} must not hold actions: write`)
   }
+})
+
+// --- the mechanical daily release, and why the exemption has to be earned ----
+
+// The shape `node scripts/changelog.mjs release` plus the version bump produce:
+// content in CHANGELOG.md and changelog.d/, and nothing but the version fields
+// and the image tag elsewhere.
+const RELEASE_FILES = [
+  { filename: 'CHANGELOG.md', patch: '@@ -1,2 +1,3 @@\n # Changelog\n+\n+## 0.3.0\n' },
+  { filename: 'changelog.d/80-daily-release-drive.added.md', patch: '@@ -1 +0,0 @@\n-a fragment\n' },
+  { filename: 'package.json', patch: '@@ -2,3 +2,3 @@\n-  "version": "0.2.4",\n+  "version": "0.3.0",\n' },
+  { filename: 'package-lock.json', patch: '@@ -1,4 +1,4 @@\n-  "version": "0.2.4",\n+  "version": "0.3.0",\n' },
+  { filename: 'docker-compose.yml', patch: '@@ -3,3 +3,3 @@\n-    image: ghcr.io/hugoxk/fledge:v0.2.4\n+    image: ghcr.io/hugoxk/fledge:v0.3.0\n' },
+]
+
+test('the gate passes a mechanical release PR with no verdict, because the diff is the release shape', async () => {
+  const state = initialState()
+  state.files = RELEASE_FILES
+  state.title = 'release: v0.3.0'
+  state.branch = 'release/v0.3.0'
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, `a mechanical release PR must not need a PASS: ${result.stderr}`)
+    assert.match(result.stdout, /T0 at /)
+  })
+})
+
+test('the same five files without the release identity stay T3 and need a PASS', async () => {
+  const state = initialState()
+  state.files = RELEASE_FILES
+  state.title = 'feat: rename a thing'
+  state.branch = 'dev2/rename'
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'the file set alone must never be exempt')
+    assert.match(result.stderr, /no conclusion at /)
+  })
+})
+
+test('a release title on a non-release branch also stays T3', async () => {
+  const state = initialState()
+  state.files = RELEASE_FILES
+  state.title = 'release: v0.3.0'
+  state.branch = 'dev2/80-release-driver'
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /no conclusion at /)
+  })
+})
+
+test('a release identity that carries a dependency change stays T3', async () => {
+  const state = initialState()
+  state.files = [
+    ...RELEASE_FILES.filter((file) => file.filename !== 'package.json'),
+    {
+      filename: 'package.json',
+      patch: '@@ -2,4 +2,5 @@\n-  "version": "0.2.4",\n+  "version": "0.3.0",\n+  "dependencies": { "fastify": "^5.12.7" },\n',
+    },
+  ]
+  state.title = 'release: v0.3.0'
+  state.branch = 'release/v0.3.0'
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'a self-declared identity must not exempt a dependency change')
+    assert.match(result.stderr, /no conclusion at /)
+  })
+})
+
+test('a release identity whose package.json patch the API omitted stays T3', async () => {
+  const state = initialState()
+  state.files = [
+    ...RELEASE_FILES.filter((file) => file.filename !== 'package.json'),
+    { filename: 'package.json' },
+  ]
+  state.title = 'release: v0.3.0'
+  state.branch = 'release/v0.3.0'
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'an unjudgeable diff fails closed')
+    assert.match(result.stderr, /no conclusion at /)
+  })
 })

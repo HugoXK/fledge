@@ -22,7 +22,10 @@ function failingChecks(checks) {
     const status = String(check?.status ?? '')
     const conclusion = String(check?.conclusion ?? '')
     if (status !== '' && status !== 'completed') return true
-    return conclusion !== 'success' && conclusion !== 'skipped' && conclusion !== 'neutral'
+    // Only `success` is green. This repository fails a required job that was
+    // skipped rather than treating it as done, so `skipped` and `neutral` must not
+    // let a release PR through either.
+    return conclusion !== 'success'
   })
 }
 

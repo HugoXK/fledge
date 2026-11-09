@@ -288,6 +288,23 @@ the five allowed paths. `pr-lint` uses it to skip the size rule (a release PR is
 `--branch` and `--title`. The same five-file diff without that key stays T3, which
 is what keeps the `package.json` review gate in place.
 
+A branch name and a title are written by whoever opens the PR, so the identity is
+not enough on its own: `review-gate` asks `mechanicalDiffShape()` as well, and the
+exemption holds only when the diff is what the release routine writes — the
+version fields in `package.json` and `package-lock.json` and the image tag in
+`docker-compose.yml`, with any content allowed in `CHANGELOG.md` and
+`changelog.d/`. A dependency line, an environment change or a file the API
+returned without a patch keeps the PR at T3, where it needs a PASS like any other.
+Otherwise a release-named branch could carry a dependency change into `main` on a
+green `ci-ok` alone.
+
+The state the drive reads is assembled by `scripts/release-state.mjs` from the
+three API payloads; page flattening and the newest-`ci-ok` pick live in
+`scripts/lib/release-state.mjs`, where the suite executes them. This exists because
+the same logic inline in the workflow broke invisibly: `--slurp` plus
+`jq -s 'add'` produced an array of page arrays, and the first `.title` selection
+aborted the night before the planner ran.
+
 `release.yml` publishes only a tag that is an ancestor of `main`, holds one run
 per ref (`concurrency: release-<ref>`, no cancel), and still runs the checks,
 builds and pushes the image, then creates or edits the GitHub release. It never

@@ -12,6 +12,7 @@
 //   - the gate needs nothing from the pull request tree: the policy comes from
 //     the base ref, the tier from the API and the verdicts from the API.
 import { tierForFiles, loadRules } from './risk.mjs'
+import { mechanicalDiffShape, mechanicalRelease } from './mechanical-release.mjs'
 
 export const REQUIRED_CONTEXT = 'review-gate'
 
@@ -95,7 +96,16 @@ export async function evaluateGate({ api, repo, policy, prNumber, tier: tierOver
   } catch (cause) {
     return threw(cause, '')
   }
-  const tier = String(tierOverride ?? tierForFiles(files.map((file) => file.filename), loadRules()).tier).toUpperCase()
+  // The mechanical daily release is the one identity-based exemption from the
+  // PASS requirement, and it is honoured here for the same reason it is honoured
+  // in risk-gate: otherwise the release PR's own review-gate fails forever on the
+  // `package.json` basis and `decideDrive` could never enqueue it. The exemption is
+  // earned, not declared: the identity must match *and* the diff must have the
+  // shape the release routine writes, or the tier stays what the paths say (T3).
+  const identity = mechanicalRelease({ branch: pr.head?.ref, title: pr.title, files: files.map((file) => String(file.filename)) })
+  const shape = identity.mechanical ? mechanicalDiffShape(files) : { shaped: false, reason: identity.reason }
+  const declaredTier = String(tierOverride ?? tierForFiles(files.map((file) => file.filename), loadRules()).tier).toUpperCase()
+  const tier = tierOverride === undefined && shape.shaped ? 'T0' : declaredTier
   if (!['T0', 'T1', 'T2', 'T3'].includes(tier)) return failed(`unknown tier ${tier}`, 'error')
 
   if (tier === 'T0' || tier === 'T1') return { ok: true, kind: 'pass', message: `${tier} at ${headSha.slice(0, 12)} needs no PASS` }
