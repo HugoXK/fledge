@@ -90,6 +90,9 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   and a contradicting one is a conflict. Side effects run only in the winning
   branch (`docs/decisions/0004`).
 - **OAuth**: GitHub OAuth App with `state` stored server-side for 10 minutes.
+- **Token login**: one exported predicate, `tokenLoginEnabled = !oauthConfigured ||
+  allowTokenLoginOnly`, decides both the `POST /auth/token` guard and the landing
+  page's token form, so the page cannot hide a route that still answers.
 - **Applications**: a new user starts as `onboarding`. Submitting the signed
   disclaimer and information-security agreement moves them to `pending` and
   emails the administrator. The status page shows the live queue position and
