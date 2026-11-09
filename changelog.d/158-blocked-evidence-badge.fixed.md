@@ -1,0 +1,1 @@
+The job page's PR verification card no longer says evidence passed for a pull request the path guard blocks: the evidence row now carries the same combined verdict as the badge above it and names the path guard as the reason the claim was lowered, in both Chinese and English.
