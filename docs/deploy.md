@@ -264,7 +264,10 @@ How it works and how to read it:
   its size, `sha256`, `PRAGMA user_version` and per-table row counts must match
   the manifest, which is what catches a copy that was truncated or interrupted
   at backup time. A copy written before manifests existed still passes the byte
-  comparison and prints `manifest=missing` as a warning.
+  comparison and prints `manifest=missing` as a warning, but only while it still
+  carries the schema: a manifest-less copy that holds no tables is refused,
+  because a 0-byte file compares equal to itself and `PRAGMA integrity_check`
+  answers `ok` on it.
 - **The live source is reported, never required to match or even to be
   readable.** Each shared table prints `source_table=<table> source=<n>
   restored=<n>`, `schema_drift` names a table the source has and the copy does
@@ -293,7 +296,9 @@ How it works and how to read it:
   therefore impossible, and a temp drill does not leave a copy of production
   data in `/tmp`. Drift alone never triggers that rename, so a `restored.db` that
   is gone means the copy itself failed. Always check the exit status (or look for
-  `restore-drill: OK`) before using the restored copy.
+  `restore-drill: OK`) before using the restored copy; a manifest-less copy is
+  accepted only while it still carries the schema, so `restore-drill: OK` never
+  describes a copy that holds zero tables.
 - **RTO** is the measured restore-and-verify time: how long a real restore would
   take to produce a verified copy. **RPO** is the age of the copy that restored:
   how much data a real loss would cost. Record both after every drill.

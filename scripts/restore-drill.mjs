@@ -307,7 +307,8 @@ async function main() {
     const manifest = readManifestOrFail(backupPath)
     if (manifest === null) {
       // An older backup tool wrote the copy only; the exact check above already
-      // passed, and row counts are never compared with the live source.
+      // passed, and row counts are never compared with the live source. The
+      // schema guard below still applies: an empty file compares equal to itself.
       process.stdout.write(`manifest=missing\n`)
     } else {
       process.stdout.write(`manifest=${manifestPath(backupPath)}\n`)
@@ -315,6 +316,13 @@ async function main() {
     }
     restored = openRestored(restoredPath, backupPath)
     const restoredTables = tableNames(restored)
+    if (manifest === null && restoredTables.length === 0) {
+      // Without a manifest the byte comparison is the only check, and it holds
+      // for a 0-byte file exactly as for a real copy: `integrity_check` answers
+      // `ok` on an empty database too. A manifest-less copy is therefore a
+      // backup only while it still carries the schema it is meant to restore.
+      fail(1, `corrupt or incomplete copy ${backupPath}: the copy has no manifest and no tables\nskipped checks: byte size, sha256, PRAGMA user_version and per-table row counts are only compared when a manifest is present, and this copy holds no schema to report`)
+    }
     const restoredCounts = new Map(restoredTables.map((table) => [table, rowCount(restored, table)]))
     if (manifest !== null) verifyManifestDatabase(manifest, backupPath, restored, restoredTables, restoredCounts)
     reportSourceDrift(dbPath, restoredTables, restoredCounts)
