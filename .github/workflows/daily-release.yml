@@ -66,25 +66,17 @@ jobs:
           TAG_TIME=""
           if [ -n "$TAG" ]; then TAG_TIME="$(git log -1 --format=%cI "$TAG")"; fi
           VERSION="$(jq -r .version package.json)"
-          gh api --paginate "repos/${REPO}/pulls?state=closed&per_page=100&sort=updated" | jq -s 'add // []' > /tmp/prs.json
-          gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" --slurp | jq -s 'add // []' > /tmp/open.json
+          # `jq -s .` keeps the pages nested; flattening and the newest-run pick
+          # live in scripts/lib/release-state.mjs, where a test executes them.
+          gh api --paginate "repos/${REPO}/pulls?state=closed&per_page=100&sort=updated" | jq -s . > /tmp/prs.json
+          gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" | jq -s . > /tmp/open.json
           gh api "repos/${REPO}/commits/main/check-runs?per_page=100" > /tmp/checks.json
           FRAGMENTS="$(ls changelog.d/*.md 2>/dev/null | grep -v '/README.md$' | wc -l | tr -d ' ')"
           TAGS="$(git tag --list 'v*' | jq -R . | jq -s .)"
-          jq -n \
-            --arg tag "$TAG" --arg tagTime "$TAG_TIME" --arg version "$VERSION" \
-            --argjson prs "$(cat /tmp/prs.json)" --argjson open "$(cat /tmp/open.json)" \
-            --argjson checks "$(cat /tmp/checks.json)" --argjson fragments "$FRAGMENTS" \
-            --argjson tags "$TAGS" --arg dryRun "$DRY_RUN" \
-            '{
-              lastTag: $tag, lastTagCommittedAt: $tagTime, packageVersion: $version,
-              fragments: ($fragments | tonumber),
-              tags: $tags, dryRun: ($dryRun == "true"),
-              ciOk: ([$checks.check_runs[]? | select(.name == "ci-ok")] | first | .conclusion) // "missing",
-              openPr: ([$open[] | select(.title | startswith("release: v"))] | first) // null,
-              lastMerged: ([$prs[] | select(.merged_at != null)] | sort_by(.merged_at) | last) // null,
-              mergedPrs: [$prs[] | select(.merged_at != null)]
-            }' > /tmp/state.json
+          node scripts/release-state.mjs \
+            --prs /tmp/prs.json --open /tmp/open.json --checks /tmp/checks.json \
+            --tag "$TAG" --tag-time "$TAG_TIME" --version "$VERSION" \
+            --fragments "$FRAGMENTS" --tags-json "$TAGS" --dry-run "$DRY_RUN" > /tmp/state.json
           jq '{lastTag, packageVersion, fragments, ciOk, dryRun, openPr: (.openPr | {number, title} // null), lastMerged: (.lastMerged | {number, title} // null)}' /tmp/state.json
 
       - name: Plan
