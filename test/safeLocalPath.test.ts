@@ -50,9 +50,9 @@ test('the language route redirects a folded next value to the fallback, not to a
 })
 
 test('the OAuth next value is stored as exactly the string safeLocalPath returns', async () => {
-  // /auth/github writes the checked value into the OAuth state; the callback reads
-  // it back through the same helper. Asserting the stored value proves the pair
-  // without a browser round trip.
+  // /auth/github/reauthorize writes the checked value into the OAuth state; the
+  // callback reads it back through the same helper. Asserting the stored value
+  // proves the pair without a browser round trip.
   const store = new Store(':memory:')
   const built = await buildApp({ config: testConfig(), store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
@@ -69,6 +69,25 @@ test('the OAuth next value is stored as exactly the string safeLocalPath returns
       assert.ok(state !== null && state !== '', 'the authorize URL must carry a state')
       const stored = store.consumeOAuthState(sha256Hex(state))
       assert.equal(stored?.redirect_to, safeLocalPath(input, '/dashboard'), `${input} must be stored as the checked value`)
+    }
+  } finally {
+    await built.close()
+  }
+})
+
+test('the sign-in route stores the page the visitor was sent away from', async () => {
+  // The 401 guard sends a visitor to /auth/github?next=<page>. That page only
+  // survives the round trip if the plain sign-in route writes it into the OAuth
+  // state, which the callback then reads back.
+  const store = new Store(':memory:')
+  const built = await buildApp({ config: testConfig(), store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    for (const input of ['/apply', '/dashboard?window=30', '//evil.com', 'https://evil.com/apply']) {
+      const response = await built.app.inject({ method: 'GET', url: `/auth/github?next=${encodeURIComponent(input)}` })
+      assert.equal(response.statusCode, 302, String(response.headers.location))
+      const state = new URL(String(response.headers.location)).searchParams.get('state')
+      assert.ok(state !== null && state !== '', 'the authorize URL must carry a state')
+      assert.equal(store.consumeOAuthState(sha256Hex(state))?.redirect_to, safeLocalPath(input, '/dashboard'), `${input} must be stored as the checked value`)
     }
   } finally {
     await built.close()

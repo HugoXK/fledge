@@ -72,6 +72,13 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   `//host` after it (`/..//evil.com`) cannot become a protocol-relative
   `Location`. `/lang/:locale` is the public entry point; the OAuth `next` and the
   form `returnTo` values share the same rule.
+- **Sign-in round trip**: an unauthenticated `GET`/`HEAD` of an HTML page
+  (`/apply`, `/apply/status`, `/dashboard`, `/console`, `/settings`, `/admin`,
+  `/pending`) is answered with a 302 to `/auth/github?next=<the page>` instead of
+  the 401 error page; `/auth/github` stores that checked path in the OAuth
+  `state` and the callback returns there. `/api/*`, `/v1/*` and non-GET requests
+  keep the 401, so a machine client keeps its status code and a form post keeps
+  its body.
 - **SQLite** via Node's built-in `node:sqlite` (WAL, foreign keys). The database
   file is the only state; the mail outbox is a development artifact.
 - **Sessions** are random 32-byte tokens, stored as SHA-256 hashes; the cookie is

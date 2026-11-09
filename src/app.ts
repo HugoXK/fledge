@@ -400,7 +400,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return htmlPage(reply, 503, errorPage(config, request.viewer ?? null, 'GitHub OAuth 未配置', '请先在 .env 设置 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET。', request.locale))
     }
     const state = randomToken(32)
-    store.createOAuthState(sha256Hex(state), addMinutes(20), null)
+    store.createOAuthState(sha256Hex(state), addMinutes(20), safeLocalPath(queryText(request, 'next'), '/dashboard'))
     return reply.redirect(oauth.authorizeUrl(state))
   })
 
@@ -2712,6 +2712,13 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (status >= 500) log.error('request failed', { url: request.url, error: String(error) })
     if (request.url.startsWith('/v1') || request.url.startsWith('/api/')) {
       return reply.code(status).send({ error: { type: code, message } })
+    }
+    // A page that only needs a session signs in and comes back, instead of
+    // showing "出错了" over a 401 the visitor cannot act on. API paths keep the
+    // status for machine clients, and a non-GET request keeps it too so a form
+    // post does not lose its body through a redirect.
+    if (status === 401 && code === 'AUTH_REQUIRED' && (request.method === 'GET' || request.method === 'HEAD')) {
+      return reply.redirect(`/auth/github?next=${encodeURIComponent(safeLocalPath(request.url, '/dashboard'))}`)
     }
     return htmlPage(reply, status, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), status === 404 ? '页面不存在' : '出错了', status >= 500 ? '服务器出了点问题，请稍后再试。' : message, request.locale))
   })
