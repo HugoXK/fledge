@@ -201,6 +201,32 @@ rotate it:
 The script validates the new token, writes a timestamped backup next to the
 secrets file and never prints the token. It does not revoke the old token.
 
+**The old value is dead only when one and the same run proves it.** Run
+`GET /user` with the old value and `GET /user` with the new value inside a single
+run: `401` for the old and `200` for the new is the only pair that counts. A lone
+`401` is not evidence — a proxy, a rate limit or a typo produces one too — so any
+other outcome is **INCONCLUSIVE** and must be re-run, not recorded as done.
+
+Exit codes of `npm run secret:scan`, the tool this section documents:
+
+| code | meaning |
+|---|---|
+| `2` | refused: a tracked file could not be read, so the run cannot say the tree is clean |
+| `1` | a suspected real value in a tracked file, or an error that stopped the scan (no git, unreadable allowlist) |
+| `0` | every tracked file was scanned and nothing was found |
+
+The rotation script keeps its own codes and documents them next to it; this table
+deliberately names no code that `secret:scan` cannot produce.
+
+`npm run secret:scan` scans only the files git tracks (`git ls-files`), prints
+`file:line` with the first 4 characters and the length of a hit and never the
+value, and fails closed: a scan that cannot complete exits non-zero rather than
+looking clean — `2` when a tracked file could not be read, `1` when the scan
+could not start. Only a complete, empty scan exits `0`. The inventory is
+`docs/secrets.md`; the per-line whitelist for the three fake test fixtures is
+`scripts/secret-scan-allowlist.json` (`test/crypto.test.ts:32`,
+`test/transcript.test.ts:52` and `:66`). Never whitelist a directory.
+
 ### OAuth
 
 - `state` is a 32-byte random value; only its hash is stored, for 10 minutes.
@@ -210,13 +236,25 @@ secrets file and never prints the token. It does not revoke the old token.
 
 ### Token login
 
-When `GITHUB_CLIENT_ID` is empty, the landing page offers a GitHub token login.
+Token login is one rule, `tokenLoginEnabled = !oauthConfigured || allowTokenLoginOnly`,
+and both the `POST /auth/token` guard and the landing page call the same exported
+predicate, so the page never hides a route that still answers:
+
+- OAuth configured, `ALLOW_TOKEN_LOGIN_ONLY=false`: the route answers 403 and the
+  page shows no token form.
+- OAuth configured, `ALLOW_TOKEN_LOGIN_ONLY=true`: the fallback is deliberately
+  kept, so the token form stays visible next to the GitHub sign-in button.
+- OAuth not configured: the fallback is the only path, whatever
+  `ALLOW_TOKEN_LOGIN_ONLY` says.
+
 The token is used only for `GET /user` (identity) and is **not stored**; the
 repository token is supplied later, per repository. The route is rate-limited
-and writes `login.github-token` to the audit log. A production instance that has
-no OAuth app must set `ALLOW_TOKEN_LOGIN_ONLY=true` explicitly; the default is
-fail-closed. Configure an OAuth App to make
-OAuth the primary path.
+and writes `login.github-token` to the audit log. The code→token exchange is
+posted to `GITHUB_OAUTH_TOKEN_URL` (default
+`https://github.com/login/oauth/access_token`), which tests point at a fake
+server. A production instance that has no OAuth app must set
+`ALLOW_TOKEN_LOGIN_ONLY=true` explicitly; the default is fail-closed. Configure
+an OAuth App to make OAuth the primary path.
 
 ### Development login
 
@@ -307,8 +345,15 @@ treat it as a secret.
 
 ### Rate limits
 
-- Login: 30 requests/minute per IP.
-- Job callbacks: 120 requests/minute per IP.
+- Login: 30 requests/minute per client address.
+- Job callbacks: 120 requests/minute per client address.
+- A client address is the one the trusted proxy appended to `X-Forwarded-For`;
+  a caller-supplied left end cannot open a new bucket. The trusted hops come from
+  `TRUST_PROXY` (loopback by default), never from `trustProxy: true`, and a
+  wildcard or boolean value is refused at startup. IPv6 clients are bucketed by
+  their /64, because one host usually controls the whole prefix.
+- `/metrics` shares the 120/minute API bucket, so the unauthenticated 401/403
+  path is not free to hammer.
 - The model gateway should be rate-limited at the reverse proxy per token if the
   platform is exposed to many users.
 
@@ -324,6 +369,32 @@ treat it as a secret.
 | Quota abuse | Per-user ledger, hard 402, admin adjustments audited |
 | Job secret leak | Short-lived, per job, credential endpoint scoped to the job |
 | Log leak | Redaction; no request bodies; secrets never rendered |
+
+## Approval mail failures
+
+An approval mail that cannot be sent is a security-relevant outage, not a log
+line: the applicant stays `pending` and nobody can approve them. The product
+records it instead of swallowing it.
+
+- `Approvals.request` writes an `approval.mail_failed` audit entry with the
+  sender error **redacted** (`src/lib/secrets.ts`), then rethrows.
+- The applicant's `/apply/status` page shows a banner that the mail did not reach
+  the administrator and that the queue position is unchanged.
+- The pending list on `/admin` marks that user with "approval mail not
+  delivered" and offers **Resend approval mail**
+  (`POST /admin/users/:id/resend-approval`, CSRF-guarded, admin only). The marker
+  clears on its own when a later send succeeds, because only a success sets
+  `users.approval_sent_at`.
+- The automatic retry on `/apply/status` does **not** write an audit row: that
+  page refreshes every 10 seconds and a failing SMTP host would otherwise flood
+  the audit log.
+- The probe is `npm run mail:probe -- --to <address>`. It sends exactly one mail
+  over the configured transport and prints `transport=… host=… elapsed=…ms` plus
+  ok/failed; it prints neither the address nor a credential, and exits non-zero
+  on failure. Run it after any SMTP change, before trusting the approval path.
+
+The same rule applies to the approval notice and the quota reminder: their
+failures are logged (`log.warn`) but do not change a user's state.
 
 ## Operator checklist
 

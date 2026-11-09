@@ -90,6 +90,9 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   and a contradicting one is a conflict. Side effects run only in the winning
   branch (`docs/decisions/0004`).
 - **OAuth**: GitHub OAuth App with `state` stored server-side for 10 minutes.
+- **Token login**: one exported predicate, `tokenLoginEnabled = !oauthConfigured ||
+  allowTokenLoginOnly`, decides both the `POST /auth/token` guard and the landing
+  page's token form, so the page cannot hide a route that still answers.
 - **Applications**: a new user starts as `onboarding`. Submitting the signed
   disclaimer and information-security agreement moves them to `pending` and
   emails the administrator. The status page shows the live queue position and
@@ -267,7 +270,13 @@ every width: it lays out as a table from 641px up and, below 641px, each row
 becomes a card whose cells carry their column name in a `data-label` attribute
 (`public/app.css`, the `max-width: 640px` block). The cells therefore never sit
 behind a horizontal scroll on a phone, and a new column must emit `data-label`
-in `jobRows` to stay readable there. Add repository presents two explicit
+in `jobRows` to stay readable there. Between 641px and 960px a wide table (the
+delivery board is 952px wide at 768) can still be wider than its `.table-scroll`
+box, so that band draws an always-present classic scrollbar — an explicit track
+plus `scrollbar-width`/`scrollbar-color` for Firefox — instead of relying on a
+thumb that is 1.5:1 on the panel. The band has its own
+`(min-width: 641px) and (max-width: 960px)` block in `public/app.css`; the cards
+below 641px and the table above 960px are unchanged. Add repository presents two explicit
 alternatives: the GitHub App installation path (recommended) and a collapsed
 fine-grained token form; users pick one, not both. The App repository picker
 carries the same task template, goal, auto-iterate interval and reviewer
@@ -610,6 +619,13 @@ callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
 | Admin email link | single-use 32-byte token, 7-day expiry |
 
 ## Failure modes
+
+- **Approval mail cannot be sent.** The approval request writes an
+  `approval.mail_failed` audit entry, the applicant's status page and the pending
+  list on `/admin` show the failure, and an admin can resend from that list. The
+  marker is derived (`store.approvalMailFailures()` compared with
+  `users.approval_sent_at`), so a later successful send clears it. See
+  `docs/security.md` for the operator probe (`npm run mail:probe`).
 
 | Failure | Behaviour |
 |---|---|

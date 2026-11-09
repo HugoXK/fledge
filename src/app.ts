@@ -8,6 +8,7 @@ import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
 import { openStore, type JobRow, type RepoRow, type Store, type UserRow } from './db.js'
 import { GithubOAuth } from './auth/github.js'
+import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
 import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions } from './auth/session.js'
 import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
@@ -20,7 +21,7 @@ import { failureBreakdown } from './lib/failure.js'
 import { Jobs } from './jobs/service.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
-import { RateLimiter } from './lib/rateLimit.js'
+import { rateLimitKey, RateLimiter } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
@@ -163,6 +164,15 @@ async function testOwnModel(baseUrl: string, key: string, model: string): Promis
   }
 }
 
+// A pending applicant whose newest approval-mail attempt failed and whose
+// approval_sent_at is still empty: the admin has no mail to act on.
+function approvalMailFailed(user: UserRow, failures: Map<string, string>): boolean {
+  const failedAt = failures.get(user.id)
+  if (failedAt === undefined) return false
+  if (user.approval_sent_at === null) return true
+  return failedAt > user.approval_sent_at
+}
+
 export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const { config } = options
   assertProductionConfig(config)
@@ -188,7 +198,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   const app = Fastify({
     logger: false,
-    trustProxy: true,
+    // Only the hops configured in TRUST_PROXY may add X-Forwarded-For; the
+    // caller-supplied left end of that header never becomes request.ip. The
+    // default is loopback (the direct-nginx path); a bridge network names its
+    // gateway there instead. See docs/deploy.md.
+    trustProxy: config.trustProxy,
     bodyLimit: 20 * 1024 * 1024,
     routerOptions: { ignoreTrailingSlash: true },
   })
@@ -317,6 +331,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/metrics', async (request, reply) => {
+    if (!apiLimiter.take(`metrics:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
     const loopback = request.ip === '127.0.0.1' || request.ip === '::1' || request.ip === '::ffff:127.0.0.1'
     const header = String(request.headers.authorization ?? '')
     const bearer = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : ''
@@ -365,7 +380,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (viewer.user.status === 'onboarding') return reply.redirect('/apply')
       return reply.redirect('/apply/status')
     }
-    return reply.type('text/html').send(landingPage(config, null, config.env !== 'production' && config.devLogin.login !== '', config.github.clientId !== '' && config.github.clientSecret !== '', locale))
+    return reply.type('text/html').send(landingPage(config, null, config.env !== 'production' && config.devLogin.login !== '', locale))
   })
 
   app.get('/auth/dev', async (request, reply) => {
@@ -391,11 +406,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/auth/token', async (request, reply) => {
-    if (config.github.clientId !== '' && config.github.clientSecret !== '' && !config.allowTokenLoginOnly) {
+    if (!tokenLoginEnabled(config)) {
       const t = translator(request.locale ?? 'zh')
       return htmlPage(reply, 403, errorPage(config, request.viewer ?? null, 'OAuth 已启用', '这个部署已经启用 GitHub OAuth，请使用 GitHub 登录。', request.locale, { href: '/auth/github', label: t('使用 GitHub 登录', 'Sign in with GitHub') }))
     }
-    if (!loginLimiter.take(`token:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!loginLimiter.take(`token:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const token = (form(request).token ?? '').trim()
     if (token === '') return htmlPage(reply, 400, messagePage(config, '缺少 token', '请填写一个 GitHub token。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
     let profile
@@ -426,8 +441,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/auth/github', async (request, reply) => {
-    if (!loginLimiter.take(`login:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
-    if (config.github.clientId === '' || config.github.clientSecret === '') {
+    if (!loginLimiter.take(`login:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!oauthConfigured(config)) {
       return htmlPage(reply, 503, errorPage(config, request.viewer ?? null, 'GitHub OAuth 未配置', '请先在 .env 设置 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET。', request.locale))
     }
     const state = randomToken(32)
@@ -438,7 +453,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.get('/auth/github/reauthorize', async (request, reply) => {
     const viewer = requireApproved(request)
     if (!loginLimiter.take(`reauth:${viewer.user.id}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
-    if (config.github.clientId === '' || config.github.clientSecret === '') return reply.redirect('/settings?error=' + encodeURIComponent('GitHub OAuth 未配置。'))
+    if (!oauthConfigured(config)) return reply.redirect('/settings?error=' + encodeURIComponent('GitHub OAuth 未配置。'))
     const state = randomToken(32)
     store.createOAuthState(sha256Hex(state), addMinutes(20), safeLocalPath(queryText(request, 'next'), '/dashboard'))
     const scopes = [...new Set(`${config.github.scopes} repo`.split(/\s+/).filter(Boolean))].join(' ')
@@ -446,7 +461,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/auth/github/callback', async (request, reply) => {
-    if (!loginLimiter.take(`callback:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!loginLimiter.take(`callback:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const query = request.query as Record<string, string | undefined>
     const code = query.code ?? ''
     const state = query.state ?? ''
@@ -564,7 +579,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (viewer.user.status === 'approved') return reply.redirect('/dashboard')
     if (viewer.user.status === 'onboarding') return reply.redirect('/apply')
     if (viewer.user.status === 'pending' && viewer.user.approval_sent_at === null) {
-      void approvals.request(viewer.user).catch((error) => log.warn('approval mail retry failed', { user: viewer.user.login, error: String(error) }))
+      // This page refreshes every 10 seconds, so a failing retry must not write an
+      // audit row each time; the failure marker comes from the submit attempt and
+      // from an admin resend, which do audit.
+      void approvals
+        .request(viewer.user, { auditFailure: false })
+        .catch((error) => log.warn('approval mail retry failed', { user: viewer.user.login, error: String(error) }))
     }
     return reply.type('text/html').send(
       applicationStatusPage({
@@ -575,6 +595,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         total: store.pendingTotal(),
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
+        mailFailed: approvalMailFailed(viewer.user, store.approvalMailFailures()),
       }),
     )
   })
@@ -2306,6 +2327,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const users = superadmin ? allUsers : allUsers.filter((user) => user.id === viewer.user.id || user.role === 'user')
     const userIds = superadmin ? null : users.map((user) => user.id)
     const activity = new Map(users.map((user) => [user.id, store.userActivity(user.id)]))
+    const mailFailures = store.approvalMailFailures()
+    const mailFailedUsers = new Set(users.filter((user) => approvalMailFailed(user, mailFailures)).map((user) => user.id))
     const perPage = 10
     const pageNumber = (name: string): number => {
       const n = Number(queryText(request, name))
@@ -2324,6 +2347,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         viewer: viewOf(viewer),
         users,
         activity,
+        mailFailedUsers,
         jobs: store.listJobsPageForUsers(userIds, perPage, (jobsPage - 1) * perPage),
         jobsPage,
         jobsTotal,
@@ -2366,6 +2390,21 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     return user
   }
+
+  app.post('/admin/users/:id/resend-approval', async (request, reply) => {
+    const viewer = approvedCsrfGuard(request)
+    if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
+    const id = String((request.params as Record<string, string>).id)
+    const user = store.userById(id)
+    if (user === undefined || user.status !== 'pending') throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
+    try {
+      const result = await approvals.request(user)
+      if (!result.sent) return reply.redirect(`/admin?error=${encodeURIComponent('这封邮件刚刚发送过，24 小时内不重复发送。')}`)
+      return reply.redirect(`/admin?notice=${encodeURIComponent('审批邮件已重新发送。')}`)
+    } catch {
+      return reply.redirect(`/admin?error=${encodeURIComponent('审批邮件仍然发送失败，请检查 SMTP 配置。')}`)
+    }
+  })
 
   app.post('/admin/users/:id/approve', async (request, reply) => {
     await adminStatus(request, 'approved')
@@ -2440,7 +2479,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/approve/:token', async (request, reply) => {
-    if (!loginLimiter.take(`approve:${request.ip}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!loginLimiter.take(`approve:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const token = String((request.params as Record<string, string>).token)
     const result = await approvals.apply(token, 'email-link')
     if (!result.ok) return htmlPage(reply, 400, messagePage(config, '无法处理', result.reason, request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
@@ -2448,7 +2487,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/api/jobs/:id/credential', async (request, reply) => {
-    if (!apiLimiter.take(`credential:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
+    if (!apiLimiter.take(`credential:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
     const secret = bearerSecret(request)
     const result = await jobs.credential(String((request.params as Record<string, string>).id), secret)
     if (!result.ok) return reply.code(result.status ?? 400).send({ error: result.error ?? 'unauthorized' })
@@ -2469,7 +2508,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/api/jobs/:id/callback', async (request, reply) => {
-    if (!apiLimiter.take(`callback:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
+    if (!apiLimiter.take(`callback:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
     const secret = bearerSecret(request)
     const body = (request.body ?? {}) as Record<string, unknown>
     const result = await jobs.handleCallback(String((request.params as Record<string, string>).id), secret, body)
@@ -2673,7 +2712,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   }
 
   app.post('/api/github/webhook', async (request, reply) => {
-    if (!apiLimiter.take(`webhook:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
+    if (!apiLimiter.take(`webhook:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
     if (!githubApp.configured || config.githubApp.webhookSecret === '') return reply.code(503).send({ error: 'GitHub App webhook is not configured' })
     const signature = String(request.headers['x-hub-signature-256'] ?? '')
     const raw = (request as FastifyRequest & { rawBody?: Buffer }).rawBody
@@ -2710,7 +2749,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
 
   app.post('/api/inbound/email', async (request, reply) => {
-    if (!apiLimiter.take(`inbound:${request.ip}`)) return reply.code(429).send({ error: 'too many requests' })
+    if (!apiLimiter.take(`inbound:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
     if (config.inboundEmailSecret === '') return reply.code(503).send({ error: 'inbound email is not configured' })
     const provided = String(request.headers['x-fledge-email-secret'] ?? '')
     if (!safeEqual(provided, config.inboundEmailSecret)) return reply.code(401).send({ error: 'bad inbound email secret' })

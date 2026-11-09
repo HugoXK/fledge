@@ -6,6 +6,7 @@ import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { renderState, stateCell } from './states.js'
+import { oauthConfigured, tokenLoginEnabled } from '../auth/login.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
@@ -390,8 +391,11 @@ function noticeBlock(locale: Locale, viewer: Viewer, notifications: Notification
     .join('')}<form method="post" action="/notifications/read">${csrf(viewer)}<button class="link" type="submit">${escapeHtml(t('全部标为已读', 'Mark all read'))}</button></form></div>`
 }
 
-export function landingPage(config: Config, viewer?: Viewer | null, devLogin = false, oauthConfigured = true, locale: Locale = 'zh'): string {
+export function landingPage(config: Config, viewer?: Viewer | null, devLogin = false, locale: Locale = 'zh'): string {
   const t = translator(locale)
+  // The same two predicates the route guard calls; the page must not decide this alone.
+  const oauth = oauthConfigured(config)
+  const tokenLogin = tokenLoginEnabled(config)
   const tokenForm = `<details class="card narrow" id="token-login" open style="margin:24px 0 0">
       <summary>${escapeHtml(t('使用 GitHub token 登录（备用）', 'Sign in with a GitHub token (fallback)'))}</summary>
       <form method="post" action="/auth/token" class="form">
@@ -406,7 +410,7 @@ export function landingPage(config: Config, viewer?: Viewer | null, devLogin = f
       <h1>${escapeHtml(t('让仓库自己长大。', 'Let your repositories grow.'))}</h1>
       <p class="lede">${escapeHtml(t('把多个 GitHub 仓库交给 Fledge。FlyBot 会持续阅读代码、写失败的测试、修最小的根因，并开一个你可以审查的 PR。你只需要决定合不合。', 'Hand several GitHub repositories to Fledge. FlyBot reads the code, writes a failing test, fixes the smallest root cause and opens a pull request you can review. You only decide whether to merge.'))}</p>
       <div class="actions">
-        ${oauthConfigured ? `<a class="btn" href="/auth/github">${escapeHtml(t('使用 GitHub 登录', 'Sign in with GitHub'))}</a>` : `<a class="btn" href="#token-login">${escapeHtml(t('使用 GitHub token 登录', 'Sign in with a GitHub token'))}</a>`}
+        ${oauth ? `<a class="btn" href="/auth/github">${escapeHtml(t('使用 GitHub 登录', 'Sign in with GitHub'))}</a>` : `<a class="btn" href="#token-login">${escapeHtml(t('使用 GitHub token 登录', 'Sign in with a GitHub token'))}</a>`}
         ${devLogin ? `<a class="btn btn-ghost" href="/auth/dev">${escapeHtml(t('Dev 登录（本地）', 'Dev sign-in (local)'))}</a>` : ''}
         <a class="btn btn-ghost" href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">${escapeHtml(t('看源码', 'View source'))}</a>
       </div>
@@ -423,8 +427,8 @@ export function landingPage(config: Config, viewer?: Viewer | null, devLogin = f
     </aside>
     <div class="hero-note">
       <p class="fine">${escapeHtml(t('首次登录需要 GitHub 授权；没有权限时先签署《免责声明》和《信息安全承诺》，提交后可在状态页查看排队位置，不要重复提交。平台初始额度 1 元；用完后配置自己的模型 API 即可继续。', 'The first sign-in needs GitHub authorization. Without access, sign the Disclaimer and the Information Security Commitment first; after submitting, the status page shows your queue position. Do not submit twice. The platform starts with 1 CNY of quota; when it runs out, add your own model API to continue.'))}</p>
-      ${oauthConfigured ? '' : `<p class="fine">${escapeHtml(t('OAuth App 尚未配置；先用 GitHub token 登录（只用于确认身份，不会保存），部署后可在 .env 补 OAuth。', 'The OAuth App is not configured yet. Use the GitHub token fallback (identity only, never stored); add OAuth in .env after deployment.'))}</p>`}
-      ${oauthConfigured ? '' : tokenForm}
+      ${oauth ? '' : `<p class="fine">${escapeHtml(t('OAuth App 尚未配置；先用 GitHub token 登录（只用于确认身份，不会保存），部署后可在 .env 补 OAuth。', 'The OAuth App is not configured yet. Use the GitHub token fallback (identity only, never stored); add OAuth in .env after deployment.'))}</p>`}
+      ${tokenLogin ? tokenForm : ''}
     </div>
   </section>
   <section class="grid3">
@@ -1338,6 +1342,7 @@ export function adminPage(input: {
   auditTotal: number
   perPage: number
   activity?: Map<string, { repos: number; jobs: number; lastJobAt: string | null }>
+  mailFailedUsers?: Set<string>
   superadmin?: boolean
   preview?: boolean
   showAudit?: boolean
@@ -1346,6 +1351,7 @@ export function adminPage(input: {
   error?: string
 }): string {
   const { config, locale, viewer, users, jobs, jobsPage, jobsTotal, audit, auditPage, auditTotal, perPage, activity, notice, error } = input
+  const mailFailedUsers = input.mailFailedUsers ?? new Set<string>()
   const superadmin = input.superadmin === true
   const preview = input.preview === true
   const showAudit = input.showAudit !== false
@@ -1364,6 +1370,7 @@ export function adminPage(input: {
             <td><b>#${index + 1}</b><br /><small class="muted">${escapeHtml(humanTimeShort(user.application_submitted_at ?? user.created_at))}</small></td>
             <td>${badge(t, user.status)}<br /><small class="muted">${escapeHtml(t('签署：', 'Signed: '))}${escapeHtml(user.disclaimer_name ?? '—')}<br />${escapeHtml(t('免责', 'Disclaimer'))} ${escapeHtml(humanTimeShort(user.disclaimer_accepted_at))}<br />${escapeHtml(t('信息安全', 'Security'))} ${escapeHtml(humanTimeShort(user.security_accepted_at))}<br />IP ${escapeHtml(user.application_ip ?? '—')}</small></td>
             <td class="row">
+              ${mailFailedUsers.has(user.id) ? `<span class="badge bad">${escapeHtml(t('审批邮件发送失败', 'Approval mail not delivered'))}</span><form method="post" action="/admin/users/${escapeHtml(user.id)}/resend-approval">${csrf(viewer)}<button class="link" type="submit">${escapeHtml(t('重新发送审批邮件', 'Resend approval mail'))}</button></form>` : ''}
               <form method="post" action="/admin/users/${escapeHtml(user.id)}/approve">${csrf(viewer)}<button class="link good" type="submit">${escapeHtml(t('批准', 'Approve'))}</button></form>
               <form method="post" action="/admin/users/${escapeHtml(user.id)}/reject">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('拒绝', 'Reject'))}</button></form>
             </td>
@@ -1502,6 +1509,7 @@ export function applicationStatusPage(input: {
   total: number
   notice?: string
   error?: string
+  mailFailed?: boolean
 }): string {
   const { config, locale, viewer, position, total, notice, error } = input
   const t = translator(locale)
@@ -1512,6 +1520,7 @@ export function applicationStatusPage(input: {
     <div class="eyebrow">${escapeHtml(rejected ? t('申请已结束', 'APPLICATION CLOSED') : t('等待审批', 'WAITING FOR APPROVAL'))}</div>
     <h1>${escapeHtml(rejected ? t('申请未通过', 'Application not approved') : t('申请已提交，正在排队', 'Application submitted; you are in the queue'))}</h1>
     <p>${escapeHtml(t(`@${viewer.user.login}，${rejected ? '这次申请没有通过。如果情况有变化，请联系管理员；不要重复提交。' : '管理员审批后会发邮件通知，本页每 10 秒自动刷新。不要重复提交申请。'}`, `@${viewer.user.login}, ${rejected ? 'this application was not approved. If your situation changes, contact the administrator; do not submit again.' : 'you will receive email after the administrator reviews it. This page refreshes every 10 seconds. Do not submit again.'}`))}</p>
+    ${input.mailFailed === true && !rejected ? `<div class="banner bad" role="status">${escapeHtml(t('审批邮件未送达管理员：SMTP 发送失败。管理员可以在 /admin 的待审批列表里重新发送，你的排队位置不受影响。', 'The approval mail did not reach the administrator: the SMTP send failed. An admin can resend it from the pending list on /admin; your queue position is unchanged.'))}</div>` : ''}
     <p class="fine">${escapeHtml(t('Fledge 的审批只覆盖 Fledge；FlyBot、Bot Social 和 ScienceDiscovery 需要各自的授权。', 'Fledge approval covers Fledge only; FlyBot, Bot Social and ScienceDiscovery each require their own authorization.'))}</p>
     <div class="flow">
       <div class="flow-step"><span>01 / GitHub</span><b>${escapeHtml(t('登录', 'Sign in'))}</b><small>${escapeHtml(t('已完成', 'Done'))}</small></div>

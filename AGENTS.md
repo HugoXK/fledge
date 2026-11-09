@@ -89,8 +89,9 @@ issue → claim → worktree/branch → red test → fix → gates → PR
    change.
 7. **Review.** `ci-ok` covers the build; `review-gate` and `pr-lint` are also
    required. T0/T1 merge on green `ci-ok`. T2/T3 need a PASS at the same tip
-   from a reviewer in `.github/agent/review-policy.json` (self-PASS by the
-   owner's reviewer agent is allowed). The review format is fixed; see below.
+   from a reviewer in `.github/agent/review-policy.json`; the author of the tip
+   may never PASS it, so a reviewer always signs another identity's work. The
+   review format is fixed; see below.
 8. **Merge.** Enqueue with `gh pr merge --auto --squash --match-head-commit
    <sha>` after the guard script agrees. Auto-merge (or the merge queue when
    available) performs the squash merge. Never use `--admin`, never force-push
@@ -132,8 +133,8 @@ Verdict: REQUEST_CHANGES at <sha>
 
 The second line is `Written-by: <name>` from the policy's `writers` list. The
 third line is `Posted-by: <GitHub login>` and must match the account that
-submitted the review; never edit someone else's report. The PR author may not
-PASS its own tip unless `selfReview` allows it.
+submitted the review; never edit someone else's report. The PR author may never
+PASS its own tip: the policy carries no self-review waiver.
 
 `requiredPass` in `.github/agent/review-policy.json` names the required
 reviewer/PASS identity: `HugoXK-bot`, the GitHub account for

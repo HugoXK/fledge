@@ -1067,6 +1067,16 @@ export class Store {
     return this.all<UserRow>('SELECT * FROM users WHERE status = ? ORDER BY created_at DESC', status)
   }
 
+  // The newest failed approval-mail attempt per user. The admin page compares it
+  // with users.approval_sent_at, which only a successful send sets, so a later
+  // successful send clears the marker without rewriting the audit history.
+  approvalMailFailures(): Map<string, string> {
+    const rows = this.all<{ user_id: string | null; at: string }>(
+      "SELECT user_id, MAX(at) AS at FROM audit_log WHERE action = 'approval.mail_failed' AND user_id IS NOT NULL GROUP BY user_id",
+    )
+    return new Map(rows.filter((row) => row.user_id !== null).map((row) => [row.user_id as string, row.at]))
+  }
+
   setUserStatus(id: string, status: UserStatus, by: string): void {
     const at = status === 'approved' ? nowIso() : null
     this.run(
