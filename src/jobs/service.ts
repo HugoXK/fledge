@@ -16,6 +16,7 @@ import { decryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../l
 import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
 import { GithubApp } from '../repos/app.js'
+import { parsePrUrl } from './prUrl.js'
 import { repoGithubToken } from '../repos/token.js'
 import { parseTeam } from '../flybot/instances.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
@@ -643,6 +644,14 @@ export class Jobs {
     return Number.isFinite(at) && Date.now() - at <= maxAgeMs
   }
 
+  // The base a job's pull request must target, using the same fallback as
+  // enqueue/followUp: the job's recorded base branch, else the repo target
+  // branch, else the upstream default.
+  private expectedBaseBranch(repo: RepoRow, job: JobRow): string {
+    if (job.base_branch !== null && job.base_branch !== '') return job.base_branch
+    return repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)
+  }
+
   private async tryMerge(job: JobRow, prUrl: string, manual: boolean): Promise<{ ok: boolean; message?: string }> {
     if (job.kind !== 'iterate') return { ok: false, message: '只有 iterate 任务可以合并。' }
     let repo = this.store.getRepo(job.repo_id)
@@ -658,15 +667,30 @@ export class Jobs {
       repo = refreshed
       if (!manual && repo.auto_merge !== 1) return { ok: false, message: '自动合并未开启。' }
     }
-    const match = /\/pull\/(\d+)(?:[/?#]|$)/.exec(prUrl)
-    if (match === null) return { ok: false, message: 'PR 链接格式不正确。' }
-    const number = Number(match[1])
-    const owner = repo.upstream_owner || repo.owner
-    const name = repo.upstream_name || repo.name
+    const parsed = parsePrUrl(repo, prUrl, this.config.github.apiBase)
+    if (!parsed.ok) {
+      this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: ${parsed.reason}`)
+      return { ok: false, message: 'PR 链接不属于本仓库。' }
+    }
+    const { owner, name, number } = parsed.ref
     try {
       const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
       const client = new GithubClient(token, this.config.github.apiBase)
       const pr = await client.getPullRequest(owner, name, number)
+      if (!manual) {
+        // Auto-merge may only touch the pull request this job produced. A
+        // callback secret is handed to a bridge agent, so "some green PR in
+        // this repository" is not enough proof of provenance.
+        if (pr.head !== job.branch) {
+          this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: head ${pr.head} is not this job's branch ${job.branch ?? '(none)'}`)
+          return { ok: false, message: 'PR 的分支不是本任务的分支。' }
+        }
+        const expectedBase = this.expectedBaseBranch(repo, job)
+        if (pr.base !== expectedBase) {
+          this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: base ${pr.base} is not ${expectedBase}`)
+          return { ok: false, message: 'PR 的目标分支不是本任务的基线分支。' }
+        }
+      }
       if (pr.merged) {
         this.store.updateJobsPrState(prUrl, 'merged')
         return { ok: false, message: 'PR 已合并。' }
@@ -769,12 +793,17 @@ export class Jobs {
   }
 
   private async resolveHeadSha(repo: RepoRow, prUrl: string): Promise<string | undefined> {
-    const match = /\/pull\/(\d+)(?:[/?#]|$)/.exec(prUrl)
-    if (match === null) return undefined
+    // Same single definition as the merge path: a URL that is not this
+    // repository's own pull request never causes a GitHub call.
+    const parsed = parsePrUrl(repo, prUrl, this.config.github.apiBase)
+    if (!parsed.ok) {
+      log.warn('ignoring follow-up PR URL', { repo: repo.id, reason: parsed.reason })
+      return undefined
+    }
     try {
       const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
       const client = new GithubClient(token, this.config.github.apiBase)
-      const pr = await client.getPullRequest(repo.upstream_owner || repo.owner, repo.upstream_name || repo.name, Number(match[1]))
+      const pr = await client.getPullRequest(parsed.ref.owner, parsed.ref.name, parsed.ref.number)
       return pr.headSha
     } catch (error) {
       log.warn('could not resolve PR head', { repo: repo.id, prUrl, error: String(error) })
