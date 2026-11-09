@@ -37,9 +37,10 @@ export const REQUIRED_JOBS = [
 // `skipped` is an acceptable result. On every other event it must be `success`;
 // a failure, a cancellation or an absence from `needs` fails on all events.
 // `dependency-review` reads the pull request's diff, so it has nothing to
-// compare on a push to main; the pull request run is the gate that counts.
+// compare on a push to main, a nightly run or a manual run; the pull request run
+// is the gate that counts.
 export const SKIPPABLE_ON = {
-  'dependency-review': ['push', 'merge_group'],
+  'dependency-review': ['push', 'merge_group', 'schedule', 'workflow_dispatch'],
 }
 
 function resultOf(value) {

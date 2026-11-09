@@ -112,6 +112,18 @@ test('the workflow runs the script and no longer accepts a skipped job inline', 
   assert.doesNotMatch(workflow, /value\.result !== "skipped"/, 'the inline predicate that treated skipped as a pass must be gone')
 })
 
+test('ci runs nightly and can be dispatched by hand, and only a pull request cancels in place', () => {
+  const workflow = readFileSync(workflowPath, 'utf8')
+  assert.match(workflow, /^  workflow_dispatch:$/m, 'a branch with no pull request needs a manual trigger')
+  assert.match(workflow, /^  schedule:$/m, 'a nightly run catches a dependency or runner change before a PR does')
+  assert.match(workflow, /cron: '[^']+'/, 'the schedule needs a cron expression')
+  assert.match(
+    workflow,
+    /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/,
+    'a run on main is the record of a commit and must not be cancelled by a later one',
+  )
+})
+
 test('the needs list in ci.yml and the required list in the script agree', async () => {
   const required = await requiredJobs()
   const workflow = readFileSync(workflowPath, 'utf8')
