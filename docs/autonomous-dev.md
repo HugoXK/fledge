@@ -14,9 +14,9 @@ required check, one review gate.
 | Release manager | Assemble fragments, bump version, tag, publish | Change product code |
 | Contributor | Pick an `agent-ready` issue, write a test, open one PR | Push to `main`, merge their own PR |
 
-A human contributor does not approve their own PR. The maintainer's automation
-may self-PASS only when `.github/agent/review-policy.json` lists it in
-`selfReview`; a self-PASS never replaces green CI.
+A human contributor does not approve their own PR, and neither does a bot: the
+author of the tip may never PASS it, and `.github/agent/review-policy.json`
+carries no self-review waiver. A PASS never replaces green CI.
 
 The required reviewer/PASS identity is `HugoXK-bot`, the GitHub account for
 `hugo2001xk@gmail.com`. The owner `HugoXK` keeps repository merge authority and
@@ -94,8 +94,8 @@ Add a changelog fragment for a user-visible change. Update the owned doc or add
 ### 8. Merge
 
 - T0/T1: `ci-ok` green, mergeable, design-conformant.
-- T2/T3: a PASS at the same tip (self-PASS only if the policy allows it) with a
-  real `Ran:` command.
+- T2/T3: a PASS at the same tip from another identity (the tip author never
+  PASSes it) with a real `Ran:` command.
 - Enqueue with `gh pr merge --auto --squash --match-head-commit <sha>`.
 - Never `--admin`; never force-push `main`; never bypass a required check.
 - After merge: fetch, fast-forward `main`, delete the branch/worktree, and file
@@ -188,8 +188,8 @@ Not run: Docker, real SMTP
   `.github/agent/review-policy.json`, is refused.
 - `Posted-by:` is mandatory and must match the account that submitted the
   review; a relay cannot claim a different poster.
-- The PR author may not PASS its own tip unless `selfReview` in the policy
-  allows it.
+- The PR author may never PASS its own tip: the policy carries no self-review
+  waiver.
 - The newest conclusion wins; a later INC overrides an earlier PASS.
 - A new commit voids the PASS.
 - A `hold` label blocks the queue.

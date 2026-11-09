@@ -46,7 +46,8 @@ and which rules a change must follow. For what Fledge does and how to run it, se
       FlyBot job)
 - [ ] The new test fails on the base and passes at the tip
 - [ ] The fix covers the class (shared helper), not one sample
-- [ ] T2/T3: a PASS at the same tip (self-PASS counts) with a real `Ran:`
+- [ ] T2/T3: a PASS at the same tip from another identity (never the tip author)
+      with a real `Ran:`
 - [ ] `npm run check` green at the tip
 - [ ] Changelog fragment for a user-visible change
 - [ ] Owned doc updated, or `Docs-not-needed:` in the PR body and a branch commit

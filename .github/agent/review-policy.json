@@ -1,14 +1,11 @@
 {
   "version": 2,
-  "note": "Owner HugoXK keeps repository merge authority. Reviewer work is hosted by the HugoXK-bot account (hugo2001xk@gmail.com), and a T2/T3 PASS must be written and posted by that login. `writers` decides who may author a verdict; `authors` decides who may be named as a pull request's author. The policy is read from the base branch so a pull request cannot weaken its own gate, and `authors` falls back to `writers` on a base branch that predates the split.",
+  "note": "Owner HugoXK keeps repository merge authority. Reviewer work is hosted by the HugoXK-bot account (hugo2001xk@gmail.com), and a T2/T3 PASS must be written and posted by that login. The author of the tip may never PASS it — the bot reviews human- and bot-authored tips alike — and this policy carries no self-review waiver. `writers` decides who may author a verdict; `authors` decides who may be named as a pull request's author. The policy is read from the base branch so a pull request cannot weaken its own gate, and `authors` falls back to `writers` on a base branch that predates the split.",
   "reviewers": [
     "HugoXK-bot"
   ],
   "requiredPass": "HugoXK-bot",
   "requiredPassEmail": "hugo2001xk@gmail.com",
-  "selfReview": [
-    "HugoXK-bot"
-  ],
   "writers": [
     "HugoXK",
     "HugoXK-bot"
