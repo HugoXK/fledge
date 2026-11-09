@@ -2,7 +2,11 @@
    - every colour, space, radius, font size and duration is named here and used
      through var(); a colour literal outside this block fails test/uiTokens.test.ts.
    - --muted-2 is the 10-13px text colour (.fine, <small>, .count, .foot, table
-     headers) and is kept >= 4.5:1 on --panel-2, the lightest surface. */
+     headers) and is kept >= 4.5:1 on --panel-2, the lightest surface.
+   - --scroll-track and --scroll-thumb paint the 641-960px table scrollbar and
+     are kept >= 3:1 against --panel and against each other (WCAG 2.1 AA 1.4.11
+     for a graphical object), because a column hidden behind a 1.5:1 thumb looks
+     like a column that does not exist. */
 :root {
   --bg: #07090d;
   --bg-soft: #0a0e14;
@@ -18,6 +22,8 @@
   --raised-bottom: #0a0e15;
   --line: #1c232d;
   --line-strong: #2a3545;
+  --scroll-track: #5b6779;
+  --scroll-thumb: #c8d2de;
   --text: #f2f5f9;
   --muted: #98a2b3;
   --muted-2: #8b96a6;
@@ -246,6 +252,20 @@ p { margin: 0 0 12px; }
 .table-scroll { width: 100%; overflow-x: auto; }
 .table-scroll::-webkit-scrollbar { height: 8px; }
 .table-scroll::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 99px; }
+/* Above 640px the wide tables are tables again — the delivery board at
+   /repos/:id is 952px wide in a 686px window at 768 — so a column can sit
+   off-screen with no cue but an 8px thumb in --line-strong, which is 1.5:1 on
+   --panel. In that band the scroller gets an always-present classic scrollbar:
+   a real track (WebKit pseudo-element plus the standard pair, or Firefox keeps
+   its platform default), with the thumb drawn on the track. Scoped to
+   641-960 inclusive so the below-641 card layout (#116/#130) and the 961+
+   table are untouched. */
+@media (min-width: 641px) and (max-width: 960px) {
+  .table-scroll { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) var(--scroll-track); }
+  .table-scroll::-webkit-scrollbar { height: 12px; }
+  .table-scroll::-webkit-scrollbar-track { background: var(--scroll-track); border-radius: 99px; }
+  .table-scroll::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border: 2px solid var(--scroll-track); border-radius: 99px; }
+}
 .job-table td { vertical-align: top; }
 .job-table .job-cell { min-width: 150px; }
 .job-table .job-links { white-space: nowrap; }

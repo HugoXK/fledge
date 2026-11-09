@@ -270,7 +270,13 @@ every width: it lays out as a table from 641px up and, below 641px, each row
 becomes a card whose cells carry their column name in a `data-label` attribute
 (`public/app.css`, the `max-width: 640px` block). The cells therefore never sit
 behind a horizontal scroll on a phone, and a new column must emit `data-label`
-in `jobRows` to stay readable there. Add repository presents two explicit
+in `jobRows` to stay readable there. Between 641px and 960px a wide table (the
+delivery board is 952px wide at 768) can still be wider than its `.table-scroll`
+box, so that band draws an always-present classic scrollbar — an explicit track
+plus `scrollbar-width`/`scrollbar-color` for Firefox — instead of relying on a
+thumb that is 1.5:1 on the panel. The band has its own
+`(min-width: 641px) and (max-width: 960px)` block in `public/app.css`; the cards
+below 641px and the table above 960px are unchanged. Add repository presents two explicit
 alternatives: the GitHub App installation path (recommended) and a collapsed
 fine-grained token form; users pick one, not both. The App repository picker
 carries the same task template, goal, auto-iterate interval and reviewer
