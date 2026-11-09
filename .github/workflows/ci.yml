@@ -161,8 +161,15 @@ jobs:
         # merge_group measures against its base sha instead of HEAD~1, and so
         # test/riskBase.test.ts covers it. The step fetches what it needs.
         run: echo "ref=$(node scripts/risk-gate.mjs --print-base)" >> "$GITHUB_OUTPUT"
+      # The branch and the title are the mechanical-release key (#80): only a PR
+      # whose head is release/vX.Y.Z and whose title is exactly "release: vX.Y.Z"
+      # is classified as the mechanical class. A PR that merely touches the same
+      # five files keeps its computed T3 and the PASS that comes with it.
       - name: Compute the tier
-        run: node scripts/risk-gate.mjs --base "${{ steps.base.outputs.ref }}"
+        env:
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: node scripts/risk-gate.mjs --base "${{ steps.base.outputs.ref }}" --branch "$PR_BRANCH" --title "$PR_TITLE"
 
   restore-drill:
     name: restore-drill

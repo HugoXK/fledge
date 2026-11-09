@@ -12,6 +12,7 @@
 //   - the gate needs nothing from the pull request tree: the policy comes from
 //     the base ref, the tier from the API and the verdicts from the API.
 import { tierForFiles, loadRules } from './risk.mjs'
+import { mechanicalDiffShape, mechanicalRelease } from './mechanical-release.mjs'
 
 export const REQUIRED_CONTEXT = 'review-gate'
 
@@ -112,6 +113,20 @@ export async function paginate(api, path, maxPages = 4) {
   return out
 }
 
+// The mechanical release is the next minor: read the base branch's package.json
+// and add one to the minor. Unreadable or unparsable means no exemption.
+async function expectedNextVersion(api, repo, ref) {
+  try {
+    const file = await api(`/repos/${repo}/contents/package.json?ref=${encodeURIComponent(ref)}`)
+    const text = Buffer.from(String(file?.content ?? ''), 'base64').toString('utf8')
+    const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(JSON.parse(text)?.version ?? ''))
+    if (match === null) return ''
+    return `${Number(match[1])}.${Number(match[2]) + 1}.0`
+  } catch {
+    return ''
+  }
+}
+
 // `kind` tells a caller why the tip did not pass:
 //   pass    - nothing to do
 //   verdict - the newest conclusion at the tip does not allow a merge (the case
@@ -140,7 +155,33 @@ export async function evaluateGate({ api, repo, policy, prNumber, tier: tierOver
   } catch (cause) {
     return threw(cause, '')
   }
-  const tier = String(tierOverride ?? tierForFiles(files.map((file) => file.filename), loadRules()).tier).toUpperCase()
+  // The mechanical daily release is the one identity-based exemption from the
+  // PASS requirement, and it is honoured here for the same reason it is honoured
+  // in risk-gate: otherwise the release PR's own review-gate fails forever on the
+  // `package.json` basis and `decideDrive` could never enqueue it. The exemption is
+  // earned, not declared: the identity must match *and* the diff must have the
+  // shape the release routine writes, or the tier stays what the paths say (T3).
+  // The exemption is only for the release this repository's routine writes: the
+  // head branch must live in this repository (a fork can call itself release/vX.Y.Z
+  // just as easily), and the version must be the next minor the planner computes
+  // from the base's package.json, not one the author typed into a branch name.
+  const headRepo = String(pr.head?.repo?.full_name ?? '')
+  const sameRepo = headRepo !== '' && headRepo.toLowerCase() === String(repo).toLowerCase()
+  const identity = sameRepo
+    ? mechanicalRelease({ branch: pr.head?.ref, title: pr.title, files: files.map((file) => String(file.filename)) })
+    : { mechanical: false, version: '', reason: `${headRepo === '' ? 'the head repository' : headRepo} is not ${repo}` }
+  const nextVersion = identity.mechanical ? await expectedNextVersion(api, repo, String(pr.base?.sha ?? '')) : ''
+  const versionMatches = identity.mechanical && nextVersion !== '' && identity.version === nextVersion
+  const shape = versionMatches
+    ? mechanicalDiffShape(files, identity.version)
+    : {
+        shaped: false,
+        reason: identity.mechanical
+          ? `the release version v${identity.version} is not the computed next ${nextVersion === '' ? 'of the base branch' : `v${nextVersion}`}`
+          : identity.reason,
+      }
+  const declaredTier = String(tierOverride ?? tierForFiles(files.map((file) => file.filename), loadRules()).tier).toUpperCase()
+  const tier = tierOverride === undefined && shape.shaped ? 'T0' : declaredTier
   if (!['T0', 'T1', 'T2', 'T3'].includes(tier)) return failed(`unknown tier ${tier}`, 'error')
 
   if (tier === 'T0' || tier === 'T1') return { ok: true, kind: 'pass', message: `${tier} at ${headSha.slice(0, 12)} needs no PASS` }

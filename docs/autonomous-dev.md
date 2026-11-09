@@ -254,9 +254,70 @@ The release workflow runs `npm run check`, builds the image, publishes it to
 GHCR and creates the GitHub release from the changelog. The tag must point at a
 commit whose `CHANGELOG.md` has the matching section.
 
-The release PR touches only `CHANGELOG.md`, `changelog.d/`, `package.json` and
-`package-lock.json`; anything else is a normal PR and needs a review. No release
-with no fragments.
+The release PR touches only `CHANGELOG.md`, `changelog.d/`, `package.json`,
+`package-lock.json` and `docker-compose.yml`; anything else is a normal PR and
+needs a review. No release with no fragments.
+
+### The daily drive
+
+`.github/workflows/daily-release.yml` runs at 22:30 Asia/Shanghai (`30 14 * * *`)
+and does exactly one thing per night, decided by the pure `decideDrive()` in
+`scripts/lib/release-drive.mjs`:
+
+| Situation | Action |
+|---|---|
+| the rule is met and nothing is in flight | open the mechanical PR `release: v<next>` on `release/v<next>` |
+| a release PR is already open and mergeable | `gh pr merge --auto --squash --match-head-commit <its sha>` — never a second PR, never `--admin` |
+| a release PR is open but red or blocked | report the failing check names and stop |
+| the last merged PR is a release PR whose tag does not exist | tag it and dispatch `release.yml` with `-f tag=v<next>` |
+| the rule is not met, or a dry run | write the counts and the reason to the job summary and exit 0 |
+
+Rule 4 (the latest `ci-ok` on `main` is green) has no input in the planner, so the
+drive checks it before opening anything; a red or missing `ci-ok` on `main` is a
+`none` night. The branch is pushed and the PR is opened with `RELEASE_TOKEN`, not
+`GITHUB_TOKEN`: a branch pushed with the workflow token starts no `pull_request`
+workflow, so the release PR would never get a `ci-ok`. Without `RELEASE_TOKEN` the
+run fails closed with `reason: missing-release-token` and opens nothing.
+
+The mechanical class is keyed on identity, never on the file set alone:
+`scripts/lib/mechanical-release.mjs` requires the head branch `release/v<next>`,
+the title `release: v<next>` for the same `<next>`, and every changed path inside
+the five allowed paths. `pr-lint` uses it to skip the size rule (a release PR is
+~33 files) and the `docs/deploy.md` obligation; `risk-gate` reports
+`risk-tier: T0; basis: mechanical release v<next>` when `ci.yml` passes
+`--branch` and `--title`. The same five-file diff without that key stays T3, which
+is what keeps the `package.json` review gate in place.
+
+A branch name and a title are written by whoever opens the PR, so the identity is
+not enough on its own: `review-gate` asks `mechanicalDiffShape()` as well, and the
+exemption holds only when the diff is what the release routine writes — the
+version fields in `package.json` and `package-lock.json` and the image tag in
+`docker-compose.yml`, with any content allowed in `CHANGELOG.md` and
+`changelog.d/`. A dependency line, an environment change or a file the API
+returned without a patch keeps the PR at T3, where it needs a PASS like any other.
+Otherwise a release-named branch could carry a dependency change into `main` on a
+green `ci-ok` alone.
+
+The state the drive reads is assembled by `scripts/release-state.mjs` from the
+three API payloads; page flattening and the newest-`ci-ok` pick live in
+`scripts/lib/release-state.mjs`, where the suite executes them. This exists because
+the same logic inline in the workflow broke invisibly: `--slurp` plus
+`jq -s 'add'` produced an array of page arrays, and the first `.title` selection
+aborted the night before the planner ran.
+
+The release PR is identified by a title match **and** a head in this repository:
+the open list is newest-first, so a fork PR titled `release: v<next>` must not take
+the slot of the routine's own PR. Such a PR is written to the run summary as a
+notice and never counted as a release in flight — an outsider can neither stop the
+nightly nor be enqueued. The planner gets that projection from `plannerInput` in
+`scripts/lib/release-state.mjs`, where a test executes it instead of a `jq`
+expression in the workflow.
+
+`release.yml` publishes only a tag that is an ancestor of `main`, holds one run
+per ref (`concurrency: release-<ref>`, no cancel), and still runs the checks,
+builds and pushes the image, then creates or edits the GitHub release. It never
+deploys: a tag, an image and a release are artefacts, and the live service stays
+owner-only.
 
 ## Automation (optional)
 
