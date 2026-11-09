@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { prepareRepo } from '../src/repos/github.js'
+import { GithubClient, prepareRepo } from '../src/repos/github.js'
 import { json, readBody, startFakeServer } from './helpers.js'
 
 interface FakeState {
@@ -159,6 +159,32 @@ test('GithubClient retries a rate-limited read', async () => {
     const prepared = await prepareRepo('token', 'HugoXK', 'RetryRepo', 'HugoXK', github.url)
     assert.equal(prepared.permission, 'admin')
     assert.equal(hits, 2)
+  } finally {
+    await github.close()
+  }
+})
+
+test('an open pull request body is capped but keeps both of its ends', async () => {
+  // #113 review at 6cd761d: a body at the GitHub cap is scanned once per open
+  // pull request, so only a bounded part of it can be matched. The reference a
+  // duplicate is found by sits at the top or the bottom of a long description,
+  // so the cap keeps both ends instead of truncating the tail away.
+  const body = `${'x'.repeat(20_000)}\nFixes #42`
+  const github = await startFakeServer((request, response) => {
+    if ((request.url ?? '').startsWith('/repos/o/dup/pulls?state=open')) {
+      json(response, 200, [
+        { number: 7, html_url: 'https://github.com/o/dup/pull/7', title: 'Fix it', body, head: { ref: 'fix' }, base: { ref: 'main' } },
+      ])
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  try {
+    const client = new GithubClient('token', github.url)
+    const [pull] = await client.listOpenPullRequests('o', 'dup')
+    assert.equal(pull?.number, 7)
+    assert.ok((pull?.body.length ?? 0) <= 8_001, `body is ${pull?.body.length} chars, over the cap`)
+    assert.match(pull?.body ?? '', /Fixes #42$/, 'the tail of a long body still carries its reference')
   } finally {
     await github.close()
   }

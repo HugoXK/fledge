@@ -186,6 +186,12 @@ dispatch. The issue number comes from the work item's issue URL, falling back to
 the goal text, and is read only from a reference to the same repository; a
 dispatch with no such reference makes no GitHub call.
 
+A pull request body longer than 8,000 characters is matched at both of its ends —
+its first and last 4,000 characters, joined by a newline — because a closing
+`Fixes #N` line sits at the top of a description or at its bottom. Only the
+reference is matched: the body is not stored and not rendered, and the audit line
+and the `job_duplicate_work` event carry the pull request URL.
+
 ## Job endpoints
 
 These are called by the FlyBot bridge/agent, not by a browser.

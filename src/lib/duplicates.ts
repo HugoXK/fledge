@@ -23,9 +23,18 @@ const ANY_ISSUE_URL = /\/issues\/(\d+)\b/
 // quadratic on a slash-less run (65,538 chars measured 5,942 ms), and a pull
 // request body is stored whole and matched once per `#N`.
 const REPOSITORY_PATH = /(?:^|[^A-Za-z0-9_.-])([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/
+// Only the path immediately before the `#` decides the reference, so a fixed
+// window is enough and the copy is O(1) per reference instead of O(length).
+// It is safe because a legal `owner/repo` is at most 140 characters (GitHub
+// caps an owner at 39 and a repository at 100), so a real reference is always
+// inside the last 256 characters before its `#`, with the delimiter that the
+// pattern anchors on still in view; a longer run of path characters is not a
+// repository reference at all, and truncating it cannot change the last two
+// segments the pattern captures.
+const PATH_WINDOW = 256
 
 function repositoryPathBefore(text: string, index: number): string | null {
-  const match = REPOSITORY_PATH.exec(text.slice(0, index).trimEnd())
+  const match = REPOSITORY_PATH.exec(text.slice(Math.max(0, index - PATH_WINDOW), index).trimEnd())
   return match === null ? null : (match[1] ?? null)
 }
 

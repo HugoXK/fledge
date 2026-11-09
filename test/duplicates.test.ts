@@ -79,6 +79,20 @@ test('a long slash-less body cannot stall the event loop', () => {
   assert.ok(elapsed < 500, `took ${elapsed.toFixed(0)} ms; a quadratic path match blocks the whole app`)
 })
 
+test('a body with many issue references cannot stall the event loop', () => {
+  // #113 review at 6cd761d: bounding the path scan fixed one slash-less run, but
+  // every `#N` still copied its whole prefix, so the cost was O(references x
+  // length): 21,845 references inside a 65,535-char body (the GitHub body cap)
+  // measured 4,481 ms in one synchronous call, over up to 300 open pull requests.
+  const body = ' #1'.repeat(21_845)
+  assert.equal(body.length, 65_535)
+  const pulls = [pull(3, { body })]
+  const started = performance.now()
+  assert.equal(findDuplicatePullRequest(999, 'o/dup', pulls), null)
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 500, `took ${elapsed.toFixed(0)} ms; per-reference prefix copies block the whole app`)
+})
+
 test('a path ending in a separator is not a repository reference', () => {
   assert.equal(issueNumberFromText('see other/repo/ #42', 'o/dup'), 42)
   assert.equal(issueNumberFromText('see other/repo/#42', 'o/dup'), 42)
