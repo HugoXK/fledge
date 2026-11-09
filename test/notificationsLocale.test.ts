@@ -5,6 +5,7 @@ import { dashboardPage } from '../src/views/pages.js'
 import { QuotaNotifier } from '../src/gateway/notifier.js'
 import { MemoryMailer, makeUser, testConfig } from './helpers.js'
 import type { Locale } from '../src/i18n.js'
+import { LOCALES, NOTIFICATION_TEMPLATES, localizeNotification } from '../src/i18n.js'
 
 // The console is bilingual but a notification is written as a finished sentence
 // by whatever code produced the event, so the row used to render in the writer's
@@ -78,6 +79,66 @@ test('a stalled-job alert renders in the reader language in both directions', ()
     assert.match(en, /The job job_1 failed: 模型超时/)
   } finally {
     store.close()
+  }
+})
+
+test('a stage-evidence notice renders in English for every job kind', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'notice-stage', status: 'approved' })
+    // The writer interpolates `${job.kind}`, and checkStage blocks scope and
+    // verify as well as iterate and review, so every kind has to be localised.
+    store.notify(user.id, 'job', 'scope 任务 job_3 缺少阶段证据：缺少范围（evidence.scope）')
+    store.notify(user.id, 'job', 'verify 任务 job_4 缺少阶段证据：缺少失败测试证据（evidence.testRed）')
+    store.notify(user.id, 'job', 'iterate 任务 job_5 缺少阶段证据：缺少验收标准（evidence.acceptance）')
+
+    const en = render(store, user.id, 'en')
+    assert.ok(en.includes('The scope job job_3 is missing stage evidence: 缺少范围'), `the scope notice must be English: ${en}`)
+    assert.ok(en.includes('The verify job job_4 is missing stage evidence: 缺少失败测试证据'), `the verify notice must be English: ${en}`)
+    assert.ok(en.includes('The iterate job job_5 is missing stage evidence: 缺少验收标准'), `the iterate notice must be English: ${en}`)
+    assert.equal(/[a-z]+ 任务 job_\d 缺少阶段证据/.test(en), false, `no stage-evidence template may survive in English: ${en}`)
+
+    const zh = render(store, user.id, 'zh')
+    assert.ok(zh.includes('scope 任务 job_3 缺少阶段证据：缺少范围'), `a Chinese console keeps the stored row: ${zh}`)
+  } finally {
+    store.close()
+  }
+})
+
+test('every localisation row is pinned by a sample in both directions', () => {
+  const samples: ReadonlyArray<readonly [Locale, string, string]> = [
+    ['en', '@alice 的 GitHub token 权限不足，自动迭代已暂停；请重新授权后手动开启。', "@alice: the GitHub token is missing permissions, so auto-iteration is paused. Re-authorize GitHub and start it again manually."],
+    ['en', '审核 job_1 启动失败：模型超时', 'The review job job_1 failed to start: 模型超时'],
+    ['en', '任务 job_2 失败：模型超时', 'The job job_2 failed: 模型超时'],
+    ['en', 'scope 任务 job_3 缺少阶段证据：缺少范围（evidence.scope）', 'The scope job job_3 is missing stage evidence: 缺少范围（evidence.scope）'],
+    ['en', '任务 job_4 成本 12.5 元，超过单任务预算 10 元。', 'Job job_4 cost 12.5 CNY, over its 10 CNY single-job budget.'],
+    ['en', '任务 job_5 属于临时失败，将在约 5 分钟后自动重试。', 'Job job_5 hit a temporary failure; it will retry automatically in about 5 minutes.'],
+    ['en', '任务 job_6 的 PR 改动了受保护路径，已阻止合并：src/auth/x.ts', 'The PR for job job_6 changed protected paths, so the merge was blocked: src/auth/x.ts'],
+    ['en', '任务 job_7 改动了受保护路径：src/auth/x.ts', 'Job job_7 changed protected paths: src/auth/x.ts'],
+    ['en', 'alice 连续 3 个任务失败，自动迭代已暂停；请检查 bridge、GitHub 凭据和模型额度后手动重新开启。', 'alice failed 3 jobs in a row, so auto-iteration is paused. Check the bridge, the GitHub credential and the model quota, then start it again manually.'],
+    ['en', 'alice 的本次任务只有 Lead 参与，其他团队角色没有实际介入。', 'Only the Lead took part in this job for alice; no other team role was involved.'],
+    ['en', 'alice 团队提问：继续吗', 'alice team question: 继续吗'],
+    ['en', '平台额度已用完，请到 Settings → Model 配置你自己的模型 API。后重试。', 'Platform quota is used up. Configure your own model API in Settings → Model.'],
+    ['en', '平台额度已用完，请在 Settings → Model 配置自己的模型 API。', 'Platform quota is used up. Configure your own model API in Settings → Model.'],
+    ['zh', 'The scope job job_3 is missing stage evidence: 缺少范围（evidence.scope）', 'scope 任务 job_3 缺少阶段证据：缺少范围（evidence.scope）'],
+    ['zh', 'job job_9 has no callback for 49m', '任务 job_9 已有 49 分钟没有回报。'],
+    ['zh', 'PR https://github.com/o/r/pull/7 has been open for 49h', 'PR https://github.com/o/r/pull/7 已开启 49 小时。'],
+    ['zh', 'alice: GitHub credential is expired', 'alice：GitHub 凭据状态为 expired。'],
+    ['zh', 'alice: spent 12.5 of 100 CNY in 30 days', 'alice：30 天已花费 12.5 / 100 元。'],
+  ]
+
+  for (const [locale, stored, expected] of samples) {
+    assert.equal(localizeNotification(locale, stored), expected, `${locale} template drifted for: ${stored}`)
+  }
+
+  // A row with no sample would ship untested, so a new template fails here.
+  for (const locale of LOCALES) {
+    for (const [pattern] of NOTIFICATION_TEMPLATES[locale]) {
+      assert.ok(
+        samples.some(([sampleLocale, stored]) => sampleLocale === locale && pattern.test(stored)),
+        `the ${locale} row ${String(pattern)} has no sample`,
+      )
+    }
   }
 })
 

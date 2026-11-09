@@ -182,11 +182,14 @@ export function localizeMessage(locale: Locale, message: string | undefined): st
 // template it matches; a message no template knows is returned unchanged.
 type Localizer = (match: RegExpExecArray) => string
 
-const ZH_TO_EN: ReadonlyArray<readonly [RegExp, Localizer]> = [
+export const ZH_TO_EN: ReadonlyArray<readonly [RegExp, Localizer]> = [
   [/^(.+) 的 GitHub token 权限不足，自动迭代已暂停；请重新授权后手动开启。$/, (m) => `${m[1]}: the GitHub token is missing permissions, so auto-iteration is paused. Re-authorize GitHub and start it again manually.`],
   [/^(审核|任务) (\S+) 启动失败：([\s\S]+)$/, (m) => `The ${m[1] === '审核' ? 'review job' : 'job'} ${m[2]} failed to start: ${m[3]}`],
   [/^(审核|任务) (\S+) 失败：([\s\S]+)$/, (m) => `The ${m[1] === '审核' ? 'review job' : 'job'} ${m[2]} failed: ${m[3]}`],
-  [/^(iterate|review) 任务 (\S+) 缺少阶段证据：([\s\S]+)$/, (m) => `The ${m[1]} job ${m[2]} is missing stage evidence: ${m[3]}`],
+  // Every job kind can miss stage evidence, not just iterate/review: checkStage
+  // returns errors for scope and verify too, and the writer interpolates
+  // `${job.kind}` verbatim, so the kind is read as data rather than enumerated.
+  [/^(\S+) 任务 (\S+) 缺少阶段证据：([\s\S]+)$/, (m) => `The ${m[1]} job ${m[2]} is missing stage evidence: ${m[3]}`],
   [/^任务 (\S+) 成本 ([\d.]+) 元，超过单任务预算 ([\d.]+) 元。$/, (m) => `Job ${m[1]} cost ${m[2]} CNY, over its ${m[3]} CNY single-job budget.`],
   [/^任务 (\S+) 属于临时失败，将在约 (\d+) 分钟后自动重试。$/, (m) => `Job ${m[1]} hit a temporary failure; it will retry automatically in about ${m[2]} minutes.`],
   [/^任务 (\S+) 的 PR 改动了受保护路径，已阻止合并：([\s\S]+)$/, (m) => `The PR for job ${m[1]} changed protected paths, so the merge was blocked: ${m[2]}`],
@@ -198,16 +201,24 @@ const ZH_TO_EN: ReadonlyArray<readonly [RegExp, Localizer]> = [
   [/^平台额度已用完，请在 Settings → Model 配置自己的模型 API。$/, () => 'Platform quota is used up. Configure your own model API in Settings → Model.'],
 ]
 
-const EN_TO_ZH: ReadonlyArray<readonly [RegExp, Localizer]> = [
+export const EN_TO_ZH: ReadonlyArray<readonly [RegExp, Localizer]> = [
+  [/^The (\S+) job (\S+) is missing stage evidence: ([\s\S]+)$/, (m) => `${m[1]} 任务 ${m[2]} 缺少阶段证据：${m[3]}`],
   [/^job (\S+) has no callback for (\d+)m$/, (m) => `任务 ${m[1]} 已有 ${m[2]} 分钟没有回报。`],
   [/^PR (\S+) has been open for (\d+)h$/, (m) => `PR ${m[1]} 已开启 ${m[2]} 小时。`],
   [/^(.+): GitHub credential is (.+)$/, (m) => `${m[1]}：GitHub 凭据状态为 ${m[2]}。`],
   [/^(.+): spent ([\d.]+) of ([\d.]+) CNY in 30 days$/, (m) => `${m[1]}：30 天已花费 ${m[2]} / ${m[3]} 元。`],
 ]
 
+// The tables are exported so the suite can pin every row with a rendering of
+// its own: a row added without a sample, or a sample whose sentence stopped
+// matching, fails there instead of in a user's console.
+export const NOTIFICATION_TEMPLATES: Readonly<Record<Locale, ReadonlyArray<readonly [RegExp, Localizer]>>> = {
+  en: ZH_TO_EN,
+  zh: EN_TO_ZH,
+}
+
 export function localizeNotification(locale: Locale, message: string): string {
-  const table = locale === 'zh' ? EN_TO_ZH : ZH_TO_EN
-  for (const [pattern, build] of table) {
+  for (const [pattern, build] of NOTIFICATION_TEMPLATES[locale]) {
     const match = pattern.exec(message)
     if (match !== null) return build(match)
   }
