@@ -201,6 +201,27 @@ rotate it:
 The script validates the new token, writes a timestamped backup next to the
 secrets file and never prints the token. It does not revoke the old token.
 
+**The old value is dead only when one and the same run proves it.** Run
+`GET /user` with the old value and `GET /user` with the new value inside a single
+run: `401` for the old and `200` for the new is the only pair that counts. A lone
+`401` is not evidence — a proxy, a rate limit or a typo produces one too — so any
+other outcome is **INCONCLUSIVE** and must be re-run, not recorded as done.
+
+Exit codes, shared with `npm run secret:scan`:
+
+| code | meaning |
+|---|---|
+| `2` | the old value is still live |
+| `1` | a suspected real value in a tracked file, or any other error |
+| `0` | nothing found |
+
+`npm run secret:scan` scans only the files git tracks (`git ls-files`), prints
+`file:line` with the first 4 characters and the length of a hit and never the
+value, and fails closed: a scan that cannot run exits `1` rather than looking
+clean. The inventory is `docs/secrets.md`; the per-line whitelist for the two
+fake test fixtures is `scripts/secret-scan-allowlist.json`. Never whitelist a
+directory.
+
 ### OAuth
 
 - `state` is a 32-byte random value; only its hash is stored, for 10 minutes.

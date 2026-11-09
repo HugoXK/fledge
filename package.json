@@ -23,7 +23,8 @@
     "role:set:dev": "tsx scripts/set-role.ts",
     "evolution:export": "node scripts/evolution-shadow.mjs",
     "evolution:report": "node scripts/evolution-shadow.mjs --report",
-    "db:restore-drill:ci": "node scripts/restore-drill-ci.mjs"
+    "db:restore-drill:ci": "node scripts/restore-drill-ci.mjs",
+    "secret:scan": "node scripts/secret-scan.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.5",
