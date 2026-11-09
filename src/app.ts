@@ -163,6 +163,15 @@ async function testOwnModel(baseUrl: string, key: string, model: string): Promis
   }
 }
 
+// A pending applicant whose newest approval-mail attempt failed and whose
+// approval_sent_at is still empty: the admin has no mail to act on.
+function approvalMailFailed(user: UserRow, failures: Map<string, string>): boolean {
+  const failedAt = failures.get(user.id)
+  if (failedAt === undefined) return false
+  if (user.approval_sent_at === null) return true
+  return failedAt > user.approval_sent_at
+}
+
 export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const { config } = options
   assertProductionConfig(config)
@@ -564,7 +573,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (viewer.user.status === 'approved') return reply.redirect('/dashboard')
     if (viewer.user.status === 'onboarding') return reply.redirect('/apply')
     if (viewer.user.status === 'pending' && viewer.user.approval_sent_at === null) {
-      void approvals.request(viewer.user).catch((error) => log.warn('approval mail retry failed', { user: viewer.user.login, error: String(error) }))
+      // This page refreshes every 10 seconds, so a failing retry must not write an
+      // audit row each time; the failure marker comes from the submit attempt and
+      // from an admin resend, which do audit.
+      void approvals
+        .request(viewer.user, { auditFailure: false })
+        .catch((error) => log.warn('approval mail retry failed', { user: viewer.user.login, error: String(error) }))
     }
     return reply.type('text/html').send(
       applicationStatusPage({
@@ -575,6 +589,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         total: store.pendingTotal(),
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
+        mailFailed: approvalMailFailed(viewer.user, store.approvalMailFailures()),
       }),
     )
   })
@@ -2306,6 +2321,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const users = superadmin ? allUsers : allUsers.filter((user) => user.id === viewer.user.id || user.role === 'user')
     const userIds = superadmin ? null : users.map((user) => user.id)
     const activity = new Map(users.map((user) => [user.id, store.userActivity(user.id)]))
+    const mailFailures = store.approvalMailFailures()
+    const mailFailedUsers = new Set(users.filter((user) => approvalMailFailed(user, mailFailures)).map((user) => user.id))
     const perPage = 10
     const pageNumber = (name: string): number => {
       const n = Number(queryText(request, name))
@@ -2324,6 +2341,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         viewer: viewOf(viewer),
         users,
         activity,
+        mailFailedUsers,
         jobs: store.listJobsPageForUsers(userIds, perPage, (jobsPage - 1) * perPage),
         jobsPage,
         jobsTotal,
@@ -2366,6 +2384,21 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     return user
   }
+
+  app.post('/admin/users/:id/resend-approval', async (request, reply) => {
+    const viewer = approvedCsrfGuard(request)
+    if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
+    const id = String((request.params as Record<string, string>).id)
+    const user = store.userById(id)
+    if (user === undefined || user.status !== 'pending') throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
+    try {
+      const result = await approvals.request(user)
+      if (!result.sent) return reply.redirect(`/admin?error=${encodeURIComponent('这封邮件刚刚发送过，24 小时内不重复发送。')}`)
+      return reply.redirect(`/admin?notice=${encodeURIComponent('审批邮件已重新发送。')}`)
+    } catch {
+      return reply.redirect(`/admin?error=${encodeURIComponent('审批邮件仍然发送失败，请检查 SMTP 配置。')}`)
+    }
+  })
 
   app.post('/admin/users/:id/approve', async (request, reply) => {
     await adminStatus(request, 'approved')

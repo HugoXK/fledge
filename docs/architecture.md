@@ -611,6 +611,13 @@ callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
 
 ## Failure modes
 
+- **Approval mail cannot be sent.** The approval request writes an
+  `approval.mail_failed` audit entry, the applicant's status page and the pending
+  list on `/admin` show the failure, and an admin can resend from that list. The
+  marker is derived (`store.approvalMailFailures()` compared with
+  `users.approval_sent_at`), so a later successful send clears it. See
+  `docs/security.md` for the operator probe (`npm run mail:probe`).
+
 | Failure | Behaviour |
 |---|---|
 | Bridge unreachable | job fails with `RUNNER_ERROR`; user notified |
