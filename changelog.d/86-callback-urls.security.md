@@ -1,1 +1,0 @@
-The job callback now stores a `prUrl` or `issueUrl` only when it names this job's own repository on the origin Fledge derives for that repository, and treats a present but unplaceable value as no link. The console, the work-item row and the completion mail can no longer render an off-site URL under a `PR` or `Issue` label.

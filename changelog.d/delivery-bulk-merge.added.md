@@ -1,1 +1,0 @@
-The delivery list now has a "merge all clean PRs" action. It re-checks each open Fledge PR and merges the ones that pass the same PR state, checks, commit status, reviews and branch-protection gate, skipping blocked PRs and reporting the counts.

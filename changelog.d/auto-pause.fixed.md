@@ -1,1 +1,0 @@
-The repeated-failure auto-pause now fires even when the ops notice was already sent. A repository with three consecutive failures pauses auto-iterate before the notification dedupe, so an old failure key can no longer keep a broken repository retrying forever.

@@ -1,1 +1,0 @@
-Token login now follows one rule everywhere: the landing page shows the token form exactly when `POST /auth/token` accepts it, so a deployment that configures OAuth and deliberately keeps the fallback no longer hides a working login path. The OAuth code→token exchange endpoint is configurable with `GITHUB_OAUTH_TOKEN_URL`, which lets the callback be tested against a fake server.
