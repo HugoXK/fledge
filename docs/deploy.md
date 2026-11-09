@@ -164,6 +164,12 @@ docker compose up -d --build
 
 The volume `fledge-data` holds the SQLite database and the console outbox.
 
+The runtime stage also copies `CHANGELOG.md` and `changelog.d/` into `/app`
+(`Dockerfile`, runtime stage). The console reads them for the footer version and
+the `/admin` release card, which states the running version, the newest changelog
+section and the pending fragment count. Keep both paths in the image: without
+them those lines read "not available in this build" instead of answering.
+
 ### Node
 
 ```sh

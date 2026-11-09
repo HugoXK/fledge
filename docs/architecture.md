@@ -555,6 +555,21 @@ interpolated job id, repo label, minutes and similar facts kept as data. A
 message no template knows, including every row written before this change,
 renders verbatim. Nothing is rewritten in the database and no column was added.
 
+### Release surface
+
+An operator has to see which release is running without a shell. `readReleaseSurface`
+(`src/lib/releaseSurface.ts`) reads three local files and returns
+`{ version, changelogVersion, releasedAt, fragments }`: `version` from
+`package.json`, the newest dated `CHANGELOG.md` section (`[Unreleased]` carries no
+date and is skipped), and the count of `changelog.d/*.md` fragments excluding
+`README.md`. There is no GitHub call, token or network access, and the footer of
+every page carries `v<version>` while the `/admin` card states the running
+version (naming `package.json` as its source), the newest section and the pending
+count. A path that is missing at runtime renders "not available in this build"
+for that line rather than `0` or `—`; a zero fragment count is a real fact and
+reads "nothing pending". The surface reports no commit or build identifier — the
+version the release routine keeps in step is the only fact it can prove.
+
 ### Operational alerts
 
 A failed job also feeds the ops signal: three consecutive failures in one

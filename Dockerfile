@@ -18,6 +18,10 @@ COPY --from=build /app/dist ./dist
 COPY public ./public
 COPY scripts ./scripts
 COPY bridge ./bridge
+# The console reads these two to state which release it runs; without them the
+# admin release card would say "not available in this build".
+COPY CHANGELOG.md ./
+COPY changelog.d ./changelog.d
 RUN mkdir -p /data && chown -R node:node /app /data
 USER node
 EXPOSE 8080

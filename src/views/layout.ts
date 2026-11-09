@@ -2,6 +2,7 @@ import type { UserRow } from '../db.js'
 import { quotaView, type QuotaView } from '../gateway/quota.js'
 import type { Config } from '../config.js'
 import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
+import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 
 export function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch)
@@ -35,6 +36,8 @@ export interface LayoutOptions {
   active?: string
   notice?: string
   error?: string
+  /** Defaults to the running process's surface; a test passes a fixture root. */
+  release?: ReleaseSurface
 }
 
 function languageSwitch(locale: Locale, path: string): string {
@@ -74,6 +77,7 @@ export function layout(options: LayoutOptions): string {
   const notice = localizeMessage(locale, options.notice)
   const error = localizeMessage(locale, options.error)
   const preview = viewer !== undefined && viewer !== null && viewer.preview === true
+  const release = options.release ?? releaseSurface()
   const section = active ?? sectionForPath(path)
   const navItem = (key: string, href: string, label: string): string =>
     section === key
@@ -102,7 +106,7 @@ export function layout(options: LayoutOptions): string {
       </div>`
   const brandSmall = locale === 'zh' ? '<small>羽巢</small>' : ''
   const footer = `<footer class="foot">
-    <div>${escapeHtml(t('Fledge · 让托管的仓库自己长大 · 由 FlyBot 驱动', 'Fledge · hosted repositories that grow themselves · powered by FlyBot'))}</div>
+    <div>${escapeHtml(t('Fledge · 让托管的仓库自己长大 · 由 FlyBot 驱动', 'Fledge · hosted repositories that grow themselves · powered by FlyBot'))}${release.version === null ? '' : ` · <span class="foot-release">v${escapeHtml(release.version)}</span>`}</div>
     <nav class="foot-links" aria-label="${escapeHtml(t('页脚导航', 'Footer navigation'))}">
       <a href="${escapeHtml(withSlash(config.services.docs))}" target="_blank" rel="noreferrer">${escapeHtml(t('文档', 'Docs'))}</a>
       <a href="${escapeHtml(config.services.portal)}" target="_blank" rel="noreferrer">Portal</a>
