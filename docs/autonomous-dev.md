@@ -169,9 +169,9 @@ The required checks are **`ci-ok`**, **`review-gate`** and **`pr-lint`**.
 `Not run:`), the changelog fragment and docs obligations, the `Written-by`
 writer, and any `risk:T*` label against the computed tier.
 
-`review-gate` runs on `pull_request`, `pull_request_review` and `merge_group`, so
-posting a PASS reruns the check without a manual retry. It parses the newest
-conclusion at the PR head:
+`review-gate` runs on `pull_request`, `pull_request_review`, `merge_group` and on
+a verdict posted as a comment by an owner, member or collaborator
+(`issue_comment`), and it parses the newest conclusion at the PR head:
 
 ```
 Verdict: PASS at <sha>
@@ -193,6 +193,33 @@ Not run: Docker, real SMTP
 - The newest conclusion wins; a later INC overrides an earlier PASS.
 - A new commit voids the PASS.
 - A `hold` label blocks the queue.
+
+A verdict only paints the check that sits at the head SHA when a run at that SHA
+is re-run, because a run started by `issue_comment` checks the default branch and
+a review run only adds a check of its own. `scripts/gate-repair.mjs` therefore
+evaluates the gate itself and re-runs at most one set of runs at the head:
+
+- a PASS re-runs the failed first-attempt runs whose own `review-gate` job
+  failed, which clears the pre-PASS red that would otherwise block the merge;
+- a rejection re-runs the newest first-attempt run of the `Review gate`
+  workflow at the SHA, so a run that is currently green turns red. A run of any
+  other workflow at the same SHA is never a target: re-running it paints no
+  `review-gate` check;
+- only the newest check run of each name stands at the SHA, so a superseded
+  failure left behind by an earlier re-run is history, not a standing red;
+- a re-run is attempt 2 and is never a target again, so posting the same verdict
+  twice writes nothing, and a SHA whose runs have all been re-run fails with its
+  name instead of looping.
+
+The comment path is the job `review-gate-comment`, never `review-gate`: its checks
+land on the default branch, and a skipped job would still publish a check run
+under the required name. Its `if:` tests the event first and reaches the
+association test only for `issue_comment`, so a stranger cannot start the
+`actions: write` job and the other three events never evaluate the association.
+By design, a PASS that arrives after a rejection at the
+same SHA keeps the check red until a new commit moves the tip or one run at that
+SHA is re-run by hand — the newest conclusion at an unmoved tip is still the
+rejection.
 
 `main` is protected by required `ci-ok`, `review-gate` and `pr-lint` plus
 conversation resolution; admins are enforced. This repository has no merge
