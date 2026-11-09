@@ -1,0 +1,1 @@
+Pages no longer scroll sideways on phones and tablets: the hint tooltip now appears as a bar pinned to the viewport instead of a fixed 270px box hanging off its icon, and console list rows can shrink inside their card instead of forcing the page wider than the screen.
