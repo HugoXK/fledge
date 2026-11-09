@@ -101,7 +101,7 @@ if (integrity.length !== 1 || integrity[0] !== 'ok') {
 // The manifest is what lets a later drill prove the file on disk is still the
 // database this run wrote, so it is written after the integrity check and
 // before pruning may delete this copy.
-const manifest = writeManifest(target)
+const manifest = await writeManifest(target)
 
 const pruned = prune(outDir, keep)
 process.stdout.write(`backup=${target}\n`)

@@ -113,7 +113,7 @@ async function writeBackup(sourcePath, dir) {
     rmSync(target, { force: true })
     throw error
   }
-  writeManifest(target)
+  await writeManifest(target)
   return target
 }
 
@@ -146,11 +146,11 @@ function openRestored(restoredPath, backupPath) {
 // 1. Exact: the restored file must be the copy it was made from, byte for byte.
 // The copy is still on disk next to it, so this needs no manifest and holds for
 // every backup ever taken, including copies written before manifests existed.
-function verifyRestoredCopy(restoredPath, backupPath) {
+async function verifyRestoredCopy(restoredPath, backupPath) {
   const restoredSize = statSync(restoredPath).size
   const backupSize = statSync(backupPath).size
-  const restoredHash = sha256File(restoredPath)
-  const backupHash = sha256File(backupPath)
+  const restoredHash = await sha256File(restoredPath)
+  const backupHash = await sha256File(backupPath)
   if (restoredSize !== backupSize || restoredHash !== backupHash) {
     fail(1, `restored copy differs from ${backupPath}\nrestored size=${restoredSize} sha256=${restoredHash}\nbackup size=${backupSize} sha256=${backupHash}`)
   }
@@ -303,7 +303,7 @@ async function main() {
     const startedAt = process.hrtime.bigint()
     copyFileSync(backupPath, restoredPath)
     chmodSync(restoredPath, 0o600)
-    const copy = verifyRestoredCopy(restoredPath, backupPath)
+    const copy = await verifyRestoredCopy(restoredPath, backupPath)
     const manifest = readManifestOrFail(backupPath)
     if (manifest === null) {
       // An older backup tool wrote the copy only; the exact check above already
