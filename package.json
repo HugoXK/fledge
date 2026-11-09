@@ -17,6 +17,7 @@
     "test": "tsx --test test/*.test.ts",
     "check": "npm run lint && npm run typecheck && npm test && npm run build",
     "mail:outbox": "node scripts/outbox.mjs",
+    "mail:probe": "node scripts/mail-probe.mjs",
     "db:backup": "node scripts/backup.mjs",
     "db:restore-drill": "node scripts/restore-drill.mjs",
     "role:set": "node scripts/set-role.mjs",

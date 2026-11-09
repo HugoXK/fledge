@@ -3,7 +3,7 @@ import type { ApprovalRow, Store, UserRow } from '../db.js'
 import type { Mailer } from '../email/mailer.js'
 import { applicationEmail, applicationReceivedEmail, approvedEmail, rejectedEmail } from '../email/templates.js'
 import { log } from '../lib/log.js'
-import { randomToken, sha256Hex } from '../lib/secrets.js'
+import { randomToken, redact, sha256Hex } from '../lib/secrets.js'
 import { addDays } from '../lib/time.js'
 
 const RESEND_AFTER_MS = 24 * 60 * 60 * 1000
@@ -22,7 +22,7 @@ export class Approvals {
     private readonly mailer: Mailer,
   ) {}
 
-  async request(user: UserRow): Promise<{ sent: boolean; approveUrl?: string; rejectUrl?: string }> {
+  async request(user: UserRow, options: { auditFailure?: boolean } = {}): Promise<{ sent: boolean; approveUrl?: string; rejectUrl?: string }> {
     if (user.status !== 'pending') return { sent: false }
     if (user.approval_sent_at !== null) {
       const sentAt = Date.parse(user.approval_sent_at)
@@ -40,6 +40,12 @@ export class Approvals {
       await this.mailer.send({ to: this.config.mail.adminEmail, ...mail })
     } catch (error) {
       log.error('approval mail failed', { user: user.login, error: String(error) })
+      // The applicant stays pending and the admin has no mail, so the failure has
+      // to be visible in the product, not only on stdout. The value is redacted
+      // before it is stored: an SMTP error can quote the credential it rejected.
+      if (options.auditFailure !== false) {
+        this.store.audit(user.id, 'approval.mail_failed', `admin mail could not be sent: ${redact(String(error))}`)
+      }
       throw error
     }
     this.store.markApprovalSent(user.id)

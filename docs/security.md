@@ -325,6 +325,32 @@ treat it as a secret.
 | Job secret leak | Short-lived, per job, credential endpoint scoped to the job |
 | Log leak | Redaction; no request bodies; secrets never rendered |
 
+## Approval mail failures
+
+An approval mail that cannot be sent is a security-relevant outage, not a log
+line: the applicant stays `pending` and nobody can approve them. The product
+records it instead of swallowing it.
+
+- `Approvals.request` writes an `approval.mail_failed` audit entry with the
+  sender error **redacted** (`src/lib/secrets.ts`), then rethrows.
+- The applicant's `/apply/status` page shows a banner that the mail did not reach
+  the administrator and that the queue position is unchanged.
+- The pending list on `/admin` marks that user with "approval mail not
+  delivered" and offers **Resend approval mail**
+  (`POST /admin/users/:id/resend-approval`, CSRF-guarded, admin only). The marker
+  clears on its own when a later send succeeds, because only a success sets
+  `users.approval_sent_at`.
+- The automatic retry on `/apply/status` does **not** write an audit row: that
+  page refreshes every 10 seconds and a failing SMTP host would otherwise flood
+  the audit log.
+- The probe is `npm run mail:probe -- --to <address>`. It sends exactly one mail
+  over the configured transport and prints `transport=… host=… elapsed=…ms` plus
+  ok/failed; it prints neither the address nor a credential, and exits non-zero
+  on failure. Run it after any SMTP change, before trusting the approval path.
+
+The same rule applies to the approval notice and the quota reminder: their
+failures are logged (`log.warn`) but do not change a user's state.
+
 ## Operator checklist
 
 - [ ] `SESSION_SECRET` and `TOKEN_ENCRYPTION_KEY` are unique and backed up.
