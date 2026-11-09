@@ -559,3 +559,100 @@ test('actions: write is granted only to the two jobs that re-run a workflow run'
     else assert.doesNotMatch(body, /actions: write/, `${name} must not hold actions: write`)
   }
 })
+
+// --- hasRan: a PASS lists what it ran, not just its first bullet -------------
+//
+// The predicate is imported directly. scripts/lib/review-gate.mjs ships no
+// declaration file and this issue pins the change to two files, so the specifier
+// is a variable: the import stays first-hand and the shape is typed here.
+const REVIEW_GATE = '../scripts/lib/review-gate.mjs'
+const { hasNotRun, hasRan } = (await import(REVIEW_GATE)) as {
+  hasNotRun: (body: string) => boolean
+  hasRan: (body: string) => boolean
+}
+
+// The #137 verdict verbatim (comment 6742047633 at b334492d): its first Ran:
+// bullet is an API call, and the gate called that "no real Ran: command".
+const PASS_137 = `Verdict: PASS at b334492dc3d2f78621a502a5e317d329084215b5
+Written-by: HugoXK-bot
+Posted-by: HugoXK-bot
+
+Ran:
+- \`GET /repos/HugoXK/fledge/pulls/137\` - pass: tip \`b334492d…\`, base \`061240ba…\`, 4 files +399/-0, not draft, same-repo head, head unchanged since the request
+- \`npm ci\` (npmjs registry override) then \`npm run check\` at the tip - pass: exit 0, oxlint and \`tsc --noEmit\` clean, **333/333 tests**, build ok
+- \`tsx --test test/releasePlan.test.ts\` at the tip - pass: 19 tests, 19 pass
+- red at the base \`061240ba\` in a detached worktree with only the test file added - \`ERR_MODULE_NOT_FOUND: scripts/release-plan.mjs\`, \`# tests 1 # pass 0 # fail 1\`: module absence, exactly as the body states
+- mutation table re-run independently: 11 guards neutralised one at a time in the checked-out module, each restored afterwards - **11/11 caught** (the author's ten plus the \`open-release-pr\` guard, which is not in their table). Worktree left clean.
+- \`node scripts/risk-gate.mjs --base origin/main\` - pass: \`risk-tier: T3; basis: docs/autonomous-dev.md\` (matches the body)
+- \`node scripts/pr-lint.mjs --pr 137\` at the tip - pass: \`pr-lint: ok (#137, T3, 4 files)\`
+- \`node scripts/changelog.mjs check\` and \`node scripts/version.mjs check\` - pass: 28 fragments ok, version 0.2.4 ok
+Not run: the workflow that will call the planner (slice B; \`daily-release.yml\` does not exist), a real \`GET /pulls\` response shape, Docker, a live database.
+
+Findings:
+Blocking: none. Ruling on the red shape, which is the thing that needed a decision: module absence alone would not be a red test in the sense we require, and if it were the only evidence I would reject it. It is not the evidence. The mutation table is, and I reproduced it myself: every guard has a test that names it, and neutralising any one of them turns the suite red. The PASS stands on that.
+
+1. \`scripts/release-plan.mjs:76-104\` - rule 4 of #80 ("the latest \`ci-ok\` run on \`main\` is green") has no input in the declared shape, so \`shouldRelease\` cannot see it. Slice B must gate it in the workflow before opening the release PR and say so in its body; otherwise a green plan on a red \`main\` opens a release PR.
+2. \`scripts/release-plan.d.mts:3-6\` - \`labels: string[]\`, but \`GET /pulls\` returns \`[{ name, color }]\`. The caller must map the names before calling, or the \`enhancement\` half of rule 2 silently never matches. Slice B owns that mapping and must show it.
+3. Note, not a finding: the feature regex is case-sensitive by design (\`feat!:\` and \`Feat:\` are not features) while the revert regex is case-insensitive because the issue names both \`revert:\` and \`Revert "\`. Under-counting is the conservative direction and the tests pin it.
+
+The pure-function contract the issue asked for holds: no fs, net, clock or env; the release-PR self-vote is removed after the dedupe; reverts add to \`total\` and never to \`features\`; every ambiguity returns a named reason instead of a guess. PASS at this tip.
+`
+
+test('hasRan accepts a block whose command is not the first bullet', () => {
+  const body = ['Ran:', '- `GET /repos/o/r/pulls/1` - pass', '- `npm ci && npm run check` - pass', '', 'Not run: Docker image'].join('\n')
+  assert.equal(hasRan(body), true)
+})
+
+test('hasRan accepts the real #137 PASS whose first bullet is a GET', () => {
+  assert.equal(hasRan(PASS_137), true)
+  assert.equal(hasNotRun(PASS_137), true)
+})
+
+test('hasRan stays false when no bullet is a command', () => {
+  const body = ['Ran:', '- opened the dashboard', '- re-read the job log', '- checked the pull request page', '', 'Not run: Docker image'].join('\n')
+  assert.equal(hasRan(body), false)
+})
+
+test('hasRan does not count a CLI word that is only mentioned in prose', () => {
+  const body = ['Ran:', '- I did not run npm today', '- checked the npm logs', '', 'Not run: Docker image'].join('\n')
+  assert.equal(hasRan(body), false)
+})
+
+test('hasRan counts an unmarked command and a bare $ command', () => {
+  assert.equal(hasRan(['Ran:', '- npm ci && npm run check', '', 'Not run: Docker image'].join('\n')), true)
+  assert.equal(hasRan(['Ran:', '$ npm run check', '', 'Not run: Docker image'].join('\n')), true)
+})
+
+test('hasRan counts a fenced command', () => {
+  const body = ['Ran:', '```', 'npm ci', '```', '', 'Not run: Docker image'].join('\n')
+  assert.equal(hasRan(body), true)
+})
+
+test('hasRan does not count a fence that opens with prose', () => {
+  const body = ['Ran:', '```', '# I did not run npm today', 'npm was not run', '```', '', 'Not run: Docker image'].join('\n')
+  assert.equal(hasRan(body), false)
+})
+
+test('hasRan ignores a command after the block boundary', () => {
+  const body = ['Ran:', '- opened the page', '', 'Not run: Docker image', '', '- npm ci was not run'].join('\n')
+  assert.equal(hasRan(body), false)
+})
+
+// Case 7 stays at the gate level: a PASS that lists real commands but no
+// `Not run:` line is still rejected. That is `hasNotRun`, which this change does
+// not touch, so the case guards the gate rather than the predicate.
+test('the gate still requires a Not run: line from a PASS that ran real commands', async () => {
+  const state = initialState()
+  state.reviews = [{
+    body: PASS_BODY.replace('Not run: Docker image', ''),
+    state: 'APPROVED',
+    submitted_at: '2026-11-09T07:00:00Z',
+    user: { login: 'HugoXK-bot' },
+    author_association: 'COLLABORATOR',
+  }]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /has no Not run: line/)
+  })
+})

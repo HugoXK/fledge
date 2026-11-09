@@ -48,11 +48,56 @@ export function hasNotRun(body) {
   return /(^|\n)\s*Not run[^\n:]*[:：]/i.test(String(body ?? ''))
 }
 
+const COMMAND_FIRST = /^(?:npm|node|npx|docker|git|gh|curl|pnpm|yarn)\b/i
+const RAN_LABEL = /^\s*Ran[^\n:]*[:：]\s*(.*)$/
+const BLOCK_END = /^\s*(?:#{1,6}\s|Not run[^\n:]*[:：]|Findings\s*[:：])/i
+const FENCE = /^\s*```/
+
+// Position, not markup: a step counts only when its first token is a command
+// word. Prose that mentions a CLI ("I did not run npm today") and an API call
+// (`GET /repos/...`) do not count, while a bare `- npm ci`, a backticked
+// command and a `$ <cmd>` line do.
+function ranCommand(text) {
+  const first = String(text)
+    .trim()
+    .replace(/^[-*]\s+/, '')
+    .replace(/^`+/, '')
+    .replace(/^\$\s+/, '')
+    .trim()
+  return COMMAND_FIRST.test(first)
+}
+
 export function hasRan(body) {
-  const text = String(body ?? '')
-  if (/(^|\n)\s*Ran[^\n:]*[:：]\s*(npm|node|npx|docker|git|gh|curl|pnpm|yarn)\b/i.test(text)) return true
-  if (/(^|\n)\s*Ran[^\n:]*[:：]\s*\n(?:\s*[-*]\s*|\s*\$ )?.*\b(npm|node|npx|docker|git|gh|curl|pnpm|yarn)\b/i.test(text)) return true
-  if (/(^|\n)\s*\$\s+(npm|node|npx|docker|git|gh|curl|pnpm|yarn)\b/i.test(text)) return true
+  let inRan = false
+  let fence = false
+  let fenceChecked = false
+  for (const line of String(body ?? '').split(/\r?\n/)) {
+    if (!inRan) {
+      const label = RAN_LABEL.exec(line)
+      if (label === null) continue
+      inRan = true
+      if (ranCommand(label[1] ?? '')) return true
+      continue
+    }
+    if (fence) {
+      if (FENCE.test(line)) {
+        fence = false
+        continue
+      }
+      if (!fenceChecked && line.trim() !== '') {
+        fenceChecked = true
+        if (ranCommand(line)) return true
+      }
+      continue
+    }
+    if (FENCE.test(line)) {
+      fence = true
+      fenceChecked = false
+      continue
+    }
+    if (BLOCK_END.test(line)) return false
+    if (ranCommand(line)) return true
+  }
   return false
 }
 
