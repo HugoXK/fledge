@@ -45,39 +45,51 @@ export function prOrigin(repo: Pick<RepoRow, 'upstream_html_url' | 'fork_html_ur
   return webOriginOf(apiBase)
 }
 
-// A pull request URL is accepted only when its scheme+host is the repository's
-// own origin and its path names this repository's owner/name and a number.
-// This is the single definition used by the merge path and by head resolution.
-export function parsePrUrl(repo: RepoRow, prUrl: string, apiBase: string): PrUrlResult {
+// A pull request or issue URL is accepted only when its scheme+host is the
+// repository's own origin and its path names this repository's owner/name and a
+// number. Both kinds share this one definition; the merge path only takes pull
+// requests, while a job callback may report either.
+function parseRepoResourceUrl(repo: RepoRow, value: string, apiBase: string, kind: 'pull' | 'issues'): PrUrlResult {
   const owner = repo.upstream_owner || repo.owner
   const name = repo.upstream_name || repo.name
+  const what = kind === 'pull' ? 'pull request' : 'issue'
   const expected = prOrigin(repo, apiBase)
   if (expected === undefined) {
     return { ok: false, reason: `cannot determine the expected origin for ${owner}/${name}: no recorded html_url and API base ${apiBase} is not a URL` }
   }
   let url: URL
   try {
-    url = new URL(prUrl)
+    url = new URL(value)
   } catch {
-    return { ok: false, reason: `pull request URL ${prUrl} is not a valid URL` }
+    return { ok: false, reason: `${what} URL ${value} is not a valid URL` }
   }
   // WHATWG keeps `user:pass@` outside `host`, so `https://x@github.example/...`
   // compares equal to the repository origin while the URL still reads like a
   // different host. A job callback has no reason to carry credentials.
   if (url.username !== '' || url.password !== '') {
-    return { ok: false, reason: `pull request URL ${prUrl} carries credentials` }
+    return { ok: false, reason: `${what} URL ${value} carries credentials` }
   }
   const actual = `${url.protocol}//${url.host}`
   if (actual !== expected) {
-    return { ok: false, reason: `pull request host ${actual} is not ${expected}` }
+    return { ok: false, reason: `${what} host ${actual} is not ${expected}` }
   }
-  const prefix = `/${owner}/${name}/pull/`
+  const prefix = `/${owner}/${name}/${kind}/`
   if (!url.pathname.startsWith(prefix)) {
-    return { ok: false, reason: `pull request URL ${url.pathname} does not belong to repository ${owner}/${name}` }
+    return { ok: false, reason: `${what} URL ${url.pathname} does not belong to repository ${owner}/${name}` }
   }
   const match = /^(\d+)\/?$/.exec(url.pathname.slice(prefix.length))
   if (match === null) {
-    return { ok: false, reason: `pull request URL ${url.pathname} is not ${owner}/${name}/pull/<number>` }
+    return { ok: false, reason: `${what} URL ${url.pathname} is not ${owner}/${name}/${kind}/<number>` }
   }
   return { ok: true, ref: { owner, name, number: Number(match[1]) } }
+}
+
+// The single definition used by the merge path and by head resolution.
+export function parsePrUrl(repo: RepoRow, prUrl: string, apiBase: string): PrUrlResult {
+  return parseRepoResourceUrl(repo, prUrl, apiBase, 'pull')
+}
+
+// A callback also reports the issue a job opened; it shares the origin rule.
+export function parseIssueUrl(repo: RepoRow, issueUrl: string, apiBase: string): PrUrlResult {
+  return parseRepoResourceUrl(repo, issueUrl, apiBase, 'issues')
 }
