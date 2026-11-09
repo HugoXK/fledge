@@ -25,6 +25,8 @@ them; this page only fixes the names and the values.
 | Line | `--line` | `#1c232d` | default border and divider |
 | Line | `--line-strong` | `#2a3545` | emphasised border |
 | Line | `--row-line` | `#18202a` | table row divider |
+| Line | `--scroll-track` | `#5b6779` | `.table-scroll` scrollbar track, 641-960px only (3.3:1 on `--panel`) |
+| Line | `--scroll-thumb` | `#c8d2de` | `.table-scroll` scrollbar thumb, 641-960px only (3.7:1 on `--scroll-track`) |
 | Text | `--text` | `#f2f5f9` | body copy and headings |
 | Text | `--muted` | `#98a2b3` | secondary copy |
 | Text | `--muted-2` | `#8b96a6` | 10-13px meta text: `.fine`, `<small>`, `.count`, `.foot`, table headers |
