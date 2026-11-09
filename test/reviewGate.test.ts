@@ -46,6 +46,8 @@ interface FakeState {
   sha: string
   posts: string[]
   failPaths: string[]
+  author: string
+  policy: string
 }
 
 function initialState(): FakeState {
@@ -59,11 +61,13 @@ function initialState(): FakeState {
     sha: SHA,
     posts: [],
     failPaths: [],
+    author: 'HugoXK',
+    policy: JSON.stringify({ writers: ['HugoXK', 'HugoXK-bot'], requiredPass: 'HugoXK-bot' }),
   }
 }
 
 async function withFakeGitHub(state: FakeState, body: (env: Record<string, string>, state: FakeState) => Promise<void>): Promise<void> {
-  const policy = JSON.stringify({ writers: ['HugoXK', 'HugoXK-bot'], requiredPass: 'HugoXK-bot', selfReview: ['HugoXK-bot'] })
+  const policy = state.policy
   const server = await startFakeServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
     const path = url.pathname
@@ -72,7 +76,7 @@ async function withFakeGitHub(state: FakeState, body: (env: Record<string, strin
       return
     }
     if (path === '/repos/o/r/pulls/7') {
-      json(response, 200, { number: 7, head: { sha: state.sha }, user: { login: 'HugoXK' }, labels: [] })
+      json(response, 200, { number: 7, head: { sha: state.sha }, user: { login: state.author }, labels: [] })
       return
     }
     if (path === '/repos/o/r/pulls/7/files') {
@@ -163,6 +167,19 @@ test('the gate passes a T2 tip that carries a valid PASS at the tip', async () =
     const result = await runScript(gateScript, ['--pr', '7'], env)
     assert.equal(result.code, 0, result.stderr)
     assert.match(result.stdout, /PASS/)
+  })
+})
+
+test('the tip author may never PASS its own tip, not even the reviewer identity', async () => {
+  const state = initialState()
+  // The shipped policy, not a copy of it: the test breaks if a waiver comes back.
+  state.policy = readFileSync(fileURLToPath(new URL('../.github/agent/review-policy.json', import.meta.url)), 'utf8')
+  state.author = 'HugoXK-bot'
+  state.reviews = [{ body: PASS_BODY, state: 'APPROVED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.notEqual(result.code, 0, 'a complete PASS by the tip author must not satisfy the gate')
+    assert.match(result.stderr, /the pull request author "HugoXK-bot" may not PASS its own tip/)
   })
 })
 

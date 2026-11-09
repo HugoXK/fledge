@@ -95,8 +95,8 @@ not a conclusion.
 - **T0/T1:** merge through the queue when `ci-ok` is green, the PR is mergeable
   and design-conformant. No PASS needed.
 - **T2/T3:** a **PASS at the same tip** from a reviewer in
-  `.github/agent/review-policy.json` (self-PASS by the owner's reviewer agent
-  counts) and green `ci-ok`. The agent that gated it enqueues it itself.
+  `.github/agent/review-policy.json`, where the author of the tip may never PASS
+  it, and green `ci-ok`. The agent that gated it enqueues it itself.
 - Any new commit voids the PASS. Re-run the Verifier on the new tip.
 - Never admin-merge, never bypass a required check, never force-push `main`.
 - One PR per issue. Push to the existing branch instead of opening a duplicate.
@@ -117,8 +117,8 @@ Not run: Docker image, real SMTP
 - Second line: `Written-by:` from the policy's `writers` list.
 - Third line: `Posted-by:` with the account that submitted the review. It must
   match the actual poster, or the gate rejects the conclusion.
-- The PR author may not PASS its own tip unless `selfReview` in the policy
-  allows it.
+- The PR author may never PASS its own tip: the policy carries no self-review
+  waiver.
 - One tip carries one conclusion. A replacement PASS at the same tip is allowed
   only when the first was rejected for a missing `Ran:` line, and it must say
   `Replaces:`.
