@@ -1,10 +1,13 @@
 #!/usr/bin/env node
-// Restore drill: restore the newest online backup into a temp path and prove it
-// matches the source database. Reads the source read-only, never writes it.
+// Restore drill: restore the newest online backup into a temp path and prove the
+// restored copy is the backup it came from and still holds what its manifest
+// recorded. The live source is read read-only and only reported on: drift since
+// the copy was taken is normal and is never a failure.
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { manifestPath, readManifest, sha256File, writeManifest } from './lib/backup-manifest.mjs'
 
 const require = createRequire(import.meta.url)
 const { DatabaseSync, backup } = require('node:sqlite')
@@ -98,6 +101,19 @@ async function writeBackup(sourcePath, dir) {
     source.close()
   }
   chmodSync(target, 0o600)
+  // A copy taken by the drill is a normal backup: it gets the same manifest, so
+  // the checks below are exact on the very first run of an instance. The manifest
+  // records what this run wrote, so the copy is verified before it is described -
+  // a manifest over a file that cannot be opened would launder a bad backup - and
+  // an unreadable copy is removed rather than left looking usable.
+  try {
+    const fresh = openRestored(target, target)
+    fresh.close()
+  } catch (error) {
+    rmSync(target, { force: true })
+    throw error
+  }
+  writeManifest(target)
   return target
 }
 
@@ -125,6 +141,102 @@ function openRestored(restoredPath, backupPath) {
     fail(1, `corrupt backup ${backupPath}: ${error instanceof Error ? error.message : String(error)}`)
   }
   return db
+}
+
+// 1. Exact: the restored file must be the copy it was made from, byte for byte.
+// The copy is still on disk next to it, so this needs no manifest and holds for
+// every backup ever taken, including copies written before manifests existed.
+function verifyRestoredCopy(restoredPath, backupPath) {
+  const restoredSize = statSync(restoredPath).size
+  const backupSize = statSync(backupPath).size
+  const restoredHash = sha256File(restoredPath)
+  const backupHash = sha256File(backupPath)
+  if (restoredSize !== backupSize || restoredHash !== backupHash) {
+    fail(1, `restored copy differs from ${backupPath}\nrestored size=${restoredSize} sha256=${restoredHash}\nbackup size=${backupSize} sha256=${backupHash}`)
+  }
+  return { size: restoredSize, sha256: restoredHash }
+}
+
+function readManifestOrFail(backupPath) {
+  try {
+    return readManifest(backupPath)
+  } catch (error) {
+    fail(1, `manifest unreadable ${manifestPath(backupPath)}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+// 2a. The manifest describes bytes, so this runs before the database is opened:
+// a file that is shorter than its manifest was interrupted or truncated at
+// backup time, and SQLite's opinion of it is not what proves that.
+function verifyManifestBytes(manifest, backupPath, copy) {
+  const failures = []
+  if (manifest.size !== copy.size) failures.push(`manifest says size=${manifest.size}, the restored copy has ${copy.size}`)
+  if (manifest.sha256 !== copy.sha256) failures.push(`manifest says sha256=${manifest.sha256}, the restored copy has ${copy.sha256}`)
+  if (failures.length > 0) fail(1, `corrupt or incomplete copy ${backupPath}: restored copy does not match its manifest\n${failures.join('\n')}`)
+}
+
+// 2b. And what it held: schema version and per-table counts.
+function verifyManifestDatabase(manifest, backupPath, restored, restoredTables, restoredCounts) {
+  const failures = []
+  const version = schemaVersion(restored)
+  process.stdout.write(`schema_version expected=${manifest.schemaVersion} actual=${version}\n`)
+  if (manifest.schemaVersion !== version) failures.push(`manifest says schema_version=${manifest.schemaVersion}, restored has ${version}`)
+  const restoredSet = new Set(restoredTables)
+  for (const table of [...new Set([...Object.keys(manifest.tables), ...restoredTables])].sort()) {
+    const expected = manifest.tables[table]
+    if (!restoredSet.has(table)) {
+      failures.push(`manifest says ${table}=${expected}, restored is missing ${table}`)
+      continue
+    }
+    const actual = restoredCounts.get(table) ?? 0
+    if (expected === undefined) {
+      failures.push(`restored has ${table}=${actual}, which the manifest does not list`)
+      continue
+    }
+    process.stdout.write(`table=${table} expected=${expected} actual=${actual}\n`)
+    if (expected !== actual) failures.push(`manifest says ${table}=${expected}, restored has ${actual}`)
+  }
+  if (failures.length > 0) fail(1, `corrupt or incomplete copy ${backupPath}: restored copy does not match its manifest\n${failures.join('\n')}`)
+}
+
+// 3. The live source only informs. A serving instance writes after the copy is
+// taken, and a migration may add a table, so neither is a failure: a red drill
+// must mean "this backup is bad", never "the database moved on".
+// The source is the one part of this drill that is allowed to be broken: an
+// operator runs a drill *because* the live database may be damaged, so a source
+// that cannot be opened or read is reported and never fails a verified copy.
+function reportSourceDrift(dbPath, restoredTables, restoredCounts) {
+  try {
+    const source = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      const sourceTables = tableNames(source)
+      const sourceSet = new Set(sourceTables)
+      const restoredSet = new Set(restoredTables)
+      const schemaNotes = []
+      let drift = 0
+      for (const table of [...new Set([...sourceTables, ...restoredTables])].sort()) {
+        if (!sourceSet.has(table)) {
+          schemaNotes.push(`extra:${table}`)
+          continue
+        }
+        if (!restoredSet.has(table)) {
+          schemaNotes.push(`missing:${table}`)
+          continue
+        }
+        const live = rowCount(source, table)
+        const copy = restoredCounts.get(table) ?? 0
+        drift += live - copy
+        process.stdout.write(`source_table=${table} source=${live} restored=${copy}\n`)
+      }
+      process.stdout.write(`schema_drift=${schemaNotes.length === 0 ? 'none' : schemaNotes.join(',')}\n`)
+      process.stdout.write(`source_drift=${drift > 0 ? '+' : ''}${drift}\n`)
+    } finally {
+      source.close()
+    }
+  } catch (error) {
+    process.stdout.write('schema_drift=unavailable\nsource_drift=unavailable\n')
+    process.stderr.write(`restore-drill: the live source could not be read, so drift is not reported and the restore stands: ${error instanceof Error ? error.message : String(error)}\n`)
+  }
 }
 
 async function main() {
@@ -191,36 +303,26 @@ async function main() {
     const startedAt = process.hrtime.bigint()
     copyFileSync(backupPath, restoredPath)
     chmodSync(restoredPath, 0o600)
+    const copy = verifyRestoredCopy(restoredPath, backupPath)
+    const manifest = readManifestOrFail(backupPath)
+    if (manifest === null) {
+      // An older backup tool wrote the copy only; the exact check above already
+      // passed, and row counts are never compared with the live source.
+      process.stdout.write(`manifest=missing\n`)
+    } else {
+      process.stdout.write(`manifest=${manifestPath(backupPath)}\n`)
+      verifyManifestBytes(manifest, backupPath, copy)
+    }
     restored = openRestored(restoredPath, backupPath)
     const restoredTables = tableNames(restored)
-    const source = new DatabaseSync(dbPath, { readOnly: true })
-    const failures = []
-    try {
-      const sourceTables = tableNames(source)
-      const all = [...new Set([...sourceTables, ...restoredTables])].sort()
-      const sourceSet = new Set(sourceTables)
-      const restoredSet = new Set(restoredTables)
-      for (const table of all) {
-        const expected = sourceSet.has(table) ? rowCount(source, table) : 0
-        const actual = restoredSet.has(table) ? rowCount(restored, table) : 0
-        process.stdout.write(`table=${table} expected=${expected} actual=${actual}\n`)
-        if (!sourceSet.has(table)) failures.push(`table ${table} exists only in the restore`)
-        else if (!restoredSet.has(table)) failures.push(`table ${table} is missing from the restore`)
-        else if (expected !== actual) failures.push(`table ${table} expected=${expected} actual=${actual}`)
-      }
-      const expectedVersion = schemaVersion(source)
-      const actualVersion = schemaVersion(restored)
-      process.stdout.write(`schema_version expected=${expectedVersion} actual=${actualVersion}\n`)
-      if (expectedVersion !== actualVersion) failures.push(`schema_version expected=${expectedVersion} actual=${actualVersion}`)
-    } finally {
-      source.close()
-    }
+    const restoredCounts = new Map(restoredTables.map((table) => [table, rowCount(restored, table)]))
+    if (manifest !== null) verifyManifestDatabase(manifest, backupPath, restored, restoredTables, restoredCounts)
+    reportSourceDrift(dbPath, restoredTables, restoredCounts)
     const rtoSeconds = Number(process.hrtime.bigint() - startedAt) / 1e9
     process.stdout.write(`backup=${backupPath}\n`)
     process.stdout.write(`restored=${restoredPath}\n`)
     process.stdout.write(`RTO=${rtoSeconds.toFixed(3)}s\n`)
     process.stdout.write(`RPO=${backupAgeSeconds.toFixed(3)}s\n`)
-    if (failures.length > 0) fail(1, `restore does not match the source\n${failures.join('\n')}`)
     process.stdout.write('restore-drill: OK\n')
     succeeded = true
   } finally {

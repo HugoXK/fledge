@@ -221,6 +221,8 @@ npm run db:backup
 # every copy is checked with PRAGMA integrity_check and pruned to BACKUP_KEEP
 # (default 14) newest copies; a copy that fails the check is deleted and the run
 # exits non-zero, so a failed backup never leaves a usable-looking file
+# each copy gets a <copy>.json manifest: size, sha256, schema version and
+# per-table row counts, written 0600 and deleted together with its copy
 ```
 
 Back up `.env` separately (it contains the encryption key). Without
@@ -238,8 +240,12 @@ Prove that the newest copy still restores, without touching the live database:
 
 ```sh
 npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR"
-# table=jobs expected=5000 actual=5000        one line per table
+# manifest=/var/lib/fledge/backups/fledge-2026-11-06T09-44-53-448Z.db.json
+# table=jobs expected=5000 actual=5000        one line per table: copy vs manifest
 # schema_version expected=28 actual=28
+# source_table=jobs source=5012 restored=5000   information: the live database moved on
+# schema_drift=none                            or missing:<table> / extra:<table>
+# source_drift=+12
 # backup=/var/lib/fledge/backups/fledge-2026-11-06T09-44-53-448Z.db
 # restored=/tmp/fledge-restore-drill-xxxx/restored.db
 # RTO=0.385s
@@ -252,14 +258,27 @@ How it works and how to read it:
 - It takes the newest `fledge-*.db` in the backup directory (write a fresh copy
   first with `--fresh`). Nothing is created if a copy already exists, so the RPO
   you see is the age of your real backup schedule.
-- It copies the backup into a temp directory (`--work-dir` to choose one and
-  keep the restored file), opens it read-only, runs `PRAGMA integrity_check`,
-  and compares every table's row count and `PRAGMA user_version` with the
-  source. The source database is opened read-only and never written; a drill
-  leaves its bytes unchanged.
+- **The copy is judged against the file it is, not against the live database.**
+  The restored file must be byte-for-byte the copy it came from; then, when that
+  copy has a `<copy>.json` manifest (every copy `npm run db:backup` writes does),
+  its size, `sha256`, `PRAGMA user_version` and per-table row counts must match
+  the manifest, which is what catches a copy that was truncated or interrupted
+  at backup time. A copy written before manifests existed still passes the byte
+  comparison and prints `manifest=missing` as a warning.
+- **The live source is reported, never required to match or even to be
+  readable.** Each shared table prints `source_table=<table> source=<n>
+  restored=<n>`, `schema_drift` names a table the source has and the copy does
+  not (or the reverse), and `source_drift` is the total difference. Writes — and
+  deletes, so an older copy can legitimately hold more rows — since the copy was
+  taken are normal: they are printed as information and never fail the drill.
+  If the live database cannot be opened or read at all, the drill prints
+  `schema_drift=unavailable` and `source_drift=unavailable` with the reason on
+  stderr and still reports the restored copy. That is the case an operator
+  restores *because* of, so it can never be the reason a good copy is refused.
 - It refuses a `--backup-dir` or `--work-dir` that holds the source database,
   and exits non-zero — naming the file and the table — when the copy is corrupt
-  or a count differs.
+  or does not match its manifest. The source database is opened read-only and
+  never written; a drill leaves its bytes unchanged.
 - It refuses a `--work-dir` inside `DATA_DIR` (the live data directory), inside
   the source database's own directory, or one whose parent directory does not
   exist — `DATA_DIR` need not be exported for the source directory to be
@@ -272,7 +291,8 @@ How it works and how to read it:
   exits non-zero, and a drill that used its own temp directory removes that
   directory entirely. Restoring from a `restored.db` left by a failed run is
   therefore impossible, and a temp drill does not leave a copy of production
-  data in `/tmp`. Always check the exit status (or look for
+  data in `/tmp`. Drift alone never triggers that rename, so a `restored.db` that
+  is gone means the copy itself failed. Always check the exit status (or look for
   `restore-drill: OK`) before using the restored copy.
 - **RTO** is the measured restore-and-verify time: how long a real restore would
   take to produce a verified copy. **RPO** is the age of the copy that restored:
