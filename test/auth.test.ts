@@ -1,7 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { buildApp, safeLocalPath } from '../src/app.js'
-import { tokenLoginEnabled } from '../src/auth/login.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { randomToken, sha256Hex } from '../src/lib/secrets.js'
@@ -194,7 +193,11 @@ test('the OAuth callback lands an approved user on the dashboard, a pending user
   }
 })
 
-test('tokenLoginEnabled is the single rule both call sites use', () => {
+test('tokenLoginEnabled is the single rule both call sites use', async () => {
+  // Imported here rather than at the top so this file still loads on the base
+  // tree, where the module does not exist yet: the behavioural tests above must
+  // fail on their assertions at the base, not on a missing import.
+  const { tokenLoginEnabled } = await import('../src/auth/login.js')
   const github = { ...testConfig().github }
   const configured = { ...github, clientId: 'client', clientSecret: 'secret' }
   const missing = { ...github, clientId: '', clientSecret: '' }
