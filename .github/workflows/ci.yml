@@ -5,13 +5,21 @@ on:
     branches: [main]
   pull_request:
   merge_group:
+  # A manual run for a branch that has no PR, and a nightly run on main so a
+  # dependency, runner image or upstream action change is not discovered by the
+  # next PR. 19:17 UTC is 03:17 Asia/Shanghai.
+  workflow_dispatch:
+  schedule:
+    - cron: '17 19 * * *'
 
 permissions:
   contents: read
 
 concurrency:
+  # A superseded pull request run is waste; a run on main is the record of a
+  # commit, so it is never cancelled by a later one.
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
