@@ -198,9 +198,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   const app = Fastify({
     logger: false,
-    // Only the local nginx hop may add X-Forwarded-For; the caller-supplied left
-    // end of that header never becomes request.ip. See docs/deploy.md.
-    trustProxy: ['127.0.0.1', '::1', '::ffff:127.0.0.1'],
+    // Only the hops configured in TRUST_PROXY may add X-Forwarded-For; the
+    // caller-supplied left end of that header never becomes request.ip. The
+    // default is loopback (the direct-nginx path); a bridge network names its
+    // gateway there instead. See docs/deploy.md.
+    trustProxy: config.trustProxy,
     bodyLimit: 20 * 1024 * 1024,
     routerOptions: { ignoreTrailingSlash: true },
   })

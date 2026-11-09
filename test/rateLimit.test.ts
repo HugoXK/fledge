@@ -1,13 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { buildApp } from '../src/app.js'
+import { loadConfig, type Config } from '../src/config.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { rateLimitKey } from '../src/lib/rateLimit.js'
 import { MemoryMailer, testConfig } from './helpers.js'
 
-async function withApp(run: (built: Awaited<ReturnType<typeof buildApp>>) => Promise<void>): Promise<void> {
-  const config = testConfig()
+async function withApp(run: (built: Awaited<ReturnType<typeof buildApp>>) => Promise<void>, overrides: Partial<Config> = {}): Promise<void> {
+  const config = testConfig(overrides)
   const store = new Store(':memory:')
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
@@ -94,3 +96,54 @@ test('two different clients do not share a bucket', async () => {
     assert.equal(other.statusCode, 403, `a different client answered ${other.statusCode} instead of 403`)
   })
 })
+
+function withTrustProxy<T>(raw: string | undefined, run: () => T): T {
+  const previous = process.env.TRUST_PROXY
+  if (raw === undefined) delete process.env.TRUST_PROXY
+  else process.env.TRUST_PROXY = raw
+  try {
+    return run()
+  } finally {
+    if (previous === undefined) delete process.env.TRUST_PROXY
+    else process.env.TRUST_PROXY = previous
+  }
+}
+
+test('TRUST_PROXY defaults to loopback and a two-hop list keeps both hops', () => {
+  withTrustProxy(undefined, () => assert.deepEqual(loadConfig({ env: 'test' }).trustProxy, ['127.0.0.1', '::1'], 'the default is the direct-nginx loopback hop'))
+  withTrustProxy('127.0.0.1,10.0.0.5', () => assert.deepEqual(loadConfig({ env: 'test' }).trustProxy, ['127.0.0.1', '10.0.0.5'], 'a two-hop list keeps both hops'))
+  withTrustProxy(' 172.17.0.0/16 , ::1 ', () => assert.deepEqual(loadConfig({ env: 'test' }).trustProxy, ['172.17.0.0/16', '::1']))
+})
+
+test('the app refuses to start when TRUST_PROXY is not an address or CIDR', () => {
+  for (const refused of ['true', '*', 'all', '0.0.0.0/0', '::/0', '10.0.0.0/33', 'localhost']) {
+    withTrustProxy(refused, () => assert.throws(() => loadConfig({ env: 'test' }), /TRUST_PROXY/, `"${refused}" must be refused`))
+  }
+})
+
+test('a configured proxy hop is trusted: the appended client address, not the peer, decides the bucket', async () => {
+  await withApp(async (built) => {
+    for (let i = 0; i < 30; i += 1) {
+      // 10.0.0.2 is the inner hop; it appended the real client 203.0.113.77.
+      const response = await tokenLogin(built, '10.0.0.2', `198.51.100.${i + 1}, 203.0.113.77`)
+      assert.notEqual(response.statusCode, 429, `request ${i + 1} was throttled before the limit`)
+    }
+    const other = await tokenLogin(built, '10.0.0.2', '198.51.100.9, 203.0.113.88')
+    assert.equal(other.statusCode, 400, `a different appended client answered ${other.statusCode} instead of 400`)
+  }, { trustProxy: ['10.0.0.1', '10.0.0.2'] })
+})
+
+test('every throttle in src/app.ts takes its key from the normalized client address', () => {
+  const source = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8')
+  const takes = source.split('\n').map((line) => line.trim()).filter((line) => line.includes('.take('))
+  assert.equal(takes.length, 10, `the limiter call count changed: ${takes.length}`)
+  assert.equal(takes.filter((line) => line.includes('rateLimitKey(request)')).length, 9, 'nine sites use the normalized key')
+  assert.equal(takes.filter((line) => line.includes('reauth:${viewer.user.id}')).length, 1, 'reauth stays keyed on the user id')
+  for (const line of takes) {
+    assert.ok(line.includes('rateLimitKey(request)') || line.includes('reauth:${viewer.user.id}'), `a limiter key is not client-choosable-proof: ${line}`)
+  }
+  for (const prefix of ['metrics:', 'token:', 'login:', 'callback:', 'approve:', 'credential:', 'webhook:', 'inbound:']) {
+    assert.ok(takes.some((line) => line.includes(`\`${prefix}`)), `no throttle joins the ${prefix} bucket`)
+  }
+})
+
