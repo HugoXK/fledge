@@ -1330,3 +1330,28 @@ test('a claimed green test is contradicted when the test check fails', async () 
     await github.close()
   }
 })
+
+test('an iterate job with an existing issue PR is rejected as duplicate', async () => {
+  const github = await startFakeServer((request, response) => {
+    if ((request.url ?? '').includes('/pulls?state=open')) {
+      return json(response, 200, [{ number: 9, html_url: 'https://github.com/o/dup/pull/9', title: 'Fix #42', body: 'Fixes https://github.com/o/dup/issues/42', head: { ref: 'fledge/existing' }, base: { ref: 'main' } }])
+    }
+    return json(response, 404, { message: 'Not Found' })
+  })
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'dup-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_dup', userId: user.id, owner: 'o', name: 'dup', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_dup', repoId: repo.id, userId: user.id, title: 'Fix #42', detail: '', issueUrl: 'https://github.com/o/dup/issues/42' })
+    const result = await jobs.enqueue(repo, 'manual', 'Fix this issue', 'iterate', { workItemId: item.id })
+    assert.equal(result.ok, false)
+    assert.equal(result.code, 'DUPLICATE_WORK')
+    assert.match(result.error ?? '', /pull\/9/)
+    assert.equal(store.listJobsForRepo(repo.id).length, 0)
+  } finally {
+    store.close()
+    await github.close()
+  }
+})

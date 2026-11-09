@@ -362,6 +362,30 @@ export class GithubClient {
       : []
   }
 
+  async listOpenPullRequests(owner: string, name: string, maxPages = 3): Promise<Array<{ number: number; url: string; title: string; body: string; head: string; base: string }>> {
+    const pulls: Array<{ number: number; url: string; title: string; body: string; head: string; base: string }> = []
+    for (let page = 1; page <= maxPages; page += 1) {
+      const batch = await this.request<Array<{ number?: number; html_url?: string; title?: string; body?: string | null; head?: { ref?: string }; base?: { ref?: string } }>>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls?state=open&per_page=100&page=${page}`,
+      )
+      if (!Array.isArray(batch) || batch.length === 0) break
+      for (const pull of batch) {
+        if (typeof pull.number !== 'number') continue
+        pulls.push({
+          number: pull.number,
+          url: typeof pull.html_url === 'string' ? pull.html_url : `https://github.com/${owner}/${name}/pull/${pull.number}`,
+          title: typeof pull.title === 'string' ? pull.title : '',
+          body: typeof pull.body === 'string' ? pull.body : '',
+          head: typeof pull.head?.ref === 'string' ? pull.head.ref : '',
+          base: typeof pull.base?.ref === 'string' ? pull.base.ref : '',
+        })
+      }
+      if (batch.length < 100) break
+    }
+    return pulls
+  }
+
   async listPullRequestFiles(owner: string, name: string, number: number, maxPages = 10): Promise<Array<{ filename: string; status: string; additions: number; deletions: number }>> {
     const files: Array<{ filename: string; status: string; additions: number; deletions: number }> = []
     for (let page = 1; page <= maxPages; page += 1) {
