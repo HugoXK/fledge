@@ -3,10 +3,15 @@ import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
 import type { RepoRow } from '../src/db.js'
 import { Jobs } from '../src/jobs/service.js'
+import { prOrigin } from '../src/jobs/prUrl.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
 import { addMinutes } from '../src/lib/time.js'
 import { json, makeUser, MemoryMailer, startFakeServer, testConfig } from './helpers.js'
+
+// The origin every payload in the merging cases names. The fake API base is
+// loopback, so the fixture repo records this origin and the pin below proves it.
+const PR_ORIGIN = 'https://github.com'
 
 interface FakeGithub {
   url: string
@@ -90,6 +95,10 @@ async function harness(options: { delayMs?: number; runner?: Runner } = {}): Pro
     userId: user.id,
     owner: 'o',
     name: 'r',
+    // The payloads below name https://github.com/o/r/pull/1, so the repo has to
+    // record that origin; the fake API base is loopback and prOrigin() would
+    // otherwise expect 127.0.0.1 and refuse every merge.
+    upstreamHtmlUrl: PR_ORIGIN,
     defaultBranch: 'main',
     tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey),
     permission: 'admin',
@@ -100,6 +109,10 @@ async function harness(options: { delayMs?: number; runner?: Runner } = {}): Pro
     autoIterate: false,
     intervalMinutes: 1440,
   })
+  // The payloads below name https://github.com/o/r/pull/1. If either the
+  // recorded origin or the API base moves, the four merge assertions stop
+  // meaning what they say, so fail here with the reason instead.
+  assert.equal(prOrigin(repo, config.github.apiBase), PR_ORIGIN)
   return {
     store,
     jobs,
@@ -150,7 +163,7 @@ test('replaying the same terminal callback answers 200 duplicate and writes noth
   try {
     const secret = 'replay-secret'
     const id = runningJob(h.store, h.repo, 'job_replay', secret)
-    const payload = { status: 'succeeded' as const, prUrl: 'https://github.com/o/r/pull/1', summary: 'done' }
+    const payload = { status: 'succeeded' as const, prUrl: `${PR_ORIGIN}/o/r/pull/1`, summary: 'done' }
 
     const first = await h.jobs.handleCallback(id, secret, payload)
     assert.equal(first.ok, true, first.error ?? 'no error')
@@ -175,7 +188,7 @@ test('ten concurrent copies of one terminal callback finalise the job and merge 
   try {
     const secret = 'concurrent-secret'
     const id = runningJob(h.store, h.repo, 'job_concurrent', secret)
-    const payload = { status: 'succeeded' as const, prUrl: 'https://github.com/o/r/pull/1', summary: 'done' }
+    const payload = { status: 'succeeded' as const, prUrl: `${PR_ORIGIN}/o/r/pull/1`, summary: 'done' }
     const results = await Promise.all(Array.from({ length: 10 }, () => h.jobs.handleCallback(id, secret, payload)))
     assert.equal(results.filter((entry) => entry.ok).length, 10, 'every delivery gets a final answer')
     assert.equal(results.filter((entry) => entry.duplicate === true).length, 9, 'nine deliveries see the winner result')
@@ -192,7 +205,7 @@ test('a replay that arrives while the merge is in flight does not merge a second
   try {
     const secret = 'slow-merge-secret'
     const id = runningJob(h.store, h.repo, 'job_slow_merge', secret)
-    const payload = { status: 'succeeded' as const, prUrl: 'https://github.com/o/r/pull/1', summary: 'done' }
+    const payload = { status: 'succeeded' as const, prUrl: `${PR_ORIGIN}/o/r/pull/1`, summary: 'done' }
     const first = h.jobs.handleCallback(id, secret, payload)
     await waitFor(() => h.store.getJob(id)?.status === 'succeeded', 'the first delivery to claim the row')
     const replay = await h.jobs.handleCallback(id, secret, payload)
@@ -210,7 +223,7 @@ test('a contradicting terminal report is rejected without touching the recorded 
   try {
     const secret = 'conflict-secret'
     const id = runningJob(h.store, h.repo, 'job_conflict', secret)
-    await h.jobs.handleCallback(id, secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/1', summary: 'done' })
+    await h.jobs.handleCallback(id, secret, { status: 'succeeded', prUrl: `${PR_ORIGIN}/o/r/pull/1`, summary: 'done' })
     const before = h.store.getJob(id)!
     const conflict = await h.jobs.handleCallback(id, secret, { status: 'failed', error: 'late failure' })
     assert.equal(conflict.ok, false)
