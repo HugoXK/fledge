@@ -9,6 +9,7 @@ data/
 *.db-wal
 .DS_Store
 coverage/
+*.bak
 npm-debug.log*
 SESSION_HANDOFF.md
 SESSION_HANDOFF*.md
