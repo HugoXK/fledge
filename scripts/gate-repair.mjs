@@ -11,21 +11,23 @@
 // check, scripts/lib/review-gate.mjs), reads the standing `review-gate` check at
 // the head SHA and the workflow runs there, and takes at most one action:
 //
-//   - a PASS with a failed run still on attempt 1  -> re-run those runs;
+//   - a PASS with a failed run below attempt 3      -> re-run those runs;
 //   - a rejection with no red at the SHA           -> re-run the newest Review gate
 //                                                     run there (never another
 //                                                     workflow's run, which would
 //                                                     paint no review-gate check);
 //   - nothing to repaint                           -> exit 0, no write.
 //
-// It never loops: a re-run is attempt 2 and is never a target again, so a second
-// identical verdict makes no API write, and a SHA that cannot be repainted exits 1
-// with its name instead of re-running forever.
+// It cannot loop: every re-run raises `run_attempt`, and a run above
+// `MAX_REPAIR_ATTEMPT` (2) is never a target again, so one failed run is re-run at
+// most twice (1 -> 2, then 2 -> 3) and the next trigger exits 1 with its name
+// instead of re-running forever. What is idempotent is the rejection path: it finds
+// the red it painted and makes no write.
 
 import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import { evaluateGate } from './lib/review-gate.mjs'
 import { apiClient, arg, loadPolicy, pullRequestNumber, readEvent } from './lib/gate-env.mjs'
-import { REQUIRED_CONTEXT, isGateRun, repairPlan } from './lib/gate-repair.mjs'
+import { REQUIRED_CONTEXT, isRepairCandidate, repairPlan } from './lib/gate-repair.mjs'
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
 const REPO = process.env.GITHUB_REPOSITORY ?? ''
@@ -75,10 +77,12 @@ const pr = await api(`/repos/${REPO}/pulls/${prNumber}`).catch((error) => stop(1
 const headSha = String(pr.head?.sha ?? '')
 if (headSha === '') stop(1, 'the pull request has no head SHA')
 
-// Check runs answer a wrapper object, not a bare list. `filter=latest` is what
-// makes a re-run authoritative: without it the superseded failure from before the
-// re-run is still returned and would count as a standing red.
-const checkRuns = ((await api(`/repos/${REPO}/commits/${headSha}/check-runs?check_name=${encodeURIComponent(REQUIRED_CONTEXT)}&filter=latest&per_page=100`)
+// Check runs answer a wrapper object, not a bare list. `filter=all` is required
+// (#179): the merge gate judges each check suite, so a failure left in the suite
+// of an earlier run still blocks even when a later run's check is green. With
+// `filter=latest` that failure was invisible here, the plan said "nothing to do",
+// and the merge stayed blocked until someone re-ran the old run by hand.
+const checkRuns = ((await api(`/repos/${REPO}/commits/${headSha}/check-runs?check_name=${encodeURIComponent(REQUIRED_CONTEXT)}&filter=all&per_page=100`)
   .catch((error) => stop(1, `cannot read the check runs at ${headSha}: ${error.message}`)))?.check_runs ?? [])
   .filter((check) => check.name === REQUIRED_CONTEXT)
 const runs = (await api(`/repos/${REPO}/actions/runs?head_sha=${headSha}&per_page=100`)
@@ -88,7 +92,7 @@ const runs = (await api(`/repos/${REPO}/actions/runs?head_sha=${headSha}&per_pag
 // of every candidate run are read before the plan is made. There are only a few
 // gate runs per SHA; the list is bounded by that.
 const jobs = new Map()
-for (const run of runs.filter((candidate) => isGateRun(candidate) && Number(candidate.run_attempt) === 1 && String(candidate.id) !== CURRENT_RUN)) {
+for (const run of runs.filter((candidate) => isRepairCandidate(candidate, CURRENT_RUN))) {
   const listed = await api(`/repos/${REPO}/actions/runs/${run.id}/jobs?per_page=100`)
     .catch((error) => stop(1, `cannot read the jobs of run ${run.id}: ${error.message}`))
   jobs.set(run.id, listed?.jobs ?? [])
