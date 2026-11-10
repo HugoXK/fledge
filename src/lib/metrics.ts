@@ -17,7 +17,11 @@ interface HistogramSeries {
   count: number
 }
 
-const DEFAULT_BUCKETS = [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300]
+// The highest finite boundary must stay above every latency threshold the alert
+// rules in deploy/prometheus/fledge-alerts.yml compare against: histogram_quantile
+// never interpolates inside the +Inf bucket, so a p95 that lands there reads as the
+// top finite boundary and a threshold above it could never fire.
+const DEFAULT_BUCKETS = [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 600, 1200, 1800, 3600]
 
 const counters = new Map<string, Series>()
 const gauges = new Map<string, Series>()
