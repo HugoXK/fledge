@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs'
 // accidental.
 
 const cssSource = readFileSync(new URL('../public/app.css', import.meta.url), 'utf8')
+const pagesSource = readFileSync(new URL('../src/views/pages.ts', import.meta.url), 'utf8')
 
 type Declaration = { property: string; value: string }
 type StyleRule = { selectors: string[]; declarations: Declaration[]; media: string | null }
@@ -160,4 +161,22 @@ test('the admin quota and role controls become full-width rows on a phone', () =
   assert.equal(lastValue('.admin-inline-form', 'flex-direction', 360), 'column')
   assert.equal(lastValue('.admin-inline-form', 'align-items', 360), 'stretch')
   assert.equal(lastValue('.admin-inline-form', 'flex-direction', 768), null, 'the desktop row is untouched')
+})
+
+test('a link alone in its own paragraph is a target, so the template marks it', () => {
+  // Acceptance 1's inline exception covers a link inside a sentence, not a link
+  // that is the whole paragraph. `p.fine` also carries prose with links in it,
+  // so the floor cannot be a `p.fine a` rule; the template marks the two
+  // standalone console rows ("view the other N ...") with one class and the
+  // stylesheet floors that class.
+  assert.equal(lastValue('.fine-link', 'min-height', 360), 'var(--touch)', 'the marked lone link carries the height floor')
+  assert.equal(lastValue('.fine-link', 'min-width', 360), 'var(--touch)', 'the marked lone link carries the width floor')
+  assert.equal(lastValue('.fine-link', 'display', 360), 'inline-flex', 'a floor on an inline box measures nothing')
+
+  const lone = pagesSource.split('\n').filter((line) => /查看其余|View the other/.test(line))
+  assert.equal(lone.length, 2, 'the two console rows the issue names are still the only lone links')
+  for (const line of lone) {
+    assert.match(line, /<a class="[^"]*\bfine-link\b[^"]*" href=/, 'a link alone in its paragraph carries the class')
+  }
+  assert.equal(lastValue('p .link', 'min-height', 360), null, 'a sentence link keeps its line box')
 })
