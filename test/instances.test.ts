@@ -316,3 +316,45 @@ test('healthSweep recovers a failed instance whose bridge and DSH answer again',
     await bridge.close()
   }
 })
+
+test('refreshTeam replaces stale session IDs with the live DSH state', async () => {
+  const bridge = await startFakeServer(async (request, response) => {
+    if (request.url === '/dsh') {
+      return json(response, 200, { ok: true, value: { mainBotId: 'chief-new', bots: [
+        { id: 'chief-new', name: 'Repo Chief', sessionId: 'chief-new' },
+        { id: 'lead-new', name: 'Repo Lead', sessionId: 'lead-new' },
+        { id: 'product-new', name: 'Repo Product', sessionId: 'product-new' },
+        { id: 'test-new', name: 'Repo Test', sessionId: 'test-new' },
+        { id: 'security-new', name: 'Repo Security', sessionId: 'security-new' },
+        { id: 'reviewer-new', name: 'Repo Reviewer', sessionId: 'reviewer-new' },
+        { id: 'dev1-new', name: 'Repo Dev-1', sessionId: 'dev1-new' },
+        { id: 'dev2-new', name: 'Repo Dev-2', sessionId: 'dev2-new' },
+      ] } })
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const manager = new InstanceManager(store, config)
+  try {
+    const user = makeUser(store, { login: 'refresh-team', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_refresh_team', userId: user.id, owner: 'o', name: 'rt', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.saveRepoInstance({
+      repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/rt', bridge_script: '/tmp/bridge',
+      dsh_port: 1, bridge_port: Number(new URL(bridge.url).port), model_port: 2, model_bind: '127.0.0.1', image: 'image',
+      status: 'ready', chief_session: 'chief-old',
+      team_json: JSON.stringify({ chief: 'chief-old', lead: 'lead-old', product: 'p-old', test: 't-old', security: 's-old', reviewer: 'r-old', dev1: 'd1-old', dev2: 'd2-old', reviewerScope: 'upstream', team: 'Repo', playbook: 8, playbookHash: 'h' }),
+      bridge_token_enc: encryptSecret('bridge-token', config.tokenEncryptionKey), bridge_pid: null, log_pid: null,
+      last_error: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_health_at: null,
+    })
+    assert.equal(await manager.refreshTeam(repo.id), true)
+    const team = parseTeam(store.getRepoInstance(repo.id)?.team_json ?? null)
+    assert.equal(team?.chief, 'chief-new')
+    assert.equal(team?.reviewer, 'reviewer-new')
+    assert.equal(store.getRepoInstance(repo.id)?.chief_session, 'chief-new')
+    assert.equal(await manager.refreshTeam(repo.id), false)
+  } finally {
+    store.close()
+    await bridge.close()
+  }
+})

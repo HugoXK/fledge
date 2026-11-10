@@ -403,6 +403,7 @@ export class Jobs {
         await this.instances.ensurePlaybook(repo.id).catch((error) => {
           log.warn('team playbook not refreshed', { repo: repo.id, error: String(error) })
         })
+        await this.instances.refreshTeam(repo.id).catch((error) => log.warn('team session refresh before dispatch failed', { repo: repo.id, error: String(error) }))
         const bridge = this.instances.bridgeFor(repo.id)
         const assignment = await this.instances.applyBotModels(repo.id).catch((error) => {
           log.warn('bot model check before dispatch failed', { repo: repo.id, error: String(error) })

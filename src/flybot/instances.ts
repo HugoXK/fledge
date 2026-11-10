@@ -668,6 +668,36 @@ server.listen(3081, '0.0.0.0')
     return true
   }
 
+  async refreshTeam(repoId: string): Promise<boolean> {
+    const instance = this.store.getRepoInstance(repoId)
+    if (instance === undefined || instance.status !== 'ready' || instance.team_json === null || instance.bridge_token_enc === null) return false
+    const team = parseTeam(instance.team_json)
+    if (team === null) return false
+    const token = decryptSecret(instance.bridge_token_enc, this.config.tokenEncryptionKey)
+    const state = await this.state(instance.bridge_port, token)
+    const label = team.team
+    const byName = new Map(state.bots.map((bot) => [String(bot.name ?? ''), bot]))
+    const session = (name: string): string | null => {
+      const value = byName.get(name)?.sessionId
+      return typeof value === 'string' && value !== '' ? value : null
+    }
+    const lead = session(`${label} Lead`)
+    const product = session(`${label} Product`)
+    const test = session(`${label} Test`)
+    const security = session(`${label} Security`)
+    const reviewer = session(`${label} Reviewer`)
+    const dev1 = session(`${label} Dev-1`)
+    const dev2 = session(`${label} Dev-2`)
+    if (lead === null || product === null || test === null || security === null || reviewer === null || dev1 === null || dev2 === null) return false
+    const chief = typeof state.mainBotId === 'string' && state.mainBotId !== '' ? state.mainBotId : team.chief
+    const current = { ...team, chief, lead, product, test, security, reviewer, dev1, dev2 }
+    if (JSON.stringify(current) === JSON.stringify(team)) return false
+    this.store.updateRepoInstance(repoId, { team_json: JSON.stringify(current), chief_session: chief, updated_at: nowIso() })
+    this.store.audit(instance.user_id, 'flybot.team.sessions_refreshed', `${repoId} chief=${chief.slice(0, 12)} lead=${lead.slice(0, 12)} reviewer=${reviewer.slice(0, 12)}`)
+    log.warn('team sessions refreshed from DSH state', { repo: repoId })
+    return true
+  }
+
   async ensurePlaybook(repoId: string): Promise<void> {
     const instance = this.store.getRepoInstance(repoId)
     if (instance === undefined || instance.status !== 'ready' || instance.bridge_token_enc === null) return
@@ -937,6 +967,7 @@ server.listen(3081, '0.0.0.0')
       if (instance.status === 'stopped' || instance.status === 'provisioning') continue
       try {
         await this.probeInstance(instance)
+        await this.refreshTeam(instance.repo_id).catch((error) => log.warn('team session refresh failed', { repo: instance.repo_id, error: String(error) }))
         if (instance.status !== 'ready') {
           this.store.audit(instance.user_id, 'flybot.instance.recovered', `${instance.repo_id}: ${instance.status} -> ready`)
         }
