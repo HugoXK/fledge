@@ -2233,6 +2233,14 @@ export class Store {
     return this.get<{ n: number }>("SELECT COUNT(*) AS n FROM jobs WHERE status = 'running'")?.n ?? 0
   }
 
+  countQueuedJobs(): number {
+    return this.get<{ n: number }>("SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'")?.n ?? 0
+  }
+
+  countQueuedJobsForUser(userId: string): number {
+    return this.get<{ n: number }>("SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued' AND user_id = ?", userId)?.n ?? 0
+  }
+
   renewJobLease(id: string, owner: string, leaseMs: number): boolean {
     const until = new Date(Date.now() + Math.max(1, leaseMs)).toISOString()
     return this.runChanges(

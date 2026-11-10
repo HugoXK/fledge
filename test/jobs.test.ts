@@ -1803,6 +1803,25 @@ test('an expired lease is reclaimable by another worker', async () => {
   }
 })
 
+test('an expired lease is failed by the tick reaper', async () => {
+  const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'dead-lease-user', status: 'approved' })
+    const repo = queueRepoFor(store, user.id, 'repo_dead_lease')
+    leaseMakeJob(store, repo.id, user.id, 'job_dead_lease')
+    assert.equal(store.claimQueuedJob('dead-worker', 1)?.id, 'job_dead_lease')
+    await new Promise((resolve) => setTimeout(resolve, 15))
+    await jobs.tick()
+    const row = store.getJob('job_dead_lease')
+    assert.equal(row?.status, 'failed')
+    assert.match(row?.error ?? '', /租约过期/)
+  } finally {
+    store.close()
+  }
+})
+
 test('QUEUE_DISPATCH enqueues first and dispatches the claimed job on the tick', async () => {
   const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true, maxActiveJobs: 1 } })
   const store = new Store(':memory:')
@@ -1859,6 +1878,40 @@ test('a queued job older than ten minutes is not failed before the dispatcher cl
 
     assert.equal(calls.length, 1)
     assert.equal(store.getJob(queued.job!.id)?.status, 'succeeded')
+  } finally {
+    store.close()
+  }
+})
+
+test('queue admission control rejects a full queue', async () => {
+  const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true, maxQueueDepth: 1, maxUserQueue: 10 } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'queue-full-user', status: 'approved' })
+    const one = queueRepoFor(store, user.id, 'repo_queue_full_one')
+    const two = queueRepoFor(store, user.id, 'repo_queue_full_two')
+    assert.equal((await jobs.enqueue(one, 'manual')).ok, true)
+    const rejected = await jobs.enqueue(two, 'manual')
+    assert.equal(rejected.ok, false)
+    assert.equal(rejected.code, 'QUEUE_FULL')
+  } finally {
+    store.close()
+  }
+})
+
+test('queue admission control rejects a user backlog', async () => {
+  const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true, maxQueueDepth: 10, maxUserQueue: 1 } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'queue-limit-user', status: 'approved' })
+    const one = queueRepoFor(store, user.id, 'repo_queue_limit_one')
+    const two = queueRepoFor(store, user.id, 'repo_queue_limit_two')
+    assert.equal((await jobs.enqueue(one, 'manual')).ok, true)
+    const rejected = await jobs.enqueue(two, 'manual')
+    assert.equal(rejected.ok, false)
+    assert.equal(rejected.code, 'QUEUE_LIMIT')
   } finally {
     store.close()
   }

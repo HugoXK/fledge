@@ -63,6 +63,8 @@ export interface Config {
     stallMinutes: number
     maxActiveJobs: number
     queueDispatch: boolean
+    maxQueueDepth: number
+    maxUserQueue: number
   }
   metrics: {
     token: string
@@ -258,6 +260,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       stallMinutes: number('JOB_STALL_MINUTES', 30),
       maxActiveJobs: Math.max(1, number('PLATFORM_MAX_ACTIVE_JOBS', 2)),
       queueDispatch: bool('QUEUE_DISPATCH', false),
+      maxQueueDepth: Math.max(1, number('QUEUE_MAX_DEPTH', 100)),
+      maxUserQueue: Math.max(1, number('QUEUE_MAX_PER_USER', 20)),
     },
     metrics: {
       token: text('METRICS_TOKEN'),

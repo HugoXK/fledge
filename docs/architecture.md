@@ -130,7 +130,11 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   recovery query. `QUEUE_DISPATCH=false` keeps the inline path; setting it to
   `true` makes `enqueue` store the callback secret and job token encrypted
   (`callback_secret_enc`, `platform_token_enc`) and lets the tick's worker loop
-  claim and dispatch the job. The lease and queue columns are schema version 33.
+  claim and dispatch the job. A running job renews its five-minute lease every
+  minute, and the tick reaper fails a job whose worker stops renewing instead of
+  waiting for the 90-minute job timeout. Queue admission rejects a new job when
+  the global or per-user cap is reached. The lease and queue columns are schema
+  version 33.
 - **No worker process**: a 60-second tick schedules due iterate jobs and, when
   the user selected the maintainer role and the upstream grants admin/maintain permission, review jobs for all open PRs.
   The interval is the minimum gap between runs, not a cap on PRs or issues; a
