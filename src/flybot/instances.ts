@@ -337,6 +337,7 @@ server.listen(3081, '0.0.0.0')
         last_error: null,
       })
       this.store.audit(repo.user_id, 'flybot.instance.ready', `${repo.owner}/${repo.name} container=${container} team=${team.team}`)
+      await this.applyBotModels(repo.id).catch((error) => log.warn('bot model assignment after provision failed', { repo: repo.id, error: String(error) }))
       log.info('flybot instance ready', { repo: `${repo.owner}/${repo.name}`, container, bridgePort })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -450,10 +451,22 @@ server.listen(3081, '0.0.0.0')
     clearWorkspaceCookie(repoId)
     await this.docker(['restart', '-t', '15', instance.container])
     await this.waitForDsh(instance.dsh_port, instance)
+    let assignment: { updated: number; skipped: string[] }
+    try {
+      assignment = await this.applyBotModels(repoId)
+    } catch (error) {
+      this.store.updateRepo(repoId, { models_dirty: 1 })
+      this.store.audit(instance.user_id, 'flybot.bot_models.failed', `${repoId}: ${String(error).slice(0, 300)}`)
+      return { ok: false, code: 'BOT_MODEL_ASSIGNMENT_FAILED', error: `模型配置已写入，但机器人模型更新失败：${String(error).slice(0, 200)}` }
+    }
+    if (assignment.skipped.length > 0) {
+      this.store.updateRepo(repoId, { models_dirty: 1 })
+      this.store.audit(instance.user_id, 'flybot.bot_models.failed', `${repoId} skipped=${assignment.skipped.join(',')}`)
+      return { ok: false, code: 'BOT_MODEL_ASSIGNMENT_FAILED', error: `机器人模型未全部更新：${assignment.skipped.join(', ')}` }
+    }
     this.store.markRepoModelsApplied(repoId)
-    await this.applyBotModels(repoId).catch((error) => log.warn('bot model assignment failed', { repo: repoId, error: String(error) }))
-    this.store.audit(instance.user_id, 'flybot.models.applied', `${repoId} models=${this.store.listRepoModelSelection(repoId).length}`)
-    log.info('models applied', { repo: repoId })
+    this.store.audit(instance.user_id, 'flybot.models.applied', `${repoId} models=${this.store.listRepoModelSelection(repoId).length} bots=${assignment.updated}`)
+    log.info('models applied', { repo: repoId, updated: assignment.updated })
     return { ok: true }
   }
 
