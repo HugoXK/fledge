@@ -503,6 +503,18 @@ a.list-row:hover strong { color: var(--accent); }
 .list-title-link:hover { color: var(--accent); text-decoration: none; }
 .list-meta { flex: none; }
 
+/* The menu toggle is rendered for every viewer at every width (#133), so the
+   base rule hides it and the compact bands (960px and 640px, below) turn it on.
+   It sits above both bands on purpose: it has the same specificity as their
+   .nav-toggle rule, so only source order decides, and while it came after the
+   960px block the band's display: inline-flex lost — a tablet showed no toggle,
+   only the 640px block re-showed it, and the menu was unreachable between 641
+   and 960px. A real browser found it (#233); the band's own text assertion
+   could not. Without this rule the desktop header shows a button whose panel
+   does not exist there, which flips aria-expanded without moving the
+   navigation. */
+.nav-toggle { display: none; }
+
 @media (max-width: 960px) {
   .hero { grid-template-columns: 1fr; gap: 26px; padding: 56px 0 42px; }
   .hero-copy, .loop-card, .hero-note { grid-column: 1; grid-row: auto; max-width: 760px; }
@@ -551,12 +563,6 @@ a.list-row:hover strong { color: var(--accent); }
   .grid3 { grid-template-columns: 1fr; }
   .foot { padding: 24px 16px 44px; }
 }
-
-/* The menu toggle is rendered for every viewer at every width (#133), so the
-   base rule hides it; the compact bands (960px and 640px below) turn it on.
-   Without this the desktop header shows a button whose panel does not exist
-   there, which flips aria-expanded without moving the navigation. */
-.nav-toggle { display: none; }
 
 @media (max-width: 640px) {
   body { font-size: 15px; }

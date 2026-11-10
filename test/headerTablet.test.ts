@@ -33,6 +33,62 @@ function rule(source: string, selector: string): string {
   return match[1] ?? ''
 }
 
+type StyleRule = { selector: string; body: string; media: string | null }
+
+// A text assertion on the band is what let a hidden toggle ship: the band said
+// `display: inline-flex` and the base rule further down the file won the
+// cascade. This walks the stylesheet in source order — the same order the
+// browser uses between two selectors of equal specificity — and returns the
+// winning value at a width. Test's chromium at the previous tip is the
+// instrument for the pixel half; this is the half that can live here.
+function styleRules(css: string): StyleRule[] {
+  const src = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  const out: StyleRule[] = []
+  const walk = (text: string, media: string | null): void => {
+    let buf = ''
+    let i = 0
+    while (i < text.length) {
+      if (text[i] !== '{') {
+        buf += text[i] ?? ''
+        i += 1
+        continue
+      }
+      const head = buf.trim()
+      buf = ''
+      let depth = 1
+      let j = i + 1
+      while (j < text.length && depth > 0) {
+        if (text[j] === '{') depth += 1
+        else if (text[j] === '}') depth -= 1
+        j += 1
+      }
+      const body = text.slice(i + 1, j - 1)
+      if (head.startsWith('@media')) walk(body, head.slice('@media'.length).trim())
+      else if (!head.startsWith('@')) out.push({ selector: head, body, media })
+      i = j
+    }
+  }
+  walk(src, null)
+  return out
+}
+
+function mediaMatches(query: string, width: number): boolean {
+  const match = /^\(max-width:\s*(\d+)px\)$/.exec(query)
+  assert.ok(match !== null, `the toggle pin cannot evaluate the media query "${query}"`)
+  return width <= Number(match[1] ?? 0)
+}
+
+function displayAt(rules: StyleRule[], width: number): string | undefined {
+  let winner: string | undefined
+  for (const item of rules) {
+    if (item.selector !== '.nav-toggle') continue
+    if (item.media !== null && !mediaMatches(item.media, width)) continue
+    const declared = /(?:^|;)\s*display:\s*([a-z-]+)/.exec(item.body)?.[1]
+    if (declared !== undefined) winner = declared
+  }
+  return winner
+}
+
 function render(): string {
   const store = new Store(':memory:')
   const user = makeUser(store, { admin: true })
@@ -87,6 +143,29 @@ test('the tablet band collapses the navigation behind the toggle the markup alre
   assert.match(html, /<nav class="nav" id="main-nav"/, 'the panel the band positions must be the navigation the layout renders')
   for (const href of ['/console', '/dashboard', '/settings', '/admin']) {
     assert.match(html, new RegExp(`href="${href}"`), `the tablet panel must still reach ${href}`)
+  }
+})
+
+test('the toggle wins the cascade in the 641-960 band, not only the band text', () => {
+  // Test's chromium at the previous tip (641/768/960, zh and en, menu closed):
+  // .nav-toggle computed display: none — only brand, 中/EN and 退出 were visible
+  // — so the menu was unreachable on a tablet while phones at 360/640 were fine.
+  // The band's rule and the base `.nav-toggle { display: none }` have the same
+  // specificity, so the later one wins; the base rule sat below the band and
+  // above the 640px block, which is exactly why only the phone worked.
+  const rules = styleRules(cssText())
+  for (const width of [641, 768, 960]) {
+    assert.equal(
+      displayAt(rules, width),
+      'inline-flex',
+      `at ${width}px the winning .nav-toggle display is not inline-flex: with equal specificity the last declaration wins, so the base hide rule has to sit above the compact bands, not between them`,
+    )
+  }
+  for (const width of [360, 640]) {
+    assert.equal(displayAt(rules, width), 'inline-flex', `the phone band at ${width}px must keep the visible toggle it already had`)
+  }
+  for (const width of [961, 1280]) {
+    assert.equal(displayAt(rules, width), 'none', `at ${width}px the toggle must stay hidden: the panel it opens does not exist outside the compact bands`)
   }
 })
 
