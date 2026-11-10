@@ -230,29 +230,42 @@ Not run: Docker, real SMTP
 A verdict only paints the check that sits at the head SHA when a run at that SHA
 is re-run, because a run started by `issue_comment` checks the default branch and
 a review run only adds a check of its own. `scripts/gate-repair.mjs` therefore
-evaluates the gate itself and re-runs at most one set of runs at the head:
+evaluates the gate itself and re-runs at most one set of runs at the head.
 
-- a PASS re-runs the failed first-attempt runs whose own `review-gate` job
-  failed, which clears the pre-PASS red that would otherwise block the merge;
-- a rejection re-runs the newest first-attempt run of the `Review gate`
-  workflow at the SHA, so a run that is currently green turns red. A run of any
-  other workflow at the same SHA is never a target: re-running it paints no
+"Standing" has one definition here, and it is the merge gate's: a `review-gate`
+check run belongs to the check suite of the workflow run that produced it, the
+newest attempt stands inside a suite, and every suite at the SHA counts. A re-run
+replaces the check run inside its own suite, so a red that a re-run superseded is
+history; a second workflow run at the same SHA opens a new suite and leaves the
+earlier suite's conclusion where it is, so a newer green suite does not retire an
+older red one. `#175` stayed blocked exactly that way while the newest check run
+by name was green. The step reads check runs with `filter=all` for that reason:
+`filter=latest` returned only the green one and the plan reported "nothing to do"
+while the merge gate kept refusing.
+
+- a PASS re-runs the failed runs whose own `review-gate` job failed, which clears
+  the pre-PASS red that would otherwise block the merge. No failed suite may be
+  left standing, because that is what the merge gate reads;
+- a rejection re-runs the newest repairable run of the `Review gate` workflow at
+  the SHA, so a run that is currently green turns red. A run of any other
+  workflow at the same SHA is never a target: re-running it paints no
   `review-gate` check;
-- only the newest check run of each name stands at the SHA, so a superseded
-  failure left behind by an earlier re-run is history, not a standing red;
-- a re-run is attempt 2 and is never a target again, so posting the same verdict
-  twice writes nothing, and a SHA whose runs have all been re-run fails with its
-  name instead of looping.
+- a run is repairable while its `run_attempt` is at most 2
+  (`MAX_REPAIR_ATTEMPT`), so a run that a person already re-ran by hand is still
+  reachable — the state a PASS usually arrives into. The cap is the loop bound:
+  each re-run raises the attempt, and a run at the cap is reported as blocked on
+  a new commit instead of being re-run forever. Posting the same verdict twice
+  writes nothing.
 
 The comment path is the job `review-gate-comment`, never `review-gate`: its checks
 land on the default branch, and a skipped job would still publish a check run
 under the required name. Its `if:` tests the event first and reaches the
 association test only for `issue_comment`, so a stranger cannot start the
 `actions: write` job and the other three events never evaluate the association.
-By design, a PASS that arrives after a rejection at the
-same SHA keeps the check red until a new commit moves the tip or one run at that
-SHA is re-run by hand — the newest conclusion at an unmoved tip is still the
-rejection.
+A PASS that arrives after a rejection at the same SHA keeps the
+check red until the repair step re-runs the failed run at that SHA; that now
+happens without a hand step. A run already at the attempt cap still needs a new
+commit to move the tip, and the step says so by name instead of exiting quietly.
 
 `main` is protected by required `ci-ok`, `review-gate` and `pr-lint` plus
 conversation resolution; admins are enforced. This repository has no merge

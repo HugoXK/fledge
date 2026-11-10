@@ -445,10 +445,12 @@ test('a failed run whose gate job passed is not re-run, and a red that cannot be
   })
   assert.equal(notOurFailure.action, 'none')
 
+  // #179: attempt 2 is reachable (the state a PASS arrives into after a hand
+  // re-run); the cap is attempt 2, so a run at attempt 3 is reported, not re-run.
   const exhausted = repairPlan({
     expected: 'success',
     checkRuns: [{ name: 'review-gate', status: 'completed', conclusion: 'failure' }],
-    runs: [redRun(1, 2)],
+    runs: [redRun(1, 3)],
     jobsFor: () => failedGateJob,
     currentRunId: '900',
   })
@@ -492,6 +494,86 @@ test('a run that is still executing is never a re-run target', async () => {
   })
   assert.equal(onlyInFlight.action, 'blocked')
   assert.deepEqual(onlyInFlight.ids, [], 'no rerun may be posted for a run that has not completed')
+})
+
+test('#179: a PASS repairs a failed run that is already on attempt 2', async () => {
+  // #175: `review-gate` failed at 17:56:42Z, the Reviewer's PASS landed, a second
+  // evaluation at the same sha went green at 18:03:46Z, and the merge API still
+  // answered "Required status check review-gate is failing". The failing run had
+  // been re-run by hand and was on attempt 2, so `repairable` stopped matching it
+  // and the repair step reported "nothing to do" while the merge stayed blocked.
+  // A check run belongs to a check suite; a re-run replaces the check run inside
+  // its own suite, while a second workflow run opens a new suite and leaves the
+  // first suite's red standing. That is the conclusion the merge gate reads.
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const plan = repairPlan({
+    expected: 'success',
+    checkRuns: [
+      { id: 129111111111, check_suite: { id: 42669476897 }, name: 'review-gate', status: 'completed', conclusion: 'failure', started_at: '2026-11-09T17:56:42Z' },
+      { id: 129222222222, check_suite: { id: 42670596860 }, name: 'review-gate', status: 'completed', conclusion: 'success', started_at: '2026-11-09T18:03:46Z' },
+    ],
+    runs: [redRun(42669476897, 2), greenRun(42670596860, 1)],
+    jobsFor: (id: number | string) => (Number(id) === 42669476897 ? failedGateJob : []),
+    currentRunId: '900',
+  })
+  assert.equal(plan.action, 'rerun', 'a red suite keeps the sha blocked even when a newer suite is green')
+  assert.deepEqual(plan.ids, [42669476897], 'the re-run reaches the failed run that owns the red suite, on attempt 2')
+})
+
+test('#179: standingChecks keeps one conclusion per check suite, newest attempt inside it', async () => {
+  const { standingChecks } = await import('../scripts/lib/gate-repair.mjs')
+  const standing = standingChecks([
+    { id: 11, check_suite: { id: 501 }, name: 'review-gate', status: 'completed', conclusion: 'failure', started_at: '2026-11-09T17:00:00Z' },
+    // The same suite re-run: this success replaces 11, and the red is history.
+    { id: 12, check_suite: { id: 501 }, name: 'review-gate', status: 'completed', conclusion: 'success', started_at: '2026-11-09T17:05:00Z' },
+    // A second workflow run at the same sha is a different suite: its red stands.
+    { id: 13, check_suite: { id: 502 }, name: 'review-gate', status: 'completed', conclusion: 'failure', started_at: '2026-11-09T17:56:42Z' },
+  ])
+  assert.deepEqual(
+    standing.map((check) => [check.check_suite?.id ?? check.id, check.conclusion]).sort((a, b) => Number(a[0]) - Number(b[0])),
+    [[501, 'success'], [502, 'failure']],
+    'the newest attempt stands inside a suite, and every suite stands on its own',
+  )
+})
+
+test('#179: a red in a second suite is repaired once, not hidden by the newer green suite', async () => {
+  // Mixed attempt set: attempt-1 failure oldest, attempt-2 failure after it, and a
+  // newer attempt-2 success in another suite. The merge gate reads all three
+  // suites, so the plan must reach both failed runs and never the green one.
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const plan = repairPlan({
+    expected: 'success',
+    checkRuns: [
+      { id: 1, check_suite: { id: 601 }, name: 'review-gate', status: 'completed', conclusion: 'failure', started_at: '2026-11-09T16:00:00Z' },
+      { id: 2, check_suite: { id: 602 }, name: 'review-gate', status: 'completed', conclusion: 'failure', started_at: '2026-11-09T17:56:42Z' },
+      { id: 3, check_suite: { id: 603 }, name: 'review-gate', status: 'completed', conclusion: 'success', started_at: '2026-11-09T18:03:46Z' },
+    ],
+    runs: [redRun(601, 1), redRun(602, 2), greenRun(603, 2)],
+    jobsFor: (id: number | string) => (Number(id) === 603 ? [] : failedGateJob),
+    currentRunId: '900',
+  })
+  assert.equal(plan.action, 'rerun')
+  assert.deepEqual([...plan.ids].map(Number).sort((a, b) => a - b), [601, 602], 'the two failed runs are repaired and the green one is left alone')
+})
+
+test('#179: without the PASS the same red construction asks for no re-run', async () => {
+  // The counterexample: a fix that ignores the red suites would re-run here too.
+  // With no PASS expected, a red at the sha is the wanted conclusion, so the
+  // planner must write nothing.
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const plan = repairPlan({
+    expected: 'failure',
+    checkRuns: [
+      { id: 1, check_suite: { id: 601 }, name: 'review-gate', status: 'completed', conclusion: 'failure', started_at: '2026-11-09T16:00:00Z' },
+      { id: 2, check_suite: { id: 602 }, name: 'review-gate', status: 'completed', conclusion: 'failure', started_at: '2026-11-09T17:56:42Z' },
+      { id: 3, check_suite: { id: 603 }, name: 'review-gate', status: 'completed', conclusion: 'success', started_at: '2026-11-09T18:03:46Z' },
+    ],
+    runs: [redRun(601, 1), redRun(602, 2), greenRun(603, 2)],
+    jobsFor: () => failedGateJob,
+    currentRunId: '900',
+  })
+  assert.equal(plan.action, 'none')
+  assert.deepEqual(plan.ids, [])
 })
 
 // --- the repair CLI over a fake API -----------------------------------------
@@ -605,11 +687,32 @@ test('a gate that cannot decide re-runs nothing', async () => {
   })
 })
 
-test('a SHA whose runs are all on attempt 2 fails loudly instead of looping', async () => {
+test('#179: a run on attempt 2 is repaired once, and the cap then reports it instead of looping', async () => {
   const state = initialState()
   state.reviews = [{ body: PASS_BODY, state: 'APPROVED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
   state.checkRuns = [{ name: 'review-gate', status: 'completed', conclusion: 'failure' }]
-  state.runs = [{ ...redRun(31, 2) }]
+  state.runs = [{ ...redRun(32, 2) }]
+  state.jobs = { 32: failedGateJob }
+  await withFakeGitHub(state, async (env) => {
+    const first = await runScript(repairScript, ['--pr', '7'], env)
+    assert.equal(first.code, 0, first.stderr)
+    assert.deepEqual(state.posts, ['32'], 'the attempt-2 failure is the run that owns the red suite, so it is reachable')
+
+    // The re-run landed as attempt 3 and failed again: the planner must stop.
+    state.posts = []
+    state.runs = [{ ...redRun(32, 3) }]
+    const second = await runScript(repairScript, ['--pr', '7'], env)
+    assert.equal(second.code, 1)
+    assert.match(second.stderr, new RegExp(SHA))
+    assert.deepEqual(state.posts, [], 'a run at the attempt cap is reported, never re-run again')
+  })
+})
+
+test('a SHA whose runs are all at the attempt cap fails loudly instead of looping', async () => {
+  const state = initialState()
+  state.reviews = [{ body: PASS_BODY, state: 'APPROVED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  state.checkRuns = [{ name: 'review-gate', status: 'completed', conclusion: 'failure' }]
+  state.runs = [{ ...redRun(31, 3) }]
   state.jobs = { 31: failedGateJob }
   await withFakeGitHub(state, async (env) => {
     const result = await runScript(repairScript, ['--pr', '7'], env)
