@@ -192,6 +192,23 @@ its first and last 4,000 characters, joined by a newline — because a closing
 reference is matched: the body is not stored and not rendered, and the audit line
 and the `job_duplicate_work` event carry the pull request URL.
 
+## Changed-file listing and the path guard
+
+`GET /repos/:owner/:name/pulls/:number/files` answers 100 entries per page, so a
+pull request that changes thousands of files cannot be read in one request. The
+listing walks up to 30 pages (3,000 files) and returns `{ files, complete }`
+together with `changedFiles` from the pull request itself
+(`changed_files`), so the guard can compare what it saw with what GitHub
+reports.
+
+A list that stops short is never an all-clear: `checkPathGuard` returns
+`ok: false` with `checkedFiles`, `reportedFiles` and `truncated`, the merge path
+refuses with that reason, and the job page prints `Checked X / Y reported files`
+(`已检查 X / 报告 Y 个文件`) instead of a pass. A pull request above the cap is
+refused rather than judged, which is deliberate — an unread file is not a
+permitted one. Rows stored before these fields existed keep their old sentence
+and are upgraded on the next check, so there is no migration.
+
 ## Job endpoints
 
 These are called by the FlyBot bridge/agent, not by a browser.
