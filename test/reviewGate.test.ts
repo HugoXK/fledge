@@ -291,6 +291,21 @@ test('the gate passes a T2 tip that carries a valid PASS at the tip', async () =
   })
 })
 
+test('a COMMENTED review carrying a PASS at the tip is accepted, not only an APPROVED one', async () => {
+  // The reviewer identity posts its verdicts as reviews with state COMMENTED, and
+  // #220 and #226 both merged on exactly that shape. Nothing pinned the accept
+  // path for it: every fixture above submits `state: 'APPROVED'`, so a future
+  // change requiring APPROVED would red only a refusal test, never say that a
+  // valid COMMENTED PASS was rejected (#237).
+  const state = initialState()
+  state.reviews = [{ body: PASS_BODY, state: 'COMMENTED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, `a valid COMMENTED PASS at the tip was rejected: ${result.stderr}`)
+    assert.match(result.stdout, /PASS/)
+  })
+})
+
 test('a review object by the required account passes without a Posted-by line', async () => {
   // The defect: the current two-line block fails the gate it is written for, on
   // a line the platform already answers. Identity is review.user.login.
