@@ -106,3 +106,25 @@ test('the URL and the result set move together, and pagination keeps the filter'
     store.close()
   }
 })
+
+test('applying a filter keeps the 30-day window it was set in', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'filters-window', status: 'approved' })
+    const cookie = `${sessionFor(built, user).cookie}; fledge_lang=en`
+    const repo = store.createRepo({ id: 'repo_w', userId: user.id, owner: 'o', name: 'w', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    makeJobs(store, user.id, repo.id, 'w', 11, 'failed')
+
+    const wide = await built.app.inject({ method: 'GET', url: '/dashboard?window=30&status=failed', headers: { cookie } })
+    assert.match(wide.body, /<input type="hidden" name="window" value="30" \/>/, 'the filter form carries the window it is applied in')
+    assert.match(wide.body, /window=30/, 'pagination keeps the window as well')
+
+    const narrow = await built.app.inject({ method: 'GET', url: '/dashboard?status=failed', headers: { cookie } })
+    assert.doesNotMatch(narrow.body, /name="window" value="30"/, 'the default 7-day view adds no parameter')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})

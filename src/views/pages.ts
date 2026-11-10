@@ -477,13 +477,14 @@ export function rejectedPage(config: Config, viewer: Viewer, locale: Locale = 'z
 
 // #232: the filter is a plain GET form, so the browser owns the state and a
 // refresh, a shared link and the pagination links all describe the same list.
-function jobFilterForm(locale: Locale, filter: JobFilter, repos: Array<{ id: string; label: string }>): string {
+function jobFilterForm(locale: Locale, filter: JobFilter, repos: Array<{ id: string; label: string }>, windowDays: number): string {
   const t = translator(locale)
   const options = (values: Array<{ value: string; label: string }>, selected: string): string =>
     values
       .map((option) => `<option value="${escapeHtml(option.value)}"${option.value === selected ? ' selected' : ''}>${escapeHtml(option.label)}</option>`)
       .join('')
   return `<form method="get" action="/dashboard#jobs" class="job-filters" data-job-filter>
+    ${windowDays === 30 ? '<input type="hidden" name="window" value="30" />' : ''}
     <label>${escapeHtml(t('仓库', 'Repository'))}<select name="repo">${options(
       [{ value: '', label: t('全部仓库', 'All repositories') }, ...repos.map((repo) => ({ value: repo.id, label: repo.label }))],
       filter.repo,
@@ -647,7 +648,7 @@ export function dashboardPage(input: {
       <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
       <span class="fine">${escapeHtml(t(`共 ${jobsTotal} 个任务`, `${jobsTotal} job${jobsTotal === 1 ? '' : 's'}`))}</span>
     </div>
-    ${jobFilterForm(locale, jobFilter, repoOptions)}
+    ${jobFilterForm(locale, jobFilter, repoOptions, windowDays)}
     ${jobFilterIsActive(jobFilter) && jobs.length === 0
       ? renderState({
           kind: 'empty',
