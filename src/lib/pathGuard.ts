@@ -49,15 +49,19 @@ export function checkPathGuard(
   denyInput: string | null | undefined,
   now = new Date().toISOString(),
   reportedFilesInput = 0,
+  complete = true,
 ): PathGuardResult {
   const allow = splitPathPatterns(allowInput)
   const deny = splitPathPatterns(denyInput)
   const normalizedFiles = files.map(normalize)
   const checkedFiles = normalizedFiles.length
   const reportedFiles = reportedFilesInput > 0 ? reportedFilesInput : checkedFiles
-  // A list shorter than the pull request says it has was cut off; a guard that
-  // did not see every file must never report the change as clear.
-  const truncated = reportedFilesInput > 0 && checkedFiles < reportedFiles
+  // Two ways the guard can fall short of the full change: GitHub reported a
+  // count the list did not reach, or the client itself says its walk did not
+  // finish (`complete === false`, a page cap with no reported count - the case
+  // a bare `reportedFilesInput > 0` test cannot see). A guard that did not see
+  // every file must never report the change as clear.
+  const truncated = !complete || (reportedFilesInput > 0 && checkedFiles < reportedFiles)
   const violations: PathGuardViolation[] = []
   for (const file of normalizedFiles) {
     if (deny.some((pattern) => matchesPath(file, pattern))) {

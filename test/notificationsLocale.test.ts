@@ -114,6 +114,8 @@ test('every localisation row is pinned by a sample in both directions', () => {
     ['en', '任务 job_4 成本 12.5 元，超过单任务预算 10 元。', 'Job job_4 cost 12.5 CNY, over its 10 CNY single-job budget.'],
     ['en', '任务 job_5 属于临时失败，将在约 5 分钟后自动重试。', 'Job job_5 hit a temporary failure; it will retry automatically in about 5 minutes.'],
     ['en', '任务 job_6 的 PR 改动了受保护路径，已阻止合并：src/auth/x.ts', 'The PR for job job_6 changed protected paths, so the merge was blocked: src/auth/x.ts'],
+    ['en', '任务 job_16 的 PR 改动的文件列表不完整，无法确认路径约束，已阻止合并：incomplete changed-file list: checked 3000 of 3100', 'The PR for job job_16 has an incomplete changed-file list, so the path constraint could not be confirmed and the merge was blocked: incomplete changed-file list: checked 3000 of 3100'],
+    ['en', '任务 job_17 改动的文件列表不完整，无法确认路径约束：incomplete changed-file list: checked 3000', 'Job job_17 has an incomplete changed-file list, so the path constraint could not be confirmed: incomplete changed-file list: checked 3000'],
     ['en', '任务 job_7 改动了受保护路径：src/auth/x.ts', 'Job job_7 changed protected paths: src/auth/x.ts'],
     ['en', 'alice 连续 3 个任务失败，自动迭代已暂停；请检查 bridge、GitHub 凭据和模型额度后手动重新开启。', 'alice failed 3 jobs in a row, so auto-iteration is paused. Check the bridge, the GitHub credential and the model quota, then start it again manually.'],
     ['en', 'alice 的本次任务只有 Lead 参与，其他团队角色没有实际介入。', 'Only the Lead took part in this job for alice; no other team role was involved.'],
