@@ -2356,6 +2356,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/admin/webhooks/:id/retry', async (request, reply) => {
+    if (!apiLimiter.take(`admin-webhook-retry:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
     const viewer = approvedCsrfGuard(request)
     if (viewer.user.role !== 'superadmin') throw httpError(403, '仅超级管理员可重试。', 'SUPERADMIN_ONLY')
     const id = String((request.params as Record<string, string>).id)
