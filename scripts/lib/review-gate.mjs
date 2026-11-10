@@ -16,6 +16,17 @@ import { mechanicalDiffShape, mechanicalRelease } from './mechanical-release.mjs
 
 export const REQUIRED_CONTEXT = 'review-gate'
 
+// The verdict is a review object now, so its poster is `review.user.login` and
+// no body line has to assert it. A verdict posted as an issue comment is the old
+// shape: it stays valid only until this date, and this constant is the whole
+// policy for it. It gates the comment path alone; the review path never expires.
+export const COMMENT_VERDICT_FALLBACK_UNTIL = '2026-12-14T00:00:00.000Z'
+
+export function commentVerdictFallbackOpen(now = Date.now()) {
+  const until = Date.parse(COMMENT_VERDICT_FALLBACK_UNTIL)
+  return Number.isFinite(now) && Number.isFinite(until) && now <= until
+}
+
 export function firstLine(body) {
   return String(body ?? '')
     .split(/\r?\n/)
@@ -133,7 +144,9 @@ async function expectedNextVersion(api, repo, ref) {
 //             the repair step can repaint at the head SHA)
 //   hold    - a maintainer parked the pull request; repainting cannot help
 //   error   - the gate could not decide; nothing at the SHA may be re-run
-export async function evaluateGate({ api, repo, policy, prNumber, tier: tierOverride, sha: shaOverride }) {
+// `now` exists so a test can stand past COMMENT_VERDICT_FALLBACK_UNTIL; the CLI
+// never passes it and the date itself is never a parameter.
+export async function evaluateGate({ api, repo, policy, prNumber, tier: tierOverride, sha: shaOverride, now = Date.now() }) {
   const failed = (message, kind = 'verdict') => ({ ok: false, kind, message })
   const threw = (cause, prefix) => failed(`${prefix}${cause instanceof Error ? cause.message : String(cause)}`, 'error')
 
@@ -196,24 +209,30 @@ export async function evaluateGate({ api, repo, policy, prNumber, tier: tierOver
   }
 
   const candidates = []
+  const trusted = ['OWNER', 'MEMBER', 'COLLABORATOR']
   for (const comment of comments) {
-    if (!['OWNER', 'MEMBER', 'COLLABORATOR'].includes(comment.author_association)) continue
+    if (!trusted.includes(comment.author_association)) continue
     const parsed = parseConclusion(comment.body)
     if (parsed === null) continue
     candidates.push({
       at: comment.created_at,
+      source: 'comment',
       author: comment.user?.login ?? 'unknown',
       association: comment.author_association,
       body: comment.body,
       ...parsed,
     })
   }
-  for (const review of reviews) {
-    if (!['OWNER', 'MEMBER', 'COLLABORATOR'].includes(review.author_association)) continue
+  // A review object is a platform fact about who wrote the verdict, so its
+  // presence — not its text — decides which identity rule applies below. Reviews
+  // from accounts the API does not trust as maintainers do not count as one.
+  const reviewObjects = reviews.filter((review) => trusted.includes(review.author_association))
+  for (const review of reviewObjects) {
     const parsed = parseConclusion(review.body)
     if (parsed === null) continue
     candidates.push({
       at: review.submitted_at ?? review.created_at,
+      source: 'review',
       author: review.user?.login ?? 'unknown',
       association: review.author_association,
       body: review.body,
@@ -225,28 +244,49 @@ export async function evaluateGate({ api, repo, policy, prNumber, tier: tierOver
   if (newest === undefined) return failed(`no conclusion at ${headSha}; a ${tier} tip needs a PASS`)
   if (!headSha.startsWith(newest.sha)) return failed(`newest conclusion is for ${newest.sha}, but the head is ${headSha}`)
 
+  // Precedence. The review object is the evidence; a comment-shaped verdict is
+  // the old shape and may only decide while this pull request has no review
+  // object at all, and only before the fallback date. Both miss = fail closed.
+  if (newest.source === 'comment') {
+    if (reviewObjects.length > 0) {
+      return failed('the newest conclusion is an issue comment, but this pull request has a review object; post the verdict as a review so its identity comes from the platform')
+    }
+    if (!commentVerdictFallbackOpen(now)) {
+      return failed(`the comment-shaped verdict path closed on ${COMMENT_VERDICT_FALLBACK_UNTIL.slice(0, 10)}; post the verdict as a review`)
+    }
+  }
+
   const writer = writtenBy(newest.body)
   if (writer === '') return failed('the newest conclusion has no Written-by line')
   if (!policy.writers.map((name) => String(name).toLowerCase()).includes(writer.toLowerCase())) return failed(`writer "${writer}" is not in the review policy`)
 
-  const poster = postedBy(newest.body)
-  if (poster === '') return failed('the newest conclusion has no Posted-by line')
-  if (poster.toLowerCase() !== newest.author.toLowerCase()) return failed(`Posted-by "${poster}" does not match the poster "${newest.author}"`)
-
   const requiredPass = String(policy.requiredPass ?? '').trim()
-  if (requiredPass !== '') {
-    if (writer.toLowerCase() !== requiredPass.toLowerCase()) return failed(`the required PASS identity is ${requiredPass}, not ${writer}`)
-    if (newest.author.toLowerCase() !== requiredPass.toLowerCase()) return failed(`the required PASS must be posted by ${requiredPass}, not ${newest.author}`)
+  if (newest.source === 'review') {
+    // `Posted-by:` is not read here at all: the login on the review object is
+    // the poster, and `Author:` is a declaration the gate never consults.
+    if (requiredPass !== '' && newest.author.toLowerCase() !== requiredPass.toLowerCase()) {
+      return failed(`the required PASS must come from a review by ${requiredPass}, not ${newest.author}`)
+    }
+  } else {
+    // Legacy comment path: the poster can only be asserted by the body, so it is
+    // checked against the comment's author and the required identity.
+    const poster = postedBy(newest.body)
+    if (poster === '') return failed('the newest conclusion has no Posted-by line')
+    if (poster.toLowerCase() !== newest.author.toLowerCase()) return failed(`Posted-by "${poster}" does not match the poster "${newest.author}"`)
+    if (requiredPass !== '' && newest.author.toLowerCase() !== requiredPass.toLowerCase()) return failed(`the required PASS must be posted by ${requiredPass}, not ${newest.author}`)
   }
+  if (requiredPass !== '' && writer.toLowerCase() !== requiredPass.toLowerCase()) return failed(`the required PASS identity is ${requiredPass}, not ${writer}`)
 
   const author = String(pr.user?.login ?? '')
   const selfReview = (policy.selfReview ?? []).map((name) => String(name).toLowerCase())
-  if (author !== '' && writer.toLowerCase() === author.toLowerCase() && !selfReview.includes(writer.toLowerCase())) {
+  const signers = newest.source === 'review' ? [writer, newest.author] : [writer]
+  if (author !== '' && signers.some((name) => name.toLowerCase() === author.toLowerCase()) && !selfReview.includes(writer.toLowerCase())) {
     return failed(`the pull request author "${author}" may not PASS its own tip`)
   }
 
   if (newest.verdict !== 'PASS') return failed(`newest conclusion is ${newest.verdict} at ${newest.sha}`)
   if (!hasRan(newest.body)) return failed('the PASS has no real Ran: command; it is not a conclusion')
   if (!hasNotRun(newest.body)) return failed('the PASS has no Not run: line; it is not a conclusion')
-  return { ok: true, kind: 'pass', message: `${tier} PASS at ${headSha.slice(0, 12)} by ${writer}, posted by ${poster}` }
+  const where = newest.source === 'review' ? `a review by ${newest.author}` : `a comment by ${newest.author}`
+  return { ok: true, kind: 'pass', message: `${tier} PASS at ${headSha.slice(0, 12)} by ${writer} from ${where}` }
 }

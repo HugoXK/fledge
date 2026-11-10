@@ -105,8 +105,8 @@ not a conclusion.
 
 ```
 Verdict: PASS at <sha>
-Written-by: Reviewer
-Posted-by: <GitHub login>
+Written-by: <GitHub account>
+Author: <Bot identity>
 Ran:
 - `npm run check` — pass
 - `node scripts/risk-gate.mjs --base origin/main` — T2
@@ -114,9 +114,17 @@ Not run: Docker image, real SMTP
 ```
 
 - First line: exactly `Verdict: PASS|INC|REQUEST_CHANGES at <sha>`.
-- Second line: `Written-by:` from the policy's `writers` list.
-- Third line: `Posted-by:` with the account that submitted the review. It must
-  match the actual poster, or the gate rejects the conclusion.
+- Second line: `Written-by:` the GitHub account that posted the verdict. It must
+  be in the policy's `writers` list; that check is unchanged.
+- Third line: `Author:` the Bot identity. It is a declaration for readers and
+  the gate never reads it: no body line can satisfy — or waive — the gate.
+- Identity is the platform object. A verdict submitted as a review is decided by
+  `review.user.login` against the policy's required reviewer, so no `Posted-by:`
+  line is needed or believed. A verdict posted as an issue comment is the legacy
+  shape: it decides only while the pull request has no review object at all and
+  before `COMMENT_VERDICT_FALLBACK_UNTIL` (`2026-12-14`) in
+  `scripts/lib/review-gate.mjs`, and it must carry `Posted-by:` matching its own
+  author. After that date the gate refuses it and says to post a review.
 - The PR author may never PASS its own tip: the policy carries no self-review
   waiver.
 - One tip carries one conclusion. A replacement PASS at the same tip is allowed

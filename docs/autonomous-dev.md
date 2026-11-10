@@ -175,8 +175,8 @@ a verdict posted as a comment by an owner, member or collaborator
 
 ```
 Verdict: PASS at <sha>
-Written-by: Reviewer
-Posted-by: <GitHub login>
+Written-by: <GitHub account>
+Author: <Bot identity>
 Ran:
 - `npm run check` — pass
 Not run: Docker, real SMTP
@@ -186,8 +186,14 @@ Not run: Docker, real SMTP
 - A PASS with no real `Ran:` or `Not run:` line is refused.
 - A report with no `Written-by:` line, or a writer outside
   `.github/agent/review-policy.json`, is refused.
-- `Posted-by:` is mandatory and must match the account that submitted the
-  review; a relay cannot claim a different poster.
+- Identity comes from the platform object, never from the body: a review is
+  judged by `review.user.login` against the required reviewer, and `Author:` is
+  a declaration the gate does not read.
+- A comment-shaped verdict is the legacy shape. It decides only while the pull
+  request has no review object at all and only until
+  `COMMENT_VERDICT_FALLBACK_UNTIL` (`2026-12-14`) in
+  `scripts/lib/review-gate.mjs`; it must carry `Posted-by:` matching its own
+  author. After that date the gate refuses it.
 - The PR author may never PASS its own tip: the policy carries no self-review
   waiver.
 - The newest conclusion wins; a later INC overrides an earlier PASS.
