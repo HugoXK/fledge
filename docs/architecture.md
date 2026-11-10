@@ -77,7 +77,14 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   mark and its own `aria-label` stay) and tightens its padding and gaps: at a
   360px viewport with a classic 15px scrollbar the row has 301px of usable
   width, and the wordmark is the one child that can leave without taking a
-  route or a 44px target with it.
+  route or a 44px target with it. The same floor covers the controls inside
+  `main` and in the footer: it is the `--touch` token, applied by container
+  (`td .link`, `button.link`, `.foot a`, `label.check`) rather than to `.link`,
+  because a link inside a sentence is exempt and must keep its line box; a link
+  that is the whole paragraph is a target, so the template marks it
+  (`.fine-link`) and the class carries the floor. Text fields, selects and
+  textareas are 16px below 641px, the size below which iOS zooms a focused
+  field.
 - **Redirect targets**: every `next=` / `returnTo` value goes through one helper
   that returns a path on this site or the fallback. It validates the parsed
   result, not the input, so a value that is a plain path before parsing and
