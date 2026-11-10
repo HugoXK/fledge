@@ -805,14 +805,37 @@ export class Jobs {
     number: number,
     job: JobRow,
     repo: RepoRow,
+    reportedFiles: number,
   ): Promise<PathGuardResult> {
     const allow = job.plan_allow_paths ?? repo.allow_paths
     const deny = job.plan_deny_paths ?? repo.deny_paths
     if (splitPathPatterns(allow).length === 0 && splitPathPatterns(deny).length === 0) {
-      return { ok: true, checkedAt: nowIso(), allow: [], deny: [], files: [], violations: [] }
+      return { ok: true, checkedAt: nowIso(), allow: [], deny: [], files: [], violations: [], checkedFiles: 0, reportedFiles, truncated: false }
     }
-    const files = await client.listPullRequestFiles(owner, name, number)
-    return checkPathGuard(files.map((file) => file.filename), allow, deny)
+    const listed = await client.listPullRequestFiles(owner, name, number, reportedFiles)
+    // `listed.complete` is the client's own answer about the walk: with no
+    // reported count its `files.length` equals what it fetched, so passing only
+    // the count would turn an unfinished list into a clean one.
+    return checkPathGuard(listed.files.map((file) => file.filename), allow, deny, undefined, reportedFiles > 0 ? reportedFiles : listed.files.length, listed.complete)
+  }
+
+  // A truncated walk and a protected-path violation are different refusals. A
+  // notification that names the path when the list was merely cut off accuses
+  // the change of something it did not do, so the phrase follows `truncated`.
+  private static pathGuardRefusal(guard: PathGuardResult): string {
+    return guard.truncated ? '改动的文件列表不完整，无法确认路径约束' : '改动了受保护路径'
+  }
+
+  // The reason line carried into the audit record, the notification and the
+  // merge block when the guard refused: named files, or the truncation itself.
+  private static pathGuardDetail(guard: PathGuardResult): string {
+    const violations = guard.violations.map((violation) => `${violation.file}: ${violation.reason}`).join('; ')
+    if (violations !== '') return violations.slice(0, 1000)
+    if (guard.truncated) {
+      const reported = guard.reportedFiles > guard.checkedFiles ? ` of ${guard.reportedFiles}` : ''
+      return `incomplete changed-file list: checked ${guard.checkedFiles}${reported}`
+    }
+    return 'path guard refused the change without naming a file'
   }
 
   async verifyPullRequest(job: JobRow, prUrl: string): Promise<{ ok: boolean; message?: string }> {
@@ -861,14 +884,14 @@ export class Jobs {
         testEvidence,
         reasons,
       }
-      const guard = await this.pathGuardFor(client, owner, name, number, job, repo)
+      const guard = await this.pathGuardFor(client, owner, name, number, job, repo, pr.changedFiles)
       this.store.updateJob(job.id, { verification_json: JSON.stringify(verification), path_guard_json: JSON.stringify(guard) })
       if (!guard.ok) {
         incCounter('fledge_path_guard_blocked_total', {}, 1, 'Pull requests blocked by path guard')
-        const detail = guard.violations.map((violation) => `${violation.file}: ${violation.reason}`).join('; ').slice(0, 1000)
+        const detail = Jobs.pathGuardDetail(guard)
         this.store.audit(job.user_id, 'job.path_guard_violation', `${job.id}: ${detail}`)
         this.store.event('job_path_guard_violation', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: detail })
-        this.store.notify(job.user_id, 'job', `任务 ${job.id} 改动了受保护路径：${detail}`)
+        this.store.notify(job.user_id, 'job', `任务 ${job.id} ${Jobs.pathGuardRefusal(guard)}：${detail}`)
       }
       if (!verification.ok) {
         incCounter('fledge_verification_failed_total', {}, 1, 'Pull request verification failures')
@@ -934,14 +957,14 @@ export class Jobs {
         return { ok: false, message: 'PR 已合并。' }
       }
       if (pr.state !== 'open' || pr.draft) return { ok: false, message: 'PR 不是 open 状态。' }
-      const guard = await this.pathGuardFor(client, owner, name, number, job, repo)
+      const guard = await this.pathGuardFor(client, owner, name, number, job, repo, pr.changedFiles)
       this.store.updateJob(job.id, { path_guard_json: JSON.stringify(guard) })
       if (!guard.ok) {
         incCounter('fledge_path_guard_blocked_total', {}, 1, 'Pull requests blocked by path guard')
-        const detail = guard.violations.map((violation) => `${violation.file}: ${violation.reason}`).join('; ').slice(0, 1000)
+        const detail = Jobs.pathGuardDetail(guard)
         this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: path guard ${detail}`)
-        this.store.notify(job.user_id, 'job', `任务 ${job.id} 的 PR 改动了受保护路径，已阻止合并：${detail}`)
-        return { ok: false, message: `改动包含受保护路径：${detail}` }
+        this.store.notify(job.user_id, 'job', `任务 ${job.id} 的 PR ${Jobs.pathGuardRefusal(guard)}，已阻止合并：${detail}`)
+        return { ok: false, message: guard.truncated ? `改动的文件列表不完整，无法确认路径约束：${detail}` : `改动包含受保护路径：${detail}` }
       }
       if (pr.mergeable === false || ['blocked', 'dirty', 'behind', 'unknown'].includes(pr.mergeableState)) {
         this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: PR ${number} is ${pr.mergeableState}`)
