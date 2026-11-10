@@ -15,6 +15,7 @@ import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verifi
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import { classifyFailure, failureLabel, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { STAGE_MODES } from '../lib/stages.js'
+import { JOB_FILTER_KINDS, JOB_FILTER_STATUSES, jobFilterIsActive, jobFilterLabels, jobFilterParams, kindFilterLabel, statusFilterLabel, type JobFilter } from '../lib/jobFilters.js'
 import type { InstallationRepo } from '../repos/app.js'
 import { localizeMessage, localizeNotification, translator, type Locale, type Translate } from '../i18n.js'
 import { parseTeam, type TeamLiveState, type TeamQuestionState } from '../flybot/instances.js'
@@ -474,6 +475,34 @@ export function rejectedPage(config: Config, viewer: Viewer, locale: Locale = 'z
   return layout({ title: t('申请未通过', 'Application not approved'), viewer, body, config, locale, path: '/apply/status' })
 }
 
+// #232: the filter is a plain GET form, so the browser owns the state and a
+// refresh, a shared link and the pagination links all describe the same list.
+function jobFilterForm(locale: Locale, filter: JobFilter, repos: Array<{ id: string; label: string }>): string {
+  const t = translator(locale)
+  const options = (values: Array<{ value: string; label: string }>, selected: string): string =>
+    values
+      .map((option) => `<option value="${escapeHtml(option.value)}"${option.value === selected ? ' selected' : ''}>${escapeHtml(option.label)}</option>`)
+      .join('')
+  return `<form method="get" action="/dashboard#jobs" class="job-filters" data-job-filter>
+    <label>${escapeHtml(t('仓库', 'Repository'))}<select name="repo">${options(
+      [{ value: '', label: t('全部仓库', 'All repositories') }, ...repos.map((repo) => ({ value: repo.id, label: repo.label }))],
+      filter.repo,
+    )}</select></label>
+    <label>${escapeHtml(t('状态', 'Status'))}<select name="status">${options(
+      [{ value: '', label: t('全部状态', 'All statuses') }, ...JOB_FILTER_STATUSES.map((status) => ({ value: status, label: statusFilterLabel(t, status) }))],
+      filter.status,
+    )}</select></label>
+    <label>${escapeHtml(t('类型', 'Kind'))}<select name="kind">${options(
+      [{ value: '', label: t('全部类型', 'All kinds') }, ...JOB_FILTER_KINDS.map((kind) => ({ value: kind, label: kindFilterLabel(t, kind) }))],
+      filter.kind,
+    )}</select></label>
+    <div class="job-filter-actions">
+      <button class="btn btn-small" type="submit">${escapeHtml(t('筛选', 'Filter'))}</button>
+      ${jobFilterIsActive(filter) ? `<a class="link" href="/dashboard#jobs">${escapeHtml(t('清除筛选', 'Clear filters'))}</a>` : ''}
+    </div>
+  </form>`
+}
+
 export function dashboardPage(input: {
   config: Config
   locale: Locale
@@ -499,6 +528,8 @@ export function dashboardPage(input: {
   reposTotal?: number
   jobsPage?: number
   jobsTotal?: number
+  jobFilter?: JobFilter
+  repoOptions?: Array<{ id: string; label: string }>
   notice?: string
   error?: string
 }): string {
@@ -511,6 +542,8 @@ export function dashboardPage(input: {
   const reposTotal = input.reposTotal ?? repos.length
   const jobsPage = input.jobsPage ?? 1
   const jobsTotal = input.jobsTotal ?? jobs.length
+  const jobFilter = input.jobFilter ?? { repo: '', status: '' as const, kind: '' }
+  const repoOptions = input.repoOptions ?? []
   const t = translator(locale)
   const quota = quotaView(viewer.user, config)
   const repoRows = repos.length === 0
@@ -610,9 +643,20 @@ export function dashboardPage(input: {
   </section>
 
   <section class="card" id="jobs">
-    <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
-    ${jobTable(locale, jobs, { body: t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })}
-    ${pager('/dashboard', 'jobsPage', jobsPage, jobsTotal, 10, t, { reposPage }, '#jobs')}
+    <div class="row between">
+      <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
+      <span class="fine">${escapeHtml(t(`共 ${jobsTotal} 个任务`, `${jobsTotal} job${jobsTotal === 1 ? '' : 's'}`))}</span>
+    </div>
+    ${jobFilterForm(locale, jobFilter, repoOptions)}
+    ${jobFilterIsActive(jobFilter) && jobs.length === 0
+      ? renderState({
+          kind: 'empty',
+          title: t('没有任务符合这些筛选。', 'No jobs match these filters'),
+          body: jobFilterLabels(jobFilter, repoOptions, t).join(t('、', ', ')),
+          action: { href: '/dashboard#jobs', label: t('清除筛选', 'Clear filters') },
+        })
+      : jobTable(locale, jobs, { body: t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })}
+    ${pager('/dashboard', 'jobsPage', jobsPage, jobsTotal, 10, t, { reposPage, ...(windowDays === 30 ? { window: 30 } : {}), ...jobFilterParams(jobFilter) }, '#jobs')}
   </section>`
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }

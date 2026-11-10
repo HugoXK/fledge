@@ -2051,12 +2051,35 @@ export class Store {
     return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?', userId, limit)
   }
 
-  listJobsPageForUser(userId: string, limit: number, offset: number): JobRow[] {
-    return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?', userId, limit, offset)
+  // #232: the dashboard filters by repository, status and kind in SQL so the
+  // count and the page agree, and so the filters compose with the pagination
+  // offset instead of slicing a filtered array in memory.
+  private jobsForUserWhere(userId: string, filter?: { repo?: string; status?: string; kind?: string }): { sql: string; params: unknown[] } {
+    const clauses = ['user_id = ?']
+    const params: unknown[] = [userId]
+    if (filter?.repo !== undefined && filter.repo !== '') {
+      clauses.push('repo_id = ?')
+      params.push(filter.repo)
+    }
+    if (filter?.status !== undefined && filter.status !== '') {
+      clauses.push('status = ?')
+      params.push(filter.status)
+    }
+    if (filter?.kind !== undefined && filter.kind !== '') {
+      clauses.push('kind = ?')
+      params.push(filter.kind)
+    }
+    return { sql: clauses.join(' AND '), params }
   }
 
-  countJobsForUser(userId: string): number {
-    return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM jobs WHERE user_id = ?', userId)?.n ?? 0)
+  listJobsPageForUser(userId: string, limit: number, offset: number, filter?: { repo?: string; status?: string; kind?: string }): JobRow[] {
+    const where = this.jobsForUserWhere(userId, filter)
+    return this.all<JobRow>(`SELECT * FROM jobs WHERE ${where.sql} ORDER BY created_at DESC LIMIT ? OFFSET ?`, ...where.params, limit, offset)
+  }
+
+  countJobsForUser(userId: string, filter?: { repo?: string; status?: string; kind?: string }): number {
+    const where = this.jobsForUserWhere(userId, filter)
+    return Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM jobs WHERE ${where.sql}`, ...where.params)?.n ?? 0)
   }
 
   listJobsSince(userId: string, sinceIso: string): JobRow[] {
