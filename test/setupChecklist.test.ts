@@ -24,7 +24,7 @@ function state(patch: Partial<SetupState> = {}): SetupState {
     modelConfigured: false,
     instanceReady: false,
     jobs: 0,
-    succeeded: 0,
+    firstJobStatus: null,
     firstPrUrl: null,
     repoHref: null,
     ...patch,
@@ -82,7 +82,7 @@ test('the next step follows the data, and a completed step stops being the actio
 })
 
 test('the checklist completes on the first job, not on the instance being ready', () => {
-  const complete = setupChecklist(state({ repos: 2, roleChosen: true, modelConfigured: true, instanceReady: true, jobs: 1, succeeded: 1 }), en)
+  const complete = setupChecklist(state({ repos: 2, roleChosen: true, modelConfigured: true, instanceReady: true, jobs: 1, firstJobStatus: 'succeeded' }), en)
   assert.equal(complete.done, 5)
   assert.equal(complete.complete, true)
   assert.equal(complete.next, undefined, 'a finished checklist has no next action')
@@ -125,7 +125,7 @@ test('after the first job the checklist is replaced by the first-PR summary', ()
   try {
     const user = makeUser(store, { login: 'checklist-done', status: 'approved' })
     const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
-    const setup = state({ repos: 1, roleChosen: true, modelConfigured: true, instanceReady: true, jobs: 1, succeeded: 1, firstPrUrl: 'https://github.com/o/r/pull/1' })
+    const setup = state({ repos: 1, roleChosen: true, modelConfigured: true, instanceReady: true, jobs: 1, firstJobStatus: 'succeeded', firstPrUrl: 'https://github.com/o/r/pull/1' })
     const html = dashboardPage({ config, locale: 'en', viewer, repos: [], jobs: [], notifications: [], setup })
     assert.match(html, /data-first-pr/, 'the finished run gets a summary instead of a checklist')
     assert.ok(linksTo(html, 'https://github.com/o/r/pull/1'), 'the summary links the first PR')
@@ -198,6 +198,77 @@ test('a job that carries a PR replaces the checklist and the summary links it', 
     assert.match(response.body, /data-first-pr/, 'a job with a PR ends the checklist')
     assert.ok(linksTo(response.body, 'https://github.com/o/pr/pull/7'), 'the summary links that PR')
     assert.doesNotMatch(response.body, /data-setup-next/, 'no checklist step remains once a PR exists')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
+
+// Finding 1 on #241: the first-run summary must read the *first job*, not a
+// window-scoped success count. A success that fell out of the 7-day window used
+// to render "Your first job did not succeed" and the retry path, while
+// ?window=30 rendered "Your first job finished" for the same rows.
+test('a first success older than the window still reads as a finished first run', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'checklist-old-success', status: 'approved' })
+    const session = sessionFor(built, user)
+    const cookie = `${session.cookie}; fledge_lang=en`
+    const repo = store.createRepo({ id: 'repo_old', userId: user.id, owner: 'o', name: 'old', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_old', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    const eightDaysAgo = new Date(Date.now() - 8 * 86_400_000).toISOString()
+    store.runChanges('UPDATE jobs SET status = ?, created_at = ?, started_at = ?, finished_at = ? WHERE id = ?', 'succeeded', eightDaysAgo, eightDaysAgo, eightDaysAgo, 'job_old')
+
+    const response = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
+    assert.equal(response.statusCode, 200)
+    assert.match(response.body, /Your first job finished/, 'an old success is still a finished first run')
+    assert.doesNotMatch(response.body, /did not succeed/, 'the reporting window must not turn a success into a failure')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
+
+test('a first job that failed keeps the retry path to the repository', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'checklist-failed', status: 'approved' })
+    const session = sessionFor(built, user)
+    const cookie = `${session.cookie}; fledge_lang=en`
+    const repo = store.createRepo({ id: 'repo_failed', userId: user.id, owner: 'o', name: 'failed', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_failed', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob('job_failed', { status: 'failed', error: 'boom' })
+
+    const response = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
+    assert.equal(response.statusCode, 200)
+    assert.match(response.body, /Your first job did not succeed/, 'a failed first run says so')
+    assert.ok(linksTo(response.body, `/repos/${repo.id}`), 'and offers the repository as the retry path')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
+
+test('a first job that is still running is neither finished nor failed', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'checklist-running', status: 'approved' })
+    const session = sessionFor(built, user)
+    const cookie = `${session.cookie}; fledge_lang=en`
+    const repo = store.createRepo({ id: 'repo_run', userId: user.id, owner: 'o', name: 'run', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_run', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob('job_run', { status: 'running' })
+
+    const response = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
+    assert.equal(response.statusCode, 200)
+    assert.match(response.body, /Your first job is running/, 'a running first job is announced as running')
+    assert.doesNotMatch(response.body, /did not succeed|Your first job finished/, 'and is not reported as either outcome')
   } finally {
     await built.app.close()
     store.close()

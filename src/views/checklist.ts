@@ -14,7 +14,11 @@ export interface SetupState {
   modelConfigured: boolean
   instanceReady: boolean
   jobs: number
-  succeeded: number
+  // Status of the account's *first* job, all-time, not a window-scoped count:
+  // a success that fell out of the 7-day window must not read as a failure.
+  firstJobStatus: string | null
+  // The first job's own pull request, so a later job's PR is never attributed
+  // to "your first job opened a pull request".
   firstPrUrl: string | null
   repoHref: string | null
 }
@@ -94,6 +98,8 @@ export function setupChecklist(state: SetupState, t: Translate): SetupChecklist 
 
 // Shown instead of the checklist once a job exists, so a finished run gets a
 // summary and a failed first run still gets a way forward rather than a dead end.
+// The outcome comes from the first job's own status: one row, read all-time, so
+// the answer cannot change with the ?window control.
 export function firstRunOutcome(state: SetupState, t: Translate): FirstRunOutcome | null {
   if (state.jobs === 0) return null
   if (state.firstPrUrl !== null) {
@@ -106,10 +112,17 @@ export function firstRunOutcome(state: SetupState, t: Translate): FirstRunOutcom
       action: { href: state.firstPrUrl, label: t('打开 PR', 'Open the pull request') },
     }
   }
-  if (state.succeeded > 0) {
+  if (state.firstJobStatus === 'succeeded') {
     return {
       title: t('第一个任务已经完成', 'Your first job finished'),
       body: t('之后的运行会出现在下面的最近任务里。', 'Later runs appear in Recent jobs below.'),
+      action: { href: '#jobs', label: t('查看最近任务', 'Open recent jobs') },
+    }
+  }
+  if (state.firstJobStatus === 'queued' || state.firstJobStatus === 'running') {
+    return {
+      title: t('第一个任务正在运行', 'Your first job is running'),
+      body: t('进度会出现在下面的最近任务里，完成后这里会给出结果。', 'Progress appears in Recent jobs below, and this card reports the result when it finishes.'),
       action: { href: '#jobs', label: t('查看最近任务', 'Open recent jobs') },
     }
   }

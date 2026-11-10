@@ -66,8 +66,11 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   browser or a cleared store cannot change which step is next. The pure state
   machine decides the single primary action; a step whose prerequisite is
   missing states the reason instead of offering a control. Once a job exists the
-  checklist is replaced by a first-run summary that links the PR, or the retry
-  path when the first job failed.
+  checklist is replaced by a first-run summary whose outcome is the first job's
+  own status, read all-time (not a window-scoped count), in four shapes: the
+  job's PR link when it opened one, "finished" with a link to Recent jobs when it
+  succeeded without a PR, "running" while it is queued or running, and the retry
+  path on the repository page when it failed.
 - **Shell** (`src/views/layout.ts`, `public/app.css`): the main nav marks the
   current section with `aria-current="page"`, derived from the route and
   overridable with `active`. The sticky header owns `--header-h` (re-declared
