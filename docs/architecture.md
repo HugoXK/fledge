@@ -397,6 +397,14 @@ and a failed delivery can be retried. Opening checks or approving a review
 triggers an auto-merge reconcile, and the scheduler re-checks open Fledge PRs at
 most every `AUTO_MERGE_RECONCILE_MINUTES`.
 
+### Webhook delivery console
+
+GitHub webhook deliveries are recorded in `webhook_deliveries` with a bounded
+payload, repository name and installation id. A superadmin can open
+`/admin/webhooks`, filter by status/event, inspect the error and retry one
+failed delivery from its stored payload. Retry is CSRF-protected, audited and
+does not render the raw payload in the table.
+
 ### Agent workspace
 
 The owner-accessible workspace is path-based to avoid a wildcard certificate:
