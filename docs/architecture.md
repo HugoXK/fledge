@@ -343,6 +343,14 @@ paths (deny wins; an empty allow list means no allow restriction). A violation i
 stored on the job, notified, audited and blocks the merge. The delivery list
 shows the changed files that caused the block.
 
+The changed-file listing is capped at 30 pages (3,000 files). Fledge keeps paging
+until it has the count the pull request itself reports; when it cannot, the list
+is marked incomplete and that is a refusal, not a pass: the guard is not ok, the
+job page prints the examined-versus-reported counts instead of the all-clear, and
+the merge is blocked with the truncation named. Guard rows written before those
+counts existed keep the old sentence for them and gain the counts on the next
+re-check; nothing rewrites history.
+
 The same pass records a verification snapshot: PR state, head SHA, check runs,
 combined commit status, reviews, claimed test evidence against the check runs,
 and the reasons a merge is not ready. A claimed green test with a failing test

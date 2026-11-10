@@ -67,7 +67,11 @@ export function mergeReadiness(job: Pick<JobRow, 'pr_url' | 'path_guard_json' | 
   const guard = parsePathGuard(job.path_guard_json)
   const verification = parseVerification(job.verification_json)
   if (guard !== null && !guard.ok) {
-    return { state: 'blocked', reasons: guard.violations.map((violation) => `${violation.file}: ${violation.reason}`) }
+    const reasons = guard.violations.map((violation) => `${violation.file}: ${violation.reason}`)
+    if (reasons.length === 0 && guard.truncated === true) {
+      reasons.push(`The changed-file list was cut off: checked ${guard.checkedFiles} of ${guard.reportedFiles} reported files.`)
+    }
+    return { state: 'blocked', reasons }
   }
   if (verification !== null && !verification.ok) {
     return { state: 'blocked', reasons: verification.reasons.length === 0 ? ['Evidence verification failed.'] : verification.reasons }
