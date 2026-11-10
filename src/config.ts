@@ -62,6 +62,7 @@ export interface Config {
     timeoutMinutes: number
     stallMinutes: number
     maxActiveJobs: number
+    queueDispatch: boolean
   }
   metrics: {
     token: string
@@ -256,6 +257,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       timeoutMinutes: number('JOB_TIMEOUT_MINUTES', 90),
       stallMinutes: number('JOB_STALL_MINUTES', 30),
       maxActiveJobs: Math.max(1, number('PLATFORM_MAX_ACTIVE_JOBS', 2)),
+      queueDispatch: bool('QUEUE_DISPATCH', false),
     },
     metrics: {
       token: text('METRICS_TOKEN'),

@@ -3,14 +3,14 @@ import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
 import { makeUser } from './helpers.js'
 
-function setup(): { store: Store; repoId: string; userId: string } {
+function setup(): { store: Store; repoId: string; repo2Id: string; userId: string } {
   const store = new Store(':memory:')
   const user = makeUser(store, { login: 'lease-user', status: 'approved' })
-  const repo = store.createRepo({
-    id: 'repo_lease',
+  const makeRepo = (id: string) => store.createRepo({
+    id,
     userId: user.id,
     owner: 'o',
-    name: 'r',
+    name: id,
     defaultBranch: 'main',
     tokenEnc: 'x',
     permission: 'admin',
@@ -21,7 +21,9 @@ function setup(): { store: Store; repoId: string; userId: string } {
     canReview: true,
     reviewerEnabled: true,
   })
-  return { store, repoId: repo.id, userId: user.id }
+  const repo = makeRepo('repo_lease')
+  const repo2 = makeRepo('repo_lease_2')
+  return { store, repoId: repo.id, repo2Id: repo2.id, userId: user.id }
 }
 
 function makeJob(store: Store, repoId: string, userId: string, id: string, priority = 0): void {
@@ -39,9 +41,9 @@ function makeJob(store: Store, repoId: string, userId: string, id: string, prior
 }
 
 test('claimQueuedJob leases the highest-priority queued job exactly once', () => {
-  const { store, repoId, userId } = setup()
+  const { store, repoId, repo2Id, userId } = setup()
   try {
-    makeJob(store, repoId, userId, 'job_low', 0)
+    makeJob(store, repo2Id, userId, 'job_low', 0)
     makeJob(store, repoId, userId, 'job_high', 10)
 
     const first = store.claimQueuedJob('worker-1', 60_000)
@@ -54,6 +56,27 @@ test('claimQueuedJob leases the highest-priority queued job exactly once', () =>
     assert.equal(second?.lease_owner, 'worker-2')
 
     assert.equal(store.claimQueuedJob('worker-3', 60_000), undefined)
+  } finally {
+    store.close()
+  }
+})
+
+test('only one queued job per repository is claimable at a time', () => {
+  const { store, repoId, userId } = setup()
+  try {
+    makeJob(store, repoId, userId, 'job_first', 0)
+    makeJob(store, repoId, userId, 'job_second', 10)
+
+    const first = store.claimQueuedJob('worker-1', 60_000)
+    assert.equal(first?.id, 'job_second')
+    assert.equal(store.claimQueuedJob('worker-2', 60_000), undefined)
+
+    store.updateJob('job_second', { status: 'running' })
+    assert.equal(store.claimQueuedJob('worker-2', 60_000), undefined)
+
+    store.updateJob('job_second', { status: 'succeeded', finished_at: new Date().toISOString() })
+    const next = store.claimQueuedJob('worker-2', 60_000)
+    assert.equal(next?.id, 'job_first')
   } finally {
     store.close()
   }

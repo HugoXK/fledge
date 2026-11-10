@@ -230,6 +230,8 @@ export interface JobRow {
   retry_of: string | null
   lease_owner: string | null
   lease_until: string | null
+  callback_secret_enc: string | null
+  platform_token_enc: string | null
   last_callback_at: string | null
   created_at: string
   started_at: string | null
@@ -557,6 +559,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   retry_of TEXT,
   lease_owner TEXT,
   lease_until TEXT,
+  callback_secret_enc TEXT,
+  platform_token_enc TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   last_callback_at TEXT,
@@ -832,9 +836,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 32) {
+    if (previousVersion > 33) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (32)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (33)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -850,7 +854,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 32)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 33)};`)
   }
 
   migrateIndexes(): void {
@@ -995,6 +999,8 @@ export class Store {
     if (!jobColumns.has('pr_state')) this.run('ALTER TABLE jobs ADD COLUMN pr_state TEXT')
     if (!jobColumns.has('lease_owner')) this.run('ALTER TABLE jobs ADD COLUMN lease_owner TEXT')
     if (!jobColumns.has('lease_until')) this.run('ALTER TABLE jobs ADD COLUMN lease_until TEXT')
+    if (!jobColumns.has('callback_secret_enc')) this.run('ALTER TABLE jobs ADD COLUMN callback_secret_enc TEXT')
+    if (!jobColumns.has('platform_token_enc')) this.run('ALTER TABLE jobs ADD COLUMN platform_token_enc TEXT')
     const tokenColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(api_tokens)').map((row) => row.name))
     if (!tokenColumns.has('repo_id')) this.run('ALTER TABLE api_tokens ADD COLUMN repo_id TEXT')
     const ledgerColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(quota_ledger)').map((row) => row.name))
@@ -2193,7 +2199,22 @@ export class Store {
       const now = nowIso()
       const until = new Date(Date.now() + Math.max(1, leaseMs)).toISOString()
       const row = this.get<JobRow>(
-        "SELECT * FROM jobs WHERE status = 'queued' AND (lease_until IS NULL OR lease_until < ?) ORDER BY priority DESC, created_at ASC LIMIT 1",
+        `SELECT * FROM jobs j
+         WHERE j.status = 'queued' AND (j.lease_until IS NULL OR j.lease_until < ?)
+           AND NOT EXISTS (
+             SELECT 1 FROM jobs x
+             WHERE x.repo_id = j.repo_id AND x.id != j.id AND (
+               x.status = 'running'
+               OR (x.status = 'queued' AND (
+                 x.priority > j.priority
+                 OR (x.priority = j.priority AND (
+                   x.created_at < j.created_at
+                   OR (x.created_at = j.created_at AND x.id < j.id)
+                 ))
+               ))
+             )
+           )
+         ORDER BY j.priority DESC, j.created_at ASC LIMIT 1`,
         now,
       )
       if (row === undefined) return undefined
@@ -2206,6 +2227,10 @@ export class Store {
       )
       return changes === 1 ? this.getJob(row.id) : undefined
     })
+  }
+
+  countRunningJobs(): number {
+    return this.get<{ n: number }>("SELECT COUNT(*) AS n FROM jobs WHERE status = 'running'")?.n ?? 0
   }
 
   renewJobLease(id: string, owner: string, leaseMs: number): boolean {
@@ -2229,7 +2254,7 @@ export class Store {
     )
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')

@@ -124,11 +124,13 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   renders the simple UI while advanced routes stay blocked. An admin can open a
   read-only support view for a visible user and that user's jobs; it never
   mutates data or triggers work.
-- **Dispatch leases (foundation)**: every running job records `lease_owner` and
-  `lease_until`; the terminal transition clears them. `Store.claimQueuedJob`
-  atomically claims one queued row for a future worker pool, and
-  `expiredLeaseJobs` is the recovery query. The current tick still dispatches
-  inline, so behavior is unchanged until the worker loop is enabled.
+- **Dispatch leases and queue mode**: every running job records `lease_owner`
+  and `lease_until`; the terminal transition clears them. `Store.claimQueuedJob`
+  atomically claims one queued row per repository, and `expiredLeaseJobs` is the
+  recovery query. `QUEUE_DISPATCH=false` keeps the inline path; setting it to
+  `true` makes `enqueue` store the callback secret and job token encrypted
+  (`callback_secret_enc`, `platform_token_enc`) and lets the tick's worker loop
+  claim and dispatch the job. The lease and queue columns are schema version 33.
 - **No worker process**: a 60-second tick schedules due iterate jobs and, when
   the user selected the maintainer role and the upstream grants admin/maintain permission, review jobs for all open PRs.
   The interval is the minimum gap between runs, not a cap on PRs or issues; a
