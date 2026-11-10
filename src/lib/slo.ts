@@ -9,11 +9,17 @@ export interface SloInput {
   openAlerts: number | null
 }
 
-// The statuses the job success rate divides over. `succeeded` is the numerator;
-// both members are the denominator. One definition, so the report and the alert
-// rule cannot drift: the rule is YAML and cannot import this, so
-// test/slo-status.test.ts reads that file as text and pins it to this list.
-export const SLO_JOB_STATUSES = ['succeeded', 'failed'] as const satisfies readonly JobStatus[]
+// The numerator of the job success rate, named on its own so neither the report
+// nor the alert rule has to reach into the set by position: `SLO_JOB_STATUSES`
+// is built from this, not the other way round. One definition, so the report and
+// the alert rule cannot drift: the rule is YAML and cannot import this, so
+// test/slo-status.test.ts reads that file as text and pins both of its selectors
+// to these values.
+export const SLO_SUCCESS_STATUS = 'succeeded' as const satisfies JobStatus
+
+// The statuses the job success rate divides over. `SLO_SUCCESS_STATUS` is the
+// numerator; both members are the denominator.
+export const SLO_JOB_STATUSES = [SLO_SUCCESS_STATUS, 'failed'] as const satisfies readonly JobStatus[]
 
 // Terminal `JobStatus` values left out of numerator and denominator alike, so
 // the rate is over jobs that ran, not over every job. A cancellation did not

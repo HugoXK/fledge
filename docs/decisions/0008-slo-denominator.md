@@ -33,15 +33,16 @@ rate of the other. `queued` and `running` are absent from both because they are
 not terminal. The rate is therefore a rate over jobs that *ran* to success or
 failure, not over every job Fledge accepted.
 
-**The set lives in one place.** `src/lib/slo.ts` exports `SLO_JOB_STATUSES`
-(`succeeded`, `failed`) as the denominator and numerator, and
-`EXCLUDED_JOB_STATUSES` (`cancelled`, `paused`, `quota_exhausted`) as the other
-half of the definition. `scripts/slo-report.mjs` builds its selector from that
-export, so the script carries no literal. The recording rule is YAML and cannot
-import JavaScript, so it is pinned the only honest way available: a test reads
-`deploy/prometheus/fledge-alerts.yml` as text and holds both of its regex
-selectors to the exported set, and separately asserts that the script contains
-no second copy.
+**The set lives in one place.** `src/lib/slo.ts` exports `SLO_SUCCESS_STATUS`
+(`succeeded`) as the numerator and `SLO_JOB_STATUSES` (`succeeded`, `failed`) as
+the set it divides over, built from that status rather than reached into by
+position; `EXCLUDED_JOB_STATUSES` (`cancelled`, `paused`, `quota_exhausted`) is
+the other half of the definition. `scripts/slo-report.mjs` builds both of its
+selectors from those exports, so the script carries no status literal. The
+recording rule is YAML and cannot import JavaScript, so it is pinned the only
+honest way available: a test reads `deploy/prometheus/fledge-alerts.yml` as text
+and holds its exact-match numerator and both of its regex denominators to the
+exported values, and separately asserts that the script contains no second copy.
 
 **A quiet window is not an absent one, and both render `n/a`.** A window whose
 counters are present and flat has nothing to measure, so the five rows that can
