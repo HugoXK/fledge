@@ -299,7 +299,20 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       admin: bool('DEV_LOGIN_ADMIN', true),
     },
   }
+  // Deliberately not asserting here: maintenance scripts (rotate-instance-tokens,
+  // set-role, mail-probe) call loadConfig() to read one value, and a missing
+  // production secret must not block an operator repair. The startup gate is
+  // buildApp(), which src/index.ts also calls unguarded. See docs/deploy.md.
   return { ...config, ...overrides }
+}
+
+function isAbsoluteHttpsUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && url.hostname !== ''
+  } catch {
+    return false
+  }
 }
 
 export function assertProductionConfig(config: Config): void {
@@ -315,5 +328,12 @@ export function assertProductionConfig(config: Config): void {
   if (config.mail.transport === 'smtp' && config.mail.smtp.pass === '') missing.push('SMTP_PASS')
   if (config.llm.key === '' && config.runner.mode === 'flybot') missing.push('PLATFORM_LLM_KEY (needed by the FlyBot runner)')
   if (config.devLogin.login !== '') missing.push('DEV_LOGIN_LOGIN must be empty in production')
+  // #127: /metrics stays unauthenticated without a token, and the alert webhook
+  // carries the payload plus a bearer secret, so both are startup refusals rather
+  // than a warning in a log nobody reads.
+  if (config.metrics.token === '') missing.push('METRICS_TOKEN')
+  if (config.notifyWebhookUrl !== '' && !isAbsoluteHttpsUrl(config.notifyWebhookUrl)) {
+    missing.push('NOTIFY_WEBHOOK_URL (must be an absolute https: URL)')
+  }
   if (missing.length > 0) throw new Error(`Fledge cannot start in production. Missing: ${missing.join(', ')}`)
 }
