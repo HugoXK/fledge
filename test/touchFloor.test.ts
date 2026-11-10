@@ -164,6 +164,17 @@ test('the admin quota and role controls become full-width rows on a phone', () =
   assert.equal(lastValue('.admin-inline-form', 'flex-direction', 360), 'column')
   assert.equal(lastValue('.admin-inline-form', 'align-items', 360), 'stretch')
   assert.equal(lastValue('.admin-inline-form', 'flex-direction', 768), null, 'the desktop row is untouched')
+  // Stretching the wrapper is not enough. The fields themselves carry a definite
+  // 88px / 112px width and a fixed flex basis, and in a column container
+  // `flex: 0 0 88px` sizes the height, not the width: the row would stretch and
+  // the controls inside it would stay 88x88 and 112x112. The field is asserted at
+  // both widths, not the wrapper.
+  for (const [selector, desktopWidth] of [['.admin-quota', '88px'], ['.admin-role', '112px']] as const) {
+    assert.equal(lastValue(selector, 'width', 360), '100%', `${selector} fills the phone row instead of its measured width`)
+    assert.notEqual(lastValue(selector, 'flex', 360), `0 0 ${desktopWidth}`, `${selector} does not keep its fixed basis on a phone`)
+    assert.equal(lastValue(selector, 'width', 768), desktopWidth, `${selector} keeps its desktop width`)
+    assert.equal(lastValue(selector, 'flex', 768), `0 0 ${desktopWidth}`, `${selector} keeps its desktop basis`)
+  }
 })
 
 test('a link alone in its own paragraph is a target, so the template marks it', () => {

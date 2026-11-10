@@ -599,6 +599,10 @@ a.list-row:hover strong { color: var(--accent); }
      block-level row; no DOM change and no new class (issue 132 acceptance 3). */
   .admin-inline-form { flex-direction: column; align-items: stretch; width: 100%; }
   .admin-control-row { width: 100%; flex-wrap: wrap; }
+  /* Stretching the row is not enough: a definite width does not stretch, and in
+     a column container `flex: 0 0 88px` sizes the height. The field fills the row
+     instead, and `1 1 auto` leaves its height content-driven. */
+  .admin-quota, .admin-role { width: 100%; flex: 1 1 auto; }
 }
 
 @media (max-width: 420px) {
