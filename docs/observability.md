@@ -52,7 +52,19 @@ PROMETHEUS_URL=http://127.0.0.1:9090 npm run slo:report
 ```
 
 The report prints the 7-day success rate, remaining error budget, queue/job p95,
-bridge success and GitHub 429 rate. Missing series render as `n/a`.
+bridge success and GitHub 429 rate. Missing series render as `n/a`, and so does a
+quiet window — counters present but flat — in the five rows that can then be
+non-finite: the success rate, the error budget derived from it, both p95 values
+and the bridge success rate. The GitHub 429 rate and the open-alert count read a
+real `0` on the same window and keep printing it.
+
+The job success rate counts only `succeeded` and `failed` jobs. The other terminal
+states — `cancelled`, `paused` and `quota_exhausted` — are excluded from the
+numerator and from the denominator alike, so the percentage is a rate over jobs
+that ran to success or failure, not over every job Fledge accepted: a surge of
+quota refusals or cancellations shrinks that population without moving the rate,
+and the report does not show how many jobs it left out. The set itself is decided
+in [decisions/0008](decisions/0008-slo-denominator.md).
 
 ## Traces
 
