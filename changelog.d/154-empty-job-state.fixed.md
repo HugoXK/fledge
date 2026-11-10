@@ -1,0 +1,1 @@
+A repository with no jobs yet now offers that repository's own Run now in its empty Jobs card, instead of a button that left the page to add the repository you are already in. The console's recent jobs, the model-provider list in Settings and a job's timeline now render through the shared state component, so each empty region says what is happening and offers its own next step.

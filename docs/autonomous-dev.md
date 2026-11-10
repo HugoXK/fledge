@@ -164,6 +164,33 @@ The required checks are **`ci-ok`**, **`review-gate`** and **`pr-lint`**.
 - `changelog` (fragments are well formed)
 - `version` (`package.json`, lockfile, changelog, compose and tag agree)
 - `risk` (the tier report succeeds)
+- `action-pins` (every `uses:` is a 40-hex commit pin with its tag comment)
+- `Analyze JavaScript/TypeScript` (the CodeQL job: no new high/critical result)
+
+CodeQL is gated on its own diff, not globally. `github/codeql-action/analyze`
+exits 0 whether it found a sink or nothing at all, so the job runs
+`scripts/codeql-gate.mjs` afterwards: it reads the SARIF that run just wrote and
+fails on a high or critical result the recorded baseline does not already hold.
+The baseline is `.github/agent/codeql-baseline.json` — every open high/critical
+alert at its `recordedAtSha`, by rule id, path and line, which today is the four
+`js/missing-rate-limiting` findings in `src/app.ts` (issues #62–#65). They stay
+open and none is dismissed: the gate exists so a pull request cannot quietly add
+a fifth while working beside them. The same step runs on a push to `main`, so new
+highs cannot accumulate there either. Changing the baseline is a reviewed commit,
+and the PR that does it says why the alert is accepted; a line that drifts for an
+unrelated reason fails loudly rather than being silently re-labelled.
+
+Every action a workflow runs is pinned to a 40-hex commit with the tag it came
+from in a trailing comment, and the `action-pins` job fails the build on a
+floating tag: a tag is a pointer the action's owner can move, and whatever it
+points at runs on our runner with our token. To re-pin one, resolve the tag the
+same way CI would and paste the commit, never the tag:
+
+```sh
+git ls-remote --tags https://github.com/<owner>/<repo>.git | grep 'refs/tags/v<major>'
+# take the peeled `^{}` sha for an annotated tag, the plain sha for a lightweight one
+node scripts/action-pins.mjs   # checks the tree: 40-hex pin plus `# <version>` comment
+```
 
 `pr-lint` checks the PR body (`Written-by:`, `Fixes #N` / `No-issue:`, `Ran:`,
 `Not run:`), the changelog fragment and docs obligations, the `Written-by`
@@ -175,8 +202,8 @@ a verdict posted as a comment by an owner, member or collaborator
 
 ```
 Verdict: PASS at <sha>
-Written-by: Reviewer
-Posted-by: <GitHub login>
+Written-by: <GitHub account>
+Author: <Bot identity>
 Ran:
 - `npm run check` — pass
 Not run: Docker, real SMTP
@@ -186,8 +213,14 @@ Not run: Docker, real SMTP
 - A PASS with no real `Ran:` or `Not run:` line is refused.
 - A report with no `Written-by:` line, or a writer outside
   `.github/agent/review-policy.json`, is refused.
-- `Posted-by:` is mandatory and must match the account that submitted the
-  review; a relay cannot claim a different poster.
+- Identity comes from the platform object, never from the body: a review is
+  judged by `review.user.login` against the required reviewer, and `Author:` is
+  a declaration the gate does not read.
+- A comment-shaped verdict is the legacy shape. It decides only while the pull
+  request has no review object at all and only until
+  `COMMENT_VERDICT_FALLBACK_UNTIL` (`2026-12-14`) in
+  `scripts/lib/review-gate.mjs`; it must carry `Posted-by:` matching its own
+  author. After that date the gate refuses it.
 - The PR author may never PASS its own tip: the policy carries no self-review
   waiver.
 - The newest conclusion wins; a later INC overrides an earlier PASS.
@@ -254,9 +287,70 @@ The release workflow runs `npm run check`, builds the image, publishes it to
 GHCR and creates the GitHub release from the changelog. The tag must point at a
 commit whose `CHANGELOG.md` has the matching section.
 
-The release PR touches only `CHANGELOG.md`, `changelog.d/`, `package.json` and
-`package-lock.json`; anything else is a normal PR and needs a review. No release
-with no fragments.
+The release PR touches only `CHANGELOG.md`, `changelog.d/`, `package.json`,
+`package-lock.json` and `docker-compose.yml`; anything else is a normal PR and
+needs a review. No release with no fragments.
+
+### The daily drive
+
+`.github/workflows/daily-release.yml` runs at 22:30 Asia/Shanghai (`30 14 * * *`)
+and does exactly one thing per night, decided by the pure `decideDrive()` in
+`scripts/lib/release-drive.mjs`:
+
+| Situation | Action |
+|---|---|
+| the rule is met and nothing is in flight | open the mechanical PR `release: v<next>` on `release/v<next>` |
+| a release PR is already open and mergeable | `gh pr merge --auto --squash --match-head-commit <its sha>` — never a second PR, never `--admin` |
+| a release PR is open but red or blocked | report the failing check names and stop |
+| the last merged PR is a release PR whose tag does not exist | tag it and dispatch `release.yml` with `-f tag=v<next>` |
+| the rule is not met, or a dry run | write the counts and the reason to the job summary and exit 0 |
+
+Rule 4 (the latest `ci-ok` on `main` is green) has no input in the planner, so the
+drive checks it before opening anything; a red or missing `ci-ok` on `main` is a
+`none` night. The branch is pushed and the PR is opened with `RELEASE_TOKEN`, not
+`GITHUB_TOKEN`: a branch pushed with the workflow token starts no `pull_request`
+workflow, so the release PR would never get a `ci-ok`. Without `RELEASE_TOKEN` the
+run fails closed with `reason: missing-release-token` and opens nothing.
+
+The mechanical class is keyed on identity, never on the file set alone:
+`scripts/lib/mechanical-release.mjs` requires the head branch `release/v<next>`,
+the title `release: v<next>` for the same `<next>`, and every changed path inside
+the five allowed paths. `pr-lint` uses it to skip the size rule (a release PR is
+~33 files) and the `docs/deploy.md` obligation; `risk-gate` reports
+`risk-tier: T0; basis: mechanical release v<next>` when `ci.yml` passes
+`--branch` and `--title`. The same five-file diff without that key stays T3, which
+is what keeps the `package.json` review gate in place.
+
+A branch name and a title are written by whoever opens the PR, so the identity is
+not enough on its own: `review-gate` asks `mechanicalDiffShape()` as well, and the
+exemption holds only when the diff is what the release routine writes — the
+version fields in `package.json` and `package-lock.json` and the image tag in
+`docker-compose.yml`, with any content allowed in `CHANGELOG.md` and
+`changelog.d/`. A dependency line, an environment change or a file the API
+returned without a patch keeps the PR at T3, where it needs a PASS like any other.
+Otherwise a release-named branch could carry a dependency change into `main` on a
+green `ci-ok` alone.
+
+The state the drive reads is assembled by `scripts/release-state.mjs` from the
+three API payloads; page flattening and the newest-`ci-ok` pick live in
+`scripts/lib/release-state.mjs`, where the suite executes them. This exists because
+the same logic inline in the workflow broke invisibly: `--slurp` plus
+`jq -s 'add'` produced an array of page arrays, and the first `.title` selection
+aborted the night before the planner ran.
+
+The release PR is identified by a title match **and** a head in this repository:
+the open list is newest-first, so a fork PR titled `release: v<next>` must not take
+the slot of the routine's own PR. Such a PR is written to the run summary as a
+notice and never counted as a release in flight — an outsider can neither stop the
+nightly nor be enqueued. The planner gets that projection from `plannerInput` in
+`scripts/lib/release-state.mjs`, where a test executes it instead of a `jq`
+expression in the workflow.
+
+`release.yml` publishes only a tag that is an ancestor of `main`, holds one run
+per ref (`concurrency: release-<ref>`, no cancel), and still runs the checks,
+builds and pushes the image, then creates or edits the GitHub release. It never
+deploys: a tag, an image and a release are artefacts, and the live service stays
+owner-only.
 
 ## Automation (optional)
 

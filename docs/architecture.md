@@ -357,7 +357,10 @@ and the reasons a merge is not ready. A claimed green test with a failing test
 check is contradicted and blocks the merge. The job
 page and the delivery list show `ready`, `blocked` or `not verified`, and
 `POST /repos/:id/jobs/:jobId/recheck` refreshes it on demand. Verification never
-replaces the merge gate's own re-check at the tip.
+replaces the merge gate's own re-check at the tip. The evidence row inside the
+card carries that combined verdict rather than the PR evidence alone, so a pull
+request the path guard blocks never renders as evidence passed; the row names the
+guard as the reason its claim was lowered.
 
 ### Retry policy and capacity
 
@@ -372,10 +375,16 @@ concurrency is `PLATFORM_MAX_ACTIVE_JOBS` (default 2), not a hard-coded literal.
 ### Metrics, traces, shutdown and webhook replay
 
 `/metrics` exposes Prometheus counters, gauges and histograms for HTTP, jobs,
-retries, merges, path guard, evidence verification, GitHub and the bridge. It is
-loopback-only unless `METRICS_TOKEN` is set. Optional OTLP/HTTP JSON tracing is
-enabled with `OTEL_EXPORTER_OTLP_ENDPOINT`; HTTP requests, GitHub calls and
-bridge dispatches emit spans.
+retries, merges, path guard, evidence verification, GitHub and the bridge. The
+token is read from `Authorization: Bearer <token>` only — never from the query
+string — and compared in constant time. A production process refuses to start
+without `METRICS_TOKEN`, and refuses a `NOTIFY_WEBHOOK_URL` that is not an
+absolute `https:` URL, because that webhook carries the alert payload and its
+bearer secret; the loopback fallback for an empty token is development/test
+only, judged on the peer the trusted `TRUST_PROXY` hop saw. The refusal lands in
+`buildApp()`, which `src/index.ts` calls unguarded. Optional OTLP/HTTP JSON
+tracing is enabled with `OTEL_EXPORTER_OTLP_ENDPOINT`; HTTP requests, GitHub
+calls and bridge dispatches emit spans.
 
 Shutdown stops the scheduler, waits up to `SHUTDOWN_GRACE_SECONDS` for active
 jobs, closes HTTP, flushes traces and closes SQLite. Startup removes orphan
@@ -559,6 +568,21 @@ reader's language from the template it matches — both directions, with the
 interpolated job id, repo label, minutes and similar facts kept as data. A
 message no template knows, including every row written before this change,
 renders verbatim. Nothing is rewritten in the database and no column was added.
+
+### Release surface
+
+An operator has to see which release is running without a shell. `readReleaseSurface`
+(`src/lib/releaseSurface.ts`) reads three local files and returns
+`{ version, changelogVersion, releasedAt, fragments }`: `version` from
+`package.json`, the newest dated `CHANGELOG.md` section (`[Unreleased]` carries no
+date and is skipped), and the count of `changelog.d/*.md` fragments excluding
+`README.md`. There is no GitHub call, token or network access, and the footer of
+every page carries `v<version>` while the `/admin` card states the running
+version (naming `package.json` as its source), the newest section and the pending
+count. A path that is missing at runtime renders "not available in this build"
+for that line rather than `0` or `—`; a zero fragment count is a real fact and
+reads "nothing pending". The surface reports no commit or build identifier — the
+version the release routine keeps in step is the only fact it can prove.
 
 ### Operational alerts
 

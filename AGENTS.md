@@ -131,10 +131,16 @@ Verdict: INC at <sha>
 Verdict: REQUEST_CHANGES at <sha>
 ```
 
-The second line is `Written-by: <name>` from the policy's `writers` list. The
-third line is `Posted-by: <GitHub login>` and must match the account that
-submitted the review; never edit someone else's report. The PR author may never
-PASS its own tip: the policy carries no self-review waiver.
+The lines after the verdict are `Written-by: <GitHub account>` from the policy's
+`writers` list and `Author: <Bot identity>`. Identity comes from the platform
+object: a verdict submitted as a review is decided by `review.user.login`, and
+`Author:` is a declaration the gate never reads, so no body line can satisfy it.
+A verdict posted as an issue comment is the legacy shape: it decides only while
+the pull request has no review object at all and before
+`COMMENT_VERDICT_FALLBACK_UNTIL` (`2026-12-14`) in
+`scripts/lib/review-gate.mjs`, and it must carry `Posted-by:` matching its own
+author. Never edit someone else's report. The PR author may never PASS its own
+tip: the policy carries no self-review waiver.
 
 `requiredPass` in `.github/agent/review-policy.json` names the required
 reviewer/PASS identity: `HugoXK-bot`, the GitHub account for

@@ -12,6 +12,7 @@ import { attributionSentence, parseAttribution, type Attribution } from '../lib/
 import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
 import { classifyFailure } from '../lib/failure.js'
 import { retryDecision } from '../lib/retry.js'
+import { findDuplicatePullRequest, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
@@ -236,6 +237,32 @@ export class Jobs {
     }
   }
 
+  private async duplicatePreflight(repo: RepoRow, goal: string, workItemId?: string): Promise<{ ok: boolean; error?: string; code?: string }> {
+    // Only the FlyBot runner reads the upstream repository; the sibling
+    // `preflight` has the same guard at its first line. Without it a deployment
+    // on another runner decrypted the repo token and made GitHub reads it never
+    // made before this feature.
+    if (this.runner.name !== 'flybot') return { ok: true }
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    const repository = `${owner}/${name}`
+    const item = workItemId === undefined ? undefined : this.store.getWorkItem(workItemId)
+    const issue = issueNumberFromText(item?.issue_url ?? goal, repository)
+    if (issue === null) return { ok: true }
+    try {
+      const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
+      const client = new GithubClient(token, this.config.github.apiBase)
+      const duplicate = findDuplicatePullRequest(issue, repository, await client.listOpenPullRequests(owner, name))
+      if (duplicate === null) return { ok: true }
+      this.store.audit(repo.user_id, 'job.duplicate_work', `${repository} issue #${issue} -> ${duplicate.url}`)
+      this.store.event('job_duplicate_work', { userId: repo.user_id, repoId: repo.id, meta: `issue=${issue};pr=${duplicate.url}`.slice(0, 400) })
+      return { ok: false, code: 'DUPLICATE_WORK', error: `已有 PR 覆盖这个 issue：${duplicate.url}` }
+    } catch (error) {
+      log.warn('duplicate preflight failed', { repo: repo.id, error: String(error) })
+      return { ok: true }
+    }
+  }
+
   private async preflight(repo: RepoRow, baseBranch: string, trigger: string): Promise<{ ok: boolean; baseSha?: string; warning?: string; error?: string; code?: string }> {
     if (this.runner.name !== 'flybot') return { ok: true }
     if (trigger === 'schedule' && this.store.hasActiveWorkItem(repo.id)) {
@@ -339,6 +366,10 @@ export class Jobs {
     const repoBaseBranch = repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)
     const baseBranch = (options.baseBranch ?? repoBaseBranch).trim()
     if (!isValidBranchName(baseBranch)) return { ok: false, error: '目标分支格式不正确。', code: 'BRANCH_INVALID' }
+    if (kind === 'iterate' && options.prUrl === undefined) {
+      const duplicate = await this.duplicatePreflight(repo, goalOverride ?? repo.goal, options.workItemId)
+      if (!duplicate.ok) return { ok: false, error: duplicate.error, code: duplicate.code }
+    }
     let preflightSha: string | null = null
     let preflightWarning = ''
     if (kind === 'iterate') {

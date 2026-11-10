@@ -5,13 +5,14 @@ import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
-import { renderState, stateCell } from './states.js'
+import { renderState, stateCell, type StateAction } from './states.js'
 import { oauthConfigured, tokenLoginEnabled } from '../auth/login.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
+import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import { classifyFailure, failureLabel, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { STAGE_MODES } from '../lib/stages.js'
 import type { InstallationRepo } from '../repos/app.js'
@@ -299,9 +300,16 @@ function jobPlainSummary(locale: Locale, t: Translate, job: JobRow, max = 160): 
   return { full, short: full.length > max ? `${full.slice(0, max)}…` : full }
 }
 
-function jobRows(locale: Locale, jobs: JobRow[]): string {
+/** What an empty job list says; the action belongs to the page that renders it. */
+interface EmptyJobs {
+  title?: string
+  body: string
+  action?: StateAction
+}
+
+function jobRows(locale: Locale, jobs: JobRow[], empty?: EmptyJobs): string {
   const t = translator(locale)
-  if (jobs.length === 0) return stateCell(4, { kind: 'empty', title: t('还没有任务。', 'No jobs yet.'), body: t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.'), action: { href: '/dashboard#add-repo', label: t('添加仓库', 'Add repository') } })
+  if (jobs.length === 0) return stateCell(4, { kind: 'empty', title: empty?.title ?? t('还没有任务。', 'No jobs yet.'), body: empty === undefined ? t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.') : empty.body, action: empty?.action ?? { href: '/dashboard#add-repo', label: t('添加仓库', 'Add repository') } })
   return jobs
     .map((job) => {
       const summary = jobPlainSummary(locale, t, job)
@@ -319,14 +327,14 @@ function jobRows(locale: Locale, jobs: JobRow[]): string {
     .join('')
 }
 
-function jobTable(locale: Locale, jobs: JobRow[]): string {
+function jobTable(locale: Locale, jobs: JobRow[], empty?: EmptyJobs): string {
   const t = translator(locale)
-  return `<div class="table-scroll"><table class="job-table"><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('PR / Issue', 'PR / Issue'))}</th><th>${escapeHtml(t('摘要', 'Summary'))}</th></tr></thead><tbody>${jobRows(locale, jobs)}</tbody></table></div>`
+  return `<div class="table-scroll"><table class="job-table"><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('PR / Issue', 'PR / Issue'))}</th><th>${escapeHtml(t('摘要', 'Summary'))}</th></tr></thead><tbody>${jobRows(locale, jobs, empty)}</tbody></table></div>`
 }
 
-function jobList(locale: Locale, jobs: JobRow[], repoLabels: Map<string, string> = new Map()): string {
+function jobList(locale: Locale, jobs: JobRow[], repoLabels: Map<string, string> = new Map(), empty?: EmptyJobs): string {
   const t = translator(locale)
-  if (jobs.length === 0) return `<p class="muted">${escapeHtml(t('还没有任务。', 'No jobs yet.'))}</p>`
+  if (jobs.length === 0) return renderState({ kind: 'empty', title: empty?.title ?? t('还没有任务。', 'No jobs yet.'), body: empty === undefined ? t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.') : empty.body, action: empty?.action ?? { href: '/dashboard', label: t('打开仓库', 'Open a repository') } })
   return `<div class="list">${jobs
     .map((job) => {
       const summary = jobPlainSummary(locale, t, job, 100)
@@ -603,7 +611,7 @@ export function dashboardPage(input: {
 
   <section class="card" id="jobs">
     <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
-    ${jobTable(locale, jobs)}
+    ${jobTable(locale, jobs, { body: t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })}
     ${pager('/dashboard', 'jobsPage', jobsPage, jobsTotal, 10, t, { reposPage }, '#jobs')}
   </section>`
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
@@ -668,6 +676,13 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const repoEnabled = repo.enabled === 1
   const credentialOk = repo.credential_state !== 'invalid'
   const runnable = repoEnabled && flybotReady && credentialOk
+  // The empty job list points at what this page can actually do: choose a role,
+  // run this repository, or fix what blocks a run. Another page's action is wrong here.
+  const emptyJobs: EmptyJobs = roleMissing
+    ? { body: t('先选择你在这个仓库的角色，然后运行第一个任务。', 'Choose your role for this repository, then run the first job.'), action: { href: '#role', label: t('选择角色', 'Choose a role') } }
+    : runnable
+      ? { body: t('立即运行会创建这个仓库的第一个任务；每次运行只开一个 PR。', 'Run now creates the first job for this repository; each run opens at most one pull request.'), action: { formAction: `/repos/${repo.id}/run`, label: t('立即运行', 'Run now'), csrf: csrf(viewer) } }
+      : { body: t('先修复 FlyBot 实例或 GitHub 凭据，然后再运行。', 'Fix the FlyBot instance or the GitHub credential first, then run.'), action: { label: t('实例与凭据在本页的连接卡片里。', 'The instance and the credential are on the connection card of this page.') } }
   const instanceNotice = config.flybot.instanceImage === ''
     ? `<div class="banner">${escapeHtml(t('这个部署没有启用每仓库 FlyBot 实例，任务由全局 mock/runner 处理。', 'This deployment has no per-repository FlyBot instance; jobs use the global mock/runner.'))}</div>`
     : instance === undefined
@@ -928,7 +943,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   </section>
   <section class="card" id="jobs">
     <h2>${escapeHtml(t('任务', 'Jobs'))}</h2>
-    ${jobTable(locale, jobs)}
+    ${jobTable(locale, jobs, emptyJobs)}
     ${pager(`/repos/${repo.id}`, 'jobsPage', jobsPage, jobsTotal, 10, t, {}, '#jobs')}
   </section>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : '<script src="/assets/chief.js" defer></script>'}`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
@@ -1102,7 +1117,7 @@ export function teamPage(input: {
   </section>
   <section class="card" id="jobs">
     <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
-    ${jobTable(locale, jobs)}
+    ${jobTable(locale, jobs, { body: t('去这个仓库的页面运行第一个任务；每次运行最多开一个 PR。', 'Run the first job from this repository page; each run opens at most one pull request.'), action: { href: `/repos/${escapeHtml(repo.id)}`, label: t('去仓库运行', 'Run from the repository') } })}
     ${pager(`/repos/${repo.id}`, 'jobsPage', jobsPage, jobsTotal, 10, t, {}, '#jobs')}
   </section>
   <script src="/assets/team.js" defer></script>`
@@ -1148,7 +1163,8 @@ export function settingsPage(input: {
     <h2>${escapeHtml(t('模型提供方', 'Model providers'))}</h2>
     <p class="muted">${escapeHtml(t('先添加提供方（Base URL + API Key），再在它下面添加模型。添加模型时 Fledge 会发起 1-token 测试；测试失败不会保存。', 'Add a provider (Base URL + API key), then add models under it. Adding a model sends a 1-token test from Fledge; a failed test is not saved.'))}</p>
     ${providers.length === 0
-      ? `<p class="muted">${escapeHtml(t('还没有模型提供方。', 'No model providers yet.'))}</p>`
+      ? `${renderState({ kind: 'empty', title: t('还没有模型提供方。', 'No model providers yet.'), body: t('添加提供方（Base URL + API Key）后，任务才能用你自己的模型。', 'Add a provider (Base URL and API key) so jobs can use your own model.'), action: { href: '#add-provider', label: t('添加提供方', 'Add provider') } })}
+      <span id="add-provider"></span>`
       : providers.map((provider) => {
           const pending = (discoveredProvider === provider.id ? discovered : []).filter((id) => !provider.models.some((model) => model.model === id))
           return `<div class="card provider-card">
@@ -1354,8 +1370,11 @@ export function adminPage(input: {
   hideActor?: boolean
   notice?: string
   error?: string
+  /** Defaults to the running process's surface; a test passes a fixture root. */
+  release?: ReleaseSurface
 }): string {
   const { config, locale, viewer, users, jobs, jobsPage, jobsTotal, audit, auditPage, auditTotal, perPage, activity, notice, error } = input
+  const release = input.release ?? releaseSurface()
   const mailFailedUsers = input.mailFailedUsers ?? new Set<string>()
   const superadmin = input.superadmin === true
   const preview = input.preview === true
@@ -1405,12 +1424,25 @@ export function adminPage(input: {
       </tr>`,
     )
     .join('')
+  // Local files only: package.json is what the release routine keeps in step, so
+  // the card names it as the running version and never claims a commit. A file
+  // that is not in this build says so; a zero fragment count is a real fact.
+  const absent = t('此构建中不可用', 'not available in this build')
+  const releaseCard = `<section class="card">
+    <h2>${escapeHtml(t('发布', 'Release'))}</h2>
+    <div class="list">
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('运行版本', 'Running'))}</strong><small>${release.version === null ? escapeHtml(absent) : `v${escapeHtml(release.version)} · ${escapeHtml(t('来自 package.json', 'from package.json'))}`}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新 CHANGELOG 段落', 'Newest CHANGELOG section'))}</strong><small>${release.changelogVersion === null || release.releasedAt === null ? escapeHtml(absent) : `${escapeHtml(release.changelogVersion)} · ${escapeHtml(release.releasedAt)}`}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('待发布片段', 'Pending fragments'))}</strong><small>${release.fragments === null ? escapeHtml(absent) : release.fragments === 0 ? escapeHtml(t('没有待发布片段', 'nothing pending')) : escapeHtml(t(`${release.fragments} 个待发布片段`, `${release.fragments} pending fragment${release.fragments === 1 ? '' : 's'}`))}</small></div></div>
+    </div>
+  </section>`
   const body = `<section class="card">
     <div class="eyebrow">${escapeHtml(t('管理', 'ADMIN'))}</div>
     <h1>${escapeHtml(t('审批与额度', 'Approvals & quota'))}</h1>
     <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}${superadmin ? ` · <a class="link" href="/admin/metrics">${escapeHtml(t('产品指标', 'Product metrics'))}</a>` : ''} · <a class="link" href="/admin/search">${escapeHtml(t('审计与任务', 'Audit and jobs'))}</a></p>
     ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出用户视图预览', 'Exit user preview') : t('预览用户视图', 'Preview the user view'))}</button></form>` : ''}
   </section>
+  ${releaseCard}
   <section class="card">
     <h2>${escapeHtml(t('待审批', 'Pending'))} <small class="count">${pending.length}</small></h2>
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('用户', 'User'))}</th><th>${escapeHtml(t('申请时间', 'Applied'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th></th></tr></thead><tbody>${pendingRows}</tbody></table></div>
@@ -1421,7 +1453,7 @@ export function adminPage(input: {
   </section>
   <section class="card">
     <div class="row between"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))} <small class="count">${jobsTotal}</small></h2><span class="fine">${escapeHtml(t('每页 10 条', '10 per page'))}</span></div>
-    ${jobTable(locale, jobs)}
+    ${jobTable(locale, jobs, { body: t('这里汇总所有用户的任务；还没有任何一条。', 'Jobs from every user are collected here; there are none yet.'), action: { href: '/admin/users', label: t('查看用户', 'View users') } })}
     ${pager('/admin', 'jobsPage', jobsPage, jobsTotal, perPage, t, showAudit ? { auditPage } : {})}
   </section>
   ${showAudit ? `<section class="card">
@@ -1429,7 +1461,7 @@ export function adminPage(input: {
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('时间', 'Time'))}</th><th>${escapeHtml(t('动作', 'Action'))}</th><th>${escapeHtml(t('操作者', 'Actor'))}</th><th>${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${auditRows(locale, audit, usersById, hideActor)}</tbody></table></div>
     ${pager('/admin', 'auditPage', auditPage, auditTotal, perPage, t, { jobsPage })}
   </section>` : ''}`
-  return layout({ title: t('管理', 'Admin'), viewer, body, config, locale, path: '/admin', active: 'admin', notice, error })
+  return layout({ title: t('管理', 'Admin'), viewer, body, config, locale, path: '/admin', active: 'admin', notice, error, release })
 }
 
 export function approvalPage(input: { config: Config; locale: Locale; user: UserRow; action: 'approve' | 'reject'; token: string; error?: string }): string {
@@ -1621,7 +1653,7 @@ export function workspacePage(input: {
   </section>
   <section class="card">
     <div class="row between"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2><a class="link" href="/dashboard">${escapeHtml(t('查看全部', 'View all'))}</a></div>
-    ${jobList(locale, recent, reposById)}
+    ${jobList(locale, recent, reposById, { body: t('在仓库页点“立即运行”创建第一个任务；每个任务只开一个 PR。', 'Run the first job from a repository page; each job opens at most one pull request.'), action: { href: '/dashboard', label: t('打开仓库', 'Open a repository') } })}
     ${jobsTotal > recent.length ? `<p class="fine" style="margin:12px 0 0"><a href="/dashboard#jobs">${escapeHtml(t(`查看其余 ${jobsTotal - recent.length} 个任务`, `View the other ${jobsTotal - recent.length} jobs`))}</a></p>` : ''}
   </section>`
   return layout({ title: t('工作区', 'Workspace'), viewer, body, config, locale, path: '/console', active: 'console', notice, error })
@@ -1664,6 +1696,18 @@ export function jobPage(input: {
   const verification = parseVerification(job.verification_json)
   const pathGuard = parsePathGuard(job.path_guard_json)
   const readiness = mergeReadiness(job)
+  // The badge above combines the path guard with the PR evidence; the evidence
+  // row used to read verification.ok alone, so a PR the guard blocked still
+  // claimed its evidence had passed. The row carries the combined verdict now:
+  // it lowers its own claim only when the guard is what blocks the merge.
+  const guardBlocks = pathGuard !== null && !pathGuard.ok
+  const evidenceVerdict = verification === null
+    ? ''
+    : verification.ok
+      ? guardBlocks
+        ? t('证据已核实，合并被路径守卫阻止', 'Evidence verified; the merge is blocked by the path guard')
+        : t('证据通过', 'Evidence passed')
+      : t('证据未通过', 'Evidence failed')
   const attribution = jobAttribution(t, job)
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
@@ -1754,7 +1798,7 @@ export function jobPage(input: {
     ${verification === null
       ? `<p class="muted">${escapeHtml(t('还没有核实记录。任务回调后会自动核实；也可以现在重新检查。', 'No verification yet. It runs after a job callback; you can also re-check now.'))}</p>`
       : `<div class="list">
-          <div class="list-row"><div class="list-main"><strong>${escapeHtml(verification.ok ? t('证据通过', 'Evidence passed') : t('证据未通过', 'Evidence failed'))}</strong><small>${escapeHtml(t('核实时间', 'Checked'))} ${escapeHtml(humanTimeShort(verification.checkedAt))} · ${escapeHtml(t('基于', 'At'))} <code>${escapeHtml(verification.sha.slice(0, 12))}</code></small></div></div>
+          <div class="list-row"><div class="list-main"><strong>${escapeHtml(evidenceVerdict)}</strong><small>${escapeHtml(t('核实时间', 'Checked'))} ${escapeHtml(humanTimeShort(verification.checkedAt))} · ${escapeHtml(t('基于', 'At'))} <code>${escapeHtml(verification.sha.slice(0, 12))}</code></small></div></div>
           <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('检查', 'Checks'))}</strong><small>${verification.checks.green}/${verification.checks.total} ${escapeHtml(t('通过', 'green'))}${verification.checks.failing.length === 0 ? '' : ` · ${escapeHtml(t('失败', 'failing'))}: ${escapeHtml(verification.checks.failing.join(', '))}`}${verification.checks.pending.length === 0 ? '' : ` · ${escapeHtml(t('等待', 'pending'))}: ${escapeHtml(verification.checks.pending.join(', '))}`}</small></div></div>
           <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试证据', 'Test evidence'))}</strong><small>${escapeHtml(verification.testEvidence.state === 'verified' ? t('已核实', 'Verified') : verification.testEvidence.state === 'contradicted' ? t('与 checks 不一致', 'Contradicted by checks') : t('未核实', 'Unverified'))}${verification.testEvidence.greenChecks.length === 0 ? '' : ` · ${escapeHtml(t('通过', 'green'))}: ${escapeHtml(verification.testEvidence.greenChecks.join(', '))}`}${verification.testEvidence.failingChecks.length === 0 ? '' : ` · ${escapeHtml(t('失败', 'failing'))}: ${escapeHtml(verification.testEvidence.failingChecks.join(', '))}`}</small></div></div>
           <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('审核', 'Reviews'))}</strong><small>${escapeHtml(t(`批准 ${verification.reviews.approvals} 个`, `${verification.reviews.approvals} approval(s)`))}${verification.reviews.changesRequested ? ` · ${escapeHtml(t('有 changes requested', 'changes requested'))}` : ''}</small></div></div>
@@ -1773,7 +1817,7 @@ export function jobPage(input: {
   <section class="card">
     <h2>${escapeHtml(t('时间线', 'Timeline'))}</h2>
     ${events.length === 0
-      ? `<p class="muted">${escapeHtml(t('还没有任务事件。', 'No job events yet.'))}</p>`
+      ? renderState({ kind: 'empty', title: t('还没有任务事件。', 'No job events yet.'), body: t('任务开始后，每一次状态变化都会记录在这里。', 'Every state change is recorded here once the job starts.'), action: job.status === 'failed' ? { formAction: `/repos/${repo.id}/jobs/${job.id}/retry`, label: t('重试这个任务', 'Retry this job'), csrf: csrf(viewer) } : { href: `/repos/${repo.id}`, label: t('返回仓库', 'Back to repository') } })
       : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('时间', 'Time'))}</th><th>${escapeHtml(t('事件', 'Event'))}</th><th>${escapeHtml(t('角色/步骤', 'Role/step'))}</th><th>${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${events.map((entry) => `<tr><td>${escapeHtml(humanTimeShort(entry.at))}</td><td><code>${escapeHtml(entry.kind)}</code></td><td>${escapeHtml([entry.role, entry.step].filter((value) => value !== null && value !== '').join(' · ') || '—')}</td><td>${escapeHtml(jobEventDetail(t, entry))}</td></tr>`).join('')}</tbody></table></div>`}
   </section>
   ${advanced ? `<section class="card">

@@ -44,10 +44,17 @@ Key settings:
 | `FLYBOT_BRIDGE_URL` / `FLYBOT_BRIDGE_TOKEN` | Bridge endpoint and shared secret |
 | `DATA_DIR` / `DB_PATH` | Defaults `./data`, `./data/fledge.db` |
 | `ALLOW_PRIVATE_MODEL_URLS` | Keep `false` for untrusted users |
-| `NOTIFY_WEBHOOK_URL` / `NOTIFY_WEBHOOK_SECRET` | Optional outbound notifications (Slack-compatible `text`); the secret is sent as a bearer token |
+| `METRICS_TOKEN` | Required in production: `/metrics` answers only `Authorization: Bearer <token>` |
+| `NOTIFY_WEBHOOK_URL` / `NOTIFY_WEBHOOK_SECRET` | Optional outbound notifications (Slack-compatible `text`); the secret is sent as a bearer token. When set, the URL must be an absolute `https:` URL |
 
-Production startup fails closed if the session/encryption keys, OAuth app or
-SMTP password are missing.
+Production startup fails closed if the session/encryption keys, OAuth app,
+SMTP password or `METRICS_TOKEN` are missing, or if `NOTIFY_WEBHOOK_URL` is set
+to anything but an absolute `https:` URL — a plain-`http` webhook would send the
+alert payload and its bearer secret in cleartext. That refusal lands in
+`buildApp()`, which `src/index.ts` calls unguarded, so the process exits instead
+of listening with an unauthenticated `/metrics`. `loadConfig()` deliberately
+does not assert: the operator scripts (`rotate-instance-tokens`, `set-role`,
+`mail-probe`) read it and must keep working while a secret is being repaired.
 
 ## 2. GitHub OAuth App
 
@@ -163,6 +170,12 @@ docker compose up -d --build
 ```
 
 The volume `fledge-data` holds the SQLite database and the console outbox.
+
+The runtime stage also copies `CHANGELOG.md` and `changelog.d/` into `/app`
+(`Dockerfile`, runtime stage). The console reads them for the footer version and
+the `/admin` release card, which states the running version, the newest changelog
+section and the pending fragment count. Keep both paths in the image: without
+them those lines read "not available in this build" instead of answering.
 
 ### Node
 

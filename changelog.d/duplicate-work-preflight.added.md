@@ -1,0 +1,1 @@
+An iterate job that references a GitHub issue now checks the upstream open pull requests before creating a branch. If an open PR already references the same issue, the job is rejected as `DUPLICATE_WORK`, the existing PR is linked and the attempt is audited instead of opening a second PR.

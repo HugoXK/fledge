@@ -125,6 +125,23 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+// The duplicate preflight matches a pull request's body for a reference to the
+// job's issue; it never shows or stores the body (the audit line and the event
+// carry the URL), so a body longer than this contributes nothing but work: at
+// the 65,535-character GitHub cap one body measured 4,564 ms to scan. Both ends
+// are kept because a closing `Fixes #N` line sits at the top of a description or
+// at its bottom, and dropping only the tail would silently miss the reference
+// and let the second pull request through. The newline at the seam stops a path
+// from being read across the cut; the only body a seam can affect is one whose
+// reference is split exactly at 4,000 characters.
+const BODY_CAP_HEAD = 4_000
+const BODY_CAP_TAIL = 4_000
+
+function capBody(body: string): string {
+  if (body.length <= BODY_CAP_HEAD + BODY_CAP_TAIL) return body
+  return `${body.slice(0, BODY_CAP_HEAD)}\n${body.slice(-BODY_CAP_TAIL)}`
+}
+
 export class GithubClient {
   constructor(
     private readonly token: string,
@@ -364,6 +381,30 @@ export class GithubClient {
           submittedAt: review.submitted_at ?? '',
         }))
       : []
+  }
+
+  async listOpenPullRequests(owner: string, name: string, maxPages = 3): Promise<Array<{ number: number; url: string; title: string; body: string; head: string; base: string }>> {
+    const pulls: Array<{ number: number; url: string; title: string; body: string; head: string; base: string }> = []
+    for (let page = 1; page <= maxPages; page += 1) {
+      const batch = await this.request<Array<{ number?: number; html_url?: string; title?: string; body?: string | null; head?: { ref?: string }; base?: { ref?: string } }>>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls?state=open&per_page=100&page=${page}`,
+      )
+      if (!Array.isArray(batch) || batch.length === 0) break
+      for (const pull of batch) {
+        if (typeof pull.number !== 'number') continue
+        pulls.push({
+          number: pull.number,
+          url: typeof pull.html_url === 'string' ? pull.html_url : `https://github.com/${owner}/${name}/pull/${pull.number}`,
+          title: typeof pull.title === 'string' ? pull.title : '',
+          body: typeof pull.body === 'string' ? capBody(pull.body) : '',
+          head: typeof pull.head?.ref === 'string' ? pull.head.ref : '',
+          base: typeof pull.base?.ref === 'string' ? pull.base.ref : '',
+        })
+      }
+      if (batch.length < 100) break
+    }
+    return pulls
   }
 
   // The changed-file listing is capped at 30 pages (3,000 files) so one huge
