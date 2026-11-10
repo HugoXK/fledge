@@ -335,7 +335,8 @@ td .link, button.link {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: var(--touch); min-height: var(--touch); padding: 8px 10px; border-radius: 8px;
 }
-.foot a { display: inline-flex; align-items: center; min-height: var(--touch); }
+.foot a { display: inline-flex; align-items: center; justify-content: center;
+  min-width: var(--touch); min-height: var(--touch); }
 /* The 13px checkbox glyph reaches the floor through the label around it, which
    `pages.ts` already emits; no new element and no new attribute. */
 label.check { min-height: var(--touch); }

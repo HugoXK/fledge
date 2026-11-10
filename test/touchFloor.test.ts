@@ -136,8 +136,11 @@ test('the approve, reject and mark-all-read buttons are no longer zero-padded wo
 })
 
 test('the footer links, the ghost buttons and the checkbox rows reach the floor', () => {
-  assert.equal(lastValue('.foot a', 'min-height', 360), 'var(--touch)')
-  assert.equal(lastValue('.foot a', 'display', 360), 'inline-flex')
+  // The footer sets 11.5px, so a height-only floor leaves `文档` 23px wide and
+  // `Docs`/`Portal`/`GitHub` between 24 and 37px: acceptance 1 asks for 44x44,
+  // so both dimensions are pinned here by the shared helper.
+  touchFloor('.foot a')
+  assert.equal(lastValue('.foot a', 'display', 360), 'inline-flex', 'a floor on an inline box measures nothing')
   assert.equal(lastValue('.btn', 'min-width', 360), 'var(--touch)', 'a ghost button measured 39px wide in a cell')
   // The 13px checkbox glyph reaches 44px through the label around it, which is
   // the shape `pages.ts` already emits; no new element is added.
@@ -173,10 +176,16 @@ test('a link alone in its own paragraph is a target, so the template marks it', 
   assert.equal(lastValue('.fine-link', 'min-width', 360), 'var(--touch)', 'the marked lone link carries the width floor')
   assert.equal(lastValue('.fine-link', 'display', 360), 'inline-flex', 'a floor on an inline box measures nothing')
 
-  const lone = pagesSource.split('\n').filter((line) => /查看其余|View the other/.test(line))
-  assert.equal(lone.length, 2, 'the two console rows the issue names are still the only lone links')
-  for (const line of lone) {
+  const consoleRows = pagesSource.split('\n').filter((line) => /查看其余|View the other/.test(line))
+  assert.equal(consoleRows.length, 2, 'the issue names two console rows ("view the other N") and this pattern still finds exactly those')
+  for (const line of consoleRows) {
     assert.match(line, /<a class="[^"]*\bfine-link\b[^"]*" href=/, 'a link alone in its paragraph carries the class')
   }
+  // Not every lone target is floored, and the body says so: the job page renders
+  // the `jobLinks` helper into its own paragraph, while the same helper is
+  // emitted inline inside a table cell, so closing it needs a class per call
+  // site. It is the residue under "Still below the floor"; this assertion fails
+  // if that paragraph changes shape and the note goes stale.
+  assert.match(pagesSource, /<p class="fine">\$\{jobLinks\(job\)\}<\/p>/, 'the job page keeps one named, unfloored lone paragraph')
   assert.equal(lastValue('p .link', 'min-height', 360), null, 'a sentence link keeps its line box')
 })
