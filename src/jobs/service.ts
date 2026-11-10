@@ -265,9 +265,6 @@ export class Jobs {
 
   private async preflight(repo: RepoRow, baseBranch: string, trigger: string): Promise<{ ok: boolean; baseSha?: string; warning?: string; error?: string; code?: string }> {
     if (this.runner.name !== 'flybot') return { ok: true }
-    if (trigger === 'schedule' && this.store.hasActiveWorkItem(repo.id)) {
-      return { ok: false, error: '已有进行中的工作项，跳过定时任务。', code: 'WORK_ITEM_OPEN' }
-    }
     try {
       const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
       const client = new GithubClient(token, this.config.github.apiBase)
@@ -541,7 +538,11 @@ export class Jobs {
     const existing = job.work_item_id === null ? undefined : this.store.getWorkItem(job.work_item_id)
     if (existing !== undefined) {
       const prState = result.prUrl === null ? existing.pr_state : 'open'
-      const state = result.status === 'succeeded' && result.prUrl !== null ? 'pr_ready' : result.status === 'failed' ? 'in_progress' : existing.state
+      const state = result.status === 'succeeded' && result.prUrl !== null
+        ? 'pr_ready'
+        : result.status === 'failed' && (existing.state === 'in_progress' || existing.state === 'assigned')
+          ? 'triaged'
+          : existing.state
       this.store.updateWorkItem(existing.id, {
         state,
         ...(result.prUrl === null ? {} : { pr_url: result.prUrl, pr_state: prState }),

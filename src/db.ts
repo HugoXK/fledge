@@ -2108,14 +2108,6 @@ export class Store {
     return this.all<WorkItemRow>('SELECT * FROM work_items WHERE repo_id = ? ORDER BY priority DESC, updated_at DESC', repoId)
   }
 
-  hasActiveWorkItem(repoId: string): boolean {
-    const row = this.get<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM work_items WHERE repo_id = ? AND state IN ('assigned', 'in_progress', 'pr_ready', 'in_review', 'changes_requested', 'approved')",
-      repoId,
-    )
-    return Number(row?.n ?? 0) > 0
-  }
-
   listOpenWorkItems(repoId: string): WorkItemRow[] {
     return this.all<WorkItemRow>("SELECT * FROM work_items WHERE repo_id = ? AND state NOT IN ('merged', 'closed') ORDER BY priority DESC, updated_at DESC", repoId)
   }

@@ -726,7 +726,26 @@ test('a work item follows its job to PR ready', async () => {
   }
 })
 
-test('flybot preflight records the base SHA and skips scheduled work while a work item is active', async () => {
+test('a failed job returns its work item to triaged instead of leaving it active', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'work-item-fail-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_work_item_fail', userId: user.id, owner: 'o', name: 'wif', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_fail', repoId: repo.id, userId: user.id, title: 'Fix parser', state: 'triaged' })
+    const result = await jobs.enqueue(repo, 'manual', 'work goal', 'iterate', { workItemId: item.id })
+    assert.equal(result.ok, true)
+    await jobs.handleCallback(result.job!.id, contexts[0]!.callback.secret, { status: 'failed', error: 'bridge 502' })
+    assert.equal(store.getWorkItem(item.id)?.state, 'triaged')
+  } finally {
+    store.close()
+  }
+})
+
+test('flybot preflight records the base SHA and scheduled work is not blocked by an open work item', async () => {
   const github = await startFakeServer((request, response) => {
     if (request.url === '/repos/o/preflight/branches/main') {
       json(response, 200, { name: 'main', commit: { sha: 'abc123' } })
@@ -746,10 +765,10 @@ test('flybot preflight records the base SHA and skips scheduled work while a wor
     assert.equal(first.ok, true)
     assert.equal(first.job?.base_sha, 'abc123')
     store.updateJob(first.job!.id, { status: 'succeeded', finished_at: new Date().toISOString() })
-    store.createWorkItem({ id: 'work_preflight', repoId: repo.id, userId: user.id, title: 'Active work', state: 'in_progress' })
+    store.createWorkItem({ id: 'work_preflight', repoId: repo.id, userId: user.id, title: 'Open work', state: 'in_progress' })
     const scheduled = await jobs.enqueue(repo, 'schedule')
-    assert.equal(scheduled.ok, false)
-    assert.equal(scheduled.code, 'WORK_ITEM_OPEN')
+    assert.equal(scheduled.ok, true)
+    assert.notEqual(scheduled.code, 'WORK_ITEM_OPEN')
   } finally {
     store.close()
     await github.close()
