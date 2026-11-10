@@ -61,7 +61,13 @@
       navToggle.focus()
     })
     if (typeof window.matchMedia === 'function') {
-      window.matchMedia('(max-width: 640px)').addEventListener('change', () => setNavOpen(false))
+      // Guarded like the ResizeObserver above: an engine can have matchMedia and
+      // only the legacy addListener (Safari <= 13.1), and an unguarded throw here
+      // would abort every widget wired after this line.
+      const phone = window.matchMedia('(max-width: 640px)')
+      const closeOnPhone = () => setNavOpen(false)
+      if (typeof phone.addEventListener === 'function') phone.addEventListener('change', closeOnPhone)
+      else if (typeof phone.addListener === 'function') phone.addListener(closeOnPhone)
     }
   }
 

@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { Store } from '../src/db.js'
 import { layout } from '../src/views/layout.js'
 import { makeUser, testConfig } from './helpers.js'
+import { runApp } from './stubDom.js'
 
 // #133: on a phone the sticky header filled a quarter to a third of the
 // viewport (125 / 194.9 / 255.9px measured at 360 in #94 and the phone matrix)
@@ -68,6 +69,9 @@ test('at phone widths the header is a fixed height, not a wrapped block', () => 
 
 test('the toggle script keeps aria-expanded, Escape and the sticky offset honest', () => {
   const script = jsText()
+  // A guard, not the evidence: these assertions pin tokens, and a token is not
+  // behaviour (this regex passes on `data-nav-open-typo`). The behaviour test
+  // below runs the shipped script; both are kept.
   assert.match(script, /data-nav-toggle/, 'public/app.js must wire the menu toggle')
   assert.match(script, /aria-expanded/, 'the toggle state lives in aria-expanded, not only in a class')
   assert.match(script, /Escape/, 'a keyboard user must be able to close the menu')
@@ -76,6 +80,63 @@ test('the toggle script keeps aria-expanded, Escape and the sticky offset honest
   // observed element is the header box, and the menu is absolutely positioned.
   assert.match(script, /querySelector\(['"]\.top['"]\)/, 'the observed header stays .top')
 })
+
+test('the toggle opens and closes the panel, closes on Escape and on a link, and never moves the sticky offset', () => {
+  // #133 acceptance 5, in the instrument it names: the shipped script runs in a
+  // stub DOM, so a token that is never wired fails here even though the source
+  // still contains it.
+  const app = runApp({ resizeObserver: true, headerHeight: 65 })
+  assert.equal(app.ariaExpanded(), 'false', 'the toggle starts collapsed')
+  assert.equal(app.navOpen(), null, 'the header starts without the open state')
+  assert.equal(app.properties.get('--header-h'), '65px', 'the offset follows the measured header')
+
+  app.clickToggle()
+  assert.equal(app.ariaExpanded(), 'true', 'a click must open the panel and say so')
+  assert.equal(app.navOpen(), 'true', 'the open state must reach .top, which is what the CSS keys on')
+  assert.equal(app.properties.get('--header-h'), '65px', 'an open panel overlays the page: the sticky offset must not move')
+
+  app.clickToggle()
+  assert.equal(app.ariaExpanded(), 'false', 'a second click must close it')
+  assert.equal(app.navOpen(), null, 'closing must remove the open state, not leave a stale attribute')
+
+  app.clickToggle()
+  assert.equal(app.ariaExpanded(), 'true')
+  app.pressEscape()
+  assert.equal(app.ariaExpanded(), 'false', 'Escape must close the menu')
+  assert.equal(app.navOpen(), null)
+  assert.equal(app.focused(), 1, 'Escape must return focus to the toggle, not drop it on the body')
+  app.pressEscape()
+  assert.equal(app.focused(), 1, 'Escape while closed must not move focus')
+
+  app.clickToggle()
+  assert.equal(app.ariaExpanded(), 'true')
+  app.clickPanelLink()
+  assert.equal(app.ariaExpanded(), 'false', 'following a link in the panel must close it')
+
+  app.clickToggle()
+  assert.equal(app.ariaExpanded(), 'true')
+  app.changeMedia()
+  assert.equal(app.ariaExpanded(), 'false', 'leaving the phone band must close the menu')
+})
+
+test('an engine whose matchMedia result has only addListener still wires the rest of the page', () => {
+  // Safari <= 13.1 has matchMedia and MediaQueryList#addListener but no
+  // #addEventListener; an unguarded call throws and the rest of the IIFE never
+  // runs. The [data-auto-group] wiring below the menu block is the observable.
+  const legacy = runApp({ media: 'legacy' })
+  assert.equal(legacy.autoSelectDisabled(), true, 'the widgets after the menu block must still wire without addEventListener')
+  legacy.clickToggle()
+  assert.equal(legacy.ariaExpanded(), 'true', 'the toggle must work on an engine with only addListener')
+  legacy.changeMedia()
+  assert.equal(legacy.ariaExpanded(), 'false', 'the legacy listener must still close the menu when the band changes')
+
+  // An engine with neither method must not throw either.
+  const bare = runApp({ media: 'none' })
+  assert.equal(bare.autoSelectDisabled(), true, 'a matchMedia result with no listener API must not abort the script')
+  bare.clickToggle()
+  assert.equal(bare.ariaExpanded(), 'true')
+})
+
 
 test('the toggle is hidden above the phone band, where its panel does not exist', () => {
   const css = cssText()
