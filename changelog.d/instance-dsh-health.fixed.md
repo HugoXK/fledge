@@ -1,0 +1,1 @@
+Instance health checks now ask the bridge for DSH `state`, not only `/healthz`. A container whose `dsh web` process has exited is marked failed instead of ready; when no job is active and restart is safe, Fledge restarts the container, waits for DSH and records an audit entry, with a ten-minute cooldown. An instance with an active job is never restarted by the sweep.
