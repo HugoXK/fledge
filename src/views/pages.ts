@@ -5,7 +5,7 @@ import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
-import { renderState, stateCell } from './states.js'
+import { renderState, stateCell, type StateAction } from './states.js'
 import { oauthConfigured, tokenLoginEnabled } from '../auth/login.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
@@ -295,9 +295,16 @@ function jobPlainSummary(locale: Locale, t: Translate, job: JobRow, max = 160): 
   return { full, short: full.length > max ? `${full.slice(0, max)}…` : full }
 }
 
-function jobRows(locale: Locale, jobs: JobRow[]): string {
+/** What an empty job list says; the action belongs to the page that renders it. */
+interface EmptyJobs {
+  title?: string
+  body: string
+  action?: StateAction
+}
+
+function jobRows(locale: Locale, jobs: JobRow[], empty?: EmptyJobs): string {
   const t = translator(locale)
-  if (jobs.length === 0) return stateCell(4, { kind: 'empty', title: t('还没有任务。', 'No jobs yet.'), body: t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.'), action: { href: '/dashboard#add-repo', label: t('添加仓库', 'Add repository') } })
+  if (jobs.length === 0) return stateCell(4, { kind: 'empty', title: empty?.title ?? t('还没有任务。', 'No jobs yet.'), body: empty === undefined ? t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.') : empty.body, action: empty?.action ?? { href: '/dashboard#add-repo', label: t('添加仓库', 'Add repository') } })
   return jobs
     .map((job) => {
       const summary = jobPlainSummary(locale, t, job)
@@ -315,14 +322,14 @@ function jobRows(locale: Locale, jobs: JobRow[]): string {
     .join('')
 }
 
-function jobTable(locale: Locale, jobs: JobRow[]): string {
+function jobTable(locale: Locale, jobs: JobRow[], empty?: EmptyJobs): string {
   const t = translator(locale)
-  return `<div class="table-scroll"><table class="job-table"><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('PR / Issue', 'PR / Issue'))}</th><th>${escapeHtml(t('摘要', 'Summary'))}</th></tr></thead><tbody>${jobRows(locale, jobs)}</tbody></table></div>`
+  return `<div class="table-scroll"><table class="job-table"><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('PR / Issue', 'PR / Issue'))}</th><th>${escapeHtml(t('摘要', 'Summary'))}</th></tr></thead><tbody>${jobRows(locale, jobs, empty)}</tbody></table></div>`
 }
 
-function jobList(locale: Locale, jobs: JobRow[], repoLabels: Map<string, string> = new Map()): string {
+function jobList(locale: Locale, jobs: JobRow[], repoLabels: Map<string, string> = new Map(), empty?: EmptyJobs): string {
   const t = translator(locale)
-  if (jobs.length === 0) return `<p class="muted">${escapeHtml(t('还没有任务。', 'No jobs yet.'))}</p>`
+  if (jobs.length === 0) return renderState({ kind: 'empty', title: empty?.title ?? t('还没有任务。', 'No jobs yet.'), body: empty === undefined ? t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.') : empty.body, action: empty?.action ?? { href: '/dashboard', label: t('打开仓库', 'Open a repository') } })
   return `<div class="list">${jobs
     .map((job) => {
       const summary = jobPlainSummary(locale, t, job, 100)
@@ -599,7 +606,7 @@ export function dashboardPage(input: {
 
   <section class="card" id="jobs">
     <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
-    ${jobTable(locale, jobs)}
+    ${jobTable(locale, jobs, { body: t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })}
     ${pager('/dashboard', 'jobsPage', jobsPage, jobsTotal, 10, t, { reposPage }, '#jobs')}
   </section>`
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
@@ -664,6 +671,13 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const repoEnabled = repo.enabled === 1
   const credentialOk = repo.credential_state !== 'invalid'
   const runnable = repoEnabled && flybotReady && credentialOk
+  // The empty job list points at what this page can actually do: choose a role,
+  // run this repository, or fix what blocks a run. Another page's action is wrong here.
+  const emptyJobs: EmptyJobs = roleMissing
+    ? { body: t('先选择你在这个仓库的角色，然后运行第一个任务。', 'Choose your role for this repository, then run the first job.'), action: { href: '#role', label: t('选择角色', 'Choose a role') } }
+    : runnable
+      ? { body: t('立即运行会创建这个仓库的第一个任务；每次运行只开一个 PR。', 'Run now creates the first job for this repository; each run opens at most one pull request.'), action: { formAction: `/repos/${repo.id}/run`, label: t('立即运行', 'Run now'), csrf: csrf(viewer) } }
+      : { body: t('先修复 FlyBot 实例或 GitHub 凭据，然后再运行。', 'Fix the FlyBot instance or the GitHub credential first, then run.'), action: { label: t('实例与凭据在本页的连接卡片里。', 'The instance and the credential are on the connection card of this page.') } }
   const instanceNotice = config.flybot.instanceImage === ''
     ? `<div class="banner">${escapeHtml(t('这个部署没有启用每仓库 FlyBot 实例，任务由全局 mock/runner 处理。', 'This deployment has no per-repository FlyBot instance; jobs use the global mock/runner.'))}</div>`
     : instance === undefined
@@ -924,7 +938,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   </section>
   <section class="card" id="jobs">
     <h2>${escapeHtml(t('任务', 'Jobs'))}</h2>
-    ${jobTable(locale, jobs)}
+    ${jobTable(locale, jobs, emptyJobs)}
     ${pager(`/repos/${repo.id}`, 'jobsPage', jobsPage, jobsTotal, 10, t, {}, '#jobs')}
   </section>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : '<script src="/assets/chief.js" defer></script>'}`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
@@ -1098,7 +1112,7 @@ export function teamPage(input: {
   </section>
   <section class="card" id="jobs">
     <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
-    ${jobTable(locale, jobs)}
+    ${jobTable(locale, jobs, { body: t('去这个仓库的页面运行第一个任务；每次运行最多开一个 PR。', 'Run the first job from this repository page; each run opens at most one pull request.'), action: { href: `/repos/${escapeHtml(repo.id)}`, label: t('去仓库运行', 'Run from the repository') } })}
     ${pager(`/repos/${repo.id}`, 'jobsPage', jobsPage, jobsTotal, 10, t, {}, '#jobs')}
   </section>
   <script src="/assets/team.js" defer></script>`
@@ -1144,7 +1158,8 @@ export function settingsPage(input: {
     <h2>${escapeHtml(t('模型提供方', 'Model providers'))}</h2>
     <p class="muted">${escapeHtml(t('先添加提供方（Base URL + API Key），再在它下面添加模型。添加模型时 Fledge 会发起 1-token 测试；测试失败不会保存。', 'Add a provider (Base URL + API key), then add models under it. Adding a model sends a 1-token test from Fledge; a failed test is not saved.'))}</p>
     ${providers.length === 0
-      ? `<p class="muted">${escapeHtml(t('还没有模型提供方。', 'No model providers yet.'))}</p>`
+      ? `${renderState({ kind: 'empty', title: t('还没有模型提供方。', 'No model providers yet.'), body: t('添加提供方（Base URL + API Key）后，任务才能用你自己的模型。', 'Add a provider (Base URL and API key) so jobs can use your own model.'), action: { href: '#add-provider', label: t('添加提供方', 'Add provider') } })}
+      <span id="add-provider"></span>`
       : providers.map((provider) => {
           const pending = (discoveredProvider === provider.id ? discovered : []).filter((id) => !provider.models.some((model) => model.model === id))
           return `<div class="card provider-card">
@@ -1433,7 +1448,7 @@ export function adminPage(input: {
   </section>
   <section class="card">
     <div class="row between"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))} <small class="count">${jobsTotal}</small></h2><span class="fine">${escapeHtml(t('每页 10 条', '10 per page'))}</span></div>
-    ${jobTable(locale, jobs)}
+    ${jobTable(locale, jobs, { body: t('这里汇总所有用户的任务；还没有任何一条。', 'Jobs from every user are collected here; there are none yet.'), action: { href: '/admin/users', label: t('查看用户', 'View users') } })}
     ${pager('/admin', 'jobsPage', jobsPage, jobsTotal, perPage, t, showAudit ? { auditPage } : {})}
   </section>
   ${showAudit ? `<section class="card">
@@ -1633,7 +1648,7 @@ export function workspacePage(input: {
   </section>
   <section class="card">
     <div class="row between"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2><a class="link" href="/dashboard">${escapeHtml(t('查看全部', 'View all'))}</a></div>
-    ${jobList(locale, recent, reposById)}
+    ${jobList(locale, recent, reposById, { body: t('在仓库页点“立即运行”创建第一个任务；每个任务只开一个 PR。', 'Run the first job from a repository page; each job opens at most one pull request.'), action: { href: '/dashboard', label: t('打开仓库', 'Open a repository') } })}
     ${jobsTotal > recent.length ? `<p class="fine" style="margin:12px 0 0"><a href="/dashboard#jobs">${escapeHtml(t(`查看其余 ${jobsTotal - recent.length} 个任务`, `View the other ${jobsTotal - recent.length} jobs`))}</a></p>` : ''}
   </section>`
   return layout({ title: t('工作区', 'Workspace'), viewer, body, config, locale, path: '/console', active: 'console', notice, error })
@@ -1793,7 +1808,7 @@ export function jobPage(input: {
   <section class="card">
     <h2>${escapeHtml(t('时间线', 'Timeline'))}</h2>
     ${events.length === 0
-      ? `<p class="muted">${escapeHtml(t('还没有任务事件。', 'No job events yet.'))}</p>`
+      ? renderState({ kind: 'empty', title: t('还没有任务事件。', 'No job events yet.'), body: t('任务开始后，每一次状态变化都会记录在这里。', 'Every state change is recorded here once the job starts.'), action: job.status === 'failed' ? { formAction: `/repos/${repo.id}/jobs/${job.id}/retry`, label: t('重试这个任务', 'Retry this job'), csrf: csrf(viewer) } : { href: `/repos/${repo.id}`, label: t('返回仓库', 'Back to repository') } })
       : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('时间', 'Time'))}</th><th>${escapeHtml(t('事件', 'Event'))}</th><th>${escapeHtml(t('角色/步骤', 'Role/step'))}</th><th>${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${events.map((entry) => `<tr><td>${escapeHtml(humanTimeShort(entry.at))}</td><td><code>${escapeHtml(entry.kind)}</code></td><td>${escapeHtml([entry.role, entry.step].filter((value) => value !== null && value !== '').join(' · ') || '—')}</td><td>${escapeHtml(jobEventDetail(t, entry))}</td></tr>`).join('')}</tbody></table></div>`}
   </section>
   ${advanced ? `<section class="card">

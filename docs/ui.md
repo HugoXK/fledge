@@ -117,6 +117,11 @@ and the accessibility contract are fixed:
 
 - `stateCell(colspan, …)` is the table form; a table that still renders a bare
   `<td colspan class="muted">` is a leftover, not a style choice.
+- The empty state's action comes from the page that renders it: a repository
+  page offers that repository's own `Run now`, the dashboard offers
+  `Add repository`, Settings offers `Add provider`. No page inherits another
+  page's empty action, and a region blocked by config names the blocker instead
+  of sending the user somewhere else.
 - A control that cannot act uses `aria-disabled="true"` and the shared inert
   style, so a disabled link looks inert like a disabled button.
 - The three live streams (notifications, questions, chief) announce

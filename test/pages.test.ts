@@ -6,7 +6,7 @@ import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
-import { appReposPage, dashboardPage, jobPage, landingPage, metricsPage, repoPage } from '../src/views/pages.js'
+import { appReposPage, dashboardPage, jobPage, landingPage, metricsPage, repoPage, settingsPage, workspacePage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
 import { localizeMessage } from '../src/i18n.js'
 import { encryptSecret } from '../src/lib/secrets.js'
@@ -1101,6 +1101,93 @@ test('admin metrics shows the failure breakdown', () => {
     assert.match(page, /Failure breakdown/)
     assert.match(page, /Platform quota exhausted/)
     assert.match(page, /GitHub operation failed/)
+  } finally {
+    store.close()
+  }
+})
+
+/** One card out of a page, so a state rendered elsewhere cannot satisfy an assertion. */
+function cardWithId(html: string, id: string): string {
+  const start = html.indexOf(`id="${id}"`)
+  assert.notEqual(start, -1, `expected a card with id="${id}" in the page`)
+  const end = html.indexOf('</section>', start)
+  assert.notEqual(end, -1, `expected the card with id="${id}" to close`)
+  return html.slice(start, end)
+}
+
+/** The card that starts with one heading, for pages whose cards carry no id. */
+function cardAfterHeading(html: string, heading: string): string {
+  const start = html.indexOf(`<h2>${heading}</h2>`)
+  assert.notEqual(start, -1, `expected a card headed ${heading}`)
+  const end = html.indexOf('</section>', start)
+  assert.notEqual(end, -1, `expected the card headed ${heading} to close`)
+  return html.slice(start, end)
+}
+
+test('every empty data region uses the shared state component and points at its own page action', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'empty-state-user', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const repo = store.createRepo({ id: 'repo_empty_states', userId: user.id, owner: 'o', name: 'empty', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+
+    const repoHtml = repoPage({ config, locale: 'en', viewer, repo, jobs: [] })
+    const jobsCard = cardWithId(repoHtml, 'jobs')
+    assert.match(jobsCard, /data-state="empty"/, 'the repository jobs card renders the shared empty state')
+    assert.doesNotMatch(jobsCard, /\/dashboard#add-repo/, 'the repository page never sends an empty job list to add a repository')
+    assert.match(jobsCard, /action="\/repos\/repo_empty_states\/run"/, "the repository empty action runs this repository's first job")
+
+    const consoleHtml = workspacePage({ config, locale: 'en', viewer, repos: [repo], jobs: [] })
+    const consoleRecent = cardAfterHeading(consoleHtml, 'Recent jobs')
+    assert.match(consoleRecent, /data-state="empty"/, 'the console recent-jobs region renders the shared empty state')
+    assert.doesNotMatch(consoleRecent, /<p class="muted">No jobs yet\.<\/p>/, 'the console no longer falls back to a bare grey sentence')
+    assert.match(consoleRecent, /class="actions"/, 'the console empty state carries an action')
+
+    const settingsHtml = settingsPage({ config, locale: 'en', viewer, tokens: [], providers: [] })
+    const providerCard = cardWithId(settingsHtml, 'model-providers')
+    assert.match(providerCard, /data-state="empty"/, 'settings renders the shared empty state when there is no provider')
+    assert.doesNotMatch(providerCard, /<p class="muted">No model providers yet\.<\/p>/, 'settings no longer falls back to a bare grey sentence')
+
+    const job = store.createJob({ id: 'job_empty_events', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    const jobHtml = jobPage({ config, locale: 'en', viewer, repo, job, events: [] })
+    const timelineCard = cardAfterHeading(jobHtml, 'Timeline')
+    assert.match(timelineCard, /data-state="empty"/, 'the job timeline renders the shared empty state')
+    assert.doesNotMatch(timelineCard, /<p class="muted">No job events yet\.<\/p>/, 'the timeline no longer falls back to a bare grey sentence')
+  } finally {
+    store.close()
+  }
+})
+
+test('non-empty data regions render exactly as before, with no state wrapper', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'filled-state-user', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const repo = store.createRepo({ id: 'repo_filled_states', userId: user.id, owner: 'o', name: 'filled', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_filled_events', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+
+    const repoHtml = repoPage({ config, locale: 'en', viewer, repo, jobs: [job] })
+    const jobsCard = cardWithId(repoHtml, 'jobs')
+    assert.match(jobsCard, /data-job-id="job_filled_events"/)
+    assert.doesNotMatch(jobsCard, /data-state=/, 'a non-empty job table gains no state wrapper')
+
+    const consoleHtml = workspacePage({ config, locale: 'en', viewer, repos: [repo], jobs: [job] })
+    const consoleRecent = cardAfterHeading(consoleHtml, 'Recent jobs')
+    assert.match(consoleRecent, /data-job-id="job_filled_events"/)
+    assert.doesNotMatch(consoleRecent, /data-state=/, 'a non-empty recent-jobs list gains no state wrapper')
+
+    const provider = store.createModelProvider({ id: 'prov_filled', userId: user.id, label: 'Filled provider', baseUrl: 'https://api.example.com/v1', keyEnc: 'x', allowPrivate: false })
+    const settingsHtml = settingsPage({ config, locale: 'en', viewer, tokens: [], providers: [{ ...provider, models: [] }] })
+    const providerCard = cardWithId(settingsHtml, 'model-providers')
+    assert.match(providerCard, /Filled provider/)
+    assert.doesNotMatch(providerCard, /data-state=/, 'a configured settings page gains no state wrapper')
+
+    const jobHtml = jobPage({ config, locale: 'en', viewer, repo, job, events: [{ id: 1, at: new Date().toISOString(), job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.enqueued', role: null, step: 'iterate', meta: 'iterate:manual' }] })
+    const timelineCard = cardAfterHeading(jobHtml, 'Timeline')
+    assert.match(timelineCard, /job\.enqueued/)
+    assert.doesNotMatch(timelineCard, /data-state=/, 'a non-empty timeline gains no state wrapper')
   } finally {
     store.close()
   }
