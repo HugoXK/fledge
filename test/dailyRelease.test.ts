@@ -13,6 +13,32 @@ import { existsSync, readFileSync } from 'node:fs'
 const daily = readFileSync('.github/workflows/daily-release.yml', 'utf8')
 const release = readFileSync('.github/workflows/release.yml', 'utf8')
 
+// Two lists, this branch's own additions, kept apart so a test file can never
+// ride in on the script rule. They are deliberately not "every release file
+// that may exist": `#187` adds `scripts/release-open.mjs` on another branch,
+// and an absolute listing of `scripts/` would go red on that merge and blame
+// this change for it.
+const allowedScripts = new Set([
+  'scripts/lib/release-tag.d.mts',
+  'scripts/lib/release-tag.mjs',
+])
+const allowedTests = new Set(['test/releaseTag.test.ts'])
+
+// The only branch whose own additions are held to those two lists is the one the
+// daily-release job creates (`release/v<version>`, `.github/workflows/daily-release.yml`
+// `git checkout -b "$BRANCH"`). A working branch may add a test or a script for
+// the change it makes; before this seam existed the guard read
+// `origin/main...HEAD` and failed that branch, so `npm run check` was red for
+// work unrelated to the release (#225). Returning the violations instead of
+// asserting here is what lets the test drive both branches from one checkout.
+function addedReleaseEntries(added: string[], branch: string): { tests: string[]; scripts: string[] } {
+  if (!branch.startsWith('release/v')) return { tests: [], scripts: [] }
+  return {
+    tests: added.filter((path) => path.startsWith('test/') && path.endsWith('.test.ts') && !allowedTests.has(path)),
+    scripts: added.filter((path) => path.startsWith('scripts/') && !allowedScripts.has(path)),
+  }
+}
+
 function between(from: string, to: string): string {
   const start = daily.indexOf(from)
   assert.notEqual(start, -1, `the workflow has "${from}"`)
@@ -172,16 +198,6 @@ test('no expression reaches a shell body anywhere in the workflow', () => {
 })
 
 test('the surface this branch adds is declared, and the workflow runs no other release module', () => {
-  // Two lists, this branch's own additions, kept apart so a test file can never
-  // ride in on the script rule. They are deliberately not "every release file
-  // that may exist": `#187` adds `scripts/release-open.mjs` on another branch,
-  // and an absolute listing of `scripts/` would go red on that merge and blame
-  // this change for it.
-  const allowedScripts = new Set([
-    'scripts/lib/release-tag.d.mts',
-    'scripts/lib/release-tag.mjs',
-  ])
-  const allowedTests = new Set(['test/releaseTag.test.ts'])
   for (const path of [...allowedScripts, ...allowedTests]) {
     assert.ok(existsSync(path), `${path} exists on this branch`)
   }
@@ -197,24 +213,27 @@ test('the surface this branch adds is declared, and the workflow runs no other r
   assert.ok(imports.length >= 3, 'the workflow imports the tested modules')
   for (const path of imports) assert.ok(machinery.has(path), `${path} is not the tested release machinery`)
 
-  // Locally the branch's own diff is readable, so the two lists are held to it.
-  // The CI checkout is one commit deep, where `origin/main` has no merge base to
-  // diff against; the import check above is the half that always runs, and a
-  // false red on a T3 costs a review cycle it does not buy anything for.
+  // Locally the branch's own diff is readable, so the release branch's additions
+  // are held to the two lists. The CI checkout is one commit deep, where
+  // `origin/main` has no merge base to diff against; the import check above is the
+  // half that always runs, and a false red on a T3 costs a review cycle it does
+  // not buy anything for. The decision itself is `addedReleaseEntries`, which the
+  // test below drives for both branch shapes.
   let added: string[] | null = null
+  let branch = 'HEAD'
   try {
     added = execFileSync('git', ['diff', '--name-only', '--diff-filter=A', 'origin/main...HEAD'], { encoding: 'utf8' })
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line !== '')
+    branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim()
   } catch {
     added = null
   }
   if (added !== null) {
-    for (const path of added) {
-      if (path.startsWith('scripts/')) assert.ok(allowedScripts.has(path), `${path} is a new release script; add it to allowedScripts`)
-      if (path.startsWith('test/') && path.endsWith('.test.ts')) assert.ok(allowedTests.has(path), `${path} is a new release test; add it to allowedTests`)
-    }
+    const { scripts, tests } = addedReleaseEntries(added, branch)
+    for (const path of scripts) assert.ok(false, `${path} is a new release script; add it to allowedScripts`)
+    for (const path of tests) assert.ok(false, `${path} is a new release test; add it to allowedTests`)
   }
 })
 
@@ -222,6 +241,20 @@ test('release.yml is not folded into this change and knows nothing about the tag
   assert.equal(/git\/tags/.test(release), false)
   assert.equal(/git\/refs/.test(release), false)
   assert.match(release, /Verify the tag is an ancestor of main/)
+})
+
+test('an added test or script is held to the release lists only on a release branch', () => {
+  const added = ['test/anything.test.ts', 'scripts/anything.mjs']
+  assert.deepEqual(addedReleaseEntries(added, 'main'), { tests: [], scripts: [] }, 'main may add a test or a script for its own change')
+  assert.deepEqual(addedReleaseEntries(added, 'dev3/225-daily-release-guard'), { tests: [], scripts: [] }, 'a working branch may add a test or a script')
+  assert.deepEqual(
+    addedReleaseEntries(added, 'release/v0.3.0'),
+    { tests: ['test/anything.test.ts'], scripts: ['scripts/anything.mjs'] },
+    'the release branch still cannot grow a second test file or a second release script',
+  )
+  const declared = ['test/releaseTag.test.ts', 'scripts/lib/release-tag.mjs']
+  assert.deepEqual(addedReleaseEntries(declared, 'release/v0.3.0'), { tests: [], scripts: [] }, 'the declared entries are allowed on the release branch')
+  assert.deepEqual(addedReleaseEntries(['docs/readme.md', 'src/app.ts'], 'release/v0.3.0'), { tests: [], scripts: [] }, 'other paths are not release entries')
 })
 
 test('release.yml keeps its own concurrency and verifies the tag before publishing', () => {

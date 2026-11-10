@@ -1,0 +1,1 @@
+On a tablet the sticky header is now one fixed 64px row instead of a two-row block that stood 215px tall between 641px and 960px, and the main navigation opens from the same labelled toggle the phone already uses, so a 768px screen keeps its content under a header that reserves 90px even without JavaScript, in both Chinese and English.

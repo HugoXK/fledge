@@ -149,7 +149,7 @@ test('the toggle is hidden above the phone band, where its panel does not exist'
   const base = /\n\.nav-toggle\s*\{([^}]*)\}/.exec(css)
   assert.ok(base !== null, 'public/app.css must carry a base .nav-toggle rule outside the phone block')
   assert.ok((base?.index ?? 0) < phoneStart, 'the .nav-toggle base rule must sit outside (above) the phone block')
-  assert.match(base?.[1] ?? '', /display:\s*none/, 'above 641px the toggle must not render: the panel it opens is phone-only')
+  assert.match(base?.[1] ?? '', /display:\s*none/, 'outside the compact bands the toggle must not render: the panel it opens does not exist there')
 })
 
 test('the 420px band takes chrome off the row, never a control, so 360 fits with a scrollbar', () => {
