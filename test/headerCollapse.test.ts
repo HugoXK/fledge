@@ -76,3 +76,17 @@ test('the toggle script keeps aria-expanded, Escape and the sticky offset honest
   // observed element is the header box, and the menu is absolutely positioned.
   assert.match(script, /querySelector\(['"]\.top['"]\)/, 'the observed header stays .top')
 })
+
+test('the toggle is hidden above the phone band, where its panel does not exist', () => {
+  const css = cssText()
+  // The toggle is emitted for every viewer at every width (src/views/layout.ts),
+  // so a base rule outside every breakpoint must hide it; only the phone block
+  // turns it on. Every other assertion in this file reads inside the phone
+  // block, which is how a visible toggle that cannot act shipped green.
+  const phoneStart = css.indexOf('@media (max-width: 640px)')
+  assert.ok(phoneStart !== -1, 'public/app.css has no @media (max-width: 640px) block')
+  const base = /\n\.nav-toggle\s*\{([^}]*)\}/.exec(css)
+  assert.ok(base !== null, 'public/app.css must carry a base .nav-toggle rule outside the phone block')
+  assert.ok((base?.index ?? 0) < phoneStart, 'the .nav-toggle base rule must sit outside (above) the phone block')
+  assert.match(base?.[1] ?? '', /display:\s*none/, 'above 641px the toggle must not render: the panel it opens is phone-only')
+})

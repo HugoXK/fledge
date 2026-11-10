@@ -499,6 +499,12 @@ a.list-row:hover strong { color: var(--accent); }
   .foot { padding: 24px 16px 44px; }
 }
 
+/* The menu toggle is rendered for every viewer at every width (#133), so the
+   base rule hides it; only the phone block below turns it on. Without this the
+   desktop header shows a button whose panel is phone-only, which flips
+   aria-expanded without moving the navigation. */
+.nav-toggle { display: none; }
+
 @media (max-width: 640px) {
   body { font-size: 15px; }
   h1 { font-size: clamp(28px, 9vw, 38px); }

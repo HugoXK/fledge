@@ -70,7 +70,9 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   navigation collapses behind a `data-nav-toggle` button that publishes
   `aria-expanded`; the open menu is an absolutely positioned panel, so it
   overlays the page and `--header-h` keeps the collapsed height while it is
-  open. Every destination the wide header lists is still rendered in the panel,
+  open. The toggle itself is hidden outside the phone band by a base rule, so
+  the desktop header never shows a control whose panel does not exist there.
+  Every destination the wide header lists is still rendered in the panel,
   so a phone loses no route.
 - **Redirect targets**: every `next=` / `returnTo` value goes through one helper
   that returns a path on this site or the fallback. It validates the parsed
