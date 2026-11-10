@@ -69,7 +69,9 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   a 44px touch target, and so do the controls inside `main` and in the footer:
   the floor is the `--touch` token, applied by container (`td .link`,
   `button.link`, `.foot a`, `label.check`) rather than to `.link`, because a
-  link inside a sentence is exempt and must keep its line box. Text fields,
+  link inside a sentence is exempt and must keep its line box; a link that is
+  the whole paragraph is a target, so the template marks it (`.fine-link`) and
+  the class carries the floor. Text fields,
   selects and textareas are 16px below 641px, the size below which iOS zooms a
   focused field.
 - **Redirect targets**: every `next=` / `returnTo` value goes through one helper
