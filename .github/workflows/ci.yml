@@ -164,9 +164,19 @@ jobs:
       - name: Run the image and assert /healthz
         run: |
           set -euo pipefail
-          secret="$(node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('hex'))")"
+          # The image runs with NODE_ENV=production, so src/config.ts refuses to
+          # start without these. Generate every one of them per run: a committed
+          # fixture would be a secret, and a real OAuth pair would be a credential
+          # this job has no business holding. `ALLOW_TOKEN_LOGIN_ONLY` is the
+          # documented way to run without an OAuth app; the runner stays on its
+          # default `mock` mode and mail on its default `console` transport, so no
+          # outbound call or SMTP account is involved.
+          random() { node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('$1'))"; }
           docker run -d --name fledge-smoke \
-            -e SESSION_SECRET="$secret" \
+            -e SESSION_SECRET="$(random hex)" \
+            -e TOKEN_ENCRYPTION_KEY="$(random base64)" \
+            -e METRICS_TOKEN="$(random hex)" \
+            -e ALLOW_TOKEN_LOGIN_ONLY=true \
             -e DATA_DIR=/data \
             -e PORT=8080 \
             -p 18080:8080 \
@@ -179,6 +189,7 @@ jobs:
           started=0
           for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:18080/healthz -o /tmp/healthz.json; then started=1; break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' fledge-smoke 2>/dev/null)" = "false" ]; then break; fi
             sleep 1
           done
           if [ "$started" = 0 ]; then
@@ -357,9 +368,11 @@ jobs:
           # 138. actionlint's -ignore matches the message text, which does not
           # carry the file name, so this silences exactly those three rule ids and
           # nothing else — and today they fire nowhere but that file (checked by
-          # running actionlint 1.7.12 without the flag). Remove it together with
-          # #80's fix to daily-release.yml.
-          flags: '-ignore "shellcheck reported issue in this script: SC(2010|2126|2016)"'
+          # running actionlint 1.7.12 without the flag). One token per flag: the
+          # action splits `flags` on whitespace and keeps quotes literally, so a
+          # single quoted pattern with spaces does not reach actionlint. Remove
+          # these together with #80's fix to daily-release.yml.
+          flags: '-ignore SC2010 -ignore SC2126 -ignore SC2016'
 
   # gitleaks runs as a checksum-pinned binary rather than an action: the action
   # is licence-gated and chooses its own scan range, and this job has to prove a

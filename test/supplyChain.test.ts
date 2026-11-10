@@ -165,6 +165,13 @@ test('the docker job runs the image and checks /healthz for the version', () => 
   assert.match(block, /docker run -d --name fledge-smoke/, 'a built image that cannot start is not a green build')
   assert.match(block, /SESSION_SECRET=/, 'the smoke run needs a generated secret, never a committed one')
   assert.match(block, /DATA_DIR=/, 'the smoke run writes its SQLite file to a throwaway path')
+  assert.match(
+    block,
+    /TOKEN_ENCRYPTION_KEY=/,
+    'the image runs with NODE_ENV=production, so src/config.ts refuses to start without the key material',
+  )
+  assert.match(block, /METRICS_TOKEN=/, 'the production startup check refuses an unauthenticated /metrics since #127')
+  assert.match(block, /ALLOW_TOKEN_LOGIN_ONLY=true/, 'a smoke run must not need a real OAuth app or token')
   assert.match(block, /\/healthz/, 'the readiness route is the assertion')
   assert.match(block, /version/, 'a /healthz answer without the version field is not the release surface')
   assert.match(block, /docker rm -f fledge-smoke/, 'the container must be removed even when the assertion fails')
