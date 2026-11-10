@@ -212,6 +212,19 @@ test('the gate passes a T0 tip with no verdict, because no PASS is required', as
   })
 })
 
+test('a mixed diff of an unnamed path and a docs file is T2, so the gate needs a PASS', async () => {
+  const state = initialState()
+  state.files = ['.env.example', 'docs/deploy.md']
+  state.comments = []
+  state.reviews = []
+  state.checkRuns = []
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'one docs file must not exempt a diff that also touches an unnamed path')
+    assert.match(result.stderr, /no conclusion at /)
+  })
+})
+
 test('a same-repo release PR for the computed next still earns the T0 exemption', async () => {
   const state = initialState()
   state.title = 'release: v0.4.0'
