@@ -165,3 +165,28 @@ test('the route detects the step from rows, so a second browser or a cleared coo
     store.close()
   }
 })
+
+test('a job that carries a PR replaces the checklist and the summary links it', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'checklist-pr', status: 'approved' })
+    const session = sessionFor(built, user)
+    const cookie = `${session.cookie}; fledge_lang=en`
+    const repo = store.createRepo({ id: 'repo_pr', userId: user.id, owner: 'o', name: 'pr', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_pr', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    // The summary must read the oldest job that carries a PR, through the
+    // store's index, not whichever page of jobs happens to be loaded.
+    store.updateJob('job_pr', { pr_url: 'https://github.com/o/pr/pull/7', status: 'succeeded' })
+
+    const response = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
+    assert.equal(response.statusCode, 200)
+    assert.match(response.body, /data-first-pr/, 'a job with a PR ends the checklist')
+    assert.match(response.body, /https:\/\/github\.com\/o\/pr\/pull\/7/, 'the summary links that PR')
+    assert.doesNotMatch(response.body, /data-setup-next/, 'no checklist step remains once a PR exists')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
