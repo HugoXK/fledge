@@ -715,7 +715,10 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
   received_at TEXT NOT NULL,
   processed_at TEXT,
   status TEXT NOT NULL DEFAULT 'processing',
-  error TEXT
+  error TEXT,
+  payload_json TEXT,
+  repository_full_name TEXT,
+  installation_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS webhook_deliveries_at_idx ON webhook_deliveries(received_at);
 CREATE INDEX IF NOT EXISTS webhook_deliveries_status_idx ON webhook_deliveries(status, received_at);
@@ -818,13 +821,14 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 30) {
+    if (previousVersion > 31) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (30)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (31)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
+    this.migrateWebhookColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
     this.migrateModelsV2()
@@ -835,7 +839,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 30)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 31)};`)
   }
 
   migrateIndexes(): void {
@@ -866,6 +870,18 @@ export class Store {
       }
       this.setSetting('models_v2', nowIso())
     })
+  }
+
+  private migrateWebhookColumns(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(webhook_deliveries)').map((row) => row.name))
+    const additions: Array<[string, string]> = [
+      ['payload_json', 'TEXT'],
+      ['repository_full_name', 'TEXT'],
+      ['installation_id', 'INTEGER'],
+    ]
+    for (const [name, type] of additions) {
+      if (!columns.has(name)) this.run(`ALTER TABLE webhook_deliveries ADD COLUMN ${name} ${type}`)
+    }
   }
 
   private migrateColumns(): void {
@@ -2236,14 +2252,24 @@ export class Store {
     return this.all<ApiTokenRow>('SELECT * FROM api_tokens WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC', userId)
   }
 
-  claimWebhookDelivery(deliveryId: string, event: string, action: string | null): boolean {
+  claimWebhookDelivery(deliveryId: string, event: string, action: string | null, input: { payloadJson?: string | null; repositoryFullName?: string | null; installationId?: number | null } = {}): boolean {
     const existing = this.get<{ status: string; received_at: string }>('SELECT status, received_at FROM webhook_deliveries WHERE delivery_id = ?', deliveryId)
     if (existing !== undefined && existing.status === 'processing' && Date.now() - Date.parse(existing.received_at) > 5 * 60_000) {
       this.run("UPDATE webhook_deliveries SET received_at = ?, processed_at = NULL, error = NULL WHERE delivery_id = ?", nowIso(), deliveryId)
       return true
     }
     if (existing === undefined) {
-      this.run('INSERT INTO webhook_deliveries (delivery_id, event, action, received_at, processed_at, status, error) VALUES (?, ?, ?, ?, NULL, ?, NULL)', deliveryId, event, action, nowIso(), 'processing')
+      this.run(
+        'INSERT INTO webhook_deliveries (delivery_id, event, action, received_at, processed_at, status, error, payload_json, repository_full_name, installation_id) VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?)',
+        deliveryId,
+        event,
+        action,
+        nowIso(),
+        'processing',
+        input.payloadJson === undefined ? null : input.payloadJson,
+        input.repositoryFullName ?? null,
+        input.installationId ?? null,
+      )
       return true
     }
     if (existing.status === 'failed') {
@@ -2251,6 +2277,28 @@ export class Store {
       return true
     }
     return false
+  }
+
+  getWebhookDelivery(deliveryId: string): { delivery_id: string; event: string; action: string | null; received_at: string; processed_at: string | null; status: string; error: string | null; payload_json: string | null; repository_full_name: string | null; installation_id: number | null } | undefined {
+    return this.get('SELECT * FROM webhook_deliveries WHERE delivery_id = ?', deliveryId) as never
+  }
+
+  listWebhookDeliveries(filters: { status?: string; event?: string }, limit: number, offset: number): Array<{ delivery_id: string; event: string; action: string | null; received_at: string; processed_at: string | null; status: string; error: string | null; payload_json: string | null; repository_full_name: string | null; installation_id: number | null }> {
+    const where: string[] = []
+    const params: unknown[] = []
+    if (filters.status !== undefined && filters.status !== '') { where.push('status = ?'); params.push(filters.status) }
+    if (filters.event !== undefined && filters.event !== '') { where.push('event = ?'); params.push(filters.event) }
+    const clause = where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`
+    return this.all(`SELECT * FROM webhook_deliveries ${clause} ORDER BY received_at DESC LIMIT ? OFFSET ?`, ...params, limit, offset) as never
+  }
+
+  countWebhookDeliveries(filters: { status?: string; event?: string }): number {
+    const where: string[] = []
+    const params: unknown[] = []
+    if (filters.status !== undefined && filters.status !== '') { where.push('status = ?'); params.push(filters.status) }
+    if (filters.event !== undefined && filters.event !== '') { where.push('event = ?'); params.push(filters.event) }
+    const clause = where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`
+    return Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM webhook_deliveries ${clause}`, ...params)?.n ?? 0)
   }
 
   finishWebhookDelivery(deliveryId: string, status: 'processed' | 'ignored' | 'failed', error: string | null = null): void {

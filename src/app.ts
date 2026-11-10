@@ -42,6 +42,7 @@ import {
   adminPage,
   adminSupportPage,
   adminSearchPage,
+  adminWebhooksPage,
   approvalPage,
   dashboardPage,
   landingPage,
@@ -2331,6 +2332,53 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-jobs.csv"').send(csv)
   })
 
+  app.get('/admin/webhooks', async (request, reply) => {
+    const viewer = requireSuperAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    const status = (queryText(request, 'status') ?? '').slice(0, 20)
+    const event = (queryText(request, 'event') ?? '').slice(0, 40)
+    const perPage = 25
+    const total = store.countWebhookDeliveries({ status, event })
+    const pages = Math.max(1, Math.ceil(total / perPage))
+    const page = Math.min(Math.max(1, Math.floor(Number(queryText(request, 'page')) || 1)), pages)
+    return reply.type('text/html').send(adminWebhooksPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      deliveries: store.listWebhookDeliveries({ status, event }, perPage, (page - 1) * perPage),
+      filters: { status, event },
+      page,
+      pages,
+      total,
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
+  })
+
+  app.post('/admin/webhooks/:id/retry', async (request, reply) => {
+    if (!apiLimiter.take(`admin-webhook-retry:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
+    const viewer = approvedCsrfGuard(request)
+    if (viewer.user.role !== 'superadmin') throw httpError(403, '仅超级管理员可重试。', 'SUPERADMIN_ONLY')
+    const id = String((request.params as Record<string, string>).id)
+    const delivery = store.getWebhookDelivery(id)
+    if (delivery === undefined) throw httpError(404, 'Webhook delivery 不存在。', 'WEBHOOK_NOT_FOUND')
+    if (delivery.status !== 'failed') return reply.redirect('/admin/webhooks?error=' + encodeURIComponent('只有失败的 delivery 可以重试。'))
+    let body: Record<string, unknown>
+    try {
+      body = JSON.parse(delivery.payload_json ?? '{}') as Record<string, unknown>
+    } catch {
+      return reply.redirect('/admin/webhooks?error=' + encodeURIComponent('这个 delivery 没有可重试的 payload。'))
+    }
+    store.claimWebhookDelivery(delivery.delivery_id, delivery.event, delivery.action)
+    try {
+      await processGithubWebhook(delivery.event, body, delivery.delivery_id)
+      store.audit(viewer.user.id, 'admin.webhook_retry', `${delivery.delivery_id}: ${delivery.event}`)
+      return reply.redirect('/admin/webhooks?notice=' + encodeURIComponent('Webhook 已重试。'))
+    } catch (error) {
+      return reply.redirect('/admin/webhooks?error=' + encodeURIComponent(`重试失败：${String(error).slice(0, 200)}`))
+    }
+  })
+
   app.get('/admin', async (request, reply) => {
     const viewer = requireAdmin(request)
     if (viewer.preview === true) return reply.redirect('/console')
@@ -2723,19 +2771,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.updateWorkItem(existing.id, { state })
   }
 
-  app.post('/api/github/webhook', async (request, reply) => {
-    if (!apiLimiter.take(`webhook:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
-    if (!githubApp.configured || config.githubApp.webhookSecret === '') return reply.code(503).send({ error: 'GitHub App webhook is not configured' })
-    const signature = String(request.headers['x-hub-signature-256'] ?? '')
-    const raw = (request as FastifyRequest & { rawBody?: Buffer }).rawBody
-    if (raw === undefined || !githubApp.verifyWebhook(raw, signature)) return reply.code(401).send({ error: 'bad webhook signature' })
-    const event = String(request.headers['x-github-event'] ?? '')
-    const delivery = String(request.headers['x-github-delivery'] ?? '')
-    const body = (request.body ?? {}) as Record<string, unknown>
+  const processGithubWebhook = async (event: string, body: Record<string, unknown>, delivery: string): Promise<void> => {
     const action = typeof body.action === 'string' ? body.action : ''
     const repository = typeof body.repository === 'object' && body.repository !== null ? (body.repository as Record<string, unknown>) : {}
     const fullName = typeof repository.full_name === 'string' ? repository.full_name : ''
-    if (delivery !== '' && !store.claimWebhookDelivery(delivery, event, action)) return { ok: true, duplicate: true }
     store.event('github_webhook', { meta: `${event}:${action}:${fullName}:${delivery}`.slice(0, 300) })
     if (event === 'installation') {
       const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
@@ -2756,6 +2795,28 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (delivery !== '') store.finishWebhookDelivery(delivery, 'failed', String(error))
       throw error
     }
+  }
+
+  app.post('/api/github/webhook', async (request, reply) => {
+    if (!apiLimiter.take(`webhook:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
+    if (!githubApp.configured || config.githubApp.webhookSecret === '') return reply.code(503).send({ error: 'GitHub App webhook is not configured' })
+    const signature = String(request.headers['x-hub-signature-256'] ?? '')
+    const raw = (request as FastifyRequest & { rawBody?: Buffer }).rawBody
+    if (raw === undefined || !githubApp.verifyWebhook(raw, signature)) return reply.code(401).send({ error: 'bad webhook signature' })
+    const event = String(request.headers['x-github-event'] ?? '')
+    const delivery = String(request.headers['x-github-delivery'] ?? '')
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const action = typeof body.action === 'string' ? body.action : ''
+    const repository = typeof body.repository === 'object' && body.repository !== null ? (body.repository as Record<string, unknown>) : {}
+    const fullName = typeof repository.full_name === 'string' ? repository.full_name : ''
+    const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
+    const installationId = Number(installation.id)
+    if (delivery !== '' && !store.claimWebhookDelivery(delivery, event, action, {
+      payloadJson: JSON.stringify(body).slice(0, 64 * 1024),
+      repositoryFullName: fullName,
+      installationId: Number.isFinite(installationId) ? installationId : null,
+    })) return { ok: true, duplicate: true }
+    await processGithubWebhook(event, body, delivery)
     return { ok: true }
   })
 

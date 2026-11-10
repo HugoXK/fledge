@@ -1439,7 +1439,7 @@ export function adminPage(input: {
   const body = `<section class="card">
     <div class="eyebrow">${escapeHtml(t('管理', 'ADMIN'))}</div>
     <h1>${escapeHtml(t('审批与额度', 'Approvals & quota'))}</h1>
-    <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}${superadmin ? ` · <a class="link" href="/admin/metrics">${escapeHtml(t('产品指标', 'Product metrics'))}</a>` : ''} · <a class="link" href="/admin/search">${escapeHtml(t('审计与任务', 'Audit and jobs'))}</a></p>
+    <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}${superadmin ? ` · <a class="link" href="/admin/metrics">${escapeHtml(t('产品指标', 'Product metrics'))}</a> · <a class="link" href="/admin/webhooks">${escapeHtml(t('Webhook deliveries', 'Webhook deliveries'))}</a>` : ''} · <a class="link" href="/admin/search">${escapeHtml(t('审计与任务', 'Audit and jobs'))}</a></p>
     ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出用户视图预览', 'Exit user preview') : t('预览用户视图', 'Preview the user view'))}</button></form>` : ''}
   </section>
   ${releaseCard}
@@ -2084,6 +2084,55 @@ export function agentWorkspacePage(input: {
     : `<section class="card"><p class="muted">${escapeHtml(t('实例就绪后才能打开工作区。', 'The workspace opens after the instance is ready.'))}</p></section>`}
   <p class="fine" style="text-align:right">Fledge · powered by FlyBot</p>`
   return layout({ title: `${t('工作区', 'Workspace')} · ${repo.upstream_name || repo.name}`, viewer, body, config, locale, path: `/repos/${repo.id}/workspace`, active: 'dashboard', notice, error })
+}
+
+export function adminWebhooksPage(input: {
+  config: Config
+  locale: Locale
+  viewer: Viewer
+  deliveries: Array<{ delivery_id: string; event: string; action: string | null; received_at: string; processed_at: string | null; status: string; error: string | null; repository_full_name: string | null }>
+  filters: { status: string; event: string }
+  page: number
+  pages: number
+  total: number
+  notice?: string
+  error?: string
+}): string {
+  const { config, locale, viewer, deliveries, filters, page, pages, total, notice, error } = input
+  const t = translator(locale)
+  const query = (extra: Record<string, string | number>): string => {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries({ ...filters, ...extra })) if (String(value) !== '') params.set(key, String(value))
+    return params.toString()
+  }
+  const statusBadge = (status: string): string => {
+    const cls = status === 'processed' ? 'good' : status === 'failed' ? 'bad' : 'busy'
+    return `<span class="badge ${cls}">${escapeHtml(status)}</span>`
+  }
+  const rows = deliveries.length === 0
+    ? stateCell(6, { kind: 'empty', title: t('没有 webhook delivery。', 'No webhook deliveries.'), body: t('GitHub 推送事件后会出现在这里。', 'GitHub events appear here after delivery.'), action: { href: '/admin', label: t('返回管理', 'Back to admin') } })
+    : deliveries.map((delivery) => `<tr>
+        <td>${escapeHtml(humanTimeShort(delivery.received_at))}</td>
+        <td><code>${escapeHtml(delivery.event)}</code>${delivery.action === null || delivery.action === '' ? '' : `<br /><small class="muted">${escapeHtml(delivery.action)}</small>`}</td>
+        <td>${escapeHtml(delivery.repository_full_name ?? '—')}</td>
+        <td>${statusBadge(delivery.status)}</td>
+        <td>${delivery.error === null ? '—' : `<span title="${escapeHtml(delivery.error)}">${escapeHtml(delivery.error.slice(0, 160))}</span>`}</td>
+        <td>${delivery.status !== 'failed' ? '' : `<form method="post" action="/admin/webhooks/${escapeHtml(delivery.delivery_id)}/retry">${csrf(viewer)}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('重试', 'Retry'))}</button></form>`}</td>
+      </tr>`).join('')
+  const body = `<a class="back" href="/admin">← ${escapeHtml(t('返回管理', 'Back to admin'))}</a>
+  <section class="card">
+    <div class="row between"><div><div class="eyebrow">${escapeHtml(t('WEBHOOK', 'WEBHOOK'))}</div><h1>${escapeHtml(t('Webhook deliveries', 'Webhook deliveries'))}</h1><p class="muted">${escapeHtml(t(`最近 ${total} 条；只显示元数据，不显示 payload。`, `Latest ${total}; metadata only, payload is not shown.`))}</p></div></div>
+    <form method="get" action="/admin/webhooks" class="form">
+      <div class="row">
+        <label>${escapeHtml(t('状态', 'Status'))} <select name="status"><option value="">${escapeHtml(t('全部', 'All'))}</option>${['processing', 'processed', 'failed'].map((value) => `<option value="${value}"${filters.status === value ? ' selected' : ''}>${value}</option>`).join('')}</select></label>
+        <label>${escapeHtml(t('事件', 'Event'))} <input name="event" value="${escapeHtml(filters.event)}" placeholder="check_suite" /></label>
+        <button class="btn" type="submit">${escapeHtml(t('筛选', 'Filter'))}</button>
+      </div>
+    </form>
+    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('收到', 'Received'))}</th><th>${escapeHtml(t('事件', 'Event'))}</th><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('错误', 'Error'))}</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${pages <= 1 ? '' : `<div class="row between" style="margin-top:12px"><span class="fine">${escapeHtml(t(`第 ${page} / ${pages} 页`, `Page ${page} of ${pages}`))}</span><div class="row"><a class="btn btn-ghost btn-small" href="/admin/webhooks?${query({ page: Math.max(1, page - 1) })}">${escapeHtml(t('上一页', 'Previous'))}</a><a class="btn btn-ghost btn-small" href="/admin/webhooks?${query({ page: Math.min(pages, page + 1) })}">${escapeHtml(t('下一页', 'Next'))}</a></div></div>`}
+  </section>`
+  return layout({ title: t('Webhook deliveries', 'Webhook deliveries'), viewer, body, config, locale, path: '/admin/webhooks', active: 'admin', notice, error })
 }
 
 export function adminSupportPage(input: {
