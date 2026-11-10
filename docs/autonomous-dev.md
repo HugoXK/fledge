@@ -152,20 +152,70 @@ review.
 
 ## Gates
 
-The required checks are **`ci-ok`**, **`review-gate`** and **`pr-lint`**.
+The required checks on `main` are **`ci-ok`**, **`review-gate`**,
+**`pr-lint`**, **`dependency-review`** and the CodeQL job's own name,
+**`Analyze JavaScript/TypeScript`**. The set is recorded, with the names exactly
+as the checks API reports them, in
+[`.github/agent/required-checks.md`](../.github/agent/required-checks.md); that
+file is the record and not the gate — branch protection is an owner action.
+
 `ci-ok` is green only when all of these are green at the same tip:
 
 - `lint`
 - `typecheck`
 - `test` on Node 22 and Node 24
+- `coverage` (the Node coverage floor recorded in `package.json`)
 - `build`
-- `docker` (image builds)
-- `audit` (no high-severity production dependency)
+- `docker` (image builds, scans and starts)
+- `audit` (no high-severity advisory in either the runtime set or the full graph)
 - `changelog` (fragments are well formed)
 - `version` (`package.json`, lockfile, changelog, compose and tag agree)
 - `risk` (the tier report succeeds)
+- `restore-drill` (the SQLite backup restores into a throwaway path)
+- `dependency-review` (no new high-severity advisory in the pull request diff)
 - `action-pins` (every `uses:` is a 40-hex commit pin with its tag comment)
-- `Analyze JavaScript/TypeScript` (the CodeQL job: no new high/critical result)
+- `workflow-lint` (actionlint over the workflow tree, plus the template-injection check)
+- `secret-scan` (gitleaks over the commit range, full history on `main`)
+
+A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
+`skipped`, `cancelled` or a job absent from `needs`, except where
+`SKIPPABLE_ON` records that an event has nothing for that job to read.
+
+### Supply-chain gates
+
+`docker` scans the built image with trivy at `HIGH,CRITICAL` and fails the build
+(`exit-code: 1`), ignoring unfixed findings; an exception goes in
+`.trivyignore.yaml` as one entry with an expiry, never as a severity downgrade.
+It then runs the image with a throwaway SQLite path and a generated session
+secret and asserts `GET /healthz` returns 200 with a version — a build that
+passes is not an image that starts.
+
+`workflow-lint` runs actionlint (YAML, expressions, shellcheck) and separately
+`scripts/workflow-injection.mjs`, which is the part actionlint cannot do: it has
+no taint analysis, so `${{ github.event.pull_request.title }}` inside a `run:`
+body is well-formed at every level actionlint checks and still executes text
+whoever opened the pull request wrote. An expression string that must appear in
+a shell script goes in
+`.github/agent/workflow-injection-allowlist.json` with a reason.
+
+`secret-scan` runs gitleaks as a checksum-pinned binary with `fetch-depth: 0`
+and a commit range (`pull_request`, `merge_group`, `push`, whole history
+otherwise). Squash merges mean a secret added and then deleted on a branch is in
+neither the head tree nor the pull request diff, and only the range still holds
+it. The config is `.gitleaks.toml`; it deliberately carries no `paths`
+allowlist, because that suppresses every finding in a file, including a real
+token pasted later.
+
+`coverage` enforces a line floor with a number: `test:coverage` in
+`package.json` (`--test-coverage-lines=84`, measured 84.59% at the commit that
+introduced it). Lowering it is a reviewed diff, not an edit. The job also writes
+the report into the run summary — not a pull request comment, since a fork pull
+request runs without `pull_request_target`.
+
+The release workflow signs the published image: `id-token: write` and
+`attestations: write` on the release job only, `actions/attest-build-provenance`
+against the pushed digest, and an SBOM from `anchore/sbom-action`. Verification
+is in [deploy.md](deploy.md).
 
 CodeQL is gated on its own diff, not globally. `github/codeql-action/analyze`
 exits 0 whether it found a sink or nothing at all, so the job runs
