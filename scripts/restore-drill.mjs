@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Restore drill: restore the newest online backup into a temp path and prove the
-// restored copy is the backup it came from and still holds what its manifest
-// recorded. The live source is read read-only and only reported on: drift since
-// the copy was taken is normal and is never a failure.
+// restored copy is the backup it came from, holds the application schema, and
+// still holds what its manifest recorded. The live source is read read-only and
+// only reported on: drift since the copy was taken is normal and is never a
+// failure.
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -79,6 +80,29 @@ function rowCount(db, table) {
 
 function schemaVersion(db) {
   return Number(db.prepare('PRAGMA user_version').all()[0]?.user_version ?? 0)
+}
+
+// One definition for every copy, with or without a manifest. `Store` creates
+// these tables and sets `user_version` on construction, so a real Fledge
+// database always holds them — a copy that does not cannot be a restore. A
+// fresh instance is schema with zero rows and stays valid: only tables and the
+// schema version are required, never rows.
+const APPLICATION_TABLES = ['jobs', 'repos', 'users']
+
+function assertApplicationSchema(db, tables, backupPath, manifest) {
+  const present = new Set(tables)
+  const problems = []
+  const missing = APPLICATION_TABLES.filter((table) => !present.has(table))
+  if (missing.length > 0) problems.push(`missing tables: ${missing.join(', ')}`)
+  const version = schemaVersion(db)
+  if (version <= 0) problems.push(`PRAGMA user_version is ${version}, expected a positive schema version`)
+  if (problems.length === 0) return
+  // A copy without a manifest carries only the byte comparison, so say so: the
+  // schema guard is what refuses it, not the missing manifest.
+  const skipped = manifest === null
+    ? '\nthe byte size and sha256 are the only checks a copy without a manifest carries, and this copy does not hold the application schema'
+    : ''
+  fail(1, `corrupt or incomplete copy ${backupPath}: the copy does not hold the application schema\n${problems.join('\n')}${skipped}`)
 }
 
 function newestBackup(dir) {
@@ -305,23 +329,18 @@ async function main() {
     chmodSync(restoredPath, 0o600)
     const copy = await verifyRestoredCopy(restoredPath, backupPath)
     const manifest = readManifestOrFail(backupPath)
-    if (manifest === null) {
-      // An older backup tool wrote the copy only; the exact check above already
-      // passed, and row counts are never compared with the live source. The
-      // schema guard below still applies: an empty file compares equal to itself.
-      process.stdout.write(`manifest=missing\n`)
-    } else {
+    if (manifest !== null) {
       process.stdout.write(`manifest=${manifestPath(backupPath)}\n`)
       verifyManifestBytes(manifest, backupPath, copy)
     }
     restored = openRestored(restoredPath, backupPath)
     const restoredTables = tableNames(restored)
-    if (manifest === null && restoredTables.length === 0) {
-      // Without a manifest the byte comparison is the only check, and it holds
-      // for a 0-byte file exactly as for a real copy: `integrity_check` answers
-      // `ok` on an empty database too. A manifest-less copy is therefore a
-      // backup only while it still carries the schema it is meant to restore.
-      fail(1, `corrupt or incomplete copy ${backupPath}: the copy has no manifest and no tables\nskipped checks: byte size, sha256, PRAGMA user_version and per-table row counts are only compared when a manifest is present, and this copy holds no schema to report`)
+    assertApplicationSchema(restored, restoredTables, backupPath, manifest)
+    if (manifest === null) {
+      // An older backup tool wrote the copy only; the exact check above already
+      // passed, and row counts are never compared with the live source. Printed
+      // after the schema guard so a refused run does not lead with this warning.
+      process.stdout.write(`manifest=missing\n`)
     }
     const restoredCounts = new Map(restoredTables.map((table) => [table, rowCount(restored, table)]))
     if (manifest !== null) verifyManifestDatabase(manifest, backupPath, restored, restoredTables, restoredCounts)

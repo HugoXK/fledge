@@ -9,9 +9,10 @@ on:
         description: Release tag, for example v0.2.4
         required: true
 
+# Read-only at workflow scope; the publish job declares what it needs. A
+# job-level block replaces this set, so the release scopes are repeated there.
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 # One publish at a time per ref, and never cancel a publish that is already
 # pushing an image: a cancelled run can leave a tag with no release.
@@ -24,6 +25,16 @@ jobs:
     name: release ${{ inputs.tag || github.ref_name }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # `contents: write` and `packages: write` are the publish scopes this job had
+    # inherited from the workflow; they are repeated here because a job-level
+    # block replaces the workflow set instead of merging with it, and dropping
+    # one fails at tag time rather than in CI. `id-token` and `attestations` are
+    # the two the provenance record signs and stores with.
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -61,16 +72,67 @@ jobs:
             exit 1
           fi
 
+      # GHCR rejects an uppercase owner, and the value is also used by the
+      # steps whose inputs cannot run a shell: derive it once, lowercase, and
+      # every later step reads the same string.
+      - name: Derive the image reference
+        env:
+          REPO: ${{ github.repository }}
+        run: echo "IMAGE=ghcr.io/${REPO,,}" >> "$GITHUB_ENV"
+
+      # #183: stamp the image so /healthz on the published tag names the commit
+      # it was cut from. The tag checkout is not necessarily github.sha, so the
+      # commit comes from the checked-out tree, the same way docs/deploy.md
+      # tells an operator to stamp a local build.
       - name: Build the image
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: docker build -t "ghcr.io/${GITHUB_REPOSITORY,,}:${RELEASE_TAG}" .
+        run: |
+          docker build \
+            --build-arg "GIT_SHA=$(git rev-parse HEAD)" \
+            --build-arg "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "${IMAGE}:${RELEASE_TAG}" .
+
+      # The digest is the identity the attestation signs. `docker push` prints
+      # layer progress, so the repo digest is read back from the image metadata
+      # after the push; without it the provenance step silently has nothing to
+      # attest.
       - name: Publish to GHCR
+        id: push
         env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker push "ghcr.io/${GITHUB_REPOSITORY,,}:${RELEASE_TAG}"
+          set -euo pipefail
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+          docker push "${IMAGE}:${RELEASE_TAG}"
+          digest="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${IMAGE}:${RELEASE_TAG}" \
+            | sed -n 's/^.*@\(sha256:[0-9a-f]*\)$/\1/p' | head -n 1)"
+          if [ -z "$digest" ]; then
+            echo "::error::the push produced no repo digest; cannot attest or name an SBOM"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Generate an SBOM for the published image
+        uses: anchore/sbom-action@fffec3d851af758d56fee099cf3fbf8aa8779843 # v0.24.3
+        with:
+          image: ${{ env.IMAGE }}:${{ env.RELEASE_TAG }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          artifact-name: fledge-sbom-${{ env.RELEASE_TAG }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest the image provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          # The attestation is stored in the registry beside the digest it
+          # signs, so `gh attestation verify` finds it from the image alone.
+          push: true
 
       - name: Create or update the GitHub release
         env:

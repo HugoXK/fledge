@@ -288,3 +288,31 @@ test('bot model assignment updates every role and reports a failed update', asyn
     await bridge.close()
   }
 })
+
+test('healthSweep recovers a failed instance whose bridge and DSH answer again', async () => {
+  const bridge = await startFakeServer((request, response) => {
+    if (request.url === '/healthz') return json(response, 200, { ok: true })
+    if (request.url === '/dsh') return json(response, 200, { ok: true, value: { bots: [] } })
+    json(response, 404, { message: 'Not Found' })
+  })
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const manager = new InstanceManager(store, config)
+  try {
+    const user = makeUser(store, { login: 'health-recover', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_health_recover', userId: user.id, owner: 'o', name: 'hr', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.saveRepoInstance({
+      repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/hr', bridge_script: '/tmp/bridge',
+      dsh_port: 1, bridge_port: Number(new URL(bridge.url).port), model_port: 2, model_bind: '127.0.0.1', image: 'image',
+      status: 'failed', chief_session: 'chief-1', team_json: null,
+      bridge_token_enc: encryptSecret('bridge-token', config.tokenEncryptionKey), bridge_pid: null, log_pid: null,
+      last_error: 'previous timeout', created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_health_at: null,
+    })
+    const result = await manager.healthSweep()
+    assert.equal(result.ready, 1)
+    assert.equal(store.getRepoInstance(repo.id)?.status, 'ready')
+  } finally {
+    store.close()
+    await bridge.close()
+  }
+})
