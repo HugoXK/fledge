@@ -601,8 +601,10 @@ a.list-row:hover strong { color: var(--accent); }
   .admin-control-row { width: 100%; flex-wrap: wrap; }
   /* Stretching the row is not enough: a definite width does not stretch, and in
      a column container `flex: 0 0 88px` sizes the height. The field fills the row
-     instead, and `1 1 auto` leaves its height content-driven. */
-  .admin-quota, .admin-role { width: 100%; flex: 1 1 auto; }
+     instead, `1 1 auto` leaves its height content-driven, and the 44px control
+     floor applies to these two fields like every other control (16px text plus
+     6px/8px padding is only ~33-38px tall). */
+  .admin-quota, .admin-role { width: 100%; flex: 1 1 auto; min-height: var(--touch); }
 }
 
 @media (max-width: 420px) {

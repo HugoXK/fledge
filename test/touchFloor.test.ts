@@ -174,6 +174,11 @@ test('the admin quota and role controls become full-width rows on a phone', () =
     assert.notEqual(lastValue(selector, 'flex', 360), `0 0 ${desktopWidth}`, `${selector} does not keep its fixed basis on a phone`)
     assert.equal(lastValue(selector, 'width', 768), desktopWidth, `${selector} keeps its desktop width`)
     assert.equal(lastValue(selector, 'flex', 768), `0 0 ${desktopWidth}`, `${selector} keeps its desktop basis`)
+    // Acceptance 1 has no exemption for these two fields: with 16px text,
+    // `6px 8px` padding and a 1px border the height is content-driven at about
+    // 33-38px, so the field carries the same 44px floor as every other control.
+    assert.equal(lastValue(selector, 'min-height', 360), 'var(--touch)', `${selector} reaches the 44px height on a phone`)
+    assert.equal(lastValue(selector, 'min-height', 768), null, `${selector} keeps its desktop height`)
   }
 })
 
