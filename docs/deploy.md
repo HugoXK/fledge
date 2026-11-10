@@ -202,7 +202,9 @@ leaves `CHANGELOG.md`, `changelog.d/`, `docker-compose.yml`, `package-lock.json`
 and `package.json`, reuses an open pull request at the same commit instead of
 opening a second one, and prints the JSON it acted on. It writes that one pull
 request and nothing else, and it carries no tag endpoint: the tag stays in the
-workflow.
+workflow. A `POST /pulls` whose readback does not show
+`maintainer_can_modify: true` is a refusal, but the pull request already exists
+at that point, so close it by hand before retrying.
 
 ## 6. Reverse proxy
 
