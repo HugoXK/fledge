@@ -31,6 +31,19 @@ function state(patch: Partial<SetupState> = {}): SetupState {
   }
 }
 
+// The link assertions below compare whole anchor targets rather than searching
+// the page for a URL: CodeQL rejects both an unanchored URL regex and a URL
+// substring check on a page of text, and an equality against the parsed href is
+// the stronger evidence anyway — it proves the link, not the presence of a
+// string that could sit anywhere.
+function anchorTargets(html: string): string[] {
+  return [...html.matchAll(/href="([^"]*)"/g)].map((match) => match[1] ?? '')
+}
+
+function linksTo(html: string, url: string): boolean {
+  return anchorTargets(html).some((target) => target === url)
+}
+
 test('a brand-new account starts at step 1 and every later step names its blocker', () => {
   const checklist = setupChecklist(state(), en)
   assert.equal(checklist.steps.length, 5, 'five steps: repository, role, model, instance, first job')
@@ -115,10 +128,7 @@ test('after the first job the checklist is replaced by the first-PR summary', ()
     const setup = state({ repos: 1, roleChosen: true, modelConfigured: true, instanceReady: true, jobs: 1, succeeded: 1, firstPrUrl: 'https://github.com/o/r/pull/1' })
     const html = dashboardPage({ config, locale: 'en', viewer, repos: [], jobs: [], notifications: [], setup })
     assert.match(html, /data-first-pr/, 'the finished run gets a summary instead of a checklist')
-    // Substring, not a regex: the exact URL is stronger evidence than a pattern
-    // that could match any host, and it keeps the scan free of unanchored-regex
-    // findings on a test fixture.
-    assert.ok(html.includes('https://github.com/o/r/pull/1'), 'the summary links the first PR')
+    assert.ok(linksTo(html, 'https://github.com/o/r/pull/1'), 'the summary links the first PR')
     assert.doesNotMatch(html, /id="setup"/, 'the checklist is gone, not merely collapsed')
   } finally {
     store.close()
@@ -186,7 +196,7 @@ test('a job that carries a PR replaces the checklist and the summary links it', 
     const response = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
     assert.equal(response.statusCode, 200)
     assert.match(response.body, /data-first-pr/, 'a job with a PR ends the checklist')
-    assert.ok(response.body.includes('https://github.com/o/pr/pull/7'), 'the summary links that PR')
+    assert.ok(linksTo(response.body, 'https://github.com/o/pr/pull/7'), 'the summary links that PR')
     assert.doesNotMatch(response.body, /data-setup-next/, 'no checklist step remains once a PR exists')
   } finally {
     await built.app.close()
