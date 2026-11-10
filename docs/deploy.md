@@ -429,6 +429,13 @@ npm run build
 Schema changes are additive and idempotent for `v0.1.x`; review the changelog
 before a major upgrade.
 
+A release tag is not a deploy. `release.yml` builds the image, publishes it to
+GHCR and creates the GitHub release against the tag; the running service changes
+only when someone follows the three commands above on the host. The tag itself is
+written by the daily release job through the Git data API
+(`POST /git/tags` + `POST /git/refs`) once the mechanical release pull request is
+merged, so a tag on `main` is evidence of a released version, not of a rollout.
+
 ## 9. Monitoring
 
 - `GET /healthz` for liveness.
