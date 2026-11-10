@@ -30,11 +30,14 @@ predates this inventory — it is not a value.
 | `INBOUND_EMAIL_SECRET` | shared secret with the inbound Email Worker | production `.env` and the worker | random 32 bytes | owner | unknown | `openssl rand -hex 32` in both places | reply to one digest mail and confirm it lands | unknown |
 | `METRICS_TOKEN` | `/metrics` outside loopback | production `.env` | random 32 bytes | owner | unknown | `openssl rand -hex 32` then restart | `curl -H "Authorization: Bearer …" /metrics` returns 200 | unknown |
 | `NOTIFY_WEBHOOK_SECRET` | outbound notification webhook | production `.env` | random 32 bytes | owner | unknown | `openssl rand -hex 32` in both places | one event delivers with a valid signature | unknown |
-| `RELEASE_TOKEN` | the daily release pushes a branch and opens its PR so `pull_request` checks start | repository secret (GitHub settings) | fine-grained: contents write, pull requests write, actions write | owner | not created yet (#80) | mint a fine-grained PAT or App token, add it as the repository secret | one `workflow_dispatch` of `daily-release.yml` opens a PR that shows a real `ci-ok` | unknown |
 
 ## What is deliberately not in this table
 
-- CI's `GITHUB_TOKEN`: minted per run, never stored, never rotated by hand.
+- CI's `GITHUB_TOKEN`: minted per run, never stored, never rotated by hand. It is
+  also the only credential of the daily release (`#80`): the branch push, the tag
+  through the Git data API and the dispatch of `release.yml` all run with it, so
+  the stored `RELEASE_TOKEN` that used to gate that workflow is gone.
+
 - Per-user OAuth tokens and per-repository fine-grained tokens: they live in the
   database encrypted with `TOKEN_ENCRYPTION_KEY` and are rotated by their owner
   through the UI, not on this host.

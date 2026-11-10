@@ -310,24 +310,46 @@ needs a review. No release with no fragments.
 
 ### The daily drive
 
-`.github/workflows/daily-release.yml` runs at 22:30 Asia/Shanghai (`30 14 * * *`)
-and does exactly one thing per night, decided by the pure `decideDrive()` in
-`scripts/lib/release-drive.mjs`:
+`.github/workflows/daily-release.yml` has two jobs on two triggers and no stored
+credential: both run with the automatic `GITHUB_TOKEN`, and the token is scoped per
+job rather than at file level (`release`: contents write, pull-requests read, checks
+read, issues write; `tag`: contents write, pull-requests read, actions write).
+
+The `release` job runs at 22:30 Asia/Shanghai (`30 14 * * *`) and on
+`workflow_dispatch` (default `dry_run: true`). It collects the state, asks the
+planner and the pure `decideDrive()` in `scripts/lib/release-drive.mjs`, and does
+exactly one thing per night:
 
 | Situation | Action |
 |---|---|
-| the rule is met and nothing is in flight | open the mechanical PR `release: v<next>` on `release/v<next>` |
-| a release PR is already open and mergeable | `gh pr merge --auto --squash --match-head-commit <its sha>` — never a second PR, never `--admin` |
-| a release PR is open but red or blocked | report the failing check names and stop |
-| the last merged PR is a release PR whose tag does not exist | tag it and dispatch `release.yml` with `-f tag=v<next>` |
-| the rule is not met, or a dry run | write the counts and the reason to the job summary and exit 0 |
+| the rule is met and nothing is in flight | push `release/v<next>` with the mechanical commit and comment on `#80` with the counts, the branch and the pushed sha |
+| the same branch already exists with the same tree | `already pushed` — report it and exit 0 |
+| the same branch exists with other content | fail; the branch is never overwritten, so a review in progress cannot be discarded |
+| a release PR is already open | no push; the drive decision goes to the artifact and the summary, and whoever calls `#187` owns the PR |
+| the rule is not met | write the counts and the reason to the job summary and exit 0 |
+| a dry run | the same summary and artifact, and no push and no comment |
 
-Rule 4 (the latest `ci-ok` on `main` is green) has no input in the planner, so the
-drive checks it before opening anything; a red or missing `ci-ok` on `main` is a
-`none` night. The branch is pushed and the PR is opened with `RELEASE_TOKEN`, not
-`GITHUB_TOKEN`: a branch pushed with the workflow token starts no `pull_request`
-workflow, so the release PR would never get a `ci-ok`. Without `RELEASE_TOKEN` the
-run fails closed with `reason: missing-release-token` and opens nothing.
+The job never opens, merges or publishes a pull request, and the file contains no
+`gh pr` command at all: the pull-request half is `#187`. Rule 4 (the latest
+`ci-ok` on `main` is green) has no input in the planner, so the drive checks it
+before the push; a red or missing `ci-ok` on `main` is a `none` night.
+
+The `tag` job runs on `push` to `main` only. It reads `package.json` at the pushed
+commit, asks `plan()` in `scripts/lib/release-tag.mjs` whether that commit is the
+squash of the mechanical release, and — if it is — writes the annotated tag with
+`POST /git/tags` and `POST /git/refs` on that merge commit, then dispatches
+`release.yml` at the tag with `-f tag=<tag>`. There is no `git tag` and no tag push
+in the file: a tag written with the automatic token starts no workflow, and the API
+path is what pins the object to the merge commit. A short sha, an unreadable
+version, an existing tag, an unmerged pull request, a foreign squash commit, a head
+branch that is not `release/v<version>` and two claims on one version each return
+`skip` with their reason.
+
+Both jobs read the tag list through `GET /git/matching-refs/tags/v`, never through
+the runner's own tag store. `test/dailyRelease.test.ts` holds the file to that
+shape: no `secrets.` other than the automatic token, no file-level `permissions:`
+block, no pull-request or release command, one branch push, and the tag write
+present only as the two API calls.
 
 The mechanical class is keyed on identity, never on the file set alone:
 `scripts/lib/mechanical-release.mjs` requires the head branch `release/v<next>`,

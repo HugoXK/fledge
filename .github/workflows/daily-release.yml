@@ -1,10 +1,20 @@
 name: Daily minor release
 
 # Owner decision 2026-11-06: a minor release every night at 22:30 Asia/Shanghai
-# (14:30 UTC) when the rule in issue #80 is satisfied. This workflow collects the
-# counts, asks the pure planner, and does exactly one thing: open the mechanical
-# release PR, enqueue the one already open, tag a merged release, or report and
-# stop. It never deploys and never merges by hand.
+# (14:30 UTC) when the rule in issue #80 is satisfied, and the annotated tag for
+# that release once its mechanical pull request is merged.
+#
+# Two jobs, two triggers, no stored credential:
+#   release  plans the night and pushes `release/v<version>` with the automatic
+#            token. Opening the pull request is #187's half, so nothing here
+#            opens, merges or publishes one.
+#   tag      recognises the merge of that branch on `main` and writes the tag
+#            through the Git data API, then dispatches the publish run at it.
+#
+# A branch pushed with `GITHUB_TOKEN` starts no workflow, so the release pull
+# request carries no checks of its own until a commit is pushed to it — that is
+# #187's half, which is why the drive decision is kept in the artifact and not
+# acted on here.
 
 on:
   schedule:
@@ -12,15 +22,11 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Print the counts and open nothing
+        description: Print the counts and push nothing
         type: boolean
         default: true
-
-permissions:
-  contents: write
-  pull-requests: write
-  actions: write
-  issues: read
+  push:
+    branches: [main]
 
 concurrency:
   group: daily-release
@@ -28,43 +34,46 @@ concurrency:
 
 jobs:
   release:
-    name: plan and drive the daily minor release
+    name: plan the daily minor release and push its branch
+    # An ordinary merge to `main` must not plan, push or comment: that trigger
+    # belongs to the tag job below.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: read
+      checks: read
+      issues: write
     steps:
-      - name: Fail closed without RELEASE_TOKEN
-        env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-        run: |
-          if [ -z "${RELEASE_TOKEN}" ]; then
-            echo 'reason: missing-release-token' >> "$GITHUB_STEP_SUMMARY"
-            echo '::error::RELEASE_TOKEN is not configured (contents/pull_requests/actions write). A branch pushed with GITHUB_TOKEN starts no pull_request workflow, so the release PR would never get a ci-ok. Nothing is opened.'
-            exit 1
-          fi
-
-      # A branch and a PR created with GITHUB_TOKEN do not trigger workflows, so the
-      # release PR would never see ci-ok/pr-lint/review-gate. RELEASE_TOKEN is used
-      # for the checkout, the push and the PR, which is why it must exist.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-          token: ${{ secrets.RELEASE_TOKEN }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
       - name: Collect the state
+        id: state
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
         run: |
           set -euo pipefail
           REPO="$GITHUB_REPOSITORY"
-          git fetch --tags --force --quiet
-          TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || true)"
+          MAIN_SHA="$(gh api "repos/${REPO}/commits/main" --jq .sha)"
+          echo "main_sha=${MAIN_SHA}" >> "$GITHUB_OUTPUT"
+          # The last tag, its commit time and the full tag list come from the API.
+          # A local listing on this runner is a copy of the checkout, not of the
+          # repository, so it must not decide which version is next.
+          gh api --paginate "repos/${REPO}/git/matching-refs/tags/v" \
+            | jq -s 'flatten | map(.ref) | map(ltrimstr("refs/tags/")) | map(select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))) | sort_by(ltrimstr("v") | split(".") | map(tonumber))' > /tmp/tags.json
+          TAG="$(jq -r 'last // empty' /tmp/tags.json)"
           TAG_TIME=""
-          if [ -n "$TAG" ]; then TAG_TIME="$(git log -1 --format=%cI "$TAG")"; fi
+          if [ -n "$TAG" ]; then TAG_TIME="$(gh api "repos/${REPO}/commits/${TAG}" --jq '.commit.committer.date')"; fi
+          # With no tag at all the version comes from `package.json`, which is
+          # what the planner already assumes for a first release.
           VERSION="$(jq -r .version package.json)"
           # `jq -s .` keeps the pages nested; flattening and the newest-run pick
           # live in scripts/lib/release-state.mjs, where a test executes them.
@@ -72,7 +81,7 @@ jobs:
           gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" | jq -s . > /tmp/open.json
           gh api "repos/${REPO}/commits/main/check-runs?per_page=100" > /tmp/checks.json
           FRAGMENTS="$(ls changelog.d/*.md 2>/dev/null | grep -v '/README.md$' | wc -l | tr -d ' ')"
-          TAGS="$(git tag --list 'v*' | jq -R . | jq -s .)"
+          TAGS="$(jq -c . /tmp/tags.json)"
           node scripts/release-state.mjs \
             --prs /tmp/prs.json --open /tmp/open.json --checks /tmp/checks.json \
             --tag "$TAG" --tag-time "$TAG_TIME" --version "$VERSION" \
@@ -89,112 +98,84 @@ jobs:
           # silenced every night. `plannerInput` reads only the accepted candidate;
           # a rejected one becomes a notice below.
           node --input-type=module -e '
-            import { readFileSync, appendFileSync } from "node:fs"
+            import { readFileSync, writeFileSync, appendFileSync } from "node:fs"
             import { planRelease } from "./scripts/release-plan.mjs"
             import { plannerInput } from "./scripts/lib/release-state.mjs"
             const state = JSON.parse(readFileSync("/tmp/state.json", "utf8"))
             const input = plannerInput(state)
             const result = planRelease(input)
+            const plan = {
+              shouldRelease: result.shouldRelease,
+              nextVersion: result.nextVersion,
+              total: result.total,
+              features: result.features,
+              fragments: result.fragments,
+              reason: result.reason,
+            }
+            writeFileSync("/tmp/plan.json", `${JSON.stringify(plan)}\n`)
             appendFileSync(process.env.GITHUB_OUTPUT, `shouldRelease=${result.shouldRelease}\nnextVersion=${result.nextVersion}\ntotal=${result.total}\nfeatures=${result.features}\nfragments=${result.fragments}\nreason=${result.reason}\n`)
-            console.log(`total=${result.total} features=${result.features} fragments=${result.fragments} next=${result.nextVersion} shouldRelease=${result.shouldRelease} reason=${result.reason}`)
             appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Daily minor release\n\n- merged PRs since ${input.lastTag || "(no tag)"}: **${result.total}** (need 10)\n- features: **${result.features}** (need 5)\n- fragments: **${result.fragments}** (need 1)\n- next version: **${result.nextVersion}**\n- decision: **${result.shouldRelease ? "release" : "no release"}** — ${result.reason}\n\n`)
             const rejected = state.openPrRejected
             if (rejected !== null && rejected !== undefined) {
               appendFileSync(process.env.GITHUB_STEP_SUMMARY, `> Notice: ignored pull request #${String(rejected.number)} "${String(rejected.title)}" from ${String(rejected.repo || "an unknown repository")} — a release-shaped title outside this repository is not the release PR and does not block the night.\n\n`)
             }
+            console.log(`total=${result.total} features=${result.features} fragments=${result.fragments} next=${result.nextVersion} shouldRelease=${result.shouldRelease} reason=${result.reason}`)
           '
-
-      # This step must run whenever a release PR is open, not only when the plan
-      # says "release tonight": `shouldRelease` is false exactly when a release PR
-      # is already in flight, so gating the collection on it meant the drive
-      # enqueued a PR whose checks nobody had read.
-      - name: Collect the open release PR's checks and files
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-        run: |
-          set -euo pipefail
-          jq -r '.openPr.number // empty' /tmp/state.json > /tmp/open-number.txt
-          NUMBER="$(cat /tmp/open-number.txt)"
-          if [ -z "$NUMBER" ]; then
-            jq '. + {openChecks: [], openFiles: [], mergeable: null}' /tmp/state.json > /tmp/state2.json && mv /tmp/state2.json /tmp/state.json
-            exit 0
-          fi
-          SHA="$(jq -r '.openPr.head.sha' /tmp/state.json)"
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?per_page=100" > /tmp/open-checks.json
-          # The file list is what proves the open PR is the mechanical release and
-          # not a docs-only PR that merely titled itself `release: vX.Y.Z`.
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${NUMBER}/files?per_page=100" | jq -s 'flatten | map(.filename)' > /tmp/open-files.json
-          MERGEABLE="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${NUMBER}" | jq -r '.mergeable')"
-          jq --slurpfile checks /tmp/open-checks.json --slurpfile files /tmp/open-files.json --arg mergeable "$MERGEABLE" \
-            '. + {openChecks: $checks[0].check_runs, openFiles: $files[0], mergeable: $mergeable}' /tmp/state.json > /tmp/state2.json
-          mv /tmp/state2.json /tmp/state.json
 
       - name: Decide
         id: decide
-        env:
-          PLAN_SHOULD: ${{ steps.plan.outputs.shouldRelease }}
-          PLAN_NEXT: ${{ steps.plan.outputs.nextVersion }}
-          PLAN_REASON: ${{ steps.plan.outputs.reason }}
         run: |
           set -euo pipefail
-          jq -n \
-            --argjson state "$(cat /tmp/state.json)" \
-            --argjson should "$(jq -n --arg v "$PLAN_SHOULD" '$v == "true"')" \
-            --arg next "$PLAN_NEXT" --arg reason "$PLAN_REASON" \
-            '{
-              plan: {shouldRelease: $should, nextVersion: $next, reason: $reason},
-              openReleasePr: (if $state.openPr == null then null else {number: $state.openPr.number, headSha: $state.openPr.head.sha, branch: $state.openPr.head.ref, title: $state.openPr.title, files: ($state.openFiles // []), blocked: ($state.mergeable == false), checks: ($state.openChecks // []), sameRepo: ($state.openPr.head.repo.full_name == $state.openPr.base.repo.full_name)} end),
-              mergedPrs: [($state.mergedPrs // [])[] | {number, title, headRef: .head.ref, mergeCommitSha: .merge_commit_sha, mergedAt: .merged_at}],
-              tags: $state.tags,
-              ciOk: $state.ciOk,
-              dryRun: $state.dryRun
-            }' > /tmp/drive-input.json
+          # Rule 4 and the dry-run reduction live in the tested drive module. The
+          # pull-request half of the drive is #187's, so this job reports it and
+          # acts only on `open-pr`, which is the branch push below.
           node --input-type=module -e '
-            import { readFileSync, appendFileSync } from "node:fs"
+            import { readFileSync, writeFileSync, appendFileSync } from "node:fs"
             import { decideDrive } from "./scripts/lib/release-drive.mjs"
-            const decision = decideDrive(JSON.parse(readFileSync("/tmp/drive-input.json", "utf8")))
-            appendFileSync(process.env.GITHUB_OUTPUT, `action=${decision.action}\nreason=${decision.reason}\ntag=${decision.tag ?? ""}\nsha=${decision.sha ?? ""}\nheadSha=${decision.headSha ?? ""}\npr=${decision.pr ?? ""}\nversion=${decision.version ?? ""}\n`)
-            console.log(JSON.stringify(decision))
+            const state = JSON.parse(readFileSync("/tmp/state.json", "utf8"))
+            const plan = JSON.parse(readFileSync("/tmp/plan.json", "utf8"))
+            const open = state.openPr
+            const decision = decideDrive({
+              plan: { shouldRelease: plan.shouldRelease, nextVersion: plan.nextVersion, reason: plan.reason },
+              openReleasePr: open === null || open === undefined
+                ? null
+                : {
+                    number: Number(open.number ?? 0),
+                    headSha: String(open.head?.sha ?? ""),
+                    branch: String(open.head?.ref ?? ""),
+                    title: String(open.title ?? ""),
+                    files: [],
+                    blocked: false,
+                    checks: [],
+                    sameRepo: open.head?.repo?.full_name === open.base?.repo?.full_name,
+                  },
+              mergedPrs: [],
+              tags: state.tags,
+              ciOk: state.ciOk,
+              dryRun: state.dryRun,
+            })
+            writeFileSync("/tmp/drive.json", `${JSON.stringify(decision)}\n`)
+            appendFileSync(process.env.GITHUB_OUTPUT, `action=${decision.action}\nreason=${decision.reason}\nversion=${decision.version ?? ""}\ntag=${decision.tag ?? ""}\n`)
             appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- action: **${decision.action}** — ${decision.reason}\n`)
+            console.log(JSON.stringify(decision))
           '
 
-      - name: Enqueue the open release PR through the gate
-        if: ${{ steps.decide.outputs.action == 'enqueue' }}
+      - name: Push the release branch
+        id: push
+        # A manual dispatch defaults to a dry run: it writes the summary and the
+        # artifact and pushes nothing.
+        if: ${{ inputs.dry_run != true }}
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          RELEASE_PR: ${{ steps.decide.outputs.pr }}
-          RELEASE_HEAD_SHA: ${{ steps.decide.outputs.headSha }}
-        run: |
-          set -euo pipefail
-          gh pr merge "$RELEASE_PR" --auto --squash --match-head-commit "$RELEASE_HEAD_SHA"
-          echo 'enqueued the open release PR with auto-merge' >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Report a blocked release PR
-        if: ${{ steps.decide.outputs.action == 'report-blocked' }}
-        env:
-          RELEASE_REASON: ${{ steps.decide.outputs.reason }}
-        run: |
-          set -euo pipefail
-          printf 'reason: %s\n' "$RELEASE_REASON" >> "$GITHUB_STEP_SUMMARY"
-          printf '::error::%s — not merging and not opening a second PR\n' "$RELEASE_REASON"
-
-      - name: Open the mechanical release PR
-        if: ${{ steps.decide.outputs.action == 'open-pr' }}
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          DECIDE_ACTION: ${{ steps.decide.outputs.action }}
           DECIDE_VERSION: ${{ steps.decide.outputs.version }}
-          PLAN_TOTAL: ${{ steps.plan.outputs.total }}
-          PLAN_FEATURES: ${{ steps.plan.outputs.features }}
-          PLAN_FRAGMENTS: ${{ steps.plan.outputs.fragments }}
         run: |
           set -euo pipefail
+          if [ "$DECIDE_ACTION" != 'open-pr' ]; then
+            echo "nothing to push: the drive said ${DECIDE_ACTION}" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           VERSION="$DECIDE_VERSION"
           BRANCH="release/v${VERSION}"
-          CI_OK="$(jq -r '.ciOk' /tmp/state.json)"
-          LAST_TAG="$(jq -r '.lastTag' /tmp/state.json)"
-          TOTAL="$PLAN_TOTAL"
-          FEATURES="$PLAN_FEATURES"
-          FRAGMENTS="$PLAN_FRAGMENTS"
           node scripts/changelog.mjs release "$VERSION" --date "$(TZ=Asia/Shanghai date +%F)"
           node scripts/version.mjs check
           git config user.name 'HugoXK'
@@ -202,56 +183,177 @@ jobs:
           git checkout -b "$BRANCH"
           git add CHANGELOG.md changelog.d package.json package-lock.json docker-compose.yml
           git commit -m "release: v${VERSION}"
+          # Idempotent: an unchanged branch is left alone and the night succeeds,
+          # a branch with other content is a conflict and the night fails. It is
+          # never overwritten, because that would discard a review in progress.
+          if git fetch --quiet origin "$BRANCH" 2>/dev/null && git rev-parse --quiet --verify "refs/remotes/origin/${BRANCH}" > /dev/null; then
+            REMOTE_SHA="$(git rev-parse "refs/remotes/origin/${BRANCH}")"
+            if [ "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse "refs/remotes/origin/${BRANCH}^{tree}")" ]; then
+              echo "already pushed ${BRANCH} at ${REMOTE_SHA} — same content, nothing to do" >> "$GITHUB_STEP_SUMMARY"
+              printf 'pushed=%s\nbranch=%s\n' "$REMOTE_SHA" "$BRANCH" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::${BRANCH} already exists at ${REMOTE_SHA} with different content; refusing to overwrite it"
+            exit 1
+          fi
           git push origin "$BRANCH"
-          cat > /tmp/release-pr.md <<EOF
-          Written-by: HugoXK
-          No-issue: mechanical daily minor release
+          PUSHED="$(git rev-parse HEAD)"
+          printf 'pushed=%s\nbranch=%s\n' "$PUSHED" "$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "pushed ${BRANCH} at ${PUSHED}" >> "$GITHUB_STEP_SUMMARY"
 
-          Automated minor release **v${VERSION}**.
-
-          - merged PRs since the last tag: **${TOTAL}** (rule: >= 10)
-          - features: **${FEATURES}** (rule: >= 5)
-          - changelog fragments released: **${FRAGMENTS}** (rule: >= 1)
-          - latest \`ci-ok\` on \`main\`: **${CI_OK}** (rule 4, checked before this job opened anything)
-
-          Files: \`CHANGELOG.md\`, \`changelog.d/\`, \`package.json\`, \`package-lock.json\`, \`docker-compose.yml\` — the mechanical set, nothing else. \`risk-gate\` and \`pr-lint\` treat this shape as the mechanical class because the branch is \`release/v${VERSION}\` and the title is \`release: v${VERSION}\`.
-
-          Ran:
-          - \`node scripts/changelog.mjs release ${VERSION}\` — assembled the fragments above the Unreleased marker
-          - \`node scripts/version.mjs check\` — pass
-
-          Not run: \`npm run check\` here; this PR's own \`ci-ok\` runs it at the tip.
-
-          Compare: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/${LAST_TAG}...${BRANCH}
-          EOF
-          gh pr create --base main --head "$BRANCH" --title "release: v${VERSION}" --body-file /tmp/release-pr.md
-
-      - name: Tag the merged release and dispatch release.yml
-        if: ${{ steps.decide.outputs.action == 'tag' }}
+      - name: Comment on #80
+        if: ${{ inputs.dry_run != true }}
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          DECIDE_TAG: ${{ steps.decide.outputs.tag }}
-          DECIDE_SHA: ${{ steps.decide.outputs.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUSHED: ${{ steps.push.outputs.pushed }}
+          BRANCH: ${{ steps.push.outputs.branch }}
+          MAIN_SHA: ${{ steps.state.outputs.main_sha }}
         run: |
           set -euo pipefail
-          TAG="$DECIDE_TAG"
-          SHA="$DECIDE_SHA"
-          # The tag names the release PR's squash commit, never HEAD: one unrelated
-          # merge after the release PR used to mean HEAD was tagged with the wrong
-          # tree. Proving it is an ancestor of main keeps a rewritten or foreign sha
-          # from being published.
-          if [ -z "$SHA" ]; then
-            echo "::error::no merge commit sha for ${TAG}; refusing to tag HEAD"
-            exit 1
+          if [ -z "$PUSHED" ]; then
+            echo "no pushed branch, so nothing to say on #80" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
-          git fetch --quiet origin main
-          if ! git merge-base --is-ancestor "$SHA" origin/main; then
-            echo "::error::${SHA} is not on main; refusing to tag ${TAG}"
-            exit 1
+          REPO="$GITHUB_REPOSITORY"
+          PLAN_TOTAL="$(jq -r '.total' /tmp/plan.json)"
+          PLAN_FEATURES="$(jq -r '.features' /tmp/plan.json)"
+          PLAN_FRAGMENTS="$(jq -r '.fragments' /tmp/plan.json)"
+          PLAN_NEXT="$(jq -r '.nextVersion' /tmp/plan.json)"
+          LAST_TAG="$(jq -r '.lastTag' /tmp/state.json)"
+          CI_OK="$(jq -r '.ciOk' /tmp/state.json)"
+          # The marker is version plus pushed sha: a night that pushes nothing new
+          # repeats nothing here, so the issue does not get a line every day.
+          MARKER="<!-- daily-release:v${PLAN_NEXT}:${PUSHED} -->"
+          LAST_LINE="$(gh api --paginate "repos/${REPO}/issues/80/comments?per_page=100" \
+            | jq -s -r 'flatten | map(.body | split("\n") | first) | map(select(startswith("<!-- daily-release:"))) | last // ""')"
+          if [ "$LAST_LINE" = "$MARKER" ]; then
+            echo "already commented ${MARKER}" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
-          # A tag pushed with GITHUB_TOKEN does not start another workflow, so the
-          # publish run is dispatched explicitly with the tag the release PR set.
-          git tag -a "$TAG" -m "Fledge $TAG" "$SHA"
-          git push origin "$TAG"
-          gh workflow run release.yml --ref main -f "tag=${TAG}"
-          echo "tagged ${TAG} and dispatched release.yml" >> "$GITHUB_STEP_SUMMARY"
+          BODY="$(printf '%s\n' \
+            "$MARKER" \
+            "Written-by: HugoXK" \
+            "" \
+            "The daily minor release **v${PLAN_NEXT}** is on \`${BRANCH}\` at \`${PUSHED}\`, planned from \`main\` \`${MAIN_SHA}\`." \
+            "" \
+            "- merged PRs since ${LAST_TAG:-the first release}: **${PLAN_TOTAL}** (need 10)" \
+            "- features among them: **${PLAN_FEATURES}** (need 5)" \
+            "- changelog fragments released: **${PLAN_FRAGMENTS}** (need 1)" \
+            "- latest \`ci-ok\` on \`main\`: **${CI_OK}** (rule 4)" \
+            "" \
+            "The branch is the mechanical set — \`CHANGELOG.md\`, \`changelog.d/\`, \`package.json\`, \`package-lock.json\`, \`docker-compose.yml\` — nothing else. The pull request and the tag are not created by this run; the tag follows the merge on \`main\`, through the Git data API." \
+            "" \
+            "Compare: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${LAST_TAG:-HEAD}...${BRANCH}")"
+          gh issue comment 80 --body "$BODY"
+          echo "commented ${MARKER} on #80" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write the plan artifact
+        # Written on every run, failed or not, so a red night still leaves the
+        # state it saw behind for whoever reads the run.
+        if: ${{ always() }}
+        env:
+          MAIN_SHA: ${{ steps.state.outputs.main_sha }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg mainSha "${MAIN_SHA:-unknown}" \
+            --argjson plan "$(cat /tmp/plan.json 2>/dev/null || echo null)" \
+            --argjson drive "$(cat /tmp/drive.json 2>/dev/null || echo null)" \
+            '{ mainSha: $mainSha, plan: $plan, drive: $drive }' > release-plan.json
+          cat release-plan.json
+
+      - name: Keep the plan artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-plan
+          path: release-plan.json
+          if-no-files-found: error
+          retention-days: 30
+
+  tag:
+    name: tag the merged release and dispatch the publish run
+    # Inverted mirror of the release job: a scheduled or manual run must never
+    # tag, and only a push to `main` can carry a merged release.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Collect the pushed commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          SHA="$GITHUB_SHA"
+          # The pull requests that produced this commit, and the tag list as the
+          # API sees it — not the runner's copy, which is one commit deep.
+          gh api "repos/${REPO}/commits/${SHA}/pulls" > /tmp/pulls.json
+          gh api --paginate "repos/${REPO}/git/matching-refs/tags/v" \
+            | jq -s 'flatten | map(.ref) | map(ltrimstr("refs/tags/"))' > /tmp/tags.json
+          gh api "repos/${REPO}/contents/package.json?ref=${SHA}" --jq '.content' | base64 -d | jq -r '.version // empty' > /tmp/version.txt
+          echo "read version $(cat /tmp/version.txt) at ${SHA}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Decide the tag
+        id: decide
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          VERSION="$(cat /tmp/version.txt)"
+          export VERSION SHA
+          # Whether this push is the squash of the mechanical release is a pure
+          # decision with a test per refusal, in scripts/lib/release-tag.mjs.
+          node --input-type=module -e '
+            import { readFileSync, appendFileSync } from "node:fs"
+            import { plan } from "./scripts/lib/release-tag.mjs"
+            const result = plan({
+              pulls: JSON.parse(readFileSync("/tmp/pulls.json", "utf8")),
+              tags: JSON.parse(readFileSync("/tmp/tags.json", "utf8")),
+              packageVersion: process.env.VERSION,
+              sha: process.env.SHA,
+            })
+            appendFileSync(process.env.GITHUB_OUTPUT, `action=${result.action}\ntag=${result.tag ?? ""}\nsha=${result.sha ?? ""}\nreason=${result.reason}\n`)
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- tag decision: **${result.action}** — ${result.reason}\n`)
+            console.log(JSON.stringify(result))
+          '
+
+      - name: Create the annotated tag on the merge commit
+        if: ${{ steps.decide.outputs.action == 'create' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.decide.outputs.tag }}
+          SHA: ${{ steps.decide.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Two API calls are the whole write: the annotated tag object, then its
+          # ref. The tag names the merge commit the release pull request produced,
+          # so an unrelated merge after it cannot move the tag.
+          OBJECT="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/git/tags" \
+            -f tag="$TAG" -f message="Fledge ${TAG}" -f object="$SHA" -f type=commit --jq .sha)"
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/${TAG}" -f sha="$OBJECT" --jq .ref
+          echo "created ${TAG} on ${SHA}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dispatch release.yml at the tag
+        if: ${{ steps.decide.outputs.action == 'create' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.decide.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # A tag written with the automatic token starts no workflow, so the
+          # publish run is dispatched explicitly at that tag. release.yml verifies
+          # the tag is an ancestor of main before it publishes anything.
+          gh workflow run release.yml --ref "$TAG" -f "tag=$TAG"
+          echo "dispatched release.yml at ${TAG}" >> "$GITHUB_STEP_SUMMARY"
