@@ -88,13 +88,17 @@ export function standingChecks(checkRuns) {
 // 'failure' from a rejection.
 //
 // A rejection is satisfied by any completed red standing at the SHA. When none
-// stands yet, the newest attempt-1 run of the gate workflow is re-run in full
+// stands yet, the newest repairable run of the gate workflow is re-run in full
 // (`rerun`, all jobs): a rejection must be able to repaint a run that is currently
-// green, and that is the only way.
+// green, and that is the only way. This path is idempotent — the re-run paints the
+// red it was asked for, so a repeated rejection finds that red and writes nothing.
 //
 // A PASS is satisfied only when no failed run is left standing. Each failed
-// attempt-1 gate run whose own `review-gate` job failed is re-run. Anything still
-// red afterwards is blocked on a new commit, not on another re-run.
+// repairable gate run (`run_attempt <= MAX_REPAIR_ATTEMPT`) whose own `review-gate`
+// job failed is re-run. Every re-run raises `run_attempt`, so one failed run is
+// re-run at most twice if the same PASS is posted twice (1 -> 2, then 2 -> 3); once
+// it stands above the cap, a red it still owns is blocked on a new commit instead
+// of another re-run. That bound is what makes this loop terminate.
 export function repairPlan({ expected, checkRuns, runs, jobsFor, currentRunId }) {
   const completed = standingChecks(checkRuns).filter((check) => check.status === 'completed')
   const reds = completed.filter((check) => check.conclusion !== 'success' && check.conclusion !== 'skipped')

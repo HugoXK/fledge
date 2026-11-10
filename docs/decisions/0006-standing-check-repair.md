@@ -46,10 +46,15 @@ Three consequences follow from it:
 3. A run is repairable while `run_attempt <= MAX_REPAIR_ATTEMPT` (2). A run that a
    person already re-ran by hand sat on attempt 2 — the state a PASS usually
    arrives into — so attempt 1 only is too narrow. The cap is the loop bound:
-   every re-run strictly raises `run_attempt`, a run at the cap is never a target
-   again, and it is reported as blocked on a new commit instead of being re-run.
-   Each failed run can therefore be repaired automatically exactly once, and a
-   repeated identical verdict writes nothing.
+   every re-run strictly raises `run_attempt`, so one failed run is re-run
+   automatically **twice at most** — 1 → 2 for the first repair, 2 → 3 for the
+   second — and once it stands above the cap, a red it still owns is reported as
+   blocked on a new commit instead of being re-run again. Posting the same PASS
+   twice is therefore not a no-op: the second trigger re-runs the run the first one
+   left on attempt 2, and only the third trigger, with the run on attempt 3, is the
+   one that reports blocked. The **rejection** path is the idempotent one: it
+   repaints a green run, and a repeated rejection finds the red it just painted and
+   writes nothing.
 
 ## Rejected
 
@@ -65,7 +70,8 @@ Three consequences follow from it:
   repair or a merge queue ignore the rollup.** These remove the gate instead of
   repairing it.
 - **Re-run without an attempt cap.** Every trigger would re-run the same failing
-  run forever; the cap is what makes "one automatic repair" true.
+  run forever; the cap is what makes the repair terminate, after at most two
+  automatic re-runs of one run (1 → 2 → 3).
 - **Act only on attempt-1 runs (the status quo).** It makes a run unreachable at
   exactly the moment a verdict needs it, and the hand re-run becomes permanent
   procedure.

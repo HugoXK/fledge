@@ -18,9 +18,11 @@
 //                                                     paint no review-gate check);
 //   - nothing to repaint                           -> exit 0, no write.
 //
-// It never loops: a re-run is attempt 2 and is never a target again, so a second
-// identical verdict makes no API write, and a SHA that cannot be repainted exits 1
-// with its name instead of re-running forever.
+// It cannot loop: every re-run raises `run_attempt`, and a run above
+// `MAX_REPAIR_ATTEMPT` (2) is never a target again, so one failed run is re-run at
+// most twice (1 -> 2, then 2 -> 3) and the next trigger exits 1 with its name
+// instead of re-running forever. What is idempotent is the rejection path: it finds
+// the red it painted and makes no write.
 
 import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import { evaluateGate } from './lib/review-gate.mjs'

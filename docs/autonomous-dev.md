@@ -253,9 +253,12 @@ while the merge gate kept refusing.
 - a run is repairable while its `run_attempt` is at most 2
   (`MAX_REPAIR_ATTEMPT`), so a run that a person already re-ran by hand is still
   reachable — the state a PASS usually arrives into. The cap is the loop bound:
-  each re-run raises the attempt, and a run at the cap is reported as blocked on
-  a new commit instead of being re-run forever. Posting the same verdict twice
-  writes nothing.
+  each re-run raises the attempt, so one failed run is re-run automatically twice
+  at most (1 → 2, then 2 → 3), and a run already above the cap has its red reported
+  as blocked on a new commit instead of being re-run again. Posting the same PASS
+  twice is therefore not a no-op — the second trigger re-runs the attempt-2 run —
+  while posting the same rejection twice writes nothing, because the red it painted
+  is already standing.
 
 The comment path is the job `review-gate-comment`, never `review-gate`: its checks
 land on the default branch, and a skipped job would still publish a check run
@@ -264,8 +267,9 @@ association test only for `issue_comment`, so a stranger cannot start the
 `actions: write` job and the other three events never evaluate the association.
 A PASS that arrives after a rejection at the same SHA keeps the
 check red until the repair step re-runs the failed run at that SHA; that now
-happens without a hand step. A run already at the attempt cap still needs a new
-commit to move the tip, and the step says so by name instead of exiting quietly.
+happens without a hand step. A run already above the attempt cap (attempt 3, after
+two automatic re-runs) still needs a new commit to move the tip, and the step says
+so by name instead of exiting quietly.
 
 `main` is protected by required `ci-ok`, `review-gate` and `pr-lint` plus
 conversation resolution; admins are enforced. This repository has no merge
