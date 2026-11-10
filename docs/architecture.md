@@ -367,10 +367,16 @@ concurrency is `PLATFORM_MAX_ACTIVE_JOBS` (default 2), not a hard-coded literal.
 ### Metrics, traces, shutdown and webhook replay
 
 `/metrics` exposes Prometheus counters, gauges and histograms for HTTP, jobs,
-retries, merges, path guard, evidence verification, GitHub and the bridge. It is
-loopback-only unless `METRICS_TOKEN` is set. Optional OTLP/HTTP JSON tracing is
-enabled with `OTEL_EXPORTER_OTLP_ENDPOINT`; HTTP requests, GitHub calls and
-bridge dispatches emit spans.
+retries, merges, path guard, evidence verification, GitHub and the bridge. The
+token is read from `Authorization: Bearer <token>` only — never from the query
+string — and compared in constant time. A production process refuses to start
+without `METRICS_TOKEN`, and refuses a `NOTIFY_WEBHOOK_URL` that is not an
+absolute `https:` URL, because that webhook carries the alert payload and its
+bearer secret; the loopback fallback for an empty token is development/test
+only, judged on the peer the trusted `TRUST_PROXY` hop saw. The refusal lands in
+`buildApp()`, which `src/index.ts` calls unguarded. Optional OTLP/HTTP JSON
+tracing is enabled with `OTEL_EXPORTER_OTLP_ENDPOINT`; HTTP requests, GitHub
+calls and bridge dispatches emit spans.
 
 Shutdown stops the scheduler, waits up to `SHUTDOWN_GRACE_SECONDS` for active
 jobs, closes HTTP, flushes traces and closes SQLite. Startup removes orphan
