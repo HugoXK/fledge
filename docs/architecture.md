@@ -408,6 +408,14 @@ and a failed delivery can be retried. Opening checks or approving a review
 triggers an auto-merge reconcile, and the scheduler re-checks open Fledge PRs at
 most every `AUTO_MERGE_RECONCILE_MINUTES`.
 
+### Scheduled work and work items
+
+Work items are a tracking board, not a second scheduler lock. A scheduled
+iterate job is blocked by an active job for the same repository, a failing
+credential or a duplicate issue, but not by a `pr_ready`, `in_review` or stale
+`in_progress` item. A failed job returns its `assigned`/`in_progress` work item
+to `triaged` so a later schedule can pick it up.
+
 ### Team session reconciliation
 
 A DSH restart can create new session IDs for the Chief and role bots. Fledge
