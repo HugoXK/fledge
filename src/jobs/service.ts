@@ -483,6 +483,7 @@ export class Jobs {
       // Mark the job running before dispatch: the bridge may send its first
       // heartbeat as soon as the agent is up, and a queued row may not accept one.
       this.store.updateJob(job.id, { status: 'running', started_at: nowIso() })
+      observeHistogram('fledge_job_queue_seconds', Math.max(0, (Date.now() - Date.parse(job.created_at)) / 1000), { kind }, 'Time from enqueue to dispatch')
       this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.running', step: kind })
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'running' })
       else this.store.updateRepo(repo.id, { last_status: 'running' })

@@ -40,6 +40,20 @@ Suggested SLOs:
 | bridge availability | ≥ 99% |
 | GitHub 429/5xx rate | < 2% |
 
+## Alert rules and SLO report
+
+Prometheus alert rules live in [`deploy/prometheus/fledge-alerts.yml`](../deploy/prometheus/fledge-alerts.yml).
+They cover job success, p95 queue wait, p95 job duration, bridge failure rate,
+GitHub 429s and open operational alerts, each with a runbook link.
+
+```sh
+npm run build
+PROMETHEUS_URL=http://127.0.0.1:9090 npm run slo:report
+```
+
+The report prints the 7-day success rate, remaining error budget, queue/job p95,
+bridge success and GitHub 429 rate. Missing series render as `n/a`.
+
 ## Traces
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP collector (for example
