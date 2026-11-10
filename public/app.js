@@ -37,6 +37,34 @@
     }
   }
 
+  // Below 640px the header is one fixed row and the navigation opens from this
+  // toggle (#133). The panel is absolutely positioned, so .top keeps the height
+  // the observer above publishes while the menu is open — the sticky offset and
+  // the workspace frame must not move when a reader opens the menu.
+  const navToggle = document.querySelector('[data-nav-toggle]')
+  const navPanel = document.getElementById('main-nav')
+  if (header && navToggle && navPanel) {
+    const setNavOpen = (open) => {
+      navToggle.setAttribute('aria-expanded', open ? 'true' : 'false')
+      if (open) header.setAttribute('data-nav-open', 'true')
+      else header.removeAttribute('data-nav-open')
+    }
+    navToggle.addEventListener('click', () => {
+      setNavOpen(navToggle.getAttribute('aria-expanded') !== 'true')
+    })
+    navPanel.addEventListener('click', (event) => {
+      if (event.target instanceof Element && event.target.closest('a') !== null) setNavOpen(false)
+    })
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape' || navToggle.getAttribute('aria-expanded') !== 'true') return
+      setNavOpen(false)
+      navToggle.focus()
+    })
+    if (typeof window.matchMedia === 'function') {
+      window.matchMedia('(max-width: 640px)').addEventListener('change', () => setNavOpen(false))
+    }
+  }
+
 
   document.querySelectorAll('[data-auto-group]').forEach((group) => {
     const toggle = group.querySelector('input[name="auto"]')

@@ -66,7 +66,12 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   per breakpoint); `[id] { scroll-margin-top }` and the workspace frame's height
   both follow it, so an anchor is never hidden under the header when it wraps
   and the frame's bottom lands at the viewport bottom. The shell's controls keep
-  a 44px touch target.
+  a 44px touch target. Below 641px the header is one **fixed** 64px row and the
+  navigation collapses behind a `data-nav-toggle` button that publishes
+  `aria-expanded`; the open menu is an absolutely positioned panel, so it
+  overlays the page and `--header-h` keeps the collapsed height while it is
+  open. Every destination the wide header lists is still rendered in the panel,
+  so a phone loses no route.
 - **Redirect targets**: every `next=` / `returnTo` value goes through one helper
   that returns a path on this site or the fallback. It validates the parsed
   result, not the input, so a value that is a plain path before parsing and

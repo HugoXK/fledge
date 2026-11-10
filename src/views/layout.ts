@@ -85,12 +85,18 @@ export function layout(options: LayoutOptions): string {
       : `<a href="${href}">${escapeHtml(label)}</a>`
   const nav = viewer === undefined || viewer === null
     ? ''
-    : `<nav class="nav" aria-label="${escapeHtml(t('主导航', 'Main navigation'))}">
+    : `<nav class="nav" id="main-nav" aria-label="${escapeHtml(t('主导航', 'Main navigation'))}">
         ${navItem('console', '/console', t('工作区', 'Workspace'))}
         ${navItem('dashboard', '/dashboard', t('仓库', 'Repositories'))}
         ${navItem('settings', '/settings', t('设置', 'Settings'))}
         ${!preview && (viewer.user.role === 'admin' || viewer.user.role === 'superadmin') ? navItem('admin', '/admin', t('管理', 'Admin')) : ''}
       </nav>`
+  // A phone header is one fixed row (#133), so the navigation collapses behind
+  // this toggle instead of wrapping. It is rendered only when there is a nav to
+  // open, and it stays a plain button: the menu is a CSS panel, not a route.
+  const navToggle = viewer === undefined || viewer === null
+    ? ''
+    : `<button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="main-nav">${escapeHtml(t('菜单', 'Menu'))}</button>`
   const accountAvatar = viewer !== undefined && viewer !== null && viewer.user.avatar_url !== null && viewer.user.avatar_url !== ''
     ? `<img src="${escapeHtml(viewer.user.avatar_url)}" alt="" width="24" height="24" />`
     : viewer !== undefined && viewer !== null
@@ -129,6 +135,7 @@ export function layout(options: LayoutOptions): string {
   <header class="top">
     <div class="top-inner">
       <a class="brand" href="/"><span class="mark">F</span><span>Fledge${brandSmall}</span></a>
+      ${navToggle}
       ${nav}
       <div class="spacer"></div>
       ${languageSwitch(locale, path)}
