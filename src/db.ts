@@ -808,6 +808,13 @@ function durationMs(start: string | null, end: string | null): number | null {
   return Number.isFinite(a) && Number.isFinite(b) && b >= a ? b - a : null
 }
 
+// One definition of "newest job" for a pull request. created_at is a
+// millisecond string, so two rows for the same PR can tie; rowid is the only
+// stable tie-break, and both callers must order the same way.
+function newestJobOrder(alias: string): string {
+  return `${alias}.created_at DESC, ${alias}.rowid DESC`
+}
+
 export class Store {
   readonly db: Database
 
@@ -2048,6 +2055,20 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE repo_id = ? AND pr_url IS NOT NULL AND kind = 'iterate' AND (pr_state IS NULL OR pr_state != 'merged') ORDER BY created_at DESC LIMIT ?", repoId, limit)
   }
 
+  // For each pull request URL, the one iterate job that decides its merge:
+  // newer than every other row for that URL, with rowid breaking a tie.
+  listNewestPrJobsForRepo(repoId: string, limit = 20): JobRow[] {
+    return this.all<JobRow>(
+      `SELECT j.* FROM jobs AS j
+       WHERE j.repo_id = ? AND j.pr_url IS NOT NULL AND j.kind = 'iterate'
+         AND j.rowid = (SELECT j2.rowid FROM jobs AS j2
+                        WHERE j2.repo_id = j.repo_id AND j2.pr_url = j.pr_url AND j2.kind = 'iterate'
+                        ORDER BY ${newestJobOrder('j2')} LIMIT 1)
+       ORDER BY ${newestJobOrder('j')} LIMIT ?`,
+      repoId, limit,
+    )
+  }
+
   updateJobsPrState(prUrl: string, state: string): void {
     this.run('UPDATE jobs SET pr_state = ? WHERE pr_url = ?', state, prUrl)
   }
@@ -2061,7 +2082,11 @@ export class Store {
   }
 
   latestJobByPrUrl(userId: string, prUrl: string): JobRow | undefined {
-    return this.get<JobRow>('SELECT * FROM jobs WHERE user_id = ? AND pr_url = ? ORDER BY created_at DESC LIMIT 1', userId, prUrl)
+    return this.get<JobRow>(`SELECT * FROM jobs AS j WHERE j.user_id = ? AND j.pr_url = ? ORDER BY ${newestJobOrder('j')} LIMIT 1`, userId, prUrl)
+  }
+
+  newestIterateJobByPrUrl(userId: string, prUrl: string): JobRow | undefined {
+    return this.get<JobRow>(`SELECT * FROM jobs AS j WHERE j.user_id = ? AND j.pr_url = ? AND j.kind = 'iterate' ORDER BY ${newestJobOrder('j')} LIMIT 1`, userId, prUrl)
   }
 
   createWorkItem(input: { id: string; repoId: string; userId: string; title: string; detail?: string; issueUrl?: string | null; prUrl?: string | null; state?: string; priority?: number; assigneeUserId?: string | null; jobId?: string | null; prState?: string | null; mergedAt?: string | null; mergeCommit?: string | null }): WorkItemRow {

@@ -250,6 +250,14 @@ base branch. A URL that does not match, or a PR that does not belong to the job,
 is skipped without a merge and recorded as `job.merge_skipped` with the specific
 mismatch (host, repository, head or base).
 
+The job state decides the automatic merge as well: for each pull request only the
+newest `iterate` job for that PR may merge, and only after it has succeeded
+(`created_at DESC`, `rowid DESC` as the tie-break). A queued, running, failed,
+cancelled or paused follow-up therefore holds the pull request back — an older
+succeeded job for the same PR never merges past its newer attempt. The scheduled
+reconciler skips those PRs, and `POST /repos/:id/delivery/merge-clean` reports
+them in `skipped` with the job state instead of merging them.
+
 ### `POST /api/jobs/:id/callback`
 
 Headers: `Authorization: Bearer <callbackSecret>`, `Content-Type: application/json`

@@ -157,6 +157,10 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   checks and approvals before it performs a squash merge. The agent prompt
   always forbids merging. The switch is stored on the repository and included
   in the job payload for reporting. A stale or downgraded role blocks the merge.
+  A merge also needs the newest `iterate` job for that pull request to have
+  succeeded: a queued, running, failed, cancelled or paused follow-up on the
+  same PR holds it back, so an older succeeded job cannot merge work that is
+  still in flight or that failed afterwards.
 
 ### Model gateway
 

@@ -1250,6 +1250,46 @@ test('transient failures schedule one durable retry and permanent failures do no
   }
 })
 
+// Fake GitHub shared by the auto-merge tests below: every listed pull request
+// is open, mergeable and green, and merge calls are recorded, not performed.
+async function startGreenPullRequests(repo: string, numbers: number[], headRef: string) {
+  const merges: string[] = []
+  const server = await startFakeServer((request, response) => {
+    const method = request.method ?? 'GET'
+    const url = request.url ?? ''
+    const pulls = numbers.join('|')
+    const pull = new RegExp(`^/repos/o/${repo}/pulls/(${pulls})$`).exec(url)
+    if (method === 'GET' && pull !== null) {
+      const number = Number(pull[1])
+      json(response, 200, { number, html_url: `https://github.com/o/${repo}/pull/${number}`, title: 'fix', state: 'open', head: { ref: headRef, sha: `sha${number}` }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false })
+      return
+    }
+    if (method === 'GET' && new RegExp(`^/repos/o/${repo}/commits/sha(${pulls})/check-runs\\?per_page=100$`).test(url)) {
+      json(response, 200, { check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] })
+      return
+    }
+    if (method === 'GET' && new RegExp(`^/repos/o/${repo}/commits/sha(${pulls})/status$`).test(url)) {
+      json(response, 200, { state: 'success', statuses: [] })
+      return
+    }
+    if (method === 'GET' && new RegExp(`^/repos/o/${repo}/pulls/(${pulls})/reviews\\?per_page=100$`).test(url)) {
+      json(response, 200, [])
+      return
+    }
+    if (method === 'GET' && url === `/repos/o/${repo}/branches/main/protection`) {
+      json(response, 200, { protected: false, required_status_checks: { contexts: [] }, required_pull_request_reviews: { required_approving_review_count: 0 } })
+      return
+    }
+    if (method === 'PUT' && new RegExp(`^/repos/o/${repo}/pulls/(${pulls})/merge$`).test(url)) {
+      merges.push(url)
+      json(response, 200, { merged: true, sha: 'merged' })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  return { server, merges }
+}
+
 test('the auto-merge reconciler merges an open Fledge PR once checks are green', async () => {
   const merges: string[] = []
   const github = await startFakeServer((request, response) => {
@@ -1278,6 +1318,135 @@ test('the auto-merge reconciler merges an open Fledge PR once checks are green',
   } finally {
     store.close()
     await github.close()
+  }
+})
+
+test('the auto-merge reconciler does not merge a queued iterate job', async () => {
+  const { server, merges } = await startGreenPullRequests('queued', [3], 'fledge/x')
+  const config = testConfig({ github: { ...testConfig().github, apiBase: server.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'queued-reconcile-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_queued', userId: user.id, owner: 'o', name: 'queued', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, roleCheckedAt: new Date().toISOString(), upstreamHtmlUrl: 'https://github.com', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_queued_only', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(job.id, { branch: 'fledge/x', pr_url: 'https://github.com/o/queued/pull/3', pr_state: 'open' })
+    await jobs.reconcileAutoMerge()
+    assert.equal(merges.length, 0)
+    assert.equal(store.getJob(job.id)?.pr_state, 'open')
+    assert.equal(store.listAudit(50).filter((row) => row.action === 'job.auto_merged').length, 0)
+  } finally {
+    store.close()
+    await server.close()
+  }
+})
+
+test('the auto-merge reconciler does not merge a failed iterate job', async () => {
+  const { server, merges } = await startGreenPullRequests('failed', [3], 'fledge/x')
+  const config = testConfig({ github: { ...testConfig().github, apiBase: server.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'failed-reconcile-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_failed', userId: user.id, owner: 'o', name: 'failed', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, roleCheckedAt: new Date().toISOString(), upstreamHtmlUrl: 'https://github.com', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_failed_only', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(job.id, { status: 'failed', branch: 'fledge/x', pr_url: 'https://github.com/o/failed/pull/3', pr_state: 'open', error: 'bridge 502' })
+    await jobs.reconcileAutoMerge()
+    assert.equal(merges.length, 0)
+    assert.equal(store.getJob(job.id)?.pr_state, 'open')
+  } finally {
+    store.close()
+    await server.close()
+  }
+})
+
+test('a queued follow-up blocks a merge even when an older job for the same PR succeeded', async () => {
+  const { server, merges } = await startGreenPullRequests('followup', [3], 'fledge/x')
+  const config = testConfig({ github: { ...testConfig().github, apiBase: server.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'followup-reconcile-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_followup', userId: user.id, owner: 'o', name: 'followup', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, roleCheckedAt: new Date().toISOString(), upstreamHtmlUrl: 'https://github.com', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const prUrl = 'https://github.com/o/followup/pull/3'
+    const first = store.createJob({ id: 'job_first_succeeded', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(first.id, { status: 'succeeded', branch: 'fledge/x', pr_url: prUrl, pr_state: 'open', finished_at: new Date().toISOString() })
+    const second = store.createJob({ id: 'job_second_queued', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(second.id, { branch: 'fledge/x', pr_url: prUrl, pr_state: 'open' })
+    store.run('UPDATE jobs SET created_at = ? WHERE id = ?', '2026-01-01T00:00:00.000Z', first.id)
+    store.run('UPDATE jobs SET created_at = ? WHERE id = ?', '2026-01-01T00:00:01.000Z', second.id)
+    await jobs.reconcileAutoMerge()
+    assert.equal(merges.length, 0)
+    assert.equal(store.getJob(first.id)?.pr_state, 'open')
+  } finally {
+    store.close()
+    await server.close()
+  }
+})
+
+test('the newest job for a PR wins when created_at ties', async () => {
+  const { server, merges } = await startGreenPullRequests('tie', [3], 'fledge/x')
+  const config = testConfig({ github: { ...testConfig().github, apiBase: server.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'tie-reconcile-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_tie', userId: user.id, owner: 'o', name: 'tie', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, roleCheckedAt: new Date().toISOString(), upstreamHtmlUrl: 'https://github.com', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const prUrl = 'https://github.com/o/tie/pull/3'
+    const first = store.createJob({ id: 'job_tie_succeeded', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(first.id, { status: 'succeeded', branch: 'fledge/x', pr_url: prUrl, pr_state: 'open', finished_at: new Date().toISOString() })
+    const second = store.createJob({ id: 'job_tie_queued', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(second.id, { branch: 'fledge/x', pr_url: prUrl, pr_state: 'open' })
+    store.run('UPDATE jobs SET created_at = ? WHERE id IN (?, ?)', '2026-01-02T00:00:00.000Z', first.id, second.id)
+    await jobs.reconcileAutoMerge()
+    assert.equal(merges.length, 0)
+    assert.equal(store.getJob(first.id)?.pr_state, 'open')
+  } finally {
+    store.close()
+    await server.close()
+  }
+})
+
+test('the callback-path merge refuses a job that is not the newest succeeded iterate job', async () => {
+  const { server, merges } = await startGreenPullRequests('callback', [3], 'fledge/x')
+  const config = testConfig({ github: { ...testConfig().github, apiBase: server.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'callback-reconcile-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_callback', userId: user.id, owner: 'o', name: 'callback', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, roleCheckedAt: new Date().toISOString(), upstreamHtmlUrl: 'https://github.com', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_callback_queued', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(job.id, { branch: 'fledge/x', pr_url: 'https://github.com/o/callback/pull/3', pr_state: 'open' })
+    await jobs.reconcilePr(repo, 'https://github.com/o/callback/pull/3')
+    assert.equal(merges.length, 0)
+    assert.equal(store.getJob(job.id)?.pr_state, 'open')
+  } finally {
+    store.close()
+    await server.close()
+  }
+})
+
+test('mergeCleanPrs skips a PR whose newest iterate job is not succeeded', async () => {
+  const { server, merges } = await startGreenPullRequests('r', [4, 5], 'fledge/fix')
+  const config = testConfig({ github: { ...testConfig().github, apiBase: server.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'bulk-skip-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_bulk_skip', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', requireProtection: false, upstreamHtmlUrl: 'https://github.com/o/r', forkHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const done = store.createJob({ id: 'job_bulk_succeeded', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(done.id, { status: 'succeeded', branch: 'fledge/fix', pr_url: 'https://github.com/o/r/pull/4', pr_state: 'open', finished_at: new Date().toISOString() })
+    const waiting = store.createJob({ id: 'job_bulk_queued', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(waiting.id, { branch: 'fledge/fix', pr_url: 'https://github.com/o/r/pull/5', pr_state: 'open' })
+    const result = await jobs.mergeCleanPrs(repo.id)
+    assert.deepEqual(result.merged, ['job_bulk_succeeded'])
+    assert.equal(result.skipped.length, 1)
+    assert.equal(result.skipped[0]?.jobId, 'job_bulk_queued')
+    assert.match(result.skipped[0]?.message ?? '', /queued/)
+    assert.equal(merges.length, 1)
+  } finally {
+    store.close()
+    await server.close()
   }
 })
 

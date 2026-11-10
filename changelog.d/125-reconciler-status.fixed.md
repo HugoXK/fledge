@@ -1,0 +1,1 @@
+Auto-merge now waits for the newest job on a pull request: a queued, running, failed, cancelled or paused follow-up holds the PR back instead of letting an older succeeded job merge it, so a merge can no longer land before the requested fix or after a failed run. The bulk merge reports such PRs in its skipped list together with the job state.
