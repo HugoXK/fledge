@@ -80,6 +80,7 @@ test('the gitleaks config carries no file-wide allowlist', () => {
 test('the workflow lint job runs actionlint and the injection checker', () => {
   const block = jobBlock(ci, 'workflow-lint')
   assert.match(block, /uses: raven-actions\/actionlint@[0-9a-f]{40} # v\d/)
+  assert.match(block, /version: '1\.\d+\.\d+'/, "the action's default is `latest`, which is an unpinned download behind a pinned action")
   assert.match(block, /node scripts\/workflow-injection\.mjs/)
 })
 
@@ -151,6 +152,11 @@ test('the docker job scans the built image and fails on a high or critical resul
   assert.match(block, /severity: 'HIGH,CRITICAL'/, 'the threshold must be stated, not implied by the tool default')
   assert.match(block, /ignore-unfixed: true/, 'an unfixable base-image finding must not be the only reason to pin the base image forever')
   assert.match(block, /trivyignores: \.trivyignore\.yaml/, 'an exception must be per entry with an expiry, so it is reviewable and it dies')
+  assert.match(
+    block,
+    /skip-dirs: usr\/local\/lib\/node_modules\/npm/,
+    "the npm CLI's vendored tree inside the base image cannot be patched from this repository; the exclusion is one directory and must stay stated",
+  )
 })
 
 // D4 — the image is run, not only built.
