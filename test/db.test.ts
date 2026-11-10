@@ -150,7 +150,7 @@ test('the role backfill runs once and future schema versions are refused', () =>
     const reopened = new Store(path)
     assert.equal(reopened.getRepo(repo.id)?.repo_role, 'maintainer')
     assert.notEqual(reopened.getRepo(repo.id)?.role_checked_at, null)
-    reopened.db.exec('PRAGMA user_version = 31;')
+    reopened.db.exec('PRAGMA user_version = 32;')
     reopened.close()
 
     assert.throws(() => new Store(path), /newer than this build/)
@@ -525,6 +525,23 @@ test('orphan cleanup removes pending work for missing jobs and repositories', ()
     assert.equal(result.followups, 1)
     assert.equal(store.getSetting('retry_pending:job_missing'), undefined)
     assert.equal(store.getSetting('pending_followup:repo_missing:1'), undefined)
+  } finally {
+    store.close()
+  }
+})
+
+test('webhook deliveries keep metadata, payload and filters', () => {
+  const store = new Store(':memory:')
+  try {
+    assert.equal(store.claimWebhookDelivery('delivery-meta', 'check_suite', 'completed', { payloadJson: '{"ok":true}', repositoryFullName: 'o/r', installationId: 7 }), true)
+    const row = store.getWebhookDelivery('delivery-meta')
+    assert.equal(row?.repository_full_name, 'o/r')
+    assert.equal(row?.installation_id, 7)
+    assert.equal(row?.payload_json, '{"ok":true}')
+    assert.equal(store.listWebhookDeliveries({ status: 'processing', event: 'check_suite' }, 10, 0).length, 1)
+    assert.equal(store.countWebhookDeliveries({ event: 'check_suite' }), 1)
+    store.finishWebhookDelivery('delivery-meta', 'failed', 'boom')
+    assert.equal(store.listWebhookDeliveries({ status: 'failed' }, 10, 0)[0]?.error, 'boom')
   } finally {
     store.close()
   }
