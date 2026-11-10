@@ -832,9 +832,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 31) {
+    if (previousVersion > 32) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (31)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (32)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -850,7 +850,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 31)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 32)};`)
   }
 
   migrateIndexes(): void {
