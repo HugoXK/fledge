@@ -170,6 +170,22 @@ the `/admin` release card, which states the running version, the newest changelo
 section and the pending fragment count. Keep both paths in the image: without
 them those lines read "not available in this build" instead of answering.
 
+### Verify what you pulled
+
+A published image carries a build-provenance attestation signed by the release
+workflow, stored in the registry beside its digest. Check the tag you are about
+to run rather than trusting the tag name:
+
+```sh
+gh attestation verify oci://ghcr.io/hugoxk/fledge:v0.3.0 --repo HugoXK/fledge
+```
+
+The output names the workflow, the commit and the digest that was attested. If
+the command fails, the image was built or pushed by something other than this
+repository's release workflow — do not run it. `docker images --digests` shows
+the digest the local tag resolved to, and it must be the one the verification
+printed.
+
 ### Node
 
 ```sh
