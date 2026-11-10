@@ -1,0 +1,1 @@
+Fledge now ships Prometheus alert rules for job success, queue wait, job duration, bridge failures, GitHub rate limiting and open operational alerts. `npm run slo:report` queries Prometheus for the 7-day success rate, error budget, queue/job p95 and bridge/GitHub signals and prints a Markdown report; missing data stays `n/a` instead of a confident zero.

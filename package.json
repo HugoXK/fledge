@@ -25,7 +25,8 @@
     "evolution:export": "node scripts/evolution-shadow.mjs",
     "evolution:report": "node scripts/evolution-shadow.mjs --report",
     "db:restore-drill:ci": "node scripts/restore-drill-ci.mjs",
-    "secret:scan": "node scripts/secret-scan.mjs"
+    "secret:scan": "node scripts/secret-scan.mjs",
+    "slo:report": "node scripts/slo-report.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.5",
