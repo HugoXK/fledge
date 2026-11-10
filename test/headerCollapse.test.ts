@@ -17,7 +17,7 @@ const jsText = (): string => readFileSync(new URL('../public/app.js', import.met
 
 function rule(css: string, selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const match = css.match(new RegExp(`(?:^|\\n)${escaped} \\{([^}]*)\\}`))
+  const match = css.match(new RegExp(`(?:^|\\n)[ \\t]*${escaped} \\{([^}]*)\\}`))
   assert.ok(match !== null, `public/app.css has no rule for ${selector}`)
   return match[1] ?? ''
 }
@@ -89,4 +89,26 @@ test('the toggle is hidden above the phone band, where its panel does not exist'
   assert.ok(base !== null, 'public/app.css must carry a base .nav-toggle rule outside the phone block')
   assert.ok((base?.index ?? 0) < phoneStart, 'the .nav-toggle base rule must sit outside (above) the phone block')
   assert.match(base?.[1] ?? '', /display:\s*none/, 'above 641px the toggle must not render: the panel it opens is phone-only')
+})
+
+test('the 420px band takes chrome off the row, never a control, so 360 fits with a scrollbar', () => {
+  // At innerWidth 360 with a classic 15px scrollbar the row has 345px, minus
+  // the 420 band's two 10px paddings and three 8px gaps: 301px for the mark,
+  // the toggle, the language switch and the account. The wordmark is the one
+  // child that can leave without taking a destination or a 44px target with it.
+  const css = cssText()
+  const block = mediaBlock(css, '(max-width: 420px)')
+  assert.match(block, /\.brand > span:not\(\.mark\)\s*\{[^}]*display:\s*none/, 'below 420 the wordmark must leave the row, not a control')
+  assert.match(block, /\.top-inner\s*\{[^}]*gap:\s*8px/, 'the row gaps must tighten below 420 for the 360px case')
+  assert.match(block, /\.top-inner\s*\{[^}]*padding:\s*0 10px/, 'the row padding must tighten below 420 for the 360px case')
+  // Everything that stays keeps its 44px floor: the escape hatch here is the
+  // wordmark, not a smaller tap target. The toggle's full rule lives in the
+  // phone block; the base rule only hides it above 641.
+  const phone = mediaBlock(css, '(max-width: 640px)')
+  assert.match(rule(phone, '.nav-toggle'), /min-(height|width):\s*var\(--touch\)/, '.nav-toggle must keep its --touch floor')
+  for (const selector of ['.lang a', '.account-exit']) {
+    assert.match(rule(css, selector), /min-(height|width):\s*var\(--touch\)/, `${selector} must keep its --touch floor`)
+  }
+  // The mark alone is not a link name, so the brand carries one of its own.
+  assert.match(render(), /<a class="brand" href="\/" aria-label="Fledge"/, 'the mark-only brand needs an accessible name of its own')
 })

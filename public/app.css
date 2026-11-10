@@ -572,10 +572,15 @@ a.list-row:hover strong { color: var(--accent); }
 }
 
 @media (max-width: 420px) {
-  /* The header is already one fixed row at this width (#133), so nothing can
-     re-wrap here; the 640px block above owns --header-h for every phone. This
-     block keeps its own inner padding only where it does not disturb that row. */
-  .top-inner { padding: 0 10px; }
+  /* At 360px with a classic 15px scrollbar the row has 345px minus the two
+     10px paddings and three 8px gaps: 301px for four children. The mark, the
+     toggle, the two 44px language targets and the 44px sign-out already take
+     more than that, so the wordmark leaves the row rather than a control:
+     the mark keeps the brand, the toggle still names itself, the language
+     switch keeps both targets and the account keeps its exit. #133 acceptance
+     3's 44px floor is not touched here. */
+  .top-inner { padding: 0 10px; gap: 8px; }
+  .brand > span:not(.mark) { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

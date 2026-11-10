@@ -73,7 +73,11 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   open. The toggle itself is hidden outside the phone band by a base rule, so
   the desktop header never shows a control whose panel does not exist there.
   Every destination the wide header lists is still rendered in the panel,
-  so a phone loses no route.
+  so a phone loses no route. Below 420px the row also drops the wordmark (the
+  mark and its own `aria-label` stay) and tightens its padding and gaps: at a
+  360px viewport with a classic 15px scrollbar the row has 301px of usable
+  width, and the wordmark is the one child that can leave without taking a
+  route or a 44px target with it.
 - **Redirect targets**: every `next=` / `returnTo` value goes through one helper
   that returns a path on this site or the fallback. It validates the parsed
   result, not the input, so a value that is a plain path before parsing and

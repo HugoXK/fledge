@@ -134,7 +134,7 @@ export function layout(options: LayoutOptions): string {
   <a class="skip-link" href="#main">${escapeHtml(t('跳到主要内容', 'Skip to main content'))}</a>
   <header class="top">
     <div class="top-inner">
-      <a class="brand" href="/"><span class="mark">F</span><span>Fledge${brandSmall}</span></a>
+      <a class="brand" href="/" aria-label="Fledge"><span class="mark">F</span><span>Fledge${brandSmall}</span></a>
       ${navToggle}
       ${nav}
       <div class="spacer"></div>
