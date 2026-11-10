@@ -1992,7 +1992,8 @@ export class Jobs {
       this.finish(job.id, { status: 'failed', error: `任务停滞：超过 ${this.config.runner.stallMinutes} 分钟没有心跳。` }, revoke)
     }
     const staleBefore = addMinutes(-this.config.runner.timeoutMinutes)
-    const staleJobs = [...this.store.staleQueuedJobs(addMinutes(-10)), ...this.store.staleRunningJobs(staleBefore)].filter((job) => !handled.has(job.id))
+    const queuedStaleBefore = this.config.runner.queueDispatch ? addMinutes(-this.config.runner.timeoutMinutes) : addMinutes(-10)
+    const staleJobs = [...this.store.staleQueuedJobs(queuedStaleBefore), ...this.store.staleRunningJobs(staleBefore)].filter((job) => !handled.has(job.id))
     for (const job of staleJobs) {
       const revoke = (): void => {
         const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)

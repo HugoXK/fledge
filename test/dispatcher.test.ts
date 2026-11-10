@@ -56,6 +56,34 @@ test('QUEUE_DISPATCH enqueues first and dispatches the claimed job on the tick',
   }
 })
 
+test('a queued job older than ten minutes is not failed before the dispatcher claims it', async () => {
+  const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true, maxActiveJobs: 1 } })
+  const store = new Store(':memory:')
+  const calls: RunnerContext[] = []
+  const runner: Runner = {
+    name: 'capture',
+    async run(context) {
+      calls.push(context)
+      return { status: 'succeeded', summary: 'ok' }
+    },
+  }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'queue-old-user', status: 'approved' })
+    const repo = repoFor(store, user.id, 'repo_queue_old')
+    const queued = await jobs.enqueue(repo, 'manual')
+    assert.equal(queued.ok, true)
+    store.run('UPDATE jobs SET created_at = ? WHERE id = ?', new Date(Date.now() - 20 * 60_000).toISOString(), queued.job!.id)
+
+    await jobs.tick()
+
+    assert.equal(calls.length, 1)
+    assert.equal(store.getJob(queued.job!.id)?.status, 'succeeded')
+  } finally {
+    store.close()
+  }
+})
+
 test('the dispatcher respects maxActiveJobs and releases the next repo after the first finishes', async () => {
   const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true, maxActiveJobs: 1 } })
   const store = new Store(':memory:')

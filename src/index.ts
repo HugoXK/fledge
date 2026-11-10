@@ -12,6 +12,7 @@ try {
     host: config.host,
     port: config.port,
     runner: config.runner.mode,
+    queueDispatch: config.runner.queueDispatch,
     mail: config.mail.transport,
   })
 } catch (error) {
