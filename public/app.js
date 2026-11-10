@@ -37,10 +37,11 @@
     }
   }
 
-  // Below 640px the header is one fixed row and the navigation opens from this
-  // toggle (#133). The panel is absolutely positioned, so .top keeps the height
-  // the observer above publishes while the menu is open — the sticky offset and
-  // the workspace frame must not move when a reader opens the menu.
+  // Below 961px the header is one fixed row and the navigation opens from this
+  // toggle (#133's phone band, #233's tablet band). The panel is absolutely
+  // positioned, so .top keeps the height the observer above publishes while the
+  // menu is open — the sticky offset and the workspace frame must not move when
+  // a reader opens the menu.
   const navToggle = document.querySelector('[data-nav-toggle]')
   const navPanel = document.getElementById('main-nav')
   if (header && navToggle && navPanel) {
@@ -64,10 +65,14 @@
       // Guarded like the ResizeObserver above: an engine can have matchMedia and
       // only the legacy addListener (Safari <= 13.1), and an unguarded throw here
       // would abort every widget wired after this line.
-      const phone = window.matchMedia('(max-width: 640px)')
-      const closeOnPhone = () => setNavOpen(false)
-      if (typeof phone.addEventListener === 'function') phone.addEventListener('change', closeOnPhone)
-      else if (typeof phone.addListener === 'function') phone.addListener(closeOnPhone)
+      // The band must be the one public/app.css collapses in (#233 widened it
+      // from the phone's 640px to the tablet's 960px): leaving it hands the
+      // navigation back to the wide header, so a panel left open would sit over
+      // a header that no longer has a toggle to close it.
+      const compact = window.matchMedia('(max-width: 960px)')
+      const closeOnWide = () => setNavOpen(false)
+      if (typeof compact.addEventListener === 'function') compact.addEventListener('change', closeOnWide)
+      else if (typeof compact.addListener === 'function') compact.addListener(closeOnWide)
     }
   }
 
