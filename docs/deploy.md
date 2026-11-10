@@ -174,6 +174,23 @@ the commit: `GIT_SHA=$(git rev-parse HEAD) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:
 Without the stamp the image answers `unknown` — honest, and useless for
 identifying a deploy.
 
+Compose publishes the port on loopback, so nginx outside the container is the
+caller and its address is this project's bridge gateway. Read that value from the
+running project instead of copying an example:
+
+```sh
+docker network inspect <project>_default --format '{{(index .IPAM.Config 0).Gateway}}'
+```
+
+The project name defaults to the directory name (`docker compose ls` prints it).
+Put the answer in `.env` as `TRUST_PROXY=<gateway>`, or add it to the existing
+list, and restart. Compose allocates the next free `/16`, so the gateway is often
+`172.18.0.1` or higher; the frequently copied `172.17.0.1` is docker0's gateway
+and usually does not contain this peer. A hop that names the wrong address fails
+closed: `proxy-addr` stops at the peer, every client looks like the gateway, and
+the whole instance shares one rate-limit bucket (30/min on token, login, callback
+and approve; 120/min across credential, callback, webhook, inbound and metrics).
+
 The volume `fledge-data` holds the SQLite database and the console outbox.
 
 The runtime stage also copies `CHANGELOG.md` and `changelog.d/` into `/app`
@@ -271,7 +288,7 @@ mint a new bucket by rotating the header.
 | Topology | `TRUST_PROXY` |
 |---|---|
 | nginx on the same host (the supported default shown above) | leave unset - defaults to `127.0.0.1,::1` |
-| Docker Compose as published (bridge network, nginx outside the app container) | the bridge gateway, for example `172.17.0.1`; or run the app with `network_mode: host` and keep the default |
+| Docker Compose as published (bridge network, nginx outside the app container) | the project's bridge gateway, read from the running project with `docker network inspect <project>_default --format '{{(index .IPAM.Config 0).Gateway}}'` (see §5); or run the app with `network_mode: host` and keep the default |
 | another proxy in front of nginx | that proxy's address or CIDR, added to the list |
 
 The rule for every row is the same: **add the hop, do not loosen it.** A value
