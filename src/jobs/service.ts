@@ -929,6 +929,17 @@ export class Jobs {
     if (repo === undefined) return { ok: false, message: '仓库不存在。' }
     if (repo.repo_role !== 'maintainer') return { ok: false, message: '只有 maintainer 可以合并。' }
     if (!manual && repo.auto_merge !== 1) return { ok: false, message: '自动合并未开启。' }
+    if (!manual) {
+      // Defence in depth for the automatic path: the job must be the newest
+      // iterate job for this PR and it must have succeeded. A caller that
+      // forgets the per-PR rule cannot reopen the merge-before-the-fix hole.
+      const newest = this.store.newestIterateJobByPrUrl(job.user_id, prUrl)
+      if (newest === undefined || newest.id !== job.id || newest.status !== 'succeeded') {
+        const state = newest === undefined ? 'no iterate job' : `${newest.id} is ${newest.status}`
+        this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: newest iterate job for this PR is ${state}`)
+        return { ok: false, message: '这个 PR 的最新 iterate 任务还没有成功。' }
+      }
+    }
     if (!this.roleFresh(repo)) {
       const refreshed = await this.refreshRepoAccess(repo)
       if (refreshed === undefined || refreshed.repo_role !== 'maintainer') {
@@ -1064,8 +1075,13 @@ export class Jobs {
     let candidates = 0
     for (const repo of this.store.listAutoMergeRepos()) {
       if (repo.repo_role !== 'maintainer') continue
-      for (const job of this.store.listPrJobsForRepo(repo.id, 20)) {
+      // One row per PR: only the newest iterate job for that PR may merge, and
+      // only when it succeeded. A queued, running, failed, cancelled or paused
+      // follow-up therefore holds the PR back instead of being skipped over to
+      // an older succeeded row.
+      for (const job of this.store.listNewestPrJobsForRepo(repo.id, 20)) {
         if (job.pr_url === null || job.pr_state === 'merged' || job.pr_state === 'closed') continue
+        if (job.status !== 'succeeded') continue
         const key = `merge_reconcile:${job.id}`
         const last = this.store.getSetting(key)
         const lastAt = last === undefined ? 0 : Date.parse(last)
@@ -1083,18 +1099,20 @@ export class Jobs {
     await this.tryMerge(job, prUrl, false)
   }
 
-  async mergeCleanPrs(repoId: string): Promise<{ merged: string[]; skipped: Array<{ jobId: string; message: string }> }> {
+  async mergeCleanPrs(repoId: string): Promise<{ merged: string[]; skipped: Array<{ jobId: string; message: string; reason: 'job-state' | 'gate' }> }> {
     const repo = this.store.getRepo(repoId)
     if (repo === undefined) return { merged: [], skipped: [] }
     const merged: string[] = []
-    const skipped: Array<{ jobId: string; message: string }> = []
-    const seen = new Set<string>()
-    for (const job of this.store.listPrJobsForRepo(repoId, 10)) {
-      if (job.pr_url === null || seen.has(job.pr_url)) continue
-      seen.add(job.pr_url)
+    const skipped: Array<{ jobId: string; message: string; reason: 'job-state' | 'gate' }> = []
+    for (const job of this.store.listNewestPrJobsForRepo(repoId, 10)) {
+      if (job.pr_url === null) continue
+      if (job.status !== 'succeeded') {
+        skipped.push({ jobId: job.id, message: `未合并：这个 PR 的最新任务状态是 ${job.status}。`, reason: 'job-state' })
+        continue
+      }
       const result = await this.manualMerge(repo, job)
       if (result.ok) merged.push(job.id)
-      else skipped.push({ jobId: job.id, message: result.message ?? 'skipped' })
+      else skipped.push({ jobId: job.id, message: result.message ?? 'skipped', reason: 'gate' })
     }
     return { merged, skipped }
   }
