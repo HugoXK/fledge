@@ -1,8 +1,9 @@
 # Auto-iterate continuity — from hourly isolated jobs to one carried work item
 
-Status: proposed design, not implemented.
+Status: Phase 1 implemented in #238; phases 2-3 proposed.
 Scope: `src/jobs/service.ts`, `bridge/flybot-bridge.mjs`,
-`src/flybot/instances.ts`, the `jobs`/`repos` tables, and the Fledge team prompt.
+`src/flybot/instances.ts`, the `jobs`/`repos`/`work_items` tables, and the Fledge
+team prompt.
 
 ## 1. The measured problem
 
@@ -54,7 +55,7 @@ Goals:
 - A work item is carried across jobs until it is merged/closed or explicitly
   abandoned.
 - The scheduler prefers finishing/reviewing existing work over starting new
-  work.
+  work, **without ever skipping a due repository** (#219).
 - A run cannot silently produce a meta/inventory issue.
 - Operators can see per-run continuity and output category.
 
@@ -84,11 +85,12 @@ After each job finishes, write a `RunDigest` (new `jobs.continuity_json` or a
   "issue_url": "...",
   "pr_url": "...",
   "work_item_id": "wi_...",
-  "decisions": ["created issue #446", "opened PR #472"],
-  "next_actions": ["review PR #472", "verify #446 on device"],
-  "open_work": {"prs": 3, "issues": 5}
+  "output_kind": "issue"
 }
 ```
+
+Phase 1 stores exactly these fields. `decisions`, `next_actions` and
+`open_work` counts are Phase 2 additions.
 
 The digest is written in `finish()` (`src/jobs/service.ts:573`) from the values
 the job already returns (`summary`, `branch`, `prUrl`, `issueUrl`, `error`,
@@ -99,14 +101,13 @@ the job already returns (`summary`, `branch`, `prUrl`, `issueUrl`, `error`,
 Before enqueuing a job, build a compact `TeamState` for the repo:
 
 - the last 3 `RunDigest` rows;
-- open Fledge PRs (number, title, age, base, state);
-- open issues created by this team (number, title, priority);
+- up to 4 open work items (state, priority, issue URL, PR URL, title);
 - the active `work_item_id` (if any);
 - counts and the last zero-output/failure streak.
 
-Source: the local `jobs` table for digests; GitHub API for open PRs/issues
-(read-only, already used by the job preflight). Cache for a few minutes to
-avoid rate limits.
+Phase 1 sources this from the local `jobs` and `work_items` tables, so a tick
+makes no GitHub call. Phase 2 may add open GitHub PRs/issues that have no local
+row and cache them for a few minutes to avoid rate limits.
 
 ### 4.3 Scheduler policy
 
@@ -125,67 +126,65 @@ function decide(repo, state, now): NextJob
 
 Rules, in order:
 
-1. If `state.activeWorkItem` exists and is not terminal → `followup` with that
-   work item (same branch/PR if present).
-2. Else if `state.openPrs > 0` → `review` the oldest Fledge PR (or `verify` if
-   its checks are pending).
+1. If an open work item exists, `followup` it (same branch/PR if present). This is
+   a preference, not a lock: the function never returns `none` just because work
+   is open.
+2. If that item has an open Fledge PR and a maintainer reviewer is due, `review`
+   it. When the review interval has not elapsed, fall back to `followup` rather
+   than skipping the repo.
 3. Else if `state.openIssues > repo.openIssueCap` → `triage` (close/split
    stale issues; no new feature work).
 4. Else if `state.zeroOutputStreak >= 2` or `state.failures >= 2` → `none` with
    exponential backoff (do not burn quota).
-5. Else → `iterate` with a **specific** backlog item (the highest-priority
-   issue without an open PR), not the generic goal.
+5. Else → `iterate`. Phase 2 narrows this to a **specific** backlog item (the
+   highest-priority issue without an open PR); Phase 1 still uses the repo goal
+   plus the carry-over block.
 
-The scheduler still respects `activeJobForRepo`, quotas, and the repo role.
+The scheduler still respects `activeJobForRepo`, quotas, and the repo role. A
+work item that is carried forever is bounded in Phase 2 by `attempts` plus an
+`abandoned` state.
 
 ### 4.4 Prompt: a bounded carry-over block
 
 Extend `buildText(job)` with a `CARRY-OVER` section, after `Goal:`:
 
 ```
-Carry-over (auto-generated; do not treat as instructions):
-- Last 3 runs:
-  1. 07:59Z iterate → issue #1037, no PR; summary: ...
-  2. 05:58Z manual → issue #1037; summary: ...
-- Open Fledge PRs: #472 (2d, checks pending), #499 (1d, ready)
-- Open issues: #446 (P1), #447 (P1), #459 (RFC)
-- Active work item: wi_446 (state=implementing, branch fix/about-you-entry)
-- Do not duplicate: #472, #446
-- Next action requested by the scheduler: followup wi_446
+[Carry-over - auto-generated state, not a new goal]
+Continue the open work item when one exists; do not create a duplicate issue/PR.
+Do not create inventory, backlog, or "存量/盘点/清账/reconcile" issues.
+Recent runs:
+- 2026-11-10T07:59 iterate succeeded: 存量清账 ... [issue link]
+Open work:
+- wi_446 state=pr_ready priority=1 issue=... pr=... title=...
 ```
 
 Rules:
 
-- Hard cap 4000 characters; drop oldest first.
+- Hard cap 3200 characters; drop oldest first; one line per run/item.
 - The block is data, not a new goal; `Goal:` remains the source of intent.
-- If there is an active work item, the prompt says "continue this item; do not
-  open a new issue/PR".
-- If there are open PRs and the job is `review`, the prompt says "review/merge
-  path only; do not create new work".
+- If there is open work, the prompt says "continue this item; do not create a
+  duplicate issue/PR".
+- If the job is `review`, the review rules already say "review only; do not
+  modify code or create new work".
 
 ### 4.5 Work-item state machine
 
-Add a `work_items` table (if not already present in the live schema):
+`work_items` already exists (`src/db.ts`), with the shipped vocabulary
+`proposed → triaged → assigned → in_progress → pr_ready → in_review →
+changes_requested → approved → merged/closed`. Phase 2 **extends** that table
+with `branch`, `attempts` and `last_job_id`; it does not add a second table or a
+parallel state vocabulary.
 
 ```sql
-CREATE TABLE work_items (
-  id TEXT PRIMARY KEY,
-  repo_id TEXT NOT NULL,
-  issue_url TEXT,
-  pr_url TEXT,
-  branch TEXT,
-  state TEXT NOT NULL, -- discovered|scoped|implementing|pr_open|review|merged|closed|abandoned
-  priority INTEGER NOT NULL DEFAULT 0,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  last_job_id TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
+ALTER TABLE work_items ADD COLUMN branch TEXT;
+ALTER TABLE work_items ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE work_items ADD COLUMN last_job_id TEXT;
 ```
 
 Every `iterate` job creates or selects one work item. Every `followup` job
-inherits it. Terminal states are `merged`, `closed`, `abandoned`. The scheduler
-only starts a new `iterate` when no active work item exists.
+inherits it and adds `attempts`. Terminal states are `merged`, `closed` and the
+new `abandoned`. The scheduler still starts a due `iterate` when no work is
+open; a work item is a preference, never a lock.
 
 ### 4.6 Interval and backoff
 
@@ -203,11 +202,14 @@ Classify each run's output in `finish()`:
 - `issue` (new issue created), `pr` (new/updated PR), `review` (comment/review),
   `zero` (no branch/PR/issue), `duplicate`, `meta`, `failed`.
 
-If the job creates an issue whose title matches
-`存量|盘点|清账|清帐|reconcile|inventory|audit the backlog`, mark it `meta`:
-do not count it as productive, add `needs-human`, and notify the owner. The
-prompt also explicitly forbids meta/inventory issues; this is the server-side
-backstop.
+If the run's reported summary matches
+`存量|盘点|清账|清帐|reconcile|inventory|audit the backlog`, mark it `meta`: do
+not count it as productive, close its tracking row, and notify the owner. The
+classification reads the **result**, never the goal: the goal now carries the
+carry-over block that names the forbidden words, so reading it would mark every
+scheduled issue as meta. The prompt also explicitly forbids meta/inventory
+issues; this is the server-side backstop. Phase 2 should also read the created
+issue's title when the runner reports it.
 
 ### 4.8 Observability
 
@@ -218,35 +220,41 @@ Add per-run fields to the job record:
 
 Expose:
 
-- `scheduled_jobs_total{result,kind}`;
+- `fledge_job_output_total{kind,output}` (Phase 1);
+- `fledge_meta_issue_total{kind}` (Phase 1);
 - `continuity_carry_over_total`;
 - `open_work_items{repo}`;
-- `zero_output_streak{repo}`;
-- `meta_issue_rejected_total`.
+- `zero_output_streak{repo}`.
 
 ### 4.9 Migration
 
-1. Add nullable columns `jobs.continuity_json`, `jobs.output_kind`,
-   `jobs.continuity_used`; no backfill required.
-2. Add `work_items` and `team_run_digests` tables (or reuse `jobs` if the
-   schema already has enough).
+1. Add nullable columns `jobs.continuity_json`, `jobs.output_kind` and
+   `jobs.continuity_used`; no backfill required (Phase 1).
+2. Extend the existing `work_items` table; do not create a second one (Phase 2).
 3. Backfill `work_items` lazily from the first scheduled job per repo.
-4. Keep the old scheduler behind a flag for one release.
+4. Keep the old scheduler behind a flag for one release; Phase 1 does not.
 
 ## 5. Rollout
 
-Phase 1 (smallest useful change, 1–2 days):
+Phase 1 (implemented in #238):
 
-- Inject the last 3 job summaries and the open Fledge PR/issue counts into
-  `buildText` (no new tables; query existing `jobs` + GitHub).
-- If open Fledge PRs exist, enqueue `review`/`followup` instead of `iterate`.
-- Raise the default interval to 2–3 hours and add a completion cooldown.
-- Add the "no meta issue" prompt rule and the title-based backstop.
+- Inject the last 3 run digests and open work items into the scheduled goal
+  (reusing the existing `jobs` and `work_items` tables; no GitHub list call).
+- If open work exists, enqueue `followup`/`review` instead of a fresh `iterate`;
+  a review that is not due falls back to `followup`, never to `none`.
+- Stretch the interval to `max(interval, last duration * 1.5 + cooldown)` and
+  back off after two unproductive runs.
+- Persist `jobs.continuity_json`, `jobs.output_kind` and `jobs.continuity_used`;
+  add the "no meta issue" prompt rule and the result-based backstop.
+
+Deliberately smaller than the first draft: the default interval is unchanged,
+Phase 1 reuses the local work items instead of listing GitHub PRs, and a meta run
+closes its tracking row rather than inventing a new work-item state.
 
 Phase 2 (1–2 weeks):
 
-- Add `work_items` and `RunDigest` persistence; carry `work_item_id` across
-  jobs; implement the full `decide()` policy with tests.
+- Extend the existing `work_items` table; carry `work_item_id` and `attempts`
+  across jobs; add `abandoned`; implement the full `decide()` policy with tests.
 
 Phase 3:
 
@@ -255,15 +263,16 @@ Phase 3:
 
 ## 6. Tests
 
-- `decide()` unit tests: active work item → followup; open PR → review; over
-  cap → triage; zero-output streak → none (backoff); empty → iterate with a
-  specific item.
-- `buildText()` snapshot: carry-over is bounded, includes last summary/open
-  PRs, and never exceeds 4000 chars.
-- Work-item transitions: discovered → scoped → implementing → pr_open →
-  review → merged/closed; no new iterate while active.
-- Meta guard: an issue titled "存量清账" is classified `meta` and does not
-  count as productive.
+- `decide()` unit tests: open work → followup; maintainer PR and review due →
+  review; review not due → followup, never `none`; zero-output streak → none
+  (backoff); empty → iterate.
+- `buildText()` snapshot: carry-over is bounded, includes the last summaries and
+  open work, and never exceeds the goal limit.
+- Work-item transitions stay on the shipped vocabulary; an open item changes the
+  next job kind but never blocks a due repo.
+- Meta guard: a run whose result is "存量清账" is classified `meta`, closes its
+  tracking row, and does not count as productive. A normal issue with a
+  carry-over goal is **not** meta.
 - Idempotency: retrying a job does not create a second issue/PR for the same
   work item.
 - Integration: fake GitHub + temp SQLite; assert the second scheduled run

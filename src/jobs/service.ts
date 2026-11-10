@@ -612,6 +612,12 @@ export class Jobs {
     incCounter('fledge_job_output_total', { kind: job.kind, output: digest.output_kind }, 1, 'Scheduled output classification')
     if (digest.output_kind === 'meta') {
       incCounter('fledge_meta_issue_total', { kind: job.kind }, 1, 'Inventory/meta issues rejected by classification')
+      // Close the tracking row so the next scheduled run does not follow up a
+      // meta issue. The GitHub issue itself is left for the owner to decide on.
+      if (issueUrl !== null) {
+        const item = this.store.findWorkItemByIssueUrl(job.repo_id, issueUrl)
+        if (item !== undefined) this.store.updateWorkItem(item.id, { state: 'closed' })
+      }
       this.store.notify(job.user_id, 'job', `任务 ${jobId} 产出的是盘点/清账类 issue，不计为产品产出；请改为具体问题。`)
     }
     if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_at: nowIso(), last_review_status: result.status })

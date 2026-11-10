@@ -5,7 +5,7 @@ import type { JobRow, RepoRow, WorkItemRow } from '../src/db.js'
 import { InstanceManager } from '../src/flybot/instances.js'
 import { PLAYBOOK_VERSION, playbookFingerprint } from '../src/flybot/playbook.js'
 import { Jobs } from '../src/jobs/service.js'
-import { buildCarryOver, classifyOutput, decideNextJob, failureStreak, isMetaTitle, lastDurationMs } from '../src/jobs/continuity.js'
+import { buildCarryOver, buildRunDigest, classifyOutput, decideNextJob, failureStreak, isMetaTitle, lastDurationMs } from '../src/jobs/continuity.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
 import { json, makeUser, MemoryMailer, readBody, startFakeServer, testConfig } from './helpers.js'
@@ -1741,6 +1741,8 @@ test('scheduled jobs carry the previous run and open work, and classify meta out
     const row = store.getJob('job_meta')
     assert.equal(row?.output_kind, 'meta')
     assert.match(row?.continuity_json ?? '', /"output_kind":"meta"/)
+    const metaItem = store.findWorkItemByIssueUrl(repo.id, 'https://github.com/o/continuity/issues/2')
+    assert.equal(metaItem?.state, 'closed')
   } finally {
     store.close()
   }
@@ -1813,6 +1815,17 @@ test('meta titles are recognised and classified separately', () => {
   assert.equal(classifyOutput({ status: 'succeeded', kind: 'iterate', issueUrl: 'https://x/issues/1', summary: '存量清账' }), 'meta')
   assert.equal(classifyOutput({ status: 'succeeded', kind: 'review' }), 'review')
   assert.equal(classifyOutput({ status: 'failed', kind: 'iterate', prUrl: 'https://x/pr/1' }), 'failed')
+  // The carry-over block names the forbidden words, so reading the goal would
+  // classify every scheduled issue as meta.
+  const carried = buildRunDigest(
+    job({
+      id: 'job_carried',
+      goal: '[Carry-over - auto-generated state, not a new goal]\nDo not create inventory, backlog, or "存量/盘点/清账" issues.',
+      issue_url: 'https://x/issues/1',
+    }),
+    { status: 'succeeded' },
+  )
+  assert.equal(carried.output_kind, 'issue')
 })
 
 test('carry-over is bounded, names the open work and is explicitly data', () => {
@@ -1864,6 +1877,20 @@ test('the interval respects the last duration and backs off after failures', () 
   const recent = [job({ status: 'failed' }), job({ id: 'job_0', status: 'failed' })]
   assert.equal(failureStreak(recent), 2)
   assert.equal(lastDurationMs(recent), 600_000)
+  assert.equal(
+    failureStreak([
+      job({ id: 'job_zero_1', status: 'succeeded', output_kind: 'zero' }),
+      job({ id: 'job_zero_2', status: 'succeeded', output_kind: 'zero' }),
+    ]),
+    2,
+  )
+  assert.equal(
+    failureStreak([
+      job({ id: 'job_review_failed', kind: 'review', status: 'failed' }),
+      job({ id: 'job_iterate_ok', status: 'succeeded', output_kind: 'pr' }),
+    ]),
+    0,
+  )
   const notDue = decideNextJob({
     repo: repo(), now, lastRunAt: iso(-90 * 60_000), intervalMinutes: 60,
     lastDurationMs: 60 * 60_000, failureStreak: 1, openWork: [], reviewerEnabled: false, reviewDue: true,
@@ -1877,12 +1904,13 @@ test('the interval respects the last duration and backs off after failures', () 
 })
 
 
-test('a maintainer waits for the review interval instead of reviewing every tick', () => {
+test('a due maintainer continues the open PR when the review interval is not due', () => {
   const pr = workItem({ pr_url: 'https://x/pr/3', state: 'pr_ready' })
   const next = decideNextJob({
     repo: repo({ repo_role: 'maintainer' }), now, lastRunAt: iso(-2 * 3_600_000),
     intervalMinutes: 60, lastDurationMs: 0, failureStreak: 0, openWork: [pr],
     reviewerEnabled: true, reviewDue: false,
   })
-  assert.equal(next.kind, 'none')
+  assert.equal(next.kind, 'followup')
+  assert.equal(next.kind === 'followup' ? next.prUrl : null, 'https://x/pr/3')
 })

@@ -19,13 +19,14 @@ export function classifyOutput(input: {
   prUrl?: string | null
   issueUrl?: string | null
   summary?: string | null
-  goal?: string | null
 }): OutputKind {
   if (input.status !== 'succeeded') return 'failed'
   if (input.kind === 'review') return 'review'
   if (input.prUrl) return 'pr'
   if (!input.issueUrl) return 'zero'
-  if (isMetaTitle(input.summary) || isMetaTitle(input.goal)) return 'meta'
+  // Only the result is classified. The goal now carries a block that names the
+  // forbidden words, so reading it would mark every scheduled issue as meta.
+  if (isMetaTitle(input.summary)) return 'meta'
   return 'issue'
 }
 
@@ -53,7 +54,6 @@ export function buildRunDigest(
     prUrl: result.prUrl ?? job.pr_url,
     issueUrl: result.issueUrl ?? job.issue_url,
     summary: result.summary ?? job.summary,
-    goal: job.goal,
   })
   return {
     schema_version: 1,
@@ -157,10 +157,10 @@ export function decideNextJob(state: SchedulerState, options: { cooldownMs?: num
   if (item === undefined) return { kind: 'iterate' }
   if (item.pr_url) {
     const canReview = state.reviewerEnabled && state.repo.repo_role === 'maintainer'
-    if (canReview) {
-      if (!state.reviewDue) return { kind: 'none', reason: 'review not due' }
-      return { kind: 'review', workItemId: item.id, prUrl: item.pr_url }
-    }
+    // A review that is not due never skips a due repo (#219). Continue the same
+    // pull request with a follow-up instead; the next review window turns it
+    // back into a review job.
+    if (canReview && state.reviewDue) return { kind: 'review', workItemId: item.id, prUrl: item.pr_url }
     return { kind: 'followup', workItemId: item.id, prUrl: item.pr_url }
   }
   return { kind: 'followup', workItemId: item.id }
@@ -181,14 +181,24 @@ export function isDue(state: SchedulerState, cooldownMs: number = DEFAULT_COOLDO
 export function failureStreak(jobs: JobRow[]): number {
   let streak = 0
   for (const job of jobs) {
-    if (job.status === 'failed' || job.status === 'quota_exhausted') streak += 1
-    else break
+    if (job.kind !== 'iterate') continue
+    if (
+      job.status === 'failed'
+      || job.status === 'quota_exhausted'
+      || job.output_kind === 'zero'
+      || job.output_kind === 'meta'
+    ) {
+      streak += 1
+    } else {
+      break
+    }
   }
   return streak
 }
 
 export function lastDurationMs(jobs: JobRow[]): number | null {
   for (const job of jobs) {
+    if (job.kind !== 'iterate') continue
     if (job.started_at === null || job.finished_at === null) continue
     const started = Date.parse(job.started_at)
     const finished = Date.parse(job.finished_at)
