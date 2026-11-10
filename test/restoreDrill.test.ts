@@ -2,12 +2,16 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Store } from '../src/db.js'
 import { makeUser } from './helpers.js'
+
+const require = createRequire(import.meta.url)
+const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: string) => { exec(sql: string): void; close(): void } }
 
 const drillScript = fileURLToPath(new URL('../scripts/restore-drill.mjs', import.meta.url))
 const backupScript = fileURLToPath(new URL('../scripts/backup.mjs', import.meta.url))
@@ -64,6 +68,34 @@ function mode(path: string): number {
 
 function backups(dir: string): string[] {
   return existsSync(dir) ? readdirSync(dir).filter((name) => name.startsWith('fledge-') && name.endsWith('.db')) : []
+}
+
+// A hand-built copy that no production process ever touched: the acceptance
+// paths this issue is about, without reading or writing a real backup.
+function writeSyntheticCopy(backupDir: string, options: { tables: string[]; version?: number; withManifest?: boolean }): string {
+  const copyPath = join(backupDir, 'fledge-2099-01-01T00-00-00-000Z.db')
+  mkdirSync(dirname(copyPath), { recursive: true })
+  const db = new DatabaseSync(copyPath)
+  try {
+    db.exec(`PRAGMA user_version = ${options.version ?? 0}`)
+    for (const table of options.tables) db.exec(`CREATE TABLE "${table}" (id INTEGER)`)
+  } finally {
+    db.close()
+  }
+  if (options.withManifest === true) {
+    const tables: Record<string, number> = {}
+    for (const table of options.tables) tables[table] = 0
+    const manifest = {
+      copy: basename(copyPath),
+      createdAt: new Date().toISOString(),
+      size: statSync(copyPath).size,
+      sha256: sha256(copyPath),
+      schemaVersion: options.version ?? 0,
+      tables,
+    }
+    writeFileSync(`${copyPath}.json`, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })
+  }
+  return copyPath
 }
 
 test('the drill restores the newest backup into a temp path, compares every table and reports RTO and RPO', () => {
@@ -140,7 +172,7 @@ test('a manifest-less copy that holds no schema is refused instead of reporting 
   const result = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir])
   assert.notEqual(result.code, 0, 'a manifest-less copy with no schema must not be reported as a successful drill')
   assert.doesNotMatch(result.stdout, /^restore-drill: OK$/m, 'a copy that holds no tables must never be reported as OK')
-  assert.match(result.stderr, /no tables|no schema/i, `stderr must say the copy holds no tables, got: ${result.stderr}`)
+  assert.match(result.stderr, /application schema|no tables|no schema/i, `stderr must say the copy does not hold the application schema, got: ${result.stderr}`)
   assert.match(result.stderr, /size|sha256|user_version|per-table/i, `stderr must name the checks that were skipped, got: ${result.stderr}`)
   assert.equal(existsSync(join(workDir, 'restored.db')), false,
     'a refused copy must not be left at the path docs/deploy.md restores from')
@@ -307,4 +339,97 @@ test('a work directory that is a symlink into DATA_DIR is refused and leaves the
   assert.match(result.stderr, /DATA_DIR|refus/i)
   assert.equal(existsSync(join(dataDir, 'work')), false, 'a refused target must not be created inside the live data directory')
   assert.equal(mode(dataDir), before, 'a refused drill must not chmod the live data directory')
+})
+
+test('a manifest-bearing copy with zero tables is refused instead of reporting a successful drill', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  mkdirSync(dirname(dbPath), { recursive: true })
+  // The backup tool accepts an empty source and writes a 4096-byte copy whose
+  // manifest records `tables: {}`; before the schema guard that copy was trusted.
+  writeFileSync(dbPath, '')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+
+  const backup = run(backupScript, ['--db', dbPath, '--backup-dir', backupDir])
+  assert.equal(backup.code, 0, `the fixture needs the backup tool to accept an empty source: ${backup.stderr}`)
+
+  const result = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir])
+  assert.notEqual(result.code, 0, 'a manifest-bearing copy with zero tables must not be reported as a successful drill')
+  assert.doesNotMatch(result.stdout, /^restore-drill: OK$/m)
+  assert.match(result.stderr, /application schema|schema/i, `stderr must say the schema is missing, got: ${result.stderr}`)
+  for (const table of ['users', 'repos', 'jobs']) assert.match(result.stderr, new RegExp(table), `stderr must name the missing table ${table}`)
+  assert.equal(existsSync(join(workDir, 'restored.db')), false, 'a refused copy must not be left at the path docs/deploy.md restores from')
+  assert.equal(existsSync(join(workDir, 'restored.db.failed')), true)
+})
+
+test('a manifest-less copy holding only a foreign table is refused', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+  seed(dbPath)
+  writeSyntheticCopy(backupDir, { tables: ['something_else'] })
+
+  const result = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir])
+  assert.notEqual(result.code, 0, 'a copy that holds no application schema must not be reported as a successful drill')
+  assert.doesNotMatch(result.stdout, /^restore-drill: OK$/m)
+  assert.doesNotMatch(result.stdout, /^manifest=missing$/m, 'a refused run must not lead with the missing-manifest warning')
+  assert.match(result.stderr, /application schema|schema/i, `stderr must say the schema is missing, got: ${result.stderr}`)
+  for (const table of ['users', 'repos', 'jobs']) assert.match(result.stderr, new RegExp(table), `stderr must name the missing table ${table}`)
+  assert.equal(existsSync(join(workDir, 'restored.db')), false)
+  assert.equal(existsSync(join(workDir, 'restored.db.failed')), true)
+})
+
+test('a manifest-bearing copy holding only a foreign table is refused', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+  seed(dbPath)
+  writeSyntheticCopy(backupDir, { tables: ['something_else'], withManifest: true })
+
+  const result = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir])
+  assert.notEqual(result.code, 0, 'a manifest that agrees with a foreign-table copy must not make it an accepted restore')
+  assert.doesNotMatch(result.stdout, /^restore-drill: OK$/m)
+  assert.match(result.stderr, /application schema|schema/i, `stderr must say the schema is missing, got: ${result.stderr}`)
+  for (const table of ['users', 'repos', 'jobs']) assert.match(result.stderr, new RegExp(table), `stderr must name the missing table ${table}`)
+  assert.equal(existsSync(join(workDir, 'restored.db')), false)
+  assert.equal(existsSync(join(workDir, 'restored.db.failed')), true)
+})
+
+test('a manifest-less copy with the application schema and zero rows keeps passing', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+  // Schema present, no rows: the fresh instance a careless over-fix would refuse.
+  const store = new Store(dbPath)
+  store.close()
+
+  const backup = run(backupScript, ['--db', dbPath, '--backup-dir', backupDir])
+  assert.equal(backup.code, 0, backup.stderr)
+  for (const name of readdirSync(backupDir).filter((entry) => entry.endsWith('.json'))) rmSync(join(backupDir, name))
+
+  const result = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir])
+  assert.equal(result.code, 0, `a zero-row copy that holds the application schema must keep passing: ${result.stderr}`)
+  assert.match(result.stdout, /^manifest=missing$/m)
+  assert.match(result.stdout, /^restore-drill: OK$/m)
+  assert.equal(existsSync(join(workDir, 'restored.db')), true)
+})
+
+test('a copy with the tables but user_version = 0 is refused', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+  seed(dbPath)
+  writeSyntheticCopy(backupDir, { tables: ['users', 'repos', 'jobs'], version: 0 })
+
+  const result = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir])
+  assert.notEqual(result.code, 0, 'a copy whose schema version was never set must not be reported as a successful drill')
+  assert.doesNotMatch(result.stdout, /^restore-drill: OK$/m)
+  assert.match(result.stderr, /user_version/i, `stderr must name the schema version, got: ${result.stderr}`)
+  assert.equal(existsSync(join(workDir, 'restored.db')), false)
+  assert.equal(existsSync(join(workDir, 'restored.db.failed')), true)
 })
