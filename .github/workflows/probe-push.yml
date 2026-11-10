@@ -1,0 +1,45 @@
+name: Probe push
+
+# Throwaway mechanism drill for #80. It exists only on the probe/push-drill
+# branch, is never merged, and its only job is to answer one question: does a
+# branch whose commits were created with the workflow's own GITHUB_TOKEN get a
+# real `pull_request` run when a pull request is opened on it by another actor?
+# Deleted by closing the probe pull request; nothing here is product code.
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  push:
+    # Only the drill branch triggers the push; the branch this job creates does
+    # not re-trigger it, so the probe cannot loop.
+    if: github.event.pull_request.head.ref == 'probe/push-drill'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Create one commit and one branch through the repo API with GITHUB_TOKEN
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth="Authorization: Bearer ${GH_TOKEN}"
+          tree="$(curl -sS -H "$auth" -H 'Accept: application/vnd.github+json' \
+            "${api}/git/commits/${HEAD_SHA}" | jq -r .tree.sha)"
+          commit="$(curl -sS -X POST -H "$auth" -H 'Accept: application/vnd.github+json' \
+            "${api}/git/commits" \
+            -d "{\"message\":\"probe: commit created by the workflow token\",\"tree\":\"${tree}\",\"parents\":[\"${HEAD_SHA}\"]}" \
+            | jq -r .sha)"
+          echo "created commit ${commit}"
+          status="$(curl -sS -o /tmp/ref.json -w '%{http_code}' -X POST \
+            -H "$auth" -H 'Accept: application/vnd.github+json' \
+            "${api}/git/refs" \
+            -d "{\"ref\":\"refs/heads/probe/push-source\",\"sha\":\"${commit}\"}")"
+          echo "ref create status ${status}"
+          if [ "$status" != "201" ]; then cat /tmp/ref.json; exit 1; fi
+          echo "pushed probe/push-source at ${commit} with GITHUB_TOKEN"
