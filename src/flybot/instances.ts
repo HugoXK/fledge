@@ -132,6 +132,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+export function clearStaleDshLock(dataDir: string): void {
+  try {
+    rmSync(join(dataDir, 'bot', 'state.lock'), { force: true })
+  } catch {}
+}
+
 export class InstanceManager {
   constructor(
     private readonly store: Store,
@@ -295,6 +301,7 @@ server.listen(3081, '0.0.0.0')
       const uid = typeof process.getuid === 'function' ? process.getuid() : 1000
       const gid = typeof process.getgid === 'function' ? process.getgid() : 1000
       writeFileSync(join(dataDir, 'dsh-web.log'), '')
+      clearStaleDshLock(dataDir)
       await this.docker([
         'run', '-d',
         '--name', container,
@@ -449,6 +456,7 @@ server.listen(3081, '0.0.0.0')
     writeFileSync(join(profileDir, 'cordis.patch.yml'), this.modelPatch(repoId, instance.model_bind, instance.model_port), { mode: 0o600 })
     writeFileSync(join(instance.data_dir, 'dsh-web.log'), '')
     clearWorkspaceCookie(repoId)
+    clearStaleDshLock(instance.data_dir)
     await this.docker(['restart', '-t', '15', instance.container])
     await this.waitForDsh(instance.dsh_port, instance)
     let assignment: { updated: number; skipped: string[] }
@@ -983,6 +991,7 @@ server.listen(3081, '0.0.0.0')
         if (canRestart) {
           try {
             this.store.setSetting(restartKey, nowIso())
+            clearStaleDshLock(instance.data_dir)
             await this.docker(['restart', '-t', '15', instance.container])
             await this.waitForDshState(instance, 90_000)
             this.store.updateRepoInstance(instance.repo_id, { last_health_at: nowIso(), last_error: null })

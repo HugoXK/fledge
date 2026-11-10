@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { InstanceManager, parseTeam } from '../src/flybot/instances.js'
+import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { clearStaleDshLock, InstanceManager, parseTeam } from '../src/flybot/instances.js'
 import { PLAYBOOK_VERSION, playbookFingerprint, playbookFor } from '../src/flybot/playbook.js'
 import { Store } from '../src/db.js'
 import { encryptSecret } from '../src/lib/secrets.js'
@@ -356,5 +360,19 @@ test('refreshTeam replaces stale session IDs with the live DSH state', async () 
   } finally {
     store.close()
     await bridge.close()
+  }
+})
+
+test('a stale DSH team lock is removed before a container restart', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-dsh-lock-'))
+  try {
+    mkdirSync(join(dir, 'bot'), { recursive: true })
+    const lock = join(dir, 'bot', 'state.lock')
+    writeFileSync(lock, '{"pid":33}')
+    assert.equal(existsSync(lock), true)
+    clearStaleDshLock(dir)
+    assert.equal(existsSync(lock), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })
