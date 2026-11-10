@@ -213,11 +213,7 @@ test('the surface this branch adds is declared, and the workflow runs no other r
   if (added !== null) {
     for (const path of added) {
       if (path.startsWith('scripts/')) assert.ok(allowedScripts.has(path), `${path} is a new release script; add it to allowedScripts`)
-      // Only a test on the release surface is this rule's business. An absolute
-      // listing of `test/` would go red on every later PR that adds a test for
-      // another feature, which is a false red on a T3 and blames this change for
-      // a file it does not touch.
-      if (path.startsWith('test/') && /\/release/i.test(path)) assert.ok(allowedTests.has(path), `${path} is a new release test; add it to allowedTests`)
+      if (path.startsWith('test/') && path.endsWith('.test.ts')) assert.ok(allowedTests.has(path), `${path} is a new release test; add it to allowedTests`)
     }
   }
 })
