@@ -1682,3 +1682,221 @@ test('a dispatch without an issue reference makes no GitHub call', async () => {
     await github.close()
   }
 })
+
+function queueRepoFor(store: Store, userId: string, id: string): ReturnType<Store['createRepo']> {
+  return store.createRepo({
+    id,
+    userId,
+    owner: 'o',
+    name: id,
+    defaultBranch: 'main',
+    tokenEnc: 'x',
+    permission: 'admin',
+    repoRole: 'maintainer',
+    goal: '',
+    autoIterate: false,
+    intervalMinutes: 1440,
+    canReview: true,
+    reviewerEnabled: true,
+  })
+}
+
+function leaseSetup(): { store: Store; repoId: string; repo2Id: string; userId: string } {
+  const store = new Store(':memory:')
+  const user = makeUser(store, { login: 'lease-user', status: 'approved' })
+  const repo = queueRepoFor(store, user.id, 'repo_lease')
+  const repo2 = queueRepoFor(store, user.id, 'repo_lease_2')
+  return { store, repoId: repo.id, repo2Id: repo2.id, userId: user.id }
+}
+
+function leaseMakeJob(store: Store, repoId: string, userId: string, id: string, priority = 0): void {
+  store.createJob({
+    id,
+    repoId,
+    userId,
+    trigger: 'schedule',
+    goal: 'g',
+    callbackHash: 'h',
+    platformTokenHash: '',
+    kind: 'iterate',
+    priority,
+  })
+}
+
+test('claimQueuedJob leases the highest-priority queued job exactly once', () => {
+  const { store, repoId, repo2Id, userId } = leaseSetup()
+  try {
+    leaseMakeJob(store, repo2Id, userId, 'job_low', 0)
+    leaseMakeJob(store, repoId, userId, 'job_high', 10)
+
+    const first = store.claimQueuedJob('worker-1', 60_000)
+    assert.equal(first?.id, 'job_high')
+    assert.equal(first?.lease_owner, 'worker-1')
+    assert.ok(first?.lease_until)
+
+    const second = store.claimQueuedJob('worker-2', 60_000)
+    assert.equal(second?.id, 'job_low')
+    assert.equal(second?.lease_owner, 'worker-2')
+
+    assert.equal(store.claimQueuedJob('worker-3', 60_000), undefined)
+  } finally {
+    store.close()
+  }
+})
+
+test('only one queued job per repository is claimable at a time', () => {
+  const { store, repoId, userId } = leaseSetup()
+  try {
+    leaseMakeJob(store, repoId, userId, 'job_first', 0)
+    leaseMakeJob(store, repoId, userId, 'job_second', 10)
+
+    const first = store.claimQueuedJob('worker-1', 60_000)
+    assert.equal(first?.id, 'job_second')
+    assert.equal(store.claimQueuedJob('worker-2', 60_000), undefined)
+
+    store.updateJob('job_second', { status: 'running' })
+    assert.equal(store.claimQueuedJob('worker-2', 60_000), undefined)
+
+    store.updateJob('job_second', { status: 'succeeded', finished_at: new Date().toISOString() })
+    const next = store.claimQueuedJob('worker-2', 60_000)
+    assert.equal(next?.id, 'job_first')
+  } finally {
+    store.close()
+  }
+})
+
+test('a lease can only be renewed or released by its owner', () => {
+  const { store, repoId, userId } = leaseSetup()
+  try {
+    leaseMakeJob(store, repoId, userId, 'job_a')
+    const claimed = store.claimQueuedJob('worker-1', 60_000)
+    assert.equal(claimed?.id, 'job_a')
+
+    assert.equal(store.renewJobLease('job_a', 'worker-2', 60_000), false)
+    assert.equal(store.renewJobLease('job_a', 'worker-1', 60_000), true)
+
+    store.releaseJobLease('job_a')
+    const reclaimed = store.claimQueuedJob('worker-2', 60_000)
+    assert.equal(reclaimed?.id, 'job_a')
+    assert.equal(reclaimed?.lease_owner, 'worker-2')
+  } finally {
+    store.close()
+  }
+})
+
+test('an expired lease is reclaimable by another worker', async () => {
+  const { store, repoId, userId } = leaseSetup()
+  try {
+    leaseMakeJob(store, repoId, userId, 'job_exp')
+    const first = store.claimQueuedJob('worker-1', 1)
+    assert.equal(first?.id, 'job_exp')
+
+    await new Promise((resolve) => setTimeout(resolve, 15))
+    const expired = store.expiredLeaseJobs(new Date().toISOString())
+    assert.ok(expired.some((job) => job.id === 'job_exp'))
+
+    const second = store.claimQueuedJob('worker-2', 60_000)
+    assert.equal(second?.id, 'job_exp')
+    assert.equal(second?.lease_owner, 'worker-2')
+  } finally {
+    store.close()
+  }
+})
+
+test('QUEUE_DISPATCH enqueues first and dispatches the claimed job on the tick', async () => {
+  const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true, maxActiveJobs: 1 } })
+  const store = new Store(':memory:')
+  const calls: RunnerContext[] = []
+  const runner: Runner = {
+    name: 'capture',
+    async run(context) {
+      calls.push(context)
+      return { status: 'succeeded', summary: 'ok' }
+    },
+  }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'queue-user', status: 'approved' })
+    const repo = queueRepoFor(store, user.id, 'repo_queue_one')
+
+    const queued = await jobs.enqueue(repo, 'manual')
+    assert.equal(queued.ok, true)
+    assert.equal(queued.job?.status, 'queued')
+    assert.equal(queued.job?.lease_owner, null)
+    assert.equal(calls.length, 0)
+
+    await jobs.tick()
+
+    assert.equal(calls.length, 1)
+    const done = store.getJob(queued.job!.id)
+    assert.equal(done?.status, 'succeeded')
+    assert.equal(done?.lease_owner, null)
+  } finally {
+    store.close()
+  }
+})
+
+test('a queued job older than ten minutes is not failed before the dispatcher claims it', async () => {
+  const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true, maxActiveJobs: 1 } })
+  const store = new Store(':memory:')
+  const calls: RunnerContext[] = []
+  const runner: Runner = {
+    name: 'capture',
+    async run(context) {
+      calls.push(context)
+      return { status: 'succeeded', summary: 'ok' }
+    },
+  }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'queue-old-user', status: 'approved' })
+    const repo = queueRepoFor(store, user.id, 'repo_queue_old')
+    const queued = await jobs.enqueue(repo, 'manual')
+    assert.equal(queued.ok, true)
+    store.run('UPDATE jobs SET created_at = ? WHERE id = ?', new Date(Date.now() - 20 * 60_000).toISOString(), queued.job!.id)
+
+    await jobs.tick()
+
+    assert.equal(calls.length, 1)
+    assert.equal(store.getJob(queued.job!.id)?.status, 'succeeded')
+  } finally {
+    store.close()
+  }
+})
+
+test('the dispatcher respects maxActiveJobs and releases the next repo after the first finishes', async () => {
+  const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true, maxActiveJobs: 1 } })
+  const store = new Store(':memory:')
+  const calls: RunnerContext[] = []
+  const runner: Runner = {
+    name: 'capture',
+    async run(context) {
+      calls.push(context)
+      return { status: 'running' }
+    },
+  }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'queue-cap-user', status: 'approved' })
+    const one = queueRepoFor(store, user.id, 'repo_queue_one')
+    const two = queueRepoFor(store, user.id, 'repo_queue_two')
+    const first = await jobs.enqueue(one, 'manual')
+    const second = await jobs.enqueue(two, 'manual')
+    assert.equal(first.ok, true)
+    assert.equal(second.ok, true)
+
+    await jobs.tick()
+    assert.equal(calls.length, 1)
+    const firstJob = store.getJob(first.job!.id)
+    assert.equal(firstJob?.status, 'running')
+    assert.equal(store.getJob(second.job!.id)?.status, 'queued')
+
+    store.updateJob(first.job!.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    store.releaseJobLease(first.job!.id)
+    await jobs.tick()
+    assert.equal(calls.length, 2)
+    assert.equal(store.getJob(second.job!.id)?.status, 'running')
+  } finally {
+    store.close()
+  }
+})
