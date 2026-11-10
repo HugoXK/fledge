@@ -546,3 +546,29 @@ test('webhook deliveries keep metadata, payload and filters', () => {
     store.close()
   }
 })
+
+test('job continuity fields persist on the row', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'continuity', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_continuity', userId: user.id, owner: 'octo', name: 'continuity',
+      defaultBranch: 'main', tokenEnc: 'v1:test', goal: 'fix', autoIterate: false, intervalMinutes: 1440,
+    })
+    const job = store.createJob({
+      id: 'job_continuity', repoId: repo.id, userId: user.id, trigger: 'schedule',
+      goal: 'fix', callbackHash: 'h', platformTokenHash: 'p', kind: 'iterate',
+    })
+    store.updateJob(job.id, {
+      continuity_json: '{"schema_version":1,"summary":"x"}',
+      output_kind: 'zero',
+      continuity_used: 1,
+    })
+    const row = store.getJob(job.id)
+    assert.equal(row?.output_kind, 'zero')
+    assert.equal(row?.continuity_used, 1)
+    assert.match(row?.continuity_json ?? '', /schema_version/)
+  } finally {
+    store.close()
+  }
+})

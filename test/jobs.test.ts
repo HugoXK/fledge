@@ -1,9 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
+import type { JobRow, RepoRow, WorkItemRow } from '../src/db.js'
 import { InstanceManager } from '../src/flybot/instances.js'
 import { PLAYBOOK_VERSION, playbookFingerprint } from '../src/flybot/playbook.js'
 import { Jobs } from '../src/jobs/service.js'
+import { buildCarryOver, classifyOutput, decideNextJob, failureStreak, isMetaTitle, lastDurationMs } from '../src/jobs/continuity.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
 import { json, makeUser, MemoryMailer, readBody, startFakeServer, testConfig } from './helpers.js'
@@ -1681,4 +1683,206 @@ test('a dispatch without an issue reference makes no GitHub call', async () => {
     store.close()
     await github.close()
   }
+})
+
+test('scheduled jobs carry the previous run and open work, and classify meta output', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = {
+    name: 'capture',
+    async run(context) {
+      contexts.push(context)
+      return { status: 'running' }
+    },
+  }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'continuity-user', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_continuity_job', userId: user.id, owner: 'o', name: 'continuity',
+      defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
+      repoRole: 'developer', goal: 'fix bugs', autoIterate: true, intervalMinutes: 60,
+    })
+    store.createJob({
+      id: 'job_prev', repoId: repo.id, userId: user.id, trigger: 'schedule',
+      goal: 'fix bugs', callbackHash: 'h', platformTokenHash: '', kind: 'iterate',
+    })
+    const at = new Date().toISOString()
+    store.updateJob('job_prev', {
+      status: 'succeeded', summary: 'created issue #1',
+      issue_url: 'https://github.com/o/continuity/issues/1',
+      started_at: at, finished_at: at,
+    })
+    store.createWorkItem({
+      id: 'work_open', repoId: repo.id, userId: user.id,
+      title: 'fix the thing', issueUrl: 'https://github.com/o/continuity/issues/1',
+      state: 'triaged',
+    })
+
+    const result = await jobs.enqueue(repo, 'schedule', undefined, 'iterate')
+    assert.equal(result.ok, true)
+    const goal = contexts[0]?.goal ?? ''
+    assert.match(goal, /\[Carry-over/)
+    assert.match(goal, /created issue #1/)
+    assert.match(goal, /work_open state=triaged/)
+    assert.equal(store.getJob(result.job!.id)?.continuity_used, 1)
+
+    const secret = 'callback-secret'
+    store.createJob({
+      id: 'job_meta', repoId: repo.id, userId: user.id, trigger: 'schedule',
+      goal: '存量清账', callbackHash: sha256Hex(secret), platformTokenHash: '',
+    })
+    store.updateJob('job_meta', { status: 'running' })
+    const cb = await jobs.handleCallback('job_meta', secret, {
+      status: 'succeeded', issueUrl: 'https://github.com/o/continuity/issues/2', summary: '存量清账',
+    })
+    assert.equal(cb.ok, true)
+    const row = store.getJob('job_meta')
+    assert.equal(row?.output_kind, 'meta')
+    assert.match(row?.continuity_json ?? '', /"output_kind":"meta"/)
+  } finally {
+    store.close()
+  }
+})
+
+// -- scheduled-iteration continuity -----------------------------------------
+
+const now = Date.now()
+const iso = (offsetMs = 0): string => new Date(now + offsetMs).toISOString()
+
+function repo(overrides: Partial<RepoRow> = {}): RepoRow {
+  return {
+    id: 'repo_1', user_id: 'usr_1', owner: 'octo', name: 'demo',
+    default_branch: 'main', token_enc: 'x', goal: 'fix bugs',
+    enabled: 1, auto_iterate: 1, interval_minutes: 60, last_run_at: null,
+    last_status: null, created_at: iso(-86_400_000),
+    upstream_owner: 'octo', upstream_name: 'demo', fork_owner: 'octo',
+    fork_name: 'demo', upstream_default_branch: 'main',
+    fork_default_branch: 'main', is_fork: 0, fork_created: 0,
+    permission: 'write', can_review: 1, can_create_issue: 1,
+    reviewer_enabled: 0, review_interval_minutes: 1440,
+    last_review_at: null, last_review_status: null,
+    upstream_html_url: 'https://github.com/octo/demo',
+    fork_html_url: 'https://github.com/octo/demo',
+    installation_id: null, target_branch: 'main', job_mode: 'iterate',
+    repo_role: 'developer', auto_merge: 0, role_checked_at: null,
+    plan_required: 0, allow_paths: '', deny_paths: '', merge_method: 'squash',
+    require_protection: 1, monthly_budget_cny: 0, job_budget_cny: 0,
+    protection_state: null, protection_checked_at: null, stage_mode: 'off',
+    models_dirty: 0, credential_state: 'ok', consecutive_failures: 0,
+    allow_private_models: 0, ...overrides,
+  } as RepoRow
+}
+
+function workItem(overrides: Partial<WorkItemRow> = {}): WorkItemRow {
+  return {
+    id: 'work_1', repo_id: 'repo_1', user_id: 'usr_1', title: 'fix the thing',
+    detail: '', issue_url: 'https://github.com/octo/demo/issues/1', pr_url: null,
+    state: 'triaged', priority: 0, assignee_user_id: null, job_id: null,
+    pr_state: null, merged_at: null, merge_commit: null,
+    created_at: iso(-3_600_000), updated_at: iso(-3_600_000), ...overrides,
+  }
+}
+
+function job(overrides: Partial<JobRow> = {}): JobRow {
+  return {
+    id: 'job_1', repo_id: 'repo_1', user_id: 'usr_1', status: 'succeeded',
+    trigger: 'schedule', goal: 'fix bugs', branch: null, base_branch: 'main',
+    pr_url: null, summary: 'did a thing', error: null, cost_usd: 0,
+    platform_token_hash: null, callback_hash: 'h', kind: 'iterate',
+    issue_url: null, pr_state: null, review_score: null,
+    attribution_json: null, evidence_json: null, checkpoint: null,
+    team_stats_json: null, work_item_id: null, priority: 0,
+    plan_approved_at: null, plan_approved_by: null, plan_rejected_at: null,
+    plan_allow_paths: null, plan_deny_paths: null, base_sha: null,
+    callback_fingerprint: null, path_guard_json: null,
+    verification_json: null, continuity_json: null, output_kind: null,
+    continuity_used: 0, retry_attempt: 0, retry_of: null,
+    created_at: iso(-3_600_000), started_at: iso(-3_000_000),
+    last_callback_at: null, finished_at: iso(-2_400_000), ...overrides,
+  } as JobRow
+}
+
+test('meta titles are recognised and classified separately', () => {
+  assert.equal(isMetaTitle('【存量清账】open PR 82 + open issue 248'), true)
+  assert.equal(isMetaTitle('fix: the about-you entry'), false)
+  assert.equal(classifyOutput({ status: 'succeeded', kind: 'iterate', prUrl: 'https://x/pr/1' }), 'pr')
+  assert.equal(classifyOutput({ status: 'succeeded', kind: 'iterate', issueUrl: 'https://x/issues/1' }), 'issue')
+  assert.equal(classifyOutput({ status: 'succeeded', kind: 'iterate' }), 'zero')
+  assert.equal(classifyOutput({ status: 'succeeded', kind: 'iterate', issueUrl: 'https://x/issues/1', summary: '存量清账' }), 'meta')
+  assert.equal(classifyOutput({ status: 'succeeded', kind: 'review' }), 'review')
+  assert.equal(classifyOutput({ status: 'failed', kind: 'iterate', prUrl: 'https://x/pr/1' }), 'failed')
+})
+
+test('carry-over is bounded, names the open work and is explicitly data', () => {
+  const text = buildCarryOver({
+    recent: [job({ id: 'job_2', summary: 'created issue #2', issue_url: 'https://x/issues/2' })],
+    openWork: [workItem({ pr_url: 'https://x/pr/3', state: 'pr_ready' })],
+    maxChars: 500,
+  })
+  assert.ok(text.length <= 500)
+  assert.match(text, /not a new goal/)
+  assert.match(text, /Recent runs:/)
+  assert.match(text, /Open work:/)
+  assert.match(text, /work_1 state=pr_ready/)
+  assert.match(text, /https:\/\/x\/pr\/3/)
+})
+
+test('a due repo with no open work starts one iterate job', () => {
+  const next = decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-2 * 3_600_000), intervalMinutes: 60,
+    lastDurationMs: 1_000, failureStreak: 0, openWork: [], reviewerEnabled: false, reviewDue: true,
+  })
+  assert.deepEqual(next, { kind: 'iterate' })
+})
+
+test('open work continues instead of starting another isolated iterate', () => {
+  const pr = workItem({ pr_url: 'https://x/pr/3', state: 'pr_ready' })
+  const followup = decideNextJob({
+    repo: repo({ repo_role: 'developer' }), now, lastRunAt: iso(-2 * 3_600_000),
+    intervalMinutes: 60, lastDurationMs: 0, failureStreak: 0, openWork: [pr], reviewerEnabled: true, reviewDue: true,
+  })
+  assert.equal(followup.kind, 'followup')
+  assert.equal(followup.kind === 'followup' ? followup.workItemId : null, 'work_1')
+
+  const review = decideNextJob({
+    repo: repo({ repo_role: 'maintainer' }), now, lastRunAt: iso(-2 * 3_600_000),
+    intervalMinutes: 60, lastDurationMs: 0, failureStreak: 0, openWork: [pr], reviewerEnabled: true, reviewDue: true,
+  })
+  assert.equal(review.kind, 'review')
+  assert.equal(review.kind === 'review' ? review.prUrl : null, 'https://x/pr/3')
+
+  const scoped = decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-2 * 3_600_000), intervalMinutes: 60,
+    lastDurationMs: 0, failureStreak: 0, openWork: [workItem()], reviewerEnabled: false, reviewDue: false,
+  })
+  assert.equal(scoped.kind, 'followup')
+})
+
+test('the interval respects the last duration and backs off after failures', () => {
+  const recent = [job({ status: 'failed' }), job({ id: 'job_0', status: 'failed' })]
+  assert.equal(failureStreak(recent), 2)
+  assert.equal(lastDurationMs(recent), 600_000)
+  const notDue = decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-90 * 60_000), intervalMinutes: 60,
+    lastDurationMs: 60 * 60_000, failureStreak: 1, openWork: [], reviewerEnabled: false, reviewDue: true,
+  })
+  assert.equal(notDue.kind, 'none')
+  const backedOff = decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-90 * 60_000), intervalMinutes: 60,
+    lastDurationMs: 0, failureStreak: 3, openWork: [], reviewerEnabled: false, reviewDue: true,
+  })
+  assert.equal(backedOff.kind, 'none')
+})
+
+
+test('a maintainer waits for the review interval instead of reviewing every tick', () => {
+  const pr = workItem({ pr_url: 'https://x/pr/3', state: 'pr_ready' })
+  const next = decideNextJob({
+    repo: repo({ repo_role: 'maintainer' }), now, lastRunAt: iso(-2 * 3_600_000),
+    intervalMinutes: 60, lastDurationMs: 0, failureStreak: 0, openWork: [pr],
+    reviewerEnabled: true, reviewDue: false,
+  })
+  assert.equal(next.kind, 'none')
 })

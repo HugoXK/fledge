@@ -23,6 +23,7 @@ import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
 import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
+import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs } from './continuity.js'
 import { repoGithubToken } from '../repos/token.js'
 import { parseTeam } from '../flybot/instances.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
@@ -377,7 +378,12 @@ export class Jobs {
     }
     const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : kind === 'scope' ? DEFAULT_SCOPE_GOAL : kind === 'verify' ? DEFAULT_VERIFY_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
     const rawGoal = goalOverride ?? baseGoal
-    const goal = (preflightWarning === '' ? rawGoal : `${rawGoal}\n\nPreflight: ${preflightWarning}. Sync the fork before creating the working branch.`).slice(0, 4000)
+    const carryOver = trigger === 'schedule' || trigger === 'followup'
+      ? buildCarryOver({ recent: this.store.listJobsForRepo(repo.id, 3), openWork: this.store.listOpenWorkItems(repo.id) })
+      : ''
+    const goal = ((preflightWarning === '' ? rawGoal : `${rawGoal}\n\nPreflight: ${preflightWarning}. Sync the fork before creating the working branch.`)
+      + (carryOver === '' ? '' : `\n\n${carryOver}`)).slice(0, 4000)
+    const continuityUsed = carryOver !== ''
     const jobId = `job_${randomToken(10)}`
     const callbackSecret = randomToken(24)
     const callbackHash = sha256Hex(callbackSecret)
@@ -451,6 +457,7 @@ export class Jobs {
     const priorJobs = this.store.listJobs(user.id, 1).length
     const priority = options.priority ?? (trigger === 'followup' ? 20 : trigger === 'manual' ? 10 : 0)
     const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null })
+    if (continuityUsed) this.store.updateJob(job.id, { continuity_used: 1 })
     if (options.workItemId !== undefined) {
       this.store.updateWorkItem(options.workItemId, { state: 'in_progress', job_id: job.id, assignee_user_id: user.id })
     }
@@ -599,6 +606,14 @@ export class Jobs {
     const ended = Date.parse(nowIso())
     if (Number.isFinite(started) && Number.isFinite(ended)) observeHistogram('fledge_job_seconds', Math.max(0, (ended - started) / 1000), { kind: job.kind, status: result.status }, 'Job duration')
     this.syncWorkItemForJob(job, { status: result.status, prUrl, issueUrl })
+    const finalJob = this.store.getJob(jobId) ?? job
+    const digest = buildRunDigest(finalJob, { status: result.status, summary: result.summary, issueUrl, prUrl })
+    this.store.updateJob(jobId, { continuity_json: JSON.stringify(digest), output_kind: digest.output_kind })
+    incCounter('fledge_job_output_total', { kind: job.kind, output: digest.output_kind }, 1, 'Scheduled output classification')
+    if (digest.output_kind === 'meta') {
+      incCounter('fledge_meta_issue_total', { kind: job.kind }, 1, 'Inventory/meta issues rejected by classification')
+      this.store.notify(job.user_id, 'job', `任务 ${jobId} 产出的是盘点/清账类 issue，不计为产品产出；请改为具体问题。`)
+    }
     if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_at: nowIso(), last_review_status: result.status })
     else this.store.updateRepo(job.repo_id, { last_status: result.status })
     void this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => {
@@ -1871,10 +1886,30 @@ export class Jobs {
       if (!this.userReadyForScheduling(repo.user_id)) continue
       if (!this.instanceReady(repo.id)) continue
       if (this.store.activeJobForRepo(repo.id) !== undefined) continue
-      if (!this.due(repo)) continue
-      const result = await this.enqueue(repo, 'schedule', undefined, 'iterate')
+      const recent = this.store.listJobsForRepo(repo.id, 6)
+      const next = decideNextJob({
+        repo,
+        now: Date.now(),
+        lastRunAt: repo.last_run_at,
+        intervalMinutes: repo.interval_minutes,
+        lastDurationMs: lastDurationMs(recent),
+        failureStreak: failureStreak(recent),
+        openWork: this.store.listOpenWorkItems(repo.id),
+        reviewerEnabled: repo.reviewer_enabled === 1,
+        reviewDue: this.dueReview(repo),
+      })
+      if (next.kind === 'none') continue
+      const result = next.kind === 'review'
+        ? await this.enqueue(repo, 'schedule', undefined, 'review', { workItemId: next.workItemId, prUrl: next.prUrl })
+        : next.kind === 'followup'
+          ? await this.enqueue(repo, 'followup', undefined, 'iterate', {
+              workItemId: next.workItemId,
+              ...(next.prUrl === undefined ? {} : { prUrl: next.prUrl }),
+              ...(next.branch === undefined ? {} : { branch: next.branch }),
+            })
+          : await this.enqueue(repo, 'schedule', undefined, 'iterate')
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
-      log.info('scheduled job', { repo: `${repo.owner}/${repo.name}`, ok: result.ok, job: result.job?.id })
+      log.info('scheduled job', { repo: `${repo.owner}/${repo.name}`, ok: result.ok, kind: next.kind, job: result.job?.id })
     }
   }
 
