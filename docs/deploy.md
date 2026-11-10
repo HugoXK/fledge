@@ -169,6 +169,11 @@ separate no-heartbeat stall sweep; a heartbeat moves only that one.
 docker compose up -d --build
 ```
 
+To make `/healthz` name the build, stamp it at build time so the image can carry
+the commit: `GIT_SHA=$(git rev-parse HEAD) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) docker compose build`.
+Without the stamp the image answers `unknown` — honest, and useless for
+identifying a deploy.
+
 The volume `fledge-data` holds the SQLite database and the console outbox.
 
 The runtime stage also copies `CHANGELOG.md` and `changelog.d/` into `/app`
@@ -390,6 +395,8 @@ before a major upgrade.
 ## 9. Monitoring
 
 - `GET /healthz` for liveness.
+- After a deploy, compare `/healthz`'s `commit` with the commit you deployed: a
+  mismatch or `unknown` means the running artifact is not the one you intended.
 - Watch for `level:"error"` in structured logs.
 - The Admin panel shows the audit trail and recent jobs.
 - Quota state: `GET /v1/models` with a user token, or the dashboard.

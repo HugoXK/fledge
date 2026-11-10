@@ -395,7 +395,11 @@ Status code: `402`.
 
 ## Health
 
-`GET /healthz` → `{ "ok": true, "service": "fledge", "version": "0.2.4" }`.
+`GET /healthz` → `{ "ok": true, "service": "fledge", "version": "0.2.4", "commit": "0123456789ab", "builtAt": "2026-11-10T00:00:00Z", "time": "..." }`.
+
+`commit` and `builtAt` always appear; a build that carried no stamp answers
+`"unknown"` for both, so an absent field is never mistaken for a match. The
+values above are illustrative — read the real ones from the running service.
 
 ## Conventions
 

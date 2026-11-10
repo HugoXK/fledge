@@ -356,7 +356,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.type('text/plain; version=0.0.4; charset=utf-8').send(renderMetrics())
   })
 
-  app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: VERSION, time: new Date().toISOString() }))
+  // #183: the build names itself. `commit`/`builtAt` are stamped at build time
+  // and always present (`unknown` when the build carried no stamp), because a
+  // missing field reads as a match to whoever is checking a deploy.
+  app.get('/healthz', async () => ({
+    ok: true,
+    service: 'fledge',
+    version: VERSION,
+    commit: config.build.commit,
+    builtAt: config.build.builtAt,
+    time: new Date().toISOString(),
+  }))
 
   app.get('/readyz', async (_request, reply) => {
     try {
