@@ -487,7 +487,12 @@ export class Jobs {
     try {
       // Mark the job running before dispatch: the bridge may send its first
       // heartbeat as soon as the agent is up, and a queued row may not accept one.
-      this.store.updateJob(job.id, { status: 'running', started_at: nowIso() })
+      this.store.updateJob(job.id, {
+        status: 'running',
+        started_at: nowIso(),
+        lease_owner: 'inline',
+        lease_until: addMinutes(this.config.runner.timeoutMinutes + 5),
+      })
       observeHistogram('fledge_job_queue_seconds', Math.max(0, (Date.now() - Date.parse(job.created_at)) / 1000), { kind }, 'Time from enqueue to dispatch')
       this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.running', step: kind })
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'running' })
@@ -525,6 +530,7 @@ export class Jobs {
       revoke()
       const message = String(error instanceof Error ? error.message : error)
       this.store.updateJob(job.id, { status: 'failed', error: message.slice(0, 1000), finished_at: nowIso() })
+      this.store.releaseJobLease(job.id)
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
       else this.store.updateRepo(repo.id, { last_status: 'failed' })
       this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${message}`)
@@ -594,6 +600,7 @@ export class Jobs {
       finished_at: nowIso(),
     })
     if (!claimed) return false
+    this.store.releaseJobLease(jobId)
     incCounter('fledge_jobs_total', { status: result.status, kind: job.kind }, 1, 'Jobs by terminal status')
     const started = Date.parse(job.started_at ?? job.created_at)
     const ended = Date.parse(nowIso())
@@ -1858,7 +1865,12 @@ export class Jobs {
       if (!this.dueReview(repo)) continue
       const result = await this.enqueue(repo, 'schedule', undefined, 'review')
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
-      log.info('scheduled review', { repo: `${repo.owner}/${repo.name}`, ok: result.ok, job: result.job?.id })
+      log.info('scheduled review', {
+        repo: `${repo.owner}/${repo.name}`,
+        ok: result.ok,
+        job: result.job?.id,
+        ...(result.ok ? {} : { code: result.code, error: result.error }),
+      })
     }
     for (const listed of this.store.listAutoRepos()) {
       if (this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) break
@@ -1874,7 +1886,12 @@ export class Jobs {
       if (!this.due(repo)) continue
       const result = await this.enqueue(repo, 'schedule', undefined, 'iterate')
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
-      log.info('scheduled job', { repo: `${repo.owner}/${repo.name}`, ok: result.ok, job: result.job?.id })
+      log.info('scheduled job', {
+        repo: `${repo.owner}/${repo.name}`,
+        ok: result.ok,
+        job: result.job?.id,
+        ...(result.ok ? {} : { code: result.code, error: result.error }),
+      })
     }
   }
 

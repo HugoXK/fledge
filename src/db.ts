@@ -228,6 +228,8 @@ export interface JobRow {
   verification_json: string | null
   retry_attempt: number
   retry_of: string | null
+  lease_owner: string | null
+  lease_until: string | null
   last_callback_at: string | null
   created_at: string
   started_at: string | null
@@ -553,6 +555,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   verification_json TEXT,
   retry_attempt INTEGER NOT NULL DEFAULT 0,
   retry_of TEXT,
+  lease_owner TEXT,
+  lease_until TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   last_callback_at TEXT,
@@ -989,6 +993,8 @@ export class Store {
     if (!jobColumns.has('retry_of')) this.run('ALTER TABLE jobs ADD COLUMN retry_of TEXT')
     if (!jobColumns.has('last_callback_at')) this.run('ALTER TABLE jobs ADD COLUMN last_callback_at TEXT')
     if (!jobColumns.has('pr_state')) this.run('ALTER TABLE jobs ADD COLUMN pr_state TEXT')
+    if (!jobColumns.has('lease_owner')) this.run('ALTER TABLE jobs ADD COLUMN lease_owner TEXT')
+    if (!jobColumns.has('lease_until')) this.run('ALTER TABLE jobs ADD COLUMN lease_until TEXT')
     const tokenColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(api_tokens)').map((row) => row.name))
     if (!tokenColumns.has('repo_id')) this.run('ALTER TABLE api_tokens ADD COLUMN repo_id TEXT')
     const ledgerColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(quota_ledger)').map((row) => row.name))
@@ -2179,7 +2185,51 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority DESC, created_at ASC")
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'retry_attempt' | 'retry_of'>>): void {
+  // Durable dispatch foundation: one worker claims one queued job. The guarded
+  // UPDATE repeats the lease predicate from the SELECT, so two workers cannot
+  // claim the same row; BEGIN IMMEDIATE serializes SQLite writers.
+  claimQueuedJob(owner: string, leaseMs: number): JobRow | undefined {
+    return this.transaction(() => {
+      const now = nowIso()
+      const until = new Date(Date.now() + Math.max(1, leaseMs)).toISOString()
+      const row = this.get<JobRow>(
+        "SELECT * FROM jobs WHERE status = 'queued' AND (lease_until IS NULL OR lease_until < ?) ORDER BY priority DESC, created_at ASC LIMIT 1",
+        now,
+      )
+      if (row === undefined) return undefined
+      const changes = this.runChanges(
+        "UPDATE jobs SET lease_owner = ?, lease_until = ? WHERE id = ? AND status = 'queued' AND (lease_until IS NULL OR lease_until < ?)",
+        owner,
+        until,
+        row.id,
+        now,
+      )
+      return changes === 1 ? this.getJob(row.id) : undefined
+    })
+  }
+
+  renewJobLease(id: string, owner: string, leaseMs: number): boolean {
+    const until = new Date(Date.now() + Math.max(1, leaseMs)).toISOString()
+    return this.runChanges(
+      "UPDATE jobs SET lease_until = ? WHERE id = ? AND lease_owner = ? AND status IN ('queued','running')",
+      until,
+      id,
+      owner,
+    ) === 1
+  }
+
+  releaseJobLease(id: string): void {
+    this.run('UPDATE jobs SET lease_owner = NULL, lease_until = NULL WHERE id = ?', id)
+  }
+
+  expiredLeaseJobs(beforeIso: string): JobRow[] {
+    return this.all<JobRow>(
+      "SELECT * FROM jobs WHERE status IN ('queued','running') AND lease_until IS NOT NULL AND lease_until < ?",
+      beforeIso,
+    )
+  }
+
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
