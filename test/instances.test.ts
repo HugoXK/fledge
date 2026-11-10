@@ -115,6 +115,10 @@ test('healthSweep records live bridges and marks a dead bridge failed', async ()
       json(response, 200, { ok: true })
       return
     }
+    if (request.url === '/dsh') {
+      json(response, 200, { ok: true, value: { bots: [] } })
+      return
+    }
     json(response, 404, { message: 'Not Found' })
   })
   const config = testConfig()
@@ -143,6 +147,35 @@ test('healthSweep records live bridges and marks a dead bridge failed', async ()
   } finally {
     store.close()
     if (!closed) await bridge.close()
+  }
+})
+
+test('healthSweep marks an instance failed when the bridge is up but DSH is down', async () => {
+  const bridge = await startFakeServer((request, response) => {
+    if (request.url === '/healthz') return json(response, 200, { ok: true })
+    if (request.url === '/dsh') return json(response, 502, { error: 'could not reach DSH' })
+    json(response, 404, { message: 'Not Found' })
+  })
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const manager = new InstanceManager(store, config)
+  try {
+    const user = makeUser(store, { login: 'health-dsh-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_health_dsh', userId: user.id, owner: 'o', name: 'health-dsh', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.saveRepoInstance({
+      repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/health-dsh', bridge_script: '/tmp/bridge',
+      dsh_port: 1, bridge_port: Number(new URL(bridge.url).port), model_port: 2, model_bind: '127.0.0.1', image: 'image',
+      status: 'ready', chief_session: 'chief-1', team_json: null,
+      bridge_token_enc: encryptSecret('bridge-token', config.tokenEncryptionKey), bridge_pid: null, log_pid: null,
+      last_error: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_health_at: null,
+    })
+    const result = await manager.healthSweep()
+    assert.equal(result.failed, 1)
+    assert.equal(store.getRepoInstance(repo.id)?.status, 'failed')
+    assert.match(store.getRepoInstance(repo.id)?.last_error ?? '', /DSH|bridge \/dsh/)
+  } finally {
+    store.close()
+    await bridge.close()
   }
 })
 

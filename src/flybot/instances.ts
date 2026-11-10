@@ -895,24 +895,65 @@ server.listen(3081, '0.0.0.0')
     if (!response.ok) throw new Error(`bridge /job-done ${response.status}`)
   }
 
+  private async probeInstance(instance: RepoInstanceRow): Promise<void> {
+    const response = await fetch(`http://127.0.0.1:${instance.bridge_port}/healthz`, { signal: AbortSignal.timeout(2_000) })
+    if (!response.ok) throw new Error(`bridge ${response.status}`)
+    if (instance.bridge_token_enc === null) throw new Error('bridge token missing')
+    const token = decryptSecret(instance.bridge_token_enc, this.config.tokenEncryptionKey)
+    await this.dsh(instance.bridge_port, token, 'state', {}, 10_000)
+  }
+
+  private async waitForDshState(instance: RepoInstanceRow, timeoutMs: number): Promise<void> {
+    if (instance.bridge_token_enc === null) throw new Error('bridge token missing')
+    const token = decryptSecret(instance.bridge_token_enc, this.config.tokenEncryptionKey)
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      try {
+        await this.dsh(instance.bridge_port, token, 'state', {}, 5_000)
+        return
+      } catch {}
+      await sleep(2_000)
+    }
+    throw new Error(`FlyBot DSH did not answer within ${Math.round(timeoutMs / 1000)}s`)
+  }
+
   async healthSweep(): Promise<{ ready: number; failed: number; total: number }> {
     let ready = 0
     let failed = 0
     for (const instance of this.store.listRepoInstances()) {
       if (instance.status !== 'ready') continue
       try {
-        const response = await fetch(`http://127.0.0.1:${instance.bridge_port}/healthz`, { signal: AbortSignal.timeout(2_000) })
-        if (!response.ok) throw new Error(`bridge ${response.status}`)
-        this.store.updateRepoInstance(instance.repo_id, { last_health_at: nowIso() })
+        await this.probeInstance(instance)
+        this.store.updateRepoInstance(instance.repo_id, { last_health_at: nowIso(), last_error: null })
         ready += 1
       } catch (error) {
+        const detail = String(error).slice(0, 200)
+        const active = this.store.activeJobForRepo(instance.repo_id) !== undefined
+        const restartKey = `instance_restart:${instance.repo_id}`
+        const lastRestart = this.store.getSetting(restartKey)
+        const canRestart = this.config.flybot.instanceImage !== '' && this.config.env !== 'test' && !active &&
+          (lastRestart === undefined || Date.now() - Date.parse(lastRestart) >= 10 * 60_000)
+        if (canRestart) {
+          try {
+            this.store.setSetting(restartKey, nowIso())
+            await this.docker(['restart', '-t', '15', instance.container])
+            await this.waitForDshState(instance, 90_000)
+            this.store.updateRepoInstance(instance.repo_id, { last_health_at: nowIso(), last_error: null })
+            this.store.audit(instance.user_id, 'flybot.instance.auto_restarted', `${instance.repo_id}: ${detail}`)
+            log.warn('instance auto-restarted after health failure', { repo: instance.repo_id, error: detail })
+            ready += 1
+            continue
+          } catch (restartError) {
+            log.warn('instance auto-restart failed', { repo: instance.repo_id, error: String(restartError) })
+          }
+        }
         failed += 1
         this.store.updateRepoInstance(instance.repo_id, {
           status: 'failed',
-          last_error: `health check failed: ${String(error).slice(0, 200)}`,
+          last_error: `health check failed: ${detail}`,
           updated_at: nowIso(),
         })
-        log.warn('instance health check failed', { repo: instance.repo_id, error: String(error) })
+        log.warn('instance health check failed', { repo: instance.repo_id, error: detail, active })
       }
     }
     return { ready, failed, total: ready + failed }

@@ -68,6 +68,14 @@ owner in-app, posted to the optional notification webhook as `ops.alert`, and
 deduplicated for `OPS_ALERT_COOLDOWN_MINUTES`. Resolving an alert clears its
 marker, so a later recurrence notifies again.
 
+## Instance health
+
+The scheduler probes each ready instance through the bridge for DSH `state`.
+A bridge that answers `/healthz` but cannot reach DSH is not ready. When no job
+is active, Fledge restarts the container, waits for DSH `state` and audits
+`flybot.instance.auto_restarted`; the restart is rate-limited to once per ten
+minutes. An instance with an active job is marked failed instead of restarted.
+
 ## Shutdown and recovery
 
 On `SIGTERM`/`SIGINT` Fledge stops scheduling, waits up to
