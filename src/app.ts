@@ -332,14 +332,26 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/metrics', async (request, reply) => {
     if (!apiLimiter.take(`metrics:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
+    // #127: request.ip is the peer the configured proxy saw (TRUST_PROXY), so a
+    // client-supplied X-Forwarded-For can no longer make a public peer look local.
     const loopback = request.ip === '127.0.0.1' || request.ip === '::1' || request.ip === '::ffff:127.0.0.1'
     const header = String(request.headers.authorization ?? '')
     const bearer = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : ''
-    const queryToken = queryText(request, 'token') ?? ''
-    if (config.metrics.token !== '' && bearer !== config.metrics.token && queryToken !== config.metrics.token) {
+    // The token is read from the Authorization header and nowhere else: a `?token=`
+    // value ends up in proxy access logs, browser history and Referer headers, and a
+    // scrape URL is committed to config files. safeEqual keeps the compare constant
+    // time so a wrong token cannot be recovered byte by byte.
+    if (config.metrics.token === '') {
+      // No token configured: the loopback fallback is a development and test
+      // convenience only. assertProductionConfig refuses an empty METRICS_TOKEN in
+      // production, so this branch is unreachable there; the check stays as a
+      // second line of defence for a config assembled without that assertion.
+      if (config.env === 'production' || !loopback) {
+        return reply.code(403).send({ error: 'metrics are loopback-only without METRICS_TOKEN' })
+      }
+    } else if (!safeEqual(bearer, config.metrics.token)) {
       return reply.code(401).send({ error: 'metrics token required' })
     }
-    if (config.metrics.token === '' && !loopback) return reply.code(403).send({ error: 'metrics are loopback-only without METRICS_TOKEN' })
     return reply.type('text/plain; version=0.0.4; charset=utf-8').send(renderMetrics())
   })
 

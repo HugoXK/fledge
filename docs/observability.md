@@ -2,9 +2,18 @@
 
 ## Metrics
 
-`GET /metrics` exposes Prometheus text format. Without `METRICS_TOKEN` it is
-loopback-only; with a token, send `Authorization: Bearer <token>` or
-`?token=<token>`. Keep the token out of URLs in production logs where possible.
+`GET /metrics` exposes Prometheus text format. A production process refuses to
+start unless `METRICS_TOKEN` is set; with a token, send
+`Authorization: Bearer <token>`. The token is read from that header only — a
+`?token=` value is not accepted, because a URL ends up in proxy access logs,
+browser history and `Referer` headers — and it is compared in constant time.
+
+Outside production an empty `METRICS_TOKEN` leaves `/metrics` loopback-only: a
+local shell keeps working without configuration, and a public peer never does.
+"Loopback" means the peer the configured `TRUST_PROXY` hop saw, so a
+client-supplied `X-Forwarded-For` cannot make a public request look local. Name
+the proxy hop in `TRUST_PROXY` (see `docs/deploy.md`); the default is the
+loopback list for the direct-nginx path.
 
 Test evidence is also checked against the PR check runs: a claimed green test with a failing test check is contradicted and blocks auto-merge.
 
