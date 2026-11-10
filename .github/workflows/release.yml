@@ -80,10 +80,18 @@ jobs:
           REPO: ${{ github.repository }}
         run: echo "IMAGE=ghcr.io/${REPO,,}" >> "$GITHUB_ENV"
 
+      # #183: stamp the image so /healthz on the published tag names the commit
+      # it was cut from. The tag checkout is not necessarily github.sha, so the
+      # commit comes from the checked-out tree, the same way docs/deploy.md
+      # tells an operator to stamp a local build.
       - name: Build the image
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: docker build -t "${IMAGE}:${RELEASE_TAG}" .
+        run: |
+          docker build \
+            --build-arg "GIT_SHA=$(git rev-parse HEAD)" \
+            --build-arg "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "${IMAGE}:${RELEASE_TAG}" .
 
       # The digest is the identity the attestation signs. `docker push` prints
       # layer progress, so the repo digest is read back from the image metadata

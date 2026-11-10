@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { isIP } from 'node:net'
 import { resolve } from 'node:path'
+import { buildIdentity } from './lib/buildIdentity.js'
 
 export type RunnerMode = 'mock' | 'flybot'
 export type MailTransport = 'console' | 'smtp'
@@ -64,6 +65,13 @@ export interface Config {
   }
   metrics: {
     token: string
+  }
+  // Build identity stamped by the release job (src/lib/buildIdentity.ts).
+  // `/healthz` serves it so a deploy can be named from outside; a local build
+  // carries no stamp and answers `unknown` rather than inventing a value.
+  build: {
+    commit: string
+    builtAt: string
   }
   otel: {
     endpoint: string
@@ -252,6 +260,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     metrics: {
       token: text('METRICS_TOKEN'),
     },
+    build: buildIdentity(),
     otel: {
       endpoint: text('OTEL_EXPORTER_OTLP_ENDPOINT').replace(/\/$/, ''),
       serviceName: text('OTEL_SERVICE_NAME', 'fledge'),

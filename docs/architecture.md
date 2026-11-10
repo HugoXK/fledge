@@ -610,8 +610,12 @@ every page carries `v<version>` while the `/admin` card states the running
 version (naming `package.json` as its source), the newest section and the pending
 count. A path that is missing at runtime renders "not available in this build"
 for that line rather than `0` or `—`; a zero fragment count is a real fact and
-reads "nothing pending". The surface reports no commit or build identifier — the
-version the release routine keeps in step is the only fact it can prove.
+reads "nothing pending". This release surface stays a local-files read and names
+no commit. The build identity lives on `/healthz` instead — `commit` and
+`builtAt`, stamped at build time from `GIT_SHA`/`BUILD_TIME` and explained in
+decision [0007](decisions/0007-build-identity.md) — because two `main` builds
+between a tag and the next version bump answer the same `version` and cannot
+otherwise be told apart from outside.
 
 ### Operational alerts
 

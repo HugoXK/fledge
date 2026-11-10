@@ -7,10 +7,18 @@ COPY src ./src
 RUN npm run build
 
 FROM node:22-alpine AS runtime
+# #183: the build identity. The build stage has no `.git`, so the commit can
+# only reach the image through these two build args; `/healthz` serves them so a
+# deploy can be named from outside. An unstamped local build answers `unknown`
+# rather than inventing a value.
+ARG GIT_SHA=
+ARG BUILD_TIME=
 ENV NODE_ENV=production \
     DATA_DIR=/data \
     PORT=8080 \
-    HOST=0.0.0.0
+    HOST=0.0.0.0 \
+    GIT_SHA=${GIT_SHA} \
+    BUILD_TIME=${BUILD_TIME}
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev && npm cache clean --force
