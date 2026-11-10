@@ -31,6 +31,7 @@ export const REQUIRED_JOBS = [
   'risk',
   'restore-drill',
   'dependency-review',
+  'action-pins',
 ]
 
 // A required job that cannot run on every event, with the events on which

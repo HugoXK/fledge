@@ -164,6 +164,33 @@ The required checks are **`ci-ok`**, **`review-gate`** and **`pr-lint`**.
 - `changelog` (fragments are well formed)
 - `version` (`package.json`, lockfile, changelog, compose and tag agree)
 - `risk` (the tier report succeeds)
+- `action-pins` (every `uses:` is a 40-hex commit pin with its tag comment)
+- `Analyze JavaScript/TypeScript` (the CodeQL job: no new high/critical result)
+
+CodeQL is gated on its own diff, not globally. `github/codeql-action/analyze`
+exits 0 whether it found a sink or nothing at all, so the job runs
+`scripts/codeql-gate.mjs` afterwards: it reads the SARIF that run just wrote and
+fails on a high or critical result the recorded baseline does not already hold.
+The baseline is `.github/agent/codeql-baseline.json` — every open high/critical
+alert at its `recordedAtSha`, by rule id, path and line, which today is the four
+`js/missing-rate-limiting` findings in `src/app.ts` (issues #62–#65). They stay
+open and none is dismissed: the gate exists so a pull request cannot quietly add
+a fifth while working beside them. The same step runs on a push to `main`, so new
+highs cannot accumulate there either. Changing the baseline is a reviewed commit,
+and the PR that does it says why the alert is accepted; a line that drifts for an
+unrelated reason fails loudly rather than being silently re-labelled.
+
+Every action a workflow runs is pinned to a 40-hex commit with the tag it came
+from in a trailing comment, and the `action-pins` job fails the build on a
+floating tag: a tag is a pointer the action's owner can move, and whatever it
+points at runs on our runner with our token. To re-pin one, resolve the tag the
+same way CI would and paste the commit, never the tag:
+
+```sh
+git ls-remote --tags https://github.com/<owner>/<repo>.git | grep 'refs/tags/v<major>'
+# take the peeled `^{}` sha for an annotated tag, the plain sha for a lightweight one
+node scripts/action-pins.mjs   # checks the tree: 40-hex pin plus `# <version>` comment
+```
 
 `pr-lint` checks the PR body (`Written-by:`, `Fixes #N` / `No-issue:`, `Ran:`,
 `Not run:`), the changelog fragment and docs obligations, the `Written-by`

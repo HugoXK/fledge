@@ -17,9 +17,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: github/codeql-action/init@9418214df1f2c4b8128c770156c409013b07d6b9 # v3.39.3
         with:
           languages: javascript-typescript
           queries: security-and-quality
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@9418214df1f2c4b8128c770156c409013b07d6b9 # v3.39.3
+        with:
+          # Keep the SARIF the gate below reads; uploads still happen by default.
+          output: codeql-results
+      # analyze exits 0 whether it found a sink or nothing at all, so the
+      # verdict is this step: fail on a high/critical result the recorded
+      # baseline does not already hold. It runs on a push to main too.
+      - name: Fail on a new high or critical CodeQL result
+        run: node scripts/codeql-gate.mjs --sarif codeql-results --baseline .github/agent/codeql-baseline.json
