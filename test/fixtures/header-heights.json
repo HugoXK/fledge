@@ -1,13 +1,13 @@
 {
-  "source": "HugoXK/fledge#94, reviewer re-measure of the rendered header",
-  "method": "document.querySelector('.top').offsetHeight in Chromium, over the 46 + 28 renders recorded in #94 (locale and default-font-size variants at the three breakpoint widths); the tallest header seen per breakpoint is the value below.",
+  "source": "HugoXK/fledge#94 (rendered header) and #133 (collapsed phone header)",
+  "method": "The 960px and wide values are rendered measurements from #94: document.querySelector('.top').offsetHeight in Chromium, over the 46 + 28 renders recorded there (locale and default-font-size variants), tallest per breakpoint. The phone value is not a rendered maximum: #133 gives the header a fixed height below 641px, a 64px row plus the 1px bottom border of .top, so no locale, label or default font size can grow it. The rendered confirmation at 360/390/430 in both locales is the phone matrix #133 asks Test to run at the tip.",
   "headroom": 20,
   "renders": [
     {
-      "breakpoint": "@media (max-width: 420px)",
-      "media": "(max-width: 420px)",
-      "viewport": "320-360",
-      "measured": 255.9
+      "breakpoint": "@media (max-width: 640px)",
+      "media": "(max-width: 640px)",
+      "viewport": "320-430",
+      "measured": 65
     },
     {
       "breakpoint": "@media (max-width: 960px)",

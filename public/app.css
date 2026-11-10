@@ -520,6 +520,12 @@ a.list-row:hover strong { color: var(--accent); }
   .foot { padding: 24px 16px 44px; }
 }
 
+/* The menu toggle is rendered for every viewer at every width (#133), so the
+   base rule hides it; only the phone block below turns it on. Without this the
+   desktop header shows a button whose panel is phone-only, which flips
+   aria-expanded without moving the navigation. */
+.nav-toggle { display: none; }
+
 @media (max-width: 640px) {
   body { font-size: 15px; }
   h1 { font-size: clamp(28px, 9vw, 38px); }
@@ -529,6 +535,37 @@ a.list-row:hover strong { color: var(--accent); }
   .flow { grid-template-columns: 1fr 1fr; }
   .account-name { display: none; }
   .account { padding: 4px; }
+  /* A phone header is one row of a fixed height (#133). It used to be
+     content-driven: the nav took a full-width row of its own, and the language
+     switch and the account pill wrapped below ~420px, so the same header
+     measured 125px logged out and 194.9/255.9px logged in. A fixed height
+     cannot be grown by a wrap, a longer label or a larger default font size,
+     which is what makes the 90px bound hold in both locales. The navigation is
+     not removed: one toggle opens it as an absolutely positioned panel, so it
+     overlays the page and .top keeps the height the ResizeObserver publishes
+     while the menu is open. */
+  :root { --header-h: 90px; }
+  .top-inner { height: 64px; min-height: 0; flex-wrap: nowrap; padding: 0 12px; gap: 10px; }
+  .brand small { display: none; }
+  .account .pill { display: none; }
+  .nav-toggle {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    order: 2; min-height: var(--touch); min-width: var(--touch); padding: 0 10px;
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    background: var(--surface-raised); color: var(--muted);
+    font: inherit; font-size: var(--text-sm); font-weight: 650; cursor: pointer;
+  }
+  .nav-toggle:hover { color: var(--text); border-color: var(--line-strong); }
+  .nav-toggle[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
+  .top .nav {
+    display: none; position: absolute; top: 100%; left: 0; right: 0;
+    order: initial; width: 100%; flex-direction: column; gap: 0;
+    padding: 4px 16px 8px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    background: var(--panel); box-shadow: var(--shadow);
+  }
+  .top[data-nav-open="true"] .nav { display: flex; }
+  .top .nav a { padding: 0; border-bottom: 1px solid var(--row-line); }
+  .top .nav a:last-child { border-bottom: 0; }
   .workspace-hero { align-items: flex-start; flex-direction: column; gap: 18px; }
   .workspace-user h1 { font-size: 27px; }
   .workspace-avatar { width: 48px; height: 48px; border-radius: 14px; }
@@ -564,12 +601,15 @@ a.list-row:hover strong { color: var(--accent); }
 }
 
 @media (max-width: 420px) {
-  /* Below ~410px the language switch and the account row each take their own
-     row, so the sticky header grows again. The measured header at 320-360px is
-     255.9px, so the fallback keeps 20px of headroom over it; public/app.js
-     replaces the value with the height it measures. */
-  :root { --header-h: 276px; }
-  .top-inner { padding: 10px 12px; }
+  /* At 360px with a classic 15px scrollbar the row has 345px minus the two
+     10px paddings and three 8px gaps: 301px for four children. The mark, the
+     toggle, the two 44px language targets and the 44px sign-out already take
+     more than that, so the wordmark leaves the row rather than a control:
+     the mark keeps the brand, the toggle still names itself, the language
+     switch keeps both targets and the account keeps its exit. #133 acceptance
+     3's 44px floor is not touched here. */
+  .top-inner { padding: 0 10px; gap: 8px; }
+  .brand > span:not(.mark) { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

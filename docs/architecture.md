@@ -66,14 +66,25 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   per breakpoint); `[id] { scroll-margin-top }` and the workspace frame's height
   both follow it, so an anchor is never hidden under the header when it wraps
   and the frame's bottom lands at the viewport bottom. The shell's controls keep
-  a 44px touch target, and so do the controls inside `main` and in the footer:
-  the floor is the `--touch` token, applied by container (`td .link`,
-  `button.link`, `.foot a`, `label.check`) rather than to `.link`, because a
-  link inside a sentence is exempt and must keep its line box; a link that is
-  the whole paragraph is a target, so the template marks it (`.fine-link`) and
-  the class carries the floor. Text fields,
-  selects and textareas are 16px below 641px, the size below which iOS zooms a
-  focused field.
+  a 44px touch target. Below 641px the header is one **fixed** 64px row and the
+  navigation collapses behind a `data-nav-toggle` button that publishes
+  `aria-expanded`; the open menu is an absolutely positioned panel, so it
+  overlays the page and `--header-h` keeps the collapsed height while it is
+  open. The toggle itself is hidden outside the phone band by a base rule, so
+  the desktop header never shows a control whose panel does not exist there.
+  Every destination the wide header lists is still rendered in the panel,
+  so a phone loses no route. Below 420px the row also drops the wordmark (the
+  mark and its own `aria-label` stay) and tightens its padding and gaps: at a
+  360px viewport with a classic 15px scrollbar the row has 301px of usable
+  width, and the wordmark is the one child that can leave without taking a
+  route or a 44px target with it. The same floor covers the controls inside
+  `main` and in the footer: it is the `--touch` token, applied by container
+  (`td .link`, `button.link`, `.foot a`, `label.check`) rather than to `.link`,
+  because a link inside a sentence is exempt and must keep its line box; a link
+  that is the whole paragraph is a target, so the template marks it
+  (`.fine-link`) and the class carries the floor. Text fields, selects and
+  textareas are 16px below 641px, the size below which iOS zooms a focused
+  field.
 - **Redirect targets**: every `next=` / `returnTo` value goes through one helper
   that returns a path on this site or the fallback. It validates the parsed
   result, not the input, so a value that is a plain path before parsing and
