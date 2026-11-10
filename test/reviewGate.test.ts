@@ -372,6 +372,30 @@ test('the gate fails a verdict written for a different SHA', async () => {
   })
 })
 
+// #213, pin not fix: the gate already reads the first line of a review object and
+// never `review.state`, so a `COMMENTED` review that rejects the tip is a
+// conclusion like any other. Both tests below hold that property still; they
+// pass on today's code, which is the point of pinning them.
+test('pin: a COMMENTED review object whose first line rejects the tip fails the gate, because review.state is not read', async () => {
+  const state = initialState()
+  state.reviews = [{ body: REJECT_BODY, state: 'COMMENTED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'a platform-COMMENTED review still carries the verdict its first line states')
+    assert.match(result.stderr, /newest conclusion is REQUEST_CHANGES/)
+  })
+})
+
+test('pin: a COMMENTED review object that PASSes an earlier sha fails the gate, because the conclusion must be at the head', async () => {
+  const state = initialState()
+  state.reviews = [{ body: `Verdict: PASS at ${OTHER_SHA}\nWritten-by: HugoXK-bot\nAuthor: Fledge Platform Reviewer\n\nRan:\n- \`npm run check\` — pass\n\nNot run: Docker image\n`, state: 'COMMENTED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'a verdict for an earlier sha does not cover the head')
+    assert.match(result.stderr, /newest conclusion is for/)
+  })
+})
+
 test('a merge_group run resolves the pull request from head_ref and still decides', async () => {
   const state = initialState()
   state.files = ['src/app.ts']
