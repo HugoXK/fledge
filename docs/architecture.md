@@ -408,6 +408,15 @@ and a failed delivery can be retried. Opening checks or approving a review
 triggers an auto-merge reconcile, and the scheduler re-checks open Fledge PRs at
 most every `AUTO_MERGE_RECONCILE_MINUTES`.
 
+### Team session reconciliation
+
+A DSH restart can create new session IDs for the Chief and role bots. Fledge
+reads the live DSH `state`, maps the current Chief/Lead/Product/Test/Security/
+Reviewer/Dev sessions, and updates `team_json` plus `chief_session` when they
+differ. The reconciliation runs after a healthy probe and immediately before job
+dispatch, and it is audited as `flybot.team.sessions_refreshed`. If any role is
+missing, the stored team is left untouched.
+
 ### Bot model assignment
 
 Applying a provider model rewrites the DSH provider patch and updates every role
