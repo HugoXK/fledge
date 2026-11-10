@@ -71,7 +71,7 @@ marker, so a later recurrence notifies again.
 ## Instance health
 
 The scheduler probes each ready instance through the bridge for DSH `state`.
-A bridge that answers `/healthz` but cannot reach DSH is not ready. When no job
+A bridge that answers `/healthz` but cannot reach DSH is not ready. Failed instances are probed too; a healthy bridge and DSH move them back to ready and audit `flybot.instance.recovered`. When no job
 is active, Fledge restarts the container, waits for DSH `state` and audits
 `flybot.instance.auto_restarted`; the restart is rate-limited to once per ten
 minutes. An instance with an active job is marked failed instead of restarted.
