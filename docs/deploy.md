@@ -188,6 +188,22 @@ NODE_ENV=production npm start
 Use a process supervisor (systemd, runit, pm2) and a single instance: SQLite is
 not a multi-writer cluster.
 
+### Daily release pull request
+
+The nightly workflow pushes `release/v<next>` and stops before the pull request,
+because a pull request opened with `GITHUB_TOKEN` starts no `pull_request`
+workflow and would never get a `ci-ok`. Open it with the team account — never
+with the Reviewer's `HugoXK-bot` token — as
+`GITHUB_TOKEN=… node scripts/release-open.mjs --artifact release-plan.json --version 0.4.0 --sha <branch tip>`:
+the tool re-runs `scripts/version.mjs check` and `scripts/changelog.mjs check`
+against the branch's contents fetched through the API (never the branch's own
+copies of those scripts), refuses when `main` moved since the plan or the diff
+leaves `CHANGELOG.md`, `changelog.d/`, `docker-compose.yml`, `package-lock.json`
+and `package.json`, reuses an open pull request at the same commit instead of
+opening a second one, and prints the JSON it acted on. It writes that one pull
+request and nothing else, and it carries no tag endpoint: the tag stays in the
+workflow.
+
 ## 6. Reverse proxy
 
 Ready-to-copy samples live in [`deploy/`](../deploy/): a systemd unit and an nginx
