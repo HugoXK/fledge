@@ -60,6 +60,14 @@ state contract and its evidence are in [docs/ui.md](ui.md).
 - **Bilingual UI** in Chinese and English. The locale is stored in the
   `fledge_lang` cookie, and the header switch shares the `hugoxk-lang`
   preference with the rest of the platform.
+- **First-run checklist** (`src/views/checklist.ts`): `/dashboard` shows five
+  steps — repository, role, model provider, instance, first job — and every
+  step's state is read from the database on the request, so a cookie, a second
+  browser or a cleared store cannot change which step is next. The pure state
+  machine decides the single primary action; a step whose prerequisite is
+  missing states the reason instead of offering a control. Once a job exists the
+  checklist is replaced by a first-run summary that links the PR, or the retry
+  path when the first job failed.
 - **Shell** (`src/views/layout.ts`, `public/app.css`): the main nav marks the
   current section with `aria-current="page"`, derived from the route and
   overridable with `active`. The sticky header owns `--header-h` (re-declared

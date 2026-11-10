@@ -2059,6 +2059,16 @@ export class Store {
     return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM jobs WHERE user_id = ?', userId)?.n ?? 0)
   }
 
+  // #227: the first-run summary asks whether a pull request ever came out of this
+  // account's jobs, not whether one sits on the loaded page, so it reads the
+  // oldest matching row through jobs_user_pr_idx instead of scanning a page.
+  firstPrJobForUser(userId: string): JobRow | undefined {
+    return this.get<JobRow>(
+      'SELECT * FROM jobs WHERE user_id = ? AND pr_url IS NOT NULL ORDER BY created_at ASC LIMIT 1',
+      userId,
+    )
+  }
+
   listJobsSince(userId: string, sinceIso: string): JobRow[] {
     return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? AND (created_at >= ? OR finished_at >= ?) ORDER BY created_at DESC', userId, sinceIso, sinceIso)
   }
