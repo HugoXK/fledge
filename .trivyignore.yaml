@@ -1,0 +1,21 @@
+# Trivy allowlist for the image scan in the `docker` job.
+#
+# Empty on purpose. The gate is fail-closed: a HIGH or CRITICAL finding with a
+# fix available fails the build, and `ignore-unfixed: true` in the workflow is
+# the only blanket exception, so an unpatched base-image CVE whose fix has not
+# shipped does not block work that cannot address it.
+#
+# An entry here is a reviewed decision, not a way to get a green build:
+#
+#   vulnerabilities:
+#     - id: CVE-2026-12345
+#       paths:
+#         - "usr/lib/libfoo.so"
+#       statement: "upstream fix is in node:22-alpine 22.24, tracked in #<issue>"
+#       expired_at: "2026-12-31"
+#
+# `expired_at` is required by review: trivy stops honouring the entry at that
+# date, so an exception cannot outlive the reason it was written for. An entry
+# without an expiry is rejected in review, and this file is never widened to a
+# severity or a package class.
+vulnerabilities: []
