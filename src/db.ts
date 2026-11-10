@@ -2056,11 +2056,15 @@ export class Store {
   }
 
   // For each pull request URL, the one iterate job that decides its merge:
-  // newer than every other row for that URL, with rowid breaking a tie.
+  // newer than every other row for that URL, with rowid breaking a tie. A pull
+  // request that is already merged or closed is not a merge candidate at all —
+  // the bulk merge would otherwise re-check it on every pass and report it as
+  // skipped, and the scheduled reconciler already skips both states.
   listNewestPrJobsForRepo(repoId: string, limit = 20): JobRow[] {
     return this.all<JobRow>(
       `SELECT j.* FROM jobs AS j
        WHERE j.repo_id = ? AND j.pr_url IS NOT NULL AND j.kind = 'iterate'
+         AND (j.pr_state IS NULL OR j.pr_state NOT IN ('merged', 'closed'))
          AND j.rowid = (SELECT j2.rowid FROM jobs AS j2
                         WHERE j2.repo_id = j.repo_id AND j2.pr_url = j.pr_url AND j2.kind = 'iterate'
                         ORDER BY ${newestJobOrder('j2')} LIMIT 1)

@@ -1606,7 +1606,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('只有 maintainer 可以批量合并 PR。')}#delivery`)
     const result = await jobs.mergeCleanPrs(repo.id)
     store.audit(viewer.user.id, 'delivery.merge_clean', `${repo.id} merged=${result.merged.length} skipped=${result.skipped.length}`)
-    const message = `已合并 ${result.merged.length} 个 PR${result.skipped.length === 0 ? '' : `，跳过 ${result.skipped.length} 个（检查/保护未通过）`}`
+    const jobStateSkips = result.skipped.filter((entry) => entry.reason === 'job-state').length
+    const gateSkips = result.skipped.length - jobStateSkips
+    // Two different reasons, two clauses: a job-state skip must not be reported
+    // to the operator as a failed check or a missing protection, and the other
+    // clause stays wide enough for a path-guard or a non-open PR refusal.
+    const skipParts = [
+      jobStateSkips === 0 ? '' : `跳过 ${jobStateSkips} 个（最新任务还没有成功）`,
+      gateSkips === 0 ? '' : `跳过 ${gateSkips} 个（未通过合并检查）`,
+    ].filter((part) => part !== '')
+    const message = `已合并 ${result.merged.length} 个 PR${skipParts.length === 0 ? '' : `，${skipParts.join('，')}`}`
     return reply.redirect(`/repos/${repo.id}?${result.merged.length > 0 ? 'notice' : 'error'}=${encodeURIComponent(message)}#delivery`)
   })
 

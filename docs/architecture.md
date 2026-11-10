@@ -160,7 +160,9 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   A merge also needs the newest `iterate` job for that pull request to have
   succeeded: a queued, running, failed, cancelled or paused follow-up on the
   same PR holds it back, so an older succeeded job cannot merge work that is
-  still in flight or that failed afterwards.
+  still in flight or that failed afterwards. A pull request that is already
+  merged is never a candidate, so the bulk merge does not re-check it on every
+  pass.
 
 ### Model gateway
 

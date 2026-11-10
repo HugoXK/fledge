@@ -1450,6 +1450,72 @@ test('mergeCleanPrs skips a PR whose newest iterate job is not succeeded', async
   }
 })
 
+test('the bulk merge leaves a merged or closed pull request out of its candidates', async () => {
+  const merges: string[] = []
+  const requested: string[] = []
+  const github = await startFakeServer((request, response) => {
+    const method = request.method ?? 'GET'
+    const url = request.url ?? ''
+    requested.push(url)
+    const pull = /^\/repos\/o\/merged\/pulls\/(4|5|6)$/.exec(url)
+    if (method === 'GET' && pull !== null) {
+      const number = Number(pull[1])
+      // 5 is already merged on GitHub and 6 was closed without merging; both of
+      // their newest iterate jobs succeeded earlier, which is exactly the row
+      // the bulk merge must not pick up again.
+      json(response, 200, { number, html_url: `https://github.com/o/merged/pull/${number}`, title: 'fix', state: number === 4 ? 'open' : 'closed', head: { ref: 'fledge/fix', sha: `sha${number}` }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: number === 5 })
+      return
+    }
+    if (method === 'GET' && /^\/repos\/o\/merged\/commits\/sha(4|5|6)\/check-runs\?per_page=100$/.test(url)) {
+      json(response, 200, { check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] })
+      return
+    }
+    if (method === 'GET' && /^\/repos\/o\/merged\/commits\/sha(4|5|6)\/status$/.test(url)) {
+      json(response, 200, { state: 'success', statuses: [] })
+      return
+    }
+    if (method === 'GET' && /^\/repos\/o\/merged\/pulls\/(4|5|6)\/reviews\?per_page=100$/.test(url)) {
+      json(response, 200, [])
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/merged/branches/main/protection') {
+      json(response, 200, { protected: false, required_status_checks: { contexts: [] }, required_pull_request_reviews: { required_approving_review_count: 0 } })
+      return
+    }
+    if (method === 'PUT' && /^\/repos\/o\/merged\/pulls\/(4|5|6)\/merge$/.test(url)) {
+      merges.push(url)
+      json(response, 200, { merged: true, sha: 'merged' })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'bulk-merged-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_bulk_merged', userId: user.id, owner: 'o', name: 'merged', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', requireProtection: false, roleCheckedAt: new Date().toISOString(), upstreamHtmlUrl: 'https://github.com', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const open = store.createJob({ id: 'job_bulk_open', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(open.id, { status: 'succeeded', branch: 'fledge/fix', pr_url: 'https://github.com/o/merged/pull/4', pr_state: 'open', finished_at: new Date().toISOString() })
+    const merged = store.createJob({ id: 'job_bulk_merged', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(merged.id, { status: 'succeeded', branch: 'fledge/fix', pr_url: 'https://github.com/o/merged/pull/5', pr_state: 'merged', finished_at: new Date().toISOString() })
+    const closed = store.createJob({ id: 'job_bulk_closed', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(closed.id, { status: 'succeeded', branch: 'fledge/fix', pr_url: 'https://github.com/o/merged/pull/6', pr_state: 'closed', finished_at: new Date().toISOString() })
+
+    assert.deepEqual(store.listNewestPrJobsForRepo(repo.id).map((row) => row.id).sort(), ['job_bulk_open'])
+    const result = await jobs.mergeCleanPrs(repo.id)
+    assert.deepEqual(result.merged, ['job_bulk_open'])
+    assert.deepEqual(result.skipped, [])
+    assert.deepEqual(merges, ['/repos/o/merged/pulls/4/merge'])
+    assert.equal(requested.some((url) => url.includes('/pulls/5') || url.includes('/pulls/6')), false)
+    assert.equal(store.getJob(merged.id)?.pr_state, 'merged')
+    assert.equal(store.getJob(closed.id)?.pr_state, 'closed')
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
+
 test('open operational alerts notify the owner once and clear after resolution', async () => {
   const config = testConfig()
   const store = new Store(':memory:')

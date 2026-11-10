@@ -256,7 +256,11 @@ newest `iterate` job for that PR may merge, and only after it has succeeded
 cancelled or paused follow-up therefore holds the pull request back — an older
 succeeded job for the same PR never merges past its newer attempt. The scheduled
 reconciler skips those PRs, and `POST /repos/:id/delivery/merge-clean` reports
-them in `skipped` with the job state instead of merging them.
+them in `skipped` with the job state instead of merging them. A pull request that
+is already merged is not a candidate at all: no new `iterate` job for it can
+bring it back, and the bulk merge neither re-checks it nor counts it as skipped.
+Each `skipped` entry carries its reason, so the operator message tells a job-state
+skip apart from one where checks or branch protection refused the merge.
 
 ### `POST /api/jobs/:id/callback`
 

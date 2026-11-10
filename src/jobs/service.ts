@@ -1090,20 +1090,20 @@ export class Jobs {
     await this.tryMerge(job, prUrl, false)
   }
 
-  async mergeCleanPrs(repoId: string): Promise<{ merged: string[]; skipped: Array<{ jobId: string; message: string }> }> {
+  async mergeCleanPrs(repoId: string): Promise<{ merged: string[]; skipped: Array<{ jobId: string; message: string; reason: 'job-state' | 'gate' }> }> {
     const repo = this.store.getRepo(repoId)
     if (repo === undefined) return { merged: [], skipped: [] }
     const merged: string[] = []
-    const skipped: Array<{ jobId: string; message: string }> = []
+    const skipped: Array<{ jobId: string; message: string; reason: 'job-state' | 'gate' }> = []
     for (const job of this.store.listNewestPrJobsForRepo(repoId, 10)) {
       if (job.pr_url === null) continue
       if (job.status !== 'succeeded') {
-        skipped.push({ jobId: job.id, message: `未合并：这个 PR 的最新任务状态是 ${job.status}。` })
+        skipped.push({ jobId: job.id, message: `未合并：这个 PR 的最新任务状态是 ${job.status}。`, reason: 'job-state' })
         continue
       }
       const result = await this.manualMerge(repo, job)
       if (result.ok) merged.push(job.id)
-      else skipped.push({ jobId: job.id, message: result.message ?? 'skipped' })
+      else skipped.push({ jobId: job.id, message: result.message ?? 'skipped', reason: 'gate' })
     }
     return { merged, skipped }
   }

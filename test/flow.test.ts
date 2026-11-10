@@ -316,3 +316,31 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     await github.close()
   }
 })
+
+test('the bulk merge reports a job-state skip as a job state, not as a failed check', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  const built = await buildApp({ config, store, mailer, runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'bulk-message-user', status: 'approved' })
+    const { csrf, cookie } = sessionFor(built, user)
+    const repo = store.createRepo({ id: 'repo_bulk_message', userId: user.id, owner: 'o', name: 'message', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', roleCheckedAt: new Date().toISOString(), upstreamHtmlUrl: 'https://github.com/o/message', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_bulk_message_queued', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(job.id, { branch: 'fledge/fix', pr_url: 'https://github.com/o/message/pull/7', pr_state: 'open' })
+    const response = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/delivery/merge-clean`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf }),
+    })
+    assert.equal(response.statusCode, 302)
+    // Nothing was merged, so the run reports its skip as an error redirect.
+    assert.match(String(response.headers.location), new RegExp(`^/repos/${repo.id}\\?error=`))
+    const message = decodeURIComponent(String(response.headers.location).split('?')[1] ?? '')
+    assert.match(message, /跳过 1 个（最新任务还没有成功）/)
+    assert.doesNotMatch(message, /检查\/保护未通过/)
+  } finally {
+    await built.close()
+  }
+})
