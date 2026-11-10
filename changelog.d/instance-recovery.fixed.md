@@ -1,0 +1,1 @@
+The instance health sweep now probes failed instances as well as ready ones. If their bridge and DSH answer again, Fledge moves them back to ready, clears the last error and records `flybot.instance.recovered` instead of leaving the repository offline until a manual restart. Stopped and provisioning instances are still skipped.

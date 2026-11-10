@@ -934,10 +934,13 @@ server.listen(3081, '0.0.0.0')
     let ready = 0
     let failed = 0
     for (const instance of this.store.listRepoInstances()) {
-      if (instance.status !== 'ready') continue
+      if (instance.status === 'stopped' || instance.status === 'provisioning') continue
       try {
         await this.probeInstance(instance)
-        this.store.updateRepoInstance(instance.repo_id, { last_health_at: nowIso(), last_error: null })
+        if (instance.status !== 'ready') {
+          this.store.audit(instance.user_id, 'flybot.instance.recovered', `${instance.repo_id}: ${instance.status} -> ready`)
+        }
+        this.store.updateRepoInstance(instance.repo_id, { status: 'ready', last_health_at: nowIso(), last_error: null })
         ready += 1
       } catch (error) {
         const detail = String(error).slice(0, 200)
