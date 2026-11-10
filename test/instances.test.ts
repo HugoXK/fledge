@@ -243,3 +243,48 @@ test('applyBotModels updates each configured bot through the bridge', async () =
     await bridge.close()
   }
 })
+
+test('bot model assignment updates every role and reports a failed update', async () => {
+  let failUpdate = false
+  const bridge = await startFakeServer(async (request, response) => {
+    const body = (await readBody(request)).toString('utf8')
+    const payload = body === '' ? {} : JSON.parse(body) as { endpoint?: string; payload?: { id?: string; model?: string } }
+    if (request.url === '/dsh' && payload.endpoint === 'state') {
+      return json(response, 200, { ok: true, value: { bots: [
+        { id: 'lead', name: 'Repo Lead', model: 'fledge/old' },
+        { id: 'dev1', name: 'Repo Dev-1', model: 'fledge/old' },
+      ] } })
+    }
+    if (request.url === '/dsh' && payload.endpoint === 'update-bot') {
+      if (failUpdate) return json(response, 502, { error: 'could not reach DSH' })
+      return json(response, 200, { ok: true })
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const manager = new InstanceManager(store, config)
+  try {
+    const user = makeUser(store, { login: 'bot-model-health', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_bot_model_health', userId: user.id, owner: 'o', name: 'bm', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const provider = store.createModelProvider({ id: 'prv_bm', userId: user.id, label: 'P', baseUrl: 'https://p.example/v1', keyEnc: 'enc', allowPrivate: false })
+    const model = store.createProviderModel({ id: 'pvm_bm', providerId: provider.id, model: 'm1', label: 'M1' })
+    store.setRepoModelSelection(repo.id, [model.id], model.id)
+    store.saveRepoInstance({
+      repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/bm', bridge_script: '/tmp/bridge',
+      dsh_port: 1, bridge_port: Number(new URL(bridge.url).port), model_port: 2, model_bind: '127.0.0.1', image: 'image',
+      status: 'ready', chief_session: 'chief-1', team_json: null,
+      bridge_token_enc: encryptSecret('bridge-token', config.tokenEncryptionKey), bridge_pid: null, log_pid: null,
+      last_error: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_health_at: null,
+    })
+    const ok = await manager.applyBotModels(repo.id)
+    assert.equal(ok.updated, 2)
+    assert.deepEqual(ok.skipped, [])
+    failUpdate = true
+    const failed = await manager.applyBotModels(repo.id)
+    assert.deepEqual(failed.skipped.sort(), ['dev1', 'lead'])
+  } finally {
+    store.close()
+    await bridge.close()
+  }
+})

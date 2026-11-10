@@ -404,6 +404,13 @@ export class Jobs {
           log.warn('team playbook not refreshed', { repo: repo.id, error: String(error) })
         })
         const bridge = this.instances.bridgeFor(repo.id)
+        const assignment = await this.instances.applyBotModels(repo.id).catch((error) => {
+          log.warn('bot model check before dispatch failed', { repo: repo.id, error: String(error) })
+          return { updated: 0, skipped: ['model-check'] }
+        })
+        if (assignment.skipped.length > 0) {
+          return { ok: false, error: `机器人模型未就绪：${assignment.skipped.join(', ')}；请在仓库设置里重新应用模型。`, code: 'BOT_MODEL_ASSIGNMENT_FAILED' }
+        }
         const reviewer = kind === 'review' ? bridge.team.reviewer : null
         const role: 'chief' | 'lead' | 'reviewer' | 'product' | 'test' = kind === 'review'
           ? 'reviewer'

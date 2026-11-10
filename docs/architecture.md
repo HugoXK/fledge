@@ -397,6 +397,16 @@ and a failed delivery can be retried. Opening checks or approving a review
 triggers an auto-merge reconcile, and the scheduler re-checks open Fledge PRs at
 most every `AUTO_MERGE_RECONCILE_MINUTES`.
 
+### Bot model assignment
+
+Applying a provider model rewrites the DSH provider patch and updates every role
+bot. A skipped or failed `update-bot` keeps `models_dirty=1`, records
+`flybot.bot_models.failed` and returns `BOT_MODEL_ASSIGNMENT_FAILED`; Fledge does
+not report a successful model switch while a bot still points at the previous
+provider. Bot models are also reconciled after provisioning and before job
+dispatch, and a mismatch blocks dispatch with the same code rather than starting
+a job that would stall.
+
 ### Webhook delivery console
 
 GitHub webhook deliveries are recorded in `webhook_deliveries` with a bounded
