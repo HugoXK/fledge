@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
 
 // The contract of issue #80, as a structural test: the file may carry no stored
 // secret, no file-level permissions block, no pull-request or release command and
@@ -171,36 +171,51 @@ test('no expression reaches a shell body anywhere in the workflow', () => {
   }
 })
 
-test('the release machinery grows by two allowlisted lists, scripts and tests kept apart', () => {
-  // A new release script or release test is a deliberate act: it gets an entry
-  // here, in its own list. The lists are checked separately so a test file can
-  // never ride in on the script rule.
+test('the surface this branch adds is declared, and the workflow runs no other release module', () => {
+  // Two lists, this branch's own additions, kept apart so a test file can never
+  // ride in on the script rule. They are deliberately not "every release file
+  // that may exist": `#187` adds `scripts/release-open.mjs` on another branch,
+  // and an absolute listing of `scripts/` would go red on that merge and blame
+  // this change for it.
   const allowedScripts = new Set([
-    'scripts/lib/mechanical-release.mjs',
+    'scripts/lib/release-tag.d.mts',
+    'scripts/lib/release-tag.mjs',
+  ])
+  const allowedTests = new Set(['test/releaseTag.test.ts'])
+  for (const path of [...allowedScripts, ...allowedTests]) {
+    assert.ok(existsSync(path), `${path} exists on this branch`)
+  }
+  // The workflow may run the tested release machinery and nothing else. A driver
+  // growing back into the release path shows up here as an import.
+  const machinery = new Set([
     'scripts/lib/release-drive.mjs',
     'scripts/lib/release-state.mjs',
     'scripts/lib/release-tag.mjs',
     'scripts/release-plan.mjs',
-    'scripts/release-state.mjs',
   ])
-  const allowedTests = new Set([
-    'test/dailyRelease.test.ts',
-    'test/mechanicalRelease.test.ts',
-    'test/prLintMechanical.test.ts',
-    'test/releasePlan.test.ts',
-    'test/releaseState.test.ts',
-    'test/releaseSurface.test.ts',
-    'test/releaseTag.test.ts',
-  ])
-  const scripts = [
-    ...readdirSync('scripts').filter((name) => name.includes('release')).map((name) => join('scripts', name)),
-    ...readdirSync('scripts/lib').filter((name) => name.includes('release')).map((name) => join('scripts/lib', name)),
-  ].filter((path) => path.endsWith('.mjs'))
-  assert.ok(scripts.length >= 4)
-  for (const path of scripts) assert.ok(allowedScripts.has(path), `${path} is a new release script; add it to allowedScripts`)
-  const tests = readdirSync('test').filter((name) => name.includes('elease') && name.endsWith('.test.ts')).map((name) => join('test', name))
-  assert.ok(tests.length >= 1)
-  for (const path of tests) assert.ok(allowedTests.has(path), `${path} is a new release test; add it to allowedTests`)
+  const imports = [...daily.matchAll(/from "\.\/(scripts\/[^"]+)"/g)].map((match) => String(match[1]))
+  assert.ok(imports.length >= 3, 'the workflow imports the tested modules')
+  for (const path of imports) assert.ok(machinery.has(path), `${path} is not the tested release machinery`)
+
+  // Locally the branch's own diff is readable, so the two lists are held to it.
+  // The CI checkout is one commit deep, where `origin/main` has no merge base to
+  // diff against; the import check above is the half that always runs, and a
+  // false red on a T3 costs a review cycle it does not buy anything for.
+  let added: string[] | null = null
+  try {
+    added = execFileSync('git', ['diff', '--name-only', '--diff-filter=A', 'origin/main...HEAD'], { encoding: 'utf8' })
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '')
+  } catch {
+    added = null
+  }
+  if (added !== null) {
+    for (const path of added) {
+      if (path.startsWith('scripts/')) assert.ok(allowedScripts.has(path), `${path} is a new release script; add it to allowedScripts`)
+      if (path.startsWith('test/') && path.endsWith('.test.ts')) assert.ok(allowedTests.has(path), `${path} is a new release test; add it to allowedTests`)
+    }
+  }
 })
 
 test('release.yml is not folded into this change and knows nothing about the tag write', () => {
