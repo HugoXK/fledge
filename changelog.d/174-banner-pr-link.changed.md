@@ -1,0 +1,1 @@
+The refusal banner that stops a job because a pull request already covers the issue now links that pull request instead of printing its URL as dead text, for both the in-flight answer and the already-merged one, so a maintainer opens it straight from the banner. The link is built only for a github.com pull request URL; any other value stays escaped text.
