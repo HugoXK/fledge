@@ -742,19 +742,34 @@ a.list-row:hover strong { color: var(--accent); }
      narrowest phone, so the right-hand columns sat behind a horizontal scroll.
      Each cell now carries the column name it lost with the header row; the
      same markup still lays out as a table from 641px up. */
-  .job-table { display: block; }
-  .job-table thead { display: none; }
-  .job-table tbody { display: block; }
-  .job-table tr { display: block; padding: 10px 0 12px; border-bottom: 1px solid var(--row-line); }
-  .job-table tr:last-child { border-bottom: none; }
-  .job-table td { display: block; padding: 0; border-bottom: 0; vertical-align: top; min-width: 0; max-width: none; white-space: normal; overflow-wrap: anywhere; }
-  .job-table td + td { margin-top: 8px; }
-  .job-table td::before { content: attr(data-label); display: block; margin-bottom: 3px; color: var(--muted-2); font-weight: 650; font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; }
-  .job-table td:not([data-label])::before { display: none; }
+  .job-table, .table-cards { display: block; }
+  .job-table thead, .table-cards thead { display: none; }
+  .job-table tbody, .table-cards tbody { display: block; }
+  .job-table tr, .table-cards tr { display: block; padding: 10px 0 12px; border-bottom: 1px solid var(--row-line); }
+  .job-table tr:last-child, .table-cards tr:last-child { border-bottom: none; }
+  .job-table td, .table-cards td { display: block; padding: 0; border-bottom: 0; vertical-align: top; min-width: 0; max-width: none; white-space: normal; overflow-wrap: anywhere; }
+  .job-table td + td, .table-cards td + td { margin-top: 8px; }
+  .job-table td::before, .table-cards td::before { content: attr(data-label); display: block; margin-bottom: 3px; color: var(--muted-2); font-weight: 650; font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; }
+  .job-table td:not([data-label])::before, .table-cards td:not([data-label])::before { display: none; }
   .job-table .job-cell,
   .job-table .job-summary { min-width: 0; max-width: none; }
   .job-table .job-links { white-space: normal; }
-  .job-table td code { white-space: normal; overflow-wrap: anywhere; }
+  .job-table td code,
+  .table-cards td code { white-space: normal; overflow-wrap: anywhere; }
+  /* The remaining data tables use the same mechanism: a row is a card, every
+     cell prints the header text it lost. `data-label` is the only contract. */
+  .table-cards .nowrap { white-space: normal; }
+  /* The users table put a 320px floor on its last column so the quota and role
+     forms kept a usable row. A card has no columns, so the floor only made a
+     278px scroller hold 621px. */
+  .admin-users-table.table-cards td:last-child { min-width: 0; }
+  /* The delivery board's header row is its stage filter (every th is a link),
+     so it cannot leave the flow. It becomes a wrapping row of links above the
+     stacked counts instead, and its cells still print the stage as a label. */
+  .table-cards-head thead { display: block; }
+  .table-cards-head thead tr { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 0 0 8px; border-bottom: 1px solid var(--row-line); }
+  .table-cards-head thead th { display: block; padding: 0; }
+
   /* The field floor: iOS zooms a focused field below 16px, and the user then has
      to pinch back out to reach the rest of the form (issue 132 acceptance 2). */
   input, textarea, select { font-size: 16px; }
