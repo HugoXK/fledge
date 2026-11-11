@@ -141,6 +141,14 @@ const FAILURE_SENTENCES: Record<FailureCode, [string, string]> = {
   REPO_DISABLED: ['这个仓库已停用。', 'This repository is disabled.'],
 }
 
+// The parameterised form of a failure sentence, used only when the refusal
+// carries the value. `DUPLICATE_WORK` names the pull request that already covers
+// the issue; the plain entry above stays the sentence for a row that carries no
+// parameter, which is the shape every writer produces today.
+const DETAIL_SENTENCES: Partial<Record<FailureCode, [string, string]>> = {
+  DUPLICATE_WORK: ['已有 PR 覆盖这个 issue：{detail}', 'A pull request already covers this issue: {detail}'],
+}
+
 // The enqueue path refuses before a job row exists, so its answer never reaches
 // `jobs.error_code`; the route carries the code on the redirect instead and the
 // banner builds the sentence from it. These are the refusals that can reach a
@@ -165,7 +173,23 @@ export function errorCodeOf(value: string | null | undefined): FailureCode | nul
 
 export function failureSentence(t: (zh: string, en: string) => string, code: string | null | undefined, detail = ''): string | null {
   const known = errorCodeOf(code)
-  if (known !== null) return t(FAILURE_SENTENCES[known][0], FAILURE_SENTENCES[known][1])
+  if (known !== null) {
+    // A sentence that names something only the writer knows (the pull request
+    // that already covers the issue) exists in two forms: the plain one below,
+    // for a row that carries no parameter, and the parameterised one here, for a
+    // refusal that does. Base kept the URL by re-deriving it inside the
+    // dictionary; authoring it as `{detail}` is the same sentence built from the
+    // value the service already had. The known-code branch returns before
+    // `REFUSAL_SENTENCES`' empty-parameter guard, so the plain entry must stay
+    // the default: a parameterised sentence with no parameter would print the
+    // placeholder itself on a `jobs.error_code` row.
+    const value = String(detail ?? '').trim()
+    const parameterised = DETAIL_SENTENCES[known]
+    if (parameterised !== undefined && value !== '') {
+      return t(parameterised[0].replace('{detail}', value), parameterised[1].replace('{detail}', value))
+    }
+    return t(FAILURE_SENTENCES[known][0], FAILURE_SENTENCES[known][1])
+  }
   const refusal = REFUSAL_SENTENCES[String(code ?? '').trim()]
   if (refusal === undefined) return null
   const value = String(detail ?? '').trim()

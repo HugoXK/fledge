@@ -242,7 +242,7 @@ export class Jobs {
     }
   }
 
-  private async duplicatePreflight(repo: RepoRow, goal: string, workItemId?: string): Promise<{ ok: boolean; error?: string; code?: string }> {
+  private async duplicatePreflight(repo: RepoRow, goal: string, workItemId?: string): Promise<{ ok: boolean; error?: string; code?: string; detail?: string }> {
     // Only the FlyBot runner reads the upstream repository; the sibling
     // `preflight` has the same guard at its first line. Without it a deployment
     // on another runner decrypted the repo token and made GitHub reads it never
@@ -261,7 +261,7 @@ export class Jobs {
       if (duplicate === null) return { ok: true }
       this.store.audit(repo.user_id, 'job.duplicate_work', `${repository} issue #${issue} -> ${duplicate.url}`)
       this.store.event('job_duplicate_work', { userId: repo.user_id, repoId: repo.id, meta: `issue=${issue};pr=${duplicate.url}`.slice(0, 400) })
-      return { ok: false, code: 'DUPLICATE_WORK', error: `已有 PR 覆盖这个 issue：${duplicate.url}` }
+      return { ok: false, code: 'DUPLICATE_WORK', error: `已有 PR 覆盖这个 issue：${duplicate.url}`, detail: duplicate.url }
     } catch (error) {
       log.warn('duplicate preflight failed', { repo: repo.id, error: String(error) })
       return { ok: true }
@@ -380,7 +380,7 @@ export class Jobs {
     if (!isValidBranchName(baseBranch)) return { ok: false, error: '目标分支格式不正确。', code: 'BRANCH_INVALID' }
     if (kind === 'iterate' && options.prUrl === undefined) {
       const duplicate = await this.duplicatePreflight(repo, goalOverride ?? repo.goal, options.workItemId)
-      if (!duplicate.ok) return { ok: false, error: duplicate.error, code: duplicate.code }
+      if (!duplicate.ok) return { ok: false, error: duplicate.error, code: duplicate.code, detail: duplicate.detail }
     }
     let preflightSha: string | null = null
     let preflightWarning = ''

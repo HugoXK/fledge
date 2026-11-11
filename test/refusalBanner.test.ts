@@ -5,8 +5,10 @@ import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { jobPage, repoPage } from '../src/views/pages.js'
 import { failureBannerSentence } from '../src/lib/failure.js'
+import { Jobs } from '../src/jobs/service.js'
+import { encryptSecret } from '../src/lib/secrets.js'
 import { translator } from '../src/i18n.js'
-import { makeUser, MemoryMailer, formBody, sessionFor, testConfig } from './helpers.js'
+import { json, makeUser, MemoryMailer, formBody, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
 // #231 review: the enqueue path refuses before a job row exists, so its answer
 // never reaches `jobs.error_code`. The route used to put the service's Chinese
@@ -16,8 +18,9 @@ import { makeUser, MemoryMailer, formBody, sessionFor, testConfig } from './help
 // builds the sentence from it, like every other failure the user reads.
 //
 // The classes below are the ones that can reach the banner: the credential
-// check, the monthly repo budget, the two queue admissions, and the preflight
-// branch-missing refusal (which carries the branch name after a colon).
+// check, the monthly repo budget, the two queue admissions, the preflight
+// branch-missing refusal (which carries the branch name after a colon) and the
+// duplicate-work refusal (which carries the pull request URL the same way).
 
 const CJK = /[\u3400-\u9fff]/
 
@@ -54,6 +57,7 @@ const REFUSALS: Array<{ value: string; en: RegExp; zh: RegExp }> = [
   { value: 'QUEUE_FULL', en: /queue is full/i, zh: /队列已满/ },
   { value: 'QUEUE_LIMIT', en: /too many (jobs|tasks) queued/i, zh: /排队/ },
   { value: 'BRANCH_MISSING:main', en: /target branch main/i, zh: /目标分支 main/ },
+  { value: 'DUPLICATE_WORK:https://github.com/acme/demo/pull/9', en: /pull\/9/, zh: /pull\/9/ },
 ]
 
 for (const refusal of REFUSALS) {
@@ -336,5 +340,66 @@ test('the resume and cancel refusals have a dictionary sentence', () => {
     assert.match(cancel, /already finished/i)
   } finally {
     store.close()
+  }
+})
+
+// The write half of the duplicate-work banner case above. The URL has to travel
+// as the refusal's own parameter: `DUPLICATE_WORK`'s sentence names `{detail}`,
+// so a payload of "已有 PR 覆盖这个 issue：https://…" would fill the English
+// sentence with the service's Chinese. Without this case the banner test above
+// passes on a hand-written value the route never produces.
+test('the duplicate refusal carries the pull request URL as its detail', async () => {
+  const github = await startFakeServer((request, response) => {
+    if ((request.url ?? '').startsWith('/repos/acme/demo/pulls')) {
+      json(response, 200, [
+        {
+          number: 9,
+          html_url: 'https://github.com/acme/demo/pull/9',
+          title: 'Fix it',
+          body: 'Fixes #9',
+          head: { ref: 'fledge/fix' },
+          base: { ref: 'main' },
+        },
+      ])
+      return
+    }
+    json(response, 404, { message: 'not found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url }, runner: { ...base.runner, queueDispatch: false } })
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'dup-user', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_dup',
+      userId: user.id,
+      owner: 'acme',
+      name: 'demo',
+      defaultBranch: 'main',
+      tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey),
+      permission: 'admin',
+      repoRole: 'maintainer',
+      goal: '',
+      autoIterate: false,
+      intervalMinutes: 1440,
+    })
+    const jobs = new Jobs(
+      store,
+      config,
+      {
+        name: 'flybot',
+        async run() {
+          return { status: 'running' }
+        },
+      },
+      new MemoryMailer(),
+    )
+    const result = await jobs.enqueue(repo, 'manual', 'close issue #9', 'iterate')
+    assert.equal(result.ok, false, 'an open pull request covering the issue refuses the enqueue')
+    assert.equal(result.code, 'DUPLICATE_WORK')
+    assert.equal(result.detail, 'https://github.com/acme/demo/pull/9', 'the URL travels as the parameter, not inside the sentence')
+  } finally {
+    store.close()
+    await github.close()
   }
 })

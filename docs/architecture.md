@@ -462,7 +462,11 @@ start with a code, and the route puts that code on the redirect with the payload
 after a colon: the code's own parameter where it has one (`BRANCH_MISSING:main`,
 `JOB_LIMIT:2`, `BOT_MODEL_ASSIGNMENT_FAILED:chief, lead`) or else the sentence the
 service wrote. The banner asks the sentence table first, so those codes read in
-the reader's language with their parameter filled in. A code with no sentence
+the reader's language with their parameter filled in. A code whose table entry
+carries `{detail}` keeps that parameter too — the duplicate-work refusal names the
+pull request that already covers the issue (`DUPLICATE_WORK:<url>`) — so the value
+the service found survives the redirect instead of being dropped when the sentence
+is rebuilt. A code with no sentence
 keeps the text that travelled with it, which the dictionary translates as it did
 before this change, so no refusal reads worse than at base; only a bare code with
 neither a sentence nor a text renders a sentence naming the code, so an unknown
