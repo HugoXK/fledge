@@ -60,6 +60,8 @@ interface FakeState {
   tags: string[]
   tagTimes: Record<string, string>
   headCommittedAt: string
+  threads: Array<Record<string, unknown>>
+  threadsFail: boolean
 }
 
 function initialState(): FakeState {
@@ -83,6 +85,8 @@ function initialState(): FakeState {
     tags: [],
     tagTimes: {},
     headCommittedAt: '',
+    threads: [],
+    threadsFail: false,
   }
 }
 
@@ -156,6 +160,14 @@ async function withFakeGitHub(state: FakeState, body: (env: Record<string, strin
       json(response, 200, { total_count: (state.jobs[jobs[1]!] ?? []).length, jobs: state.jobs[jobs[1]!] ?? [] })
       return
     }
+    if (path === '/graphql') {
+      if (state.threadsFail) {
+        json(response, 502, { message: 'graphql upstream failed' })
+        return
+      }
+      json(response, 200, { data: { repository: { pullRequest: { reviewThreads: { nodes: state.threads } } } } })
+      return
+    }
     const rerun = /^\/repos\/o\/r\/actions\/runs\/(\d+)\/rerun$/.exec(path)
     if (rerun !== null) {
       state.posts.push(rerun[1]!)
@@ -191,6 +203,7 @@ interface GateOutcome {
 const { evaluateGate, COMMENT_VERDICT_FALLBACK_UNTIL } = (await import(REVIEW_GATE_MODULE)) as {
   evaluateGate: (options: {
     api: (path: string) => Promise<unknown>
+    threads?: (repo: string, prNumber: number) => Promise<unknown[]>
     repo: string
     policy: { writers: string[]; requiredPass?: string; selfReview?: string[] }
     prNumber: number
@@ -216,7 +229,15 @@ function fakeGateApi(state: FakeState): (path: string) => Promise<unknown> {
 }
 
 async function runGateDirect(state: FakeState, now: number): Promise<GateOutcome> {
-  return evaluateGate({ api: fakeGateApi(state), repo: 'o/r', policy: JSON.parse(state.policy), prNumber: 7, tier: 'T3', now })
+  return evaluateGate({
+    api: fakeGateApi(state),
+    threads: async () => state.threads,
+    repo: 'o/r',
+    policy: JSON.parse(state.policy),
+    prNumber: 7,
+    tier: 'T3',
+    now,
+  })
 }
 
 // --- the gate still maps a tip to the same conclusion ------------------------
@@ -365,6 +386,85 @@ test('a COMMENTED review carrying a PASS at the tip is accepted, not only an APP
     assert.equal(result.code, 0, `a valid COMMENTED PASS at the tip was rejected: ${result.stderr}`)
     assert.match(result.stdout, /PASS/)
   })
+})
+
+// --- the gate reports what the branch enforces -------------------------------
+
+// The branch has `required_conversation_resolution: true`, so an unresolved review
+// thread blocks the merge whatever the required check says. #299 sat green at a
+// tip the merge API refused for exactly this, and every reader of the check
+// believed it.
+const PASS_REVIEW = { body: TWO_LINE_PASS, state: 'APPROVED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }
+
+test('an unresolved review thread fails the gate and names its path and line', async () => {
+  const state = initialState()
+  state.threads = [{ isResolved: false, isOutdated: false, path: 'scripts/verify-release.mjs', line: 21, originalLine: 21 }]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'a tip with an unresolved review thread was reported ready to merge')
+    assert.match(result.stderr, /scripts\/verify-release\.mjs:21/, 'the failing thread is not named')
+  })
+})
+
+test('an outdated thread with no line names its original line, never a null', async () => {
+  // The shape that blocked #299: the four threads went outdated when the fix
+  // landed, so `line` is null and only `originalLine` can locate them.
+  const state = initialState()
+  state.threads = [{ isResolved: false, isOutdated: true, path: 'scripts/verify-release.mjs', line: null, originalLine: 23 }]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'an outdated unresolved thread did not fail the gate')
+    assert.match(result.stderr, /scripts\/verify-release\.mjs:23/, 'the original line is not used')
+    assert.doesNotMatch(result.stderr, /:null|:undefined/, 'the location printed a null line')
+  })
+})
+
+test('resolved threads do not hold back a tip that has its PASS', async () => {
+  const state = initialState()
+  state.reviews = [PASS_REVIEW]
+  state.threads = [{ isResolved: true, isOutdated: true, path: 'scripts/verify-release.mjs', line: null, originalLine: 21 }]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, `a resolved thread failed the gate: ${result.stderr}`)
+    assert.match(result.stdout, /PASS/)
+  })
+})
+
+test('a failed thread read fails closed, naming the read error', async () => {
+  const state = initialState()
+  state.reviews = [PASS_REVIEW]
+  state.threadsFail = true
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'an unreadable thread state was taken as "no threads"')
+    assert.match(result.stderr, /thread/i, 'the message does not say what could not be read')
+    assert.match(result.stderr, /502|graphql/i, 'the read error itself is not in the message')
+  })
+})
+
+test('#299 regression: four outdated CodeQL threads are all named, on their original lines', async () => {
+  const state = initialState()
+  state.reviews = [PASS_REVIEW]
+  state.threads = [
+    { isResolved: false, isOutdated: true, path: 'scripts/verify-release.mjs', line: null, originalLine: 21 },
+    { isResolved: false, isOutdated: true, path: 'scripts/verify-release.mjs', line: null, originalLine: 23 },
+    { isResolved: false, isOutdated: true, path: 'scripts/verify-release.mjs', line: null, originalLine: 71 },
+    { isResolved: false, isOutdated: true, path: 'test/releaseStatus.test.ts', line: null, originalLine: 3 },
+  ]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'the #299 shape still reports ready')
+    for (const location of ['scripts/verify-release.mjs:21', 'scripts/verify-release.mjs:23', 'scripts/verify-release.mjs:71', 'test/releaseStatus.test.ts:3']) {
+      assert.ok(result.stderr.includes(location), `${location} is not named in the failure`)
+    }
+  })
+})
+
+test('the gate refuses to decide when it is given no thread reader', async () => {
+  const state = initialState()
+  const outcome = await evaluateGate({ api: fakeGateApi(state), repo: 'o/r', policy: JSON.parse(state.policy), prNumber: 7, tier: 'T3' })
+  assert.equal(outcome.ok, false, 'the gate passed a tip without reading its review threads')
+  assert.match(outcome.message, /thread/i)
 })
 
 test('a review object by the required account passes without a Posted-by line', async () => {

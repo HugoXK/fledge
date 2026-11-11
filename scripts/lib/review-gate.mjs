@@ -161,7 +161,42 @@ async function expectedNextVersion(api, repo, ref, headSha) {
 //   error   - the gate could not decide; nothing at the SHA may be re-run
 // `now` exists so a test can stand past COMMENT_VERDICT_FALLBACK_UNTIL; the CLI
 // never passes it and the date itself is never a parameter.
-export async function evaluateGate({ api, repo, policy, prNumber, tier: tierOverride, sha: shaOverride, now = Date.now() }) {
+
+// #308: a thread's `line` is null once it is outdated — exactly the state #299's
+// four CodeQL threads were in when their fix landed — so `originalLine` decides
+// when `line` does not, and a location never prints a null or a guess.
+function threadLocation(thread) {
+  const path = typeof thread?.path === 'string' && thread.path !== '' ? thread.path : '(unknown file)'
+  const line = Number.isInteger(thread?.line) ? thread.line : Number.isInteger(thread?.originalLine) ? thread.originalLine : null
+  const where = line === null ? `${path} (no line)` : `${path}:${line}`
+  return thread?.isOutdated === true ? `${where} (outdated)` : where
+}
+
+// Fail closed on every shape that is not a thread list: a missing reader, a
+// rejecting query, a payload that is not a list. "Could not read" is never "no
+// threads" — that is the assumption that let a green check sit on a tip the merge
+// API refused.
+async function readUnresolvedThreads(reader, repo, prNumber) {
+  if (typeof reader !== 'function') {
+    return { ok: false, kind: 'error', message: 'the review-thread reader is not configured, so the gate cannot tell whether the tip can merge' }
+  }
+  let nodes
+  try {
+    nodes = await reader(repo, prNumber)
+  } catch (cause) {
+    return {
+      ok: false,
+      kind: 'error',
+      message: `cannot read the review threads, so the tip cannot be called ready: ${cause instanceof Error ? cause.message : String(cause)}`,
+    }
+  }
+  if (!Array.isArray(nodes)) {
+    return { ok: false, kind: 'error', message: 'the review-thread reader returned no thread list, so the tip cannot be called ready' }
+  }
+  return { ok: true, threads: nodes.filter((node) => node?.isResolved !== true) }
+}
+
+export async function evaluateGate({ api, threads, repo, policy, prNumber, tier: tierOverride, sha: shaOverride, now = Date.now() }) {
   const failed = (message, kind = 'verdict') => ({ ok: false, kind, message })
   const threw = (cause, prefix) => failed(`${prefix}${cause instanceof Error ? cause.message : String(cause)}`, 'error')
 
@@ -176,6 +211,17 @@ export async function evaluateGate({ api, repo, policy, prNumber, tier: tierOver
 
   const labels = (pr.labels ?? []).map((label) => label.name)
   if (labels.includes('hold')) return failed('the pull request carries the hold label', 'hold')
+
+  // #308: the branch requires conversation resolution, so an unresolved review
+  // thread blocks the merge whatever this check says. Reading it before the tier
+  // short-circuit is deliberate: a T0 tip cannot merge over an open thread either.
+  const threadState = await readUnresolvedThreads(threads, repo, prNumber)
+  if (!threadState.ok) return failed(threadState.message, threadState.kind)
+  if (threadState.threads.length > 0) {
+    const count = threadState.threads.length
+    const locations = threadState.threads.map(threadLocation).join(', ')
+    return failed(`${count === 1 ? '1 unresolved review thread blocks' : `${count} unresolved review threads block`} the merge: ${locations}`)
+  }
 
   let files
   try {

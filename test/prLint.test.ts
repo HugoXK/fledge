@@ -141,6 +141,12 @@ async function withFakeGitHub(current: FakeState, run: (env: Record<string, stri
       json(response, 200, { encoding: 'base64', content: Buffer.from(text, 'utf8').toString('base64') })
       return
     }
+    // #308: the gate reads the tip's review threads before it judges the verdict,
+    // because the branch refuses a merge over an unresolved thread.
+    if (path === '/graphql') {
+      json(response, 200, { data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] } } } } })
+      return
+    }
     json(response, 404, { message: `unexpected ${request.method} ${path}` })
   })
   const dir = mkdtempSync(join(tmpdir(), 'fledge-pr-lint-'))
