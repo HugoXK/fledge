@@ -98,6 +98,21 @@ function reviewInstructions(context: RunnerContext): string[] {
   ]
 }
 
+// #163: when the dispatch itself fails, the bridge is the component that did not
+// answer, and the classifier can only read the string stored on the job. Name
+// the target here and keep the transport cause inside the message (#55: the
+// original error is never hidden or rewritten). The path and the host are enough
+// to identify the target: the bridge URL can carry a token in its query or its
+// userinfo, and this message is stored on the job and rendered on the job page.
+function bridgeEndpoint(url: string): string {
+  try {
+    const parsed = new URL(url)
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`
+  } catch {
+    return 'the configured bridge'
+  }
+}
+
 export class FlyBotRunner implements Runner {
   readonly name = 'flybot'
 
@@ -159,8 +174,16 @@ export class FlyBotRunner implements Runner {
       })
     } catch (error) {
       incCounter('fledge_bridge_requests_total', { status: 0 }, 1, 'FlyBot bridge requests')
-      endSpan(span, 'ERROR', error instanceof Error ? error.message : String(error), { status: 0 })
-      throw error
+      const cause = error instanceof Error ? error.message : String(error)
+      endSpan(span, 'ERROR', cause, { status: 0 })
+      // #163: a bridge that is down (reboot, container restart, wrong port or
+      // host) used to reach the job as a bare transport error, so the page said
+      // "unknown — retry once" and the metrics counted an outage as a defect.
+      const endpoint = bridgeEndpoint(bridgeUrl)
+      if (error instanceof Error && error.name === 'TimeoutError') {
+        throw new Error(`FlyBot bridge timed out after 20s: ${cause}`)
+      }
+      throw new Error(`FlyBot bridge unreachable (${endpoint}): ${cause}`)
     }
     const text = await response.text()
     incCounter('fledge_bridge_requests_total', { status: response.status }, 1, 'FlyBot bridge requests')
