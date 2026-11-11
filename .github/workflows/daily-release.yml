@@ -90,6 +90,8 @@ jobs:
 
       - name: Plan
         id: plan
+        env:
+          RELEASE_AT: ${{ github.run_started_at }}
         run: |
           set -euo pipefail
           # The projection from state to planner input lives in the tested module.
@@ -102,19 +104,20 @@ jobs:
             import { planRelease } from "./scripts/release-plan.mjs"
             import { plannerInput } from "./scripts/lib/release-state.mjs"
             const state = JSON.parse(readFileSync("/tmp/state.json", "utf8"))
-            const input = plannerInput(state)
+            const input = { ...plannerInput(state), releaseAt: process.env.RELEASE_AT ?? new Date().toISOString() }
             const result = planRelease(input)
             const plan = {
               shouldRelease: result.shouldRelease,
               nextVersion: result.nextVersion,
+              bump: result.bump,
               total: result.total,
               features: result.features,
               fragments: result.fragments,
               reason: result.reason,
             }
             writeFileSync("/tmp/plan.json", `${JSON.stringify(plan)}\n`)
-            appendFileSync(process.env.GITHUB_OUTPUT, `shouldRelease=${result.shouldRelease}\nnextVersion=${result.nextVersion}\ntotal=${result.total}\nfeatures=${result.features}\nfragments=${result.fragments}\nreason=${result.reason}\n`)
-            appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Daily minor release\n\n- merged PRs since ${input.lastTag || "(no tag)"}: **${result.total}** (need 10)\n- features: **${result.features}** (need 5)\n- fragments: **${result.fragments}** (need 1)\n- next version: **${result.nextVersion}**\n- decision: **${result.shouldRelease ? "release" : "no release"}** — ${result.reason}\n\n`)
+            appendFileSync(process.env.GITHUB_OUTPUT, `shouldRelease=${result.shouldRelease}\nnextVersion=${result.nextVersion}\nbump=${result.bump}\ntotal=${result.total}\nfeatures=${result.features}\nfragments=${result.fragments}\nreason=${result.reason}\n`)
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Daily minor release\n\n- merged PRs since ${input.lastTag || "(no tag)"}: **${result.total}** (need 10)\n- features: **${result.features}** (need 5)\n- fragments: **${result.fragments}** (need 1)\n- next version: **${result.nextVersion}** (${result.bump})\n- decision: **${result.shouldRelease ? "release" : "no release"}** — ${result.reason}\n\n`)
             const rejected = state.openPrRejected
             if (rejected !== null && rejected !== undefined) {
               appendFileSync(process.env.GITHUB_STEP_SUMMARY, `> Notice: ignored pull request #${String(rejected.number)} "${String(rejected.title)}" from ${String(rejected.repo || "an unknown repository")} — a release-shaped title outside this repository is not the release PR and does not block the night.\n\n`)

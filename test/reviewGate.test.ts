@@ -57,6 +57,9 @@ interface FakeState {
   headRepo: string
   baseRepo: string
   packageVersion: string
+  tags: string[]
+  tagTimes: Record<string, string>
+  headCommittedAt: string
 }
 
 function initialState(): FakeState {
@@ -77,6 +80,9 @@ function initialState(): FakeState {
     headRepo: 'o/r',
     baseRepo: 'o/r',
     packageVersion: '0.3.0',
+    tags: [],
+    tagTimes: {},
+    headCommittedAt: '',
   }
 }
 
@@ -111,6 +117,19 @@ async function withFakeGitHub(state: FakeState, body: (env: Record<string, strin
     }
     if (path === '/repos/o/r/contents/package.json') {
       json(response, 200, { encoding: 'base64', content: Buffer.from(JSON.stringify({ name: 'fledge', version: state.packageVersion }), 'utf8').toString('base64') })
+      return
+    }
+    if (path === '/repos/o/r/git/matching-refs/tags/v') {
+      json(response, 200, state.tags.map((tag) => ({ ref: `refs/tags/${tag}`, object: { sha: `sha-${tag}`, type: 'tag' } })))
+      return
+    }
+    const tagCommit = /^\/repos\/o\/r\/commits\/(v[0-9.]+)$/.exec(path)
+    if (tagCommit !== null) {
+      json(response, 200, { sha: tagCommit[1], commit: { committer: { date: state.tagTimes[tagCommit[1] ?? ''] ?? '' } } })
+      return
+    }
+    if (path === `/repos/o/r/commits/${state.sha}`) {
+      json(response, 200, { sha: state.sha, commit: { committer: { date: state.headCommittedAt } } })
       return
     }
     if (path === `/repos/o/r/commits/${state.sha}/check-runs`) {
@@ -239,6 +258,48 @@ test('a same-repo release PR for the computed next still earns the T0 exemption'
     const result = await runScript(gateScript, ['--pr', '7'], env)
     assert.equal(result.code, 0, result.stderr)
     assert.match(result.stdout, /review-gate: PASS/)
+  })
+})
+
+test('a same-week release PR for the patch still earns the T0 exemption', async () => {
+  const state = initialState()
+  state.packageVersion = '0.3.0'
+  state.title = 'release: v0.3.1'
+  state.branch = 'release/v0.3.1'
+  state.tags = ['v0.3.0']
+  state.tagTimes = { 'v0.3.0': '2026-11-09T16:23:33Z' }
+  state.headCommittedAt = '2026-11-10T14:30:00Z'
+  state.files = [
+    'CHANGELOG.md',
+    { filename: 'package.json', patch: '@@ -1,2 +1,2 @@\n-  "version": "0.3.0",\n+  "version": "0.3.1",\n' },
+    { filename: 'package-lock.json', patch: '@@ -1,2 +1,2 @@\n-  "version": "0.3.0",\n+  "version": "0.3.1",\n' },
+    { filename: 'docker-compose.yml', patch: '@@ -1,2 +1,2 @@\n-    image: fledge:0.3.0\n+    image: fledge:0.3.1\n' },
+  ]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /T0 at /)
+  })
+})
+
+test('a same-week minor release PR is not the mechanical next and needs its PASS', async () => {
+  const state = initialState()
+  state.packageVersion = '0.3.0'
+  state.title = 'release: v0.4.0'
+  state.branch = 'release/v0.4.0'
+  state.tags = ['v0.3.0']
+  state.tagTimes = { 'v0.3.0': '2026-11-09T16:23:33Z' }
+  state.headCommittedAt = '2026-11-10T14:30:00Z'
+  state.files = [
+    'CHANGELOG.md',
+    { filename: 'package.json', patch: '@@ -1,2 +1,2 @@\n-  "version": "0.3.0",\n+  "version": "0.4.0",\n' },
+    { filename: 'package-lock.json', patch: '@@ -1,2 +1,2 @@\n-  "version": "0.3.0",\n+  "version": "0.4.0",\n' },
+    { filename: 'docker-compose.yml', patch: '@@ -1,2 +1,2 @@\n-    image: fledge:0.3.0\n+    image: fledge:0.4.0\n' },
+  ]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /no conclusion at /)
   })
 })
 
