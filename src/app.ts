@@ -1828,7 +1828,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/instance/stop', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     await instances.stop(repo.id)
-    await jobs.cancelRepoJobs(repo.id, 'FlyBot 实例已停止')
+    await jobs.cancelRepoJobs(repo.id, 'FlyBot 实例已停止', 'BRIDGE_ERROR')
     store.audit(viewer.user.id, 'flybot.instance.stopped', `${repo.owner}/${repo.name}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例已停止。')}`)
   })
@@ -1929,7 +1929,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       store.audit(viewer.user.id, 'repo.models.changed', `${repo.owner}/${repo.name} models=${requestedModels.length} default=${effectiveDefault || 'none'}`)
     }
     if (repo.enabled === 1 && body.enabled !== '1') {
-      await jobs.cancelRepoJobs(repo.id, '仓库已停用')
+      await jobs.cancelRepoJobs(repo.id, '仓库已停用', 'REPO_DISABLED')
     }
     if (goalChanged) {
       await instances.ensurePlaybook(repo.id).catch((error) => {
@@ -1962,7 +1962,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/disable', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     store.updateRepo(repo.id, { enabled: 0, auto_iterate: 0 })
-    await jobs.cancelRepoJobs(repo.id, '仓库已停用')
+    await jobs.cancelRepoJobs(repo.id, '仓库已停用', 'REPO_DISABLED')
     store.audit(viewer.user.id, 'repo.disabled', `${repo.owner}/${repo.name}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('仓库已停用，任务不会再运行。')}`)
   })

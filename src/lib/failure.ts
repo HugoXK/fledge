@@ -93,13 +93,74 @@ const FAILURES: Record<FailureKind, FailureInfo> = {
 
 const ORDER: FailureKind[] = ['quota', 'credential', 'stage_evidence', 'stalled', 'timeout', 'bridge', 'review', 'workflow', 'github', 'model', 'unknown']
 
+// #231: the job service writes the failure sentence itself, so the text in
+// `jobs.error` is in the writer's language. The stable vocabulary is the code the
+// service already answers with (`REPO_CREDENTIAL_INVALID`, `JOB_ACTIVE`,
+// `STAGE_EVIDENCE_MISSING`); persisting it beside the text lets the read path build
+// the sentence in the reader's language. The regex classifier below stays for rows
+// written before the column existed — a new failure never depends on it.
+export const FAILURE_CODES = [
+  'REPO_CREDENTIAL_INVALID',
+  'JOB_STALLED',
+  'JOB_LEASE_EXPIRED',
+  'JOB_TIMEOUT',
+  'QUOTA_EXHAUSTED',
+  'JOB_BUDGET_EXCEEDED',
+  'DUPLICATE_WORK',
+  'STAGE_EVIDENCE_MISSING',
+  'BRIDGE_ERROR',
+  'REPO_DISABLED',
+] as const
+
+export type FailureCode = (typeof FAILURE_CODES)[number]
+
+export const FAILURE_CODE_KIND: Record<FailureCode, FailureKind> = {
+  REPO_CREDENTIAL_INVALID: 'credential',
+  JOB_STALLED: 'stalled',
+  JOB_LEASE_EXPIRED: 'stalled',
+  JOB_TIMEOUT: 'timeout',
+  QUOTA_EXHAUSTED: 'quota',
+  JOB_BUDGET_EXCEEDED: 'quota',
+  DUPLICATE_WORK: 'workflow',
+  STAGE_EVIDENCE_MISSING: 'stage_evidence',
+  BRIDGE_ERROR: 'bridge',
+  REPO_DISABLED: 'workflow',
+}
+
+const FAILURE_SENTENCES: Record<FailureCode, [string, string]> = {
+  REPO_CREDENTIAL_INVALID: ['GitHub token 权限不足，请重新授权这个仓库。', 'The GitHub token for this repository lacks permission; re-authorize the repository and retry.'],
+  JOB_STALLED: ['任务停滞：长时间没有心跳，已被判定为停滞。', 'The job stalled: it stopped sending heartbeats.'],
+  JOB_LEASE_EXPIRED: ['任务租约过期：worker 未续约。', 'The job lease expired: its worker stopped renewing it.'],
+  JOB_TIMEOUT: ['任务超时：没有在时限内回报。', 'The job timed out: it did not report back before its deadline.'],
+  QUOTA_EXHAUSTED: ['平台额度已用完，请在 Settings → Model 配置自己的模型 API 后重试。', 'The platform quota is used up; add your own model API in Settings → Model, then retry.'],
+  JOB_BUDGET_EXCEEDED: ['任务成本超过这个仓库的单任务预算。', "The job cost more than this repository's single-job budget."],
+  DUPLICATE_WORK: ['已有 PR 覆盖这个 issue。', 'A pull request already covers this issue.'],
+  STAGE_EVIDENCE_MISSING: ['任务缺少阶段证据，已停止。', 'The job is missing stage evidence, so it stopped.'],
+  BRIDGE_ERROR: ['FlyBot 实例不可用，任务无法启动。', 'The FlyBot instance for this repository is unavailable.'],
+  REPO_DISABLED: ['这个仓库已停用。', 'This repository is disabled.'],
+}
+
+export function errorCodeOf(value: string | null | undefined): FailureCode | null {
+  const code = String(value ?? '').trim()
+  return (FAILURE_CODES as readonly string[]).includes(code) ? (code as FailureCode) : null
+}
+
+export function failureSentence(t: (zh: string, en: string) => string, code: string | null | undefined): string | null {
+  const known = errorCodeOf(code)
+  if (known === null) return null
+  const sentence = FAILURE_SENTENCES[known]
+  return t(sentence[0], sentence[1])
+}
+
 export function failureLabel(t: (zh: string, en: string) => string, kind: FailureKind | string): string {
   const info = FAILURES[kind as FailureKind] ?? FAILURES.unknown
   return t(info.label[0], info.label[1])
 }
 
-export function classifyFailure(job: Pick<JobRow, 'status' | 'error' | 'kind'>): FailureInfo | null {
+export function classifyFailure(job: Pick<JobRow, 'status' | 'error' | 'kind'> & { error_code?: string | null }): FailureInfo | null {
   if (job.status !== 'failed' && job.status !== 'quota_exhausted') return null
+  const code = errorCodeOf(job.error_code)
+  if (code !== null) return FAILURES[FAILURE_CODE_KIND[code]]
   const text = String(job.error ?? '').toLowerCase()
   if (/quota|额度|预算|budget|fledge_quota_exhausted/.test(text)) return FAILURES.quota
   if (/token|权限|credential|401|403|re-authoriz|authorization/.test(text)) return FAILURES.credential
@@ -114,7 +175,7 @@ export function classifyFailure(job: Pick<JobRow, 'status' | 'error' | 'kind'>):
   return FAILURES.unknown
 }
 
-export function failureBreakdown(jobs: Array<Pick<JobRow, 'status' | 'error' | 'kind'>>): Array<{ kind: FailureKind; count: number }> {
+export function failureBreakdown(jobs: Array<Pick<JobRow, 'status' | 'error' | 'kind'> & { error_code?: string | null }>): Array<{ kind: FailureKind; count: number }> {
   const counts = new Map<FailureKind, number>()
   for (const job of jobs) {
     const info = classifyFailure(job)

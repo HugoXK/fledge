@@ -383,6 +383,20 @@ The admin metrics page aggregates the same categories for the selected window.
 The classifier lives in `src/lib/failure.ts`; it does not change job state or
 hide the original error.
 
+A failure also carries a stable **code** in `jobs.error_code`, written by the job
+service where the failure happens: `REPO_CREDENTIAL_INVALID`, `JOB_STALLED`,
+`JOB_LEASE_EXPIRED`, `JOB_TIMEOUT`, `QUOTA_EXHAUSTED`, `JOB_BUDGET_EXCEEDED`,
+`DUPLICATE_WORK`, `STAGE_EVIDENCE_MISSING`, `BRIDGE_ERROR`, `REPO_DISABLED`. The
+code, not the text, decides the sentence a reader sees: `failureSentence`
+(`src/lib/failure.ts`) builds it in the reader's language for the job-page
+summary, the dashboard summary and the notification list, and the category above
+is the code's kind. The regex classifier stays only for rows written before the
+column existed. `localizeMessage`'s exact-match dictionary remains the fallback
+for a message no code covers — which is why a new failure adds a code rather than
+a dictionary row. The raw text stays in `jobs.error`, under "Technical detail"
+and in the notification row, for operators and for the API. The choice is
+recorded in `docs/decisions/0009-job-failure-codes.md`.
+
 ### Enforcement: path guard, evidence verification and merge readiness
 
 Plan path constraints are now enforced, not only included in the prompt. After a
@@ -644,14 +658,16 @@ not controlled by the digest/job switches.
 
 A notification row keeps the `kind` and stores the `message` exactly as the
 producer wrote it, so `src/jobs/service.ts` and `src/gateway/notifier.ts` write
-Chinese while the ops alerts in `src/db.ts` write English. The dashboard is the
-only reader, and it knows the reader's locale at render time: `noticeBlock`
-(`src/views/pages.ts`) passes the stored sentence through
-`localizeNotification` (`src/i18n.ts`), which rebuilds the sentence in the
-reader's language from the template it matches — both directions, with the
-interpolated job id, repo label, minutes and similar facts kept as data. A
-message no template knows, including every row written before this change,
-renders verbatim. Nothing is rewritten in the database and no column was added.
+Chinese while the ops alerts in `src/db.ts` write English. When the producer has
+one, the row also keeps the failure `code` (`notifications.code`). The dashboard
+is the only reader, and it knows the reader's locale at render time: `noticeBlock`
+(`src/views/pages.ts`) rebuilds a job-failure sentence from the `code` with
+`failureSentence`, and otherwise passes the stored sentence through
+`localizeNotification` (`src/i18n.ts`), which rebuilds it in the reader's
+language from the template it matches — both directions, with the interpolated
+job id, repo label, minutes and similar facts kept as data. A message no code and
+no template knows, including every row written before those existed, renders
+verbatim. Nothing is rewritten in the database.
 
 ### Release surface
 
