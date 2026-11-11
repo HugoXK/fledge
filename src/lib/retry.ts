@@ -24,7 +24,8 @@ export function retryDecision(kind: FailureKind | undefined, attempt: number, ma
 
 // A review is idempotent only while it has produced no result: retrying is cheap,
 // but a second review that could post another COMMENT set is not. The caller
-// refuses to schedule when the job already recorded a review score or summary.
+// refuses to schedule when the job already recorded a review_score; summary is
+// the progress line, not a result, so it is not a reason to refuse.
 export function reviewRetryDecision(kind: FailureKind | undefined, attempt: number): RetryDecision {
   if (kind === undefined) return { retry: false, delayMs: 0, reason: 'no failure category' }
   if (!REVIEW_TRANSIENT.has(kind)) return { retry: false, delayMs: 0, reason: `${kind} is not a transient review failure` }
