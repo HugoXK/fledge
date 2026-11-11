@@ -222,7 +222,11 @@ otherwise). Squash merges mean a secret added and then deleted on a branch is in
 neither the head tree nor the pull request diff, and only the range still holds
 it. The config is `.gitleaks.toml`; it deliberately carries no `paths`
 allowlist, because that suppresses every finding in a file, including a real
-token pasted later.
+token pasted later. The one reviewed exception is `.gitleaksignore`, whose
+single line is a fingerprint — one commit, one path, one rule, one line — for
+the synthetic fixture in the initial commit that #185 removed from the tree; a
+token committed afterwards is still a finding, which is why the exception names
+a commit rather than a path.
 
 `coverage` enforces a line floor with a number: `test:coverage` in
 `package.json` (`--test-coverage-lines=84`, measured 84.59% at the commit that
@@ -247,6 +251,13 @@ a fifth while working beside them. The same step runs on a push to `main`, so ne
 highs cannot accumulate there either. Changing the baseline is a reviewed commit,
 and the PR that does it says why the alert is accepted; a line that drifts for an
 unrelated reason fails loudly rather than being silently re-labelled.
+`security-severity` is read whether the SARIF writes it as a number or a string,
+and rules a query pack keeps under `tool.extensions[].rules` are resolved by
+`ruleId` and `ruleIndex`. A security result whose severity cannot be read — and
+a result whose rule cannot be resolved — counts as high; a resolved quality
+query keeps its analysis level. Every verdict is printed with
+`parsed N result(s), H high/critical` so a blind run can be told apart from a
+clean one; an empty parse exits 1.
 
 Every action a workflow runs is pinned to a 40-hex commit with the tag it came
 from in a trailing comment, and the `action-pins` job fails the build on a
