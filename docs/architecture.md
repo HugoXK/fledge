@@ -99,6 +99,11 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   (`.fine-link`) and the class carries the floor. Text fields, selects and
   textareas are 16px below 641px, the size below which iOS zooms a focused
   field.
+- **Dashboard job filters** (`src/lib/jobFilters.ts`): `/dashboard` accepts
+  `repo`, `status` and `kind` as GET parameters and applies them in SQL, so the
+  count, the page and the pagination links describe the same list; a value the
+  account cannot use is dropped rather than turned into an error page, and the
+  filter lives in the URL rather than in a client store.
 - **Redirect targets**: every `next=` / `returnTo` value goes through one helper
   that returns a path on this site or the fallback. It validates the parsed
   result, not the input, so a value that is a plain path before parsing and
