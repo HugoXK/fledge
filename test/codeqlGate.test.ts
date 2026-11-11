@@ -104,11 +104,11 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // before an anchor refreshes that line (see the baseline note). The pins below
   // stay exact so a silent re-label is still a failing test.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|2934',
-    'js/missing-rate-limiting|src/app.ts|452',
-    'js/missing-rate-limiting|src/app.ts|487',
-    'js/missing-rate-limiting|src/app.ts|497',
-    'js/missing-rate-limiting|src/app.ts|507',
+    'js/missing-rate-limiting|src/app.ts|2950',
+    'js/missing-rate-limiting|src/app.ts|468',
+    'js/missing-rate-limiting|src/app.ts|503',
+    'js/missing-rate-limiting|src/app.ts|513',
+    'js/missing-rate-limiting|src/app.ts|523',
     'js/missing-rate-limiting|src/gateway/gateway.ts|125',
     'js/missing-rate-limiting|src/gateway/gateway.ts|150',
   ])
