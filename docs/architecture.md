@@ -386,7 +386,14 @@ a concrete next step: re-authorize GitHub, open Settings, refresh the repository
 or retry. The raw error stays available under "Technical detail" for operators.
 The admin metrics page aggregates the same categories for the selected window.
 The classifier lives in `src/lib/failure.ts`; it does not change job state or
-hide the original error.
+hide the original error. A dispatch that never reached the bridge is stored as a
+`FlyBot bridge ...` error by `src/jobs/flybot.ts`, so it lands in `bridge` rather
+than `unknown`: that message is the only place the failing component is known,
+and it keeps the transport cause inside it. Because the preserved cause can
+itself name a timeout, the `bridge` pattern is matched before `timeout` — a
+dispatch that the bridge did not answer is an instance problem, not a task that
+ran too long. The bridge URL is stored by origin and path only, so a token in
+its query or userinfo never reaches the job row or the job page.
 
 ### Enforcement: path guard, evidence verification and merge readiness
 
