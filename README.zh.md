@@ -27,8 +27,8 @@ Fledge 是一个自托管的小平台，做的是**可审查的仓库成长**。
 bridge 把任务交给 FlyBot 代理；代理先写失败测试，做最小修复，开一个 PR，再回调
 平台。Fledge 不会推默认分支、不会自动合并、也不会在本地执行用户仓库。
 
-> **状态：** 最新发布是 `v0.2.4`：<https://fledge.hugoxk.online/>。
-> 当前使用 GitHub token 登录（OAuth App 尚未配置）。文档在
+> **状态：** 最新发布是 `v0.3.1`（2026-11-11）：<https://fledge.hugoxk.online/>。
+> 周一晚发 minor，周内后续发布都是 patch。GitHub token 登录会一直可用，直到生产 OAuth App 配置完成。文档在
 > <https://fledge-docs.hugoxk.online/docs/>；项目主页和 Guide 在
 > <https://hugoxk.online/fledge/>。
 
@@ -39,6 +39,7 @@ bridge 把任务交给 FlyBot 代理；代理先写失败测试，做最小修�
 - [工作方式](#工作方式)
 - [架构](#架构)
 - [文档](#文档)
+- [发布与文档同步](#发布与文档同步)
 - [快速开始](#快速开始)
 - [配置](#配置)
 - [额度](#额度)
@@ -109,7 +110,8 @@ Fledge 是幼鸟长齐飞羽、离巢试飞的那一刻——不是因为被推�
 - **一个账号多个仓库**：每个仓库有独立目标、节奏（手动，15 分钟到 30 天）、
   启用状态和上次状态。间隔是最小运行间隔，不是 PR/issue 数量上限。
 - **任务状态**：`queued → running → succeeded | failed | cancelled | paused | quota_exhausted`。
-- **工作项与门禁**：工作项覆盖 triage 到 merge，关联 issue/PR/job；可选“先出计划、批准后执行”并限制允许/禁止路径；任务支持暂停/恢复/取消；任务创建前检查目标分支，有活跃工作项时跳过定时任务。
+- **工作项与门禁**：工作项覆盖 triage 到 merge，关联 issue/PR/job；可选“先出计划、批准后执行”并限制允许/禁止路径；任务支持暂停/恢复/取消；任务创建前检查目标分支。开放工作项会改变下一轮定时任务继续做什么，但不会阻塞到期仓库。
+- **定时任务连续性**：下一轮任务会带上最近三次运行摘要和开放工作项的 bounded carry-over；调度器优先完成/审核已有工作，并把每轮产出分类为 `pr`、`issue`、`review`、`zero`、`meta`、`failed`；盘点类 issue 不计为产品产出。
 - **每仓库 FlyBot**：每个仓库一个独立容器、独立 bridge/模型代理和团队
   （Chief、Lead、Product、Test、Security、Reviewer、2 个 Dev）。共享的运营方
   FlyBot 永远不接用户任务。
@@ -117,6 +119,23 @@ Fledge 是幼鸟长齐飞羽、离巢试飞的那一刻——不是因为被推�
   用任务级模型 token 调模型，开 PR，再签名回调。
 - **Mock runner**：本地演示和测试不需要网络。
 - **超时/陈旧任务处理**：一个仓库同时只跑一个任务，全局有并发上限。
+
+### 审核、交付与发布
+
+- **按 tip 审核**：required `review-gate` 读取精确 head SHA 上最新的结论。T2/T3 需要由非 tip 作者身份的 reviewer 给出带真实 `Ran:` 命令的 PASS；新 commit 会让旧 PASS 作废。
+- **从 diff 计算风险等级**：T0/T1 绿 `ci-ok` 即入队；T2/T3 还需要同 tip PASS。等级按全部改动路径计算，不看标签。
+- **自动合并显式开启**：只有 maintainer 能开。Fledge 会独立检查 PR 处于 open/mergeable、required checks 全绿、没有 changes requested、path guard 和测试证据通过、同一 PR 最新 iterate 任务成功，才执行 squash merge。
+- **机械发布**：夜间工作流计算下一版本、推一个 `release/v<version>` 分支并开一个机械发布 PR。每周第一个发布 bump minor，同周后续发布 bump patch。合并后 tag job 写 annotated tag 并触发 publish；发布镜像带 SBOM 和 build-provenance attestation。
+- **重复工作 preflight**：iterate 任务开分支前会检查上游 open PR，已有 PR 覆盖时拒绝重复工作。
+
+### 运维
+
+- **健康与就绪**：`/healthz` 报版本、commit 和构建时间；`/readyz` 报数据库和每个仓库实例。
+- **指标与 trace**：Prometheus `/metrics`（Bearer token、常量时间比较）和可选 OTLP/HTTP trace 覆盖 HTTP、任务、重试、合并、GitHub 和 bridge。`npm run slo:report` 对安静窗口输出 `n/a`，不伪造 0。
+- **告警与 webhook 投递**：运营告警进站内/可选 webhook，带冷却去重；失败的 GitHub webhook delivery 在 admin 控制台可见，可单次重试。
+- **备份与恢复**：`npm run db:backup` 在线备份 SQLite；restore drill 会拒绝没有应用 schema 的副本，并在 CI 每次改动时运行。
+- **实例健康与会话对齐**：健康检查探测 DSH `state`，空闲实例 DSH 死掉会重启，DSH 恢复后实例回到 ready，派发前刷新团队 session ID。
+- **GitHub API 预算**：按 token 的请求预算和 `Retry-After` 处理；webhook 按 delivery 去重。
 
 ### 模型与额度
 
@@ -173,7 +192,17 @@ flowchart LR
 用户 Guide 和参考在 <https://fledge-docs.hugoxk.online/docs/>（镜像：
 <https://hugoxk.online/fledge/docs/>）。它们由
 [HugoXK/fledge-docs](https://github.com/HugoXK/fledge-docs) 从本仓库的
-`README.md` 和 `docs/` 自动构建。
+`README.md`、`README.zh.md` 和 `docs/` 自动构建。
+
+## 发布与文档同步
+
+夜间发布流程在 **Asia/Shanghai 22:30** 运行：计算下一版本、推
+`release/v<version>`、开一个机械发布 PR。每周第一个发布 bump minor，同周后续
+发布 bump patch。发布 PR 合并后，tag job 写 annotated tag 并触发 publish；
+发布镜像带 SBOM 和 build-provenance attestation。
+
+`README.md`、`README.zh.md` 和 `docs/` 是文档站的源。用户可见行为变化时，发布
+PR 同步更新这些文件；文档站每次从本仓库重新构建，不维护一份固定副本。
 
 ## 快速开始
 
@@ -299,7 +328,7 @@ curl http://localhost:8080/v1/chat/completions \
 
 ```sh
 npm run check        # lint + typecheck + tests + build
-npm test             # 7 个 node:test 套件，假 GitHub/模型/SMTP
+npm test             # 完整 node:test 套件（650+ 测试，假 GitHub/模型/SMTP）
 npm run dev          # watch
 npm run db:backup
 ```
@@ -349,8 +378,10 @@ issue → claim → worktree → 红测试 → 修 → gates → PR
 |---|---|
 | `v0.1` | OAuth + 审批邮件、多仓库、加密 token、额度网关、自带模型、Mock/FlyBot runner、Admin/审计 |
 | `v0.2` | GitHub App、PR 反馈闭环（红 CI/review → 追加任务）、任务取消、路径守卫 |
-| `v0.3` | 按仓库预算、团队角色、模型路由、用量导出 |
-| `v1.0` | Postgres、worker pool、tracing/metrics、外部安全评审 |
+| `v0.3` | 品牌化仓库工作区、发布自动化、tip 审核门、运营指标与告警（`v0.3.1` 已发布） |
+| `v0.4` | 计划先行门禁、durable checkpoint、路径/审批守卫、GitHub App 反馈 |
+| `v0.5` | 证据与学习：任务时间线、交付指标、shadow 评估、playbook 晋级 |
+| `v1.0` | Postgres 选项、worker pool、外部安全评审、审计保留 |
 
 完整列表和开放问题见 [docs/roadmap.md](docs/roadmap.md)。
 
@@ -373,7 +404,7 @@ AES-256-GCM 加密，密钥是 `TOKEN_ENCRYPTION_KEY`；只在任务运行时解
 [docs/deploy.md](docs/deploy.md)。
 
 **支持 GitLab 吗？**
-v0.1 不支持。GitHub 客户端隔离在 `src/repos/`，第二个 provider 在路线图上。
+v0.3 不支持。GitHub 客户端隔离在 `src/repos/`，第二个 provider 在路线图上。
 
 **为什么用 `node:sqlite`？**
 避免小服务引入原生构建依赖。封装只有 `src/db.ts` 一个文件，以后换 Postgres 很局部。

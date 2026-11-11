@@ -29,8 +29,9 @@ through a signed bridge; the agent writes a failing test, makes the smallest
 correct fix, opens one pull request, and reports back. Fledge never pushes to the
 default branch, does not merge by default, and never runs a user repository itself.
 
-> **Status:** `v0.2.4` is the latest release at <https://fledge.hugoxk.online/>.
-> The GitHub token login fallback is active (the OAuth App is not configured yet). Documentation is at
+> **Status:** `v0.3.1` is the latest release (2026-11-11) at <https://fledge.hugoxk.online/>.
+> A weekly minor release goes out on Monday night; later releases in the same week are patch releases.
+> The GitHub token login fallback is active until the production OAuth App is configured. Documentation is at
 > <https://fledge-docs.hugoxk.online/docs/>; the project homepage and guide are at
 > <https://hugoxk.online/fledge/>.
 
@@ -41,6 +42,7 @@ default branch, does not merge by default, and never runs a user repository itse
 - [How it works](#how-it-works)
 - [Architecture](#architecture)
 - [Documentation](#documentation)
+- [Releases and docs](#releases-and-docs)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Quota](#quota)
@@ -122,7 +124,8 @@ own improvements. See [docs/decisions/0001-name.md](docs/decisions/0001-name.md)
   The interval is the minimum gap between runs; it does not cap the number of
   PRs or issues the repository can produce.
 - **Job lifecycle**: `queued → running → succeeded | failed | cancelled | paused | quota_exhausted`.
-- **Work items and gates**: triage-to-merge work items linked to issues, PRs and jobs; optional plan-first approval with allowed/forbidden paths; per-job pause/resume/cancel; target-branch preflight and active-work-item dedupe.
+- **Work items and gates**: triage-to-merge work items linked to issues, PRs and jobs; optional plan-first approval with allowed/forbidden paths; per-job pause/resume/cancel; target-branch preflight. An open work item changes what the next scheduled run continues; it never blocks a due repository.
+- **Continuity across scheduled runs**: the next job receives a bounded carry-over block with the last three run digests and open work items. The scheduler prefers finishing or reviewing existing work, and classifies each run as `pr`, `issue`, `review`, `zero`, `meta` or `failed`; a meta inventory issue is not counted as product work.
 - **Per-repository FlyBot**: each repository gets a separate container, a
   private bridge/model proxy and a team (Chief, Lead, Product, Test, Security,
   Reviewer, two Devs). The shared operator FlyBot is never used for user jobs.
@@ -131,6 +134,23 @@ own improvements. See [docs/decisions/0001-name.md](docs/decisions/0001-name.md)
   with a signature.
 - **Mock runner** for local demos and tests; no network required.
 - **Timeout and stale-job handling**, one active job per repo, a global cap.
+
+### Review, delivery and release
+
+- **Review at the tip**: the required `review-gate` check reads the newest verdict at the exact head SHA. A T2/T3 change needs a PASS with a real `Ran:` command from a reviewer identity other than the tip author; a new commit voids the PASS.
+- **Risk tiers from the diff**: T0/T1 merge on green `ci-ok`; T2/T3 need the tip PASS. The tier is computed from every changed path, never from a label.
+- **Opt-in auto-merge**: only a maintainer can enable it. Fledge independently verifies the PR is open and mergeable, every required check is green, no review requests changes, the path guard and test evidence pass, and the newest iterate job succeeded before it squash-merges.
+- **Mechanical releases**: the nightly workflow plans the next version, pushes one `release/v<version>` branch and opens one mechanical pull request. The first release of an ISO week bumps the minor; later releases in that week bump the patch. After merge, the tag job creates the annotated tag and dispatches the publish run; the release image carries an SBOM and a build-provenance attestation.
+- **Duplicate-work preflight**: before an iterate job opens a branch, it checks the upstream open PRs and refuses work already covered by an open pull request.
+
+### Operations
+
+- **Health and readiness**: `/healthz` reports the version, commit and build time; `/readyz` reports the database and every per-repository instance.
+- **Metrics and traces**: Prometheus `/metrics` (bearer token, constant-time compare) and optional OTLP/HTTP traces cover HTTP, jobs, retries, merges, GitHub and the bridge. `npm run slo:report` prints `n/a` for a quiet window instead of a confident zero.
+- **Alerts and webhook delivery**: operational alerts are delivered in-app and to the optional webhook with cooldown dedupe; a failed GitHub webhook delivery is visible in the admin console and can be retried once.
+- **Backup and restore**: `npm run db:backup` takes an online SQLite backup; the restore drill refuses a copy with no application schema and runs in CI on every change.
+- **Instance health and session reconciliation**: the health sweep probes DSH `state`, restarts an idle instance whose DSH died, recovers a failed instance when DSH answers again, and refreshes stored team session IDs before dispatch.
+- **GitHub API budget**: a per-token request budget with `Retry-After` handling; webhooks are delivery-deduped.
 
 ### Model and quota
 
@@ -190,7 +210,20 @@ Detailed design: [docs/architecture.md](docs/architecture.md) · trust boundarie
 The user guide and reference live at
 <https://fledge-docs.hugoxk.online/docs/> (mirrored at
 <https://hugoxk.online/fledge/docs/>). They are built from this repository's
-`README.md` and `docs/` by [HugoXK/fledge-docs](https://github.com/HugoXK/fledge-docs).
+`README.md`, `README.zh.md` and `docs/` by [HugoXK/fledge-docs](https://github.com/HugoXK/fledge-docs).
+
+## Releases and docs
+
+The nightly release routine runs at **22:30 Asia/Shanghai**. It plans the next
+version, pushes `release/v<version>` and opens one mechanical pull request. The
+first release of an ISO week bumps the minor; every later release in the same
+week bumps the patch. After the release PR merges, the tag job writes the
+annotated tag and dispatches the publish run; the published image carries an SBOM
+and a build-provenance attestation.
+
+`README.md`, `README.zh.md` and `docs/` are the source for the documentation site.
+A release that changes user-facing behaviour updates them in the same pull
+request, and the docs site rebuilds from this repository instead of a pinned copy.
 
 ## Quick start
 
@@ -328,7 +361,7 @@ curl http://localhost:8080/v1/chat/completions \
 
 ```sh
 npm run check        # lint + typecheck + tests + build
-npm test             # 7 node:test suites with fake GitHub/model/SMTP
+npm test             # the full node:test suite (650+ tests, fake GitHub/model/SMTP)
 npm run dev          # watch mode
 npm run db:backup
 ```
@@ -384,9 +417,10 @@ PASS at the same tip, with a real `Ran:` command.
 | `v0.2.2` | Self-selected repository roles, maintainer-gated review and opt-in auto-merge |
 | `v0.2.3` | Work items, plan approval, upstream preflight, job controls, branch-protection gate, admin support/search, repo budgets, notification webhook |
 | `v0.2.4` | Provider → models, per-bot models, repository lifecycle, PR delivery, issue commands, live inbox, Product/Test stage sessions |
-| `v0.3` | Branded per-repo agent workspace (Fledge shell, powered by FlyBot), interactive takeover |
-| `v0.4` | Plan-first gates, durable checkpoints, per-repo budgets, automatic attribution/audit |
-| `v1.0` | Postgres, worker pool, tracing/metrics, external security review |
+| `v0.3` | Branded per-repo workspace, release automation, tip review gate, operational metrics and alerts (shipped in `v0.3.1`) |
+| `v0.4` | Plan-first gates, durable checkpoints, path/approval guards, GitHub App feedback |
+| `v0.5` | Evidence and learning: job timelines, delivery metrics, shadow evaluation, playbook promotion |
+| `v1.0` | Postgres option, worker pool, external security review, audit retention |
 
 Full list and open questions: [docs/roadmap.md](docs/roadmap.md).
 
@@ -413,7 +447,7 @@ Yes. Docker or `npm start`, a GitHub OAuth app, SMTP, and a FlyBot bridge. See
 [docs/deploy.md](docs/deploy.md).
 
 **Does it support GitLab?**
-Not in v0.1. The GitHub client is isolated in `src/repos/`; a second provider is
+Not in v0.3. The GitHub client is isolated in `src/repos/`; a second provider is
 a roadmap item.
 
 **Why `node:sqlite`?**
