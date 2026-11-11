@@ -2059,6 +2059,16 @@ export class Store {
     return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM jobs WHERE user_id = ?', userId)?.n ?? 0)
   }
 
+  // #227: the first-run summary asks about this account's first job, not about a
+  // page of recent jobs, so it reads the oldest row by created_at. The read is
+  // all-time on purpose: a window-scoped count would give the same account two
+  // different first-run conclusions depending on ?window. SQLite serves it from
+  // jobs_user_idx (user_id, created_at DESC) by a reverse scan, so this is a
+  // LIMIT 1 against an existing index and not a scan of the history.
+  firstJobForUser(userId: string): JobRow | undefined {
+    return this.get<JobRow>('SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at ASC LIMIT 1', userId)
+  }
+
   listJobsSince(userId: string, sinceIso: string): JobRow[] {
     return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? AND (created_at >= ? OR finished_at >= ?) ORDER BY created_at DESC', userId, sinceIso, sinceIso)
   }

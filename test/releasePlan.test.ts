@@ -207,10 +207,35 @@ test('an unparsable package version fails closed instead of guessing', () => {
   assert.equal(plan.reason, 'invalid-version')
 })
 
-test('the next version is always the next minor, never a patch bump', () => {
+test('the same ISO week bumps the patch, a new week bumps the minor', () => {
   const ten = [feat(1), feat(2), feat(3), feat(4), feat(5), fix(6), fix(7), fix(8), fix(9), fix(10)]
-  assert.equal(planRelease(input({ prs: ten })).nextVersion, '0.3.0')
-  assert.equal(planRelease(input({ lastTag: 'v1.9.3', packageVersion: '1.9.3', existingTags: ['v1.9.3'], prs: ten })).nextVersion, '1.10.0')
+  const sameWeek = planRelease(input({
+    lastTag: 'v0.3.0', packageVersion: '0.3.0', existingTags: ['v0.3.0'],
+    lastTagCommittedAt: '2026-11-09T16:23:33Z', releaseAt: '2026-11-10T14:30:00Z', prs: ten,
+  }))
+  assert.equal(sameWeek.nextVersion, '0.3.1')
+  assert.equal(sameWeek.bump, 'patch')
+
+  const nextWeek = planRelease(input({
+    lastTag: 'v0.3.0', packageVersion: '0.3.0', existingTags: ['v0.3.0'],
+    lastTagCommittedAt: '2026-11-09T16:23:33Z', releaseAt: '2026-11-16T14:30:00Z', prs: ten,
+  }))
+  assert.equal(nextWeek.nextVersion, '0.4.0')
+  assert.equal(nextWeek.bump, 'minor')
+
+  const noDates = planRelease(input({ lastTag: 'v1.9.3', packageVersion: '1.9.3', existingTags: ['v1.9.3'], prs: ten }))
+  assert.equal(noDates.nextVersion, '1.10.0')
+  assert.equal(noDates.bump, 'minor')
+})
+
+test('an existing patch tag blocks the same-week release instead of repeating it', () => {
+  const ten = [feat(1), feat(2), feat(3), feat(4), feat(5), fix(6), fix(7), fix(8), fix(9), fix(10)]
+  const plan = planRelease(input({
+    lastTag: 'v0.3.0', packageVersion: '0.3.0', existingTags: ['v0.3.0', 'v0.3.1'],
+    lastTagCommittedAt: '2026-11-09T16:23:33Z', releaseAt: '2026-11-10T14:30:00Z', prs: ten,
+  }))
+  assert.equal(plan.nextVersion, '0.3.1')
+  assert.equal(plan.reason, 'tag-exists')
 })
 
 test('the plan is pure: the same input twice gives the same output and the input is not mutated', () => {

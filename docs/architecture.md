@@ -60,20 +60,34 @@ state contract and its evidence are in [docs/ui.md](ui.md).
 - **Bilingual UI** in Chinese and English. The locale is stored in the
   `fledge_lang` cookie, and the header switch shares the `hugoxk-lang`
   preference with the rest of the platform.
+- **First-run checklist** (`src/views/checklist.ts`): `/dashboard` shows five
+  steps — repository, role, model provider, instance, first job — and every
+  step's state is read from the database on the request, so a cookie, a second
+  browser or a cleared store cannot change which step is next. The pure state
+  machine decides the single primary action; a step whose prerequisite is
+  missing states the reason instead of offering a control. Once a job exists the
+  checklist is replaced by a first-run summary whose outcome is the first job's
+  own status, read all-time (not a window-scoped count), in four shapes: the
+  job's PR link when it opened one, "finished" with a link to Recent jobs when it
+  succeeded without a PR, "running" while it is queued or running, and the retry
+  path on the repository page when it failed.
 - **Shell** (`src/views/layout.ts`, `public/app.css`): the main nav marks the
   current section with `aria-current="page"`, derived from the route and
   overridable with `active`. The sticky header owns `--header-h` (re-declared
   per breakpoint); `[id] { scroll-margin-top }` and the workspace frame's height
-  both follow it, so an anchor is never hidden under the header when it wraps
-  and the frame's bottom lands at the viewport bottom. The shell's controls keep
-  a 44px touch target. Below 641px the header is one **fixed** 64px row and the
+  both follow it, so an anchor is never hidden under the header and the frame's
+  bottom lands at the viewport bottom. The shell's controls keep a 44px touch
+  target. At or below 960px the header is one **fixed** 64px row and the
   navigation collapses behind a `data-nav-toggle` button that publishes
   `aria-expanded`; the open menu is an absolutely positioned panel, so it
   overlays the page and `--header-h` keeps the collapsed height while it is
-  open. The toggle itself is hidden outside the phone band by a base rule, so
-  the desktop header never shows a control whose panel does not exist there.
-  Every destination the wide header lists is still rendered in the panel,
-  so a phone loses no route. Below 420px the row also drops the wordmark (the
+  open. The toggle itself is hidden above 960px by a base rule, so the desktop
+  header never shows a control whose panel does not exist there. Every
+  destination the wide header lists is still rendered in the panel, so a
+  collapsed header loses no route. The 641-960px band used to keep the wrapped
+  two-row header — 215px at 768px, a quarter of a tablet screen — and #233
+  widened the compact row to cover it; the phone's own 640px block re-declares
+  the same row with tighter padding. Below 420px the row also drops the wordmark (the
   mark and its own `aria-label` stay) and tightens its padding and gaps: at a
   360px viewport with a classic 15px scrollbar the row has 301px of usable
   width, and the wordmark is the one child that can leave without taking a
@@ -165,9 +179,9 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   priority, and an `agent-ready` label moves a proposed item to triaged. A
   repository can require a plan before code; a maintainer approves or
   rejects it with allowed/forbidden path constraints, and execution is blocked
-  until approval. Iterate jobs preflight the target branch, record the base SHA,
-  warn when the fork is behind, and scheduled work is skipped while an active
-  work item is open.
+  until approval. Iterate jobs preflight the target branch, record the base SHA
+  and warn when the fork is behind. Work-item states do not gate the scheduler;
+  see "Scheduled work and work items" below.
 - **Auto-merge switch**: off by default. Only a maintainer can enable it. When
   it is on, Fledge (not the agent) verifies the PR is open and mergeable, every
   check run is green, the combined commit status is not failing, and no current
@@ -423,11 +437,11 @@ most every `AUTO_MERGE_RECONCILE_MINUTES`.
 
 ### Scheduled work and work items
 
-Work items are a tracking board, not a second scheduler lock. A scheduled
-iterate job is blocked by an active job for the same repository, a failing
-credential or a duplicate issue, but not by a `pr_ready`, `in_review` or stale
-`in_progress` item. A failed job returns its `assigned`/`in_progress` work item
-to `triaged` so a later schedule can pick it up.
+Work items are a tracking board, not a second scheduler lock. No work-item
+state blocks a scheduled iterate job: the only blocks are an active job for the
+same repository, a failing credential and a duplicate issue. A failed job
+returns its `assigned`/`in_progress` work item to `triaged` so a later schedule
+can pick it up.
 
 ### Team session reconciliation
 

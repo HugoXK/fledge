@@ -121,8 +121,11 @@ computes the ratios from `:root` instead of trusting the palette:
 
 - `--muted-2` was `#6f7a8a`: 4.58 on `--bg`, 4.45 on `--bg-soft`, 4.35 on
   `--panel` and **4.13 on `--panel-2`** — below AA on the surface it most often
-  lands on. It is now `#8b96a6`: 6.90 / 6.70 / 6.55 / 6.22, and still dimmer
-  than `--muted` (`#98a2b3`, 6.97–7.74), so the hierarchy is unchanged.
+  lands on. It is now `#8b96a6`: 6.65 / 6.46 / 6.31 / 5.99, measured against
+  `--bg`, `--bg-soft`, `--panel` and `--panel-2` in that order, so the next
+  reader can re-derive each ratio from the token; it is still dimmer than
+  `--muted` (`#98a2b3`, 6.97–7.74 on the same surfaces), so the hierarchy is
+  unchanged.
 - `--accent-ink` on `--accent-strong` is 4.64:1 — the primary button passes
   without changing the brand fill.
 - A new text colour is added together with a row in the test's contrast list, so
