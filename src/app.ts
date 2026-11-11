@@ -89,6 +89,17 @@ function httpError(statusCode: number, message: string, code = 'REQUEST_FAILED')
   return Object.assign(new Error(message), { statusCode, code })
 }
 
+// #231 review: a refused enqueue answers with the job service's code, and the
+// banner builds the sentence from it, so a refusal reaches an English reader in
+// English. The detail a refusal names (a missing target branch) travels after a
+// colon; the service's text stays the fallback for a refusal that carries no code.
+function refusalValue(result: { code?: string; detail?: string; error?: string }, fallback: string): string {
+  const code = result.code ?? ''
+  if (code === '') return result.error ?? fallback
+  const detail = result.detail ?? ''
+  return detail === '' ? code : `${code}:${detail}`
+}
+
 function queryText(request: FastifyRequest, name: string): string | undefined {
   const value = (request.query as Record<string, unknown> | undefined)?.[name]
   return typeof value === 'string' && value !== '' ? value.slice(0, 500) : undefined
@@ -1501,7 +1512,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const result = await jobs.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {})
     store.audit(viewer.user.id, 'job.retried', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
     if (!result.ok || result.job === undefined) {
-      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(result.error ?? '重试失败。')}`)
+      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(refusalValue(result, '重试失败。'))}`)
     }
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已重新排队。')}`)
   })
@@ -1567,7 +1578,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const result = await jobs.enqueue(repo, 'manual', goal, 'iterate', { workItemId: job.work_item_id ?? undefined, priority: job.priority })
     store.audit(viewer.user.id, 'job.executed', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
     if (!result.ok || result.job === undefined) {
-      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(result.error ?? '执行计划失败。')}`)
+      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(refusalValue(result, '执行计划失败。'))}`)
     }
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已按计划开始执行。')}`)
   })
@@ -1634,7 +1645,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const result = await jobs.enqueue(repo, 'manual', goal, kind, { workItemId: item.id, priority: item.priority })
     store.audit(viewer.user.id, 'work_item.run', `${item.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
     if (!result.ok || result.job === undefined) {
-      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(result.error ?? '工作项启动失败。')}#work`)
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(refusalValue(result, '工作项启动失败。'))}#work`)
     }
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent(kind === 'plan' ? '计划任务已排队。' : '工作项任务已排队。')}`)
   })
@@ -1668,7 +1679,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const goal = [`Scope work item: ${item.title}`, item.detail === '' ? '' : item.detail, item.issue_url === null ? '' : `Issue: ${item.issue_url}`, 'Product scoping only: goal, non-goals, acceptance criteria and test plan. Do not code.'].filter((line) => line !== '').join('\n\n')
     const result = await jobs.enqueue(repo, 'manual', goal, 'scope', { workItemId: item.id, priority: item.priority })
     store.audit(viewer.user.id, 'work_item.scope', `${item.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
-    if (!result.ok || result.job === undefined) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(result.error ?? '范围任务启动失败。')}#work`)
+    if (!result.ok || result.job === undefined) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(refusalValue(result, '范围任务启动失败。'))}#work`)
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('Product 范围任务已排队。')}`)
   })
 

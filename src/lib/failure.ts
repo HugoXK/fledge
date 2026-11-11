@@ -140,16 +140,50 @@ const FAILURE_SENTENCES: Record<FailureCode, [string, string]> = {
   REPO_DISABLED: ['这个仓库已停用。', 'This repository is disabled.'],
 }
 
+// The enqueue path refuses before a job row exists, so its answer never reaches
+// `jobs.error_code`; the route carries the code on the redirect instead and the
+// banner builds the sentence from it. These are the refusals that can reach a
+// banner. The credential refusal reuses its failure sentence above, so it is not
+// repeated here. `BRANCH_MISSING` carries the branch after a colon, and a git ref
+// can never contain one, so `BRANCH_MISSING:main` is one unambiguous value.
+const REFUSAL_SENTENCES: Record<string, [string, string]> = {
+  REPO_BUDGET_EXHAUSTED: ['仓库月度预算已用完，请在仓库设置里提高预算，或等下个月再试。', "This repository's monthly budget is used up; raise it in the repository settings or wait for the next month, then retry."],
+  QUEUE_FULL: ['任务队列已满，请稍后再试。', 'The job queue is full; retry in a moment.'],
+  QUEUE_LIMIT: ['你排队的任务过多，请等其中几个结束后再试。', 'You have too many jobs queued; wait for some of them to finish, then retry.'],
+  BRANCH_MISSING: ['目标分支 {branch} 不存在或不可访问。', 'The target branch {branch} does not exist, or this account cannot read it.'],
+}
+
+const BRANCH_EMPTY: [string, string] = ['目标分支不存在或不可访问。', 'The target branch does not exist, or this account cannot read it.']
+
 export function errorCodeOf(value: string | null | undefined): FailureCode | null {
   const code = String(value ?? '').trim()
   return (FAILURE_CODES as readonly string[]).includes(code) ? (code as FailureCode) : null
 }
 
-export function failureSentence(t: (zh: string, en: string) => string, code: string | null | undefined): string | null {
+export function failureSentence(t: (zh: string, en: string) => string, code: string | null | undefined, detail = ''): string | null {
   const known = errorCodeOf(code)
-  if (known === null) return null
-  const sentence = FAILURE_SENTENCES[known]
-  return t(sentence[0], sentence[1])
+  if (known !== null) return t(FAILURE_SENTENCES[known][0], FAILURE_SENTENCES[known][1])
+  const refusal = REFUSAL_SENTENCES[String(code ?? '').trim()]
+  if (refusal === undefined) return null
+  const branch = detail.trim()
+  if (!refusal[0].includes('{branch}')) return t(refusal[0], refusal[1])
+  if (branch === '') return t(BRANCH_EMPTY[0], BRANCH_EMPTY[1])
+  return t(refusal[0].replace('{branch}', branch), refusal[1].replace('{branch}', branch))
+}
+
+// A banner may carry a refusal code the sentence table does not know yet. The
+// service's Chinese must still not reach an English reader, so the banner names
+// the code in the reader's language; a future refusal cannot leak before somebody
+// gives it a sentence.
+export function failureBannerSentence(t: (zh: string, en: string) => string, value: string | null | undefined): string | null {
+  const raw = String(value ?? '')
+  const separator = raw.indexOf(':')
+  const code = separator === -1 ? raw : raw.slice(0, separator)
+  const detail = separator === -1 ? '' : raw.slice(separator + 1)
+  const sentence = failureSentence(t, code, detail)
+  if (sentence !== null) return sentence
+  if (!/^[A-Z][A-Z0-9_]+$/.test(code)) return null
+  return t(`任务未能开始（${code}）。`, `The job could not start (${code}).`)
 }
 
 export function failureLabel(t: (zh: string, en: string) => string, kind: FailureKind | string): string {

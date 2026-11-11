@@ -403,17 +403,32 @@ ran too long. The bridge URL is stored by origin and path only, so a token in
 its query or userinfo never reaches the job row or the job page.
 
 A failure also carries a stable **code** in `jobs.error_code`, written by the job
-service where the failure happens: `REPO_CREDENTIAL_INVALID`, `JOB_STALLED`,
-`JOB_LEASE_EXPIRED`, `JOB_TIMEOUT`, `QUOTA_EXHAUSTED`, `JOB_BUDGET_EXCEEDED`,
-`DUPLICATE_WORK`, `STAGE_EVIDENCE_MISSING`, `BRIDGE_ERROR`, `REPO_DISABLED`. The
-code, not the text, decides the sentence a reader sees: `failureSentence`
+service where the failure happens. Seven codes are written to a row today:
+`JOB_STALLED`, `JOB_LEASE_EXPIRED`, `JOB_TIMEOUT`, `QUOTA_EXHAUSTED`,
+`STAGE_EVIDENCE_MISSING`, `BRIDGE_ERROR` and `REPO_DISABLED`. Three more are in
+the vocabulary but have no writer: `REPO_CREDENTIAL_INVALID`,
+`JOB_BUDGET_EXCEEDED` and `DUPLICATE_WORK` name refusals that stop an enqueue
+before a job row exists, so they travel on the redirect instead (below) and are
+reserved for a row if one of them ever finishes a job.
+
+The code, not the text, decides the sentence a reader sees: `failureSentence`
 (`src/lib/failure.ts`) builds it in the reader's language for the job-page
 summary, the dashboard summary and the notification list, and the category above
 is the code's kind. The regex classifier stays only for rows written before the
 column existed. `localizeMessage`'s exact-match dictionary remains the fallback
 for a message no code covers — which is why a new failure adds a code rather than
-a dictionary row. The raw text stays in `jobs.error`, under "Technical detail"
-and in the notification row, for operators and for the API. The choice is
+a dictionary row.
+
+A refusal carries its code too. The job service answers an enqueue it will not
+start with a code (`QUEUE_FULL`, `QUEUE_LIMIT`, `REPO_BUDGET_EXHAUSTED`,
+`REPO_CREDENTIAL_INVALID`, `BRANCH_MISSING`), the route puts that code on the
+redirect (`BRANCH_MISSING` names the branch after a colon, which a git ref cannot
+contain), and the banner builds its sentence the same way, so an English reader
+gets an English refusal. A code the sentence table does not know yet renders a
+sentence naming the code instead of the writer's text, so a new refusal cannot
+leak. The raw text stays in `jobs.error`, under "Technical detail"
+and in the notification row, for operators and for the API, and "Technical
+detail" prints it as written rather than translating it. The choice is
 recorded in `docs/decisions/0009-job-failure-codes.md`.
 
 ### Enforcement: path guard, evidence verification and merge readiness

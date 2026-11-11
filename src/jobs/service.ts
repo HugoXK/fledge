@@ -46,6 +46,9 @@ export interface EnqueueResult {
   job?: JobRow
   error?: string
   code?: string
+  // The value a refusal names, such as the missing target branch, so the banner
+  // can say which one instead of a bare sentence.
+  detail?: string
 }
 
 function progressSummary(value: unknown): string | undefined {
@@ -265,7 +268,7 @@ export class Jobs {
     }
   }
 
-  private async preflight(repo: RepoRow, baseBranch: string, trigger: string): Promise<{ ok: boolean; baseSha?: string; warning?: string; error?: string; code?: string }> {
+  private async preflight(repo: RepoRow, baseBranch: string, trigger: string): Promise<{ ok: boolean; baseSha?: string; warning?: string; error?: string; code?: string; detail?: string }> {
     if (this.runner.name !== 'flybot') return { ok: true }
     try {
       const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
@@ -275,7 +278,7 @@ export class Jobs {
       const branch = await client.getBranch(upstreamOwner, upstreamName, baseBranch)
       this.store.markRepoCredential(repo.id, 'ok')
       this.credentialCache.set(repo.id, { at: Date.now() })
-      if (branch === null) return { ok: false, error: `目标分支 ${baseBranch} 不存在或不可访问。`, code: 'BRANCH_MISSING' }
+      if (branch === null) return { ok: false, error: `目标分支 ${baseBranch} 不存在或不可访问。`, code: 'BRANCH_MISSING', detail: baseBranch }
       await client.canReadContents(upstreamOwner, upstreamName, baseBranch)
       let warning = ''
       if (repo.is_fork === 1) {
@@ -383,7 +386,7 @@ export class Jobs {
     let preflightWarning = ''
     if (kind === 'iterate') {
       const preflight = await this.preflight(repo, baseBranch, trigger)
-      if (!preflight.ok) return { ok: false, error: preflight.error, code: preflight.code }
+      if (!preflight.ok) return { ok: false, error: preflight.error, code: preflight.code, detail: preflight.detail }
       preflightSha = preflight.baseSha ?? null
       preflightWarning = preflight.warning ?? ''
     }
