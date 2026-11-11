@@ -1,0 +1,1 @@
+Failed GitHub webhook deliveries are now visible in a superadmin-only `/admin/webhooks` page with event, action, repository, status, error, filters and pagination. A failed delivery can be retried explicitly from the console; the stored payload is replayed once, the action is audited and a processed delivery cannot be retried again. Raw payloads are not rendered in the table.
