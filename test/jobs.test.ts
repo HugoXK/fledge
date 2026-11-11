@@ -2234,3 +2234,112 @@ test('only the one-active-job index is reported as a busy queue', async () => {
     store.close()
   }
 })
+
+// #261 review finding: `summary` is the progress field every running heartbeat
+// writes, so a review that reported progress and then failed transiently is the
+// production shape — and it must still get its one retry.
+test('a review that reported one progress heartbeat still gets its one retry', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'review-heartbeat-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_review_heartbeat', userId: user.id, owner: 'o', name: 'heartbeat', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 720, canReview: true, reviewerEnabled: true })
+    const secret = 'review-heartbeat-secret'
+
+    store.createJob({ id: 'job_review_heartbeat', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review' })
+    store.updateJob('job_review_heartbeat', { status: 'running', pr_url: 'https://github.com/o/heartbeat/pull/4' })
+    await jobs.handleCallback('job_review_heartbeat', secret, { status: 'running', summary: 'reviewing pull request 4: reading the diff' })
+    assert.equal(store.getJob('job_review_heartbeat')?.summary, 'reviewing pull request 4: reading the diff', 'the heartbeat stored a progress line')
+
+    await jobs.handleCallback('job_review_heartbeat', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    const pending = store.listSettings('retry_pending:')
+    assert.equal(pending.length, 1, 'progress is not a posted verdict, so the transient failure still retries')
+    assert.equal(pending[0]?.key, 'retry_pending:job_review_heartbeat')
+  } finally {
+    store.close()
+  }
+})
+
+// The half that actually runs: the due retry becomes one review job that keeps
+// the original's pull request and work item, and never a second work item.
+test('a due review retry becomes one review job with retry_of and retry_attempt', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'review-release-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_review_release', userId: user.id, owner: 'o', name: 'release', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 720, canReview: true, reviewerEnabled: true })
+    const item = store.createWorkItem({ id: 'work_review_release', repoId: repo.id, userId: user.id, title: 'review the pull request', prUrl: 'https://github.com/o/release/pull/5', state: 'pr_ready' })
+    const secret = 'review-release-secret'
+
+    store.createJob({ id: 'job_review_release', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review', workItemId: item.id })
+    store.updateJob('job_review_release', { status: 'running', pr_url: 'https://github.com/o/release/pull/5' })
+    await jobs.handleCallback('job_review_release', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+
+    const key = 'retry_pending:job_review_release'
+    const pending = JSON.parse(store.getSetting(key) ?? '{}') as Record<string, unknown>
+    store.setSetting(key, JSON.stringify({ ...pending, dueAt: new Date(Date.now() - 1_000).toISOString() }))
+    await jobs.tick()
+
+    assert.equal(store.getSetting(key), undefined, 'a released retry row is consumed once')
+    const retries = store.listJobsForRepo(repo.id, 10).filter((job) => job.retry_of === 'job_review_release')
+    assert.equal(retries.length, 1, 'exactly one review job is created')
+    const retry = retries[0]!
+    assert.equal(retry.kind, 'review')
+    assert.equal(retry.retry_attempt, 1)
+    assert.equal(retry.pr_url, 'https://github.com/o/release/pull/5', 'the retry keeps the pull request it reviews')
+    assert.equal(retry.work_item_id, item.id, 'and the work item it belongs to')
+    assert.equal(store.listWorkItems(repo.id).length, 1, 'no second work item is created')
+
+    await jobs.tick()
+    assert.equal(store.listJobsForRepo(repo.id, 10).filter((job) => job.retry_of === 'job_review_release').length, 1, 'a second tick does not duplicate the retry')
+  } finally {
+    store.close()
+  }
+})
+
+test('a failed review schedules one retry and keeps its pull request and work item', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'review-retry-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_review_retry', userId: user.id, owner: 'o', name: 'reviewed', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 720, canReview: true, reviewerEnabled: true })
+    const item = store.createWorkItem({ id: 'work_review', repoId: repo.id, userId: user.id, title: 'review the pull request', prUrl: 'https://github.com/o/reviewed/pull/9', state: 'pr_ready' })
+    const secret = 'review-secret'
+
+    store.createJob({ id: 'job_review_retry', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review', workItemId: item.id })
+    store.updateJob('job_review_retry', { status: 'running', pr_url: 'https://github.com/o/reviewed/pull/9' })
+    await jobs.handleCallback('job_review_retry', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    const pending = store.listSettings('retry_pending:')
+    assert.equal(pending.length, 1)
+    assert.equal(pending[0]?.key, 'retry_pending:job_review_retry')
+    const row = JSON.parse(pending[0]?.value ?? '{}') as { attempt?: number; kind?: string; workItemId?: string | null; prUrl?: string | null }
+    assert.equal(row.attempt, 1)
+    assert.equal(row.kind, 'review')
+    assert.equal(row.workItemId, 'work_review')
+    assert.equal(row.prUrl, 'https://github.com/o/reviewed/pull/9')
+
+    // One retry is the bound: a second transient failure stays manual.
+    store.createJob({ id: 'job_review_retry_2', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review', retryAttempt: 1 })
+    store.updateJob('job_review_retry_2', { status: 'running' })
+    await jobs.handleCallback('job_review_retry_2', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    assert.equal(store.listSettings('retry_pending:').length, 1)
+
+    // A quota failure is not transient for a review either.
+    store.createJob({ id: 'job_review_quota', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review' })
+    store.updateJob('job_review_quota', { status: 'running' })
+    await jobs.handleCallback('job_review_quota', secret, { status: 'failed', error: '平台额度已用完' })
+    assert.equal(store.listSettings('retry_pending:').length, 1)
+
+    // A review that already produced a result is not re-run blindly: its comments
+    // are posted, so a blind retry could duplicate the COMMENT review.
+    store.createJob({ id: 'job_review_posted', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review' })
+    store.updateJob('job_review_posted', { status: 'running', review_score: 4, summary: 'posted 3 review comments' })
+    await jobs.handleCallback('job_review_posted', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    assert.equal(store.listSettings('retry_pending:').length, 1)
+  } finally {
+    store.close()
+  }
+})

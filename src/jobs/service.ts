@@ -11,7 +11,7 @@ import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
 import { classifyFailure, type FailureCode } from '../lib/failure.js'
-import { retryDecision } from '../lib/retry.js'
+import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
 import { findDuplicatePullRequest, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
@@ -716,11 +716,19 @@ export class Jobs {
   }
 
   private scheduleRetry(job: JobRow): void {
-    if (job.kind !== 'iterate' && job.kind !== 'verify') return
+    if (job.kind !== 'iterate' && job.kind !== 'verify' && job.kind !== 'review') return
+    // A review that already recorded a score posted its verdict, so a blind retry
+    // could post a second COMMENT set. `summary` is not that signal: every running
+    // heartbeat writes it as the progress line (the bridge posts one after each
+    // major step), so gating on it refused exactly the transient failures this
+    // policy exists for. The residual case — comments posted but the terminal
+    // callback lost — leaves no stored marker; it stays manual and is stated in
+    // docs/architecture.md.
+    if (job.kind === 'review' && job.review_score !== null) return
     const repo = this.store.getRepo(job.repo_id)
     if (repo === undefined || repo.enabled !== 1) return
     const failure = classifyFailure({ status: 'failed', error: job.error, kind: job.kind })
-    const decision = retryDecision(failure?.kind, job.retry_attempt)
+    const decision = job.kind === 'review' ? reviewRetryDecision(failure?.kind, job.retry_attempt) : retryDecision(failure?.kind, job.retry_attempt)
     if (!decision.retry) return
     const key = `retry_pending:${job.id}`
     if (this.store.getSetting(key) !== undefined) return
