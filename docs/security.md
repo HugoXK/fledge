@@ -167,6 +167,15 @@ per day. Test mail is rate-limited to one per minute.
   before review/auto-merge downgrades a maintainer to developer when the
   permission is lost. Auto-merge is an explicit maintainer-only switch and is
   off by default; Fledge verifies the PR, checks and reviews before merging.
+- A preview account that connects no repository within 7 days of registration is
+  rejected by the sweep (hourly in the job service, or by hand with
+  `npm run trial:sweep -- [--dry-run] [--login <login>]`). It writes one
+  `trial.expired` audit row and sends one bilingual notice, and it never deletes
+  an account or a repository. Anyone with a `repos` row or a `repo.added` audit,
+  anyone with a job, admins and the super admin are never selected. The status
+  change and its audit row commit together and the notice is sent afterwards, so
+  the audit row is the record and a rerun is a no-op; the operator output carries
+  the login and the registration date, never an address.
 
 ### Team console and agent controls
 
