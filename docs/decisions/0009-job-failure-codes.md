@@ -35,13 +35,17 @@ three are reserved: `REPO_CREDENTIAL_INVALID`, `JOB_BUDGET_EXCEEDED` and
 they reach the reader on the redirect instead, and the vocabulary keeps a row for
 them should one ever finish a job.
 
-A refusal is localized the same way. The job service answers an enqueue it will
-not start with a code (`QUEUE_FULL`, `QUEUE_LIMIT`, `REPO_BUDGET_EXHAUSTED`,
-`REPO_CREDENTIAL_INVALID`, `BRANCH_MISSING`), the route puts the code on the
-`error` query parameter (`BRANCH_MISSING` names the branch after a colon), and
-`layout()` builds the banner with `failureSentence` rather than echoing the
-service's text. A code the sentence table does not know yet renders a sentence
-that names the code, so a refusal added later cannot leak either.
+A refusal is localized the same way, in three steps. A code with a sentence of
+its own travels on the `error` query parameter (`QUEUE_FULL`, `QUEUE_LIMIT`,
+`REPO_BUDGET_EXHAUSTED`, `REPO_CREDENTIAL_INVALID`, and `BRANCH_MISSING`, which
+names the branch after a colon), and `layout()` builds the banner from it rather
+than echoing the service's text. A refusal whose code has no sentence of its own
+travels as the writer's text, which the dictionary translates exactly as it did
+before this change — `BRANCH_INVALID`, `JOB_ACTIVE` and `REVIEW_DISABLED` are the
+reachable ones — so a refusal never reads worse than at base. Only a bare code
+with neither a sentence nor a text renders a sentence that names the code, so a
+value nobody has given a sentence cannot carry the writer's Chinese to an English
+reader.
 
 The read path localizes by the code: `failureSentence` builds the sentence in the
 reader's language for the job-page summary, the dashboard summary and the
@@ -70,9 +74,10 @@ not need a new dictionary row.
 - `jobs.error_code` and `notifications.code` are nullable and migrated in place
   (`migrateRepoColumns` in `src/db.ts`); old rows are not rewritten.
 - A code that is not in the vocabulary is not invented into a failure: on a job
-  row the text falls through to the dictionary, and in a banner it renders a
-  generic sentence that names the code — an unknown code neither invents a
-  sentence nor prints the service's text.
+  row the text falls through to the dictionary, and a refusal with no sentence
+  keeps the writer's text through the same dictionary, so the reader still gets
+  the sentence the console had before this change. Only a bare code with neither
+  a sentence nor a text renders the generic sentence that names it.
 - The vocabulary is closed on purpose. A failure that does not fit any code keeps
   the current behaviour: its text renders as written, which is visible and
   fixable rather than silently generic.

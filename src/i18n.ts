@@ -72,6 +72,8 @@ const MESSAGES: Record<string, string> = {
   '请选择至少一个仓库。': 'Choose at least one repository.',
   '没有新增仓库；可能已经添加过，或 App 权限不足。': 'No repositories were added; they may already be connected, or the App lacks permission.',
   '这个仓库已有任务在运行。': 'A job is already running for this repository.',
+  '只有已暂停的任务可以恢复。': 'Only a paused job can be resumed.',
+  '这个任务已经结束。': 'This job has already finished.',
   '目标分支格式不正确。': 'The target branch name is invalid.',
   '目标分支不存在或不可访问。': 'The target branch does not exist or is not accessible.',
   '平台当前已有 2 个任务在运行，请稍后再试。': 'Two jobs are already running on the platform; try again later.',

@@ -155,6 +155,17 @@ const REFUSAL_SENTENCES: Record<string, [string, string]> = {
 
 const BRANCH_EMPTY: [string, string] = ['目标分支不存在或不可访问。', 'The target branch does not exist, or this account cannot read it.']
 
+// Whether a refusal code has a sentence of its own. The redirect carries the code
+// only for those; any other refusal travels as the writer's text, which the banner
+// translates through the dictionary exactly as it did before #231, so an unmapped
+// refusal never reads worse than base.
+export function refusalSentenceKnown(code: string | null | undefined): boolean {
+  const key = String(code ?? '').trim()
+  if (key === '') return false
+  if (errorCodeOf(key) !== null) return true
+  return Object.prototype.hasOwnProperty.call(REFUSAL_SENTENCES, key)
+}
+
 export function errorCodeOf(value: string | null | undefined): FailureCode | null {
   const code = String(value ?? '').trim()
   return (FAILURE_CODES as readonly string[]).includes(code) ? (code as FailureCode) : null
@@ -171,10 +182,12 @@ export function failureSentence(t: (zh: string, en: string) => string, code: str
   return t(refusal[0].replace('{branch}', branch), refusal[1].replace('{branch}', branch))
 }
 
-// A banner may carry a refusal code the sentence table does not know yet. The
-// service's Chinese must still not reach an English reader, so the banner names
-// the code in the reader's language; a future refusal cannot leak before somebody
-// gives it a sentence.
+// The banner is built in this order, so a refusal is never worse than base:
+//   1. a code with a sentence entry gets that sentence in the reader's language;
+//   2. anything else is not a code, so this returns null and `layout` keeps the
+//      dictionary translation of the writer's text;
+//   3. a bare code with neither a sentence nor a text names itself in the reader's
+//      language, so an unknown refusal cannot leak the writer's Chinese.
 export function failureBannerSentence(t: (zh: string, en: string) => string, value: string | null | undefined): string | null {
   const raw = String(value ?? '')
   const separator = raw.indexOf(':')

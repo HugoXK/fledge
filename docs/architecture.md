@@ -458,13 +458,14 @@ for a message no code covers — which is why a new failure adds a code rather t
 a dictionary row.
 
 A refusal carries its code too. The job service answers an enqueue it will not
-start with a code (`QUEUE_FULL`, `QUEUE_LIMIT`, `REPO_BUDGET_EXHAUSTED`,
-`REPO_CREDENTIAL_INVALID`, `BRANCH_MISSING`), the route puts that code on the
-redirect (`BRANCH_MISSING` names the branch after a colon, which a git ref cannot
-contain), and the banner builds its sentence the same way, so an English reader
-gets an English refusal. A code the sentence table does not know yet renders a
-sentence naming the code instead of the writer's text, so a new refusal cannot
-leak. The raw text stays in `jobs.error`, under "Technical detail"
+start with a code, and a code with a sentence of its own travels on the redirect
+(`QUEUE_FULL`, `QUEUE_LIMIT`, `REPO_BUDGET_EXHAUSTED`, `REPO_CREDENTIAL_INVALID`,
+and `BRANCH_MISSING`, which names the branch after a colon that a git ref cannot
+contain), so the banner reads in the reader's language. A refusal code with no
+sentence of its own keeps the writer's text on the redirect, which the dictionary
+translates as it did before this change, so no refusal reads worse than at base;
+only a bare code with neither a sentence nor a text renders a sentence naming the
+code, so an unknown value cannot leak. The raw text stays in `jobs.error`, under "Technical detail"
 and in the notification row, for operators and for the API, and "Technical
 detail" prints it as written rather than translating it. The choice is
 recorded in `docs/decisions/0009-job-failure-codes.md`.

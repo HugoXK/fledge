@@ -4,6 +4,8 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { jobPage, repoPage } from '../src/views/pages.js'
+import { failureBannerSentence } from '../src/lib/failure.js'
+import { translator } from '../src/i18n.js'
 import { makeUser, MemoryMailer, formBody, sessionFor, testConfig } from './helpers.js'
 
 // #231 review: the enqueue path refuses before a job row exists, so its answer
@@ -164,6 +166,167 @@ test('technical detail prints the raw text even when the dictionary knows it', (
     const detail = /Technical detail<\/summary><p>([\s\S]*?)<\/p>/.exec(html)?.[1] ?? ''
     assert.equal(detail, raw, 'technical detail is the operator copy, not the reader sentence')
     assert.match(/<h2>Result<\/h2>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/.exec(html)?.[1] ?? '', /quota/i, 'the reader sentence still comes from the code')
+  } finally {
+    store.close()
+  }
+})
+
+// Review at `077be4d1`, finding 2: only `/retry`, `/execute`, the work-run and
+// the work-scope route carried the refusal code; the four buttons a user presses
+// first still put the service's Chinese on the redirect. Queue full is the same
+// cheap refusal for all of them, so one loop pins every route.
+test('every enqueue button carries the refusal code, not the service sentence', async () => {
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  const base = testConfig()
+  const config = { ...base, runner: { ...base.runner, queueDispatch: true, maxQueueDepth: 0 } }
+  const built = await buildApp({ config, store, mailer, runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(built.store, { login: 'enqueue-buttons', status: 'approved' })
+    const repo = built.store.createRepo({
+      id: 'repo_enqueue_buttons',
+      userId: user.id,
+      owner: 'acme',
+      name: 'demo',
+      defaultBranch: 'main',
+      tokenEnc: 'x',
+      permission: 'admin',
+      repoRole: 'maintainer',
+      goal: '',
+      autoIterate: false,
+      intervalMinutes: 1440,
+    })
+    // The review button answers `REVIEW_DISABLED` and a stale role before the
+    // queue is consulted, so the fixture makes that role current.
+    built.store.updateRepo(repo.id, { reviewer_enabled: 1, can_review: 1, role_checked_at: new Date().toISOString() })
+    const item = built.store.createWorkItem({ id: 'wi_enqueue', repoId: repo.id, userId: user.id, title: 't', prUrl: 'https://github.com/acme/demo/pull/1' })
+    const session = sessionFor(built, user)
+    const posting = { cookie: session.cookie, 'content-type': 'application/x-www-form-urlencoded' }
+    const routes: Array<[string, string]> = [
+      ['run', `/repos/${repo.id}/run`],
+      ['plan', `/repos/${repo.id}/plan`],
+      ['review', `/repos/${repo.id}/review`],
+      ['verify', `/repos/${repo.id}/work/${item.id}/verify`],
+    ]
+    for (const [name, url] of routes) {
+      const response = await built.app.inject({ method: 'POST', url, headers: posting, payload: formBody({ csrf: session.csrf }) })
+      assert.equal(response.statusCode, 302, `${name} did not redirect`)
+      const location = String(response.headers.location)
+      assert.match(location, /[?&]error=QUEUE_FULL(#work)?$/, `the ${name} redirect carried the service sentence instead of the code: ${location}`)
+      const page = await built.app.inject({ method: 'GET', url: location, headers: { cookie: session.cookie, 'accept-language': 'en' } })
+      assert.equal(page.statusCode, 200)
+      const text = banner(page.body)
+      assert.doesNotMatch(text, CJK, `the ${name} landing page leaked the refusal: ${text}`)
+      assert.match(text, /queue is full/i, `the ${name} landing page lost the refusal sentence: ${text}`)
+    }
+  } finally {
+    await built.close()
+  }
+})
+
+// Review at `077be4d1`, finding 3: a code with no sentence of its own used to
+// render "The job could not start (CODE)." in both languages, which is worse than
+// base for the codes the dictionary already translates. The order is now sentence
+// table, then the writer's text through the dictionary, then the named-code stub;
+// these three are the codes the reviewer named.
+test('a refusal code with no sentence of its own keeps the dictionary sentence', async () => {
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  const built = await buildApp({ config: testConfig(), store, mailer, runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(built.store, { login: 'dictionary-refusals', status: 'approved' })
+    const repo = built.store.createRepo({
+      id: 'repo_dictionary_refusals',
+      userId: user.id,
+      owner: 'acme',
+      name: 'demo',
+      defaultBranch: 'main',
+      tokenEnc: 'x',
+      permission: 'admin',
+      repoRole: 'maintainer',
+      goal: '',
+      autoIterate: false,
+      intervalMinutes: 1440,
+    })
+    const session = sessionFor(built, user)
+    const posting = { cookie: session.cookie, 'content-type': 'application/x-www-form-urlencoded' }
+    const cases: Array<{ name: string; code: string; text: string; url: string; en: RegExp; zh: RegExp; prepare: () => void }> = [
+      {
+        name: 'BRANCH_INVALID',
+        code: 'BRANCH_INVALID',
+        text: '目标分支格式不正确。',
+        url: `/repos/${repo.id}/run`,
+        en: /target branch name is invalid/i,
+        zh: /目标分支格式不正确/,
+        prepare: () => {
+          built.store.updateRepo(repo.id, { default_branch: 'not a branch', target_branch: '', upstream_default_branch: '' })
+        },
+      },
+      {
+        name: 'JOB_ACTIVE',
+        code: 'JOB_ACTIVE',
+        text: '这个仓库已有任务在运行',
+        url: `/repos/${repo.id}/run`,
+        en: /job is already running/i,
+        zh: /这个仓库已有任务在运行/,
+        prepare: () => {
+          built.store.updateRepo(repo.id, { default_branch: 'main' })
+          built.store.createJob({ id: 'job_active_blocker', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+        },
+      },
+      {
+        name: 'REVIEW_DISABLED',
+        code: 'REVIEW_DISABLED',
+        text: '这个仓库没有启用审核角色',
+        url: `/repos/${repo.id}/review`,
+        en: /reviewer role is not enabled/i,
+        zh: /没有启用审核角色/,
+        prepare: () => {
+          built.store.updateRepo(repo.id, { reviewer_enabled: 0, can_review: 0 })
+        },
+      },
+    ]
+    for (const item of cases) {
+      item.prepare()
+      const response = await built.app.inject({ method: 'POST', url: item.url, headers: posting, payload: formBody({ csrf: session.csrf }) })
+      assert.equal(response.statusCode, 302, `${item.name} did not redirect`)
+      const location = String(response.headers.location)
+      assert.doesNotMatch(location, new RegExp(`error=${item.code}`), `${item.name} still travelled as a bare code: ${location}`)
+      assert.match(location, new RegExp(encodeURIComponent(item.text.slice(0, 6)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `${item.name} did not carry the writer text: ${location}`)
+      const en = await built.app.inject({ method: 'GET', url: location, headers: { cookie: session.cookie, 'accept-language': 'en' } })
+      const enText = banner(en.body)
+      assert.doesNotMatch(enText, CJK, `the ${item.name} banner leaked Chinese in en: ${enText}`)
+      assert.match(enText, item.en, `the ${item.name} en banner does not match base: ${enText}`)
+      const zh = await built.app.inject({ method: 'GET', url: location, headers: { cookie: session.cookie, 'accept-language': 'zh' } })
+      const zhText = banner(zh.body)
+      assert.match(zhText, item.zh, `the ${item.name} zh banner does not match base: ${zhText}`)
+    }
+  } finally {
+    await built.close()
+  }
+})
+
+// The order itself, without a route: a sentence entry wins, a bare code with no
+// entry is the stub, and anything that is not a code stays on the dictionary.
+test('the banner prefers the sentence table, then the dictionary, then the code stub', () => {
+  const t = translator('en')
+  assert.match(failureBannerSentence(t, 'JOB_LEASE_EXPIRED') ?? '', /lease expired/i)
+  assert.equal(failureBannerSentence(t, 'ROLE_REQUIRED'), 'The job could not start (ROLE_REQUIRED).')
+  assert.equal(failureBannerSentence(t, '表单已过期，请刷新页面后重试。'), null, 'a text banner must stay on the dictionary')
+})
+
+// The two job-button refusals whose text had no dictionary row: at base an `en`
+// reader saw Chinese from Pause/Resume. They answer text, not a code, so the row
+// is the fix.
+test('the resume and cancel refusals have a dictionary sentence', () => {
+  const { store, userId, repo } = fixture()
+  try {
+    const resume = repoBanner(store, userId, repo, 'en', '只有已暂停的任务可以恢复。')
+    assert.doesNotMatch(resume, CJK, `the resume refusal leaked Chinese: ${resume}`)
+    assert.match(resume, /only a paused job/i)
+    const cancel = repoBanner(store, userId, repo, 'en', '这个任务已经结束。')
+    assert.doesNotMatch(cancel, CJK, `the cancel refusal leaked Chinese: ${cancel}`)
+    assert.match(cancel, /already finished/i)
   } finally {
     store.close()
   }
