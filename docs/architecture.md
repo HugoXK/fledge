@@ -96,6 +96,20 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   (`.fine-link`) and the class carries the floor. Text fields, selects and
   textareas are 16px below 641px, the size below which iOS zooms a focused
   field.
+- **Repository page tabs** (`src/views/pages.ts` `repoPage`, `public/repoTabs.js`):
+  `/repos/:id` renders six sections — Overview, Delivery, Work, Team, Settings,
+  Danger — behind a sticky subnav. The sections are a regroup of the cards the
+  page already renders: nothing new is computed, no route is added, and the ten
+  ids the page published before (`#inbox`, `#chief`, `#role`, `#board`, `#work`,
+  `#delivery`, `#repo-settings`, `#connection`, `#jobs`, `#danger`) are still on
+  or inside a section, so an old link lands where it used to. `#overview`,
+  `#team` and `#settings` are the anchors this adds. The markup ships all six
+  sections expanded, and `public/repoTabs.js` collapses them and moves
+  `aria-current="page"` as the hash changes — an inner anchor such as `#board`
+  opens the section that holds it — so a reader without the script still gets
+  the whole page. The bar sticks at `var(--header-h)` and scrolls horizontally
+  in the phone band; the tab is a 44px `--touch` target and the current tab
+  paints with `--accent-strong`, the one interactive accent.
 - **Dashboard job filters** (`src/lib/jobFilters.ts`): `/dashboard` accepts
   `repo`, `status` and `kind` as GET parameters and applies them in SQL, so the
   count, the page and the pagination links describe the same list; a value the

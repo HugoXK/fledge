@@ -917,7 +917,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     <div class="table-scroll"><table><thead><tr>${WORK_ITEM_STATES.map((state) => `<th><a class="link" href="/repos/${escapeHtml(repo.id)}?workState=${state}#work">${escapeHtml(workItemStateLabel(t, state))}</a></th>`).join('')}</tr></thead><tbody><tr>${WORK_ITEM_STATES.map((state) => `<td><strong>${workCounts.get(state) ?? 0}</strong></td>`).join('')}</tr></tbody></table></div>
   </section>`
 
-  const workCard = `<section class="card" id="work">
+  const workCard = `<section class="card">
     <div class="row between"><h2>${escapeHtml(t('工作项', 'Work items'))}</h2><span class="fine">${workState === undefined ? escapeHtml(t('Issue / PR / 状态 / 优先级', 'Issue / PR / state / priority')) : escapeHtml(t(`筛选：${workItemStateLabel(t, workState)}`, `Filter: ${workItemStateLabel(t, workState)}`))}</span></div>
     <form method="post" action="/repos/${escapeHtml(repo.id)}/work" class="form">
       ${csrf(viewer)}
@@ -941,7 +941,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         const reasons = readiness.reasons.slice(0, 2).join(' · ')
         return `<tr><td><a href="${escapeHtml(job.pr_url ?? '')}" target="_blank" rel="noreferrer">#${escapeHtml(number)}</a></td><td>${badge(t, job.status)}</td><td>${readinessBadge(t, readiness.state)}${reasons === '' ? '' : `<br /><small class="muted">${escapeHtml(reasons)}</small>`}</td><td>${job.review_score === null ? '—' : job.review_score}</td><td>${escapeHtml(quotaMoney(job.cost_usd * config.quota.usdCny))}</td><td>${escapeHtml(humanTimeShort(job.created_at))}</td><td><div class="row"><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('重新核实', 'Re-check'))}</button></form>${repo.repo_role === 'maintainer' ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/merge">${csrf(viewer)}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('合并', 'Merge'))}</button></form>` : ''}</div></td></tr>`
       }).join('')
-  const deliveryCard = `<section class="card" id="delivery"><h2>${escapeHtml(t('待处理 PR', 'Pull requests to decide'))}</h2>
+  const deliveryCard = `<section class="card"><h2>${escapeHtml(t('待处理 PR', 'Pull requests to decide'))}</h2>
     ${repo.auto_merge === 0 && prJobs.length >= 3 ? `<div class="banner">${escapeHtml(t(`有 ${prJobs.length} 个 PR 等待合并。如果检查一直全绿，可在仓库设置里开启自动合并。`, `${prJobs.length} pull requests are waiting. If checks stay green, enable auto-merge in repository settings.`))} <a class="link" href="#repo-settings">${escapeHtml(t('去设置', 'Open settings'))}</a></div>` : ''}
     <p class="muted">${escapeHtml(t('合并前会重新检查 PR 状态、checks、commit status、reviews 和 branch protection。', 'Merging re-checks the PR state, checks, commit status, reviews and branch protection.'))}</p>
     ${repo.repo_role === 'maintainer' && prJobs.length > 0 ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/delivery/merge-clean" data-confirm="${escapeHtml(t('逐个重新检查并合并所有 clean PR？有阻塞的会跳过。', 'Re-check and merge all clean PRs? Blocked PRs are skipped.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('合并所有 clean PR', 'Merge all clean PRs'))}</button></form>` : ''}
@@ -957,7 +957,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     !credentialOk ? `<a class="btn btn-ghost" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a>` : '',
   ].join('')
   const lifecycleBanner = lifecycleItems.length === 0 ? '' : `<div class="banner bad"><strong>${escapeHtml(t('当前状态', 'Current state'))}</strong><ul>${lifecycleItems.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>${lifecycleActions === '' ? '' : `<div class="row">${lifecycleActions}</div>`}</div>`
-  const dangerCard = `<section class="card" id="danger">
+  const dangerCard = `<section class="card">
     <h2>${escapeHtml(t('危险操作', 'Danger zone'))}</h2>
     <p class="muted">${escapeHtml(t('这里的操作只影响 Fledge 连接，不会删除 GitHub 仓库。停止调度会保留实例和历史；停止 FlyBot 会停止容器；删除会移除连接、实例、任务和 token。', 'These actions affect the Fledge connection only; the GitHub repository is not deleted. Stop scheduling keeps the instance and history; Stop FlyBot stops the container; Delete removes the connection, instance, jobs and tokens.'))}</p>
     <div class="row">
@@ -970,8 +970,19 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <button class="btn btn-danger" type="submit">${escapeHtml(t('删除仓库连接', 'Delete repository connection'))}</button>
     </form>
   </section>`
-  const body = `${repoHeader}${roleCard}${lifecycleBanner}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${instanceNotice}${instanceCard}${deliveryCard}${workBoard}${workCard}${dangerCard}
-  <section class="cols">
+  // #234: the page was one long column of sixteen cards, so the things a user
+  // acts on sat under configuration. The six sections below are a regroup of
+  // cards that already render here - nothing new is computed - and #overview is
+  // the section a bare /repos/:id opens. public/repoTabs.js follows the hash,
+  // including the inner anchors that existed before the tabs.
+  const repoTabs = `<nav class="repo-subnav" id="repo-tabs" aria-label="${escapeHtml(t('仓库分区', 'Repository sections'))}">${([['overview', '概览', 'Overview'], ['delivery', '交付', 'Delivery'], ['work', '工作', 'Work'], ['team', '团队', 'Team'], ['settings', '设置', 'Settings'], ['danger', '危险操作', 'Danger']] as const).map(([id, zh, en]) => `<a class="repo-tab" id="repo-tab-${id}" href="#${id}"${id === 'overview' ? ' aria-current="page"' : ''}>${escapeHtml(t(zh, en))}</a>`).join('')}</nav>`
+  const repoSection = (id: string, content: string): string => `<section class="repo-section" id="${id}" data-repo-section="${id}" aria-labelledby="repo-tab-${id}">${content}</section>`
+  const jobsCard = `  <section class="card" id="jobs">
+    <h2>${escapeHtml(t('任务', 'Jobs'))}</h2>
+    ${jobTable(locale, jobs, emptyJobs)}
+    ${pager(`/repos/${repo.id}`, 'jobsPage', jobsPage, jobsTotal, 10, t, {}, '#jobs')}
+  </section>`
+  const settingsCards = `  <section class="cols">
     <div class="card" id="repo-settings">
       <h2>${escapeHtml(t('迭代目标', 'Iteration goal'))}</h2>
       <form method="post" action="/repos/${escapeHtml(repo.id)}/settings" class="form">
@@ -1039,13 +1050,9 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       </div>
       <p class="fine">${escapeHtml(t('平台只通过 GitHub API 读取元数据、创建 fork 和分支/PR；不会 clone 到公共磁盘。', 'The platform only uses the GitHub API to read metadata, create forks and open branches/PRs; it never clones to public disk.'))}</p>
     </div>
-  </section>
-  <section class="card" id="jobs">
-    <h2>${escapeHtml(t('任务', 'Jobs'))}</h2>
-    ${jobTable(locale, jobs, emptyJobs)}
-    ${pager(`/repos/${repo.id}`, 'jobsPage', jobsPage, jobsTotal, 10, t, {}, '#jobs')}
   </section>`
-  return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : '<script src="/assets/chief.js" defer></script>'}`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
+  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${lifecycleBanner}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}`)}${repoSection('delivery', `${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceNotice}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
+  return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : '<script src="/assets/chief.js" defer></script>'}<script src="/assets/repoTabs.js" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
 }
 
 function workItemStageLabel(t: Translate, state: string): string {
