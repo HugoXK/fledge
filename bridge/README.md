@@ -85,7 +85,11 @@ The agent prompt includes:
 2. use the model at `platform.baseUrl` with `platform.token`;
 3. for `kind=iterate`: push to `fork`, create/reuse an issue on `upstream`, open
    one focused PR against `upstream`, no force-push and never merge; Fledge
-   performs the maintainer-enabled auto-merge after checking the PR;
+   performs the maintainer-enabled auto-merge after checking the PR. The goal
+   may carry a `[Carry-over ...]` block with the last runs and open work; it is
+   state, not a new goal. Never create an inventory, backlog, or
+   `存量/盘点/清账/reconcile` issue; work on one concrete issue or PR, and report
+   zero output when there is no concrete defect;
 4. for `kind=scope`: use the Product session to produce scope, non-goals,
    acceptance criteria and a test plan; do not create a branch or PR;
 5. for `kind=verify`: use the Test session to run the relevant tests against the

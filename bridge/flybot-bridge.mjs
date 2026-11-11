@@ -170,6 +170,8 @@ function buildText(job) {
             : `- Create or reuse one issue on ${upstream.owner}/${upstream.name}; reference it from the PR.`,
           '- Never push to the upstream base branch. Do not force-push or change repository settings.',
           '- Never merge. Fledge performs the maintainer-enabled auto-merge only after independently checking the PR checks and reviews.',
+          '- Never create an inventory, backlog, or "存量/盘点/清账/清帐/reconcile" issue. Work on one concrete issue or PR; if there is no concrete defect, report zero output.',
+          '- If the goal contains a "[Carry-over" block, continue the open work item it names; do not create a duplicate issue or PR.',
           '- Write a failing test first when a test is possible.',
           '- Team participation is mandatory: Product scopes, Test writes/verifies the failing test, Dev-1/Dev-2 implement, Security reviews material risk, Reviewer reviews the PR. Do not let the Lead implement the whole change alone; if a role is unavailable, say so in the callback.',
         ]
