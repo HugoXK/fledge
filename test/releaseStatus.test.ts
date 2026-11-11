@@ -127,8 +127,11 @@ test('a release pull request that is still open is red: the version is not relea
   assert.equal(linkOf(status, 'pull')?.state, 'mismatch')
 })
 
-function runCli(args: string[]): { status: number; stdout: string; stderr: string } {
-  const result = spawnSync(process.execPath, ['scripts/verify-release.mjs', ...args], { encoding: 'utf8' })
+function runCli(args: string[], env: Record<string, string> = {}): { status: number; stdout: string; stderr: string } {
+  const result = spawnSync(process.execPath, ['scripts/verify-release.mjs', ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  })
   return { status: result.status ?? -1, stdout: result.stdout, stderr: result.stderr }
 }
 
@@ -162,6 +165,20 @@ test('the CLI rejects a fixture it cannot read with exit 2, never a green verdic
   assert.match(run.stderr, /cannot read/)
 })
 
+test('the CLI on a fresh checkout without a token or a fixture exits 2 and never claims a release verdict', () => {
+  // The command must be runnable on a fresh clone: with no input it says which
+  // input is missing and exits 2. It must not print "not released" — that verdict
+  // is only allowed after the API answered.
+  const bare = runCli(['--version', '0.3.2'], { GITHUB_TOKEN: '', GH_TOKEN: '', GITHUB_REPOSITORY: '' })
+  assert.equal(bare.status, 2, bare.stderr)
+  assert.match(bare.stderr, /no repository: set GITHUB_REPOSITORY or pass --repo/)
+  assert.doesNotMatch(bare.stdout, /release-status:/)
+
+  const repoOnly = runCli(['--version', '0.3.2'], { GITHUB_TOKEN: '', GH_TOKEN: '', GITHUB_REPOSITORY: 'HugoXK/fledge' })
+  assert.equal(repoOnly.status, 2, repoOnly.stderr)
+  assert.match(repoOnly.stderr, /no token: set GITHUB_TOKEN or pass --fixtures/)
+  assert.doesNotMatch(repoOnly.stdout, /release-status:/)
+})
 test('the CLI writes the snapshot the admin page reads', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fledge-release-status-'))
   const out = join(dir, 'release-status.json')
