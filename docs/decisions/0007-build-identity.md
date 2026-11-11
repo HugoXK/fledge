@@ -23,12 +23,13 @@ practice and is corrected here.
 - `commit` — 12-character lowercase hex short sha, or `unknown`
 - `builtAt` — `YYYY-MM-DDTHH:MM:SSZ` (UTC), or `unknown`
 
-Both are always present and never empty. They are read once at boot from
-`GIT_SHA`/`BUILD_TIME` (`src/lib/buildIdentity.ts`), stamped by the release job
-and passed through `Dockerfile` build args and `docker-compose.yml`; the runtime
-image has no `.git`, so a runtime `git rev-parse` would answer `unknown` forever
-and is deliberately not used. No branch, host name, environment name or image
-label is added: `/healthz` is unauthenticated and stays boring.
+Both are present to an authorised caller and never empty (see the amendment
+below: #236 moved them behind the `/metrics` credential). They are read once at
+boot from `GIT_SHA`/`BUILD_TIME` (`src/lib/buildIdentity.ts`), stamped by the
+release job and passed through `Dockerfile` build args and `docker-compose.yml`;
+the runtime image has no `.git`, so a runtime `git rev-parse` would answer
+`unknown` forever and is deliberately not used. No branch, host name, environment
+name or image label is added.
 
 ## Alternatives considered
 
@@ -50,3 +51,25 @@ label is added: `/healthz` is unauthenticated and stays boring.
 artifact is not the one intended). A local `npm run dev` build will answer
 `unknown`, which is correct rather than a defect. The liveness contract, HTTP
 status and `HEALTHCHECK` are unchanged.
+
+## Amendment — 2026-11-11 (#236)
+
+The decision above served `commit`/`builtAt` to every caller, and this document
+said `/healthz` "is unauthenticated and stays boring". That is no longer true,
+because naming the live commit answers "is the security fix deployed yet?" for
+anyone who asks, between the merge and the rollout — a deploy-timing oracle made
+of public facts.
+
+`/healthz` keeps its liveness contract unchanged: `200` for every caller, with
+`ok`/`service`/`version`/`time`. The two identity fields are served only on the
+credential `/metrics` already uses — `Authorization: Bearer <METRICS_TOKEN>`, or a
+loopback caller in a non-production build with no token configured. A caller
+without it gets no key at all rather than `"unknown"`: `unknown` is the truthful
+answer for a build that carries no stamp, and reusing it for "not authorised"
+would make an unstamped production build and a denied caller indistinguishable.
+
+The documentation-exposure alternative (keep the payload, record the rationale
+here) was rejected because it had one condition: take it only if gating would
+break a real health probe. It does not — no probe reads the body, and the HTTP
+status never changes; only the release verifier reads `commit`, and
+`scripts/verify-release.mjs` now sends `METRICS_TOKEN` as a bearer when it is set.

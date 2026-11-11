@@ -432,11 +432,26 @@ Status code: `402`.
 
 ## Health
 
-`GET /healthz` → `{ "ok": true, "service": "fledge", "version": "0.2.4", "commit": "0123456789ab", "builtAt": "2026-11-10T00:00:00Z", "time": "..." }`.
+`GET /healthz` → `{ "ok": true, "service": "fledge", "version": "0.2.4", "time": "..." }`.
 
-`commit` and `builtAt` always appear; a build that carried no stamp answers
-`"unknown"` for both, so an absent field is never mistaken for a match. The
-values above are illustrative — read the real ones from the running service.
+That is the whole public answer. `commit` (12-character short sha) and `builtAt`
+(UTC build stamp) are served only to a caller presenting
+`Authorization: Bearer <METRICS_TOKEN>`, or to a loopback caller in a
+non-production build with no token configured — the same rule `/metrics` uses,
+and the same reason: the live commit is a deploy-timing oracle for anyone who can
+ask it. With the bearer the payload grows two fields:
+
+```json
+{ "ok": true, "service": "fledge", "version": "0.2.4", "commit": "0123456789ab", "builtAt": "2026-11-10T00:00:00Z", "time": "..." }
+```
+
+`commit` and `builtAt` are always present *for an authorised caller*; a build that
+carried no stamp answers `"unknown"` for both. A caller without the credential
+gets no key at all rather than `"unknown"`: `unknown` means "this build carries no
+stamp", so reusing it for "not authorised" would make an unstamped production
+build and a denied caller indistinguishable. The status stays `200` for every
+caller — a liveness probe is never refused. The values above are illustrative;
+read the real ones from the running service.
 
 ## Conventions
 

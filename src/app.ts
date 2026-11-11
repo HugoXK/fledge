@@ -352,42 +352,58 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }).catch(() => fail('502 Bad Gateway'))
   })
 
-  app.get('/metrics', async (request, reply) => {
-    if (!apiLimiter.take(`metrics:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
+  // #236: `/healthz` names the live commit, so it answers to the same credential
+  // `/metrics` uses — otherwise an unauthenticated caller can ask "is the security
+  // fix deployed yet?" and get a fact instead of a guess, which is a deploy-timing
+  // oracle. The token is read from the Authorization header and nowhere else: a
+  // `?token=` value ends up in proxy access logs, browser history and Referer
+  // headers, and a probe URL is committed to config files. safeEqual keeps the
+  // compare constant time so a wrong token cannot be recovered byte by byte.
+  const diagnosticsAccess = (request: FastifyRequest): 'bearer' | 'loopback' | 'denied' => {
     // #127: request.ip is the peer the configured proxy saw (TRUST_PROXY), so a
     // client-supplied X-Forwarded-For can no longer make a public peer look local.
     const loopback = request.ip === '127.0.0.1' || request.ip === '::1' || request.ip === '::ffff:127.0.0.1'
     const header = String(request.headers.authorization ?? '')
     const bearer = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : ''
-    // The token is read from the Authorization header and nowhere else: a `?token=`
-    // value ends up in proxy access logs, browser history and Referer headers, and a
-    // scrape URL is committed to config files. safeEqual keeps the compare constant
-    // time so a wrong token cannot be recovered byte by byte.
     if (config.metrics.token === '') {
       // No token configured: the loopback fallback is a development and test
       // convenience only. assertProductionConfig refuses an empty METRICS_TOKEN in
       // production, so this branch is unreachable there; the check stays as a
       // second line of defence for a config assembled without that assertion.
-      if (config.env === 'production' || !loopback) {
-        return reply.code(403).send({ error: 'metrics are loopback-only without METRICS_TOKEN' })
-      }
-    } else if (!safeEqual(bearer, config.metrics.token)) {
-      return reply.code(401).send({ error: 'metrics token required' })
+      return config.env === 'production' || !loopback ? 'denied' : 'loopback'
+    }
+    return safeEqual(bearer, config.metrics.token) ? 'bearer' : 'denied'
+  }
+
+  app.get('/metrics', async (request, reply) => {
+    if (!apiLimiter.take(`metrics:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
+    if (diagnosticsAccess(request) === 'denied') {
+      return config.metrics.token === ''
+        ? reply.code(403).send({ error: 'metrics are loopback-only without METRICS_TOKEN' })
+        : reply.code(401).send({ error: 'metrics token required' })
     }
     return reply.type('text/plain; version=0.0.4; charset=utf-8').send(renderMetrics())
   })
 
-  // #183: the build names itself. `commit`/`builtAt` are stamped at build time
-  // and always present (`unknown` when the build carried no stamp), because a
-  // missing field reads as a match to whoever is checking a deploy.
-  app.get('/healthz', async () => ({
-    ok: true,
-    service: 'fledge',
-    version: VERSION,
-    commit: config.build.commit,
-    builtAt: config.build.builtAt,
-    time: new Date().toISOString(),
-  }))
+  // #183: the build names itself, so a deploy can be checked rather than guessed.
+  // #236: `commit`/`builtAt` are for the operator, not the public — they are served
+  // only on the `/metrics` credential above, because a live commit between a
+  // security fix merging and being deployed answers "is it live yet?". The public
+  // answer keeps `ok`/`service`/`version`/`time`, and the identity keys are absent
+  // rather than `unknown`: `unknown` means "this build carries no stamp", so reusing
+  // it for "not authorised" would make an unstamped production build and a denied
+  // caller indistinguishable. The status stays 200 for every caller — a liveness
+  // probe must never be refused.
+  app.get('/healthz', async (request) => {
+    const publicAnswer = {
+      ok: true,
+      service: 'fledge',
+      version: VERSION,
+      time: new Date().toISOString(),
+    }
+    if (diagnosticsAccess(request) === 'denied') return publicAnswer
+    return { ...publicAnswer, commit: config.build.commit, builtAt: config.build.builtAt }
+  })
 
   app.get('/readyz', async (_request, reply) => {
     try {
