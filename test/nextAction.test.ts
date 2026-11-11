@@ -318,3 +318,58 @@ test('the route reads the account newest job, not the job table page or filter',
     store.close()
   }
 })
+
+// The platform writes some failure sentences in Chinese only. On an English
+// page one of those must not become the most prominent sentence on the page:
+// the card names the failure class instead, and the raw text stays on the job.
+test('an English page does not lead with an untranslated failure sentence', () => {
+  const seed = (store: Store, user: UserRow): PageInput => {
+    const repo = store.createRepo({ id: 'repo_failed', userId: user.id, owner: 'o', name: 'failed', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_cn', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob('job_cn', { status: 'failed', error: '任务停滞：超过 30 分钟没有心跳。' })
+    return { jobs: store.listJobsPageForUser(user.id, 10, 0) }
+  }
+  const english = nextActionBlock(render('en', {}, seed))
+  assert.match(english, /data-next-action="job"/)
+  assert.doesNotMatch(english, /[\u4e00-\u9fff]/, 'no Chinese sentence reaches an English headline')
+  assert.match(english, /Job stalled/, 'the card names the failure class instead of dropping the reason')
+
+  // The Chinese page keeps the platform's own sentence: it is the detail the
+  // reader came for, and it is already in their language.
+  const chinese = nextActionBlock(render('zh', {}, seed))
+  assert.match(chinese, /任务停滞：超过 30 分钟没有心跳。/)
+})
+
+// The pager at the bottom of the job table and the filter form at its top both
+// target `#jobs`, and `id="jobs"` sits inside the disclosure. A browser does not
+// open <details> for an in-page anchor, so a page loaded on page two or with an
+// active filter must render the disclosure open — otherwise Next and Apply land
+// on a table that is hidden behind a second tap.
+test('the disclosure opens when the table was reached through the pager or a filter', async () => {
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'next-action-pager', status: 'approved' })
+    const session = sessionFor(built, user)
+    const cookie = `${session.cookie}; fledge_lang=en`
+    const repo = store.createRepo({ id: 'repo_pager', userId: user.id, owner: 'o', name: 'pager', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    for (let i = 1; i <= 12; i += 1) {
+      store.createJob({ id: `job_${i}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+      store.updateJob(`job_${i}`, { status: 'succeeded' })
+    }
+    const disclosureOf = (html: string): string => html.match(/<details[^>]*data-secondary[^>]*>/)?.[0] ?? ''
+
+    const firstPage = disclosureOf((await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })).body)
+    assert.notEqual(firstPage, '', 'the sections still collapse into one disclosure')
+    assert.doesNotMatch(firstPage, /\bopen\b/, 'a plain visit still starts collapsed')
+
+    const secondPage = disclosureOf((await built.app.inject({ method: 'GET', url: '/dashboard?jobsPage=2', headers: { cookie } })).body)
+    assert.match(secondPage, /\bopen\b/, 'the pager lands on a visible table')
+
+    const filtered = disclosureOf((await built.app.inject({ method: 'GET', url: '/dashboard?status=succeeded', headers: { cookie } })).body)
+    assert.match(filtered, /\bopen\b/, 'a filter submit lands on a visible table')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})

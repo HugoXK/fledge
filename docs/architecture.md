@@ -89,6 +89,12 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   renders open whenever the next action points inside it — the add-repository
   form, the inbox or the attention table — because a browser does not open
   `<details>` for an in-page anchor, so that link is never hidden behind a tap.
+  The job table's own pager and filter form target `#jobs`, which is inside the
+  same element, so a page loaded with `?jobsPage=2` or an active
+  `repo`/`status`/`kind` filter also renders the disclosure open; otherwise Next
+  and Apply would land on a hidden table. A failed job whose message the
+  platform only writes in Chinese is named by its failure class on a page in the
+  other language, and the raw sentence stays on the job page.
 - **Shell** (`src/views/layout.ts`, `public/app.css`): the main nav marks the
   current section with `aria-current="page"`, derived from the route and
   overridable with `active`. The sticky header owns `--header-h` (re-declared

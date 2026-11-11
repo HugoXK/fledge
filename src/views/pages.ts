@@ -596,8 +596,14 @@ function nextScheduledRun(repos: RepoRow[], t: Translate): string {
   return t(`下次自动运行：${soonest.label} · ${when}`, `Next automatic run: ${soonest.label} · ${when}`)
 }
 
+// An English page must not lead with a sentence only the platform writes in
+// Chinese: `localizeMessage` maps the strings it knows, and when it has no
+// mapping this test is what keeps the raw text off the headline card.
+const CJK_TEXT = /[\u4e00-\u9fff]/
+
 function nextActionFor(input: {
   t: Translate
+  locale: Locale
   questions: InboxQuestion[]
   alerts: AlertView[]
   // The account's newest job, not the job-table slice: the table is paged and
@@ -607,7 +613,7 @@ function nextActionFor(input: {
   setup: SetupState | undefined
   repos: RepoRow[]
 }): NextActionView {
-  const { t, questions, alerts, latestJob, quota, setup, repos } = input
+  const { t, locale, questions, alerts, latestJob, quota, setup, repos } = input
   if (questions.length > 0) {
     return {
       kind: 'questions',
@@ -647,10 +653,21 @@ function nextActionFor(input: {
   const latest = latestJob
   if (latest !== undefined && latest.status === 'failed') {
     const reason = (latest.error ?? '').trim()
+    const localized = (localizeMessage(locale, reason) ?? '').trim()
+    const failure = classifyFailure(latest)
+    // The platform writes some failure sentences in Chinese only. Showing the
+    // raw text on a page in the other language is a mixed-language headline a
+    // reader cannot act on, so the card falls back to the failure class, which
+    // exists in both languages, and leaves the raw text on the job page.
+    const body = reason === ''
+      ? t('打开任务看失败原因，修好后重跑。', 'Open the job for the reason, fix it and run again.')
+      : localized !== '' && (locale !== 'en' || !CJK_TEXT.test(localized))
+        ? localized.slice(0, 160)
+        : t(`${failure?.label[0] ?? '任务失败'}，打开任务查看原因。`, `${failure?.label[1] ?? 'Job failed'}; open the job for the detail.`)
     return {
       kind: 'job',
       title: t(`最近一次任务失败：${latest.id}`, `The latest job failed: ${latest.id}`),
-      body: reason === '' ? t('打开任务看失败原因，修好后重跑。', 'Open the job for the reason, fix it and run again.') : reason.slice(0, 160),
+      body,
       href: `/repos/${latest.repo_id}/jobs/${latest.id}`,
       label: t('查看任务', 'Open job'),
       setupStep: null,
@@ -742,6 +759,7 @@ export function dashboardPage(input: {
   const quota = quotaView(viewer.user, config)
   const nextAction = nextActionFor({
     t,
+    locale,
     questions,
     alerts,
     latestJob: input.latestJob ?? jobs[0],
@@ -749,11 +767,14 @@ export function dashboardPage(input: {
     setup: input.setup,
     repos: input.allRepos ?? repos,
   })
-  // The add-repository form, the inbox and the attention table all live inside
-  // the disclosure. A browser does not open <details> for an in-page anchor, so
-  // the disclosure must already be open or the one action link lands on hidden
-  // content; every other target is a real page outside it.
-  const secondaryOpen = ['#add-repo', '#inbox', '#attention'].includes(nextAction.href)
+  // The add-repository form, the inbox, the attention table and the job table
+  // all live inside the disclosure. A browser does not open <details> for an
+  // in-page anchor, so the disclosure must already be open or a link that points
+  // inside it lands on hidden content. The pager and the filter form are the
+  // other two ways in: both target `#jobs`, so a page loaded on page two or with
+  // an active filter is a page whose table must be visible.
+  const jobTableDeepLinked = jobsPage > 1 || jobFilterIsActive(jobFilter)
+  const secondaryOpen = jobTableDeepLinked || ['#add-repo', '#inbox', '#attention'].includes(nextAction.href)
   const repoRows = repos.length === 0
     ? stateCell(5, { kind: 'empty', title: t('还没有仓库。', 'No repositories yet.'), body: t('添加第一个仓库并选择你的角色，任务才会开始。', 'Add your first repository and choose your role before any job can start.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })
     : repos
