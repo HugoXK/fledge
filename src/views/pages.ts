@@ -14,6 +14,7 @@ import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '..
 import { parseEvidenceJson } from '../lib/evidence.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
+import { readBackupStatus, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus } from '../lib/backupStatus.js'
 import { classifyFailure, failureLabel, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { STAGE_MODES } from '../lib/stages.js'
 import { JOB_FILTER_KINDS, JOB_FILTER_STATUSES, jobFilterIsActive, jobFilterLabels, jobFilterParams, kindFilterLabel, statusFilterLabel, type JobFilter } from '../lib/jobFilters.js'
@@ -1658,9 +1659,12 @@ export function adminPage(input: {
   error?: string
   /** Defaults to the running process's surface; a test passes a fixture root. */
   release?: ReleaseSurface
+  /** Defaults to reading `config.backup.dir`; a test passes a fixture directory. */
+  backup?: BackupStatus
 }): string {
   const { config, locale, viewer, users, jobs, jobsPage, jobsTotal, audit, auditPage, auditTotal, perPage, activity, notice, error } = input
   const release = input.release ?? releaseSurface()
+  const backup = input.backup ?? readBackupStatus({ dir: config.backup.dir, expectedHours: config.backup.expectedIntervalHours })
   const mailFailedUsers = input.mailFailedUsers ?? new Set<string>()
   const superadmin = input.superadmin === true
   const preview = input.preview === true
@@ -1722,6 +1726,56 @@ export function adminPage(input: {
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('待发布片段', 'Pending fragments'))}</strong><small>${release.fragments === null ? escapeHtml(absent) : release.fragments === 0 ? escapeHtml(t('没有待发布片段', 'nothing pending')) : escapeHtml(t(`${release.fragments} 个待发布片段`, `${release.fragments} pending fragment${release.fragments === 1 ? '' : 's'}`))}</small></div></div>
     </div>
   </section>`
+  // The console can only show what the writer leaves on disk: a copy and its
+  // manifest. A run that fails writes nothing, so "the night was good" is never
+  // claimed here - the card reports staleness and a manifest that no longer
+  // matches instead (the drill records no verdict yet, so that row says so).
+  const backupSize = (bytes: number): string => {
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+    if (bytes >= 1024) return `${Math.round(bytes / 1024)} KiB`
+    return `${bytes} B`
+  }
+  const backupHours = (hours: number): string => `${Math.round(hours)} ${t('小时', 'hours')}`
+  const manifestText = (copy: BackupCopyStatus): string => {
+    switch (copy.manifest) {
+      case 'matches':
+        return t('相符（大小与 sha256 一致）', 'matches (size and sha256)')
+      case 'differs':
+        return copy.manifestDetail === 'size' ? t('不符（大小）', 'differs (size)') : t('不符（sha256）', 'differs (sha256)')
+      case 'not-checked':
+        return t(`未检查（副本大于 ${Math.round(SHA256_MAX_BYTES / (1024 * 1024))} MiB）`, `not checked (copy above ${Math.round(SHA256_MAX_BYTES / (1024 * 1024))} MiB)`)
+      case 'missing':
+        return t('缺失', 'missing')
+      default:
+        return t('无法读取', 'unreadable')
+    }
+  }
+  const newest = backup.newest
+  const freshness = newest === null || newest.ageHours === null
+    ? t('无从判断', 'nothing to judge')
+    : backup.stale
+      ? t(`${backupHours(newest.ageHours)}，超过预期的 ${backup.expectedHours} 小时`, `${backupHours(newest.ageHours)}, older than the expected ${backup.expectedHours} hours`)
+      : t(`${backupHours(newest.ageHours)}，在预期的 ${backup.expectedHours} 小时以内`, `${backupHours(newest.ageHours)}, within the expected ${backup.expectedHours} hours`)
+  const copyCount = backup.copies.length === 1 ? t('1 个副本', '1 copy') : t(`${backup.copies.length} 个副本`, `${backup.copies.length} copies`)
+  const copyAgreement = backup.mismatched === 0
+    ? t('都与清单相符', 'all match their manifest')
+    : t(`${backup.mismatched} 个与清单不符`, `${backup.mismatched} not matching the manifest`)
+  const mismatchRows = backup.copies
+    .filter((copy) => copy.manifest !== 'matches')
+    .map((copy) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(copy.name)}</strong><small>${escapeHtml(manifestText(copy))} · ${escapeHtml(backupSize(copy.sizeBytes))} · ${escapeHtml(humanTimeShort(copy.createdAt))}</small></div></div>`)
+    .join('')
+  const backupCard = `<section class="card" id="backups">
+    <h2>${escapeHtml(t('备份', 'Backups'))}</h2>
+    <div class="list">
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新副本', 'Newest copy'))}</strong><small>${newest === null ? escapeHtml(t('还没有记录备份副本', 'No backup copy recorded yet')) : `${escapeHtml(newest.name)} · ${escapeHtml(backupSize(newest.sizeBytes))} · ${escapeHtml(humanTimeShort(newest.createdAt))}`}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('新鲜度', 'Freshness'))}</strong><small>${escapeHtml(freshness)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('副本数', 'Copies'))}</strong><small>${escapeHtml(copyCount)} · ${escapeHtml(copyAgreement)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新副本的清单', 'Newest manifest'))}</strong><small>${newest === null ? escapeHtml('—') : escapeHtml(manifestText(newest))}</small></div></div>
+      ${mismatchRows}
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('恢复演练', 'Restore drill'))}</strong><small>${escapeHtml(t('没有记录', 'none recorded'))}</small></div></div>
+    </div>
+    <p class="muted">${escapeHtml(t('只读：本卡片列出备份目录并核对清单，不会打开正在备份的数据库，也没有备份、恢复或删除按钮。', 'Read-only: this card lists the backup directory and checks the manifests. It never opens the database being backed up, and carries no backup, restore or delete control.'))}${newest === null ? ` ${escapeHtml(t('在主机上运行', 'Run'))} <code>npm run db:backup</code> ${escapeHtml(t('后，下一份副本会出现在这里。', 'on the host; the next copy appears here.'))}` : ''}</p>
+  </section>`
   const body = `<section class="card">
     <div class="eyebrow">${escapeHtml(t('管理', 'ADMIN'))}</div>
     <h1>${escapeHtml(t('审批与额度', 'Approvals & quota'))}</h1>
@@ -1729,6 +1783,7 @@ export function adminPage(input: {
     ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出用户视图预览', 'Exit user preview') : t('预览用户视图', 'Preview the user view'))}</button></form>` : ''}
   </section>
   ${releaseCard}
+  ${backupCard}
   <section class="card">
     <h2>${escapeHtml(t('待审批', 'Pending'))} <small class="count">${pending.length}</small></h2>
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('用户', 'User'))}</th><th>${escapeHtml(t('申请时间', 'Applied'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th></th></tr></thead><tbody>${pendingRows}</tbody></table></div>
