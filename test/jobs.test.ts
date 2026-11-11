@@ -1729,6 +1729,11 @@ test('scheduled jobs carry the previous run and open work, and classify meta out
     assert.match(goal, /work_open state=triaged/)
     assert.equal(store.getJob(result.job!.id)?.continuity_used, 1)
 
+    // The invariant allows one active job per repository, so the carried-over job
+    // has to finish before the meta-output case enqueues its own.
+    store.updateJob(result.job!.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    store.releaseJobLease(result.job!.id)
+
     const secret = 'callback-secret'
     store.createJob({
       id: 'job_meta', repoId: repo.id, userId: user.id, trigger: 'schedule',
