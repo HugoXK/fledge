@@ -6,6 +6,7 @@ import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { renderState, stateCell, type StateAction } from './states.js'
+import { firstRunOutcome, setupChecklist, type SetupState } from './checklist.js'
 import { oauthConfigured, tokenLoginEnabled } from '../auth/login.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
@@ -504,6 +505,57 @@ function jobFilterForm(locale: Locale, filter: JobFilter, repos: Array<{ id: str
   </form>`
 }
 
+// #227: one primary action at a time. Done steps collapse to a tick, the current
+// step carries the only button, and a blocked step states its reason instead of
+// offering a control that cannot work yet.
+function setupSection(setup: SetupState | undefined, t: Translate): string {
+  if (setup === undefined) return ''
+  const outcome = firstRunOutcome(setup, t)
+  if (outcome !== null) {
+    return `<section class="card setup-card" id="first-run" data-first-pr>
+    <div class="row between">
+      <div>
+        <div class="eyebrow">${escapeHtml(t('第一次运行', 'FIRST RUN'))}</div>
+        <h2>${escapeHtml(outcome.title)}</h2>
+        <p class="muted">${escapeHtml(outcome.body)}</p>
+      </div>
+      <a class="btn" href="${escapeHtml(outcome.action.href)}">${escapeHtml(outcome.action.label)}</a>
+    </div>
+  </section>`
+  }
+  const checklist = setupChecklist(setup, t)
+  const rows = checklist.steps
+    .map((step, index) => {
+      const current = checklist.next?.key === step.key
+      const mark = step.done ? '✓' : String(index + 1)
+      const status = step.done
+        ? `<span class="setup-done">${escapeHtml(t('已完成', 'Done'))}</span>`
+        : step.blocked === null
+          ? ''
+          : `<span class="setup-blocked">${escapeHtml(step.blocked)}</span>`
+      const action = current && step.blocked === null
+        ? `<a class="btn btn-small" data-setup-primary href="${escapeHtml(step.action.href)}">${escapeHtml(step.action.label)}</a>`
+        : ''
+      return `<li class="setup-step${step.done ? ' is-done' : ''}${current ? ' is-current' : ''}" data-setup-step="${step.key}"${current ? ' aria-current="step"' : ''}>
+        <span class="setup-mark" aria-hidden="true">${mark}</span>
+        <div class="setup-main"><strong>${escapeHtml(step.title)}</strong>${status}</div>
+        ${action}
+      </li>`
+    })
+    .join('')
+  return `<section class="card setup-card" id="setup" data-setup data-setup-next="${checklist.next?.key ?? ''}">
+    <div class="row between">
+      <div>
+        <div class="eyebrow">${escapeHtml(t('开始使用', 'GETTING STARTED'))}</div>
+        <h2>${escapeHtml(t('第一次运行', 'Your first run'))}</h2>
+        <p class="muted">${escapeHtml(t(`${checklist.done} / ${checklist.total} 步已完成`, `${checklist.done} of ${checklist.total} steps done`))}</p>
+      </div>
+      <span class="badge">${checklist.done}/${checklist.total}</span>
+    </div>
+    <ol class="setup-steps">${rows}</ol>
+  </section>`
+}
+
 export function dashboardPage(input: {
   config: Config
   locale: Locale
@@ -531,6 +583,7 @@ export function dashboardPage(input: {
   jobsTotal?: number
   jobFilter?: JobFilter
   repoOptions?: Array<{ id: string; label: string }>
+  setup?: SetupState
   notice?: string
   error?: string
 }): string {
@@ -587,6 +640,7 @@ export function dashboardPage(input: {
   </section>
   ${quota.exhausted ? `<div class="banner bad">${escapeHtml(t('平台额度已用完。请到 Settings → Model 配置你自己的模型 API，任务才能继续。', 'Platform quota is used up. Add your own model API in Settings → Model to keep jobs running.'))}</div>` : ''}
   ${noticeBlock(locale, viewer, notifications)}
+  ${setupSection(input.setup, t)}
   <section class="quota-card card">
     <div>
       <div class="eyebrow">${escapeHtml(t('平台额度', 'PLATFORM QUOTA'))}</div>

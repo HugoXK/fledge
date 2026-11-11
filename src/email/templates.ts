@@ -232,18 +232,23 @@ export interface DigestInput {
 }
 
 export function dailyDigestEmail(user: UserRow, input: DigestInput): { subject: string; text: string; html: string } {
+  const isFailure = (status: string): boolean => status === 'failed' || status === 'quota_exhausted'
   const succeeded = input.jobs.filter((job) => job.status === 'succeeded').length
-  const failed = input.jobs.filter((job) => job.status === 'failed').length
+  const failed = input.jobs.filter((job) => isFailure(job.status)).length
   const running = input.jobs.filter((job) => job.status === 'running' || job.status === 'queued').length
   const pullRequests = new Set(input.jobs.map((job) => job.prUrl).filter((url): url is string => url !== null)).size
   const usage = input.unlimited ? `今日消耗 ¥${input.usedCny.toFixed(2)}（不限额）` : `今日消耗 ¥${input.usedCny.toFixed(2)}，剩余 ¥${input.remainingCny.toFixed(2)}`
-  const subject = `[Fledge] 今日摘要 · ${input.date}`
+  // Email clients cannot colour a subject; the bracket marker is the title the
+  // owner sees first, and the HTML heading below is the red one.
+  const subject = failed === 0 ? `[Fledge] 今日摘要 · ${input.date}` : `[Fledge] [失败 ${failed}] 今日摘要 · ${input.date}`
+  const failureBanner = failed === 0 ? '' : `<h2 style="color:#b42318;font-size:18px;margin:0 0 12px">⚠ ${failed} 个任务失败，请先处理</h2>`
+  const failureLine = failed === 0 ? [] : [`⚠ ${failed} 个任务失败，请先处理。`, '']
   const jobLines = input.jobs.length === 0
     ? ['今天没有新任务。']
     : input.jobs.slice(0, 12).flatMap((job) => {
       const links = [job.issueUrl === null ? '' : `Issue: ${job.issueUrl}`, job.prUrl === null ? '' : `PR: ${job.prUrl}`].filter((line) => line !== '')
       return [
-        `· ${job.repo} · ${job.kind} · ${job.status}${job.reviewScore === null ? '' : ` · ${job.reviewScore}/100`}${job.costUsd > 0 ? ` · $${job.costUsd.toFixed(4)}` : ''}`,
+        `${isFailure(job.status) ? '⚠ ' : ''}· ${job.repo} · ${job.kind} · ${job.status}${job.reviewScore === null ? '' : ` · ${job.reviewScore}/100`}${job.costUsd > 0 ? ` · $${job.costUsd.toFixed(4)}` : ''}`,
         job.summary === '' ? '' : `  ${job.summary.slice(0, 240)}`,
         ...links.map((line) => `  ${line}`),
       ].filter((line) => line !== '')
@@ -251,6 +256,7 @@ export function dailyDigestEmail(user: UserRow, input: DigestInput): { subject: 
   const text = [
     `@${user.login}，这是 Fledge 今天为你托管仓库做的工作。`,
     '',
+    ...failureLine,
     `${input.jobs.length} 个任务（成功 ${succeeded} / 失败 ${failed} / 进行中 ${running}），打开 ${pullRequests} 个 PR；${usage}。`,
     '',
     '今天：',
@@ -268,10 +274,10 @@ export function dailyDigestEmail(user: UserRow, input: DigestInput): { subject: 
     ...(input.replyAddress === undefined ? [] : [`回复这封邮件也可以给团队下指示（保持 Reply-To 不变）：${input.replyAddress}`, '']),
     mailFooter(),
   ].join('\n')
-  const html = `<p>@${escapeHtml(user.login)}，这是 Fledge 今天为你托管仓库做的工作。</p>
+  const html = `${failureBanner}<p>@${escapeHtml(user.login)}，这是 Fledge 今天为你托管仓库做的工作。</p>
 <p>${input.jobs.length} 个任务（成功 ${succeeded} / 失败 ${failed} / 进行中 ${running}），打开 ${pullRequests} 个 PR；${escapeHtml(usage)}。</p>
 <h3>今天</h3>
-${input.jobs.length === 0 ? '<p>今天没有新任务。</p>' : `<ul>${input.jobs.slice(0, 12).map((job) => `<li><strong>${escapeHtml(job.repo)}</strong> · ${escapeHtml(job.kind)} · ${escapeHtml(job.status)}${job.reviewScore === null ? '' : ` · ${job.reviewScore}/100`}${job.costUsd > 0 ? ` · $${job.costUsd.toFixed(4)}` : ''}${job.summary === '' ? '' : `<br />${escapeHtml(job.summary.slice(0, 240))}`}${job.issueUrl === null ? '' : `<br />Issue: <a href="${escapeHtml(job.issueUrl)}">${escapeHtml(job.issueUrl)}</a>`}${job.prUrl === null ? '' : `<br />PR: <a href="${escapeHtml(job.prUrl)}">${escapeHtml(job.prUrl)}</a>`}</li>`).join('')}</ul>`}
+${input.jobs.length === 0 ? '<p>今天没有新任务。</p>' : `<ul>${input.jobs.slice(0, 12).map((job) => `<li${isFailure(job.status) ? ' style="color:#b42318"' : ''}><strong>${escapeHtml(job.repo)}</strong> · ${escapeHtml(job.kind)} · ${escapeHtml(job.status)}${job.reviewScore === null ? '' : ` · ${job.reviewScore}/100`}${job.costUsd > 0 ? ` · $${job.costUsd.toFixed(4)}` : ''}${job.summary === '' ? '' : `<br />${escapeHtml(job.summary.slice(0, 240))}`}${job.issueUrl === null ? '' : `<br />Issue: <a href="${escapeHtml(job.issueUrl)}">${escapeHtml(job.issueUrl)}</a>`}${job.prUrl === null ? '' : `<br />PR: <a href="${escapeHtml(job.prUrl)}">${escapeHtml(job.prUrl)}</a>`}</li>`).join('')}</ul>`}
 <h3>明天</h3>
 <ul>
 ${input.nextRuns.length === 0 ? '<li>暂无自动迭代计划。</li>' : input.nextRuns.map((run) => `<li>下次自动迭代：${escapeHtml(run.repo)} · ${escapeHtml(run.when)}</li>`).join('')}
