@@ -177,6 +177,21 @@ test('the all-clear state is honest when no repository auto-iterates', () => {
   assert.match(section, /No repository runs automatically/, 'manual-only accounts are told so instead of an invented schedule')
 })
 
+// A repository the scheduler has never run has no next run to report, and it
+// must not shadow one that does: the all-clear names the run that comes first
+// among the runs the platform actually knows.
+test('the all-clear names the repository that runs next, not one with no known run', () => {
+  const html = render('en', { setup: completeSetup }, (store, user) => {
+    store.createRepo({ id: 'repo_waiting', userId: user.id, owner: 'o', name: 'waiting', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: true, intervalMinutes: 60 })
+    const running = store.createRepo({ id: 'repo_running', userId: user.id, owner: 'o', name: 'running', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: true, intervalMinutes: 60 })
+    store.updateRepo(running.id, { last_run_at: new Date(Date.now() - 30 * 60_000).toISOString() })
+  })
+  const section = nextActionBlock(html)
+  assert.match(section, /data-next-action="clear"/)
+  assert.match(section, /Next automatic run: o\/running/, 'the repository with a known next run is the one named')
+  assert.doesNotMatch(section, /o\/waiting/, 'a repository with no known run does not shadow the one that runs next')
+})
+
 test('an unfinished first run keeps exactly one primary action, in the next-action block', () => {
   const setup: SetupState = { repos: 1, roleChosen: false, modelConfigured: false, instanceReady: false, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: '/repos/repo_1' }
   const html = render('en', { setup })
@@ -213,6 +228,33 @@ test('the disclosure opens when the next action points inside it', () => {
   assert.match(disclosure, /\bopen\b/, 'the form the action points at must be reachable in one tap, not hidden behind a second one')
 })
 
+// The disclosure holds more than the add-repository form: the inbox the answer
+// button points at and the attention table an unclassified alert points at are
+// inside it too. A browser does not open <details> for an in-page anchor, so a
+// link into a collapsed disclosure would land on hidden content.
+test('the disclosure opens for every next action that points inside it', () => {
+  const question: InboxQuestion = {
+    id: 'q1',
+    sessionId: 's1',
+    repoId: 'repo_1',
+    repoLabel: 'o/r',
+    question: 'Which branch?',
+    detail: '',
+    options: ['main'],
+    multiSelect: false,
+  }
+  const questionHtml = render('en', { questions: [question] })
+  assert.deepEqual(targets(nextActionBlock(questionHtml)), ['#inbox'], 'the question links to the inbox')
+  const questionDisclosure = questionHtml.match(/<details[^>]*data-secondary[^>]*>/)?.[0] ?? ''
+  assert.match(questionDisclosure, /\bopen\b/, 'the answer form must not be hidden behind a second tap')
+
+  const unclassified: AlertView = { kind: 'unclassified', level: 'info', message: 'something happened' }
+  const alertHtml = render('en', { alerts: [unclassified] })
+  assert.deepEqual(targets(nextActionBlock(alertHtml)), ['#attention'], 'an unclassified alert links to the attention table')
+  const alertDisclosure = alertHtml.match(/<details[^>]*data-secondary[^>]*>/)?.[0] ?? ''
+  assert.match(alertDisclosure, /\bopen\b/, 'the table it links to must be visible')
+})
+
 test('the next action is bilingual', () => {
   const english = nextActionBlock(render('en', { alerts: [criticalAlert] }))
   const chinese = nextActionBlock(render('zh', { alerts: [criticalAlert] }))
@@ -238,6 +280,39 @@ test('the route derives the next action from rows, not from the template alone',
     const section = nextActionBlock(response.body)
     assert.match(section, /data-next-action="alert"/, 'an invalid credential is the first thing the page says')
     assert.deepEqual(targets(section), [`/repos/${repo.id}`], 'and it links to the repository that needs re-authorizing')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
+
+// The job table is paged and filtered; the headline is not. A `?jobsPage=2` or a
+// `?status=` that hides the newest failure must not change what the page leads
+// with, or a table control edits the page's opening sentence.
+test('the route reads the account newest job, not the job table page or filter', async () => {
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'next-action-paged', status: 'approved' })
+    const session = sessionFor(built, user)
+    const cookie = `${session.cookie}; fledge_lang=en`
+    const repo = store.createRepo({ id: 'repo_paged', userId: user.id, owner: 'o', name: 'paged', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    for (let i = 1; i <= 12; i += 1) {
+      store.createJob({ id: `job_${i}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+      store.updateJob(`job_${i}`, { status: 'succeeded' })
+    }
+    store.updateJob('job_12', { status: 'failed', error: 'bridge refused the run' })
+
+    const firstPage = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
+    assert.match(nextActionBlock(firstPage.body), /job_12/, 'the newest job is the failure')
+
+    const secondPage = await built.app.inject({ method: 'GET', url: '/dashboard?jobsPage=2', headers: { cookie } })
+    const second = nextActionBlock(secondPage.body)
+    assert.match(second, /data-next-action="job"/, 'the second table page must not hide the newest failure')
+    assert.match(second, /job_12/)
+
+    const filtered = await built.app.inject({ method: 'GET', url: '/dashboard?status=succeeded', headers: { cookie } })
+    assert.match(nextActionBlock(filtered.body), /data-next-action="job"/, 'a table filter must not change what the page leads with')
   } finally {
     await built.app.close()
     store.close()

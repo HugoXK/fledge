@@ -585,7 +585,9 @@ function nextScheduledRun(repos: RepoRow[], t: Translate): string {
   for (const repo of automatic) {
     const last = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
     const at = Number.isFinite(last) ? last + repo.interval_minutes * 60_000 : Number.NaN
-    if (soonest === null || (Number.isFinite(at) && at < soonest.at)) {
+    // A repository the scheduler has never run has no next run to report; it
+    // must not shadow one that does, so a known time always beats an unknown.
+    if (soonest === null || (Number.isFinite(at) && (!Number.isFinite(soonest.at) || at < soonest.at))) {
       soonest = { label: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`, at }
     }
   }
@@ -598,12 +600,14 @@ function nextActionFor(input: {
   t: Translate
   questions: InboxQuestion[]
   alerts: AlertView[]
-  jobs: JobRow[]
+  // The account's newest job, not the job-table slice: the table is paged and
+  // filtered, and a filter must not decide what the page leads with.
+  latestJob: JobRow | undefined
   quota: ReturnType<typeof quotaView>
   setup: SetupState | undefined
   repos: RepoRow[]
 }): NextActionView {
-  const { t, questions, alerts, jobs, quota, setup, repos } = input
+  const { t, questions, alerts, latestJob, quota, setup, repos } = input
   if (questions.length > 0) {
     return {
       kind: 'questions',
@@ -640,7 +644,7 @@ function nextActionFor(input: {
       setupStep: null,
     }
   }
-  const latest = jobs[0]
+  const latest = latestJob
   if (latest !== undefined && latest.status === 'failed') {
     const reason = (latest.error ?? '').trim()
     return {
@@ -692,6 +696,9 @@ export function dashboardPage(input: {
   viewer: Viewer
   repos: RepoRow[]
   jobs: JobRow[]
+  // #230 review: the headline job is the account's newest, which the route
+  // reads separately from the paged and filtered table slice.
+  latestJob?: JobRow
   notifications: NotificationRow[]
   questions?: InboxQuestion[]
   personal?: {
@@ -737,14 +744,16 @@ export function dashboardPage(input: {
     t,
     questions,
     alerts,
-    jobs,
+    latestJob: input.latestJob ?? jobs[0],
     quota,
     setup: input.setup,
     repos: input.allRepos ?? repos,
   })
-  // The first step of a new account points at the add-repository form, which
-  // lives inside the disclosure; keep that one tap away, not two.
-  const secondaryOpen = nextAction.href === '#add-repo'
+  // The add-repository form, the inbox and the attention table all live inside
+  // the disclosure. A browser does not open <details> for an in-page anchor, so
+  // the disclosure must already be open or the one action link lands on hidden
+  // content; every other target is a real page outside it.
+  const secondaryOpen = ['#add-repo', '#inbox', '#attention'].includes(nextAction.href)
   const repoRows = repos.length === 0
     ? stateCell(5, { kind: 'empty', title: t('还没有仓库。', 'No repositories yet.'), body: t('添加第一个仓库并选择你的角色，任务才会开始。', 'Add your first repository and choose your role before any job can start.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })
     : repos

@@ -75,15 +75,20 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   with one server-derived action instead of a wall of equal cards. The order is
   the order a person would take them — an open question only they can answer, an
   exhausted platform quota, the most urgent alert (stalled or slow job, stale
-  PR, invalid credential, repository budget), the latest failed job, the
-  unfinished first-run step — and when none applies, an all-clear that names the
-  next scheduled automatic run, or says that no repository runs automatically.
-  Every source is one the route already loads, so the block cannot disagree with
-  the sections below it. The first-run checklist becomes the detail of the same
-  action and does not render a second primary button for that step; the quota,
-  delivery, repository table and recent-job sections move into one `<details>`
-  that starts collapsed, and it renders open when the next action points at the
-  add-repository form inside it, so that link is never hidden behind another tap.
+  PR, invalid credential, repository budget), the account's newest failed job,
+  the unfinished first-run step — and when none applies, an all-clear that names
+  the known next scheduled automatic run (a repository the scheduler has never
+  run is not a known time and never shadows one), or says that no repository runs
+  automatically. Every source is one the route already loads, so the block cannot
+  disagree with the sections below it. The newest job is read on its own, not
+  from the job-table slice: the table is paged and filtered, and `?jobsPage=2` or
+  `?status=` must not change the sentence the page opens with. The first-run
+  checklist becomes the detail of the same action and does not render a second
+  primary button for that step; the quota, delivery, repository table and
+  recent-job sections move into one `<details>` that starts collapsed, and it
+  renders open whenever the next action points inside it — the add-repository
+  form, the inbox or the attention table — because a browser does not open
+  `<details>` for an in-page anchor, so that link is never hidden behind a tap.
 - **Shell** (`src/views/layout.ts`, `public/app.css`): the main nav marks the
   current section with `aria-current="page"`, derived from the route and
   overridable with `active`. The sticky header owns `--header-h` (re-declared
