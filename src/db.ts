@@ -204,6 +204,7 @@ export interface JobRow {
   pr_url: string | null
   summary: string | null
   error: string | null
+  error_code: string | null
   cost_usd: number
   platform_token_hash: string | null
   callback_hash: string
@@ -304,6 +305,7 @@ export interface NotificationRow {
   user_id: string
   kind: string
   message: string
+  code: string | null
   created_at: string
   read_at: string | null
 }
@@ -551,6 +553,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   pr_url TEXT,
   summary TEXT,
   error TEXT,
+  error_code TEXT,
   cost_usd REAL NOT NULL DEFAULT 0,
   platform_token_hash TEXT,
   callback_hash TEXT NOT NULL,
@@ -622,6 +625,7 @@ CREATE TABLE IF NOT EXISTS notifications (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   kind TEXT NOT NULL,
   message TEXT NOT NULL,
+  code TEXT,
   created_at TEXT NOT NULL,
   read_at TEXT
 );
@@ -1065,6 +1069,9 @@ export class Store {
     if (!jobColumns.has('lease_until')) this.run('ALTER TABLE jobs ADD COLUMN lease_until TEXT')
     if (!jobColumns.has('callback_secret_enc')) this.run('ALTER TABLE jobs ADD COLUMN callback_secret_enc TEXT')
     if (!jobColumns.has('platform_token_enc')) this.run('ALTER TABLE jobs ADD COLUMN platform_token_enc TEXT')
+    if (!jobColumns.has('error_code')) this.run('ALTER TABLE jobs ADD COLUMN error_code TEXT')
+    const notificationColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(notifications)').map((row) => row.name))
+    if (!notificationColumns.has('code')) this.run('ALTER TABLE notifications ADD COLUMN code TEXT')
     const tokenColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(api_tokens)').map((row) => row.name))
     if (!tokenColumns.has('repo_id')) this.run('ALTER TABLE api_tokens ADD COLUMN repo_id TEXT')
     const ledgerColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(quota_ledger)').map((row) => row.name))
@@ -2378,7 +2385,7 @@ export class Store {
   }
 
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'output_kind' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'output_kind' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -2648,8 +2655,8 @@ export class Store {
     return Number(row?.total ?? 0)
   }
 
-  notify(userId: string, kind: string, message: string): void {
-    this.run('INSERT INTO notifications (id, user_id, kind, message, created_at) VALUES (?, ?, ?, ?, ?)', `ntf_${randomBytes(6).toString('hex')}`, userId, kind, message, nowIso())
+  notify(userId: string, kind: string, message: string, code: string | null = null): void {
+    this.run('INSERT INTO notifications (id, user_id, kind, message, code, created_at) VALUES (?, ?, ?, ?, ?, ?)', `ntf_${randomBytes(6).toString('hex')}`, userId, kind, message, code, nowIso())
   }
 
   listNotifications(userId: string, limit = 20): NotificationRow[] {

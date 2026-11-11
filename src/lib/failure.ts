@@ -1,4 +1,5 @@
 import type { JobRow } from '../db.js'
+import { localizeMessage, translator, type Locale } from '../i18n.js'
 
 export type FailureKind =
   | 'quota'
@@ -93,16 +94,158 @@ const FAILURES: Record<FailureKind, FailureInfo> = {
 
 const ORDER: FailureKind[] = ['quota', 'credential', 'stage_evidence', 'stalled', 'timeout', 'bridge', 'review', 'workflow', 'github', 'model', 'unknown']
 
+// #231: the job service writes the failure sentence itself, so the text in
+// `jobs.error` is in the writer's language. The stable vocabulary is the code the
+// service already answers with (`REPO_CREDENTIAL_INVALID`, `JOB_ACTIVE`,
+// `STAGE_EVIDENCE_MISSING`); persisting it beside the text lets the read path build
+// the sentence in the reader's language. The regex classifier below stays for rows
+// written before the column existed — a new failure never depends on it.
+export const FAILURE_CODES = [
+  'REPO_CREDENTIAL_INVALID',
+  'JOB_STALLED',
+  'JOB_LEASE_EXPIRED',
+  'JOB_TIMEOUT',
+  'QUOTA_EXHAUSTED',
+  'JOB_BUDGET_EXCEEDED',
+  'DUPLICATE_WORK',
+  'STAGE_EVIDENCE_MISSING',
+  'BRIDGE_ERROR',
+  'REPO_DISABLED',
+] as const
+
+export type FailureCode = (typeof FAILURE_CODES)[number]
+
+export const FAILURE_CODE_KIND: Record<FailureCode, FailureKind> = {
+  REPO_CREDENTIAL_INVALID: 'credential',
+  JOB_STALLED: 'stalled',
+  JOB_LEASE_EXPIRED: 'stalled',
+  JOB_TIMEOUT: 'timeout',
+  QUOTA_EXHAUSTED: 'quota',
+  JOB_BUDGET_EXCEEDED: 'quota',
+  DUPLICATE_WORK: 'workflow',
+  STAGE_EVIDENCE_MISSING: 'stage_evidence',
+  BRIDGE_ERROR: 'bridge',
+  REPO_DISABLED: 'workflow',
+}
+
+const FAILURE_SENTENCES: Record<FailureCode, [string, string]> = {
+  REPO_CREDENTIAL_INVALID: ['GitHub token 权限不足，请重新授权这个仓库。', 'The GitHub token for this repository lacks permission; re-authorize the repository and retry.'],
+  JOB_STALLED: ['任务停滞：长时间没有心跳，已被判定为停滞。', 'The job stalled: it stopped sending heartbeats.'],
+  JOB_LEASE_EXPIRED: ['任务租约过期：worker 未续约。', 'The job lease expired: its worker stopped renewing it.'],
+  JOB_TIMEOUT: ['任务超时：没有在时限内回报。', 'The job timed out: it did not report back before its deadline.'],
+  QUOTA_EXHAUSTED: ['平台额度已用完，请在 Settings → Model 配置自己的模型 API 后重试。', 'The platform quota is used up; add your own model API in Settings → Model, then retry.'],
+  JOB_BUDGET_EXCEEDED: ['任务成本超过这个仓库的单任务预算。', "The job cost more than this repository's single-job budget."],
+  DUPLICATE_WORK: ['已有 PR 覆盖这个 issue。', 'A pull request already covers this issue.'],
+  STAGE_EVIDENCE_MISSING: ['任务缺少阶段证据，已停止。', 'The job is missing stage evidence, so it stopped.'],
+  BRIDGE_ERROR: ['FlyBot 实例不可用，任务无法启动。', 'The FlyBot instance for this repository is unavailable.'],
+  REPO_DISABLED: ['这个仓库已停用。', 'This repository is disabled.'],
+}
+
+// The parameterised form of a failure sentence, used only when the refusal
+// carries the value. `DUPLICATE_WORK` names the pull request that already covers
+// the issue; the plain entry above stays the sentence for a row that carries no
+// parameter, which is the shape every writer produces today.
+const DETAIL_SENTENCES: Partial<Record<FailureCode, [string, string]>> = {
+  DUPLICATE_WORK: ['已有 PR 覆盖这个 issue：{detail}', 'A pull request already covers this issue: {detail}'],
+}
+
+// The enqueue path refuses before a job row exists, so its answer never reaches
+// `jobs.error_code`; the route carries the code on the redirect instead and the
+// banner builds the sentence from it. These are the refusals that can reach a
+// banner. The credential refusal reuses its failure sentence above, so it is not
+// repeated here. `BRANCH_MISSING` carries the branch after a colon, and a git ref
+// can never contain one, so `BRANCH_MISSING:main` is one unambiguous value.
+const REFUSAL_SENTENCES: Record<string, [string, string]> = {
+  REPO_BUDGET_EXHAUSTED: ['仓库月度预算已用完，请在仓库设置里提高预算，或等下个月再试。', "This repository's monthly budget is used up; raise it in the repository settings or wait for the next month, then retry."],
+  QUEUE_FULL: ['任务队列已满，请稍后再试。', 'The job queue is full; retry in a moment.'],
+  QUEUE_LIMIT: ['你排队的任务过多，请等其中几个结束后再试。', 'You have too many jobs queued; wait for some of them to finish, then retry.'],
+  JOB_LIMIT: ['平台同时运行的任务数已达上限（{detail} 个），请稍后再试。', 'The platform already has {detail} jobs running at once; retry in a moment.'],
+  BOT_MODEL_ASSIGNMENT_FAILED: ['机器人模型未就绪：{detail}；请在仓库设置里重新应用模型。', 'The bot models are not ready: {detail}; re-apply the models in the repository settings.'],
+  BRANCH_MISSING: ['目标分支 {branch} 不存在或不可访问。', 'The target branch {branch} does not exist, or this account cannot read it.'],
+}
+
+const BRANCH_EMPTY: [string, string] = ['目标分支不存在或不可访问。', 'The target branch does not exist, or this account cannot read it.']
+
+export function errorCodeOf(value: string | null | undefined): FailureCode | null {
+  const code = String(value ?? '').trim()
+  return (FAILURE_CODES as readonly string[]).includes(code) ? (code as FailureCode) : null
+}
+
+export function failureSentence(t: (zh: string, en: string) => string, code: string | null | undefined, detail = ''): string | null {
+  const known = errorCodeOf(code)
+  if (known !== null) {
+    // A sentence that names something only the writer knows (the pull request
+    // that already covers the issue) exists in two forms: the plain one below,
+    // for a row that carries no parameter, and the parameterised one here, for a
+    // refusal that does. Base kept the URL by re-deriving it inside the
+    // dictionary; authoring it as `{detail}` is the same sentence built from the
+    // value the service already had. The known-code branch returns before
+    // `REFUSAL_SENTENCES`' empty-parameter guard, so the plain entry must stay
+    // the default: a parameterised sentence with no parameter would print the
+    // placeholder itself on a `jobs.error_code` row.
+    const value = String(detail ?? '').trim()
+    const parameterised = DETAIL_SENTENCES[known]
+    if (parameterised !== undefined && value !== '') {
+      return t(parameterised[0].replace('{detail}', value), parameterised[1].replace('{detail}', value))
+    }
+    return t(FAILURE_SENTENCES[known][0], FAILURE_SENTENCES[known][1])
+  }
+  const refusal = REFUSAL_SENTENCES[String(code ?? '').trim()]
+  if (refusal === undefined) return null
+  const value = String(detail ?? '').trim()
+  if (refusal[0].includes('{branch}') && value === '') return t(BRANCH_EMPTY[0], BRANCH_EMPTY[1])
+  // A parameterised sentence without its parameter says nothing useful; returning
+  // null lets the banner fall through to the text the service wrote.
+  if (refusal[0].includes('{detail}') && value === '') return null
+  const fill = (text: string): string => text.replace('{branch}', value).replace('{detail}', value)
+  return t(fill(refusal[0]), fill(refusal[1]))
+}
+
+// The banner is built in this order, so a refusal is never worse than base:
+//   1. a code with a sentence entry gets that sentence in the reader's language,
+//      with its parameter (`BRANCH_MISSING:main`, `JOB_LIMIT:2`) filled in;
+//   2. a value that is not a code is left to `layout`'s dictionary call;
+//   3. a code with no sentence keeps the writer's text that travelled after the
+//      colon, translated by the same dictionary the banner used before #231;
+//   4. only a bare code with neither a sentence nor a text names itself.
+const CODE_VALUE = /^[A-Z][A-Z0-9_]+$/
+
+export function failureBannerSentence(locale: Locale, value: string | null | undefined): string | null {
+  const raw = String(value ?? '')
+  const separator = raw.indexOf(':')
+  const code = separator === -1 ? raw : raw.slice(0, separator)
+  const detail = separator === -1 ? '' : raw.slice(separator + 1)
+  if (!CODE_VALUE.test(code)) return null
+  const t = translator(locale)
+  const sentence = failureSentence(t, code, detail)
+  if (sentence !== null) return sentence
+  if (detail !== '') return localizeMessage(locale, detail) ?? null
+  return t(`任务未能开始（${code}）。`, `The job could not start (${code}).`)
+}
+
 export function failureLabel(t: (zh: string, en: string) => string, kind: FailureKind | string): string {
   const info = FAILURES[kind as FailureKind] ?? FAILURES.unknown
   return t(info.label[0], info.label[1])
 }
 
-export function classifyFailure(job: Pick<JobRow, 'status' | 'error' | 'kind'>): FailureInfo | null {
+export function classifyFailure(job: Pick<JobRow, 'status' | 'error' | 'kind'> & { error_code?: string | null }): FailureInfo | null {
   if (job.status !== 'failed' && job.status !== 'quota_exhausted') return null
+  const code = errorCodeOf(job.error_code)
+  if (code !== null) return FAILURES[FAILURE_CODE_KIND[code]]
   const text = String(job.error ?? '').toLowerCase()
+  // #231 review/Node 24: `src/jobs/flybot.ts` writes "FlyBot bridge unreachable
+  // (<endpoint>): <cause>". The cause is the runtime's text and Node 22 and 24
+  // word one refused fetch differently - the 24 wording carries a credential word
+  // and used to win the first matching pattern below, so a transport failure was
+  // reported as an authorization problem. Our marker is the observable fact, so it
+  // decides before the vocabulary does.
+  if (/bridge unreachable/.test(text)) return FAILURES.bridge
   if (/quota|额度|预算|budget|fledge_quota_exhausted/.test(text)) return FAILURES.quota
-  if (/token|权限|credential|401|403|re-authoriz|authorization/.test(text)) return FAILURES.credential
+  // `401|403` used to be unanchored against the whole sentence, and that sentence
+  // carries the bridge endpoint: an ephemeral port such as 127.0.0.1:40100 made a
+  // dead bridge read as "GitHub authorization expired". Only a real status code
+  // matches now.
+  if (/token|权限|credential|(?<!\d)40[13](?!\d)|re-authoriz|authorization/.test(text)) return FAILURES.credential
   if (/stage_evidence_missing|阶段证据|缺少范围|缺少失败测试|缺少通过测试|缺少验收|缺少测试计划/.test(text)) return FAILURES.stage_evidence
   if (/停滞|心跳|no callback|stall/.test(text)) return FAILURES.stalled
   // #163: a dispatch that timed out at the bridge is an instance problem, not a
@@ -117,7 +260,7 @@ export function classifyFailure(job: Pick<JobRow, 'status' | 'error' | 'kind'>):
   return FAILURES.unknown
 }
 
-export function failureBreakdown(jobs: Array<Pick<JobRow, 'status' | 'error' | 'kind'>>): Array<{ kind: FailureKind; count: number }> {
+export function failureBreakdown(jobs: Array<Pick<JobRow, 'status' | 'error' | 'kind'> & { error_code?: string | null }>): Array<{ kind: FailureKind; count: number }> {
   const counts = new Map<FailureKind, number>()
   for (const job of jobs) {
     const info = classifyFailure(job)
