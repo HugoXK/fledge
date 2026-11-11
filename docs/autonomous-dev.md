@@ -222,7 +222,11 @@ otherwise). Squash merges mean a secret added and then deleted on a branch is in
 neither the head tree nor the pull request diff, and only the range still holds
 it. The config is `.gitleaks.toml`; it deliberately carries no `paths`
 allowlist, because that suppresses every finding in a file, including a real
-token pasted later.
+token pasted later. The one reviewed exception is `.gitleaksignore`, whose
+single line is a fingerprint — one commit, one path, one rule, one line — for
+the synthetic fixture in the initial commit that #185 removed from the tree; a
+token committed afterwards is still a finding, which is why the exception names
+a commit rather than a path.
 
 `coverage` enforces a line floor with a number: `test:coverage` in
 `package.json` (`--test-coverage-lines=84`, measured 84.59% at the commit that
