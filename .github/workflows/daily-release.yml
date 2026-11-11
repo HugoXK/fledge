@@ -90,8 +90,6 @@ jobs:
 
       - name: Plan
         id: plan
-        env:
-          RELEASE_AT: ${{ github.run_started_at }}
         run: |
           set -euo pipefail
           # The projection from state to planner input lives in the tested module.
@@ -104,7 +102,7 @@ jobs:
             import { planRelease } from "./scripts/release-plan.mjs"
             import { plannerInput } from "./scripts/lib/release-state.mjs"
             const state = JSON.parse(readFileSync("/tmp/state.json", "utf8"))
-            const input = { ...plannerInput(state), releaseAt: process.env.RELEASE_AT ?? new Date().toISOString() }
+            const input = { ...plannerInput(state), releaseAt: new Date().toISOString() }
             const result = planRelease(input)
             const plan = {
               shouldRelease: result.shouldRelease,
