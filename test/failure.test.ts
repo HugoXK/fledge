@@ -94,6 +94,8 @@ test('a dispatch transport failure is a bridge failure', async () => {
     () => runnerFor(url).run(withUrl(context, url)),
     (error: Error) => {
       assert.match(error.message, /FlyBot bridge/)
+      assert.ok(error.message.includes(`unreachable (${url})`), `names the refused bridge and its endpoint: ${error.message}`)
+      assert.doesNotMatch(error.message, /timed out after 20s/, 'a refused connection is not reported as a timeout')
       assert.match(error.message, /ECONNREFUSED|fetch failed/i)
       assert.equal(classifyFailure({ ...base, error: error.message })?.kind, 'bridge')
       return true
@@ -113,6 +115,8 @@ test('a dispatch that never answers names the bridge, not an unknown failure', a
       () => runnerFor(url).run(withUrl(context, url)),
       (error: Error) => {
         assert.match(error.message, /FlyBot bridge/)
+        assert.match(error.message, /timed out after 20s/, 'the timeout branch is named, not collapsed into the transport one')
+        assert.doesNotMatch(error.message, /unreachable/, 'a timeout is not reported as an unreachable bridge')
         assert.match(error.message, /The operation was aborted due to timeout/)
         assert.equal(classifyFailure({ ...base, error: error.message })?.kind, 'bridge')
         return true
