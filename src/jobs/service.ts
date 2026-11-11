@@ -910,6 +910,11 @@ export class Jobs {
       if (combined.count > 0 && combined.state !== 'success') reasons.push(`Commit status is ${combined.state}.`)
       if (changesRequested) reasons.push('Changes requested.')
       if (testEvidence.state === 'contradicted') reasons.push('Test evidence is contradicted by the check runs.')
+      // #134: the job claims a green test, and no check run produced one — the
+      // test job was skipped or neutral, or no check is named as a test job. The
+      // panel must not say "Verified", and the gate must not merge on the claim:
+      // both read this snapshot, so the refusal is recorded here, once.
+      else if (testEvidence.claimed && testEvidence.state === 'unverified' && checks.length > 0) reasons.push('Test evidence is claimed but no test check passed.')
       const verification: VerificationResult = {
         ok: reasons.length === 0,
         checkedAt: nowIso(),
@@ -1028,6 +1033,17 @@ export class Jobs {
       if (checks.some((run) => run.status !== 'completed' || !['success', 'neutral', 'skipped'].includes(run.conclusion ?? ''))) {
         this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: checks are not green`)
         return { ok: false, message: 'PR 检查还没有全绿。' }
+      }
+      // #134 D3: the panel and this gate must read the same row the same way. The
+      // sweep above tolerates `neutral`/`skipped` for every check — that is #79's
+      // `ci-ok` question, not this one — but a job that claims a green test and
+      // has no passing test check is refused here, before the merge call, under
+      // the same evidence rule the panel applies. This is the gate that actually
+      // merges, so the refusal the snapshot records needs a reader here too.
+      const claimedTest = parseEvidenceJson(job.evidence_json)?.testGreen !== undefined
+      if (claimedTest && evaluateTestEvidence(true, checks).state !== 'verified') {
+        this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: claimed test evidence is not verified`)
+        return { ok: false, message: 'PR 声称有测试证据，但没有通过的测试 check。' }
       }
       const combined = await client.getCombinedStatus(owner, name, pr.headSha)
       if (combined.count > 0 && combined.state !== 'success') {

@@ -402,8 +402,14 @@ re-check; nothing rewrites history.
 
 The same pass records a verification snapshot: PR state, head SHA, check runs,
 combined commit status, reviews, claimed test evidence against the check runs,
-and the reasons a merge is not ready. A claimed green test with a failing test
-check is contradicted and blocks the merge. The job
+and the reasons a merge is not ready. Test evidence counts only a check whose
+name identifies a test job (`test`, `tests`, `spec`, `specs` and the common
+runner names, matched on word boundaries) whose conclusion is `success`:
+`skipped` and `neutral` are completions without a verdict, so they leave the
+evidence unverified rather than contradicted, and a claim that no test check
+supports blocks the merge with "Test evidence is claimed but no test check
+passed." A claimed green test with a failing test check is contradicted and
+blocks the merge. The job
 page and the delivery list show `ready`, `blocked` or `not verified`, and
 `POST /repos/:id/jobs/:jobId/recheck` refreshes it on demand. Verification never
 replaces the merge gate's own re-check at the tip. The evidence row inside the
