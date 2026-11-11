@@ -681,11 +681,16 @@ server. A wildcard subdomain remains a future option if a certificate covers it.
 
 Verified webhooks drive a small follow-up loop: a failed check run/suite or a
 review requesting changes on a PR that has a Fledge job enqueues an iterate job
-with the existing branch and PR URL. The bridge prompt tells the agent to push
-to the same branch and update the existing PR, never open a second PR. The
-follow-up is deduped by delivery id and by repo + PR + head SHA + reason, and is
-skipped while the repository has an active job. A follow-up does not receive a
-second automation comment; the job list labels it "Follow-up".
+with the existing branch and PR URL. A `changes_requested` review also carries
+the maintainer's own words from `review.body` into the goal the agent is given,
+on one `Reviewer asked:` line, and the job page shows that line back so the
+maintainer can see what the agent was told. The bridge prompt tells the agent to
+push to the same branch and update the existing PR, never open a second PR. The
+follow-up is deduped by delivery id and by repo + PR + head SHA + a fingerprint
+of the reason with that instruction, and is skipped while the repository has an
+active job; requests are parked per fingerprint, so two different reviews on one
+commit are two follow-ups rather than one overwritten entry. A follow-up does not
+receive a second automation comment; the job list labels it "Follow-up".
 
 ### Plan-first-lite, checkpoints and templates
 
