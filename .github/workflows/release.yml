@@ -138,6 +138,24 @@ jobs:
           # signs, so `gh attestation verify` finds it from the image alone.
           push: true
 
+      # #280: the Release body is the one durable, API-readable place the digest,
+      # the SBOM and the attestation can be read back from without a registry
+      # credential, so `node scripts/verify-release.mjs` compares them instead of
+      # trusting a workflow run nobody opened. Written before the Release exists,
+      # so a run that fails earlier never leaves a body claiming them.
+      - name: Record the published chain in the release notes
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "Image: ${IMAGE}:${RELEASE_TAG}@${DIGEST}"
+            echo "SBOM: fledge-sbom-${RELEASE_TAG}"
+            echo "Attestation: ${DIGEST}"
+          } >> /tmp/release-notes.md
+
       - name: Create or update the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

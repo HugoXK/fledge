@@ -14,6 +14,7 @@ import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '..
 import { parseEvidenceJson } from '../lib/evidence.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
+import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
 import { readBackupStatus, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus } from '../lib/backupStatus.js'
 import { classifyFailure, failureLabel, failureSentence, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { filterTrials, trialCounts, trialStateOf, TRIAL_DAYS, type TrialCandidateSource, type TrialFilter } from '../lib/trials.js'
@@ -1687,6 +1688,8 @@ export function adminPage(input: {
   error?: string
   /** Defaults to the running process's surface; a test passes a fixture root. */
   release?: ReleaseSurface
+  /** The release chain recorded by `node scripts/verify-release.mjs`; null when none is recorded. */
+  releaseStatus?: ReleaseStatusSnapshot | null
   /** Defaults to reading `config.backup.dir`; a test passes a fixture directory. */
   backup?: BackupStatus
 }): string {
@@ -1754,6 +1757,48 @@ export function adminPage(input: {
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('待发布片段', 'Pending fragments'))}</strong><small>${release.fragments === null ? escapeHtml(absent) : release.fragments === 0 ? escapeHtml(t('没有待发布片段', 'nothing pending')) : escapeHtml(t(`${release.fragments} 个待发布片段`, `${release.fragments} pending fragment${release.fragments === 1 ? '' : 's'}`))}</small></div></div>
     </div>
   </section>`
+  // Issue #280: the chain is assembled by `node scripts/verify-release.mjs` and
+  // read from `${DATA_DIR}/release-status.json`; the page renders what that run
+  // recorded and never calls GitHub itself. The running row is the only live
+  // fact — this process knows the version and the commit stamp it booted with.
+  const releaseStatus = input.releaseStatus ?? null
+  const stateBadge = (state: string) => {
+    if (state === 'ok') return `<span class="badge good">${escapeHtml(t('正常', 'ok'))}</span>`
+    if (state === 'missing') return `<span class="badge bad">${escapeHtml(t('缺失', 'missing'))}</span>`
+    if (state === 'mismatch') return `<span class="badge bad">${escapeHtml(t('不一致', 'mismatch'))}</span>`
+    return `<span class="badge busy">${escapeHtml(t('跳过', 'skipped'))}</span>`
+  }
+  const linkLabel = (id: string) => {
+    const labels: Record<string, [string, string]> = {
+      version: ['版本', 'Version'],
+      plan: ['发布计划', 'Plan'],
+      branch: ['发布分支', 'Release branch'],
+      pull: ['发布 PR', 'Release PR'],
+      tag: ['标签', 'Tag'],
+      image: ['镜像', 'Image'],
+      sbom: ['SBOM', 'SBOM'],
+      attestation: ['来源证明', 'Provenance'],
+      release: ['GitHub Release', 'GitHub Release'],
+      healthz: ['运行实例', 'Running instance'],
+    }
+    const pair = labels[id] ?? [id, id]
+    return t(pair[0]!, pair[1]!)
+  }
+  const chainRows = releaseStatus === null
+    ? `<p class="muted">${escapeHtml(t('这台实例还没有记录发布链。', 'No release chain is recorded on this instance.'))} <code>node scripts/verify-release.mjs --version X.Y.Z --write ${escapeHtml(config.dataDir)}/release-status.json</code></p>`
+    : `${releaseStatus.links
+        .map(
+          (entry) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(linkLabel(entry.id))}</strong><small>${escapeHtml(entry.detail)}</small></div><div class="row">${stateBadge(entry.state)}</div></div>`,
+        )
+        .join('')}${(() => {
+        const running = compareRunning(releaseStatus, { version: release.version ?? '', commit: config.build.commit })
+        return `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('这个进程', 'This process'))}</strong><small>${escapeHtml(running.detail)}</small></div><div class="row">${stateBadge(running.state)}</div></div>`
+      })()}`
+  const chainCard = `<section class="card">
+    <h2>${escapeHtml(t('发布链', 'Release chain'))}${releaseStatus === null ? '' : ` <small class="count">v${escapeHtml(releaseStatus.version)} · ${escapeHtml(releaseStatus.ok ? t('已发布', 'released') : t('未完成', 'not released'))}${releaseStatus.checkedAt === '' ? '' : ` · ${escapeHtml(t(`检查于 ${releaseStatus.checkedAt}`, `checked ${releaseStatus.checkedAt}`))}`}${releaseStatus.releaseUrl === '' ? '' : ` · <a class="link" href="${escapeHtml(releaseStatus.releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(t('GitHub Release', 'GitHub Release'))}</a>`}</small>`}</h2>
+    <div class="list">${chainRows}</div>
+  </section>`
+
   // The console can only show what the writer leaves on disk: a copy and its
   // manifest. A run that fails writes nothing, so "the night was good" is never
   // claimed here - the card reports staleness and a manifest that no longer
@@ -1826,6 +1871,7 @@ export function adminPage(input: {
     ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出用户视图预览', 'Exit user preview') : t('预览用户视图', 'Preview the user view'))}</button></form>` : ''}
   </section>
   ${releaseCard}
+  ${chainCard}
   ${backupCard}
   <section class="card">
     <h2>${escapeHtml(t('待审批', 'Pending'))} <small class="count">${pending.length}</small></h2>
