@@ -189,12 +189,14 @@ per day. Test mail is rate-limited to one per minute.
   per-repository or per-role gate, and the scheduler tick returns before it
   creates, dispatches or merges work. The guard is therefore in the admission
   path and not only on a route: a repository that is due cannot enqueue either.
-- The drain is bounded to 25 active jobs per stop. A running job whose bridge is
-  reachable is paused, so its checkpoint survives; a job with no bridge, or one
-  that cannot be paused, is cancelled with a terminal reason. Either way its
-  platform token is revoked, so it cannot keep spending. Past the bound the next
-  tick finishes the drain, and a `platform.drain_incomplete` audit row says how
-  many jobs are left.
+- The drain is bounded. The stop's own request drains 5 active jobs, because the
+  operator is waiting on that form post, and each scheduler tick then drains up to
+  25 more until nothing is active. A running job whose bridge is reachable is
+  paused, so its checkpoint survives; a job with no bridge, or one that cannot be
+  paused, is cancelled with a terminal reason. Either way its platform token is
+  revoked, so it cannot keep spending. `platform.drain_incomplete` says how many
+  jobs are still left (once on the stop, then on each tick that ends with work
+  remaining), and `platform.drain_complete` records the pass that empties them.
 - A stop writes exactly one `platform.stopped` audit row and changes nothing
   else: no repository is disabled (`repos.enabled` is untouched), no token is
   rotated, no user is changed and no row is deleted. A second stop while stopped

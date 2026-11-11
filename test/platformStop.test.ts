@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
-import { Jobs } from '../src/jobs/service.js'
+import { Jobs, PLATFORM_DRAIN_LIMIT, PLATFORM_STOP_DRAIN_LIMIT } from '../src/jobs/service.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { failureBannerSentence } from '../src/lib/failure.js'
 import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
@@ -337,6 +337,63 @@ test('a burst against the stop and resume routes is refused at the same threshol
     assert.equal(resumeRefused.statusCode, 429, 'a burst past the form threshold was accepted on resume')
     const resumedAudits = f.store.listAuditPageForUsers(null, 100, 0).filter((row) => row.action === 'platform.resumed').length
     assert.equal(resumedAudits, 1, 'the refused resume wrote another audit row')
+  } finally {
+    await f.built.close()
+  }
+})
+
+test('a stop drains past the inline bound on the following ticks and records the completion', async () => {
+  const f = await platformFixture()
+  try {
+    // The fixture already carries one running job. Add enough that neither the
+    // inline pass nor one tick can finish them, which is the case the old suite
+    // never built: the thirty-iteration loop above is the HTTP limiter, not the
+    // job bound.
+    const extra = PLATFORM_STOP_DRAIN_LIMIT + PLATFORM_DRAIN_LIMIT
+    for (let i = 0; i < extra; i += 1) {
+      const repo = f.store.createRepo({
+        userId: f.owner.id,
+        id: `repo_drain_${i}`,
+        name: `drain-${i}`,
+        owner: 'acme',
+        defaultBranch: 'main',
+        tokenEnc: 'x',
+        permission: 'admin',
+        repoRole: 'maintainer',
+        goal: '',
+        intervalMinutes: 1440,
+        autoIterate: false,
+      })
+      const tokenHash = `drain-hash-${i}`
+      f.store.createApiToken({ id: `tok_drain_${i}`, userId: f.owner.id, kind: 'job', name: `job:job_drain_${i}`, tokenHash, prefix: 'flg_drn', expiresAt: null })
+      f.store.createJob({ id: `job_drain_${i}`, repoId: repo.id, userId: f.owner.id, trigger: 'manual', goal: 'g', callbackHash: `cb-drain-${i}`, platformTokenHash: tokenHash })
+      f.store.updateJob(`job_drain_${i}`, { status: 'running' })
+    }
+    const total = extra + 1
+
+    const stopped = await f.built.jobs.stopPlatform({ id: f.admin.id, login: f.admin.login }, 'mass outage')
+    assert.equal(stopped.left, total - PLATFORM_STOP_DRAIN_LIMIT, 'the stop drained past its inline bound')
+    assert.equal(f.store.listActiveJobs().length, total - PLATFORM_STOP_DRAIN_LIMIT)
+
+    // One tick, one bounded pass; the pass that reaches the end records the
+    // completion. Without the tick step the remainder stayed active with valid
+    // platform tokens while the platform said it was stopped.
+    await f.built.jobs.tick()
+    assert.equal(
+      f.store.listActiveJobs().length,
+      total - PLATFORM_STOP_DRAIN_LIMIT - PLATFORM_DRAIN_LIMIT,
+      'the tick did not drain up to its own bound',
+    )
+    await f.built.jobs.tick()
+    assert.equal(f.store.listActiveJobs().length, 0, 'jobs past the inline bound were still active while the platform was stopped')
+
+    const actions = f.store.listAuditPageForUsers(null, 200, 0).map((row) => row.action)
+    assert.ok(actions.includes('platform.drain_incomplete'), 'the first bounded pass left work with no audit row saying so')
+    assert.ok(actions.includes('platform.drain_complete'), 'the drain finished without recording its completion')
+    for (let i = 0; i < extra; i += 1) {
+      assert.equal(f.store.findApiToken(`drain-hash-${i}`), undefined, `job_drain_${i} kept its platform token past the drain`)
+    }
+    assert.equal(f.store.findApiToken('platform-busy-hash'), undefined)
   } finally {
     await f.built.close()
   }

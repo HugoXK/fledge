@@ -613,12 +613,15 @@ dispatches or merges work — the follow-up release, the due retries, the auto-m
 reconcile, the queue dispatch and both scheduling loops. The admission check is
 what covers a due repository, which reaches `enqueue()` without a route.
 
-The drain is bounded to 25 active jobs per stop: running jobs with a reachable
+The drain is bounded in two places: the stop request itself drains 5 active jobs
+because the operator waits on it, and every following tick drains up to 25 more
+before its own return, until no job is active. Running jobs with a reachable
 bridge are paused so their checkpoint survives, the rest are cancelled with a
-terminal reason, and every drained job loses its platform token. Past the bound
-the next tick finishes the drain. A resume deletes the row and reports the
-repositories the tick will consider (`nextTickDue()` is a read: it makes no
-bridge call and no enqueue); it does not replay the set the stop froze.
+terminal reason, and every drained job loses its platform token. The pass that
+empties the remainder writes `platform.drain_complete`; a pass that still leaves
+work writes `platform.drain_incomplete` with the count. A resume deletes the row
+and reports the repositories the tick will consider (`nextTickDue()` is a read: it
+makes no bridge call and no enqueue); it does not replay the set the stop froze.
 
 ### Team session reconciliation
 

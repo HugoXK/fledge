@@ -56,10 +56,13 @@ export interface EnqueueResult {
 // to the row instead of to a field on this object. A cached copy is exactly how a
 // restart, or a second process, would silently resume scheduling.
 const PLATFORM_STOP_KEY = 'platform.stop'
-// One operator action has to finish, so the drain is bounded: past this many
-// active jobs the next tick drains the rest, because admission is already closed
-// and no new job can take their place.
-const PLATFORM_DRAIN_LIMIT = 25
+// #283 review: one operator action has to finish, so the drain is bounded in two
+// places. The inline pass runs while the operator is waiting on a form post, so it
+// takes a small slice; the tick then finishes the drain at the per-pass bound and
+// keeps going on later ticks until nothing is active. Admission is already
+// closed, so no new job can take the place of a drained one.
+export const PLATFORM_DRAIN_LIMIT = 25
+export const PLATFORM_STOP_DRAIN_LIMIT = 5
 
 export interface PlatformStopRecord {
   at: string
@@ -294,22 +297,16 @@ export class Jobs {
     }
   }
 
-  async stopPlatform(actor: { id: string; login: string }, reason: string): Promise<PlatformStopOutcome> {
-    const existing = this.platformStop()
-    if (existing !== null) return { stop: existing, already: true, paused: 0, cancelled: 0, left: 0 }
-    const stop: PlatformStopRecord = { at: nowIso(), by: actor.login, reason: reason.trim().slice(0, 200) }
-    this.store.setSetting(PLATFORM_STOP_KEY, JSON.stringify(stop))
-    // One audit row for the stop itself; the drain below writes the per-job rows
-    // through `pauseJob`/`cancelJob`, which is where a reader looks for a job.
-    this.store.audit(actor.id, 'platform.stopped', `${stop.by}: ${stop.reason === '' ? 'no reason given' : stop.reason}`)
-    this.store.event('platform_stopped', { userId: actor.id, meta: stop.reason.slice(0, 100) })
+  // One pass over the active jobs. A running job whose bridge answers is paused so
+  // its checkpoint survives; anything else is cancelled with a terminal reason.
+  // Either way its platform token is revoked, so it cannot keep spending while the
+  // platform says it is stopped. `left` is the count the bound did not reach.
+  private async drainActiveJobs(limit: number): Promise<{ paused: number; cancelled: number; left: number }> {
     const active = this.store.listActiveJobs()
-    const draining = active.slice(0, PLATFORM_DRAIN_LIMIT)
+    const draining = active.slice(0, limit)
     let paused = 0
     let cancelled = 0
     for (const job of draining) {
-      // A job with a bridge to talk to is paused so its checkpoint survives; one
-      // without stays a row with a terminal reason instead of a silent orphan.
       if (job.status === 'running' && this.instances !== undefined) {
         const result = await this.pauseJob(job.id, '平台已紧急停止，任务已暂停。')
         if (result.ok) {
@@ -320,11 +317,43 @@ export class Jobs {
       const result = await this.cancelJob(job.id, '平台已紧急停止，任务已取消。')
       if (result.ok) cancelled += 1
     }
-    const left = active.length - draining.length
-    if (left > 0) {
-      this.store.audit(actor.id, 'platform.drain_incomplete', `${left} active jobs past the drain bound of ${PLATFORM_DRAIN_LIMIT}; the tick completes them`)
+    return { paused, cancelled, left: Math.max(0, active.length - draining.length) }
+  }
+
+  async stopPlatform(actor: { id: string; login: string }, reason: string): Promise<PlatformStopOutcome> {
+    const existing = this.platformStop()
+    if (existing !== null) return { stop: existing, already: true, paused: 0, cancelled: 0, left: 0 }
+    const stop: PlatformStopRecord = { at: nowIso(), by: actor.login, reason: reason.trim().slice(0, 200) }
+    this.store.setSetting(PLATFORM_STOP_KEY, JSON.stringify(stop))
+    // One audit row for the stop itself; the drain below writes the per-job rows
+    // through `pauseJob`/`cancelJob`, which is where a reader looks for a job.
+    this.store.audit(actor.id, 'platform.stopped', `${stop.by}: ${stop.reason === '' ? 'no reason given' : stop.reason}`)
+    this.store.event('platform_stopped', { userId: actor.id, meta: stop.reason.slice(0, 100) })
+    const drain = await this.drainActiveJobs(PLATFORM_STOP_DRAIN_LIMIT)
+    if (drain.left > 0) {
+      this.store.audit(actor.id, 'platform.drain_incomplete', `${drain.left} active jobs past the inline drain bound of ${PLATFORM_STOP_DRAIN_LIMIT}; the tick completes them, ${PLATFORM_DRAIN_LIMIT} per pass`)
     }
-    return { stop, already: false, paused, cancelled, left }
+    return { stop, already: false, paused: drain.paused, cancelled: drain.cancelled, left: drain.left }
+  }
+
+  // The inline drain is bounded, so the tick is where it finishes. One pass per
+  // tick at the per-pass bound, with the stop's own operator recorded as the actor
+  // and its own audit rows: an `incomplete` row while work remains, a `complete`
+  // row once nothing is active. Without this the drain's own audit row promised
+  // something no code did, and jobs past the inline bound kept their tokens.
+  private async completeStoppedDrain(stop: PlatformStopRecord): Promise<void> {
+    if (this.store.listActiveJobs().length === 0) return
+    const operator = stop.by === '' ? undefined : this.store.userByLogin(stop.by)
+    const drain = await this.drainActiveJobs(PLATFORM_DRAIN_LIMIT)
+    const left = this.store.listActiveJobs().length
+    if (operator !== undefined) {
+      if (left > 0) {
+        this.store.audit(operator.id, 'platform.drain_incomplete', `${left} active jobs still running while stopped; the next tick continues the drain, ${PLATFORM_DRAIN_LIMIT} per pass`)
+      } else {
+        this.store.audit(operator.id, 'platform.drain_complete', `paused ${drain.paused}, cancelled ${drain.cancelled}; no job is active while the platform is stopped`)
+      }
+    }
+    if (left > 0) log.info('platform drain continues', { left, paused: drain.paused, cancelled: drain.cancelled })
   }
 
   async resumePlatform(actor: { id: string; login: string }): Promise<PlatformResumeOutcome> {
@@ -2325,8 +2354,14 @@ export class Jobs {
     // dispatches or merges work. `releaseAllPendingFollowups`, `releaseDueRetries`,
     // `reconcileAutoMerge`, the queue dispatch and both scheduling loops are all
     // below this line on purpose; the notification passes are below it too, so a
-    // stopped platform sends no digest or question mail either.
-    if (this.platformStop() !== null) return
+    // stopped platform sends no digest or question mail either. The drain step sits
+    // here because the stop's own drain is bounded: this is the pass that finishes
+    // it, and it runs before the return rather than after it.
+    const stopped = this.platformStop()
+    if (stopped !== null) {
+      await this.completeStoppedDrain(stopped).catch((error) => log.warn('platform drain pass failed', { error: String(error) }))
+      return
+    }
     await this.releaseAllPendingFollowups().catch((error) => log.warn('pending follow-up recovery failed', { error: String(error) }))
     await this.releaseDueRetries().catch((error) => log.warn('due retry release failed', { error: String(error) }))
     await this.reconcileAutoMerge().catch((error) => log.warn('auto-merge reconcile failed', { error: String(error) }))
