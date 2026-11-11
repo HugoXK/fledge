@@ -200,6 +200,27 @@ test('a SARIF with no analysis run fails closed and says which shape it was', (t
   assert.match(run.stderr, /has no analysis run \(runs: 0\)/)
 })
 
+// The same verdict in its other two shapes: no runs key at all, and runs that is
+// not a list. Both are "never analysed anything", so both name that shape rather
+// than being counted as zero runs or, worse, as a pass.
+test('a SARIF whose runs is missing or not a list names that shape', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+
+  writeFileSync(join(sarifDir, 'head.sarif'), JSON.stringify({ version: '2.1.0' }))
+  const missing = runGate(sarifDir, baselinePath)
+  assert.equal(missing.code, 1, 'a document with no runs key must fail closed')
+  assert.match(missing.stderr, /has no analysis run \(runs: missing or not a list\)/)
+
+  writeFileSync(join(sarifDir, 'head.sarif'), JSON.stringify({ version: '2.1.0', runs: 'nope' }))
+  const notList = runGate(sarifDir, baselinePath)
+  assert.equal(notList.code, 1, 'runs that is not a list must fail closed')
+  assert.match(notList.stderr, /has no analysis run \(runs: missing or not a list\)/)
+})
+
 test('a malformed JSON body fails closed as unreadable, not as empty', (t) => {
   const dir = tempDir(t)
   const baselinePath = join(dir, 'baseline.json')
