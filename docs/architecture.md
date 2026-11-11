@@ -60,13 +60,45 @@ state contract and its evidence are in [docs/ui.md](ui.md).
 - **Bilingual UI** in Chinese and English. The locale is stored in the
   `fledge_lang` cookie, and the header switch shares the `hugoxk-lang`
   preference with the rest of the platform.
+- **First-run checklist** (`src/views/checklist.ts`): `/dashboard` shows five
+  steps — repository, role, model provider, instance, first job — and every
+  step's state is read from the database on the request, so a cookie, a second
+  browser or a cleared store cannot change which step is next. The pure state
+  machine decides the single primary action; a step whose prerequisite is
+  missing states the reason instead of offering a control. Once a job exists the
+  checklist is replaced by a first-run summary whose outcome is the first job's
+  own status, read all-time (not a window-scoped count), in four shapes: the
+  job's PR link when it opened one, "finished" with a link to Recent jobs when it
+  succeeded without a PR, "running" while it is queued or running, and the retry
+  path on the repository page when it failed.
 - **Shell** (`src/views/layout.ts`, `public/app.css`): the main nav marks the
   current section with `aria-current="page"`, derived from the route and
   overridable with `active`. The sticky header owns `--header-h` (re-declared
   per breakpoint); `[id] { scroll-margin-top }` and the workspace frame's height
-  both follow it, so an anchor is never hidden under the header when it wraps
-  and the frame's bottom lands at the viewport bottom. The shell's controls keep
-  a 44px touch target.
+  both follow it, so an anchor is never hidden under the header and the frame's
+  bottom lands at the viewport bottom. The shell's controls keep a 44px touch
+  target. At or below 960px the header is one **fixed** 64px row and the
+  navigation collapses behind a `data-nav-toggle` button that publishes
+  `aria-expanded`; the open menu is an absolutely positioned panel, so it
+  overlays the page and `--header-h` keeps the collapsed height while it is
+  open. The toggle itself is hidden above 960px by a base rule, so the desktop
+  header never shows a control whose panel does not exist there. Every
+  destination the wide header lists is still rendered in the panel, so a
+  collapsed header loses no route. The 641-960px band used to keep the wrapped
+  two-row header — 215px at 768px, a quarter of a tablet screen — and #233
+  widened the compact row to cover it; the phone's own 640px block re-declares
+  the same row with tighter padding. Below 420px the row also drops the wordmark (the
+  mark and its own `aria-label` stay) and tightens its padding and gaps: at a
+  360px viewport with a classic 15px scrollbar the row has 301px of usable
+  width, and the wordmark is the one child that can leave without taking a
+  route or a 44px target with it. The same floor covers the controls inside
+  `main` and in the footer: it is the `--touch` token, applied by container
+  (`td .link`, `button.link`, `.foot a`, `label.check`) rather than to `.link`,
+  because a link inside a sentence is exempt and must keep its line box; a link
+  that is the whole paragraph is a target, so the template marks it
+  (`.fine-link`) and the class carries the floor. Text fields, selects and
+  textareas are 16px below 641px, the size below which iOS zooms a focused
+  field.
 - **Redirect targets**: every `next=` / `returnTo` value goes through one helper
   that returns a path on this site or the fallback. It validates the parsed
   result, not the input, so a value that is a plain path before parsing and
@@ -157,6 +189,12 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   checks and approvals before it performs a squash merge. The agent prompt
   always forbids merging. The switch is stored on the repository and included
   in the job payload for reporting. A stale or downgraded role blocks the merge.
+  A merge also needs the newest `iterate` job for that pull request to have
+  succeeded: a queued, running, failed, cancelled or paused follow-up on the
+  same PR holds it back, so an older succeeded job cannot merge work that is
+  still in flight or that failed afterwards. A pull request that is already
+  merged is never a candidate, so the bulk merge does not re-check it on every
+  pass.
 
 ### Model gateway
 
@@ -397,6 +435,33 @@ and a failed delivery can be retried. Opening checks or approving a review
 triggers an auto-merge reconcile, and the scheduler re-checks open Fledge PRs at
 most every `AUTO_MERGE_RECONCILE_MINUTES`.
 
+### Scheduled work and work items
+
+Work items are a tracking board, not a second scheduler lock. A scheduled
+iterate job is blocked by an active job for the same repository, a failing
+credential or a duplicate issue, but not by a `pr_ready`, `in_review` or stale
+`in_progress` item. A failed job returns its `assigned`/`in_progress` work item
+to `triaged` so a later schedule can pick it up.
+
+### Team session reconciliation
+
+A DSH restart can create new session IDs for the Chief and role bots. Fledge
+reads the live DSH `state`, maps the current Chief/Lead/Product/Test/Security/
+Reviewer/Dev sessions, and updates `team_json` plus `chief_session` when they
+differ. The reconciliation runs after a healthy probe and immediately before job
+dispatch, and it is audited as `flybot.team.sessions_refreshed`. If any role is
+missing, the stored team is left untouched.
+
+### Bot model assignment
+
+Applying a provider model rewrites the DSH provider patch and updates every role
+bot. A skipped or failed `update-bot` keeps `models_dirty=1`, records
+`flybot.bot_models.failed` and returns `BOT_MODEL_ASSIGNMENT_FAILED`; Fledge does
+not report a successful model switch while a bot still points at the previous
+provider. Bot models are also reconciled after provisioning and before job
+dispatch, and a mismatch blocks dispatch with the same code rather than starting
+a job that would stall.
+
 ### Webhook delivery console
 
 GitHub webhook deliveries are recorded in `webhook_deliveries` with a bounded
@@ -589,8 +654,12 @@ every page carries `v<version>` while the `/admin` card states the running
 version (naming `package.json` as its source), the newest section and the pending
 count. A path that is missing at runtime renders "not available in this build"
 for that line rather than `0` or `—`; a zero fragment count is a real fact and
-reads "nothing pending". The surface reports no commit or build identifier — the
-version the release routine keeps in step is the only fact it can prove.
+reads "nothing pending". This release surface stays a local-files read and names
+no commit. The build identity lives on `/healthz` instead — `commit` and
+`builtAt`, stamped at build time from `GIT_SHA`/`BUILD_TIME` and explained in
+decision [0007](decisions/0007-build-identity.md) — because two `main` builds
+between a tag and the next version bump answer the same `version` and cannot
+otherwise be told apart from outside.
 
 ### Operational alerts
 

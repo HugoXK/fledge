@@ -1,7 +1,14 @@
 services:
   fledge:
-    build: .
-    image: fledge:0.3.0
+    build:
+      context: .
+      # #183: the build identity reaches `/healthz` through the image, so the
+      # args are passed here rather than through the runtime environment. Unset
+      # (a local `docker compose build`) is honest: the image answers `unknown`.
+      args:
+        GIT_SHA: ${GIT_SHA:-}
+        BUILD_TIME: ${BUILD_TIME:-}
+    image: fledge:0.3.1
     restart: unless-stopped
     env_file:
       - .env

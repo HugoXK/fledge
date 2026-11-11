@@ -14,7 +14,7 @@ const workflowPath = fileURLToPath(new URL('../.github/workflows/ci.yml', import
 const riskModule = (await import('../scripts/lib/risk.mjs')) as {
   chooseBase?: (eventName: string, event: Record<string, unknown>) => { ref: string; fetch: string }
   loadRules: () => unknown
-  tierForFiles: (files: string[], rules: unknown) => { tier: string; basis?: string }
+  tierForFiles: (files: string[], rules: unknown) => { tier: string; basis?: string; files?: string[] }
 }
 
 const BASE_SHA = '9f'.repeat(20)
@@ -75,4 +75,37 @@ test('the risk job asks the shared script for its base instead of branching in Y
   const workflow = readFileSync(workflowPath, 'utf8')
   assert.match(workflow, /--print-base/, 'the risk job must take its base from the script that the tests exercise')
   assert.doesNotMatch(workflow, /ref=HEAD~1/, 'the HEAD~1 decision belongs in scripts/lib/risk.mjs, not in the workflow')
+})
+
+// The tier is computed per file and the strictest one wins. The old loop
+// returned the first tier in which any single file matched, so one docs file in
+// a mixed diff made the whole change T0 — and `AGENTS.md` promises that a path
+// no rule names is T2, never silently T0/T1.
+test('a diff mixing an unnamed path with a docs file is T2, not T0', () => {
+  const rules = riskModule.loadRules()
+  const result = riskModule.tierForFiles(['.env.example', 'docs/deploy.md'], rules)
+  assert.equal(result.tier, 'T2', 'the strictest per-file tier must win over every path')
+  assert.equal(result.basis, '.env.example', 'the unnamed path is what decides, by being T2')
+})
+
+test('per-file tiering keeps the single-file answers the old loop got right', () => {
+  const rules = riskModule.loadRules()
+  const tier = (files: string[]): string => riskModule.tierForFiles(files, rules).tier
+  assert.equal(tier(['docs/deploy.md']), 'T0')
+  assert.equal(tier(['src/views/pages.ts', 'docs/deploy.md']), 'T2')
+  assert.equal(tier(['.github/workflows/ci.yml', 'src/views/pages.ts']), 'T3')
+})
+
+test('a path no rule names is T2 on its own, with itself as the basis', () => {
+  const rules = riskModule.loadRules()
+  const result = riskModule.tierForFiles(['notes/unlisted.md'], rules)
+  assert.equal(result.tier, 'T2')
+  assert.equal(result.basis, 'notes/unlisted.md')
+})
+
+test('the winning tier still lists every file that justifies it', () => {
+  const rules = riskModule.loadRules()
+  const result = riskModule.tierForFiles(['src/app.ts', '.env.example', 'docs/deploy.md'], rules)
+  assert.equal(result.tier, 'T2')
+  assert.deepEqual(result.files, ['src/app.ts', '.env.example'], 'the report keeps the matched files, it just stops deciding from the first one')
 })

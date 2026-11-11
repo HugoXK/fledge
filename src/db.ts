@@ -811,6 +811,13 @@ function durationMs(start: string | null, end: string | null): number | null {
   return Number.isFinite(a) && Number.isFinite(b) && b >= a ? b - a : null
 }
 
+// One definition of "newest job" for a pull request. created_at is a
+// millisecond string, so two rows for the same PR can tie; rowid is the only
+// stable tie-break, and both callers must order the same way.
+function newestJobOrder(alias: string): string {
+  return `${alias}.created_at DESC, ${alias}.rowid DESC`
+}
+
 export class Store {
   readonly db: Database
 
@@ -2052,6 +2059,16 @@ export class Store {
     return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM jobs WHERE user_id = ?', userId)?.n ?? 0)
   }
 
+  // #227: the first-run summary asks about this account's first job, not about a
+  // page of recent jobs, so it reads the oldest row by created_at. The read is
+  // all-time on purpose: a window-scoped count would give the same account two
+  // different first-run conclusions depending on ?window. SQLite serves it from
+  // jobs_user_idx (user_id, created_at DESC) by a reverse scan, so this is a
+  // LIMIT 1 against an existing index and not a scan of the history.
+  firstJobForUser(userId: string): JobRow | undefined {
+    return this.get<JobRow>('SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at ASC LIMIT 1', userId)
+  }
+
   listJobsSince(userId: string, sinceIso: string): JobRow[] {
     return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? AND (created_at >= ? OR finished_at >= ?) ORDER BY created_at DESC', userId, sinceIso, sinceIso)
   }
@@ -2062,6 +2079,24 @@ export class Store {
 
   listPrJobsForRepo(repoId: string, limit = 20): JobRow[] {
     return this.all<JobRow>("SELECT * FROM jobs WHERE repo_id = ? AND pr_url IS NOT NULL AND kind = 'iterate' AND (pr_state IS NULL OR pr_state != 'merged') ORDER BY created_at DESC LIMIT ?", repoId, limit)
+  }
+
+  // For each pull request URL, the one iterate job that decides its merge:
+  // newer than every other row for that URL, with rowid breaking a tie. A pull
+  // request that is already merged or closed is not a merge candidate at all —
+  // the bulk merge would otherwise re-check it on every pass and report it as
+  // skipped, and the scheduled reconciler already skips both states.
+  listNewestPrJobsForRepo(repoId: string, limit = 20): JobRow[] {
+    return this.all<JobRow>(
+      `SELECT j.* FROM jobs AS j
+       WHERE j.repo_id = ? AND j.pr_url IS NOT NULL AND j.kind = 'iterate'
+         AND (j.pr_state IS NULL OR j.pr_state NOT IN ('merged', 'closed'))
+         AND j.rowid = (SELECT j2.rowid FROM jobs AS j2
+                        WHERE j2.repo_id = j.repo_id AND j2.pr_url = j.pr_url AND j2.kind = 'iterate'
+                        ORDER BY ${newestJobOrder('j2')} LIMIT 1)
+       ORDER BY ${newestJobOrder('j')} LIMIT ?`,
+      repoId, limit,
+    )
   }
 
   updateJobsPrState(prUrl: string, state: string): void {
@@ -2077,7 +2112,11 @@ export class Store {
   }
 
   latestJobByPrUrl(userId: string, prUrl: string): JobRow | undefined {
-    return this.get<JobRow>('SELECT * FROM jobs WHERE user_id = ? AND pr_url = ? ORDER BY created_at DESC LIMIT 1', userId, prUrl)
+    return this.get<JobRow>(`SELECT * FROM jobs AS j WHERE j.user_id = ? AND j.pr_url = ? ORDER BY ${newestJobOrder('j')} LIMIT 1`, userId, prUrl)
+  }
+
+  newestIterateJobByPrUrl(userId: string, prUrl: string): JobRow | undefined {
+    return this.get<JobRow>(`SELECT * FROM jobs AS j WHERE j.user_id = ? AND j.pr_url = ? AND j.kind = 'iterate' ORDER BY ${newestJobOrder('j')} LIMIT 1`, userId, prUrl)
   }
 
   createWorkItem(input: { id: string; repoId: string; userId: string; title: string; detail?: string; issueUrl?: string | null; prUrl?: string | null; state?: string; priority?: number; assigneeUserId?: string | null; jobId?: string | null; prState?: string | null; mergedAt?: string | null; mergeCommit?: string | null }): WorkItemRow {
@@ -2106,14 +2145,6 @@ export class Store {
 
   listWorkItems(repoId: string): WorkItemRow[] {
     return this.all<WorkItemRow>('SELECT * FROM work_items WHERE repo_id = ? ORDER BY priority DESC, updated_at DESC', repoId)
-  }
-
-  hasActiveWorkItem(repoId: string): boolean {
-    const row = this.get<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM work_items WHERE repo_id = ? AND state IN ('assigned', 'in_progress', 'pr_ready', 'in_review', 'changes_requested', 'approved')",
-      repoId,
-    )
-    return Number(row?.n ?? 0) > 0
   }
 
   listOpenWorkItems(repoId: string): WorkItemRow[] {

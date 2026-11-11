@@ -1,0 +1,10 @@
+[
+  {
+    "expression": "github.event.pull_request.number",
+    "reason": "review-gate.yml:77 runs the repair script with the pull request number; a number cannot carry a shell metacharacter, and the review gate file is outside this issue's edit scope"
+  },
+  {
+    "expression": "github.event.issue.number",
+    "reason": "review-gate.yml:121, the same repair script on the issue_comment path; a number, same scope reason"
+  }
+]

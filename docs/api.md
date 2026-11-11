@@ -252,6 +252,18 @@ base branch. A URL that does not match, or a PR that does not belong to the job,
 is skipped without a merge and recorded as `job.merge_skipped` with the specific
 mismatch (host, repository, head or base).
 
+The job state decides the automatic merge as well: for each pull request only the
+newest `iterate` job for that PR may merge, and only after it has succeeded
+(`created_at DESC`, `rowid DESC` as the tie-break). A queued, running, failed,
+cancelled or paused follow-up therefore holds the pull request back — an older
+succeeded job for the same PR never merges past its newer attempt. The scheduled
+reconciler skips those PRs, and `POST /repos/:id/delivery/merge-clean` reports
+them in `skipped` with the job state instead of merging them. A pull request that
+is already merged is not a candidate at all: no new `iterate` job for it can
+bring it back, and the bulk merge neither re-checks it nor counts it as skipped.
+Each `skipped` entry carries its reason, so the operator message tells a job-state
+skip apart from one where checks or branch protection refused the merge.
+
 ### `POST /api/jobs/:id/callback`
 
 Headers: `Authorization: Bearer <callbackSecret>`, `Content-Type: application/json`
@@ -395,7 +407,11 @@ Status code: `402`.
 
 ## Health
 
-`GET /healthz` → `{ "ok": true, "service": "fledge", "version": "0.2.4" }`.
+`GET /healthz` → `{ "ok": true, "service": "fledge", "version": "0.2.4", "commit": "0123456789ab", "builtAt": "2026-11-10T00:00:00Z", "time": "..." }`.
+
+`commit` and `builtAt` always appear; a build that carried no stamp answers
+`"unknown"` for both, so an absent field is never mistaken for a match. The
+values above are illustrative — read the real ones from the running service.
 
 ## Conventions
 

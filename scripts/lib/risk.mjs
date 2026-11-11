@@ -46,18 +46,33 @@ export function matchesPath(path, pattern) {
 }
 const matches = matchesPath
 
-export function tierForFiles(files, rules = loadRules()) {
-  const tiers = ['T3', 'T2', 'T1', 'T0']
-  for (const tier of tiers) {
+const TIERS = ['T3', 'T2', 'T1', 'T0']
+// Lower index is stricter. `AGENTS.md` promises that a path no rule names is
+// T2, never silently T0/T1, so an unnamed path takes `unknownPathTier`.
+const TIER_RANK = new Map(TIERS.map((tier, index) => [tier, index]))
+
+function tierOfFile(file, rules) {
+  for (const tier of TIERS) {
     const config = rules.tiers?.[tier]
     if (config === undefined) continue
-    for (const file of files) {
-      if ((config.paths ?? []).some((pattern) => matches(file, pattern))) {
-        return { tier, basis: file, files: files.filter((f) => (config.paths ?? []).some((p) => matches(f, p))) }
-      }
-    }
+    if ((config.paths ?? []).some((pattern) => matches(file, pattern))) return tier
   }
-  return { tier: rules.unknownPathTier ?? 'T2', basis: files[0] ?? 'no files', files }
+  return rules.unknownPathTier ?? 'T2'
+}
+
+// The tier is a property of every changed file, and the strictest one wins: the
+// old loop returned the first tier in which any single file matched, so one
+// docs file in a mixed diff exempted the rest of the change as T0. The returned
+// `files` still names the files that justify the winning tier, so the report
+// keeps its per-tier listing; only the decision stops coming from the first one.
+export function tierForFiles(files, rules = loadRules()) {
+  if (files.length === 0) return { tier: rules.unknownPathTier ?? 'T2', basis: 'no files', files: [] }
+  const perFile = files.map((file) => ({ file, tier: tierOfFile(file, rules) }))
+  let winner = perFile[0]
+  for (const entry of perFile.slice(1)) {
+    if ((TIER_RANK.get(entry.tier) ?? TIERS.length) < (TIER_RANK.get(winner.tier) ?? TIERS.length)) winner = entry
+  }
+  return { tier: winner.tier, basis: winner.file, files: perFile.filter((entry) => entry.tier === winner.tier).map((entry) => entry.file) }
 }
 
 export function classify(files, diffText = '', rules = loadRules()) {

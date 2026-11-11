@@ -68,10 +68,12 @@
   --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
   /* Height of the sticky header; re-declared per breakpoint because the header
-     wraps the nav onto its own row below 960px. These are the no-JS fallback:
-     public/app.js overwrites --header-h from the rendered header, and every
-     value keeps at least 20px (one line of body text) over the measured
-     height, so an anchor target still clears the header with the script off. */
+     is not one row at every width: every band at or below 960px fixes it at
+     64px plus the .top border, the wide header is content-driven and taller.
+     These are the no-JS fallback: public/app.js overwrites --header-h from the
+     rendered header, and every value keeps at least 20px (one line of body
+     text) over the measured height, so an anchor target still clears the
+     header with the script off. */
   --header-h: 90px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --touch: 44px;
@@ -308,7 +310,7 @@ td code { white-space: nowrap; }
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   background: var(--accent-strong); color: var(--accent-ink); border: 1px solid var(--accent-strong);
-  border-radius: 10px; padding: 9px 16px; font-weight: 700; font-size: 13.5px; cursor: pointer; min-height: var(--touch);
+  border-radius: 10px; padding: 9px 16px; font-weight: 700; font-size: 13.5px; cursor: pointer; min-height: var(--touch); min-width: var(--touch);
   box-shadow: 0 10px 28px rgba(76, 102, 245, 0.2);
   transition: background 0.15s, border-color 0.15s, transform 0.15s;
 }
@@ -326,6 +328,49 @@ input:disabled, select:disabled, textarea:disabled { opacity: 0.55; cursor: not-
 .link:hover { text-decoration: underline; }
 .link.bad { color: var(--danger); }
 .link.good { color: var(--good); }
+/* WCAG 2.5.5 / issue 132: a control that is one action per cell carries the 44px
+   target from --touch. The rule names the container (`td`) and the button
+   element, never `.link` itself: a link inside a sentence is exempt from the
+   floor and must keep its line box, so padding it would grow the paragraph
+   (acceptance 1 and 5). */
+td .link, button.link {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: var(--touch); min-height: var(--touch); padding: 8px 10px; border-radius: 8px;
+}
+.foot a { display: inline-flex; align-items: center; justify-content: center;
+  min-width: var(--touch); min-height: var(--touch); }
+/* The 13px checkbox glyph reaches the floor through the label around it, which
+   `pages.ts` already emits; no new element and no new attribute. */
+label.check { min-height: var(--touch); }
+/* issue 132 (WCAG 2.5.5): a link that is the whole paragraph is a target, not a
+   word inside a sentence, so the inline exception does not cover it. The class
+   is explicit because `p.fine` also carries prose links, which must keep their
+   line box. */
+.fine-link {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: var(--touch); min-width: var(--touch); padding: 8px 10px; border-radius: 8px;
+}
+
+/* issue 227: the first-run checklist. One primary action at a time, so the current
+   step carries the only button and the rest are text; a blocked step states its
+   reason instead of offering a control that cannot work yet. */
+.setup-steps { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
+.setup-step {
+  display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel);
+}
+.setup-step.is-current { border-color: var(--accent); }
+.setup-mark {
+  display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px;
+  border: 1px solid var(--line-strong); border-radius: 50%; font-size: 12px; font-weight: 700; color: var(--muted);
+}
+.setup-step.is-done .setup-mark { color: var(--good); border-color: var(--good); }
+.setup-step.is-current .setup-mark { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+.setup-main { display: grid; gap: 2px; min-width: 0; }
+.setup-main strong { font-size: 13.5px; }
+.setup-step.is-done .setup-main strong { color: var(--muted); font-weight: 600; }
+.setup-done { color: var(--good); font-size: 11.5px; }
+.setup-blocked { color: var(--muted-2); font-size: 11.5px; }
 
 .form { display: grid; gap: 13px; }
 .form label { display: grid; gap: 6px; font-size: 12.5px; color: var(--muted); }
@@ -479,19 +524,60 @@ a.list-row:hover strong { color: var(--accent); }
 .list-title-link:hover { color: var(--accent); text-decoration: none; }
 .list-meta { flex: none; }
 
+/* The menu toggle is rendered for every viewer at every width (#133), so the
+   base rule hides it and the compact bands (960px and 640px, below) turn it on.
+   It sits above both bands on purpose: it has the same specificity as their
+   .nav-toggle rule, so only source order decides, and while it came after the
+   960px block the band's display: inline-flex lost — a tablet showed no toggle,
+   only the 640px block re-showed it, and the menu was unreachable between 641
+   and 960px. A real browser found it (#233); the band's own text assertion
+   could not. Without this rule the desktop header shows a button whose panel
+   does not exist there, which flips aria-expanded without moving the
+   navigation. */
+.nav-toggle { display: none; }
+
 @media (max-width: 960px) {
   .hero { grid-template-columns: 1fr; gap: 26px; padding: 56px 0 42px; }
   .hero-copy, .loop-card, .hero-note { grid-column: 1; grid-row: auto; max-width: 760px; }
   .loop-card { max-width: 620px; }
   .hero-note { margin-top: 4px; }
   .cols, .stats { grid-template-columns: minmax(0, 1fr); }
-  :root { --header-h: 215px; }
-  .top-inner { padding: 10px 16px; gap: 10px 14px; }
-  .nav { order: 4; width: 100%; gap: 16px; padding-top: 4px; border-top: 1px solid var(--line); }
-  .nav a { padding: 10px 0; min-height: var(--touch); }
-  .lang, .account { order: 3; }
-  .spacer { display: none; }
+  /* Below 961px the header is the compact one (#233). It used to keep the
+     desktop wrap down to 641px: the nav took a full-width second row and the
+     header stood 215px at 768px — a quarter of a tablet viewport — while the
+     phone band below 641px already had a fixed row and a toggle. The row below
+     is that phone header, unchanged: one 64px line (65px with the .top border),
+     the same [data-nav-toggle] the base rule hides and this band shows, and the
+     same #main-nav list opened as an absolutely positioned panel, so --header-h
+     keeps the collapsed height while the menu is open. The 640px block below
+     re-declares it with the phone's tighter padding, and #133's fixed-row
+     reasoning is why both bands promise one height in either locale. */
+  :root { --header-h: 90px; }
+  .top-inner { height: 64px; min-height: 0; flex-wrap: nowrap; padding: 0 16px; gap: 10px; }
   .brand { margin-right: auto; }
+  .brand small { display: none; }
+  .spacer { display: none; }
+  .lang, .account { order: 3; }
+  .nav-toggle {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    order: 2; min-height: var(--touch); min-width: var(--touch); padding: 0 10px;
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    background: var(--surface-raised); color: var(--muted);
+    font: inherit; font-size: var(--text-sm); font-weight: 650; cursor: pointer;
+  }
+  .nav-toggle:hover { color: var(--text); border-color: var(--line-strong); }
+  .nav-toggle[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
+  .top .nav {
+    display: none; position: absolute; top: 100%; left: 0; right: 0;
+    order: initial; width: 100%; flex-direction: column; gap: 0;
+    padding: 4px 16px 8px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    background: var(--panel); box-shadow: var(--shadow);
+  }
+  .top[data-nav-open="true"] .nav { display: flex; }
+  /* The panel rows keep the 44px floor the wide header's links carry, so a
+     tablet reaches every destination with a finger, not only with a cursor. */
+  .top .nav a { padding: 0; min-height: var(--touch); border-bottom: 1px solid var(--row-line); }
+  .top .nav a:last-child { border-bottom: 0; }
   .wrap { padding: 28px 16px 72px; }
   .quota-card { flex-direction: column; align-items: flex-start; gap: 14px; }
   .meter { width: 100%; max-width: none; }
@@ -508,6 +594,39 @@ a.list-row:hover strong { color: var(--accent); }
   .flow { grid-template-columns: 1fr 1fr; }
   .account-name { display: none; }
   .account { padding: 4px; }
+  /* A phone header is one row of a fixed height (#133). It used to be
+     content-driven: the nav took a full-width row of its own, and the language
+     switch and the account pill wrapped below ~420px, so the same header
+     measured 125px logged out and 194.9/255.9px logged in. A fixed height
+     cannot be grown by a wrap, a longer label or a larger default font size,
+     which is what makes the 90px bound hold in both locales. The navigation is
+     not removed: one toggle opens it as an absolutely positioned panel, so it
+     overlays the page and .top keeps the height the ResizeObserver publishes
+     while the menu is open. The 960px block above carries the same compact
+     header for the tablet band (#233); this block re-declares it with the
+     phone's tighter padding and without the account pill. */
+  :root { --header-h: 90px; }
+  .top-inner { height: 64px; min-height: 0; flex-wrap: nowrap; padding: 0 12px; gap: 10px; }
+  .brand small { display: none; }
+  .account .pill { display: none; }
+  .nav-toggle {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    order: 2; min-height: var(--touch); min-width: var(--touch); padding: 0 10px;
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    background: var(--surface-raised); color: var(--muted);
+    font: inherit; font-size: var(--text-sm); font-weight: 650; cursor: pointer;
+  }
+  .nav-toggle:hover { color: var(--text); border-color: var(--line-strong); }
+  .nav-toggle[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
+  .top .nav {
+    display: none; position: absolute; top: 100%; left: 0; right: 0;
+    order: initial; width: 100%; flex-direction: column; gap: 0;
+    padding: 4px 16px 8px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    background: var(--panel); box-shadow: var(--shadow);
+  }
+  .top[data-nav-open="true"] .nav { display: flex; }
+  .top .nav a { padding: 0; border-bottom: 1px solid var(--row-line); }
+  .top .nav a:last-child { border-bottom: 0; }
   .workspace-hero { align-items: flex-start; flex-direction: column; gap: 18px; }
   .workspace-user h1 { font-size: 27px; }
   .workspace-avatar { width: 48px; height: 48px; border-radius: 14px; }
@@ -532,15 +651,34 @@ a.list-row:hover strong { color: var(--accent); }
   .job-table .job-summary { min-width: 0; max-width: none; }
   .job-table .job-links { white-space: normal; }
   .job-table td code { white-space: normal; overflow-wrap: anywhere; }
+  /* The field floor: iOS zooms a focused field below 16px, and the user then has
+     to pinch back out to reach the rest of the form (issue 132 acceptance 2). */
+  input, textarea, select { font-size: 16px; }
+  /* The quota and role controls live in an inline row, so their `width: 100%`
+     resolved against a minimum-content box. The existing wrapper becomes a
+     block-level row; no DOM change and no new class (issue 132 acceptance 3). */
+  .setup-step { grid-template-columns: 24px minmax(0, 1fr); }
+  .setup-step .btn { grid-column: 1 / -1; width: 100%; }
+  .admin-inline-form { flex-direction: column; align-items: stretch; width: 100%; }
+  .admin-control-row { width: 100%; flex-wrap: wrap; }
+  /* Stretching the row is not enough: a definite width does not stretch, and in
+     a column container `flex: 0 0 88px` sizes the height. The field fills the row
+     instead, `1 1 auto` leaves its height content-driven, and the 44px control
+     floor applies to these two fields like every other control (16px text plus
+     6px/8px padding is only ~33-38px tall). */
+  .admin-quota, .admin-role { width: 100%; flex: 1 1 auto; min-height: var(--touch); }
 }
 
 @media (max-width: 420px) {
-  /* Below ~410px the language switch and the account row each take their own
-     row, so the sticky header grows again. The measured header at 320-360px is
-     255.9px, so the fallback keeps 20px of headroom over it; public/app.js
-     replaces the value with the height it measures. */
-  :root { --header-h: 276px; }
-  .top-inner { padding: 10px 12px; }
+  /* At 360px with a classic 15px scrollbar the row has 345px minus the two
+     10px paddings and three 8px gaps: 301px for four children. The mark, the
+     toggle, the two 44px language targets and the 44px sign-out already take
+     more than that, so the wordmark leaves the row rather than a control:
+     the mark keeps the brand, the toggle still names itself, the language
+     switch keeps both targets and the account keeps its exit. #133 acceptance
+     3's 44px floor is not touched here. */
+  .top-inner { padding: 0 10px; gap: 8px; }
+  .brand > span:not(.mark) { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

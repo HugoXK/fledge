@@ -23,6 +23,7 @@ export const REQUIRED_JOBS = [
   'lint',
   'typecheck',
   'test',
+  'coverage',
   'build',
   'docker',
   'audit',
@@ -32,6 +33,8 @@ export const REQUIRED_JOBS = [
   'restore-drill',
   'dependency-review',
   'action-pins',
+  'workflow-lint',
+  'secret-scan',
 ]
 
 // A required job that cannot run on every event, with the events on which

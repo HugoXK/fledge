@@ -57,6 +57,9 @@ interface FakeState {
   headRepo: string
   baseRepo: string
   packageVersion: string
+  tags: string[]
+  tagTimes: Record<string, string>
+  headCommittedAt: string
 }
 
 function initialState(): FakeState {
@@ -77,6 +80,9 @@ function initialState(): FakeState {
     headRepo: 'o/r',
     baseRepo: 'o/r',
     packageVersion: '0.3.0',
+    tags: [],
+    tagTimes: {},
+    headCommittedAt: '',
   }
 }
 
@@ -111,6 +117,19 @@ async function withFakeGitHub(state: FakeState, body: (env: Record<string, strin
     }
     if (path === '/repos/o/r/contents/package.json') {
       json(response, 200, { encoding: 'base64', content: Buffer.from(JSON.stringify({ name: 'fledge', version: state.packageVersion }), 'utf8').toString('base64') })
+      return
+    }
+    if (path === '/repos/o/r/git/matching-refs/tags/v') {
+      json(response, 200, state.tags.map((tag) => ({ ref: `refs/tags/${tag}`, object: { sha: `sha-${tag}`, type: 'tag' } })))
+      return
+    }
+    const tagCommit = /^\/repos\/o\/r\/commits\/(v[0-9.]+)$/.exec(path)
+    if (tagCommit !== null) {
+      json(response, 200, { sha: tagCommit[1], commit: { committer: { date: state.tagTimes[tagCommit[1] ?? ''] ?? '' } } })
+      return
+    }
+    if (path === `/repos/o/r/commits/${state.sha}`) {
+      json(response, 200, { sha: state.sha, commit: { committer: { date: state.headCommittedAt } } })
       return
     }
     if (path === `/repos/o/r/commits/${state.sha}/check-runs`) {
@@ -212,6 +231,19 @@ test('the gate passes a T0 tip with no verdict, because no PASS is required', as
   })
 })
 
+test('a mixed diff of an unnamed path and a docs file is T2, so the gate needs a PASS', async () => {
+  const state = initialState()
+  state.files = ['.env.example', 'docs/deploy.md']
+  state.comments = []
+  state.reviews = []
+  state.checkRuns = []
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'one docs file must not exempt a diff that also touches an unnamed path')
+    assert.match(result.stderr, /no conclusion at /)
+  })
+})
+
 test('a same-repo release PR for the computed next still earns the T0 exemption', async () => {
   const state = initialState()
   state.title = 'release: v0.4.0'
@@ -226,6 +258,48 @@ test('a same-repo release PR for the computed next still earns the T0 exemption'
     const result = await runScript(gateScript, ['--pr', '7'], env)
     assert.equal(result.code, 0, result.stderr)
     assert.match(result.stdout, /review-gate: PASS/)
+  })
+})
+
+test('a same-week release PR for the patch still earns the T0 exemption', async () => {
+  const state = initialState()
+  state.packageVersion = '0.3.0'
+  state.title = 'release: v0.3.1'
+  state.branch = 'release/v0.3.1'
+  state.tags = ['v0.3.0']
+  state.tagTimes = { 'v0.3.0': '2026-11-09T16:23:33Z' }
+  state.headCommittedAt = '2026-11-10T14:30:00Z'
+  state.files = [
+    'CHANGELOG.md',
+    { filename: 'package.json', patch: '@@ -1,2 +1,2 @@\n-  "version": "0.3.0",\n+  "version": "0.3.1",\n' },
+    { filename: 'package-lock.json', patch: '@@ -1,2 +1,2 @@\n-  "version": "0.3.0",\n+  "version": "0.3.1",\n' },
+    { filename: 'docker-compose.yml', patch: '@@ -1,2 +1,2 @@\n-    image: fledge:0.3.0\n+    image: fledge:0.3.1\n' },
+  ]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /T0 at /)
+  })
+})
+
+test('a same-week minor release PR is not the mechanical next and needs its PASS', async () => {
+  const state = initialState()
+  state.packageVersion = '0.3.0'
+  state.title = 'release: v0.4.0'
+  state.branch = 'release/v0.4.0'
+  state.tags = ['v0.3.0']
+  state.tagTimes = { 'v0.3.0': '2026-11-09T16:23:33Z' }
+  state.headCommittedAt = '2026-11-10T14:30:00Z'
+  state.files = [
+    'CHANGELOG.md',
+    { filename: 'package.json', patch: '@@ -1,2 +1,2 @@\n-  "version": "0.3.0",\n+  "version": "0.4.0",\n' },
+    { filename: 'package-lock.json', patch: '@@ -1,2 +1,2 @@\n-  "version": "0.3.0",\n+  "version": "0.4.0",\n' },
+    { filename: 'docker-compose.yml', patch: '@@ -1,2 +1,2 @@\n-    image: fledge:0.3.0\n+    image: fledge:0.4.0\n' },
+  ]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /no conclusion at /)
   })
 })
 
@@ -369,6 +443,30 @@ test('the gate fails a verdict written for a different SHA', async () => {
     const result = await runScript(gateScript, ['--pr', '7'], env)
     assert.equal(result.code, 1)
     assert.match(result.stderr, /newest conclusion is for /)
+  })
+})
+
+// #213, pin not fix: the gate already reads the first line of a review object and
+// never `review.state`, so a `COMMENTED` review that rejects the tip is a
+// conclusion like any other. Both tests below hold that property still; they
+// pass on today's code, which is the point of pinning them.
+test('pin: a COMMENTED review object whose first line rejects the tip fails the gate, because review.state is not read', async () => {
+  const state = initialState()
+  state.reviews = [{ body: REJECT_BODY, state: 'COMMENTED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'a platform-COMMENTED review still carries the verdict its first line states')
+    assert.match(result.stderr, /newest conclusion is REQUEST_CHANGES/)
+  })
+})
+
+test('pin: a COMMENTED review object that PASSes an earlier sha fails the gate, because the conclusion must be at the head', async () => {
+  const state = initialState()
+  state.reviews = [{ body: `Verdict: PASS at ${OTHER_SHA}\nWritten-by: HugoXK-bot\nAuthor: Fledge Platform Reviewer\n\nRan:\n- \`npm run check\` — pass\n\nNot run: Docker image\n`, state: 'COMMENTED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'a verdict for an earlier sha does not cover the head')
+    assert.match(result.stderr, /newest conclusion is for/)
   })
 })
 

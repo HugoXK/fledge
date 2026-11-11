@@ -356,7 +356,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.type('text/plain; version=0.0.4; charset=utf-8').send(renderMetrics())
   })
 
-  app.get('/healthz', async () => ({ ok: true, service: 'fledge', version: VERSION, time: new Date().toISOString() }))
+  // #183: the build names itself. `commit`/`builtAt` are stamped at build time
+  // and always present (`unknown` when the build carried no stamp), because a
+  // missing field reads as a match to whoever is checking a deploy.
+  app.get('/healthz', async () => ({
+    ok: true,
+    service: 'fledge',
+    version: VERSION,
+    commit: config.build.commit,
+    builtAt: config.build.builtAt,
+    time: new Date().toISOString(),
+  }))
 
   app.get('/readyz', async (_request, reply) => {
     try {
@@ -644,14 +654,32 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const reposPage = pageNumber('reposPage', reposTotal)
     const jobsPage = pageNumber('jobsPage', jobsTotal)
     const repos = store.listReposPage(viewer.user.id, perPage, (reposPage - 1) * perPage)
-    const questions = await inboxForUser(viewer.user.id, store.listRepos(viewer.user.id))
+    const jobs = store.listJobsPageForUser(viewer.user.id, perPage, (jobsPage - 1) * perPage)
+    const allRepos = store.listRepos(viewer.user.id)
+    const questions = await inboxForUser(viewer.user.id, allRepos)
+    const firstJob = store.firstJobForUser(viewer.user.id)
+    // #227: the checklist state is read from the database on this request, never
+    // from a cookie, so a second tab or a fresh browser sees the same step.
+    const setup = {
+      repos: reposTotal,
+      roleChosen: allRepos.some((repo) => repo.repo_role !== null),
+      modelConfigured: store
+        .listModelProviders(viewer.user.id)
+        .some((provider) => store.listProviderModels(provider.id).length > 0),
+      instanceReady: allRepos.some((repo) => store.getRepoInstance(repo.id)?.status === 'ready'),
+      jobs: jobsTotal,
+      firstJobStatus: firstJob?.status ?? null,
+      firstPrUrl: firstJob?.pr_url ?? null,
+      repoHref: allRepos[0] === undefined ? null : `/repos/${allRepos[0].id}`,
+    }
     return reply.type('text/html').send(
       dashboardPage({
         config,
         locale: request.locale ?? 'zh',
         viewer: view,
         repos,
-        jobs: store.listJobsPageForUser(viewer.user.id, perPage, (jobsPage - 1) * perPage),
+        jobs,
+        setup,
         reposPage,
         reposTotal,
         jobsPage,
@@ -1607,7 +1635,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('只有 maintainer 可以批量合并 PR。')}#delivery`)
     const result = await jobs.mergeCleanPrs(repo.id)
     store.audit(viewer.user.id, 'delivery.merge_clean', `${repo.id} merged=${result.merged.length} skipped=${result.skipped.length}`)
-    const message = `已合并 ${result.merged.length} 个 PR${result.skipped.length === 0 ? '' : `，跳过 ${result.skipped.length} 个（检查/保护未通过）`}`
+    const jobStateSkips = result.skipped.filter((entry) => entry.reason === 'job-state').length
+    const gateSkips = result.skipped.length - jobStateSkips
+    // Two different reasons, two clauses: a job-state skip must not be reported
+    // to the operator as a failed check or a missing protection, and the other
+    // clause stays wide enough for a path-guard or a non-open PR refusal.
+    const skipParts = [
+      jobStateSkips === 0 ? '' : `跳过 ${jobStateSkips} 个（最新任务还没有成功）`,
+      gateSkips === 0 ? '' : `跳过 ${gateSkips} 个（未通过合并检查）`,
+    ].filter((part) => part !== '')
+    const message = `已合并 ${result.merged.length} 个 PR${skipParts.length === 0 ? '' : `，${skipParts.join('，')}`}`
     return reply.redirect(`/repos/${repo.id}?${result.merged.length > 0 ? 'notice' : 'error'}=${encodeURIComponent(message)}#delivery`)
   })
 
@@ -2356,6 +2393,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/admin/webhooks/:id/retry', async (request, reply) => {
+    if (!apiLimiter.take(`admin-webhook-retry:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
     const viewer = approvedCsrfGuard(request)
     if (viewer.user.role !== 'superadmin') throw httpError(403, '仅超级管理员可重试。', 'SUPERADMIN_ONLY')
     const id = String((request.params as Record<string, string>).id)

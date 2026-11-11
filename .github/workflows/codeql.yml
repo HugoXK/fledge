@@ -7,8 +7,10 @@ on:
   schedule:
     - cron: '17 3 * * 1'
 
+# Read-only at workflow scope. The upload needs `security-events: write`, and it
+# lives on the job: a workflow-level grant is inherited by every job added to
+# this file later, including one that only reads source.
 permissions:
-  security-events: write
   contents: read
 
 jobs:
@@ -16,6 +18,9 @@ jobs:
     name: Analyze JavaScript/TypeScript
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: github/codeql-action/init@9418214df1f2c4b8128c770156c409013b07d6b9 # v3.39.3

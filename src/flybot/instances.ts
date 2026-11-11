@@ -132,6 +132,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+export function clearStaleDshLock(dataDir: string): void {
+  try {
+    rmSync(join(dataDir, 'bot', 'state.lock'), { force: true })
+  } catch {}
+}
+
 export class InstanceManager {
   constructor(
     private readonly store: Store,
@@ -295,6 +301,7 @@ server.listen(3081, '0.0.0.0')
       const uid = typeof process.getuid === 'function' ? process.getuid() : 1000
       const gid = typeof process.getgid === 'function' ? process.getgid() : 1000
       writeFileSync(join(dataDir, 'dsh-web.log'), '')
+      clearStaleDshLock(dataDir)
       await this.docker([
         'run', '-d',
         '--name', container,
@@ -337,6 +344,7 @@ server.listen(3081, '0.0.0.0')
         last_error: null,
       })
       this.store.audit(repo.user_id, 'flybot.instance.ready', `${repo.owner}/${repo.name} container=${container} team=${team.team}`)
+      await this.applyBotModels(repo.id).catch((error) => log.warn('bot model assignment after provision failed', { repo: repo.id, error: String(error) }))
       log.info('flybot instance ready', { repo: `${repo.owner}/${repo.name}`, container, bridgePort })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -448,12 +456,25 @@ server.listen(3081, '0.0.0.0')
     writeFileSync(join(profileDir, 'cordis.patch.yml'), this.modelPatch(repoId, instance.model_bind, instance.model_port), { mode: 0o600 })
     writeFileSync(join(instance.data_dir, 'dsh-web.log'), '')
     clearWorkspaceCookie(repoId)
+    clearStaleDshLock(instance.data_dir)
     await this.docker(['restart', '-t', '15', instance.container])
     await this.waitForDsh(instance.dsh_port, instance)
+    let assignment: { updated: number; skipped: string[] }
+    try {
+      assignment = await this.applyBotModels(repoId)
+    } catch (error) {
+      this.store.updateRepo(repoId, { models_dirty: 1 })
+      this.store.audit(instance.user_id, 'flybot.bot_models.failed', `${repoId}: ${String(error).slice(0, 300)}`)
+      return { ok: false, code: 'BOT_MODEL_ASSIGNMENT_FAILED', error: `模型配置已写入，但机器人模型更新失败：${String(error).slice(0, 200)}` }
+    }
+    if (assignment.skipped.length > 0) {
+      this.store.updateRepo(repoId, { models_dirty: 1 })
+      this.store.audit(instance.user_id, 'flybot.bot_models.failed', `${repoId} skipped=${assignment.skipped.join(',')}`)
+      return { ok: false, code: 'BOT_MODEL_ASSIGNMENT_FAILED', error: `机器人模型未全部更新：${assignment.skipped.join(', ')}` }
+    }
     this.store.markRepoModelsApplied(repoId)
-    await this.applyBotModels(repoId).catch((error) => log.warn('bot model assignment failed', { repo: repoId, error: String(error) }))
-    this.store.audit(instance.user_id, 'flybot.models.applied', `${repoId} models=${this.store.listRepoModelSelection(repoId).length}`)
-    log.info('models applied', { repo: repoId })
+    this.store.audit(instance.user_id, 'flybot.models.applied', `${repoId} models=${this.store.listRepoModelSelection(repoId).length} bots=${assignment.updated}`)
+    log.info('models applied', { repo: repoId, updated: assignment.updated })
     return { ok: true }
   }
 
@@ -652,6 +673,36 @@ server.listen(3081, '0.0.0.0')
       log.warn('team playbook incomplete', { repo: team.team, applied, expected })
       return false
     }
+    return true
+  }
+
+  async refreshTeam(repoId: string): Promise<boolean> {
+    const instance = this.store.getRepoInstance(repoId)
+    if (instance === undefined || instance.status !== 'ready' || instance.team_json === null || instance.bridge_token_enc === null) return false
+    const team = parseTeam(instance.team_json)
+    if (team === null) return false
+    const token = decryptSecret(instance.bridge_token_enc, this.config.tokenEncryptionKey)
+    const state = await this.state(instance.bridge_port, token)
+    const label = team.team
+    const byName = new Map(state.bots.map((bot) => [String(bot.name ?? ''), bot]))
+    const session = (name: string): string | null => {
+      const value = byName.get(name)?.sessionId
+      return typeof value === 'string' && value !== '' ? value : null
+    }
+    const lead = session(`${label} Lead`)
+    const product = session(`${label} Product`)
+    const test = session(`${label} Test`)
+    const security = session(`${label} Security`)
+    const reviewer = session(`${label} Reviewer`)
+    const dev1 = session(`${label} Dev-1`)
+    const dev2 = session(`${label} Dev-2`)
+    if (lead === null || product === null || test === null || security === null || reviewer === null || dev1 === null || dev2 === null) return false
+    const chief = typeof state.mainBotId === 'string' && state.mainBotId !== '' ? state.mainBotId : team.chief
+    const current = { ...team, chief, lead, product, test, security, reviewer, dev1, dev2 }
+    if (JSON.stringify(current) === JSON.stringify(team)) return false
+    this.store.updateRepoInstance(repoId, { team_json: JSON.stringify(current), chief_session: chief, updated_at: nowIso() })
+    this.store.audit(instance.user_id, 'flybot.team.sessions_refreshed', `${repoId} chief=${chief.slice(0, 12)} lead=${lead.slice(0, 12)} reviewer=${reviewer.slice(0, 12)}`)
+    log.warn('team sessions refreshed from DSH state', { repo: repoId })
     return true
   }
 
@@ -895,24 +946,70 @@ server.listen(3081, '0.0.0.0')
     if (!response.ok) throw new Error(`bridge /job-done ${response.status}`)
   }
 
+  private async probeInstance(instance: RepoInstanceRow): Promise<void> {
+    const response = await fetch(`http://127.0.0.1:${instance.bridge_port}/healthz`, { signal: AbortSignal.timeout(2_000) })
+    if (!response.ok) throw new Error(`bridge ${response.status}`)
+    if (instance.bridge_token_enc === null) throw new Error('bridge token missing')
+    const token = decryptSecret(instance.bridge_token_enc, this.config.tokenEncryptionKey)
+    await this.dsh(instance.bridge_port, token, 'state', {}, 10_000)
+  }
+
+  private async waitForDshState(instance: RepoInstanceRow, timeoutMs: number): Promise<void> {
+    if (instance.bridge_token_enc === null) throw new Error('bridge token missing')
+    const token = decryptSecret(instance.bridge_token_enc, this.config.tokenEncryptionKey)
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      try {
+        await this.dsh(instance.bridge_port, token, 'state', {}, 5_000)
+        return
+      } catch {}
+      await sleep(2_000)
+    }
+    throw new Error(`FlyBot DSH did not answer within ${Math.round(timeoutMs / 1000)}s`)
+  }
+
   async healthSweep(): Promise<{ ready: number; failed: number; total: number }> {
     let ready = 0
     let failed = 0
     for (const instance of this.store.listRepoInstances()) {
-      if (instance.status !== 'ready') continue
+      if (instance.status === 'stopped' || instance.status === 'provisioning') continue
       try {
-        const response = await fetch(`http://127.0.0.1:${instance.bridge_port}/healthz`, { signal: AbortSignal.timeout(2_000) })
-        if (!response.ok) throw new Error(`bridge ${response.status}`)
-        this.store.updateRepoInstance(instance.repo_id, { last_health_at: nowIso() })
+        await this.probeInstance(instance)
+        await this.refreshTeam(instance.repo_id).catch((error) => log.warn('team session refresh failed', { repo: instance.repo_id, error: String(error) }))
+        if (instance.status !== 'ready') {
+          this.store.audit(instance.user_id, 'flybot.instance.recovered', `${instance.repo_id}: ${instance.status} -> ready`)
+        }
+        this.store.updateRepoInstance(instance.repo_id, { status: 'ready', last_health_at: nowIso(), last_error: null })
         ready += 1
       } catch (error) {
+        const detail = String(error).slice(0, 200)
+        const active = this.store.activeJobForRepo(instance.repo_id) !== undefined
+        const restartKey = `instance_restart:${instance.repo_id}`
+        const lastRestart = this.store.getSetting(restartKey)
+        const canRestart = this.config.flybot.instanceImage !== '' && this.config.env !== 'test' && !active &&
+          (lastRestart === undefined || Date.now() - Date.parse(lastRestart) >= 10 * 60_000)
+        if (canRestart) {
+          try {
+            this.store.setSetting(restartKey, nowIso())
+            clearStaleDshLock(instance.data_dir)
+            await this.docker(['restart', '-t', '15', instance.container])
+            await this.waitForDshState(instance, 90_000)
+            this.store.updateRepoInstance(instance.repo_id, { last_health_at: nowIso(), last_error: null })
+            this.store.audit(instance.user_id, 'flybot.instance.auto_restarted', `${instance.repo_id}: ${detail}`)
+            log.warn('instance auto-restarted after health failure', { repo: instance.repo_id, error: detail })
+            ready += 1
+            continue
+          } catch (restartError) {
+            log.warn('instance auto-restart failed', { repo: instance.repo_id, error: String(restartError) })
+          }
+        }
         failed += 1
         this.store.updateRepoInstance(instance.repo_id, {
           status: 'failed',
-          last_error: `health check failed: ${String(error).slice(0, 200)}`,
+          last_error: `health check failed: ${detail}`,
           updated_at: nowIso(),
         })
-        log.warn('instance health check failed', { repo: instance.repo_id, error: String(error) })
+        log.warn('instance health check failed', { repo: instance.repo_id, error: detail, active })
       }
     }
     return { ready, failed, total: ready + failed }

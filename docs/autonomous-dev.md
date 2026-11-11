@@ -152,20 +152,70 @@ review.
 
 ## Gates
 
-The required checks are **`ci-ok`**, **`review-gate`** and **`pr-lint`**.
+The required checks on `main` are **`ci-ok`**, **`review-gate`**,
+**`pr-lint`**, **`dependency-review`** and the CodeQL job's own name,
+**`Analyze JavaScript/TypeScript`**. The set is recorded, with the names exactly
+as the checks API reports them, in
+[`.github/agent/required-checks.md`](../.github/agent/required-checks.md); that
+file is the record and not the gate — branch protection is an owner action.
+
 `ci-ok` is green only when all of these are green at the same tip:
 
 - `lint`
 - `typecheck`
 - `test` on Node 22 and Node 24
+- `coverage` (the Node coverage floor recorded in `package.json`)
 - `build`
-- `docker` (image builds)
-- `audit` (no high-severity production dependency)
+- `docker` (image builds, scans and starts)
+- `audit` (no high-severity advisory in either the runtime set or the full graph)
 - `changelog` (fragments are well formed)
 - `version` (`package.json`, lockfile, changelog, compose and tag agree)
 - `risk` (the tier report succeeds)
+- `restore-drill` (the SQLite backup restores into a throwaway path)
+- `dependency-review` (no new high-severity advisory in the pull request diff)
 - `action-pins` (every `uses:` is a 40-hex commit pin with its tag comment)
-- `Analyze JavaScript/TypeScript` (the CodeQL job: no new high/critical result)
+- `workflow-lint` (actionlint over the workflow tree, plus the template-injection check)
+- `secret-scan` (gitleaks over the commit range, full history on `main`)
+
+A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
+`skipped`, `cancelled` or a job absent from `needs`, except where
+`SKIPPABLE_ON` records that an event has nothing for that job to read.
+
+### Supply-chain gates
+
+`docker` scans the built image with trivy at `HIGH,CRITICAL` and fails the build
+(`exit-code: 1`), ignoring unfixed findings; an exception goes in
+`.trivyignore.yaml` as one entry with an expiry, never as a severity downgrade.
+It then runs the image with a throwaway SQLite path and a generated session
+secret and asserts `GET /healthz` returns 200 with a version — a build that
+passes is not an image that starts.
+
+`workflow-lint` runs actionlint (YAML, expressions, shellcheck) and separately
+`scripts/workflow-injection.mjs`, which is the part actionlint cannot do: it has
+no taint analysis, so `${{ github.event.pull_request.title }}` inside a `run:`
+body is well-formed at every level actionlint checks and still executes text
+whoever opened the pull request wrote. An expression string that must appear in
+a shell script goes in
+`.github/agent/workflow-injection-allowlist.json` with a reason.
+
+`secret-scan` runs gitleaks as a checksum-pinned binary with `fetch-depth: 0`
+and a commit range (`pull_request`, `merge_group`, `push`, whole history
+otherwise). Squash merges mean a secret added and then deleted on a branch is in
+neither the head tree nor the pull request diff, and only the range still holds
+it. The config is `.gitleaks.toml`; it deliberately carries no `paths`
+allowlist, because that suppresses every finding in a file, including a real
+token pasted later.
+
+`coverage` enforces a line floor with a number: `test:coverage` in
+`package.json` (`--test-coverage-lines=84`, measured 84.59% at the commit that
+introduced it). Lowering it is a reviewed diff, not an edit. The job also writes
+the report into the run summary — not a pull request comment, since a fork pull
+request runs without `pull_request_target`.
+
+The release workflow signs the published image: `id-token: write` and
+`attestations: write` on the release job only, `actions/attest-build-provenance`
+against the pushed digest, and an SBOM from `anchore/sbom-action`. Verification
+is in [deploy.md](deploy.md).
 
 CodeQL is gated on its own diff, not globally. `github/codeql-action/analyze`
 exits 0 whether it found a sink or nothing at all, so the job runs
@@ -288,17 +338,20 @@ git commit -m "release: v0.1.1"
 git tag v0.1.1
 ```
 
-The nightly minor release is planned by `scripts/release-plan.mjs`, a pure
-function with no I/O, no clock and no environment. It takes the latest tag, the
-package version, the merged pull requests since that tag (number, title, labels,
-`mergedAt`), the `changelog.d/` fragments, whether a release pull request is
-open and the existing tags; it returns the counts, the next minor version, a
-named reason and `shouldRelease`. It releases only when at least 10 pull
-requests merged since the tag, at least 5 of them are features, at least one
-fragment exists, the package version matches the tag and no release pull request
-or `v<next>` tag already exists. Every other case is a reason and no release;
-nothing is guessed. `git log` may only cross-check the pull-request numbers, and
-a disagreement never changes the decision.
+The nightly release is planned by `scripts/release-plan.mjs`, a pure function
+with no I/O, no clock and no environment. It takes the latest tag, the package
+version, the tagged commit time, the workflow's run time, the merged pull
+requests since that tag (number, title, labels, `mergedAt`), the `changelog.d/`
+fragments, whether a release pull request is open and the existing tags; it
+returns the counts, the next version, a `bump` of `minor` or `patch`, a named
+reason and `shouldRelease`. The first release of an ISO week bumps the minor;
+later releases in that same week bump the patch. If either timestamp is
+unreadable the planner falls back to the minor. It releases only when at least
+10 pull requests merged since the tag, at least 5 of them are features, at least
+one fragment exists, the package version matches the tag and no release pull
+request or `v<next>` tag already exists. Every other case is a reason and no
+release; nothing is guessed. `git log` may only cross-check the pull-request
+numbers, and a disagreement never changes the decision.
 
 The release workflow runs `npm run check`, builds the image, publishes it to
 GHCR and creates the GitHub release from the changelog. The tag must point at a
@@ -310,24 +363,46 @@ needs a review. No release with no fragments.
 
 ### The daily drive
 
-`.github/workflows/daily-release.yml` runs at 22:30 Asia/Shanghai (`30 14 * * *`)
-and does exactly one thing per night, decided by the pure `decideDrive()` in
-`scripts/lib/release-drive.mjs`:
+`.github/workflows/daily-release.yml` has two jobs on two triggers and no stored
+credential: both run with the automatic `GITHUB_TOKEN`, and the token is scoped per
+job rather than at file level (`release`: contents write, pull-requests read, checks
+read, issues write; `tag`: contents write, pull-requests read, actions write).
+
+The `release` job runs at 22:30 Asia/Shanghai (`30 14 * * *`) and on
+`workflow_dispatch` (default `dry_run: true`). It collects the state, asks the
+planner and the pure `decideDrive()` in `scripts/lib/release-drive.mjs`, and does
+exactly one thing per night:
 
 | Situation | Action |
 |---|---|
-| the rule is met and nothing is in flight | open the mechanical PR `release: v<next>` on `release/v<next>` |
-| a release PR is already open and mergeable | `gh pr merge --auto --squash --match-head-commit <its sha>` — never a second PR, never `--admin` |
-| a release PR is open but red or blocked | report the failing check names and stop |
-| the last merged PR is a release PR whose tag does not exist | tag it and dispatch `release.yml` with `-f tag=v<next>` |
-| the rule is not met, or a dry run | write the counts and the reason to the job summary and exit 0 |
+| the rule is met and nothing is in flight | push `release/v<next>` with the mechanical commit and comment on `#80` with the counts, the branch and the pushed sha |
+| the same branch already exists with the same tree | `already pushed` — report it and exit 0 |
+| the same branch exists with other content | fail; the branch is never overwritten, so a review in progress cannot be discarded |
+| a release PR is already open | no push; the drive decision goes to the artifact and the summary, and whoever calls `#187` owns the PR |
+| the rule is not met | write the counts and the reason to the job summary and exit 0 |
+| a dry run | the same summary and artifact, and no push and no comment |
 
-Rule 4 (the latest `ci-ok` on `main` is green) has no input in the planner, so the
-drive checks it before opening anything; a red or missing `ci-ok` on `main` is a
-`none` night. The branch is pushed and the PR is opened with `RELEASE_TOKEN`, not
-`GITHUB_TOKEN`: a branch pushed with the workflow token starts no `pull_request`
-workflow, so the release PR would never get a `ci-ok`. Without `RELEASE_TOKEN` the
-run fails closed with `reason: missing-release-token` and opens nothing.
+The job never opens, merges or publishes a pull request, and the file contains no
+`gh pr` command at all: the pull-request half is `#187`. Rule 4 (the latest
+`ci-ok` on `main` is green) has no input in the planner, so the drive checks it
+before the push; a red or missing `ci-ok` on `main` is a `none` night.
+
+The `tag` job runs on `push` to `main` only. It reads `package.json` at the pushed
+commit, asks `plan()` in `scripts/lib/release-tag.mjs` whether that commit is the
+squash of the mechanical release, and — if it is — writes the annotated tag with
+`POST /git/tags` and `POST /git/refs` on that merge commit, then dispatches
+`release.yml` at the tag with `-f tag=<tag>`. There is no `git tag` and no tag push
+in the file: a tag written with the automatic token starts no workflow, and the API
+path is what pins the object to the merge commit. A short sha, an unreadable
+version, an existing tag, an unmerged pull request, a foreign squash commit, a head
+branch that is not `release/v<version>` and two claims on one version each return
+`skip` with their reason.
+
+Both jobs read the tag list through `GET /git/matching-refs/tags/v`, never through
+the runner's own tag store. `test/dailyRelease.test.ts` holds the file to that
+shape: no `secrets.` other than the automatic token, no file-level `permissions:`
+block, no pull-request or release command, one branch push, and the tag write
+present only as the two API calls.
 
 The mechanical class is keyed on identity, never on the file set alone:
 `scripts/lib/mechanical-release.mjs` requires the head branch `release/v<next>`,

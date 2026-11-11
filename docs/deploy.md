@@ -169,6 +169,28 @@ separate no-heartbeat stall sweep; a heartbeat moves only that one.
 docker compose up -d --build
 ```
 
+To make `/healthz` name the build, stamp it at build time so the image can carry
+the commit: `GIT_SHA=$(git rev-parse HEAD) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) docker compose build`.
+Without the stamp the image answers `unknown` — honest, and useless for
+identifying a deploy.
+
+Compose publishes the port on loopback, so nginx outside the container is the
+caller and its address is this project's bridge gateway. Read that value from the
+running project instead of copying an example:
+
+```sh
+docker network inspect <project>_default --format '{{(index .IPAM.Config 0).Gateway}}'
+```
+
+The project name defaults to the directory name (`docker compose ls` prints it).
+Put the answer in `.env` as `TRUST_PROXY=<gateway>`, or add it to the existing
+list, and restart. Compose allocates the next free `/16`, so the gateway is often
+`172.18.0.1` or higher; the frequently copied `172.17.0.1` is docker0's gateway
+and usually does not contain this peer. A hop that names the wrong address fails
+closed: `proxy-addr` stops at the peer, every client looks like the gateway, and
+the whole instance shares one rate-limit bucket (30/min on token, login, callback
+and approve; 120/min across credential, callback, webhook, inbound and metrics).
+
 The volume `fledge-data` holds the SQLite database and the console outbox.
 
 The runtime stage also copies `CHANGELOG.md` and `changelog.d/` into `/app`
@@ -176,6 +198,22 @@ The runtime stage also copies `CHANGELOG.md` and `changelog.d/` into `/app`
 the `/admin` release card, which states the running version, the newest changelog
 section and the pending fragment count. Keep both paths in the image: without
 them those lines read "not available in this build" instead of answering.
+
+### Verify what you pulled
+
+A published image carries a build-provenance attestation signed by the release
+workflow, stored in the registry beside its digest. Check the tag you are about
+to run rather than trusting the tag name:
+
+```sh
+gh attestation verify oci://ghcr.io/hugoxk/fledge:v0.3.0 --repo HugoXK/fledge
+```
+
+The output names the workflow, the commit and the digest that was attested. If
+the command fails, the image was built or pushed by something other than this
+repository's release workflow — do not run it. `docker images --digests` shows
+the digest the local tag resolved to, and it must be the one the verification
+printed.
 
 ### Node
 
@@ -187,6 +225,36 @@ NODE_ENV=production npm start
 
 Use a process supervisor (systemd, runit, pm2) and a single instance: SQLite is
 not a multi-writer cluster.
+
+### Daily release pull request
+
+The version follows the weekly cadence: the first release of an ISO week (the
+Monday 22:30 Asia/Shanghai run) bumps the minor (`0.3.4 -> 0.4.0`); every later
+release in the same week bumps the patch (`0.4.0 -> 0.4.1`). The planner reads
+the last tag's commit time and the workflow's run time; if either is unreadable
+it falls back to the minor, which is the first-release behaviour.
+
+A release that changes user-facing behaviour updates `README.md`,
+`README.zh.md` and the relevant `docs/` page in the same pull request. The
+documentation site builds from this repository's `README.md`, `README.zh.md` and
+`docs/` rather than a pinned copy, so the release pull request and the docs site
+stay in step.
+
+The nightly workflow pushes `release/v<next>` and stops before the pull request,
+because a pull request opened with `GITHUB_TOKEN` starts no `pull_request`
+workflow and would never get a `ci-ok`. Open it with the team account — never
+with the Reviewer's `HugoXK-bot` token — as
+`GITHUB_TOKEN=… node scripts/release-open.mjs --artifact release-plan.json --version <next> --sha <branch tip>`:
+the tool re-runs `scripts/version.mjs check` and `scripts/changelog.mjs check`
+against the branch's contents fetched through the API (never the branch's own
+copies of those scripts), refuses when `main` moved since the plan or the diff
+leaves `CHANGELOG.md`, `changelog.d/`, `docker-compose.yml`, `package-lock.json`
+and `package.json`, reuses an open pull request at the same commit instead of
+opening a second one, and prints the JSON it acted on. It writes that one pull
+request and nothing else, and it carries no tag endpoint: the tag stays in the
+workflow. A `POST /pulls` whose readback does not show
+`maintainer_can_modify: true` is a refusal, but the pull request already exists
+at that point, so close it by hand before retrying.
 
 ## 6. Reverse proxy
 
@@ -232,7 +300,7 @@ mint a new bucket by rotating the header.
 | Topology | `TRUST_PROXY` |
 |---|---|
 | nginx on the same host (the supported default shown above) | leave unset - defaults to `127.0.0.1,::1` |
-| Docker Compose as published (bridge network, nginx outside the app container) | the bridge gateway, for example `172.17.0.1`; or run the app with `network_mode: host` and keep the default |
+| Docker Compose as published (bridge network, nginx outside the app container) | the project's bridge gateway, read from the running project with `docker network inspect <project>_default --format '{{(index .IPAM.Config 0).Gateway}}'` (see §5); or run the app with `network_mode: host` and keep the default |
 | another proxy in front of nginx | that proxy's address or CIDR, added to the list |
 
 The rule for every row is the same: **add the hop, do not loosen it.** A value
@@ -298,10 +366,11 @@ How it works and how to read it:
   its size, `sha256`, `PRAGMA user_version` and per-table row counts must match
   the manifest, which is what catches a copy that was truncated or interrupted
   at backup time. A copy written before manifests existed still passes the byte
-  comparison and prints `manifest=missing` as a warning, but only while it still
-  carries the schema: a manifest-less copy that holds no tables is refused,
-  because a 0-byte file compares equal to itself and `PRAGMA integrity_check`
-  answers `ok` on it.
+  comparison and prints `manifest=missing`, but only after it passes the same
+  schema check as every other copy: a restore must hold the application tables
+  `users`, `repos`, `jobs` and a positive `PRAGMA user_version`, so a copy that
+  does not hold the application schema is refused — a 0-byte file compares equal
+  to itself and `PRAGMA integrity_check` answers `ok` on it.
 - **The live source is reported, never required to match or even to be
   readable.** Each shared table prints `source_table=<table> source=<n>
   restored=<n>`, `schema_drift` names a table the source has and the copy does
@@ -330,9 +399,11 @@ How it works and how to read it:
   therefore impossible, and a temp drill does not leave a copy of production
   data in `/tmp`. Drift alone never triggers that rename, so a `restored.db` that
   is gone means the copy itself failed. Always check the exit status (or look for
-  `restore-drill: OK`) before using the restored copy; a manifest-less copy is
-  accepted only while it still carries the schema, so `restore-drill: OK` never
-  describes a copy that holds zero tables.
+  `restore-drill: OK`) before using the restored copy; every accepted copy holds
+  the application schema — `users`, `repos`, `jobs` and a positive `PRAGMA
+  user_version` — with or without a manifest, so `restore-drill: OK` never
+  describes a copy that does not hold the application schema. A fresh instance
+  with the schema and zero rows still restores.
 - **RTO** is the measured restore-and-verify time: how long a real restore would
   take to produce a verified copy. **RPO** is the age of the copy that restored:
   how much data a real loss would cost. Record both after every drill.
@@ -387,9 +458,18 @@ npm run build
 Schema changes are additive and idempotent for `v0.1.x`; review the changelog
 before a major upgrade.
 
+A release tag is not a deploy. `release.yml` builds the image, publishes it to
+GHCR and creates the GitHub release against the tag; the running service changes
+only when someone follows the three commands above on the host. The tag itself is
+written by the daily release job through the Git data API
+(`POST /git/tags` + `POST /git/refs`) once the mechanical release pull request is
+merged, so a tag on `main` is evidence of a released version, not of a rollout.
+
 ## 9. Monitoring
 
 - `GET /healthz` for liveness.
+- After a deploy, compare `/healthz`'s `commit` with the commit you deployed: a
+  mismatch or `unknown` means the running artifact is not the one you intended.
 - Watch for `level:"error"` in structured logs.
 - The Admin panel shows the audit trail and recent jobs.
 - Quota state: `GET /v1/models` with a user token, or the dashboard.
