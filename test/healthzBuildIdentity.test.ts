@@ -92,7 +92,7 @@ test('a full 40-char GIT_SHA is shortened to 12 and anything unusable answers `u
 // unstamped production build and a denied caller indistinguishable.
 const PUBLIC_PEER = '203.0.113.9'
 
-async function healthzRequest(overrides: Partial<Config> = {}, options: { remoteAddress?: string; headers?: Record<string, string> } = {}) {
+async function healthzRequest(overrides: Partial<Config> = {}, options: { remoteAddress?: string; headers?: Record<string, string>; url?: string } = {}) {
   const built = await build(overrides)
   try {
     const response = await built.app.inject({ method: 'GET', url: '/healthz', ...options })
@@ -122,20 +122,35 @@ test('a configured METRICS_TOKEN bearer still sees both identity fields', async 
   assert.match(String(payload.builtAt), /^(unknown|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)$/)
 })
 
-test('once a token is configured, loopback also needs it — and the query string never authenticates', async () => {
+test('once a token is configured, loopback also needs it', async () => {
   const loopback = await healthzRequest({ metrics: { token: 'metrics-secret' } })
   assert.equal(loopback.commit, undefined, 'a configured token closes the development fallback, exactly as on /metrics')
-  const viaQuery = await healthzRequest(
+})
+
+test('a wrong bearer is refused', async () => {
+  const wrongBearer = await healthzRequest(
     { metrics: { token: 'metrics-secret' } },
     { remoteAddress: PUBLIC_PEER, headers: { authorization: 'Bearer nope' } },
   )
-  assert.equal(viaQuery.commit, undefined, 'a wrong token must not reveal the build identity')
-  const wrongQuery = await healthzRequest({ metrics: { token: 'metrics-secret' } }, { remoteAddress: PUBLIC_PEER })
-  assert.equal(wrongQuery.commit, undefined)
+  assert.equal(wrongBearer.commit, undefined, 'a wrong token must not reveal the build identity')
+})
+
+// The predicate reads only the `Authorization` header. A cache or proxy in front
+// of `/healthz` must not be able to turn a credential in the query string into
+// one, so the case sends the real query string rather than a wrong header.
+test('the query string never authenticates', async () => {
+  const viaQuery = await healthzRequest(
+    { metrics: { token: 'metrics-secret' } },
+    { remoteAddress: PUBLIC_PEER, url: '/healthz?token=metrics-secret' },
+  )
+  assert.equal(viaQuery.commit, undefined, 'a token in the query string must not reveal the build identity')
+  assert.equal(viaQuery.builtAt, undefined)
 })
 
 test('without a token outside production, loopback keeps the development fallback', async () => {
-  assert.equal(process.env.NODE_ENV, undefined, 'the test config builds a non-production app')
+  // Assert the config the app is actually built from, not the harness's
+  // NODE_ENV: `npm test` under NODE_ENV=production must not fail this case.
+  assert.equal(testConfig().env, 'test', 'the test config builds a non-production app, whatever NODE_ENV says')
   const payload = await healthzRequest()
   assert.equal(typeof payload.commit, 'string', 'a local `npm run dev` build still reports its identity')
   assert.equal(typeof payload.builtAt, 'string')
