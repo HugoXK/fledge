@@ -249,9 +249,11 @@ and the PR that does it says why the alert is accepted; a line that drifts for a
 unrelated reason fails loudly rather than being silently re-labelled.
 `security-severity` is read whether the SARIF writes it as a number or a string,
 and rules a query pack keeps under `tool.extensions[].rules` are resolved by
-`ruleId` and `ruleIndex`. A result whose severity cannot be read counts as high,
-and every verdict is printed with `parsed N result(s), H high/critical` so a
-blind run can be told apart from a clean one; an empty parse exits 1.
+`ruleId` and `ruleIndex`. A security result whose severity cannot be read — and
+a result whose rule cannot be resolved — counts as high; a resolved quality
+query keeps its analysis level. Every verdict is printed with
+`parsed N result(s), H high/critical` so a blind run can be told apart from a
+clean one; an empty parse exits 1.
 
 Every action a workflow runs is pinned to a 40-hex commit with the tag it came
 from in a trailing comment, and the `action-pins` job fails the build on a
