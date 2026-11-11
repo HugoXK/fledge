@@ -585,9 +585,11 @@ most every `AUTO_MERGE_RECONCILE_MINUTES`.
 
 Work items are a tracking board, not a second scheduler lock. No work-item state
 blocks a scheduled iterate job: the only blocks are an active job for the same
-repository, a failing credential and a duplicate issue (#219, #238). A failed job
-returns its `assigned`/`in_progress` work item to `triaged` so a later schedule
-can pick it up.
+repository, a failing credential and a duplicate issue (#219, #238). A job that ends `failed` or
+`quota_exhausted` returns its `assigned`/`in_progress` work item to `triaged` so
+a later schedule can pick it up, and both edges are in `WORK_ITEM_TRANSITIONS`,
+so the manual status endpoint and the work-item board offer the moves the
+service itself writes.
 
 A due repository is never skipped because work is open. `decideNextJob()` carries
 the highest-priority open item into a `followup` job, or a `review` when the item

@@ -29,7 +29,7 @@ export const WORK_ITEM_TRANSITIONS: Record<WorkItemState, readonly WorkItemState
   proposed: ['triaged', 'closed'],
   triaged: ['assigned', 'closed'],
   assigned: ['in_progress', 'triaged', 'closed'],
-  in_progress: ['pr_ready', 'changes_requested', 'closed'],
+  in_progress: ['pr_ready', 'triaged', 'changes_requested', 'closed'],
   pr_ready: ['in_review', 'changes_requested', 'merged', 'closed'],
   in_review: ['changes_requested', 'approved', 'merged', 'closed'],
   changes_requested: ['in_progress', 'closed'],
