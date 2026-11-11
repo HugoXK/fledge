@@ -1,0 +1,1 @@
+The gateway's two limiters now key on the same normalized client identity as every app-level limiter: an IPv6 client that rotates addresses inside its routed `/64` shares one 240/min bucket instead of minting a fresh bucket per address, and traffic from a different `/64` still gets its own bucket. The limits themselves are unchanged.

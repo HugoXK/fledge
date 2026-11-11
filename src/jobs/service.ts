@@ -10,7 +10,7 @@ import { log } from '../lib/log.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
-import { classifyFailure } from '../lib/failure.js'
+import { classifyFailure, type FailureCode } from '../lib/failure.js'
 import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
 import { findDuplicatePullRequest, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
@@ -46,6 +46,9 @@ export interface EnqueueResult {
   job?: JobRow
   error?: string
   code?: string
+  // The value a refusal names, such as the missing target branch, so the banner
+  // can say which one instead of a bare sentence.
+  detail?: string
 }
 
 function progressSummary(value: unknown): string | undefined {
@@ -140,7 +143,7 @@ export class Jobs {
         const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
         if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
       }
-      this.finish(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API 后重试。' }, revoke)
+      this.finish(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API 后重试。', errorCode: 'QUOTA_EXHAUSTED' }, revoke)
     }
   }
 
@@ -229,17 +232,17 @@ export class Jobs {
     return { ok: true, job: result.job }
   }
 
-  async cancelRepoJobs(repoId: string, reason: string): Promise<void> {
+  async cancelRepoJobs(repoId: string, reason: string, errorCode?: FailureCode): Promise<void> {
     for (const job of this.store.listActiveJobs().filter((entry) => entry.repo_id === repoId)) {
       const revoke = (): void => {
         const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
         if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
       }
-      this.finish(job.id, { status: 'failed', error: reason }, revoke)
+      this.finish(job.id, { status: 'failed', error: reason, errorCode }, revoke)
     }
   }
 
-  private async duplicatePreflight(repo: RepoRow, goal: string, workItemId?: string): Promise<{ ok: boolean; error?: string; code?: string }> {
+  private async duplicatePreflight(repo: RepoRow, goal: string, workItemId?: string): Promise<{ ok: boolean; error?: string; code?: string; detail?: string }> {
     // Only the FlyBot runner reads the upstream repository; the sibling
     // `preflight` has the same guard at its first line. Without it a deployment
     // on another runner decrypted the repo token and made GitHub reads it never
@@ -258,14 +261,14 @@ export class Jobs {
       if (duplicate === null) return { ok: true }
       this.store.audit(repo.user_id, 'job.duplicate_work', `${repository} issue #${issue} -> ${duplicate.url}`)
       this.store.event('job_duplicate_work', { userId: repo.user_id, repoId: repo.id, meta: `issue=${issue};pr=${duplicate.url}`.slice(0, 400) })
-      return { ok: false, code: 'DUPLICATE_WORK', error: `已有 PR 覆盖这个 issue：${duplicate.url}` }
+      return { ok: false, code: 'DUPLICATE_WORK', error: `已有 PR 覆盖这个 issue：${duplicate.url}`, detail: duplicate.url }
     } catch (error) {
       log.warn('duplicate preflight failed', { repo: repo.id, error: String(error) })
       return { ok: true }
     }
   }
 
-  private async preflight(repo: RepoRow, baseBranch: string, trigger: string): Promise<{ ok: boolean; baseSha?: string; warning?: string; error?: string; code?: string }> {
+  private async preflight(repo: RepoRow, baseBranch: string, trigger: string): Promise<{ ok: boolean; baseSha?: string; warning?: string; error?: string; code?: string; detail?: string }> {
     if (this.runner.name !== 'flybot') return { ok: true }
     try {
       const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
@@ -275,7 +278,7 @@ export class Jobs {
       const branch = await client.getBranch(upstreamOwner, upstreamName, baseBranch)
       this.store.markRepoCredential(repo.id, 'ok')
       this.credentialCache.set(repo.id, { at: Date.now() })
-      if (branch === null) return { ok: false, error: `目标分支 ${baseBranch} 不存在或不可访问。`, code: 'BRANCH_MISSING' }
+      if (branch === null) return { ok: false, error: `目标分支 ${baseBranch} 不存在或不可访问。`, code: 'BRANCH_MISSING', detail: baseBranch }
       await client.canReadContents(upstreamOwner, upstreamName, baseBranch)
       let warning = ''
       if (repo.is_fork === 1) {
@@ -377,13 +380,13 @@ export class Jobs {
     if (!isValidBranchName(baseBranch)) return { ok: false, error: '目标分支格式不正确。', code: 'BRANCH_INVALID' }
     if (kind === 'iterate' && options.prUrl === undefined) {
       const duplicate = await this.duplicatePreflight(repo, goalOverride ?? repo.goal, options.workItemId)
-      if (!duplicate.ok) return { ok: false, error: duplicate.error, code: duplicate.code }
+      if (!duplicate.ok) return { ok: false, error: duplicate.error, code: duplicate.code, detail: duplicate.detail }
     }
     let preflightSha: string | null = null
     let preflightWarning = ''
     if (kind === 'iterate') {
       const preflight = await this.preflight(repo, baseBranch, trigger)
-      if (!preflight.ok) return { ok: false, error: preflight.error, code: preflight.code }
+      if (!preflight.ok) return { ok: false, error: preflight.error, code: preflight.code, detail: preflight.detail }
       preflightSha = preflight.baseSha ?? null
       preflightWarning = preflight.warning ?? ''
     }
@@ -402,7 +405,7 @@ export class Jobs {
 
     if (platformFunded && quotaView(user, this.config).exhausted) {
       const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind })
-      this.store.updateJob(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。', finished_at: nowIso() })
+      this.store.updateJob(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。', error_code: 'QUOTA_EXHAUSTED', finished_at: nowIso() })
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'quota_exhausted' })
       else if (kind === 'iterate') this.store.updateRepo(repo.id, { last_status: 'quota_exhausted', last_run_at: nowIso() })
       else this.store.updateRepo(repo.id, { last_status: 'quota_exhausted' })
@@ -424,7 +427,7 @@ export class Jobs {
           return { updated: 0, skipped: ['model-check'] }
         })
         if (assignment.skipped.length > 0) {
-          return { ok: false, error: `机器人模型未就绪：${assignment.skipped.join(', ')}；请在仓库设置里重新应用模型。`, code: 'BOT_MODEL_ASSIGNMENT_FAILED' }
+          return { ok: false, error: `机器人模型未就绪：${assignment.skipped.join(', ')}；请在仓库设置里重新应用模型。`, code: 'BOT_MODEL_ASSIGNMENT_FAILED', detail: assignment.skipped.join(', ') }
         }
         const reviewer = kind === 'review' ? bridge.team.reviewer : null
         const role: 'chief' | 'lead' | 'reviewer' | 'product' | 'test' = kind === 'review'
@@ -451,7 +454,7 @@ export class Jobs {
       return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
     }
     if (!this.config.runner.queueDispatch && this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) {
-      return { ok: false, error: `平台当前已有 ${this.config.runner.maxActiveJobs} 个任务在运行，请稍后再试。`, code: 'JOB_LIMIT' }
+      return { ok: false, error: `平台当前已有 ${this.config.runner.maxActiveJobs} 个任务在运行，请稍后再试。`, code: 'JOB_LIMIT', detail: String(this.config.runner.maxActiveJobs) }
     }
 
     const platformToken = `flg_${randomToken(32)}`
@@ -569,7 +572,7 @@ export class Jobs {
     } catch (error) {
       revoke()
       const message = String(error instanceof Error ? error.message : error)
-      this.store.updateJob(job.id, { status: 'failed', error: message.slice(0, 1000), finished_at: nowIso() })
+      this.store.updateJob(job.id, { status: 'failed', error: message.slice(0, 1000), error_code: 'BRIDGE_ERROR', finished_at: nowIso() })
       this.store.releaseJobLease(job.id)
       this.clearLeaseHeartbeat(job.id)
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
@@ -617,7 +620,7 @@ export class Jobs {
 
   // Returns whether this call moved the row to a terminal state. Callers that
   // perform side effects must only do so when it returns true.
-  private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string | null; issueUrl?: string | null; reviewScore?: number; summary?: string; error?: string }, revoke: () => void, attribution: Attribution | null = null, evidence: Evidence | null = null, fingerprint: string | null = null): boolean {
+  private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string | null; issueUrl?: string | null; reviewScore?: number; summary?: string; error?: string; errorCode?: FailureCode }, revoke: () => void, attribution: Attribution | null = null, evidence: Evidence | null = null, fingerprint: string | null = null): boolean {
     const job = this.store.getJob(jobId)
     if (job === undefined) return false
     if (job.status !== 'queued' && job.status !== 'running') return false
@@ -638,6 +641,7 @@ export class Jobs {
       evidence_json: evidence === null ? job.evidence_json : JSON.stringify(evidence),
       summary: (result.summary ?? job.summary ?? '').slice(0, 4000),
       error: (result.error ?? job.error ?? '').slice(0, 2000),
+      error_code: result.errorCode ?? job.error_code ?? null,
       finished_at: nowIso(),
     })
     if (!claimed) return false
@@ -672,7 +676,7 @@ export class Jobs {
     this.store.event(`job_${result.status}`, { userId: job.user_id, repoId: job.repo_id, jobId })
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: `job.${result.status}`, step: job.kind, meta: result.error ?? result.summary ?? null })
     if (result.status === 'succeeded' && prUrl !== null) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
-    if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? job.error ?? '未知原因'}`)
+    if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? job.error ?? '未知原因'}`, this.store.getJob(jobId)?.error_code ?? null)
     if (result.status === 'succeeded' || result.status === 'failed') {
       void this.sendJobEmail(job, result)
       void sendNotificationWebhook(this.config, `job.${result.status}`, {
@@ -1752,7 +1756,7 @@ export class Jobs {
         if (stageMode === 'enforced') {
           const message = `STAGE_EVIDENCE_MISSING: ${detail}`
           this.store.notify(job.user_id, 'job', `${job.kind} 任务 ${jobId} 缺少阶段证据：${detail}`)
-          this.finish(jobId, { status: 'failed', branch, prUrl, issueUrl, summary, error: message }, revoke, attribution, evidence, fingerprint)
+          this.finish(jobId, { status: 'failed', branch, prUrl, issueUrl, summary, error: message, errorCode: 'STAGE_EVIDENCE_MISSING' }, revoke, attribution, evidence, fingerprint)
           return { ok: false, status: 422, error: message }
         }
       }
@@ -1914,12 +1918,12 @@ export class Jobs {
       const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
       if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     }
-    const fail = (error: string): void => {
-      this.finish(job.id, { status: 'failed', error }, revoke)
+    const fail = (error: string, errorCode?: FailureCode): void => {
+      this.finish(job.id, { status: 'failed', error, errorCode }, revoke)
     }
     if (repo === undefined) return fail('仓库不存在')
     if (user === undefined || user.status !== 'approved') return fail('用户不可用')
-    if (repo.enabled !== 1) return fail('这个仓库已停用')
+    if (repo.enabled !== 1) return fail('这个仓库已停用', 'REPO_DISABLED')
     if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') return fail('请先选择你在这个仓库的角色。')
     if (kind === 'review' && repo.repo_role !== 'maintainer') return fail('只有 maintainer 可以运行审核任务。')
     if (job.callback_secret_enc === null || job.platform_token_enc === null) {
@@ -2081,7 +2085,7 @@ export class Jobs {
         const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
         if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
       }
-      this.finish(job.id, { status: 'failed', error: `任务停滞：超过 ${this.config.runner.stallMinutes} 分钟没有心跳。` }, revoke)
+      this.finish(job.id, { status: 'failed', error: `任务停滞：超过 ${this.config.runner.stallMinutes} 分钟没有心跳。`, errorCode: 'JOB_STALLED' }, revoke)
     }
     const staleBefore = addMinutes(-this.config.runner.timeoutMinutes)
     const queuedStaleBefore = this.config.runner.queueDispatch ? addMinutes(-this.config.runner.timeoutMinutes) : addMinutes(-10)
@@ -2091,7 +2095,7 @@ export class Jobs {
         const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
         if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
       }
-      this.finish(job.id, { status: 'failed', error: job.status === 'queued' ? '任务排队超时未启动' : '任务超时未回报' }, revoke)
+      this.finish(job.id, { status: 'failed', error: job.status === 'queued' ? '任务排队超时未启动' : '任务超时未回报', errorCode: 'JOB_TIMEOUT' }, revoke)
     }
     for (const job of this.store.expiredLeaseJobs(nowIso())) {
       if (handled.has(job.id)) continue
@@ -2101,7 +2105,7 @@ export class Jobs {
         if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
       }
       incCounter('fledge_lease_expired_total', { kind: job.kind }, 1, 'Jobs whose worker lease expired')
-      this.finish(job.id, { status: 'failed', error: '任务租约过期：worker 未续约。' }, revoke)
+      this.finish(job.id, { status: 'failed', error: '任务租约过期：worker 未续约。', errorCode: 'JOB_LEASE_EXPIRED' }, revoke)
     }
     this.store.deleteExpiredJobTokens()
     if (Date.now() - this.lastPruneAt > 60 * 60 * 1_000) {

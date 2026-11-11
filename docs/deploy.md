@@ -331,9 +331,12 @@ server {
 The app trusts only the hops named in `TRUST_PROXY`, never every hop.
 `$proxy_add_x_forwarded_for` appends `$remote_addr`, so the address nginx actually
 saw is the rightmost `X-Forwarded-For` entry, and that is the value Fledge uses as
-`request.ip`, as the rate-limit bucket key and for the `/metrics` loopback check.
-Everything to the left of it is caller-supplied and ignored, so a client cannot
-mint a new bucket by rotating the header.
+`request.ip`, as the input to the rate-limit bucket key and for the `/metrics`
+loopback check. Everything to the left of it is caller-supplied and ignored, so a
+client cannot mint a new bucket by rotating the header. Every limiter, including
+the gateway's two, derives its key from that address through one helper: IPv4 is
+exact and IPv6 keeps only its `/64` prefix, so rotating the low bits inside a
+routed `/64` does not mint a fresh bucket either.
 
 | Topology | `TRUST_PROXY` |
 |---|---|
@@ -364,6 +367,23 @@ npm run db:backup
 # each copy gets a <copy>.json manifest: size, sha256, schema version and
 # per-table row counts, written 0600 and deleted together with its copy
 ```
+
+`/admin` shows what is in that directory, read-only: the newest copy with its
+size and age, whether that copy's manifest still matches (size and `sha256`),
+how many copies exist, and a warning when the newest copy is older than
+`BACKUP_EXPECTED_HOURS` (default 26) — a night that stopped running leaves no
+error anywhere, so the card can only show it as staleness. It never opens
+`fledge.db`, and it carries no backup, restore or delete control; those stay
+host commands. Hashing is bounded: the card hashes only the newest copy, and
+only when that copy is at most 4 MiB, so a page render cannot stall on a large
+dump; every older copy is compared by size only and reads `size matches, sha256
+not checked (only the newest copy is hashed)`. Above the cap the newest row says
+the `sha256` was not checked, which is not a pass — `npm run db:restore-drill` is
+the command that verifies a large copy. The copies line counts only copies a
+manifest contradicts and names the rest separately, so `0 copies · nothing to
+check` is what an empty directory says. The
+drill prints its verdict and records nothing, so the card says `none recorded`
+rather than showing a green it cannot prove.
 
 Back up `.env` separately (it contains the encryption key). Without
 `TOKEN_ENCRYPTION_KEY`, stored GitHub/model tokens cannot be decrypted.

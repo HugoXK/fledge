@@ -7,7 +7,7 @@ import type { ApiTokenRow, RepoProviderModelRow, Store, UserRow } from '../db.js
 import { log } from '../lib/log.js'
 import { decryptSecret, sha256Hex } from '../lib/secrets.js'
 import { costUsdFromUsage, headerCost, quotaView } from './quota.js'
-import { RateLimiter } from '../lib/rateLimit.js'
+import { rateLimitKey, RateLimiter } from '../lib/rateLimit.js'
 
 interface GatewayDeps {
   config: Config
@@ -123,7 +123,7 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
   }
 
   app.get('/v1/models', async (request, reply) => {
-    if (!limiter.take(`gateway-ip:${request.ip}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many gateway requests' } })
+    if (!limiter.take(`gateway-ip:${rateLimitKey(request)}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many gateway requests' } })
     const auth = authenticate(request)
     if (auth === null) return reply.code(401).send({ error: { type: 'invalid_api_key', message: 'Missing or invalid Fledge API token' } })
     const repoModels = auth.token.repo_id === null ? [] : store.listRepoModelSelection(auth.token.repo_id)
@@ -148,7 +148,7 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
   })
 
   app.post('/v1/chat/completions', { bodyLimit: MAX_BODY }, async (request, reply) => {
-    if (!limiter.take(`gateway-chat:${request.ip}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many gateway requests' } })
+    if (!limiter.take(`gateway-chat:${rateLimitKey(request)}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many gateway requests' } })
     const auth = authenticate(request)
     if (auth === null) return reply.code(401).send({ error: { type: 'invalid_api_key', message: 'Missing or invalid Fledge API token' } })
     const body = (request.body ?? {}) as ChatBody

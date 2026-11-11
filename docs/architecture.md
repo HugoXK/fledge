@@ -369,7 +369,14 @@ every width: it lays out as a table from 641px up and, below 641px, each row
 becomes a card whose cells carry their column name in a `data-label` attribute
 (`public/app.css`, the `max-width: 640px` block). The cells therefore never sit
 behind a horizontal scroll on a phone, and a new column must emit `data-label`
-in `jobRows` to stay readable there. Between 641px and 960px a wide table (the
+in `jobRows` to stay readable there. The rest of the data tables reuse the same
+block through one class, `table-cards`: the `/admin` users and audit tables, the
+dashboard repository table, the repository page's delivery, board and work-item
+tables, and the support view's repository and job tables. Adding the class and a
+`data-label` per cell is the whole change; a table must not grow a second card
+mechanism. The delivery board is the one exception, `table-cards table-cards-head`:
+its header row is the stage filter, so it stays in the flow and reflows as a
+wrapping row of links above the cards instead of disappearing. Between 641px and 960px a wide table (the
 delivery board is 952px wide at 768) can still be wider than its `.table-scroll`
 box, so that band draws an always-present classic scrollbar — an explicit track
 plus `scrollbar-width`/`scrollbar-color` for Firefox — instead of relying on a
@@ -439,6 +446,41 @@ itself name a timeout, the `bridge` pattern is matched before `timeout` — a
 dispatch that the bridge did not answer is an instance problem, not a task that
 ran too long. The bridge URL is stored by origin and path only, so a token in
 its query or userinfo never reaches the job row or the job page.
+
+A failure also carries a stable **code** in `jobs.error_code`, written by the job
+service where the failure happens. Seven codes are written to a row today:
+`JOB_STALLED`, `JOB_LEASE_EXPIRED`, `JOB_TIMEOUT`, `QUOTA_EXHAUSTED`,
+`STAGE_EVIDENCE_MISSING`, `BRIDGE_ERROR` and `REPO_DISABLED`. Three more are in
+the vocabulary but have no writer: `REPO_CREDENTIAL_INVALID`,
+`JOB_BUDGET_EXCEEDED` and `DUPLICATE_WORK` name refusals that stop an enqueue
+before a job row exists, so they travel on the redirect instead (below) and are
+reserved for a row if one of them ever finishes a job.
+
+The code, not the text, decides the sentence a reader sees: `failureSentence`
+(`src/lib/failure.ts`) builds it in the reader's language for the job-page
+summary, the dashboard summary and the notification list, and the category above
+is the code's kind. The regex classifier stays only for rows written before the
+column existed. `localizeMessage`'s exact-match dictionary remains the fallback
+for a message no code covers — which is why a new failure adds a code rather than
+a dictionary row.
+
+A refusal carries its code too. The job service answers an enqueue it will not
+start with a code, and the route puts that code on the redirect with the payload
+after a colon: the code's own parameter where it has one (`BRANCH_MISSING:main`,
+`JOB_LIMIT:2`, `BOT_MODEL_ASSIGNMENT_FAILED:chief, lead`) or else the sentence the
+service wrote. The banner asks the sentence table first, so those codes read in
+the reader's language with their parameter filled in. A code whose table entry
+carries `{detail}` keeps that parameter too — the duplicate-work refusal names the
+pull request that already covers the issue (`DUPLICATE_WORK:<url>`) — so the value
+the service found survives the redirect instead of being dropped when the sentence
+is rebuilt. A code with no sentence
+keeps the text that travelled with it, which the dictionary translates as it did
+before this change, so no refusal reads worse than at base; only a bare code with
+neither a sentence nor a text renders a sentence naming the code, so an unknown
+value cannot leak. The raw text stays in `jobs.error`, under "Technical detail"
+and in the notification row, for operators and for the API, and "Technical
+detail" prints it as written rather than translating it. The choice is
+recorded in `docs/decisions/0009-job-failure-codes.md`.
 
 ### Enforcement: path guard, evidence verification and merge readiness
 
@@ -741,14 +783,16 @@ not controlled by the digest/job switches.
 
 A notification row keeps the `kind` and stores the `message` exactly as the
 producer wrote it, so `src/jobs/service.ts` and `src/gateway/notifier.ts` write
-Chinese while the ops alerts in `src/db.ts` write English. The dashboard is the
-only reader, and it knows the reader's locale at render time: `noticeBlock`
-(`src/views/pages.ts`) passes the stored sentence through
-`localizeNotification` (`src/i18n.ts`), which rebuilds the sentence in the
-reader's language from the template it matches — both directions, with the
-interpolated job id, repo label, minutes and similar facts kept as data. A
-message no template knows, including every row written before this change,
-renders verbatim. Nothing is rewritten in the database and no column was added.
+Chinese while the ops alerts in `src/db.ts` write English. When the producer has
+one, the row also keeps the failure `code` (`notifications.code`). The dashboard
+is the only reader, and it knows the reader's locale at render time: `noticeBlock`
+(`src/views/pages.ts`) rebuilds a job-failure sentence from the `code` with
+`failureSentence`, and otherwise passes the stored sentence through
+`localizeNotification` (`src/i18n.ts`), which rebuilds it in the reader's
+language from the template it matches — both directions, with the interpolated
+job id, repo label, minutes and similar facts kept as data. A message no code and
+no template knows, including every row written before those existed, renders
+verbatim. Nothing is rewritten in the database.
 
 ### Release surface
 
@@ -799,6 +843,36 @@ instance they are looking at is the release the chain names. A snapshot that
 claims `ok` with no links, or that contradicts its own problems, is refused as
 unparseable — a green header over an empty table is the one shape the card must
 never render.
+### Backup surface
+
+The other half of "your data is safe" is a fact the operator can see without
+reading `mtime` on a shell. `readBackupStatus` (`src/lib/backupStatus.ts`) lists
+the directory `npm run db:backup` writes (`config.backup.dir`: `BACKUP_DIR ??
+DATA_DIR/backups`, the same resolution as the script) and reads the `<copy>.json`
+manifest beside each copy. The `/admin` card reports the newest copy with its
+size and age, whether that copy's manifest still matches, how many copies exist,
+and — above `BACKUP_EXPECTED_HOURS` (default 26) — that the schedule looks stale.
+It never opens `fledge.db` and has no backup, restore or delete control, so a
+page view cannot touch the database being backed up.
+
+The manifest is checked in three steps and the card never claims more than it
+did: `size` is compared always; `sha256` is compared only for the newest copy and
+only when that copy is at most 4 MiB (`SHA256_MAX_BYTES`), because hashing is the
+only read of a copy's bytes on a render path and a bounded burst keeps `/admin`
+responsive on a slow disk. Every other copy is compared by size alone and reads
+"size matches, sha256 not checked (only the newest copy is hashed)", so a render
+reads at most one copy's bytes and at most 4 MiB of them, not the 14 copies
+`scripts/backup.mjs` keeps. A larger copy reads "not checked (copy above N MiB)" —
+not a pass; `npm run db:restore-drill` is what verifies it. A copy with no
+manifest, or a manifest that names another file or cannot be parsed, is its own
+row, so "stopped running" (stale) and "running, producing bad copies" (mismatch)
+never share a sentence. The copies line follows the same rule: only `differs`
+counts a contradiction, copies without a manifest and copies whose `sha256` was
+not read are named in their own words, and a directory with no copy says "nothing
+to check" instead of claiming every copy matches. A failed run writes no file at
+all, so the console can report it only as staleness plus a mismatch; the drill
+prints its verdict and records nothing, so the card says "restore drill: none
+recorded" rather than a green it cannot prove.
 
 ### Operational alerts
 

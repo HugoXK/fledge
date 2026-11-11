@@ -60,6 +60,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     shutdown: { ...base.shutdown, ...overrides.shutdown },
     autoMerge: { ...base.autoMerge, ...overrides.autoMerge },
     ops: { ...base.ops, ...overrides.ops },
+    backup: { ...base.backup, ...overrides.backup },
   }
 }
 

@@ -92,6 +92,23 @@ function httpError(statusCode: number, message: string, code = 'REQUEST_FAILED')
   return Object.assign(new Error(message), { statusCode, code })
 }
 
+// #231 review: a refused enqueue answers with the job service's code, and the
+// banner builds the sentence from it, so a refusal reaches an English reader in
+// English. The detail a refusal names (a missing target branch) travels after a
+// colon; the service's text stays the fallback for a refusal that carries no code.
+function refusalValue(result: { code?: string; detail?: string; error?: string }, fallback: string): string {
+  const code = result.code ?? ''
+  const text = result.error ?? fallback
+  // A discussed refusal travels as `CODE:payload`. The code lets the banner build
+  // a sentence in the reader's language where the table has one; the payload is
+  // the refusal's own parameter (the branch, the limit, the models) or, for a code
+  // with no sentence yet, the sentence the service wrote, which the banner then
+  // translates through the dictionary it used before #231.
+  if (code === '') return text
+  const detail = result.detail ?? ''
+  return `${code}:${detail !== '' ? detail : text}`
+}
+
 function queryText(request: FastifyRequest, name: string): string | undefined {
   const value = (request.query as Record<string, unknown> | undefined)?.[name]
   return typeof value === 'string' && value !== '' ? value.slice(0, 500) : undefined
@@ -1493,7 +1510,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const result = await jobs.resumeJob(job.id)
-    if (!result.ok || result.job === undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(result.error ?? '恢复失败。')}`)
+    if (!result.ok || result.job === undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(refusalValue(result, '恢复失败。'))}`)
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已恢复任务。')}`)
   })
 
@@ -1509,7 +1526,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const result = await jobs.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {})
     store.audit(viewer.user.id, 'job.retried', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
     if (!result.ok || result.job === undefined) {
-      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(result.error ?? '重试失败。')}`)
+      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(refusalValue(result, '重试失败。'))}`)
     }
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已重新排队。')}`)
   })
@@ -1575,7 +1592,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const result = await jobs.enqueue(repo, 'manual', goal, 'iterate', { workItemId: job.work_item_id ?? undefined, priority: job.priority })
     store.audit(viewer.user.id, 'job.executed', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
     if (!result.ok || result.job === undefined) {
-      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(result.error ?? '执行计划失败。')}`)
+      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(refusalValue(result, '执行计划失败。'))}`)
     }
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已按计划开始执行。')}`)
   })
@@ -1642,7 +1659,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const result = await jobs.enqueue(repo, 'manual', goal, kind, { workItemId: item.id, priority: item.priority })
     store.audit(viewer.user.id, 'work_item.run', `${item.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
     if (!result.ok || result.job === undefined) {
-      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(result.error ?? '工作项启动失败。')}#work`)
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(refusalValue(result, '工作项启动失败。'))}#work`)
     }
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent(kind === 'plan' ? '计划任务已排队。' : '工作项任务已排队。')}`)
   })
@@ -1676,7 +1693,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const goal = [`Scope work item: ${item.title}`, item.detail === '' ? '' : item.detail, item.issue_url === null ? '' : `Issue: ${item.issue_url}`, 'Product scoping only: goal, non-goals, acceptance criteria and test plan. Do not code.'].filter((line) => line !== '').join('\n\n')
     const result = await jobs.enqueue(repo, 'manual', goal, 'scope', { workItemId: item.id, priority: item.priority })
     store.audit(viewer.user.id, 'work_item.scope', `${item.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
-    if (!result.ok || result.job === undefined) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(result.error ?? '范围任务启动失败。')}#work`)
+    if (!result.ok || result.job === undefined) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(refusalValue(result, '范围任务启动失败。'))}#work`)
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('Product 范围任务已排队。')}`)
   })
 
@@ -1691,7 +1708,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const goal = `Verify PR ${item.pr_url} with the Test role. Read the PR and branch, run the relevant tests, and report failing and passing evidence. Do not code, push or merge.`
     const result = await jobs.enqueue(repo, 'manual', goal, 'verify', { prUrl: item.pr_url, workItemId: item.id, priority: item.priority })
     store.audit(viewer.user.id, 'work_item.verify', `${item.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
-    if (!result.ok || result.job === undefined) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(result.error ?? '验证任务启动失败。')}#work`)
+    if (!result.ok || result.job === undefined) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(refusalValue(result, '验证任务启动失败。'))}#work`)
     return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('Test 验证任务已排队。')}`)
   })
 
@@ -1750,7 +1767,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (repo === undefined || repo.user_id !== viewer.user.id) throw httpError(404, '仓库不存在。', 'REPO_NOT_FOUND')
     const result = await jobs.enqueue(repo, 'manual', undefined, repo.plan_required === 1 ? 'plan' : 'iterate')
     const key = result.ok ? 'notice' : 'error'
-    const message = result.ok ? (repo.plan_required === 1 ? '计划任务已排队；批准后才会写代码。' : '任务已排队。') : result.error ?? '任务启动失败。'
+    const message = result.ok ? (repo.plan_required === 1 ? '计划任务已排队；批准后才会写代码。' : '任务已排队。') : refusalValue(result, '任务启动失败。')
     return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
   })
 
@@ -1759,7 +1776,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const result = await jobs.enqueue(repo, 'manual', undefined, 'plan')
     store.audit(viewer.user.id, 'plan.enqueued', `${repo.owner}/${repo.name} ${result.ok ? 'ok' : result.error ?? 'failed'}`)
     const key = result.ok ? 'notice' : 'error'
-    const message = result.ok ? '计划任务已排队，不会写代码或开 PR。' : result.error ?? '计划任务启动失败。'
+    const message = result.ok ? '计划任务已排队，不会写代码或开 PR。' : refusalValue(result, '计划任务启动失败。')
     return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
   })
 
@@ -1845,7 +1862,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/instance/stop', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     await instances.stop(repo.id)
-    await jobs.cancelRepoJobs(repo.id, 'FlyBot 实例已停止')
+    await jobs.cancelRepoJobs(repo.id, 'FlyBot 实例已停止', 'BRIDGE_ERROR')
     store.audit(viewer.user.id, 'flybot.instance.stopped', `${repo.owner}/${repo.name}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例已停止。')}`)
   })
@@ -1854,8 +1871,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const result = await jobs.enqueue(repo, 'manual', undefined, 'review')
     const key = result.ok ? 'notice' : 'error'
-    const message = result.ok ? '审核任务已排队。' : result.error ?? '审核任务启动失败。'
-    store.audit(viewer.user.id, 'review.enqueued', `${repo.owner}/${repo.name} ${result.ok ? 'ok' : message}`)
+    const message = result.ok ? '审核任务已排队。' : refusalValue(result, '审核任务启动失败。')
+    store.audit(viewer.user.id, 'review.enqueued', `${repo.owner}/${repo.name} ${result.ok ? 'ok' : result.error ?? message}`)
     return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
   })
 
@@ -1946,7 +1963,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       store.audit(viewer.user.id, 'repo.models.changed', `${repo.owner}/${repo.name} models=${requestedModels.length} default=${effectiveDefault || 'none'}`)
     }
     if (repo.enabled === 1 && body.enabled !== '1') {
-      await jobs.cancelRepoJobs(repo.id, '仓库已停用')
+      await jobs.cancelRepoJobs(repo.id, '仓库已停用', 'REPO_DISABLED')
     }
     if (goalChanged) {
       await instances.ensurePlaybook(repo.id).catch((error) => {
@@ -1979,7 +1996,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/disable', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     store.updateRepo(repo.id, { enabled: 0, auto_iterate: 0 })
-    await jobs.cancelRepoJobs(repo.id, '仓库已停用')
+    await jobs.cancelRepoJobs(repo.id, '仓库已停用', 'REPO_DISABLED')
     store.audit(viewer.user.id, 'repo.disabled', `${repo.owner}/${repo.name}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('仓库已停用，任务不会再运行。')}`)
   })
