@@ -157,3 +157,20 @@ test('a non-admin cannot open the trial view', async () => {
     await built.close()
   }
 })
+
+test('the admin console links the trial view', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'boss', admin: true, status: 'approved' })
+    makeUser(store, { login: 'eligible-user', status: 'approved' })
+    const { cookie } = sessionFor(built, admin)
+    const page = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /href="\/admin\/trials"/, 'the admin console does not link the trial view, so an operator has to guess the URL')
+    assert.match(page.body, /Preview trials|试用预览/, 'the trial link has no label')
+  } finally {
+    await built.close()
+  }
+})
