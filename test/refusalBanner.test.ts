@@ -7,7 +7,6 @@ import { jobPage, repoPage } from '../src/views/pages.js'
 import { failureBannerSentence } from '../src/lib/failure.js'
 import { Jobs } from '../src/jobs/service.js'
 import { encryptSecret } from '../src/lib/secrets.js'
-import { translator } from '../src/i18n.js'
 import { json, makeUser, MemoryMailer, formBody, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
 // #231 review: the enqueue path refuses before a job row exists, so its answer
