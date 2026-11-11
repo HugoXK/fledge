@@ -68,7 +68,7 @@ test('the same high result at base and head passes; a head that adds one fails',
   writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([HIGH]))
   const same = runGate(sarifDir, baselinePath)
   assert.equal(same.code, 0, `the recorded high at the same place must pass: ${same.stderr}`)
-  assert.match(same.stdout, /codeql-gate: ok \(1 high\/critical result\(s\), all in the baseline/)
+  assert.match(same.stdout, /codeql-gate: ok \(parsed 1 result\(s\), 1 high\/critical, 0 added; all in the baseline/)
 
   writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([HIGH, { ...HIGH, path: 'src/app.ts', line: 9999, severity: '9.1' }]))
   const added = runGate(sarifDir, baselinePath)
@@ -100,10 +100,10 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   assert.match(baseline.recordedAtSha, /^[0-9a-f]{40}$/)
   const keys = baseline.alerts.map((alert) => alertKey(alert))
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|2714',
-    'js/missing-rate-limiting|src/app.ts|408',
-    'js/missing-rate-limiting|src/app.ts|443',
-    'js/missing-rate-limiting|src/app.ts|463',
+    'js/missing-rate-limiting|src/app.ts|2846',
+    'js/missing-rate-limiting|src/app.ts|432',
+    'js/missing-rate-limiting|src/app.ts|467',
+    'js/missing-rate-limiting|src/app.ts|487',
   ])
   assert.deepEqual(addedAlerts(keys, baseline.alerts).map((alert) => alertKey(alert)), [], 'the baseline must not fail its own alerts')
 })
@@ -115,4 +115,79 @@ test('the CodeQL workflow runs the gate after analyze and writes the SARIF it re
   assert.ok(analyze !== -1, 'codeql.yml must run analyze')
   assert.ok(gate > analyze, 'the gate must run after analyze, or it reads a SARIF that does not exist yet')
   assert.match(workflow.slice(analyze, gate), /output: codeql-results/, 'analyze must write its SARIF where the gate reads it')
+})
+
+// The gate's own defect, in its three shapes. A high result must be seen no
+// matter how the SARIF spells it, and a SARIF with nothing in it is blind, not
+// clean. Each case is written against the production shape, not a convenience.
+test('a numeric security-severity is read as high, so the gate refuses it', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+  const document = {
+    version: '2.1.0',
+    runs: [{
+      tool: { driver: { name: 'CodeQL', rules: [{ id: 'js/missing-rate-limiting', properties: { 'security-severity': 8.8 } }] } },
+      results: [{ ruleId: 'js/missing-rate-limiting', ruleIndex: 0, locations: [{ physicalLocation: { artifactLocation: { uri: 'src/app.ts' }, region: { startLine: 432 } } }] }],
+    }],
+  }
+  const alerts = parseSarif(document)
+  assert.equal(alerts[0]?.severity, 'high', 'a numeric security-severity is a severity, not an absence')
+  writeFileSync(join(sarifDir, 'head.sarif'), JSON.stringify(document))
+  const run = runGate(sarifDir, baselinePath)
+  assert.equal(run.code, 1, `a numeric high must fail the gate: ${run.stdout}${run.stderr}`)
+  assert.match(`${run.stdout}${run.stderr}`, /parsed 1 result\(s\), 1 high\/critical/)
+})
+
+test('rules that live in tool.extensions are resolved by ruleId and ruleIndex', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+  const document = {
+    version: '2.1.0',
+    runs: [{
+      tool: {
+        driver: { name: 'CodeQL', rules: [] },
+        extensions: [{ name: 'codeql/javascript-queries', rules: [{ id: 'js/missing-rate-limiting', properties: { 'security-severity': '8.8' } }] }],
+      },
+      results: [{
+        ruleId: 'js/missing-rate-limiting',
+        ruleIndex: 0,
+        rule: { id: 'js/missing-rate-limiting', toolComponent: { index: 1 } },
+        locations: [{ physicalLocation: { artifactLocation: { uri: 'src/app.ts' }, region: { startLine: 467 } } }],
+      }],
+    }],
+  }
+  const alerts = parseSarif(document)
+  assert.equal(alerts[0]?.severity, 'high', 'a query-pack rule carried the severity all along')
+  writeFileSync(join(sarifDir, 'head.sarif'), JSON.stringify(document))
+  assert.equal(runGate(sarifDir, baselinePath).code, 1, 'a query-pack high must fail the gate')
+})
+
+test('an empty SARIF is a blind gate, not a clean one', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+  writeFileSync(join(sarifDir, 'head.sarif'), JSON.stringify({ version: '2.1.0', runs: [{ tool: { driver: { name: 'CodeQL', rules: [] } }, results: [] }] }))
+  const run = runGate(sarifDir, baselinePath)
+  assert.equal(run.code, 1, 'parsing zero results must not read as a pass')
+  assert.match(`${run.stdout}${run.stderr}`, /parsed 0 result\(s\)/)
+})
+
+test('a moved line is an added result and fails until the baseline records it', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [{ ruleId: 'js/missing-rate-limiting', path: 'src/app.ts', line: 408, severity: 'high' }] }))
+  writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([{ ...HIGH, line: 432 }]))
+  const run = runGate(sarifDir, baselinePath)
+  assert.equal(run.code, 1, 'the same rule at a new line is a new key')
+  assert.match(run.stderr, /new high result js\/missing-rate-limiting at src\/app\.ts:432/)
 })

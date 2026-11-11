@@ -1,10 +1,30 @@
 {
-  "recordedAtSha": "4d44a223ae2ee909ae91bfa9ec230f66c3f7584e",
+  "recordedAtSha": "b85777cc68a5b4ca4bced910baf2414c5a9b2ea9",
   "note": "Every open high/critical CodeQL alert at the recorded sha, by rule id, path and line. Nothing here is dismissed: these four are issues #62-#65 and stay open, so the gate fails a pull request that adds an alert rather than one that works next to them. Changing this file is a reviewed commit; an entry added here says in the PR why the alert is accepted.",
   "alerts": [
-    { "ruleId": "js/missing-rate-limiting", "path": "src/app.ts", "line": 408, "severity": "high" },
-    { "ruleId": "js/missing-rate-limiting", "path": "src/app.ts", "line": 443, "severity": "high" },
-    { "ruleId": "js/missing-rate-limiting", "path": "src/app.ts", "line": 463, "severity": "high" },
-    { "ruleId": "js/missing-rate-limiting", "path": "src/app.ts", "line": 2714, "severity": "high" }
+    {
+      "ruleId": "js/missing-rate-limiting",
+      "path": "src/app.ts",
+      "line": 432,
+      "severity": "high"
+    },
+    {
+      "ruleId": "js/missing-rate-limiting",
+      "path": "src/app.ts",
+      "line": 467,
+      "severity": "high"
+    },
+    {
+      "ruleId": "js/missing-rate-limiting",
+      "path": "src/app.ts",
+      "line": 487,
+      "severity": "high"
+    },
+    {
+      "ruleId": "js/missing-rate-limiting",
+      "path": "src/app.ts",
+      "line": 2846,
+      "severity": "high"
+    }
   ]
 }
