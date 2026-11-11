@@ -25,6 +25,10 @@ jobs:
     name: release ${{ inputs.tag || github.ref_name }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # A step-level env is not visible to `with:` expressions. The SBOM step names
+    # its image and artifact from `env.RELEASE_TAG`, so the tag has to be job-level.
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     # `contents: write` and `packages: write` are the publish scopes this job had
     # inherited from the workflow; they are repeated here because a job-level
     # block replaces the workflow set instead of merging with it, and dropping
