@@ -27,40 +27,105 @@ function defaultBuckets(): number[] {
   return values
 }
 
-function thresholdLines(): Array<{ line: string; threshold: number }> {
-  return alertsText
-    .split('\n')
-    .filter((line) => line.includes('histogram_quantile') && / > [0-9.]+\s*$/.test(line))
-    .map((line) => ({ line, threshold: Number(/ > ([0-9.]+)\s*$/.exec(line)![1]) }))
+// A rule's comparison may sit on its own line when the expression is a YAML
+// block scalar (`expr: |`), which this rules file already does for two of its
+// rules. Join a block back into one expression, so a threshold cannot dodge the
+// guard by moving to a continuation line.
+function logicalExpressions(text: string): string[] {
+  const expressions: string[] = []
+  let block: { indent: number; lines: string[] } | null = null
+  const flush = () => {
+    if (block) expressions.push(block.lines.join(' '))
+    block = null
+  }
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.replace(/\s+$/, '')
+    const start = /^(\s*)expr:\s*[|>][-+]?\s*$/.exec(line)
+    if (start) {
+      flush()
+      block = { indent: start[1]!.length, lines: [] }
+      continue
+    }
+    if (block) {
+      const trimmed = line.trimStart()
+      if (trimmed === '') continue
+      if (line.length - trimmed.length > block.indent) {
+        block.lines.push(trimmed)
+        continue
+      }
+      flush()
+    }
+    const inline = /^\s*expr:\s*(.+)$/.exec(line)
+    if (inline) expressions.push(inline[1]!.trim())
+  }
+  flush()
+  return expressions
 }
 
-function thresholdOf(line: string): number {
-  return Number(/ > ([0-9.]+)\s*$/.exec(line)![1])
+function histogramRules(text: string): Array<{ expression: string; operator: string; threshold: number }> {
+  const rules: Array<{ expression: string; operator: string; threshold: number }> = []
+  for (const expression of logicalExpressions(text)) {
+    const at = expression.indexOf('histogram_quantile')
+    if (at === -1) continue
+    const comparison = /\s(>=?)\s*([0-9]+(?:\.[0-9]+)?)/.exec(expression.slice(at))
+    assert.ok(
+      comparison,
+      `every histogram_quantile rule must keep a "> <threshold>" comparison this guard can read, however it is wrapped: ${expression.trim()}`,
+    )
+    rules.push({ expression, operator: comparison![1]!, threshold: Number(comparison![2]) })
+  }
+  assert.equal(
+    rules.length,
+    (text.match(/histogram_quantile/g) ?? []).length,
+    'every histogram_quantile in the rules file must be readable by this guard, so an unparsed form fails instead of passing',
+  )
+  return rules
 }
 
-test('the highest finite bucket boundary is above every latency alert threshold', () => {
+test('the highest finite bucket boundary can reach every latency alert threshold', () => {
   const buckets = defaultBuckets()
   const top = buckets[buckets.length - 1]!
-  const rules = thresholdLines()
+  const rules = histogramRules(alertsText)
   assert.ok(rules.length >= 2, `expected at least two histogram alert rules, found ${rules.length}`)
   for (const rule of rules) {
-    // A boundary equal to the threshold still caps the p95 at the threshold,
-    // so the comparison has to be strictly greater.
+    // A boundary equal to a `>` threshold still caps the p95 at the threshold,
+    // so the top boundary has to be strictly greater for that rule to fire.
     assert.ok(
-      top > rule.threshold,
-      `the top finite bucket (${top}s) must be above the alert threshold (${rule.threshold}s) in: ${rule.line.trim()}`,
+      rule.operator === '>' ? top > rule.threshold : top >= rule.threshold,
+      `the top finite bucket (${top}s) cannot reach the alert threshold (${rule.operator} ${rule.threshold}s) in: ${rule.expression.trim()}`,
     )
   }
 })
 
 test('the queue-wait and job-duration alerts still read 600s and 1800s', () => {
-  const lines = alertsText.split('\n')
-  const queue = lines.find((line) => line.includes('histogram_quantile') && line.includes('fledge_job_queue_seconds_bucket'))
+  const rules = histogramRules(alertsText)
+  const queue = rules.find((rule) => rule.expression.includes('fledge_job_queue_seconds_bucket'))
   assert.ok(queue, 'deploy/prometheus/fledge-alerts.yml must keep the queue-wait histogram rule')
-  assert.equal(thresholdOf(queue!), 600)
-  const job = lines.find((line) => line.includes('histogram_quantile') && line.includes('fledge_job_seconds_bucket'))
+  assert.equal(queue!.threshold, 600)
+  const job = rules.find((rule) => rule.expression.includes('fledge_job_seconds_bucket'))
   assert.ok(job, 'deploy/prometheus/fledge-alerts.yml must keep the job-duration histogram rule')
-  assert.equal(thresholdOf(job!), 1800)
+  assert.equal(job!.threshold, 1800)
+})
+
+test('a histogram rule written as a YAML block scalar is read as one expression', () => {
+  const fixture = [
+    'groups:',
+    '  - name: fixture',
+    '    rules:',
+    '      - alert: FledgeFixtureLatencyHigh',
+    '        expr: |',
+    '          histogram_quantile(0.95, sum(rate(fledge_job_seconds_bucket[1h])) by (le))',
+    '          > 7200',
+    '        for: 30m',
+    '        labels:',
+    '          severity: warning',
+  ].join('\n')
+  const rules = histogramRules(fixture)
+  assert.equal(rules.length, 1, 'the block-scalar expression must be read as one rule')
+  assert.equal(rules[0]!.operator, '>')
+  assert.equal(rules[0]!.threshold, 7200)
+  const buckets = defaultBuckets()
+  assert.ok(buckets[buckets.length - 1]! < rules[0]!.threshold, 'the fixture must describe a rule above the top finite bucket')
 })
 
 // `observeHistogram` accepts a per-call `buckets` argument, so a future caller
