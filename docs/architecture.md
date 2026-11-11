@@ -60,6 +60,17 @@ state contract and its evidence are in [docs/ui.md](ui.md).
 - **Bilingual UI** in Chinese and English. The locale is stored in the
   `fledge_lang` cookie, and the header switch shares the `hugoxk-lang`
   preference with the rest of the platform.
+- **First-run checklist** (`src/views/checklist.ts`): `/dashboard` shows five
+  steps — repository, role, model provider, instance, first job — and every
+  step's state is read from the database on the request, so a cookie, a second
+  browser or a cleared store cannot change which step is next. The pure state
+  machine decides the single primary action; a step whose prerequisite is
+  missing states the reason instead of offering a control. Once a job exists the
+  checklist is replaced by a first-run summary whose outcome is the first job's
+  own status, read all-time (not a window-scoped count), in four shapes: the
+  job's PR link when it opened one, "finished" with a link to Recent jobs when it
+  succeeded without a PR, "running" while it is queued or running, and the retry
+  path on the repository page when it failed.
 - **Shell** (`src/views/layout.ts`, `public/app.css`): the main nav marks the
   current section with `aria-current="page"`, derived from the route and
   overridable with `active`. The sticky header owns `--header-h` (re-declared
@@ -178,9 +189,9 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   priority, and an `agent-ready` label moves a proposed item to triaged. A
   repository can require a plan before code; a maintainer approves or
   rejects it with allowed/forbidden path constraints, and execution is blocked
-  until approval. Iterate jobs preflight the target branch, record the base SHA,
-  warn when the fork is behind, and scheduled work is skipped while an active
-  work item is open.
+  until approval. Iterate jobs preflight the target branch, record the base SHA
+  and warn when the fork is behind. Work-item states do not gate the scheduler;
+  see "Scheduled work and work items" below.
 - **Auto-merge switch**: off by default. Only a maintainer can enable it. When
   it is on, Fledge (not the agent) verifies the PR is open and mergeable, every
   check run is green, the combined commit status is not failing, and no current
@@ -436,11 +447,11 @@ most every `AUTO_MERGE_RECONCILE_MINUTES`.
 
 ### Scheduled work and work items
 
-Work items are a tracking board, not a second scheduler lock. A scheduled
-iterate job is blocked by an active job for the same repository, a failing
-credential or a duplicate issue, but not by a `pr_ready`, `in_review` or stale
-`in_progress` item. A failed job returns its `assigned`/`in_progress` work item
-to `triaged` so a later schedule can pick it up.
+Work items are a tracking board, not a second scheduler lock. No work-item
+state blocks a scheduled iterate job: the only blocks are an active job for the
+same repository, a failing credential and a duplicate issue. A failed job
+returns its `assigned`/`in_progress` work item to `triaged` so a later schedule
+can pick it up.
 
 ### Team session reconciliation
 

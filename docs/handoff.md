@@ -1,6 +1,6 @@
 # Handoff — Fledge v0.2.4
 
-Status: **v0.2.4 is the latest release (`fledge.hugoxk.online`, GitHub token login; OAuth App pending); docs are live; CI green.**
+Status: **v0.2.4 is the latest release (`fledge.hugoxk.online`, GitHub OAuth login; the token login is disabled); docs are live; CI green.**
 Last updated: 2026-11-06.
 
 This page is the public handoff for a new development session. The operator's
@@ -27,8 +27,8 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
   aggregate check is `ci-ok`.
 - **Stack:** Node 22.9+, TypeScript, Fastify, `node:sqlite`, nodemailer,
   server-rendered HTML.
-- **Service:** <https://fledge.hugoxk.online/> (live; token login until an OAuth
-  App is connected).
+- **Service:** <https://fledge.hugoxk.online/> (live; GitHub OAuth login with the
+  token login disabled).
 - **Docs:** <https://fledge-docs.hugoxk.online/docs/> (mirror:
   <https://hugoxk.online/fledge/docs/>).
 - **Project page / guide:** <https://hugoxk.online/fledge/>.
@@ -100,11 +100,14 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 - Production startup fails closed when the OAuth app or the two secrets are
   missing.
 
-### Not yet verified / not done
+### Not yet done
 
-- Real GitHub OAuth login (the service currently uses the token login fallback;
-  create an OAuth App, set `ALLOW_TOKEN_LOGIN_ONLY=false`, and add the client
-  id/secret).
+- Production GitHub OAuth login: the OAuth App for
+  `https://fledge.hugoxk.online/auth/github/callback` is configured, its client
+  id/secret are in the deployment env, and `ALLOW_TOKEN_LOGIN_ONLY=false`, so
+  login runs through GitHub OAuth and the token login is disabled. A real
+  browser sign-in is **not yet verified**; that check and the pending-approval
+  gate are tracked in #57.
 - Real SMTP delivery (the server env is wired to the operator SMTP account; no
   test mail has been sent).
 - The leaked GitHub development PAT still needs owner rotation; managed bridge
@@ -129,10 +132,12 @@ back. See [architecture.md](architecture.md) and [api.md](api.md).
 
 ## Open work (ordered)
 
-1. **GitHub OAuth App** for `https://fledge.hugoxk.online/auth/github/callback`;
-   put the client id/secret in the deployment env and set
-   `ALLOW_TOKEN_LOGIN_ONLY=false`. The service is already live on the token
-   fallback.
+1. **First real browser OAuth sign-in** (#57) for
+   `https://fledge.hugoxk.online/auth/github/callback`: the OAuth App is
+   configured, its client id/secret are in the deployment env and
+   `ALLOW_TOKEN_LOGIN_ONLY=false` is set, so login runs through GitHub OAuth and
+   the token login is disabled. What remains is the first human sign-in and the
+   pending-approval gate.
 2. **Operational hardening**: repeated-failure alerts, stall detection, the
    credential circuit breaker and managed token rotation are done; still needed
    are log rotation, a backup restore drill and admin token rotation. The leaked

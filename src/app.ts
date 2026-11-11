@@ -654,14 +654,32 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const reposPage = pageNumber('reposPage', reposTotal)
     const jobsPage = pageNumber('jobsPage', jobsTotal)
     const repos = store.listReposPage(viewer.user.id, perPage, (reposPage - 1) * perPage)
-    const questions = await inboxForUser(viewer.user.id, store.listRepos(viewer.user.id))
+    const jobs = store.listJobsPageForUser(viewer.user.id, perPage, (jobsPage - 1) * perPage)
+    const allRepos = store.listRepos(viewer.user.id)
+    const questions = await inboxForUser(viewer.user.id, allRepos)
+    const firstJob = store.firstJobForUser(viewer.user.id)
+    // #227: the checklist state is read from the database on this request, never
+    // from a cookie, so a second tab or a fresh browser sees the same step.
+    const setup = {
+      repos: reposTotal,
+      roleChosen: allRepos.some((repo) => repo.repo_role !== null),
+      modelConfigured: store
+        .listModelProviders(viewer.user.id)
+        .some((provider) => store.listProviderModels(provider.id).length > 0),
+      instanceReady: allRepos.some((repo) => store.getRepoInstance(repo.id)?.status === 'ready'),
+      jobs: jobsTotal,
+      firstJobStatus: firstJob?.status ?? null,
+      firstPrUrl: firstJob?.pr_url ?? null,
+      repoHref: allRepos[0] === undefined ? null : `/repos/${allRepos[0].id}`,
+    }
     return reply.type('text/html').send(
       dashboardPage({
         config,
         locale: request.locale ?? 'zh',
         viewer: view,
         repos,
-        jobs: store.listJobsPageForUser(viewer.user.id, perPage, (jobsPage - 1) * perPage),
+        jobs,
+        setup,
         reposPage,
         reposTotal,
         jobsPage,

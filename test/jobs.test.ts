@@ -1759,6 +1759,27 @@ test('the database refuses a second active job for a repository', () => {
   }
 })
 
+// #248 pinned "only one queued job per repository is claimable at a time" with a
+// read-time check; #245 replaced that check with the partial unique index, so
+// two queued rows for one repository can no longer exist at all. The claiming
+// half of that case still holds and is kept: a claimed job is not offered again,
+// and a finished one frees the repository for the next job.
+test('a claimed job is not claimable again until it finishes', () => {
+  const { store, repoId, userId } = leaseSetup()
+  try {
+    leaseMakeJob(store, repoId, userId, 'job_first', 0)
+    const first = store.claimQueuedJob('worker-1', 60_000)
+    assert.equal(first?.id, 'job_first')
+    assert.equal(store.claimQueuedJob('worker-2', 60_000), undefined, 'a running job is not offered again')
+
+    store.updateJob('job_first', { status: 'succeeded', finished_at: new Date().toISOString() })
+    leaseMakeJob(store, repoId, userId, 'job_second', 10)
+    assert.equal(store.claimQueuedJob('worker-2', 60_000)?.id, 'job_second')
+  } finally {
+    store.close()
+  }
+})
+
 test('a lease can only be renewed or released by its owner', () => {
   const { store, repoId, userId } = leaseSetup()
   try {
