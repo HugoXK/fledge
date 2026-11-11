@@ -1,0 +1,1 @@
+The nightly release workflow now opens its mechanical `release/v<version>` pull request itself through the dedicated `RELEASE_OPEN_TOKEN` team secret, so a release no longer strands on a pushed branch; when the secret or a precondition is missing the run reports `blocked` in the job summary, the `release-plan` artifact and on #80 instead of stopping silently.

@@ -40,6 +40,8 @@ interface Fixture {
   changelogEntries?: Array<{ name: string; type: string }>
   pullStatus?: number
   maintainerCanModify?: boolean
+  login?: string
+  userStatus?: number
 }
 
 function makeServer(fixture: Fixture = {}) {
@@ -63,6 +65,10 @@ function makeServer(fixture: Fixture = {}) {
     const body = init?.body === undefined ? undefined : (JSON.parse(String(init.body)) as Record<string, unknown>)
     calls.push({ method, route, body })
 
+    if (method === 'GET' && route === 'https://api.github.com/user') {
+      if (fixture.userStatus !== undefined) return json({ message: 'Not Found' }, fixture.userStatus)
+      return json({ login: fixture.login ?? 'FledgePlatformTeam' })
+    }
     if (method === 'GET' && route === '') {
       return json({ full_name: REPO, permissions: { push: fixture.permissionsPush ?? true } }, 200, { 'x-oauth-scopes': 'repo, workflow' })
     }
@@ -322,4 +328,30 @@ test('the module carries no tag route and no tag-shaped export', () => {
 
 test('the surface the tool materialises is exactly the mechanical release set', () => {
   assert.deepEqual([...SURFACE_PATHS].sort(), ['CHANGELOG.md', 'changelog.d', 'docker-compose.yml', 'package-lock.json', 'package.json'])
+})
+
+test('a run without the team token is blocked before any request is made', async () => {
+  const { result, calls } = await run({ token: '' })
+  assert.equal(result.status, 'blocked')
+  assert.match(result.reason, /RELEASE_OPEN_TOKEN/)
+  assert.equal(calls.length, 0, 'a blocked run calls no endpoint, least of all POST /pulls')
+})
+
+test('a blocked run exits zero, so the night reports it instead of dying', () => {
+  assert.equal(exitCodeFor({ status: 'blocked' }), 0)
+  assert.equal(exitCodeFor({ status: 'refused' }), 1)
+})
+
+test('the reviewer account may not open the release pull request', async () => {
+  const { result, calls } = await run({}, { login: 'HugoXK-bot' })
+  assert.equal(result.status, 'refused')
+  assert.match(result.reason, /HugoXK-bot/)
+  assert.equal(posts(calls).length, 0, 'the reviewer credential never reaches the write endpoint')
+})
+
+test('an unreadable credential identity is refused, not guessed', async () => {
+  const { result, calls } = await run({}, { userStatus: 500 })
+  assert.equal(result.status, 'refused')
+  assert.match(result.reason, /identity|account/i)
+  assert.equal(posts(calls).length, 0)
 })
