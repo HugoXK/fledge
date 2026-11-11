@@ -58,6 +58,20 @@ Core paths:
    yes.
 7. **Only original material.** Do not copy code, text, icons or graphics from
    other products. Licensed dependencies keep their notices.
+8. **One write session, one PR, one writer, one port.** Four rules keep a write
+   session honest; [docs/autonomous-dev.md](docs/autonomous-dev.md#gates) carries
+   the same four with their commands:
+   - **One write session per repository.** One branch or worktree at a time; a
+     second concurrent write session is how duplicate PRs happen.
+   - **One branch, one open PR.** Before opening, query
+     `GET /repos/{owner}/{repo}/pulls?head={owner}:{branch}&state=open`; if one
+     exists, push to it, and close a second PR for that branch at once.
+   - **One worktree, one writer.** No two bots and no two sessions in the same
+     worktree.
+   - **Dedicated ports for verification servers.** Never `8080`, the documented
+     default, and never a port another session may use; start the server from an
+     isolated worktree at the reviewed tip and check the response against the
+     tree it claims to serve.
 
 ## Pipeline
 
@@ -72,7 +86,8 @@ issue → claim → worktree/branch → red test → fix → gates → PR
 2. **Claim.** Assign the issue to the bot account, add `agent-working`, and
    comment with the branch name. Release the claim if you stop.
 3. **Branch** from the latest `main`. Use a separate worktree when the local
-   tree is dirty.
+   tree is dirty. One branch, one PR — query open PRs for the head before
+   opening.
 4. **Red test.** Write the smallest test that fails for the class of bug.
 5. **Gates** at the tip you will link:
 
@@ -86,7 +101,7 @@ issue → claim → worktree/branch → red test → fix → gates → PR
 6. **PR.** Imperative English title, `Fixes #N`, what changed, what you ran and
    did not run, risks, and a `Docs-not-needed:` line only when the docs really
    say nothing about the change. Add one changelog fragment for a user-visible
-   change.
+   change. One branch, one PR — query open PRs for the head before opening.
 7. **Review.** `ci-ok` covers the build; `review-gate` and `pr-lint` are also
    required. T0/T1 merge on green `ci-ok`. T2/T3 need a PASS at the same tip
    from a reviewer in `.github/agent/review-policy.json`; the author of the tip

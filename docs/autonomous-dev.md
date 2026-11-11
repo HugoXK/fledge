@@ -181,6 +181,24 @@ A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
 `skipped`, `cancelled` or a job absent from `needs`, except where
 `SKIPPABLE_ON` records that an event has nothing for that job to read.
 
+### Write sessions, one PR per branch, and verification servers
+
+Hard rule 8 in `AGENTS.md` points at these four rules; they are repeated here
+with the commands they name, because a gate only works if it can be run:
+
+1. **One write session per repository.** A bot works in one branch or worktree at
+   a time. A second concurrent write session is how a duplicate PR appears.
+2. **One branch, one open PR.** Before opening, query
+   `GET /repos/{owner}/{repo}/pulls?head={owner}:{branch}&state=open`; if a pull
+   request exists, push to it. A second PR on that branch is closed the moment it
+   appears.
+3. **One worktree, one writer.** No two bots and no two sessions share one
+   worktree.
+4. **Dedicated ports for verification servers.** Never `8080`, the documented
+   default, and never a port another session may use. Start the server from an
+   isolated worktree at the reviewed tip, and accept a measurement only after the
+   response matches the tree it claims to serve.
+
 ### Supply-chain gates
 
 `docker` scans the built image with trivy at `HIGH,CRITICAL` and fails the build
