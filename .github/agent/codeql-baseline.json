@@ -1,12 +1,12 @@
 {
   "recordedAtSha": "b85777cc68a5b4ca4bced910baf2414c5a9b2ea9",
-  "note": "Every high/critical CodeQL result the analysis at the recorded sha emits, by rule id, path and line. Nothing is dismissed by this file: the four open alerts (issues #62-#65) stay open, and the three below them are results GitHub already carries as dismissed false positive, recorded so the line-keyed gate does not re-fail a decision that was reviewed in the alert UI. Changing this file is a reviewed commit; an entry added here says in the PR why the result is accepted. The five src/app.ts positions were refreshed by #231, whose refusal-banner helper inserts above all five route registrations and moves those anchors by eleven lines without adding a result; the alerts and their reasons are unchanged.",
+  "note": "Every high/critical CodeQL result the analysis at the recorded sha emits, by rule id, path and line. Nothing is dismissed by this file: the four open alerts (issues #62-#65) stay open, and the three below them are results GitHub already carries as dismissed false positive, recorded so the line-keyed gate does not re-fail a decision that was reviewed in the alert UI. Changing this file is a reviewed commit; an entry added here says in the PR why the result is accepted. The five src/app.ts positions were refreshed by #231, whose refusal-banner helper inserts above all five route registrations and moves those anchors by eleven lines without adding a result; the alerts and their reasons are unchanged. The positions are the merged tree's: main moved the fifth anchor to 2851 before this branch, so it lands at 2862 here.",
   "alerts": [
     { "ruleId": "js/missing-rate-limiting", "path": "src/app.ts", "line": 443, "severity": "high", "reason": "alert #62, open" },
     { "ruleId": "js/missing-rate-limiting", "path": "src/app.ts", "line": 478, "severity": "high", "reason": "alert #63, open" },
     { "ruleId": "js/missing-rate-limiting", "path": "src/app.ts", "line": 488, "severity": "high", "reason": "alert #36, dismissed false positive" },
     { "ruleId": "js/missing-rate-limiting", "path": "src/app.ts", "line": 498, "severity": "high", "reason": "alert #64, open" },
-    { "ruleId": "js/missing-rate-limiting", "path": "src/app.ts", "line": 2857, "severity": "high", "reason": "alert #65, open" },
+    { "ruleId": "js/missing-rate-limiting", "path": "src/app.ts", "line": 2862, "severity": "high", "reason": "alert #65, open" },
     { "ruleId": "js/missing-rate-limiting", "path": "src/gateway/gateway.ts", "line": 125, "severity": "high", "reason": "alert #41, dismissed false positive" },
     { "ruleId": "js/missing-rate-limiting", "path": "src/gateway/gateway.ts", "line": 150, "severity": "high", "reason": "alert #42, dismissed false positive" }
   ]

@@ -674,6 +674,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const jobsPage = pageNumber('jobsPage', jobsTotal)
     const repos = store.listReposPage(viewer.user.id, perPage, (reposPage - 1) * perPage)
     const jobs = store.listJobsPageForUser(viewer.user.id, perPage, (jobsPage - 1) * perPage, jobFilter)
+    // #230 review: the dashboard headline is the account's newest job. The table
+    // above is one page of a filtered list, so its first row is not that job.
+    const latestJob = store.listJobsPageForUser(viewer.user.id, 1, 0)[0]
     const questions = await inboxForUser(viewer.user.id, allRepos)
     const firstJob = store.firstJobForUser(viewer.user.id)
     // #227: the checklist state is read from the database on this request, never
@@ -697,6 +700,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         viewer: view,
         repos,
         jobs,
+        latestJob,
         setup,
         reposPage,
         reposTotal,
@@ -704,6 +708,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobsTotal,
         jobFilter,
         repoOptions: allRepos.map((repo) => ({ id: repo.id, label: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}` })),
+        allRepos,
         questions,
         personal,
         windowDays,

@@ -76,6 +76,69 @@ test('the gitleaks config carries no file-wide allowlist', () => {
   assert.doesNotMatch(config, /\[\[allowlists\]\]/, 'the repository currently has no literal that needs an exception')
 })
 
+// The whole-history scan (issue #250) reports one result that is not a secret: a
+// synthetic fixture at `test/crypto.test.ts:32` in the initial commit, which #185
+// removed from the tree while the commit that carries it stays in history. The
+// exception is a gitleaks ignore fingerprint: one commit, one path, one rule, one
+// line. That is narrower than a `paths` allowance in `.gitleaks.toml`, which would
+// also hide a real token pasted into the same file tomorrow.
+function ignoreEntries(text: string): string[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('#'))
+}
+
+function fingerprintProblems(text: string): string[] {
+  const entries = ignoreEntries(text)
+  const problems: string[] = []
+  if (entries.length !== 1) problems.push(`expected exactly one fingerprint, found ${entries.length}`)
+  for (const entry of entries) {
+    const fields = entry.split(':')
+    if (fields.length !== 4) {
+      problems.push(`${entry}: a fingerprint is <commit>:<path>:<rule-id>:<line>, found ${fields.length} field(s)`)
+      continue
+    }
+    const [commit, path, rule, line] = fields
+    if (!/^[0-9a-f]{40}$/.test(commit ?? '')) problems.push(`${entry}: field 1 must be a 40-hex commit`)
+    if (!path) problems.push(`${entry}: field 2 must name a path`)
+    if (!rule) problems.push(`${entry}: field 3 must name a rule`)
+    if (!/^\d+$/.test(line ?? '')) problems.push(`${entry}: field 4 must be a line number`)
+  }
+  return problems
+}
+
+test('the gitleaks ignore file names exactly one reviewed fingerprint', () => {
+  const ignore = read('.gitleaksignore')
+  assert.deepEqual(fingerprintProblems(ignore), [])
+  assert.deepEqual(ignoreEntries(ignore), [
+    '4d1e27decedc68d01b019d0434291b5f58e4b049:test/crypto.test.ts:generic-api-key:32',
+  ], 'the one exception is the fixture in the initial commit, at the line gitleaks reports')
+  // gitleaks reads `.gitleaksignore` from the source directory on its own. A
+  // `--baseline-path` would replace a file every reviewer can diff with a report
+  // generated outside the repository.
+  const block = jobBlock(ci, 'secret-scan')
+  assert.doesNotMatch(block, /--baseline-path/, 'the reviewed fingerprint file is the exception mechanism, not a generated baseline')
+})
+
+test('an ignore line that is wider than one reviewed result is refused', () => {
+  const fingerprint = '4d1e27decedc68d01b019d0434291b5f58e4b049:test/crypto.test.ts:generic-api-key:32'
+  const cases: Array<[string, string[]]> = [
+    ['two entries', [`${fingerprint}`, `4d1e27decedc68d01b019d0434291b5f58e4b049:test/crypto.test.ts:generic-api-key:33`]],
+    ['a path instead of a commit', ['test/crypto.test.ts']],
+    ['a rule and a path with no commit', ['test/crypto.test.ts:generic-api-key:32']],
+    ['a short commit', ['4d1e27de:test/crypto.test.ts:generic-api-key:32']],
+    ['a missing line', ['4d1e27decedc68d01b019d0434291b5f58e4b049:test/crypto.test.ts:generic-api-key']],
+    ['an empty file', []],
+  ]
+  for (const [name, lines] of cases) {
+    const problems = fingerprintProblems(lines.join('\n'))
+    assert.ok(problems.length > 0, `${name}: must be refused`)
+  }
+  // Comment lines are documentation, not exceptions, and do not count as entries.
+  assert.deepEqual(fingerprintProblems(`# reviewed in #250\n${fingerprint}\n`), [])
+})
+
 // D2 — actionlint reads the workflow; the expression scanner reads the shell.
 test('the workflow lint job runs actionlint and the injection checker', () => {
   const block = jobBlock(ci, 'workflow-lint')

@@ -1,0 +1,1 @@
+The CodeQL gate now passes a valid analysis that found nothing instead of failing on an empty result list, and still fails closed with a distinct message when the SARIF is missing, unparseable or carries no analysis run.

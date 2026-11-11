@@ -100,7 +100,7 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   assert.match(baseline.recordedAtSha, /^[0-9a-f]{40}$/)
   const keys = baseline.alerts.map((alert) => alertKey(alert))
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|2857',
+    'js/missing-rate-limiting|src/app.ts|2862',
     'js/missing-rate-limiting|src/app.ts|443',
     'js/missing-rate-limiting|src/app.ts|478',
     'js/missing-rate-limiting|src/app.ts|488',
@@ -173,7 +173,10 @@ test('rules that live in tool.extensions are resolved by ruleId and ruleIndex', 
   assert.equal(runGate(sarifDir, baselinePath).code, 1, 'a query-pack high must fail the gate')
 })
 
-test('an empty SARIF is a blind gate, not a clean one', (t) => {
+// The gate's success state has to be reachable. A CodeQL analysis that ran and
+// found nothing is clean; a gate that cannot tell that from a SARIF it never
+// read stays red forever and the only way out would be keeping junk results.
+test('a valid analysis that found nothing passes the gate', (t) => {
   const dir = tempDir(t)
   const baselinePath = join(dir, 'baseline.json')
   const sarifDir = join(dir, 'results')
@@ -181,8 +184,54 @@ test('an empty SARIF is a blind gate, not a clean one', (t) => {
   writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
   writeFileSync(join(sarifDir, 'head.sarif'), JSON.stringify({ version: '2.1.0', runs: [{ tool: { driver: { name: 'CodeQL', rules: [] } }, results: [] }] }))
   const run = runGate(sarifDir, baselinePath)
-  assert.equal(run.code, 1, 'parsing zero results must not read as a pass')
-  assert.match(`${run.stdout}${run.stderr}`, /parsed 0 result\(s\)/)
+  assert.equal(run.code, 0, `zero results from a valid analysis is the pass state: ${run.stderr}`)
+  assert.match(run.stdout, /codeql-gate: ok \(parsed 0 result\(s\), 0 high\/critical, 0 added/)
+})
+
+test('a SARIF with no analysis run fails closed and says which shape it was', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+  writeFileSync(join(sarifDir, 'head.sarif'), JSON.stringify({ version: '2.1.0', runs: [] }))
+  const run = runGate(sarifDir, baselinePath)
+  assert.equal(run.code, 1, 'a SARIF that analysed nothing must not read as a pass')
+  assert.match(run.stderr, /has no analysis run \(runs: 0\)/)
+})
+
+// The same verdict in its other two shapes: no runs key at all, and runs that is
+// not a list. Both are "never analysed anything", so both name that shape rather
+// than being counted as zero runs or, worse, as a pass.
+test('a SARIF whose runs is missing or not a list names that shape', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+
+  writeFileSync(join(sarifDir, 'head.sarif'), JSON.stringify({ version: '2.1.0' }))
+  const missing = runGate(sarifDir, baselinePath)
+  assert.equal(missing.code, 1, 'a document with no runs key must fail closed')
+  assert.match(missing.stderr, /has no analysis run \(runs: missing or not a list\)/)
+
+  writeFileSync(join(sarifDir, 'head.sarif'), JSON.stringify({ version: '2.1.0', runs: 'nope' }))
+  const notList = runGate(sarifDir, baselinePath)
+  assert.equal(notList.code, 1, 'runs that is not a list must fail closed')
+  assert.match(notList.stderr, /has no analysis run \(runs: missing or not a list\)/)
+})
+
+test('a malformed JSON body fails closed as unreadable, not as empty', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+  writeFileSync(join(sarifDir, 'head.sarif'), '{"version":"2.1.0","runs":[')
+  const run = runGate(sarifDir, baselinePath)
+  assert.equal(run.code, 1, 'an unparseable SARIF must fail closed')
+  assert.match(run.stderr, /is not readable SARIF/)
+  assert.doesNotMatch(`${run.stdout}${run.stderr}`, /parsed 0 result\(s\)/)
 })
 
 test('a moved line is an added result and fails until the baseline records it', (t) => {
