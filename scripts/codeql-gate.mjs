@@ -58,16 +58,24 @@ for (const file of files) {
 const baselineKeys = (baseline.alerts ?? []).map((alert) => alertKey(alert))
 const added = addedAlerts(baselineKeys, alerts)
 const highs = highAlerts(alerts)
+// Printed next to every verdict: a run that parsed nothing and a run that parsed
+// a lot but called nothing high must not look the same from the outside.
+const summary = `parsed ${alerts.length} result(s), ${highs.length} high/critical`
 
 for (const alert of added) {
   console.error(`codeql-gate: new ${alert.severity} result ${alert.ruleId} at ${alert.path}:${alert.line}`)
 }
 
+if (alerts.length === 0) {
+  console.error(`codeql-gate: ${summary}; an empty parse is a blind gate, not a clean one`)
+  process.exit(1)
+}
+
 if (added.length > 0) {
-  console.error(`codeql-gate: ${added.length} new high/critical result(s); the baseline at ${baseline.recordedAtSha ?? 'an unrecorded sha'} holds ${baselineKeys.length}`)
+  console.error(`codeql-gate: ${summary}, ${added.length} added; the baseline at ${baseline.recordedAtSha ?? 'an unrecorded sha'} holds ${baselineKeys.length}`)
   process.exit(1)
 }
 
 console.log(
-  `codeql-gate: ok (${highs.length} high/critical result(s), all in the baseline of ${baselineKeys.length} recorded at ${baseline.recordedAtSha ?? 'an unrecorded sha'})`,
+  `codeql-gate: ok (${summary}, 0 added; all in the baseline of ${baselineKeys.length} recorded at ${baseline.recordedAtSha ?? 'an unrecorded sha'})`,
 )
