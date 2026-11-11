@@ -88,6 +88,10 @@ export interface ReleaseStatus {
   ok: boolean
   links: ReleaseLink[]
   problems: string[]
+  /** The commit the release tag points at, empty when no tag target is readable. */
+  targetSha: string
+  /** The GitHub Release url, empty when the chain has no readable Release. */
+  releaseUrl: string
 }
 
 export function evaluateReleaseStatus(input?: ReleaseStatusInput): ReleaseStatus

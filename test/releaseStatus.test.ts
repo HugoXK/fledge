@@ -192,6 +192,59 @@ test('the CLI writes the snapshot the admin page reads', () => {
   assert.match(JSON.stringify(snapshot), /releases\/tag\/v0\.3\.2/)
 })
 
+test('a CLI-written snapshot records the tag target and the Release URL, so the running build can be compared', async () => {
+  // The page's "This process" row compares the booted commit stamp with the
+  // snapshot's tag target. If the snapshot carries the target only inside the
+  // tag link's prose, that comparison can never do better than `unknown`.
+  const { readReleaseStatus, compareRunning } = await import('../src/lib/releaseStatus.js')
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-release-status-'))
+  const out = join(dir, 'release-status.json')
+  const run = runCli(['--fixtures', fixtureFile(chain()), '--version', '0.3.2', '--write', out])
+  assert.equal(run.status, 0, run.stderr)
+  const snapshot = readReleaseStatus(dir)
+  assert.ok(snapshot !== null)
+  assert.equal(snapshot.targetSha, SHA('c'))
+  assert.equal(snapshot.releaseUrl, 'https://github.com/HugoXK/fledge/releases/tag/v0.3.2')
+  const atTag = compareRunning(snapshot, { version: '0.3.2', commit: SHA('c').slice(0, 12) })
+  assert.equal(atTag.state, 'ok', atTag.detail)
+  const elsewhere = compareRunning(snapshot, { version: '0.3.2', commit: SHA('f').slice(0, 12) })
+  assert.equal(elsewhere.state, 'mismatch', elsewhere.detail)
+})
+
+test('a snapshot that claims released with no links is refused, not rendered as an empty release', async () => {
+  // `{ok: true, links: []}` is a claim with no evidence: every row would be
+  // absent while the header still says "released".
+  const { parseReleaseStatus } = await import('../src/lib/releaseStatus.js')
+  assert.equal(parseReleaseStatus({ schema: 1, version: '0.3.2', checkedAt: '', baseUrl: '', ok: true, links: [], problems: [] }), null)
+  assert.equal(
+    parseReleaseStatus({
+      schema: 1,
+      version: '0.3.2',
+      checkedAt: '',
+      baseUrl: '',
+      ok: true,
+      links: [{ id: 'tag', state: 'ok', detail: 'v0.3.2 annotated' }],
+      problems: ['tag: no v0.3.2 tag'],
+    }),
+    null,
+  )
+  // An honest "not released" snapshot still parses: the refusal is about a
+  // green claim nobody can check, not about a recorded failure.
+  const recorded = parseReleaseStatus({
+    schema: 1,
+    version: '0.3.2',
+    checkedAt: '',
+    baseUrl: '',
+    ok: false,
+    links: [{ id: 'tag', state: 'missing', detail: 'no v0.3.2 tag' }],
+    problems: ['tag: no v0.3.2 tag'],
+    targetSha: '',
+    releaseUrl: '',
+  })
+  assert.equal(recorded?.ok, false)
+  assert.equal(recorded?.links.length, 1)
+})
+
 // The admin surface renders the recorded chain; it never calls GitHub itself.
 async function adminPage(body: unknown | null): Promise<string> {
   const { buildApp } = await import('../src/app.js')
@@ -224,7 +277,26 @@ test('the admin page renders the recorded chain, its digest and its Release URL,
   assert.match(page, /releases\/tag\/v0\.3\.2/)
   assert.match(page, /sha256:e{64}/)
   assert.match(page, /这个进程/)
+  // The snapshot's `releaseUrl` is rendered as a link: it is a field the page
+  // reads, not one it merely stores.
+  assert.match(page, /<a class="link" href="https:\/\/github\.com\/HugoXK\/fledge\/releases\/tag\/v0\.3\.2"/)
   assert.doesNotMatch(page, /gh[pousr]_[A-Za-z0-9]{20,}/)
+})
+
+test('the admin page does not turn an unreadable Release URL into a link', async () => {
+  const body = {
+    schema: 1,
+    version: '0.3.2',
+    checkedAt: '',
+    baseUrl: '',
+    ok: false,
+    links: [{ id: 'tag', state: 'missing', detail: 'no v0.3.2 tag' }],
+    problems: ['tag: no v0.3.2 tag'],
+    targetSha: '',
+    releaseUrl: 'javascript:alert(1)',
+  }
+  const page = await adminPage(body)
+  assert.doesNotMatch(page, /javascript:alert/)
 })
 
 test('the admin page says the chain was not recorded instead of rendering a blank card', async () => {

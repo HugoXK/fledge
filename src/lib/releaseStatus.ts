@@ -69,16 +69,22 @@ export function parseReleaseStatus(raw: unknown): ReleaseStatusSnapshot | null {
   if (typeof entry.version !== 'string' || entry.version === '') return null
   if (!Array.isArray(entry.links) || !entry.links.every(isLink)) return null
   const problems = Array.isArray(entry.problems) ? entry.problems.filter((item): item is string => typeof item === 'string') : []
+  const ok = entry.ok === true
+  // A green claim with no rows, or one that contradicts its own problems, is
+  // refused: the card would say "released" over an empty table.
+  if (ok && (entry.links.length === 0 || problems.length > 0)) return null
+  const targetSha = typeof entry.targetSha === 'string' && SHA.test(entry.targetSha) ? entry.targetSha : ''
+  const releaseUrl = typeof entry.releaseUrl === 'string' && /^https?:\/\//.test(entry.releaseUrl) ? entry.releaseUrl : ''
   return {
     schema: 1,
     version: entry.version,
     checkedAt: typeof entry.checkedAt === 'string' ? entry.checkedAt : '',
     baseUrl: typeof entry.baseUrl === 'string' ? entry.baseUrl : '',
-    ok: entry.ok === true,
+    ok,
     links: entry.links,
     problems,
-    targetSha: typeof entry.targetSha === 'string' ? entry.targetSha : '',
-    releaseUrl: typeof entry.releaseUrl === 'string' ? entry.releaseUrl : '',
+    targetSha,
+    releaseUrl,
   }
 }
 

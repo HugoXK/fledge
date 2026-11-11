@@ -1764,7 +1764,7 @@ export function adminPage(input: {
         return `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('这个进程', 'This process'))}</strong><small>${escapeHtml(running.detail)}</small></div><div class="row">${stateBadge(running.state)}</div></div>`
       })()}`
   const chainCard = `<section class="card">
-    <h2>${escapeHtml(t('发布链', 'Release chain'))}${releaseStatus === null ? '' : ` <small class="count">v${escapeHtml(releaseStatus.version)} · ${escapeHtml(releaseStatus.ok ? t('已发布', 'released') : t('未完成', 'not released'))}${releaseStatus.checkedAt === '' ? '' : ` · ${escapeHtml(t(`检查于 ${releaseStatus.checkedAt}`, `checked ${releaseStatus.checkedAt}`))}`}</small>`}</h2>
+    <h2>${escapeHtml(t('发布链', 'Release chain'))}${releaseStatus === null ? '' : ` <small class="count">v${escapeHtml(releaseStatus.version)} · ${escapeHtml(releaseStatus.ok ? t('已发布', 'released') : t('未完成', 'not released'))}${releaseStatus.checkedAt === '' ? '' : ` · ${escapeHtml(t(`检查于 ${releaseStatus.checkedAt}`, `checked ${releaseStatus.checkedAt}`))}`}${releaseStatus.releaseUrl === '' ? '' : ` · <a class="link" href="${escapeHtml(releaseStatus.releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(t('GitHub Release', 'GitHub Release'))}</a>`}</small>`}</h2>
     <div class="list">${chainRows}</div>
   </section>`
 

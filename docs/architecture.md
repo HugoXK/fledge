@@ -790,10 +790,15 @@ published before that line existed reads `missing` and is reported as such.
 The `/admin` card renders the snapshot the command writes to
 `${DATA_DIR}/release-status.json` (`src/lib/releaseStatus.ts`): it never calls
 GitHub, and a missing or unparseable snapshot renders "no release chain is
-recorded" rather than an empty card. The one live row is `This process`, which
-compares the version in `package.json` and the commit stamp this process booted
-with against the recorded tag target, so an operator can see at a glance whether
-the instance they are looking at is the release the chain names.
+recorded" rather than an empty card. The snapshot carries the tag target and the
+Release URL as fields (`targetSha`, `releaseUrl`); the target is never re-read
+out of a link's detail text. The one live row is `This process`, which compares
+the version in `package.json` and the commit stamp this process booted with
+against that recorded tag target, so an operator can see at a glance whether the
+instance they are looking at is the release the chain names. A snapshot that
+claims `ok` with no links, or that contradicts its own problems, is refused as
+unparseable — a green header over an empty table is the one shape the card must
+never render.
 
 ### Operational alerts
 

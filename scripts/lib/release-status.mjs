@@ -259,11 +259,20 @@ export function evaluateReleaseStatus(input = {}) {
   const checkedAt = text(input?.checkedAt)
   const baseUrl = text(input?.baseUrl).replace(/\/$/, '')
 
+  // The two facts the admin page compares with are fields, not prose inside a
+  // link's detail: `targetSha` is what a running build is matched against, and
+  // `releaseUrl` is the link the card renders. Both are validated here so a
+  // snapshot can never carry an unreadable sha or a non-http URL.
+  const tagTarget = text(input?.tag?.targetSha)
+  const releaseUrl = text(input?.release?.url)
+  const targetSha = SHA.test(tagTarget) ? tagTarget : ''
+  const url = /^https?:\/\//.test(releaseUrl) ? releaseUrl : ''
+
   // A chain for a version nobody named cannot be judged; saying so is better
   // than judging it green against an empty string.
   if (!VERSION.test(version)) {
     const detail = `"${version}" is not an X.Y.Z version`
-    return { schema: 1, version, checkedAt, baseUrl, ok: false, links: [link('version', 'mismatch', detail)], problems: [`version: ${detail}`] }
+    return { schema: 1, version, checkedAt, baseUrl, ok: false, links: [link('version', 'mismatch', detail)], problems: [`version: ${detail}`], targetSha: '', releaseUrl: '' }
   }
 
   const links = []
@@ -279,5 +288,5 @@ export function evaluateReleaseStatus(input = {}) {
   healthzLink(links, version, packageVersion, baseUrl, input?.healthz ?? null, input?.tag ?? null)
 
   const problems = links.filter((entry) => entry.state === 'missing' || entry.state === 'mismatch').map((entry) => `${entry.id}: ${entry.detail}`)
-  return { schema: 1, version, checkedAt, baseUrl, ok: problems.length === 0, links, problems }
+  return { schema: 1, version, checkedAt, baseUrl, ok: problems.length === 0, links, problems, targetSha, releaseUrl: url }
 }
