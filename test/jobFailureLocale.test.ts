@@ -105,12 +105,36 @@ for (const leak of LEAKS) {
 
       const zh = noticeText(dashboardHtml(store, 'zh', userId, repo, job))
       assert.match(zh, /权限不足|停滞/, 'the Chinese notification keeps the text the backend wrote')
+      assert.match(zh, /^(任务|审核) /, `the Chinese notification lost its wrapper: ${zh}`)
+      assert.doesNotMatch(zh, /The (job|review job)/, `the Chinese notification put an English wrapper around Chinese: ${zh}`)
       assert.equal(store.listNotifications(userId)[0]?.message, `任务 ${job.id} 失败：${leak.zh}`, 'the stored row keeps the operator text')
     } finally {
       store.close()
     }
   })
 }
+
+// A notification may be written while the console runs in `en`, so the stored
+// message is the English wrapper; a `zh` reader must still get one whole Chinese
+// sentence instead of the stored wrapper plus a translated body.
+test('a notification written in English reads as one Chinese sentence', () => {
+  const store = new Store(':memory:')
+  try {
+    const { userId, repo, job } = failedJob(store, 'note-en-writer', '任务租约过期：worker 未续约。', 'JOB_LEASE_EXPIRED')
+    store.notify(userId, 'job', `The job ${job.id} failed: 任务租约过期：worker 未续约。`, 'JOB_LEASE_EXPIRED')
+
+    const zh = noticeText(dashboardHtml(store, 'zh', userId, repo, job))
+    assert.match(zh, /^(任务|审核) /, `the Chinese reader lost the wrapper: ${zh}`)
+    assert.doesNotMatch(zh, /The (job|review job)/, `the Chinese reader got the English wrapper: ${zh}`)
+
+    const en = noticeText(dashboardHtml(store, 'en', userId, repo, job))
+    assert.match(en, /^The job /, `the English reader lost the wrapper: ${en}`)
+    assert.doesNotMatch(en, CJK, `the English reader got the backend sentence: ${en}`)
+    assert.equal(store.listNotifications(userId)[0]?.message, `The job ${job.id} failed: 任务租约过期：worker 未续约。`, 'the stored row keeps the writer text')
+  } finally {
+    store.close()
+  }
+})
 
 test('every failure class the issue names has a code and a sentence in both languages', () => {
   const required = ['REPO_CREDENTIAL_INVALID', 'JOB_STALLED', 'QUOTA_EXHAUSTED', 'JOB_BUDGET_EXCEEDED', 'DUPLICATE_WORK', 'STAGE_EVIDENCE_MISSING', 'JOB_TIMEOUT', 'BRIDGE_ERROR']

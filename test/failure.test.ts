@@ -15,6 +15,15 @@ test('failures map to actionable categories', () => {
   assert.equal(classifyFailure({ ...base, error: '模型供应商连接失败' })?.kind, 'model')
   assert.equal(classifyFailure({ ...base, error: 'something unexpected' })?.kind, 'unknown')
   assert.equal(classifyFailure({ ...base, status: 'succeeded', error: '' }), null)
+  // The code outranks the text it disagrees with (#231 review, finding 2): the
+  // lease sentence carries no `stall` word, so a row that has only the text is
+  // unknown while the same row with JOB_LEASE_EXPIRED is stalled. That kind
+  // drives the job-table label and the failure breakdown, so the branch needs a
+  // case that fails if the code-first lines are removed.
+  const lease = '任务租约过期：worker 未续约。'
+  assert.equal(classifyFailure({ ...base, error: lease, error_code: 'JOB_LEASE_EXPIRED' })?.kind, 'stalled')
+  assert.equal(classifyFailure({ ...base, error: lease })?.kind, 'unknown')
+  assert.equal(classifyFailure({ ...base, error: lease, error_code: 'NOT_A_CODE' })?.kind, 'unknown')
 })
 
 test('failure labels are bilingual and the breakdown is ordered', () => {

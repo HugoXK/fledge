@@ -406,8 +406,18 @@ export function inboxSection(locale: Locale, viewer: Viewer, questions: InboxQue
 function noticeText(locale: Locale, t: Translate, entry: NotificationRow): string {
   const sentence = failureSentence(t, entry.code)
   if (sentence !== null) {
-    const match = /^(审核|任务) (\S+) 失败：([\s\S]*)$/.exec(entry.message)
-    if (match !== null) return `${match[1] === '审核' ? 'The review job' : 'The job'} ${match[2]} failed: ${sentence}`
+    // The stored message keeps the wrapper its writer used, so the wrapper is
+    // rebuilt with `t()` instead of reused: a `zh` reader must not get
+    // "The job X failed:" around a Chinese sentence, and an `en` reader must not
+    // get "任务 X 失败：" around an English one.
+    const wrapper = /^(审核|任务) (\S+) 失败：|^The (review job|job) (\S+) failed: /.exec(entry.message)
+    if (wrapper !== null) {
+      const review = wrapper[1] === '审核' || wrapper[3] === 'review job'
+      const id = wrapper[2] ?? wrapper[4] ?? ''
+      return review
+        ? t(`审核 ${id} 失败：${sentence}`, `The review job ${id} failed: ${sentence}`)
+        : t(`任务 ${id} 失败：${sentence}`, `The job ${id} failed: ${sentence}`)
+    }
     if (locale === 'en') return sentence
   }
   return localizeNotification(locale, entry.message)
