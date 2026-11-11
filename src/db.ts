@@ -569,7 +569,6 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS jobs_repo_idx ON jobs(repo_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS jobs_user_idx ON jobs(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
-CREATE UNIQUE INDEX IF NOT EXISTS jobs_one_active_per_repo ON jobs(repo_id) WHERE status IN ('queued','running');
 
 CREATE TABLE IF NOT EXISTS api_tokens (
   id TEXT PRIMARY KEY,
@@ -861,7 +860,46 @@ export class Store {
   migrateIndexes(): void {
     this.run('CREATE INDEX IF NOT EXISTS quota_ledger_repo_idx ON quota_ledger(repo_id, at DESC)')
     this.run('CREATE INDEX IF NOT EXISTS jobs_pr_state_idx ON jobs(pr_state, created_at DESC)')
-    this.run("CREATE UNIQUE INDEX IF NOT EXISTS jobs_one_active_per_repo ON jobs(repo_id) WHERE status IN ('queued','running')")
+    this.ensureOneActiveJobIndex()
+  }
+
+  // The unique index below is created in the constructor, so a database written
+  // before it existed cannot be left holding two queued/running rows for one
+  // repository: the DDL would throw and the process would never boot. Resolve
+  // those rows deterministically instead. Rule: keep a running job (never fail a
+  // job that is executing; the newest one if several are), otherwise keep the
+  // oldest queued job, and fail every other active row with a stated reason and
+  // one audit line.
+  private ensureOneActiveJobIndex(): void {
+    const ddl = "CREATE UNIQUE INDEX IF NOT EXISTS jobs_one_active_per_repo ON jobs(repo_id) WHERE status IN ('queued','running')"
+    try {
+      this.run(ddl)
+      return
+    } catch (error) {
+      if (!/UNIQUE constraint failed/i.test(String(error))) throw error
+    }
+    try {
+      this.transaction(() => {
+        this.resolveDuplicateActiveJobs()
+        this.run(ddl)
+      })
+    } catch (error) {
+      const offenders = this.all<{ repo_id: string }>("SELECT repo_id FROM jobs WHERE status IN ('queued','running') GROUP BY repo_id HAVING COUNT(*) > 1").map((row) => row.repo_id)
+      throw new Error(`cannot enforce one active job per repository; still duplicated: ${offenders.join(', ') || 'unknown'} (${error instanceof Error ? error.message : String(error)})`)
+    }
+  }
+
+  private resolveDuplicateActiveJobs(): void {
+    const duplicateRepos = this.all<{ repo_id: string }>("SELECT repo_id FROM jobs WHERE status IN ('queued','running') GROUP BY repo_id HAVING COUNT(*) > 1")
+    for (const { repo_id: repoId } of duplicateRepos) {
+      const running = this.all<{ id: string; user_id: string }>("SELECT id, user_id FROM jobs WHERE repo_id = ? AND status = 'running' ORDER BY created_at DESC, rowid DESC", repoId)
+      const queued = this.all<{ id: string; user_id: string }>("SELECT id, user_id FROM jobs WHERE repo_id = ? AND status = 'queued' ORDER BY created_at ASC, rowid ASC", repoId)
+      const demoted = running.length > 0 ? [...running.slice(1), ...queued] : queued.slice(1)
+      for (const row of demoted) {
+        this.run("UPDATE jobs SET status = 'failed', error = 'JOB_DUPLICATE_ACTIVE_SUPERSEDED', finished_at = ? WHERE id = ?", nowIso(), row.id)
+        this.audit(row.user_id, 'job.duplicate_active_superseded', `${row.id}: ${repoId}`)
+      }
+    }
   }
 
   backfillTokenRepoIds(): void {

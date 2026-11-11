@@ -1968,3 +1968,32 @@ test('the dispatcher respects maxActiveJobs and releases the next repo after the
     store.close()
   }
 })
+
+test('only the one-active-job index is reported as a busy queue', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'noop', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer(), new InstanceManager(store, config))
+  const stubCreateJob = (thunk: () => never): void => {
+    Object.defineProperty(store, 'createJob', { value: () => thunk(), configurable: true })
+  }
+  try {
+    const user = makeUser(store, { login: 'busy-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_busy', userId: user.id, owner: 'o', name: 'busy', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    // A concurrent enqueue wins the race between the read-time check and this
+    // insert: SQLite names the column of the partial unique index, and the
+    // caller must see a busy queue instead of a 500.
+    stubCreateJob(() => {
+      store.db.exec(`INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, created_at) VALUES ('job_busy_racer', 'repo_busy', '${user.id}', 'queued', 'manual', 'g', 'cb_racer', '${new Date().toISOString()}')`)
+      throw new Error('UNIQUE constraint failed: jobs.repo_id')
+    })
+    assert.deepEqual(await jobs.enqueue(repo, 'manual'), { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' })
+
+    // Any other constraint failure is a bug and has to surface instead.
+    store.db.exec("UPDATE jobs SET status = 'failed' WHERE id = 'job_busy_racer'")
+    stubCreateJob(() => { throw new Error('UNIQUE constraint failed: jobs.id') })
+    await assert.rejects(() => jobs.enqueue(repo, 'manual'), /jobs\.id/)
+  } finally {
+    store.close()
+  }
+})
