@@ -123,11 +123,35 @@ Controller-managed (never by hand): `risk:T0`…`risk:T3`, `status:done`.
 
 ### When an issue is `agent-ready`
 
-All three:
+All four:
 
 1. Every design conflict is resolved; no open question for the owner.
 2. Expected behaviour and change scope are clear.
 3. It is not `hold`, not an umbrella, and not team-via-groups work.
+4. The Reviewer posted `Issue-review: PASS at issue #<N> body <12-hex>` and added
+   `review:approved`. That verdict plus the label is the Reviewer's only state
+   write: it never adds `agent-ready`, never assigns, and never edits the body.
+   `agent-ready` is added by the Lead and only by the Lead.
+
+The hash is sha256 over the **whole** decoded body, first 12 hex, whitespace
+included — the convention every published PASS was written with. Any body edit
+voids the PASS. The Lead recomputes it with
+
+```sh
+node scripts/issue-gate.mjs --issue <N>   # ok | stale-pass | no-pass | bad-passer | changes | corrupt-body
+```
+
+immediately before adding `agent-ready` — never from an earlier run in the same
+session, never from memory, never from the PASS text alone. A `changes` line
+(exit 4) blocks the label exactly like a missing PASS, and a verdict from
+anyone other than the policy's `requiredPass` is not a PASS at all.
+
+Known limit, stated rather than papered over: a byte-for-byte revert back to the
+PASSed text **does** revive the PASS, because the gate compares the live body
+with the published verdicts and GitHub exposes no body-edit history. Do not
+describe this gate as revert-proof. The machine half covers every other case;
+the human rule — a material edit voids the approval, so the Reviewer re-reads —
+covers that window.
 
 Otherwise `needs-human` or `needs-info`, with the blocking question in a comment.
 

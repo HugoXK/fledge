@@ -251,8 +251,13 @@ project-wide list and ask the maintainer before deleting or recreating anything.
 - Controller-managed (never by hand): `risk:T0`…`risk:T3`, `status:done`.
 
 `agent-ready` requires: no open design conflict, a clear expected behaviour and
-scope, not `hold`, not an umbrella, and not team-via-groups work. Agents develop
-only `agent-ready` issues.
+scope, not `hold`, not an umbrella, not team-via-groups work, and
+`review:approved` from the Reviewer whose PASS names the live body hash. The Lead
+recomputes that hash with `node scripts/issue-gate.mjs --issue <N>` immediately
+before adding the label; a `changes` line blocks it exactly like a missing PASS,
+and the person who wrote the issue never adds the label. Any body edit voids the
+PASS — a byte-for-byte revert revives it, because GitHub exposes no edit history,
+so the gate is not revert-proof. Agents develop only `agent-ready` issues.
 
 ## Every write says who wrote it
 
