@@ -4,6 +4,7 @@ import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { log } from './lib/log.js'
 import { nowIso } from './lib/time.js'
+import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 
 const require = createRequire(import.meta.url)
 
@@ -925,14 +926,29 @@ export class Store {
   private resolveDuplicateActiveJobs(): void {
     const duplicateRepos = this.all<{ repo_id: string }>("SELECT repo_id FROM jobs WHERE status IN ('queued','running') GROUP BY repo_id HAVING COUNT(*) > 1")
     for (const { repo_id: repoId } of duplicateRepos) {
-      const running = this.all<{ id: string; user_id: string }>("SELECT id, user_id FROM jobs WHERE repo_id = ? AND status = 'running' ORDER BY created_at DESC, rowid DESC", repoId)
-      const queued = this.all<{ id: string; user_id: string }>("SELECT id, user_id FROM jobs WHERE repo_id = ? AND status = 'queued' ORDER BY created_at ASC, rowid ASC", repoId)
+      const running = this.all<{ id: string; user_id: string; work_item_id: string | null }>("SELECT id, user_id, work_item_id FROM jobs WHERE repo_id = ? AND status = 'running' ORDER BY created_at DESC, rowid DESC", repoId)
+      const queued = this.all<{ id: string; user_id: string; work_item_id: string | null }>("SELECT id, user_id, work_item_id FROM jobs WHERE repo_id = ? AND status = 'queued' ORDER BY created_at ASC, rowid ASC", repoId)
       const demoted = running.length > 0 ? [...running.slice(1), ...queued] : queued.slice(1)
       for (const row of demoted) {
         this.run("UPDATE jobs SET status = 'failed', error = 'JOB_DUPLICATE_ACTIVE_SUPERSEDED', finished_at = ? WHERE id = ?", nowIso(), row.id)
-        this.audit(row.user_id, 'job.duplicate_active_superseded', `${row.id}: ${repoId}`)
+        const workItemId = row.work_item_id
+        if (workItemId !== null) this.resetSupersededWorkItem(workItemId)
+        this.audit(row.user_id, 'job.duplicate_active_superseded', workItemId === null ? `${row.id}: ${repoId}` : `${row.id}: ${repoId} item=${workItemId}`)
       }
     }
+  }
+
+  // The item a failed duplicate was running has to leave `in_progress`: nothing
+  // will ever move it, so the board would show work that cannot progress. The
+  // reset goes through the published map (`in_progress -> triaged` is already an
+  // edge), so it needs no new transition and no schema change; the item simply
+  // asks for a new dispatch decision.
+  private resetSupersededWorkItem(workItemId: string): void {
+    const item = this.getWorkItem(workItemId)
+    if (item === undefined) return
+    const allowed = WORK_ITEM_TRANSITIONS[item.state as WorkItemState] ?? []
+    if (!allowed.includes('triaged')) return
+    this.updateWorkItem(workItemId, { state: 'triaged' })
   }
 
   backfillTokenRepoIds(): void {
