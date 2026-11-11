@@ -881,6 +881,11 @@ export class Jobs {
       if (combined.count > 0 && combined.state !== 'success') reasons.push(`Commit status is ${combined.state}.`)
       if (changesRequested) reasons.push('Changes requested.')
       if (testEvidence.state === 'contradicted') reasons.push('Test evidence is contradicted by the check runs.')
+      // #134: the job claims a green test, and no check run produced one — the
+      // test job was skipped or neutral, or no check is named as a test job. The
+      // panel must not say "Verified", and the gate must not merge on the claim:
+      // both read this snapshot, so the refusal is recorded here, once.
+      else if (testEvidence.claimed && testEvidence.state === 'unverified' && checks.length > 0) reasons.push('Test evidence is claimed but no test check passed.')
       const verification: VerificationResult = {
         ok: reasons.length === 0,
         checkedAt: nowIso(),
