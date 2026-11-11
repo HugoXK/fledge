@@ -18,9 +18,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { evaluateReleaseStatus } from './lib/release-status.mjs'
 
-const SHA = /^[0-9a-f]{40}$/
 const VERSION = /^\d+\.\d+\.\d+$/
-const DIGEST = /^sha256:[0-9a-f]{64}$/
 
 function argument(name) {
   const index = process.argv.indexOf(name)
@@ -66,14 +64,6 @@ export function publishedChainFromBody(body) {
     sbom: sbom === null ? null : { present: true, name: sbom[1] ?? '' },
     attestation: attestation === null ? null : { present: true, subjectDigest: attestation[1] ?? '' },
   }
-}
-
-function messageOf(payload) {
-  if (payload !== null && typeof payload === 'object') {
-    const message = payload.message ?? payload.error
-    if (typeof message === 'string' && message !== '') return message
-  }
-  return ''
 }
 
 function apiClient(repo, token, fetchImpl) {
