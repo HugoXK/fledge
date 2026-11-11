@@ -31,7 +31,7 @@ default branch, does not merge by default, and never runs a user repository itse
 
 > **Status:** `v0.3.1` is the latest release (2026-11-11) at <https://fledge.hugoxk.online/>.
 > A weekly minor release goes out on Monday night; later releases in the same week are patch releases.
-> The GitHub token login fallback is active until the production OAuth App is configured. Documentation is at
+> Login is GitHub OAuth: the production OAuth App is configured and the token login is disabled. Documentation is at
 > <https://fledge-docs.hugoxk.online/docs/>; the project homepage and guide are at
 > <https://hugoxk.online/fledge/>.
 

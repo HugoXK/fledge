@@ -138,6 +138,17 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   renders the simple UI while advanced routes stay blocked. An admin can open a
   read-only support view for a visible user and that user's jobs; it never
   mutates data or triggers work.
+- **Dispatch leases and queue mode**: every running job records `lease_owner`
+  and `lease_until`; the terminal transition clears them. `Store.claimQueuedJob`
+  atomically claims one queued row per repository, and `expiredLeaseJobs` is the
+  recovery query. `QUEUE_DISPATCH=false` keeps the inline path; setting it to
+  `true` makes `enqueue` store the callback secret and job token encrypted
+  (`callback_secret_enc`, `platform_token_enc`) and lets the tick's worker loop
+  claim and dispatch the job. A running job renews its five-minute lease every
+  minute, and the tick reaper fails a job whose worker stops renewing instead of
+  waiting for the 90-minute job timeout. Queue admission rejects a new job when
+  the global or per-user cap is reached. The lease and queue columns are schema
+  version 33.
 - **No worker process**: a 60-second tick schedules due iterate jobs and, when
   the user selected the maintainer role and the upstream grants admin/maintain permission, review jobs for all open PRs.
   The interval is the minimum gap between runs, not a cap on PRs or issues; a
@@ -179,9 +190,9 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   priority, and an `agent-ready` label moves a proposed item to triaged. A
   repository can require a plan before code; a maintainer approves or
   rejects it with allowed/forbidden path constraints, and execution is blocked
-  until approval. Iterate jobs preflight the target branch, record the base SHA,
-  warn when the fork is behind, and scheduled work is skipped while an active
-  work item is open.
+  until approval. Iterate jobs preflight the target branch, record the base SHA
+  and warn when the fork is behind. Work-item states do not gate the scheduler;
+  see "Scheduled work and work items" below.
 - **Auto-merge switch**: off by default. Only a maintainer can enable it. When
   it is on, Fledge (not the agent) verifies the PR is open and mergeable, every
   check run is green, the combined commit status is not failing, and no current
@@ -444,11 +455,11 @@ most every `AUTO_MERGE_RECONCILE_MINUTES`.
 
 ### Scheduled work and work items
 
-Work items are a tracking board, not a second scheduler lock. A scheduled
-iterate job is blocked by an active job for the same repository, a failing
-credential or a duplicate issue, but not by a `pr_ready`, `in_review` or stale
-`in_progress` item. A failed job returns its `assigned`/`in_progress` work item
-to `triaged` so a later schedule can pick it up.
+Work items are a tracking board, not a second scheduler lock. No work-item
+state blocks a scheduled iterate job: the only blocks are an active job for the
+same repository, a failing credential and a duplicate issue. A failed job
+returns its `assigned`/`in_progress` work item to `triaged` so a later schedule
+can pick it up.
 
 ### Team session reconciliation
 

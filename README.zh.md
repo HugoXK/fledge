@@ -28,7 +28,7 @@ bridge 把任务交给 FlyBot 代理；代理先写失败测试，做最小修�
 平台。Fledge 不会推默认分支、不会自动合并、也不会在本地执行用户仓库。
 
 > **状态：** 最新发布是 `v0.3.1`（2026-11-11）：<https://fledge.hugoxk.online/>。
-> 周一晚发 minor，周内后续发布都是 patch。GitHub token 登录会一直可用，直到生产 OAuth App 配置完成。文档在
+> 周一晚发 minor，周内后续发布都是 patch。登录走 GitHub OAuth：生产 OAuth App 已配置，token 登录兜底已关闭。文档在
 > <https://fledge-docs.hugoxk.online/docs/>；项目主页和 Guide 在
 > <https://hugoxk.online/fledge/>。
 
