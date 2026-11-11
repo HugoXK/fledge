@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { isIP } from 'node:net'
 import { resolve } from 'node:path'
 import { buildIdentity } from './lib/buildIdentity.js'
+import { DEFAULT_EXPECTED_HOURS } from './lib/backupStatus.js'
 
 export type RunnerMode = 'mock' | 'flybot'
 export type MailTransport = 'console' | 'smtp'
@@ -113,6 +114,12 @@ export interface Config {
   }
   dataDir: string
   dbPath: string
+  backup: {
+    /** Where `npm run db:backup` writes: the same BACKUP_DIR ?? DATA_DIR/backups the script uses. */
+    dir: string
+    /** Age above which the newest copy is shown as stale, in hours. */
+    expectedIntervalHours: number
+  }
   allowPrivateModelUrls: boolean
   inboundEmailSecret: string
   notifyWebhookUrl: string
@@ -304,6 +311,10 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     dataDir,
     dbPath: resolve(text('DB_PATH', `${dataDir}/fledge.db`)),
+    backup: {
+      dir: resolve(text('BACKUP_DIR', `${dataDir}/backups`)),
+      expectedIntervalHours: Math.max(1, number('BACKUP_EXPECTED_HOURS', DEFAULT_EXPECTED_HOURS)),
+    },
     allowPrivateModelUrls: bool('ALLOW_PRIVATE_MODEL_URLS', false),
     inboundEmailSecret: text('INBOUND_EMAIL_SECRET'),
     notifyWebhookUrl: text('NOTIFY_WEBHOOK_URL'),

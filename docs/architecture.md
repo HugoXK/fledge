@@ -813,6 +813,37 @@ decision [0007](decisions/0007-build-identity.md) — because two `main` builds
 between a tag and the next version bump answer the same `version` and cannot
 otherwise be told apart from outside.
 
+### Backup surface
+
+The other half of "your data is safe" is a fact the operator can see without
+reading `mtime` on a shell. `readBackupStatus` (`src/lib/backupStatus.ts`) lists
+the directory `npm run db:backup` writes (`config.backup.dir`: `BACKUP_DIR ??
+DATA_DIR/backups`, the same resolution as the script) and reads the `<copy>.json`
+manifest beside each copy. The `/admin` card reports the newest copy with its
+size and age, whether that copy's manifest still matches, how many copies exist,
+and — above `BACKUP_EXPECTED_HOURS` (default 26) — that the schedule looks stale.
+It never opens `fledge.db` and has no backup, restore or delete control, so a
+page view cannot touch the database being backed up.
+
+The manifest is checked in three steps and the card never claims more than it
+did: `size` is compared always; `sha256` is compared only for the newest copy and
+only when that copy is at most 4 MiB (`SHA256_MAX_BYTES`), because hashing is the
+only read of a copy's bytes on a render path and a bounded burst keeps `/admin`
+responsive on a slow disk. Every other copy is compared by size alone and reads
+"size matches, sha256 not checked (only the newest copy is hashed)", so a render
+reads at most one copy's bytes and at most 4 MiB of them, not the 14 copies
+`scripts/backup.mjs` keeps. A larger copy reads "not checked (copy above N MiB)" —
+not a pass; `npm run db:restore-drill` is what verifies it. A copy with no
+manifest, or a manifest that names another file or cannot be parsed, is its own
+row, so "stopped running" (stale) and "running, producing bad copies" (mismatch)
+never share a sentence. The copies line follows the same rule: only `differs`
+counts a contradiction, copies without a manifest and copies whose `sha256` was
+not read are named in their own words, and a directory with no copy says "nothing
+to check" instead of claiming every copy matches. A failed run writes no file at
+all, so the console can report it only as staleness plus a mismatch; the drill
+prints its verdict and records nothing, so the card says "restore drill: none
+recorded" rather than a green it cannot prove.
+
 ### Operational alerts
 
 A failed job also feeds the ops signal: three consecutive failures in one
