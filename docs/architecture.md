@@ -450,9 +450,13 @@ settings; the scheduler releases a due retry only when the repository has no
 active job and its instance is ready. A `review` job gets a narrower policy of
 its own: only `bridge`, `model`, `timeout` and `stalled` are retried, at most
 once per failed review, with the same 1-minute cooldown and 30-minute cap and the
-same pull request and work item; a review that already recorded a score or a
-summary is never retried automatically, because it may have posted its comments
-already. `github`, `quota`, `credential` and `review` failures stay manual.
+same pull request and work item; a review that already recorded a
+`review_score` is never retried automatically, because its verdict is already
+posted. `summary` is the job's progress line, written on every running heartbeat,
+not a post marker, so it does not block a retry. If a review posted its comments
+and then lost the terminal callback, nothing stored tells that apart from a
+review that never posted; that residual case is manual. `github`, `quota`,
+`credential` and `review` failures stay manual.
 Permanent failures stay manual. Platform
 concurrency is `PLATFORM_MAX_ACTIVE_JOBS` (default 2), not a hard-coded literal.
 

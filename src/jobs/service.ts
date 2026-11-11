@@ -716,9 +716,14 @@ export class Jobs {
 
   private scheduleRetry(job: JobRow): void {
     if (job.kind !== 'iterate' && job.kind !== 'verify' && job.kind !== 'review') return
-    // A review that already recorded a result (score or summary) may have posted
-    // its comments; retrying it blindly could post a second COMMENT set.
-    if (job.kind === 'review' && (job.review_score !== null || (job.summary ?? '').trim() !== '')) return
+    // A review that already recorded a score posted its verdict, so a blind retry
+    // could post a second COMMENT set. `summary` is not that signal: every running
+    // heartbeat writes it as the progress line (the bridge posts one after each
+    // major step), so gating on it refused exactly the transient failures this
+    // policy exists for. The residual case — comments posted but the terminal
+    // callback lost — leaves no stored marker; it stays manual and is stated in
+    // docs/architecture.md.
+    if (job.kind === 'review' && job.review_score !== null) return
     const repo = this.store.getRepo(job.repo_id)
     if (repo === undefined || repo.enabled !== 1) return
     const failure = classifyFailure({ status: 'failed', error: job.error, kind: job.kind })
