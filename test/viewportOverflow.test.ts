@@ -188,7 +188,7 @@ test('desktop keeps the rendering it has today', () => {
   }
 })
 
-test('the 640px band keeps its card layout, and the header collapses below 641', () => {
+test('the 640px band keeps its card layout, and the header collapses below 961', () => {
   // The new block is scoped to <=960 and must not disturb #116's card layout at
   // 640: a fix that leaks into a merged band is a conflict with a shipped PR.
   assert.equal(lastValue('.job-table td', 'display', 640), 'block')
@@ -200,10 +200,13 @@ test('the 640px band keeps its card layout, and the header collapses below 641',
   // would describe a header that no longer wraps.
   assert.equal(compact(lastValue(':root', '--header-h', 640)), '90px')
   // 641 is one pixel outside #116's block: the table is a table again, and the
-  // header is the wrapped one #122 measured, unchanged by #133.
+  // header is #233's compact tablet header — the same fixed row the phone band
+  // carries, because 641-960 used to keep #122's wrapped header (215px at 768).
   assert.equal(lastValue('.job-table td', 'display', 641), null)
-  assert.equal(compact(lastValue(':root', '--header-h', 641)), '215px')
-  // 961 is outside both bands.
+  assert.equal(compact(lastValue(':root', '--header-h', 641)), '90px')
+  // 960 is the last width inside #233's band; 961 hands the header back to the
+  // wide rendering.
+  assert.equal(compact(lastValue(':root', '--header-h', 960)), '90px')
   assert.equal(lastValue('.job-table td', 'display', 961), null)
   assert.equal(compact(lastValue(':root', '--header-h', 961)), '90px')
 })
