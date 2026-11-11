@@ -257,15 +257,22 @@ export class Jobs {
     try {
       const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
       const client = new GithubClient(token, this.config.github.apiBase)
-      const outcome = await duplicateOutcome(issue, repository, await client.listOpenPullRequests(owner, name), () =>
-        client.listMergedPullRequests(owner, name),
+      const outcome = await duplicateOutcome(
+        issue,
+        repository,
+        await client.listOpenPullRequests(owner, name),
+        () => client.listMergedPullRequests(owner, name),
+        () => client.issueIsClosed(owner, name, issue),
       )
       if (outcome === null) return { ok: true }
       // #174: the two outcomes are recorded apart on purpose — an open pull request
       // is work in flight, a merged one is the fix already being in, and only the
       // second carries the commit that proves it. The record is the audit detail
       // and the event meta (no job row exists at this point, by design).
-      const evidence = outcome.kind === 'already-fixed' ? ` (${outcome.mergeCommitSha ?? 'merge commit not reported'})` : ''
+      const evidence =
+        outcome.kind === 'already-fixed'
+          ? ` (${outcome.mergeCommitSha ?? 'merge commit not reported'}, merged ${outcome.mergedAt.slice(0, 10)})`
+          : ''
       this.store.audit(
         repo.user_id,
         'job.duplicate_work',

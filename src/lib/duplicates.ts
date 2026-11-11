@@ -93,22 +93,28 @@ export interface MergedPullRequest extends OpenPullRequest {
 
 export type DuplicateOutcome =
   | { kind: 'open-pr'; url: string }
-  | { kind: 'already-fixed'; url: string; mergeCommitSha: string | null }
+  | { kind: 'already-fixed'; url: string; mergeCommitSha: string | null; mergedAt: string }
 
 // The merged list costs one more read, so it is requested lazily: a duplicate that
 // is still open answers without it, and only work with nothing in flight pays for
 // the history read.
+//
+// A merged pull request that merely *mentions* the issue is not the fix: the same
+// matcher accepts a reference in a title, a body or a head branch name, and `This
+// does not close #42` is routine on an active repository. The issue's own state is
+// the fact that decides it, so it is read once, only after a merged candidate
+// matched, and an open issue lets the work through rather than refusing it.
 export async function duplicateOutcome(
   issueNumber: number,
   repository: string,
   open: OpenPullRequest[],
   merged: () => Promise<MergedPullRequest[]>,
+  issueIsClosed: () => Promise<boolean>,
 ): Promise<DuplicateOutcome | null> {
   const inFlight = findDuplicatePullRequest(issueNumber, repository, open)
   if (inFlight !== null) return { kind: 'open-pr', url: inFlight.url }
   const landed = findDuplicatePullRequest(issueNumber, repository, await merged())
-  if (landed !== null) {
-    return { kind: 'already-fixed', url: landed.url, mergeCommitSha: landed.mergeCommitSha }
-  }
-  return null
+  if (landed === null) return null
+  if (!(await issueIsClosed())) return null
+  return { kind: 'already-fixed', url: landed.url, mergeCommitSha: landed.mergeCommitSha, mergedAt: landed.mergedAt }
 }

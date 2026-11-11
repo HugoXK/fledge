@@ -408,6 +408,18 @@ export class GithubClient {
     return pulls
   }
 
+  // #174: a merged pull request that mentions the issue proves nothing on its own —
+  // `Follow-up to #42` is a mention, not a fix. The issue's state is the fact that
+  // decides it, so `already-fixed` is only answered for a closed issue. One read,
+  // made only after a merged candidate matched.
+  async issueIsClosed(owner: string, name: string, issueNumber: number): Promise<boolean> {
+    const issue = await this.request<{ state?: string }>(
+      'GET',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${issueNumber}`,
+    )
+    return String(issue?.state ?? '') === 'closed'
+  }
+
   // #174: `already-fixed` needs the pull requests that already landed. Same read
   // shape and the same page cap as the open list, but closed and merged only: a
   // pull request that was closed without merging is not evidence that anything
