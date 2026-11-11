@@ -180,6 +180,9 @@ const REFUSAL_SENTENCES: Record<string, [string, string]> = {
   // refusal here it never reaches `jobs.error_code` — the enqueue path refuses
   // before a job row exists.
   ALREADY_FIXED: ['这个 issue 的修复已经合入上游：{detail}', 'The fix for this issue is already merged upstream: {detail}'],
+  // #283: the platform stop outranks every other refusal, so its sentence has to
+  // read as an operator decision rather than as a problem the reader caused.
+  PLATFORM_PAUSED: ['平台已紧急停止，暂不接受新任务；等管理员恢复后再试。', 'The platform is stopped for an emergency, so no new job is accepted; retry once an admin resumes it.'],
 }
 
 const BRANCH_EMPTY: [string, string] = ['目标分支不存在或不可访问。', 'The target branch does not exist, or this account cannot read it.']

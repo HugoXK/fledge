@@ -52,6 +52,43 @@ export interface EnqueueResult {
   detail?: string
 }
 
+// #283: the whole platform stop is one `settings` row, and every reader goes back
+// to the row instead of to a field on this object. A cached copy is exactly how a
+// restart, or a second process, would silently resume scheduling.
+const PLATFORM_STOP_KEY = 'platform.stop'
+// #283 review: one operator action has to finish, so the drain is bounded in two
+// places. The inline pass runs while the operator is waiting on a form post, so it
+// takes a small slice; the tick then finishes the drain at the per-pass bound and
+// keeps going on later ticks until nothing is active. Admission is already
+// closed, so no new job can take the place of a drained one.
+export const PLATFORM_DRAIN_LIMIT = 25
+export const PLATFORM_STOP_DRAIN_LIMIT = 5
+
+export interface PlatformStopRecord {
+  at: string
+  by: string
+  reason: string
+}
+
+export interface PlatformStopOutcome {
+  stop: PlatformStopRecord
+  // A stop while stopped changes nothing: the operator who first stopped the
+  // platform and the reason they gave stay the record.
+  already: boolean
+  paused: number
+  cancelled: number
+  // Active jobs past the drain bound; the tick completes them.
+  left: number
+}
+
+export interface PlatformResumeOutcome {
+  // A resume with no stop in place changes nothing and writes no audit row.
+  already: boolean
+  // Repositories the next tick will consider, in `owner/name` form. Resume
+  // reports them; it enqueues none of them.
+  due: string[]
+}
+
 function progressSummary(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const text = value.trim()
@@ -244,6 +281,115 @@ export class Jobs {
     }
   }
 
+  // #283: the platform emergency stop. One settings row is the state, read fresh
+  // on every enqueue and once per tick, so neither a restart nor a second process
+  // can be running with a stale "we are open" in memory.
+  platformStop(): PlatformStopRecord | null {
+    const raw = this.store.getSetting(PLATFORM_STOP_KEY)
+    if (raw === undefined) return null
+    try {
+      const value = JSON.parse(raw) as Partial<PlatformStopRecord>
+      return { at: String(value.at ?? ''), by: String(value.by ?? ''), reason: String(value.reason ?? '') }
+    } catch {
+      // An unreadable row is still a stop. Resuming on a parse error would be the
+      // one failure this row exists to prevent, and the resume route clears it.
+      return { at: '', by: '', reason: '' }
+    }
+  }
+
+  // One pass over the active jobs. A running job whose bridge answers is paused so
+  // its checkpoint survives; anything else is cancelled with a terminal reason.
+  // Either way its platform token is revoked, so it cannot keep spending while the
+  // platform says it is stopped. `left` is the count the bound did not reach.
+  private async drainActiveJobs(limit: number): Promise<{ paused: number; cancelled: number; left: number }> {
+    const active = this.store.listActiveJobs()
+    const draining = active.slice(0, limit)
+    let paused = 0
+    let cancelled = 0
+    for (const job of draining) {
+      if (job.status === 'running' && this.instances !== undefined) {
+        const result = await this.pauseJob(job.id, '平台已紧急停止，任务已暂停。')
+        if (result.ok) {
+          paused += 1
+          continue
+        }
+      }
+      const result = await this.cancelJob(job.id, '平台已紧急停止，任务已取消。')
+      if (result.ok) cancelled += 1
+    }
+    return { paused, cancelled, left: Math.max(0, active.length - draining.length) }
+  }
+
+  async stopPlatform(actor: { id: string; login: string }, reason: string): Promise<PlatformStopOutcome> {
+    const existing = this.platformStop()
+    if (existing !== null) return { stop: existing, already: true, paused: 0, cancelled: 0, left: 0 }
+    const stop: PlatformStopRecord = { at: nowIso(), by: actor.login, reason: reason.trim().slice(0, 200) }
+    this.store.setSetting(PLATFORM_STOP_KEY, JSON.stringify(stop))
+    // One audit row for the stop itself; the drain below writes the per-job rows
+    // through `pauseJob`/`cancelJob`, which is where a reader looks for a job.
+    this.store.audit(actor.id, 'platform.stopped', `${stop.by}: ${stop.reason === '' ? 'no reason given' : stop.reason}`)
+    this.store.event('platform_stopped', { userId: actor.id, meta: stop.reason.slice(0, 100) })
+    const drain = await this.drainActiveJobs(PLATFORM_STOP_DRAIN_LIMIT)
+    if (drain.left > 0) {
+      this.store.audit(actor.id, 'platform.drain_incomplete', `${drain.left} active jobs past the inline drain bound of ${PLATFORM_STOP_DRAIN_LIMIT}; the tick completes them, ${PLATFORM_DRAIN_LIMIT} per pass`)
+    }
+    return { stop, already: false, paused: drain.paused, cancelled: drain.cancelled, left: drain.left }
+  }
+
+  // The inline drain is bounded, so the tick is where it finishes. One pass per
+  // tick at the per-pass bound, with the stop's own operator recorded as the actor
+  // and its own audit rows: an `incomplete` row while work remains, a `complete`
+  // row once nothing is active. Without this the drain's own audit row promised
+  // something no code did, and jobs past the inline bound kept their tokens.
+  private async completeStoppedDrain(stop: PlatformStopRecord): Promise<void> {
+    if (this.store.listActiveJobs().length === 0) return
+    const operator = stop.by === '' ? undefined : this.store.userByLogin(stop.by)
+    const drain = await this.drainActiveJobs(PLATFORM_DRAIN_LIMIT)
+    const left = this.store.listActiveJobs().length
+    if (operator !== undefined) {
+      if (left > 0) {
+        this.store.audit(operator.id, 'platform.drain_incomplete', `${left} active jobs still running while stopped; the next tick continues the drain, ${PLATFORM_DRAIN_LIMIT} per pass`)
+      } else {
+        this.store.audit(operator.id, 'platform.drain_complete', `paused ${drain.paused}, cancelled ${drain.cancelled}; no job is active while the platform is stopped`)
+      }
+    }
+    if (left > 0) log.info('platform drain continues', { left, paused: drain.paused, cancelled: drain.cancelled })
+  }
+
+  async resumePlatform(actor: { id: string; login: string }): Promise<PlatformResumeOutcome> {
+    const existing = this.platformStop()
+    if (existing === null) return { already: true, due: this.nextTickDue() }
+    this.store.deleteSetting(PLATFORM_STOP_KEY)
+    this.store.audit(actor.id, 'platform.resumed', `${actor.login} cleared ${existing.by === '' ? 'an unreadable stop' : `the stop by ${existing.by}`}`)
+    this.store.event('platform_resumed', { userId: actor.id })
+    // Resume enqueues nothing: it reports what the next tick will consider, and
+    // the tick decides under its own rules. Replaying the frozen set would start
+    // work the operator has not seen.
+    return { already: false, due: this.nextTickDue() }
+  }
+
+  // The repositories the next tick would consider, in `owner/name` form. It is a
+  // read: it makes no bridge call and no enqueue, so the answer cannot itself
+  // start work. A stale GitHub role is left to the tick, which refreshes it.
+  nextTickDue(): string[] {
+    const due = new Set<string>()
+    for (const repo of this.store.listReviewRepos()) {
+      if (repo.repo_role !== 'maintainer') continue
+      if (!this.userReadyForScheduling(repo.user_id)) continue
+      if (!this.instanceReady(repo.id)) continue
+      if (this.store.activeJobForRepo(repo.id) !== undefined) continue
+      if (this.dueReview(repo)) due.add(`${repo.owner}/${repo.name}`)
+    }
+    for (const repo of this.store.listAutoRepos()) {
+      if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') continue
+      if (!this.userReadyForScheduling(repo.user_id)) continue
+      if (!this.instanceReady(repo.id)) continue
+      if (this.store.activeJobForRepo(repo.id) !== undefined) continue
+      if (this.due(repo)) due.add(`${repo.owner}/${repo.name}`)
+    }
+    return [...due].sort()
+  }
+
   private async duplicatePreflight(repo: RepoRow, goal: string, workItemId?: string): Promise<{ ok: boolean; error?: string; code?: string; detail?: string }> {
     // Only the FlyBot runner reads the upstream repository; the sibling
     // `preflight` has the same guard at its first line. Without it a deployment
@@ -366,6 +512,11 @@ export class Jobs {
   }
 
   async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string } = {}): Promise<EnqueueResult> {
+    // #283: the platform stop outranks every other refusal. It is checked before
+    // the per-repository and per-role gates so the answer says the platform is
+    // stopped, not that this one repository is disabled, and it is checked in the
+    // admission path itself: a due repository reaches `enqueue` without a route.
+    if (this.platformStop() !== null) return { ok: false, error: '平台已紧急停止，暂不接受新任务。', code: 'PLATFORM_PAUSED' }
     if (repo.enabled !== 1) return { ok: false, error: '这个仓库已停用', code: 'REPO_DISABLED' }
     if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
       return { ok: false, error: '请先选择你在这个仓库的角色。', code: 'ROLE_REQUIRED' }
@@ -2201,6 +2352,19 @@ export class Jobs {
     }
     if (this.config.env !== 'test' && this.instances !== undefined) {
       await this.instances.healthSweep().catch((error) => log.warn('instance health sweep failed', { error: String(error) }))
+    }
+    // #283: one read per tick, after the cleanup above (stale jobs, expired
+    // leases, token pruning, instance health) and before anything that creates,
+    // dispatches or merges work. `releaseAllPendingFollowups`, `releaseDueRetries`,
+    // `reconcileAutoMerge`, the queue dispatch and both scheduling loops are all
+    // below this line on purpose; the notification passes are below it too, so a
+    // stopped platform sends no digest or question mail either. The drain step sits
+    // here because the stop's own drain is bounded: this is the pass that finishes
+    // it, and it runs before the return rather than after it.
+    const stopped = this.platformStop()
+    if (stopped !== null) {
+      await this.completeStoppedDrain(stopped).catch((error) => log.warn('platform drain pass failed', { error: String(error) }))
+      return
     }
     await this.releaseAllPendingFollowups().catch((error) => log.warn('pending follow-up recovery failed', { error: String(error) }))
     await this.releaseDueRetries().catch((error) => log.warn('due retry release failed', { error: String(error) }))

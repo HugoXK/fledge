@@ -603,6 +603,28 @@ board and notifies the owner instead of counting as a productive run. Two
 consecutive failed, zero-output or meta iterate runs double the effective
 interval up to a 4x cap; the manual run path and reviews bypass the backoff.
 
+### Platform emergency stop
+
+The stop is one `settings` row (`platform.stop`: when, who, why), not a field on
+the `Jobs` object, so a restart cannot resume scheduling from a stale in-memory
+"open" and a second process reads the same answer. `enqueue()` reads the row on
+every call and refuses `PLATFORM_PAUSED` before the per-repository and per-role
+gates; `tickOnce()` reads it once per tick, after its cleanup (stale jobs,
+expired leases, token pruning, instance health) and before anything that creates,
+dispatches or merges work — the follow-up release, the due retries, the auto-merge
+reconcile, the queue dispatch and both scheduling loops. The admission check is
+what covers a due repository, which reaches `enqueue()` without a route.
+
+The drain is bounded in two places: the stop request itself drains 5 active jobs
+because the operator waits on it, and every following tick drains up to 25 more
+before its own return, until no job is active. Running jobs with a reachable
+bridge are paused so their checkpoint survives, the rest are cancelled with a
+terminal reason, and every drained job loses its platform token. The pass that
+empties the remainder writes `platform.drain_complete`; a pass that still leaves
+work writes `platform.drain_incomplete` with the count. A resume deletes the row
+and reports the repositories the tick will consider (`nextTickDue()` is a read: it
+makes no bridge call and no enqueue); it does not replay the set the stop froze.
+
 ### Team session reconciliation
 
 A DSH restart can create new session IDs for the Chief and role bots. Fledge

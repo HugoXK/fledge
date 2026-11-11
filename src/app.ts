@@ -2514,6 +2514,51 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     )
   })
 
+  // #283: the platform emergency stop. `isAdminRole` on purpose, not
+  // `requireAdmin`, and no `preview` rejection: the preview cookie is how the
+  // admin panel degrades to read-only, and the one action that must still work in
+  // that state is stopping everything. The stop is a persisted `settings` row, so
+  // it survives a restart, and this route reports what the drain did rather than
+  // a bare "stopped".
+  app.post('/admin/platform/stop', async (request, reply) => {
+    // Same limiter and window as the other mutating form (`/approve/:token`), and
+    // an HTML page rather than the JSON 429 the API routes send: this is a form
+    // post from a browser, and a raw JSON body would replace the page.
+    if (!loginLimiter.take(`platform-stop:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    const viewer = approvedCsrfGuard(request)
+    if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以停止平台。', 'ADMIN_ONLY')
+    const t = translator(request.locale ?? 'zh')
+    const reason = (form(request).reason ?? '').trim().slice(0, 200)
+    const result = await jobs.stopPlatform({ id: viewer.user.id, login: viewer.user.login }, reason)
+    if (result.already) {
+      const since = result.stop.at === '' ? '' : t(`，自 ${result.stop.at}`, `, since ${result.stop.at}`)
+      return reply.redirect(`/admin?notice=${encodeURIComponent(t(`平台已经处于停止状态${since}；未改动。`, `The platform is already stopped${since}; nothing changed.`))}`)
+    }
+    const drained = t(`暂停 ${result.paused} 个任务，取消 ${result.cancelled} 个任务`, `${result.paused} job(s) paused and ${result.cancelled} cancelled`)
+    const left = result.left === 0 ? '' : t(`；另有 ${result.left} 个任务超过单次上限，由下一次调度完成`, `; ${result.left} more job(s) past the single-stop bound are drained by the next tick`)
+    return reply.redirect(`/admin?notice=${encodeURIComponent(t(`平台已停止：${drained}${left}。仓库没有被停用，数据没有被删除。`, `The platform is stopped: ${drained}${left}. No repository was disabled and no data was deleted.`))}`)
+  })
+
+  app.post('/admin/platform/resume', async (request, reply) => {
+    if (!loginLimiter.take(`platform-resume:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    const viewer = approvedCsrfGuard(request)
+    if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以恢复平台。', 'ADMIN_ONLY')
+    const t = translator(request.locale ?? 'zh')
+    const result = await jobs.resumePlatform({ id: viewer.user.id, login: viewer.user.login })
+    // The operator sees what the next tick will consider before it happens; the
+    // list is capped so a large platform still renders a readable banner.
+    const due = result.due.length === 0
+      ? t('下一次调度没有到期仓库。', 'No repository is due on the next tick.')
+      : t(
+          `下一次调度将考虑 ${result.due.slice(0, 10).join('、')}${result.due.length > 10 ? ` 等 ${result.due.length} 个仓库` : ''}。`,
+          `The next tick will consider ${result.due.slice(0, 10).join(', ')}${result.due.length > 10 ? ` and ${result.due.length} repositories in total` : ''}.`,
+        )
+    const head = result.already
+      ? t('平台本来没有停止；未改动。', 'The platform was not stopped; nothing changed.')
+      : t('平台已恢复。', 'The platform is resumed.')
+    return reply.redirect(`/admin?notice=${encodeURIComponent(`${head}${due}`)}`)
+  })
+
   const adminStatus = async (request: FastifyRequest, status: 'approved' | 'rejected') => {
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')

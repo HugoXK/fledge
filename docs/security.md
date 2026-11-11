@@ -177,6 +177,38 @@ per day. Test mail is rate-limited to one per minute.
   the audit row is the record and a rerun is a no-op; the operator output carries
   the login and the registration date, never an address.
 
+### Platform emergency stop
+
+- `POST /admin/platform/stop` and `POST /admin/platform/resume` are the
+  platform-wide stop, separate from the per-repository `disable` and from the
+  per-job pause and cancel. The state is one row in `settings` (`platform.stop`:
+  when, who, why) read fresh on every enqueue and once per tick, so a restart
+  cannot silently resume scheduling and a second process cannot keep a stale
+  "open" in memory.
+- A stop refuses every new enqueue with `PLATFORM_PAUSED`, before any
+  per-repository or per-role gate, and the scheduler tick returns before it
+  creates, dispatches or merges work. The guard is therefore in the admission
+  path and not only on a route: a repository that is due cannot enqueue either.
+- The drain is bounded. The stop's own request drains 5 active jobs, because the
+  operator is waiting on that form post, and each scheduler tick then drains up to
+  25 more until nothing is active. A running job whose bridge is reachable is
+  paused, so its checkpoint survives; a job with no bridge, or one that cannot be
+  paused, is cancelled with a terminal reason. Either way its platform token is
+  revoked, so it cannot keep spending. `platform.drain_incomplete` says how many
+  jobs are still left (once on the stop, then on each tick that ends with work
+  remaining), and `platform.drain_complete` records the pass that empties them.
+- A stop writes exactly one `platform.stopped` audit row and changes nothing
+  else: no repository is disabled (`repos.enabled` is untouched), no token is
+  rotated, no user is changed and no row is deleted. A second stop while stopped
+  is a no-op that keeps the first operator and the reason they gave.
+- A resume deletes the row, writes one `platform.resumed` row, and reports the
+  repositories the next tick will consider. It does not re-enqueue the set the
+  stop froze: after the resume the tick decides under its own rules.
+- Both routes require an admin role and answer `403` otherwise. They check the
+  role directly instead of going through `requireAdmin`, and deliberately ignore
+  the preview cookie, so a super admin whose admin panel has degraded to the
+  read-only preview can still stop the platform.
+
 ### Team console and agent controls
 
 - `GET /api/repos/:id/team/events` is admin-only. It is read-only and streams

@@ -57,6 +57,9 @@ const REFUSALS: Array<{ value: string; en: RegExp; zh: RegExp }> = [
   { value: 'QUEUE_LIMIT', en: /too many (jobs|tasks) queued/i, zh: /排队/ },
   { value: 'BRANCH_MISSING:main', en: /target branch main/i, zh: /目标分支 main/ },
   { value: 'DUPLICATE_WORK:https://github.com/acme/demo/pull/9', en: /pull\/9/, zh: /pull\/9/ },
+  // #283: an emergency stop is a platform refusal, not a repository one, and it
+  // reaches the same banner as the others.
+  { value: 'PLATFORM_PAUSED', en: /platform is stopped|emergency/i, zh: /平台已紧急停止/ },
 ]
 
 for (const refusal of REFUSALS) {
