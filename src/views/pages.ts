@@ -15,6 +15,7 @@ import { parseEvidenceJson } from '../lib/evidence.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import { classifyFailure, failureLabel, type FailureAction, type FailureKind } from '../lib/failure.js'
+import { filterTrials, trialCounts, trialStateOf, TRIAL_DAYS, type TrialCandidateSource, type TrialFilter } from '../lib/trials.js'
 import { STAGE_MODES } from '../lib/stages.js'
 import { JOB_FILTER_KINDS, JOB_FILTER_STATUSES, jobFilterIsActive, jobFilterLabels, jobFilterParams, kindFilterLabel, statusFilterLabel, type JobFilter } from '../lib/jobFilters.js'
 import type { InstallationRepo } from '../repos/app.js'
@@ -2183,6 +2184,93 @@ export function agentWorkspacePage(input: {
     : `<section class="card"><p class="muted">${escapeHtml(t('实例就绪后才能打开工作区。', 'The workspace opens after the instance is ready.'))}</p></section>`}
   <p class="fine text-right">Fledge · powered by FlyBot</p>`
   return layout({ title: `${t('工作区', 'Workspace')} · ${repo.upstream_name || repo.name}`, viewer, body, config, locale, path: `/repos/${repo.id}/workspace`, active: 'dashboard', notice, error })
+}
+
+// #279: read-only. An operator can see who is approaching expiry, who is exempt
+// and who the sweep revoked, without an email address on screen and without a
+// control that could mail or change a status - #265 owns both.
+export function adminTrialsPage(input: {
+  config: Config
+  locale: Locale
+  viewer: Viewer
+  rows: TrialCandidateSource[]
+  filter: TrialFilter
+  notice?: string
+  error?: string
+}): string {
+  const { config, locale, viewer, rows, filter, notice, error } = input
+  const t = translator(locale)
+  const now = Date.now()
+  const views = rows.map((row) => trialStateOf(row, now))
+  const counts = trialCounts(views)
+  const visible = filterTrials(views, filter)
+  const filterLabels: Array<[TrialFilter, string, string]> = [
+    ['all', '全部', 'All'],
+    ['eligible', '可到期', 'For expiry'],
+    ['expiring', '即将到期', 'Expiring soon'],
+    ['expired', '已过期', 'Expired'],
+  ]
+  const stateLabel = (state: string): string => {
+    switch (state) {
+      case 'eligible': return t('可到期', 'For expiry')
+      case 'expiring': return t('即将到期', 'Expiring soon')
+      case 'expired': return t('已过期', 'Expired')
+      case 'exempt_used': return t('豁免：已用', 'Exempt: used')
+      case 'exempt_admin': return t('豁免：管理员', 'Exempt: admin')
+      case 'inactive': return t('不适用', 'Not in flight')
+      default: return t('试用中', 'Running')
+    }
+  }
+  const stateBadge = (state: string): string => {
+    if (state === 'eligible') return `<span class="badge busy">${escapeHtml(stateLabel(state))}</span>`
+    if (state === 'expiring') return `<span class="badge busy">${escapeHtml(stateLabel(state))}</span>`
+    if (state === 'expired') return `<span class="badge bad">${escapeHtml(stateLabel(state))}</span>`
+    if (state === 'exempt_used' || state === 'exempt_admin') return `<span class="badge good">${escapeHtml(stateLabel(state))}</span>`
+    return `<span class="badge">${escapeHtml(stateLabel(state))}</span>`
+  }
+  const rowsHtml = visible.length === 0
+    ? stateCell(8, { kind: 'empty', title: t('这个筛选下没有用户。', 'No users in this filter.'), body: t('换一个筛选，或查看全部。', 'Switch the filter, or view all.'), action: { href: '/admin/trials', label: t('查看全部', 'View all') } })
+    : visible
+        .map(
+          (row) => `<tr data-trial-user="${escapeHtml(row.id)}">
+            <td><a href="/admin/users/${escapeHtml(row.id)}">@${escapeHtml(row.login)}</a></td>
+            <td><small class="muted">${escapeHtml(humanTimeShort(row.registeredAt))}</small></td>
+            <td>${row.days}</td>
+            <td><small class="muted">${escapeHtml(humanTimeShort(row.lastLoginAt))}</small></td>
+            <td>${badge(t, row.status)}</td>
+            <td>${row.repos === 0 ? '0' : row.repos}</td>
+            <td>${stateBadge(row.state)}</td>
+            <td><small class="muted">${row.expiredAt === null ? '—' : escapeHtml(humanTimeShort(row.expiredAt))}</small></td>
+          </tr>`,
+        )
+        .join('')
+  const filters = filterLabels
+    .map(([value, zh, en]) => `<a class="btn ${filter === value ? '' : 'btn-ghost'}" href="/admin/trials?trial=${value}">${escapeHtml(t(zh, en))} <span class="fine">${counts[value]}</span></a>`)
+    .join(' ')
+  const body = `<section class="workspace-hero">
+    <div class="workspace-intro">
+      <div class="eyebrow">${escapeHtml(t('预览试用', 'PREVIEW TRIALS'))}</div>
+      <h1>${escapeHtml(t('预览试用', 'Preview trials'))}</h1>
+      <p class="muted">${escapeHtml(t('只读：显示注册天数、是否已用、豁免和到期。发信和停用由 #265 的清扫负责。', 'Read-only: registration age, use, exemptions and expiry. The sweep in #265 owns mail and revoking.'))}</p>
+    </div>
+    <div class="workspace-actions"><a class="btn btn-ghost" href="/admin">${escapeHtml(t('返回管理', 'Back to admin'))}</a></div>
+  </section>
+  <div class="row mb-12">${filters}</div>
+  <section class="card">
+    <div class="row between"><h2>${escapeHtml(t('试用概览', 'Trial overview'))}</h2><span class="fine">${escapeHtml(t(`共 ${counts.all} 个账号；第 ${TRIAL_DAYS - 2} 天起提醒。`, `${counts.all} accounts; reminders start on day ${TRIAL_DAYS - 2}.`))}</span></div>
+    <div class="table-scroll"><table><thead><tr>
+      <th>${escapeHtml(t('用户', 'User'))}</th>
+      <th>${escapeHtml(t('注册', 'Registered'))}</th>
+      <th>${escapeHtml(t('天数', 'Days'))}</th>
+      <th>${escapeHtml(t('最近登录', 'Last sign-in'))}</th>
+      <th>${escapeHtml(t('状态', 'Status'))}</th>
+      <th>${escapeHtml(t('仓库', 'Repos'))}</th>
+      <th>${escapeHtml(t('判定', 'Verdict'))}</th>
+      <th>${escapeHtml(t('试用到期审计', 'Trial expired at'))}</th>
+    </tr></thead><tbody>${rowsHtml}</tbody></table></div>
+    <p class="fine">${escapeHtml(t('用户列只显示登录名；账号操作在支持视图里。', 'The user column shows the login only; account actions live in the support view.'))}</p>
+  </section>`
+  return layout({ title: t('预览试用', 'Preview trials'), viewer, body, config, locale, path: '/admin/trials', active: 'admin', notice, error })
 }
 
 export function adminWebhooksPage(input: {

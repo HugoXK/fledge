@@ -362,6 +362,21 @@ export interface PromotionRow {
   created_at: string
 }
 
+// #279: one row per user for the read-only preview-trial view. `repo_added_at`
+// and `expired_at` are audit lookups, not columns: the sweep owns the audit row,
+// this view only reads it.
+export interface TrialCandidate {
+  id: string
+  login: string
+  created_at: string
+  last_login_at: string | null
+  status: string
+  role: string
+  repos: number
+  repo_added_at: string | null
+  expired_at: string | null
+}
+
 export interface AlertView {
   kind: string
   level: 'info' | 'warning' | 'critical'
@@ -1214,6 +1229,20 @@ export class Store {
       user.application_submitted_at,
     )
     return Number(row?.n ?? 0) + 1
+  }
+
+  // #279: the preview-trial sweep (#265) writes a `trial.expired` audit row, and
+  // the admin console had no read path for it. One query, because the view needs
+  // the same three counts for every user and a per-row loop would be N+1.
+  trialCandidates(): TrialCandidate[] {
+    return this.all<TrialCandidate>(
+      `SELECT u.id, u.login, u.created_at, u.last_login_at, u.status, u.role,
+              (SELECT COUNT(*) FROM repos r WHERE r.user_id = u.id) AS repos,
+              (SELECT MAX(a.at) FROM audit_log a WHERE a.user_id = u.id AND a.action = 'repo.added') AS repo_added_at,
+              (SELECT MAX(a.at) FROM audit_log a WHERE a.user_id = u.id AND a.action = 'trial.expired') AS expired_at
+         FROM users u
+        ORDER BY u.created_at ASC`,
+    )
   }
 
   userActivity(id: string): { repos: number; jobs: number; lastJobAt: string | null } {
