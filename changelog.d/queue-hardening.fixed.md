@@ -1,0 +1,1 @@
+Running jobs renew a five-minute lease every minute, and an expired lease is failed by the scheduler instead of waiting for the 90-minute job timeout. When the durable dispatcher is enabled, a new job is refused with `QUEUE_FULL` or `QUEUE_LIMIT` when the global or per-user queue cap is reached, and `/metrics` exposes queue depth, expired leases and admission rejections.

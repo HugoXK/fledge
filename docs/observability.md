@@ -23,6 +23,8 @@ Core series:
   `fledge_http_request_seconds`
 - `fledge_jobs_total{status,kind}`, `fledge_job_seconds`, `fledge_jobs_active`,
   `fledge_jobs_queued`
+- `fledge_queue_depth`, `fledge_lease_expired_total`,
+  `fledge_admission_rejected_total{reason}`
 - `fledge_retries_total{kind}`, `fledge_merges_total{result}`,
   `fledge_path_guard_blocked_total`, `fledge_verification_failed_total`
 - `fledge_github_requests_total{method,status}`,
