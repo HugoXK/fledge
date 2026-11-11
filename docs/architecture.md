@@ -489,7 +489,12 @@ the reader's language with their parameter filled in. A code whose table entry
 carries `{detail}` keeps that parameter too — the duplicate-work refusal names the
 pull request that already covers the issue (`DUPLICATE_WORK:<url>`) — so the value
 the service found survives the redirect instead of being dropped when the sentence
-is rebuilt. A code with no sentence
+is rebuilt. A refusal that names a pull request (`DUPLICATE_WORK` for work in
+flight, `ALREADY_FIXED` for a fix that landed) renders that value as a link, so the
+maintainer opens the pull request the refusal came from instead of copying a URL out
+of the sentence; the anchor is built only for a `github.com` pull request URL,
+because the banner value arrives as a query parameter and any other value stays
+escaped text. A code with no sentence
 keeps the text that travelled with it, which the dictionary translates as it did
 before this change, so no refusal reads worse than at base; only a bare code with
 neither a sentence nor a text renders a sentence naming the code, so an unknown
@@ -624,6 +629,13 @@ empties the remainder writes `platform.drain_complete`; a pass that still leaves
 work writes `platform.drain_incomplete` with the count. A resume deletes the row
 and reports the repositories the tick will consider (`nextTickDue()` is a read: it
 makes no bridge call and no enqueue); it does not replay the set the stop froze.
+
+`/admin` renders the row on every request, above the panels: who stopped the
+platform, when, why, and the resume action. The stop route's `?notice=` line is a
+one-shot report and is gone on reload; the banner is the durable answer, so a
+second admin sees the same state. A row that cannot be parsed still renders the
+banner and says the record is unreadable, because that row still stops
+scheduling; it never renders a blank operator or time as if they were facts.
 
 ### Team session reconciliation
 

@@ -2,7 +2,7 @@ import type { UserRow } from '../db.js'
 import { quotaView, type QuotaView } from '../gateway/quota.js'
 import type { Config } from '../config.js'
 import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
-import { failureBannerSentence } from '../lib/failure.js'
+import { refusalBanner } from '../lib/failure.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 
 export function escapeHtml(value: unknown): string {
@@ -70,6 +70,20 @@ function withSlash(value: string): string {
   return value === '' || value.endsWith('/') ? value : `${value}/`
 }
 
+// #174: the builder decides which refusal value may become an anchor (a pull
+// request URL on github.com) and the sentence keeps that value verbatim, so the
+// anchor is the first occurrence of it in the escaped text. Everything not marked
+// stays escaped text.
+function bannerHtml(text: string, link: { href: string; anchor: string } | null): string {
+  const escaped = escapeHtml(text)
+  if (link === null) return escaped
+  const anchor = escapeHtml(link.anchor)
+  const index = escaped.indexOf(anchor)
+  if (index === -1) return escaped
+  const open = `<a href="${escapeHtml(link.href)}" target="_blank" rel="noreferrer">${anchor}</a>`
+  return `${escaped.slice(0, index)}${open}${escaped.slice(index + anchor.length)}`
+}
+
 export function layout(options: LayoutOptions): string {
   const { title, viewer, body, config, active } = options
   const locale = options.locale ?? 'zh'
@@ -80,7 +94,9 @@ export function layout(options: LayoutOptions): string {
   // code has no sentence of its own (`QUEUE_FULL:…`, `BRANCH_MISSING:main`); the
   // builder owns the three-step order, so anything that is not a code stays here
   // on the dictionary, as before.
-  const error = failureBannerSentence(locale, options.error) ?? localizeMessage(locale, options.error)
+  const refusal = refusalBanner(locale, options.error)
+  const error = refusal === null ? localizeMessage(locale, options.error) : refusal.text
+  const errorLink = refusal === null ? null : refusal.link
   const preview = viewer !== undefined && viewer !== null && viewer.preview === true
   const release = options.release ?? releaseSurface()
   const section = active ?? sectionForPath(path)
@@ -150,7 +166,7 @@ export function layout(options: LayoutOptions): string {
   <main class="wrap" id="main">
     ${preview && viewer !== undefined && viewer !== null ? `<div class="banner ok preview-banner"><span>${escapeHtml(t('正在预览用户视图。', 'Previewing the user view.'))}</span><form method="post" action="/admin/simulation">${`<input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />`}<input type="hidden" name="enable" value="0" /><input type="hidden" name="returnTo" value="${escapeHtml(path)}" /><button class="link" type="submit">${escapeHtml(t('退出模拟', 'Exit preview'))}</button></form></div>` : ''}
     ${notice === undefined || notice === '' ? '' : `<div class="banner ok" role="status">${escapeHtml(notice)}</div>`}
-    ${error === undefined || error === '' ? '' : `<div class="banner bad" role="alert">${escapeHtml(error)}</div>`}
+    ${error === undefined || error === '' ? '' : `<div class="banner bad" role="alert">${bannerHtml(error, errorLink)}</div>`}
     ${body}
   </main>
   ${footer}

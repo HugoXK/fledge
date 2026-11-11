@@ -406,6 +406,58 @@ test('the duplicate refusal carries the pull request URL as its detail', async (
   }
 })
 
+// #174: the banner names the pull request as a dead URL, so a reader who wants to
+// see the work that already covers the issue has to copy it out of the sentence.
+// Both codes that name one render it as a link: `DUPLICATE_WORK` for work in
+// flight and `ALREADY_FIXED` for a fix that already landed. The sentence itself
+// stays identical, so the link is the only change on the page.
+test('the duplicate and already-fixed refusals link the pull request they name', () => {
+  const { store, userId, repo } = fixture()
+  const cases = [
+    { value: 'DUPLICATE_WORK:https://github.com/acme/demo/pull/9', url: 'https://github.com/acme/demo/pull/9' },
+    { value: 'ALREADY_FIXED:https://github.com/acme/demo/pull/7', url: 'https://github.com/acme/demo/pull/7' },
+  ]
+  try {
+    for (const locale of ['zh', 'en'] as const) {
+      for (const item of cases) {
+        const html = repoBanner(store, userId, repo, locale, item.value)
+        assert.match(
+          html,
+          new RegExp(`<a [^>]*href="${item.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*>${item.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</a>`),
+          `the ${locale} banner for ${item.value.split(':')[0]} does not link ${item.url}: ${html}`,
+        )
+      }
+    }
+  } finally {
+    store.close()
+  }
+})
+
+// The banner value is a query parameter, so anyone can put anything in it. Only a
+// github.com pull request URL becomes a link: a foreign host would otherwise let a
+// crafted `?error=` render an outbound link inside the platform's own banner, and
+// any other value stays text and stays escaped.
+test('the banner links only a github.com pull request URL', () => {
+  const { store, userId, repo } = fixture()
+  try {
+    const foreign = repoBanner(store, userId, repo, 'en', 'DUPLICATE_WORK:https://evil.example/pull/9')
+    assert.doesNotMatch(foreign, /<a /, `a foreign host was turned into a link: ${foreign}`)
+    assert.match(foreign, /evil\.example\/pull\/9/, 'the refusal value still reads as text')
+    const injected = repoBanner(store, userId, repo, 'en', 'DUPLICATE_WORK:<script>alert(1)</script>')
+    // Assert the escaped text instead of matching a tag-shaped regexp: CodeQL's
+    // bad-HTML-filtering query reads `/<script>/` as a sanitizer that forgets
+    // `<SCRIPT>`, and the CodeQL job fails on that new high even in a test that
+    // filters nothing. Naming the escaped sentence is the stronger claim anyway:
+    // it fails if the value renders unescaped, and it fails if it is dropped.
+    assert.ok(injected.includes('&lt;script&gt;alert(1)&lt;/script&gt;'), `the refusal value was not escaped: ${injected}`)
+    assert.equal(injected.includes('<script'), false, `the refusal value rendered as a tag: ${injected}`)
+    const lookalike = repoBanner(store, userId, repo, 'en', 'ALREADY_FIXED:https://github.com.evil.example/acme/demo/pull/7')
+    assert.doesNotMatch(lookalike, /<a /, 'a look-alike host was turned into a link')
+  } finally {
+    store.close()
+  }
+})
+
 test('already-fixed work reads as the fix being in, and not as work in flight', () => {
   // #174: the two duplicates must be distinguishable where the maintainer reads
   // them, not only in the audit row.

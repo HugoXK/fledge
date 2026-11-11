@@ -204,7 +204,10 @@ issue is closed; an open issue lets the job through and records nothing, because
 a mention is not a fact.
 
 The refusal never creates a job, so it has no job page; the banner on the
-repository page is where a maintainer reads it.
+repository page is where a maintainer reads it, and it names the pull request as a
+link: the open one for `DUPLICATE_WORK`, the merged one for `ALREADY_FIXED`. The
+audit row and the event meta carry the same evidence as text, with the merge commit
+for an already-fixed answer.
 
 The preflight is read-only and best-effort. It runs only for an iterate job that
 does not already carry a `prUrl` — a follow-up job owns its pull request — and a

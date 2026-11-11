@@ -244,6 +244,34 @@ export function failureBannerSentence(locale: Locale, value: string | null | und
   return t(`任务未能开始（${code}）。`, `The job could not start (${code}).`)
 }
 
+// #174: a refusal that names a pull request carries its URL as the parameter, and
+// the banner printed it as text, so a reader had to copy it out to open the work
+// that already covers the issue. The banner value is a query parameter anyone can
+// write, so the builder decides what may become an anchor and this is the only
+// shape that does: a pull request URL on github.com. Everything else stays text.
+const PULL_REQUEST_URL = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)$/
+
+export interface RefusalBanner {
+  text: string
+  link: { href: string; anchor: string } | null
+}
+
+export function refusalBanner(locale: Locale, value: string | null | undefined): RefusalBanner | null {
+  const text = failureBannerSentence(locale, value)
+  if (text === null) return null
+  const raw = String(value ?? '')
+  const separator = raw.indexOf(':')
+  const code = separator === -1 ? raw : raw.slice(0, separator)
+  if (code !== 'DUPLICATE_WORK' && code !== 'ALREADY_FIXED') return { text, link: null }
+  const anchor = (separator === -1 ? '' : raw.slice(separator + 1)).trim()
+  const match = PULL_REQUEST_URL.exec(anchor)
+  // A sentence that no longer names the value would leave the link pointing at
+  // something the reader cannot see, so the anchor is only the value the sentence
+  // actually carries.
+  if (match === null || !text.includes(anchor)) return { text, link: null }
+  return { text, link: { href: match[0], anchor } }
+}
+
 // #260: the dispatch path must name the provider refusal, not fold it into
 // BRIDGE_ERROR. This reads the message the bridge relayed (the DSH send error or
 // the DSH answer to it) and answers with the code, so `jobs.error_code` carries

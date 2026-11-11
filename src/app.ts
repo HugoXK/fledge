@@ -2517,6 +2517,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         auditPage,
         auditTotal,
         perPage,
+        platformStop: jobs.platformStop(),
         superadmin,
         preview: false,
         showAudit: true,
