@@ -35,10 +35,10 @@ function tempDir(t: TestContext): string {
   return dir
 }
 
-function runGate(sarifDir: string, baselinePath: string) {
+function runGate(sarifDir: string, baselinePath: string, extra: string[] = []) {
   const result = spawnSync(
     process.execPath,
-    ['scripts/codeql-gate.mjs', '--sarif', sarifDir, '--baseline', baselinePath],
+    ['scripts/codeql-gate.mjs', '--sarif', sarifDir, '--baseline', baselinePath, ...extra],
     { encoding: 'utf8' },
   )
   return { code: result.status, stdout: result.stdout, stderr: result.stderr }
@@ -280,4 +280,68 @@ test('a dismissed result that the baseline records is not counted as added', (t)
   const run = runGate(sarifDir, baselinePath)
   assert.equal(run.code, 0, `a recorded dismissed result must not fail the gate: ${run.stderr}`)
   assert.match(run.stdout, /parsed 1 result\(s\), 1 high\/critical, 0 added/)
+})
+
+// #307: these two readers describe different sets. A medium result is accepted by
+// severity here, so this gate passes it — and the branch still refuses the merge
+// while that result's review thread is open, because `review-gate` owns the
+// blocking decision and fails on any unresolved thread (`#308`, merged). Two
+// machine lines that disagree is how `#299` looked green on every required check
+// and was refused by the merge API. The gate keeps its decision (an accepted
+// severity is not a failure) and names every accepted result whose thread is open,
+// so a maintainer reading only the CodeQL job is told why the tip will not merge.
+const MEDIUM: Spec = { rule: 'js/unused-local-variable', severity: '5.3', path: 'scripts/verify-release.mjs', line: 21 }
+
+// The thread's own shape from the GraphQL reader: `line` is null once the comment
+// is outdated, exactly the state `#299`'s four threads were in when their fix
+// landed, so `originalLine` is the place to compare against.
+function writeThreads(dir: string, nodes: Array<Record<string, unknown>>): string {
+  const path = join(dir, 'threads.json')
+  writeFileSync(path, JSON.stringify(nodes))
+  return path
+}
+
+test('an accepted-severity result with an open thread is named, and the gate still passes', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+  writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([MEDIUM]))
+  const threadsPath = writeThreads(dir, [{ isResolved: false, isOutdated: true, path: MEDIUM.path, line: null, originalLine: MEDIUM.line }])
+
+  const run = runGate(sarifDir, baselinePath, ['--threads', threadsPath])
+  const output = `${run.stdout}${run.stderr}`
+  assert.equal(run.code, 0, `an accepted severity is not a gate failure: ${output}`)
+  assert.match(run.stdout, /accepted-by-severity js\/unused-local-variable at scripts\/verify-release\.mjs:21/)
+  assert.match(run.stdout, /review-gate will block the merge until that thread is resolved/)
+  assert.match(run.stdout, /codeql-gate: ok \(parsed 1 result\(s\), 0 high\/critical, 0 added/)
+})
+
+test('the same accepted-severity result stays quiet once its thread is resolved', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+  writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([MEDIUM]))
+  const threadsPath = writeThreads(dir, [{ isResolved: true, isOutdated: true, path: MEDIUM.path, line: null, originalLine: MEDIUM.line }])
+
+  const run = runGate(sarifDir, baselinePath, ['--threads', threadsPath])
+  assert.equal(run.code, 0)
+  assert.doesNotMatch(`${run.stdout}${run.stderr}`, /accepted-by-severity/, 'a resolved thread must not be named as blocking')
+})
+
+test('an open thread on a line this analysis did not report costs no advisory', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+  writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([MEDIUM]))
+  const threadsPath = writeThreads(dir, [{ isResolved: false, isOutdated: false, path: 'src/app.ts', line: 432, originalLine: 432 }])
+
+  const run = runGate(sarifDir, baselinePath, ['--threads', threadsPath])
+  assert.equal(run.code, 0)
+  assert.doesNotMatch(`${run.stdout}${run.stderr}`, /accepted-by-severity/, 'an advisory names only a result this run reported')
 })
