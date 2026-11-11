@@ -256,6 +256,35 @@ workflow. A `POST /pulls` whose readback does not show
 `maintainer_can_modify: true` is a refusal, but the pull request already exists
 at that point, so close it by hand before retrying.
 
+### Verify a release
+
+The publish run records what it produced in the GitHub Release body — the image
+reference with its digest, the SBOM artifact name and the attested digest — so
+the chain can be read back through the API alone:
+
+```sh
+# the whole chain, from the plan to the running instance
+GITHUB_TOKEN=… node scripts/verify-release.mjs --version 0.3.2 --base-url https://fledge.hugoxk.online
+
+# the same check, rendered on /admin for an operator without a token
+GITHUB_TOKEN=… node scripts/verify-release.mjs --version 0.3.2 \
+  --base-url https://fledge.hugoxk.online --write "${DATA_DIR}/release-status.json"
+```
+
+It exits `0` only when every link is present and agrees: the plan's base `main`
+sha, the `release/v<version>` branch and tip, the merged release pull request,
+the annotated tag object and the commit it targets, the image tag and digest,
+the SBOM, the build-provenance attestation, the GitHub Release and — when
+`--base-url` is given — the `/healthz` version and commit. A link that is
+missing or disagrees prints one line and exits `1`; a fixture or token it cannot
+read exits `2`, never `0`. It is read-only: no deploy, tag, merge or comment.
+Without `--base-url` the running-instance link is reported as skipped, and a
+release branch a merged release already deleted is skipped too — the pull
+request head is then the record of the tip.
+
+`--fixtures <file>` replays a recorded chain instead of reading the API, which is
+how the test suite exercises the same code path.
+
 ## 6. Reverse proxy
 
 Ready-to-copy samples live in [`deploy/`](../deploy/): a systemd unit and an nginx

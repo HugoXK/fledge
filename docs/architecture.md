@@ -761,6 +761,32 @@ decision [0007](decisions/0007-build-identity.md) — because two `main` builds
 between a tag and the next version bump answer the same `version` and cannot
 otherwise be told apart from outside.
 
+### Release chain
+
+The surface above reads local files, so it says which version this build carries
+but not whether that version was actually released and deployed. Issue #280 adds
+the other half: `node scripts/verify-release.mjs` reads the chain back through
+the API — the plan's base `main`, the `release/v<version>` branch and tip, the
+merged release pull request, the annotated tag object and its target commit, the
+image tag and digest, the SBOM, the provenance attestation and the GitHub
+Release — and, when `--base-url` is given, the running `/healthz` version and
+commit. The model is pure (`scripts/lib/release-status.mjs`): every link is
+`ok`, `missing`, `mismatch` or `skipped`, an unreadable link is `missing` rather
+than green, and the CLI exits `1` on any problem and `2` on input it cannot read.
+A merged release whose branch was deleted is `skipped`, not red — the pull
+request head is then the record of the tip. The publish workflow writes the
+image reference, the SBOM artifact name and the attested digest into the GitHub
+Release body, which is what makes those three links API-readable; a release
+published before that line existed reads `missing` and is reported as such.
+
+The `/admin` card renders the snapshot the command writes to
+`${DATA_DIR}/release-status.json` (`src/lib/releaseStatus.ts`): it never calls
+GitHub, and a missing or unparseable snapshot renders "no release chain is
+recorded" rather than an empty card. The one live row is `This process`, which
+compares the version in `package.json` and the commit stamp this process booted
+with against the recorded tag target, so an operator can see at a glance whether
+the instance they are looking at is the release the chain names.
+
 ### Operational alerts
 
 A failed job also feeds the ops signal: three consecutive failures in one

@@ -36,6 +36,7 @@ import { issuePriority, issueState, shouldTriage } from './lib/issueIntake.js'
 import { parseIssueCommand } from './lib/issueCommands.js'
 import { VERSION } from './version.js'
 import { incCounter, observeHistogram, renderMetrics } from './lib/metrics.js'
+import { readReleaseStatus } from './lib/releaseStatus.js'
 import { configureOtel, endSpan, shutdownOtel, startSpan, type SpanHandle } from './lib/otel.js'
 import { configureGithubBudget } from './lib/githubBudget.js'
 import { Approvals } from './users/approval.js'
@@ -2472,6 +2473,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         hideActor: !superadmin,
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
+        // Read from the data directory; a missing or unreadable snapshot renders
+        // as "not recorded" rather than failing the page.
+        releaseStatus: readReleaseStatus(config.dataDir),
       }),
     )
   })
