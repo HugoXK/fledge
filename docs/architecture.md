@@ -192,7 +192,11 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   database invariant, not only a read-time check; a database written before the
   index existed is deduped when it opens — keep a running job (else the oldest
   queued one) and fail the rest with `JOB_DUPLICATE_ACTIVE_SUPERSEDED` and an
-  audit row, so a duplicate row cannot turn startup into a boot failure. The
+  audit row, so a duplicate row cannot turn startup into a boot failure. A
+  demoted row that was running a work item resets that item to `triaged` in the
+  same transaction (a legal `in_progress -> triaged` edge in
+  `WORK_ITEM_TRANSITIONS`) and its audit row names the item id, because the item
+  would otherwise stay `in_progress` behind a job that can never finish. The
   lease and queue columns are schema version 33.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
