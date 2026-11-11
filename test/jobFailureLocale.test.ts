@@ -4,7 +4,8 @@ import { Store } from '../src/db.js'
 import { dashboardPage, jobPage } from '../src/views/pages.js'
 import { FAILURE_CODES, FAILURE_CODE_KIND, failureSentence } from '../src/lib/failure.js'
 import { translator } from '../src/i18n.js'
-import { makeUser, testConfig } from './helpers.js'
+import { Jobs } from '../src/jobs/service.js'
+import { makeUser, MemoryMailer, testConfig } from './helpers.js'
 
 // #231: a backend job failure writes a Chinese sentence into `jobs.error`, and
 // the read path had no way to turn it into the reader's language: `localizeMessage`
@@ -131,6 +132,31 @@ test('a failure row with no code falls back to the dictionary instead of guessin
     assert.match(en, /Plan queued/i, 'the dictionary still localizes a sentence it knows')
     assert.doesNotMatch(en, CJK)
     assert.equal(job.error_code, null)
+  } finally {
+    store.close()
+  }
+})
+
+// The render tests above prove the read path; this one proves the write path, so a
+// later refactor cannot drop the code from the sweep and leave only the sentence.
+test('the stall and lease reapers record the code on the row and on the notification', async () => {
+  const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'reaper-code-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_reaper_code', userId: user.id, owner: 'acme', name: 'demo', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440, canReview: true, reviewerEnabled: true })
+    store.createJob({ id: 'job_reaper_code', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'g', callbackHash: 'h', platformTokenHash: '', kind: 'iterate' })
+    assert.equal(store.claimQueuedJob('dead-worker', 1)?.id, 'job_reaper_code')
+
+    await new Promise((resolve) => setTimeout(resolve, 15))
+    await jobs.tick()
+
+    const row = store.getJob('job_reaper_code')
+    assert.equal(row?.status, 'failed')
+    assert.equal(row?.error_code, 'JOB_LEASE_EXPIRED', 'the row carries the code, not only the sentence')
+    assert.match(row?.error ?? '', /租约过期/)
+    assert.equal(store.listNotifications(user.id)[0]?.code, 'JOB_LEASE_EXPIRED', 'the notification carries the same code')
   } finally {
     store.close()
   }
