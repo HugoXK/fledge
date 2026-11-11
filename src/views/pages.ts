@@ -6,7 +6,7 @@ import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { renderState, stateCell, type StateAction } from './states.js'
-import { firstRunOutcome, setupChecklist, type SetupState } from './checklist.js'
+import { firstRunOutcome, setupChecklist, type SetupState, type SetupStepKey } from './checklist.js'
 import { oauthConfigured, tokenLoginEnabled } from '../auth/login.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
@@ -508,7 +508,7 @@ function jobFilterForm(locale: Locale, filter: JobFilter, repos: Array<{ id: str
 // #227: one primary action at a time. Done steps collapse to a tick, the current
 // step carries the only button, and a blocked step states its reason instead of
 // offering a control that cannot work yet.
-function setupSection(setup: SetupState | undefined, t: Translate): string {
+function setupSection(setup: SetupState | undefined, t: Translate, primaryElsewhere = false): string {
   if (setup === undefined) return ''
   const outcome = firstRunOutcome(setup, t)
   if (outcome !== null) {
@@ -533,7 +533,9 @@ function setupSection(setup: SetupState | undefined, t: Translate): string {
         : step.blocked === null
           ? ''
           : `<span class="setup-blocked">${escapeHtml(step.blocked)}</span>`
-      const action = current && step.blocked === null
+      // #230: when the next-action block already renders this step's button,
+      // the checklist is the detail of that action and must not repeat it.
+      const action = current && step.blocked === null && !primaryElsewhere
         ? `<a class="btn btn-small" data-setup-primary href="${escapeHtml(step.action.href)}">${escapeHtml(step.action.label)}</a>`
         : ''
       return `<li class="setup-step${step.done ? ' is-done' : ''}${current ? ' is-current' : ''}" data-setup-step="${step.key}"${current ? ' aria-current="step"' : ''}>
@@ -556,12 +558,164 @@ function setupSection(setup: SetupState | undefined, t: Translate): string {
   </section>`
 }
 
+// #230: the dashboard has one next action, derived on the server from data the
+// page already loads. The order is the order a person would take them: a
+// question only they can answer, a blocker the platform knows about, the most
+// urgent alert, the latest failed job, the unfinished first run, then a quiet
+// all-clear that says when the platform runs again on its own. Nothing here
+// reads a second source of truth, so the block cannot disagree with the
+// sections below it.
+export type NextActionKind = 'questions' | 'alert' | 'job' | 'quota' | 'setup' | 'clear'
+
+export interface NextActionView {
+  kind: NextActionKind
+  title: string
+  body: string
+  href: string
+  label: string
+  // A step of the first-run checklist: the block carries that step's own
+  // primary button so the checklist below renders the detail without a second.
+  setupStep: SetupStepKey | null
+}
+
+function nextScheduledRun(repos: RepoRow[], t: Translate): string {
+  const automatic = repos.filter((repo) => repo.auto_iterate === 1)
+  if (automatic.length === 0) return t('没有仓库开启自动迭代。', 'No repository runs automatically.')
+  let soonest: { label: string; at: number } | null = null
+  for (const repo of automatic) {
+    const last = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
+    const at = Number.isFinite(last) ? last + repo.interval_minutes * 60_000 : Number.NaN
+    // A repository the scheduler has never run has no next run to report; it
+    // must not shadow one that does, so a known time always beats an unknown.
+    if (soonest === null || (Number.isFinite(at) && (!Number.isFinite(soonest.at) || at < soonest.at))) {
+      soonest = { label: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`, at }
+    }
+  }
+  if (soonest === null) return t('没有仓库开启自动迭代。', 'No repository runs automatically.')
+  const when = Number.isFinite(soonest.at) && soonest.at > Date.now() ? humanTimeShort(new Date(soonest.at).toISOString()) : t('等待调度', 'waiting for the scheduler')
+  return t(`下次自动运行：${soonest.label} · ${when}`, `Next automatic run: ${soonest.label} · ${when}`)
+}
+
+// An English page must not lead with a sentence only the platform writes in
+// Chinese: `localizeMessage` maps the strings it knows, and when it has no
+// mapping this test is what keeps the raw text off the headline card.
+const CJK_TEXT = /[\u4e00-\u9fff]/
+
+function nextActionFor(input: {
+  t: Translate
+  locale: Locale
+  questions: InboxQuestion[]
+  alerts: AlertView[]
+  // The account's newest job, not the job-table slice: the table is paged and
+  // filtered, and a filter must not decide what the page leads with.
+  latestJob: JobRow | undefined
+  quota: ReturnType<typeof quotaView>
+  setup: SetupState | undefined
+  repos: RepoRow[]
+}): NextActionView {
+  const { t, locale, questions, alerts, latestJob, quota, setup, repos } = input
+  if (questions.length > 0) {
+    return {
+      kind: 'questions',
+      title: questions.length === 1
+        ? t('FlyBot 在等你回答 1 个问题。', 'FlyBot is waiting on 1 answer.')
+        : t(`FlyBot 在等你回答 ${questions.length} 个问题。`, `FlyBot is waiting on ${questions.length} answers.`),
+      body: t('回答会直接发送给正在运行的团队。', 'Answers go straight to the running team.'),
+      href: '#inbox',
+      label: t('去回答', 'Answer'),
+      setupStep: null,
+    }
+  }
+  if (quota.exhausted) {
+    return {
+      kind: 'quota',
+      title: t('平台额度已用完。', 'Platform quota is used up.'),
+      body: t('配置自己的模型 API 后任务才能继续。', 'Add your own model API to keep jobs running.'),
+      href: '/settings#model-providers',
+      label: t('配置模型', 'Add a model'),
+      setupStep: null,
+    }
+  }
+  const alert = alerts[0]
+  if (alert !== undefined) {
+    const href = alert.prUrl ?? alertHref(alert)
+    return {
+      kind: 'alert',
+      title: alertText(t, alert),
+      body: alerts.length === 1
+        ? t('这是唯一需要你处理的事项。', 'This is the only item that needs you.')
+        : t(`最紧急的一条；其余 ${alerts.length - 1} 条在下面列出。`, `The most urgent one; the other ${alerts.length - 1} are listed below.`),
+      href: href === '' ? '#attention' : href,
+      label: alert.prUrl === undefined ? t('打开', 'Open') : t('打开 PR', 'Open pull request'),
+      setupStep: null,
+    }
+  }
+  const latest = latestJob
+  if (latest !== undefined && latest.status === 'failed') {
+    const reason = (latest.error ?? '').trim()
+    const localized = (localizeMessage(locale, reason) ?? '').trim()
+    const failure = classifyFailure(latest)
+    // The platform writes some failure sentences in Chinese only. Showing the
+    // raw text on a page in the other language is a mixed-language headline a
+    // reader cannot act on, so the card falls back to the failure class, which
+    // exists in both languages, and leaves the raw text on the job page.
+    const body = reason === ''
+      ? t('打开任务看失败原因，修好后重跑。', 'Open the job for the reason, fix it and run again.')
+      : localized !== '' && (locale !== 'en' || !CJK_TEXT.test(localized))
+        ? localized.slice(0, 160)
+        : t(`${failure?.label[0] ?? '任务失败'}，打开任务查看原因。`, `${failure?.label[1] ?? 'Job failed'}; open the job for the detail.`)
+    return {
+      kind: 'job',
+      title: t(`最近一次任务失败：${latest.id}`, `The latest job failed: ${latest.id}`),
+      body,
+      href: `/repos/${latest.repo_id}/jobs/${latest.id}`,
+      label: t('查看任务', 'Open job'),
+      setupStep: null,
+    }
+  }
+  const checklist = setup === undefined ? null : setupChecklist(setup, t)
+  if (checklist !== null && checklist.next !== undefined) {
+    const step = checklist.next
+    return {
+      kind: 'setup',
+      title: step.title,
+      body: step.blocked ?? t('这是第一次运行剩下的下一步。', 'The next step of your first run.'),
+      href: step.action.href,
+      label: step.action.label,
+      setupStep: step.key,
+    }
+  }
+  return {
+    kind: 'clear',
+    title: t('现在没有需要你处理的事情。', 'Nothing needs you right now.'),
+    body: nextScheduledRun(repos, t),
+    href: '',
+    label: '',
+    setupStep: null,
+  }
+}
+
+function nextActionSection(action: NextActionView, t: Translate): string {
+  const primary = action.setupStep === null
+    ? `<a class="btn" href="${escapeHtml(action.href)}">${escapeHtml(action.label)}</a>`
+    : `<a class="btn" data-setup-primary href="${escapeHtml(action.href)}">${escapeHtml(action.label)}</a>`
+  return `<section class="card" id="next-action" data-next-action="${action.kind}" aria-labelledby="next-action-title">
+    <div class="eyebrow">${escapeHtml(t('下一步', 'NEXT ACTION'))}</div>
+    <h2 id="next-action-title">${escapeHtml(action.title)}</h2>
+    <p class="muted">${escapeHtml(action.body)}</p>
+    ${action.kind === 'clear' ? '' : primary}
+  </section>`
+}
+
 export function dashboardPage(input: {
   config: Config
   locale: Locale
   viewer: Viewer
   repos: RepoRow[]
   jobs: JobRow[]
+  // #230 review: the headline job is the account's newest, which the route
+  // reads separately from the paged and filtered table slice.
+  latestJob?: JobRow
   notifications: NotificationRow[]
   questions?: InboxQuestion[]
   personal?: {
@@ -583,6 +737,9 @@ export function dashboardPage(input: {
   jobsTotal?: number
   jobFilter?: JobFilter
   repoOptions?: Array<{ id: string; label: string }>
+  // #230: the page slice is enough for the table, but the next scheduled run
+  // must consider every repository, not only the visible page of ten.
+  allRepos?: RepoRow[]
   setup?: SetupState
   notice?: string
   error?: string
@@ -600,6 +757,24 @@ export function dashboardPage(input: {
   const repoOptions = input.repoOptions ?? []
   const t = translator(locale)
   const quota = quotaView(viewer.user, config)
+  const nextAction = nextActionFor({
+    t,
+    locale,
+    questions,
+    alerts,
+    latestJob: input.latestJob ?? jobs[0],
+    quota,
+    setup: input.setup,
+    repos: input.allRepos ?? repos,
+  })
+  // The add-repository form, the inbox, the attention table and the job table
+  // all live inside the disclosure. A browser does not open <details> for an
+  // in-page anchor, so the disclosure must already be open or a link that points
+  // inside it lands on hidden content. The pager and the filter form are the
+  // other two ways in: both target `#jobs`, so a page loaded on page two or with
+  // an active filter is a page whose table must be visible.
+  const jobTableDeepLinked = jobsPage > 1 || jobFilterIsActive(jobFilter)
+  const secondaryOpen = jobTableDeepLinked || ['#add-repo', '#inbox', '#attention'].includes(nextAction.href)
   const repoRows = repos.length === 0
     ? stateCell(5, { kind: 'empty', title: t('还没有仓库。', 'No repositories yet.'), body: t('添加第一个仓库并选择你的角色，任务才会开始。', 'Add your first repository and choose your role before any job can start.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })
     : repos
@@ -636,12 +811,15 @@ export function dashboardPage(input: {
       <h1>${escapeHtml(t('仓库', 'Repositories'))}</h1>
       <p class="muted">${escapeHtml(t('接入仓库、设置迭代目标，并查看最近任务。', 'Connect repositories, set iteration goals and review recent jobs.'))}</p>
     </div>
-    <div class="workspace-actions"><a class="btn" href="#add-repo">${escapeHtml(t('添加仓库', 'Add repository'))}</a></div>
   </section>
   ${quota.exhausted ? `<div class="banner bad">${escapeHtml(t('平台额度已用完。请到 Settings → Model 配置你自己的模型 API，任务才能继续。', 'Platform quota is used up. Add your own model API in Settings → Model to keep jobs running.'))}</div>` : ''}
   ${noticeBlock(locale, viewer, notifications)}
-  ${setupSection(input.setup, t)}
-  <section class="quota-card card">
+  ${nextActionSection(nextAction, t)}
+  <details class="secondary" data-secondary${secondaryOpen ? ' open' : ''}>
+    <summary>${escapeHtml(t('更多：仓库、交付与任务', 'More: repositories, delivery and jobs'))}</summary>
+    <div class="secondary-body">
+  ${setupSection(input.setup, t, nextAction.setupStep !== null)}
+  <section class="quota-card card" id="quota">
     <div>
       <div class="eyebrow">${escapeHtml(t('平台额度', 'PLATFORM QUOTA'))}</div>
       <div class="quota-big">${quota.unlimited ? escapeHtml(t('不限额', 'Unlimited')) : quotaMoney(quota.remainingCny)}${quota.unlimited ? '' : `<small> / ${money(quota.initialCny)}</small>`}</div>
@@ -650,12 +828,12 @@ export function dashboardPage(input: {
     <div class="meter"><span style="width:${quota.unlimited ? '0' : Math.min(100, Math.max(0, (quota.usedCny / Math.max(0.0001, quota.initialCny)) * 100)).toFixed(2)}%"></span></div>
   </section>
   ${inboxSection(locale, viewer, questions, '/dashboard')}
-  ${alerts.length === 0 ? '' : `<section class="card">
+  ${alerts.length === 0 ? '' : `<section class="card" id="attention">
     <div class="row between"><h2>${escapeHtml(t('需要处理', 'Needs attention'))}</h2><span class="fine">${escapeHtml(t('只显示你自己的仓库和任务。', 'Only your repositories and jobs.'))}</span></div>
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('级别', 'Level'))}</th><th>${escapeHtml(t('类型', 'Kind'))}</th><th>${escapeHtml(t('详情', 'Detail'))}</th><th></th></tr></thead><tbody>${alertRows(t, alerts)}</tbody></table></div>
   </section>`}
 
-  <section class="card">
+  <section class="card" id="delivery">
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('我的交付', 'MY DELIVERY'))}</div>
@@ -712,7 +890,9 @@ export function dashboardPage(input: {
         })
       : jobTable(locale, jobs, { body: t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })}
     ${pager('/dashboard', 'jobsPage', jobsPage, jobsTotal, 10, t, { reposPage, ...(windowDays === 30 ? { window: 30 } : {}), ...jobFilterParams(jobFilter) }, '#jobs')}
-  </section>`
+  </section>
+    </div>
+  </details>`
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 

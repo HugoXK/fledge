@@ -71,6 +71,30 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   job's PR link when it opened one, "finished" with a link to Recent jobs when it
   succeeded without a PR, "running" while it is queued or running, and the retry
   path on the repository page when it failed.
+- **Next action** (`src/views/pages.ts`, `nextActionFor`): `/dashboard` opens
+  with one server-derived action instead of a wall of equal cards. The order is
+  the order a person would take them — an open question only they can answer, an
+  exhausted platform quota, the most urgent alert (stalled or slow job, stale
+  PR, invalid credential, repository budget), the account's newest failed job,
+  the unfinished first-run step — and when none applies, an all-clear that names
+  the known next scheduled automatic run (a repository the scheduler has never
+  run is not a known time and never shadows one), or says that no repository runs
+  automatically. Every source is one the route already loads, so the block cannot
+  disagree with the sections below it. The newest job is read on its own, not
+  from the job-table slice: the table is paged and filtered, and `?jobsPage=2` or
+  `?status=` must not change the sentence the page opens with. The first-run
+  checklist becomes the detail of the same action and does not render a second
+  primary button for that step; the quota, delivery, repository table and
+  recent-job sections move into one `<details>` that starts collapsed, and it
+  renders open whenever the next action points inside it — the add-repository
+  form, the inbox or the attention table — because a browser does not open
+  `<details>` for an in-page anchor, so that link is never hidden behind a tap.
+  The job table's own pager and filter form target `#jobs`, which is inside the
+  same element, so a page loaded with `?jobsPage=2` or an active
+  `repo`/`status`/`kind` filter also renders the disclosure open; otherwise Next
+  and Apply would land on a hidden table. A failed job whose message the
+  platform only writes in Chinese is named by its failure class on a page in the
+  other language, and the raw sentence stays on the job page.
 - **Shell** (`src/views/layout.ts`, `public/app.css`): the main nav marks the
   current section with `aria-current="page"`, derived from the route and
   overridable with `active`. The sticky header owns `--header-h` (re-declared
