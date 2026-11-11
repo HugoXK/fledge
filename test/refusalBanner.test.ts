@@ -444,7 +444,13 @@ test('the banner links only a github.com pull request URL', () => {
     assert.doesNotMatch(foreign, /<a /, `a foreign host was turned into a link: ${foreign}`)
     assert.match(foreign, /evil\.example\/pull\/9/, 'the refusal value still reads as text')
     const injected = repoBanner(store, userId, repo, 'en', 'DUPLICATE_WORK:<script>alert(1)</script>')
-    assert.doesNotMatch(injected, /<script>/, `the refusal value was not escaped: ${injected}`)
+    // Assert the escaped text instead of matching a tag-shaped regexp: CodeQL's
+    // bad-HTML-filtering query reads `/<script>/` as a sanitizer that forgets
+    // `<SCRIPT>`, and the CodeQL job fails on that new high even in a test that
+    // filters nothing. Naming the escaped sentence is the stronger claim anyway:
+    // it fails if the value renders unescaped, and it fails if it is dropped.
+    assert.ok(injected.includes('&lt;script&gt;alert(1)&lt;/script&gt;'), `the refusal value was not escaped: ${injected}`)
+    assert.equal(injected.includes('<script'), false, `the refusal value rendered as a tag: ${injected}`)
     const lookalike = repoBanner(store, userId, repo, 'en', 'ALREADY_FIXED:https://github.com.evil.example/acme/demo/pull/7')
     assert.doesNotMatch(lookalike, /<a /, 'a look-alike host was turned into a link')
   } finally {
