@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { findDuplicatePullRequest, issueNumberFromText } from '../src/lib/duplicates.js'
+import { duplicateOutcome, findDuplicatePullRequest, issueNumberFromText } from '../src/lib/duplicates.js'
 
 function pull(number: number, fields: { title?: string; body?: string; head?: string } = {}) {
   return {
@@ -96,4 +96,34 @@ test('a body with many issue references cannot stall the event loop', () => {
 test('a path ending in a separator is not a repository reference', () => {
   assert.equal(issueNumberFromText('see other/repo/ #42', 'o/dup'), 42)
   assert.equal(issueNumberFromText('see other/repo/#42', 'o/dup'), 42)
+})
+
+function mergedPull(number: number, fields: { title?: string; body?: string; head?: string; mergeCommitSha?: string | null } = {}) {
+  return {
+    ...pull(number, fields),
+    mergedAt: '2026-11-09T10:00:00Z',
+    mergeCommitSha: fields.mergeCommitSha ?? `sha-merge-${number}`,
+  }
+}
+
+test('a duplicate is either work in flight or work that already landed, and the two are not confused', async () => {
+  // #174: a re-run of already-fixed work used to be refused exactly like a genuine
+  // duplicate, so a maintainer could not tell "someone is on it" from "it is in".
+  const open = [pull(9, { body: 'Fixes https://github.com/o/dup/issues/42' })]
+  const mergedNotAsked = async () => {
+    throw new Error('the merged read must not run when an open pull request already matches')
+  }
+  assert.deepEqual(await duplicateOutcome(42, 'o/dup', open, mergedNotAsked), {
+    kind: 'open-pr',
+    url: 'https://github.com/o/dup/pull/9',
+  })
+
+  const merged = [mergedPull(7, { body: 'Closes #42', mergeCommitSha: 'merge-sha-7' })]
+  assert.deepEqual(await duplicateOutcome(42, 'o/dup', [], async () => merged), {
+    kind: 'already-fixed',
+    url: 'https://github.com/o/dup/pull/7',
+    mergeCommitSha: 'merge-sha-7',
+  })
+
+  assert.equal(await duplicateOutcome(42, 'o/dup', [], async () => [mergedPull(8, { body: 'Unrelated work' })]), null)
 })

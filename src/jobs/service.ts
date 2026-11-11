@@ -12,7 +12,7 @@ import { attributionSentence, parseAttribution, type Attribution } from '../lib/
 import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
 import { classifyFailure, type FailureCode } from '../lib/failure.js'
 import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
-import { findDuplicatePullRequest, issueNumberFromText } from '../lib/duplicates.js'
+import { duplicateOutcome, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
@@ -257,11 +257,34 @@ export class Jobs {
     try {
       const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
       const client = new GithubClient(token, this.config.github.apiBase)
-      const duplicate = findDuplicatePullRequest(issue, repository, await client.listOpenPullRequests(owner, name))
-      if (duplicate === null) return { ok: true }
-      this.store.audit(repo.user_id, 'job.duplicate_work', `${repository} issue #${issue} -> ${duplicate.url}`)
-      this.store.event('job_duplicate_work', { userId: repo.user_id, repoId: repo.id, meta: `issue=${issue};pr=${duplicate.url}`.slice(0, 400) })
-      return { ok: false, code: 'DUPLICATE_WORK', error: `已有 PR 覆盖这个 issue：${duplicate.url}`, detail: duplicate.url }
+      const outcome = await duplicateOutcome(issue, repository, await client.listOpenPullRequests(owner, name), () =>
+        client.listMergedPullRequests(owner, name),
+      )
+      if (outcome === null) return { ok: true }
+      // #174: the two outcomes are recorded apart on purpose — an open pull request
+      // is work in flight, a merged one is the fix already being in, and only the
+      // second carries the commit that proves it. The record is the audit detail
+      // and the event meta (no job row exists at this point, by design).
+      const evidence = outcome.kind === 'already-fixed' ? ` (${outcome.mergeCommitSha ?? 'merge commit not reported'})` : ''
+      this.store.audit(
+        repo.user_id,
+        'job.duplicate_work',
+        `${repository} issue #${issue} -> ${outcome.kind === 'already-fixed' ? 'already fixed by' : 'open PR'} ${outcome.url}${evidence}`,
+      )
+      this.store.event('job_duplicate_work', {
+        userId: repo.user_id,
+        repoId: repo.id,
+        meta: `issue=${issue};outcome=${outcome.kind};pr=${outcome.url}${outcome.kind === 'already-fixed' ? `;commit=${outcome.mergeCommitSha ?? ''}` : ''}`.slice(0, 400),
+      })
+      if (outcome.kind === 'already-fixed') {
+        return {
+          ok: false,
+          code: 'ALREADY_FIXED',
+          error: `这个 issue 的修复已经合入上游：${outcome.url}`,
+          detail: outcome.url,
+        }
+      }
+      return { ok: false, code: 'DUPLICATE_WORK', error: `已有 PR 覆盖这个 issue：${outcome.url}`, detail: outcome.url }
     } catch (error) {
       log.warn('duplicate preflight failed', { repo: repo.id, error: String(error) })
       return { ok: true }

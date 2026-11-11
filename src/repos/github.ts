@@ -2,6 +2,7 @@ import { log } from '../lib/log.js'
 import { incCounter, observeHistogram } from '../lib/metrics.js'
 import { endSpan, startSpan } from '../lib/otel.js'
 import { acquireGithubBudget, noteGithubRateLimit } from '../lib/githubBudget.js'
+import type { MergedPullRequest } from '../lib/duplicates.js'
 
 const DEFAULT_API = 'https://api.github.com'
 const SEGMENT = /^[A-Za-z0-9_.-]+$/
@@ -400,6 +401,37 @@ export class GithubClient {
           body: typeof pull.body === 'string' ? capBody(pull.body) : '',
           head: typeof pull.head?.ref === 'string' ? pull.head.ref : '',
           base: typeof pull.base?.ref === 'string' ? pull.base.ref : '',
+        })
+      }
+      if (batch.length < 100) break
+    }
+    return pulls
+  }
+
+  // #174: `already-fixed` needs the pull requests that already landed. Same read
+  // shape and the same page cap as the open list, but closed and merged only: a
+  // pull request that was closed without merging is not evidence that anything
+  // was fixed, so it is dropped here rather than filtered by every caller.
+  async listMergedPullRequests(owner: string, name: string, maxPages = 3): Promise<MergedPullRequest[]> {
+    const pulls: MergedPullRequest[] = []
+    for (let page = 1; page <= maxPages; page += 1) {
+      const batch = await this.request<Array<{ number?: number; html_url?: string; title?: string; body?: string | null; head?: { ref?: string }; base?: { ref?: string }; merged_at?: string | null; merge_commit_sha?: string | null }>>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`,
+      )
+      if (!Array.isArray(batch) || batch.length === 0) break
+      for (const pull of batch) {
+        if (typeof pull.number !== 'number') continue
+        if (typeof pull.merged_at !== 'string' || pull.merged_at === '') continue
+        pulls.push({
+          number: pull.number,
+          url: typeof pull.html_url === 'string' ? pull.html_url : `https://github.com/${owner}/${name}/pull/${pull.number}`,
+          title: typeof pull.title === 'string' ? pull.title : '',
+          body: typeof pull.body === 'string' ? capBody(pull.body) : '',
+          head: typeof pull.head?.ref === 'string' ? pull.head.ref : '',
+          base: typeof pull.base?.ref === 'string' ? pull.base.ref : '',
+          mergedAt: pull.merged_at,
+          mergeCommitSha: typeof pull.merge_commit_sha === 'string' && pull.merge_commit_sha !== '' ? pull.merge_commit_sha : null,
         })
       }
       if (batch.length < 100) break

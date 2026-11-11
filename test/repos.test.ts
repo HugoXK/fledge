@@ -189,3 +189,26 @@ test('an open pull request body is capped but keeps both of its ends', async () 
     await github.close()
   }
 })
+
+test('an already-fixed read keeps the merged pull requests and drops the closed ones', async () => {
+  // #174: `already-fixed` must mean "this landed", so a pull request that was
+  // closed without merging is not evidence and must not be offered as one.
+  const github = await startFakeServer((request, response) => {
+    if ((request.url ?? '').startsWith('/repos/o/dup/pulls?state=closed')) {
+      json(response, 200, [
+        { number: 7, html_url: 'https://github.com/o/dup/pull/7', title: 'Fix #42', body: 'Fixes #42', head: { ref: 'fix' }, base: { ref: 'main' }, merged_at: '2026-11-09T10:00:00Z', merge_commit_sha: 'merge-sha-7' },
+        { number: 8, html_url: 'https://github.com/o/dup/pull/8', title: 'Abandoned #42', body: 'Fixes #42', head: { ref: 'gone' }, base: { ref: 'main' }, merged_at: null, merge_commit_sha: null },
+      ])
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  try {
+    const client = new GithubClient('token', github.url)
+    const merged = await client.listMergedPullRequests('o', 'dup')
+    assert.deepEqual(merged.map((pull) => pull.number), [7], 'a closed pull request was reported as merged')
+    assert.equal(merged[0]?.mergeCommitSha, 'merge-sha-7', 'the merge commit is the evidence and was dropped')
+  } finally {
+    await github.close()
+  }
+})

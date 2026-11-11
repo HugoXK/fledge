@@ -162,6 +162,11 @@ const REFUSAL_SENTENCES: Record<string, [string, string]> = {
   JOB_LIMIT: ['平台同时运行的任务数已达上限（{detail} 个），请稍后再试。', 'The platform already has {detail} jobs running at once; retry in a moment.'],
   BOT_MODEL_ASSIGNMENT_FAILED: ['机器人模型未就绪：{detail}；请在仓库设置里重新应用模型。', 'The bot models are not ready: {detail}; re-apply the models in the repository settings.'],
   BRANCH_MISSING: ['目标分支 {branch} 不存在或不可访问。', 'The target branch {branch} does not exist, or this account cannot read it.'],
+  // #174: already-fixed work is refused with its own code, so the banner says the
+  // fix is in rather than that someone else is still working on it. Like every
+  // refusal here it never reaches `jobs.error_code` — the enqueue path refuses
+  // before a job row exists.
+  ALREADY_FIXED: ['这个 issue 的修复已经合入上游：{detail}', 'The fix for this issue is already merged upstream: {detail}'],
 }
 
 const BRANCH_EMPTY: [string, string] = ['目标分支不存在或不可访问。', 'The target branch does not exist, or this account cannot read it.']
