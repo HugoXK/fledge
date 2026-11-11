@@ -226,17 +226,17 @@ export async function runReleaseOpen(options) {
   const branch = releaseBranch(wanted)
   const api = { repo, token, fetch: fetchImpl }
 
-  // (2a) What the credential can be trusted to prove: it can push, so the pull
-  // request it opens will start the gated workflows. Kind and breadth are outside
-  // this tool's reach; the JSON records what was observed.
+  // (2a) What the credential can be trusted to prove. It needs `Pull requests:
+  // write` to open the pull request; it does **not** need push, because the nightly
+  // workflow pushed the branch already and a fine-grained `Contents: read` +
+  // `Pull requests: write` token is the least privilege that opens one. Refusing on
+  // `permissions.push` refused exactly that token (#310 review). Kind and breadth
+  // are outside this tool's reach; the JSON records what was observed.
   const repository = await apiCall(api, 'GET', '')
   if (repository.status === 404) return refuse(`this credential cannot see ${repo}`)
   if (repository.status !== 200) return refuse(`GET /repos/${repo} answered ${repository.status}${messageOf(repository.payload) === '' ? '' : `: ${messageOf(repository.payload)}`}`)
   const permissions = repository.payload?.permissions ?? {}
   const scopes = headerOf(repository.headers, 'x-oauth-scopes')
-  if (permissions.push !== true) {
-    return refuse(`the credential cannot push to ${repo} (permissions.push is ${String(permissions.push)}); nothing was written`, { permissions, scopes })
-  }
 
   // (2b) Who this credential is. The reviewer account may post the PASS but may
   // not open the release pull request: one account holding both would let the

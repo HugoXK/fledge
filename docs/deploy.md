@@ -255,9 +255,10 @@ pull request for it, because a pull request opened with `GITHUB_TOKEN` starts no
 
 The opener runs on the repository secret **`RELEASE_OPEN_TOKEN`** (Settings →
 Secrets and variables → Actions). Set it to a token for the team account —
-never the Reviewer's `HugoXK-bot` account — scoped to this repository alone: a
-classic token with the `repo` scope, or a fine-grained token with
-`Contents: write` and `Pull requests: write`. The opener reads `GET /user` and
+never the Reviewer's `HugoXK-bot` account — scoped to this repository alone, with
+`Contents: read` and `Pull requests: write` — it does not need push, because the
+workflow pushes `release/v<next>` before the opener runs. The opener reads
+`GET /user` and
 refuses a credential whose login is the review policy's `requiredPass`, so the
 reviewer account cannot open the release pull request even if it were installed
 by mistake. The token reaches the step through the environment only; it is never
