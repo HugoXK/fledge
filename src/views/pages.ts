@@ -6,6 +6,7 @@ import { humanTimeShort } from '../lib/time.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { renderState, stateCell, type StateAction } from './states.js'
+import { REVIEW_INSTRUCTION_LABEL, reviewInstructionFromGoal } from '../lib/followUpInstruction.js'
 import { firstRunOutcome, setupChecklist, type SetupState, type SetupStepKey } from './checklist.js'
 import { oauthConfigured, tokenLoginEnabled } from '../auth/login.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
@@ -2191,6 +2192,11 @@ export function jobPage(input: {
         ? t('证据已核实，合并被路径守卫阻止', 'Evidence verified; the merge is blocked by the path guard')
         : t('证据通过', 'Evidence passed')
       : t('证据未通过', 'Evidence failed')
+  // #251: a follow-up stores the reviewer's words in the goal (one field, no
+  // column), so the console reads that same line back. Without this row the
+  // maintainer cannot tell what the agent was told, which was the second half of
+  // the defect: the fixed reason was not visible as a reason either.
+  const reviewerInstruction = job.trigger === 'followup' ? reviewInstructionFromGoal(job.goal) : ''
   const attribution = jobAttribution(t, job)
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
@@ -2260,6 +2266,7 @@ export function jobPage(input: {
     <div class="card">
       <h2>${escapeHtml(t('结果', 'Result'))}</h2>
       <p class="${job.kind === 'research' ? 'job-report' : ''}">${escapeHtml(jobSummary(locale, t, job))}</p>
+      ${reviewerInstruction === '' ? '' : `<p class="fine" data-reviewer-instruction><strong>${escapeHtml(t('审核者要求', REVIEW_INSTRUCTION_LABEL))}:</strong> ${escapeHtml(reviewerInstruction)}</p>`}
       ${failure === null ? '' : renderState({ kind: 'error', title: failureLabel(t, failure.kind), body: t(failure.hint[0], failure.hint[1]), action: failureLink === '' ? { label: t('按上面的动作处理后再重试。', 'Fix the cause above, then retry.') } : { href: failureLink, label: failureActionLabel(t, failure.action) } })}
       ${job.error === null || job.error === '' ? '' : `<details class="fine"><summary>${escapeHtml(t('技术详情', 'Technical detail'))}</summary><p>${escapeHtml(job.error)}</p></details>`}
       <p class="fine">${escapeHtml(t('成本', 'Cost'))} ${escapeHtml(cost)} · ${escapeHtml(t('创建', 'Created'))} ${escapeHtml(humanTimeShort(job.created_at))} · ${escapeHtml(t('结束', 'Finished'))} ${escapeHtml(humanTimeShort(job.finished_at))}</p>

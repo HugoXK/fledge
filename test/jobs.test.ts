@@ -8,6 +8,7 @@ import { Jobs } from '../src/jobs/service.js'
 import { buildCarryOver, buildRunDigest, classifyOutput, decideNextJob, failureStreak, isMetaTitle, lastDurationMs } from '../src/jobs/continuity.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
+import { REVIEW_INSTRUCTION_MAX, REVIEW_INSTRUCTION_LABEL } from '../src/lib/followUpInstruction.js'
 import { json, makeUser, MemoryMailer, readBody, startFakeServer, testConfig } from './helpers.js'
 
 test('iterate dispatches to the Chief and review to the Reviewer', async () => {
@@ -431,6 +432,125 @@ test('follow-up jobs reuse the branch and PR and are deduplicated', async () => 
     const duplicate = await jobs.followUp(repo, { prUrl: 'https://github.com/o/f/pull/7', branch: 'fledge/fix', reason: 'check failed', headSha: 'abc' })
     assert.equal(duplicate.ok, false)
     assert.equal(duplicate.code, 'DUPLICATE_FOLLOWUP')
+  } finally {
+    store.close()
+  }
+})
+
+test('a follow-up carries the reviewer’s instruction, and two different requests on one commit are not duplicates', async () => {
+  // #251: the follow-up input had no field for the maintainer's words, and both
+  // the duplicate key and the parked key were built from `reason`, which is the
+  // constant `review requested changes`. Two different requests on the same
+  // commit therefore collapsed into one.
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'followup-instruction', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_instruction', userId: user.id, owner: 'o', name: 'i', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const prUrl = 'https://github.com/o/i/pull/9'
+    const first = await jobs.followUp(repo, { prUrl, branch: 'fledge/fix', reason: 'review requested changes', headSha: 'abc', instruction: 'Also cover the empty case in test/jobs.test.ts.' })
+    assert.equal(first.ok, true)
+    assert.match(first.job?.goal ?? '', /Reviewer asked: Also cover the empty case in test\/jobs\.test\.ts\./, 'the goal carries the sentence the reviewer wrote')
+    store.updateJob(first.job?.id ?? '', { status: 'failed' })
+
+    const second = await jobs.followUp(repo, { prUrl, branch: 'fledge/fix', reason: 'review requested changes', headSha: 'abc', instruction: 'Please keep the 404 path out of this PR.' })
+    assert.equal(second.ok, true, 'a different request on the same commit is its own follow-up')
+    assert.match(second.job?.goal ?? '', /Reviewer asked: Please keep the 404 path out of this PR\./)
+    store.updateJob(second.job?.id ?? '', { status: 'failed' })
+
+    const repeat = await jobs.followUp(repo, { prUrl, branch: 'fledge/fix', reason: 'review requested changes', headSha: 'abc', instruction: 'Also cover the empty case in test/jobs.test.ts.' })
+    assert.equal(repeat.ok, false, 'the identical request on the same commit is still a duplicate')
+    assert.equal(repeat.code, 'DUPLICATE_FOLLOWUP')
+
+    const reasonOnly = await jobs.followUp(repo, { prUrl: 'https://github.com/o/i/pull/10', branch: 'fledge/two', reason: 'check failed', headSha: 'def' })
+    assert.equal(reasonOnly.ok, true)
+    assert.doesNotMatch(reasonOnly.job?.goal ?? '', /Reviewer asked:/, 'a follow-up with no instruction keeps its old shape')
+  } finally {
+    store.close()
+  }
+})
+
+test('two requests parked behind a review job are both released', async () => {
+  // The parked key was also built from `reason` alone, so the second request on
+  // one commit overwrote the first in `pending_followup:` before any job existed.
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'capture', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'followup-parked', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_parked', userId: user.id, owner: 'o', name: 'p', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const reviewJob = store.createJob({ id: 'job_review_active', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review the PR', callbackHash: 'cb-review', platformTokenHash: '', kind: 'review' })
+    store.updateJob(reviewJob.id, { status: 'running' })
+    const prUrl = 'https://github.com/o/p/pull/11'
+    const first = await jobs.followUp(repo, { prUrl, branch: 'fledge/p', reason: 'review requested changes', headSha: 'fff', instruction: 'First request.' })
+    const second = await jobs.followUp(repo, { prUrl, branch: 'fledge/p', reason: 'review requested changes', headSha: 'fff', instruction: 'Second request.' })
+    assert.equal(first.code, 'JOB_ACTIVE')
+    assert.equal(second.code, 'JOB_ACTIVE')
+    const parked = store.listSettings(`pending_followup:${repo.id}:`)
+    assert.equal(parked.length, 2, 'two requests park as two entries, not one overwritten')
+
+    // Finishing the review job runs the release pass, which turns a parked
+    // request into a queued follow-up. One repository may only have one active
+    // job, so the second request has to stay parked for now — but it must not be
+    // lost, which is what the overwrite did. The pass walks the settings by key,
+    // and the key carries the request's fingerprint, so the order is not the
+    // arrival order: this asserts that neither request is dropped, not which one
+    // goes first.
+    const followUpGoals = (): string[] => store.listJobsPageForUser(user.id, 50, 0)
+      .filter((job) => job.trigger === 'followup')
+      .map((job) => job.goal)
+    store.updateJob(reviewJob.id, { status: 'succeeded' })
+    await jobs.tick()
+    assert.equal(followUpGoals().length, 1, 'one parked request is queued')
+    const queued = followUpGoals()[0] ?? ''
+    const released = queued.includes('First request.') ? 'First request.' : 'Second request.'
+    const stillParked = released === 'First request.' ? 'Second request.' : 'First request.'
+    assert.ok(queued.includes(`Reviewer asked: ${released}`), 'the queued follow-up keeps its own reviewer instruction')
+    assert.equal(store.listSettings(`pending_followup:${repo.id}:`).length, 1, 'the other request stays parked while the repository has an active job')
+    const active = store.listJobsPageForUser(user.id, 50, 0).find((job) => job.trigger === 'followup')
+    assert.ok(active !== undefined)
+    store.updateJob(active.id, { status: 'failed' })
+    await jobs.tick()
+    assert.ok(followUpGoals().some((goal) => goal.includes(`Reviewer asked: ${stillParked}`)), 'the other request is queued once the first finishes')
+    assert.equal(store.listSettings(`pending_followup:${repo.id}:`).length, 0, 'nothing stays parked after the release pass')
+  } finally {
+    store.close()
+  }
+})
+
+test('a long review body cannot push the follow-up directives out of the goal', async () => {
+  // `enqueue` caps the whole goal at 4000 characters and appends the carry-over
+  // block after it, so the instruction's own bound decides whether the agent
+  // still reads "do not open a second PR" and the rest of the directives. A
+  // bound equal to the goal's cap would make the review body the last thing the
+  // agent is told.
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'capture', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'followup-long', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_long', userId: user.id, owner: 'o', name: 'l', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const result = await jobs.followUp(repo, {
+      prUrl: 'https://github.com/o/l/pull/13',
+      branch: 'fledge/l',
+      reason: 'review requested changes',
+      headSha: 'ghi',
+      instruction: 'x'.repeat(6000),
+    })
+    assert.equal(result.ok, true)
+    const goal = result.job?.goal ?? ''
+    assert.ok(goal.length <= 4000, 'the goal stays inside the bound `enqueue` applies')
+    assert.match(goal, /Continue on the same branch and update the existing PR\. Do not open a second PR or create a new issue\./, 'the directive the follow-up exists for is still there')
+    assert.match(goal, /run the relevant checks, and callback with the branch and PR URL\./, 'the closing directive is still there')
+    const line = goal.split('\n').find((row) => row.startsWith(`${REVIEW_INSTRUCTION_LABEL}: `)) ?? ''
+    assert.ok(line.length > REVIEW_INSTRUCTION_LABEL.length, 'the instruction is still carried, not dropped')
+    assert.ok(line.length <= `${REVIEW_INSTRUCTION_LABEL}: `.length + REVIEW_INSTRUCTION_MAX, `the instruction is clipped to its own bound, not the goal's (${line.length} chars)`)
+    assert.match(line, /…$/, 'a clipped instruction says it was clipped')
   } finally {
     store.close()
   }

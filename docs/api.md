@@ -166,8 +166,13 @@ A verified `check_run`/`check_suite` failure or a `pull_request_review` with
 `changes_requested` can enqueue a follow-up job when the PR URL matches an
 existing Fledge job for a repository with the same installation. The follow-up
 reuses the original branch and PR URL, skips a second PR/issue, and is deduped by
-`repo + PR + head SHA + reason` and by `X-GitHub-Delivery`. A repo with an active
-job skips the follow-up; arbitrary PRs with no Fledge job are ignored.
+`repo + PR + head SHA + fingerprint(reason, review body)` and by
+`X-GitHub-Delivery`. The `changes_requested` body is clipped to one line of at
+most 1000 characters, with an ellipsis marking the cut, and carried in the job
+goal, so two different reviews on one
+commit are two follow-ups while the same review twice is still a duplicate; a
+repo with an active job parks each pending request separately instead of
+overwriting it. Arbitrary PRs with no Fledge job are ignored.
 
 ## Duplicate-work preflight
 
