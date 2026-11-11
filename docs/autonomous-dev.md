@@ -252,8 +252,12 @@ and rules a query pack keeps under `tool.extensions[].rules` are resolved by
 `ruleId` and `ruleIndex`. A security result whose severity cannot be read — and
 a result whose rule cannot be resolved — counts as high; a resolved quality
 query keeps its analysis level. Every verdict is printed with
-`parsed N result(s), H high/critical` so a blind run can be told apart from a
-clean one; an empty parse exits 1.
+`parsed N result(s), H high/critical` so a run that found nothing can be told
+apart from a clean one. Those are different verdicts: a SARIF written by an
+analysis that really ran and legitimately found nothing passes
+(`parsed 0 result(s), 0 high/critical, 0 added`), while a missing file, a
+malformed JSON body and a document with no `runs` entry each fail closed with a
+message naming which of the three it was.
 
 Every action a workflow runs is pinned to a 40-hex commit with the tag it came
 from in a trailing comment, and the `action-pins` job fails the build on a
