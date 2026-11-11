@@ -89,6 +89,8 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/admin/users/:id/quota` | admin / super admin + CSRF | Set quota in CNY; unlimited is super-admin-only |
 | POST | `/admin/users/:id/role` | owner + CSRF | Promote a normal user to admin or demote an admin |
 | POST | `/admin/simulation` | owner + CSRF | Toggle the normal-user UI preview |
+| POST | `/admin/platform/stop` | admin + CSRF | Stop all platform work: every enqueue is refused with `PLATFORM_PAUSED`, active jobs are paused or cancelled, one audit row records who and why. The read-only preview does not block it |
+| POST | `/admin/platform/resume` | admin + CSRF | Clear the platform stop and report the repositories the next tick will consider; it re-enqueues nothing |
 | GET | `/approve/:token` | token | Confirmation page |
 | POST | `/approve/:token` | token | Apply approve/reject |
 
