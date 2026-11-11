@@ -142,6 +142,130 @@ test('the URL and the result set move together, and pagination keeps the filter'
   }
 })
 
+// #285: the filter is the URL, so every control on `/dashboard` may change only
+// its own parameter. Three of the five links rebuilt the query from scratch and
+// silently dropped the other half: the window buttons lost the filter, both
+// "Clear filters" links lost the window, and the repository pager lost both.
+// The href is the cause, so each case asserts the query keys; the rendered list
+// and the selected values are the symptom a maintainer actually sees.
+interface DashboardLink {
+  href: string
+  label: string
+  hash: string
+  params: URLSearchParams
+}
+
+/** Every `/dashboard` anchor in rendered HTML, with its label and parsed query. */
+function dashboardLinks(html: string): DashboardLink[] {
+  const links: DashboardLink[] = []
+  const pattern = /<a\b[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g
+  let match = pattern.exec(html)
+  while (match !== null) {
+    // The renderer escapes `&` in an href, so parse the decoded query.
+    const href = (match[1] ?? '').replace(/&amp;/g, '&')
+    const label = (match[2] ?? '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+    match = pattern.exec(html)
+    if (!href.startsWith('/dashboard')) continue
+    const hashAt = href.indexOf('#')
+    const withoutHash = hashAt === -1 ? href : href.slice(0, hashAt)
+    const queryAt = withoutHash.indexOf('?')
+    const query = queryAt === -1 ? '' : withoutHash.slice(queryAt + 1)
+    links.push({ href, label, hash: hashAt === -1 ? '' : href.slice(hashAt), params: new URLSearchParams(query) })
+  }
+  return links
+}
+
+test('every dashboard control keeps the state it is not changing', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'filters-links', status: 'approved' })
+    const cookie = `${sessionFor(built, user).cookie}; fledge_lang=en`
+    // Twelve repositories so the repository table has a second page, and twelve
+    // matching jobs so the jobs pager renders too: a pager that is absent cannot
+    // be asserted about.
+    const ids: string[] = []
+    for (let index = 0; index < 12; index += 1) {
+      const id = `repo_${String(index).padStart(2, '0')}`
+      store.createRepo({ id, userId: user.id, owner: 'o', name: `n${index}`, defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+      ids.push(id)
+    }
+    const repoA = ids[0] ?? ''
+    const repoB = ids[1] ?? ''
+    makeJobs(store, user.id, repoA, 'f', 12, 'failed', 'iterate')
+    makeJobs(store, user.id, repoB, 's', 3, 'succeeded', 'iterate')
+
+    const filteredUrl = `/dashboard?repo=${repoA}&status=failed&kind=iterate&window=30`
+    const filtered = await built.app.inject({ method: 'GET', url: filteredUrl, headers: { cookie } })
+    assert.equal(filtered.statusCode, 200)
+    // The symptom, not only the cause: the list and the selects agree with the URL.
+    assert.equal((filtered.body.match(/data-job-id="job_f/g) ?? []).length, 10, 'the filter fills the first page of jobs')
+    assert.match(filtered.body, new RegExp(`<option value="${repoA}" selected>`), 'the repository select shows the filter')
+    assert.match(filtered.body, /<option value="failed" selected>/, 'the status select shows the filter')
+    assert.match(filtered.body, /<option value="iterate" selected>/, 'the kind select shows the filter')
+
+    const links = dashboardLinks(filtered.body)
+
+    // The window buttons are selected by label: the fix adds keys to their hrefs,
+    // so a selector keyed on "a query whose only key is window" would match
+    // nothing on the fixed page and pass over zero elements.
+    const windowButtons = links.filter((link) => link.label === '7 days' || link.label === '30 days')
+    assert.equal(windowButtons.length, 2, 'the page offers exactly the two window buttons')
+    const seven = windowButtons.find((link) => link.label === '7 days')
+    const thirty = windowButtons.find((link) => link.label === '30 days')
+    assert.equal(seven?.params.get('window'), '7', 'the 7-day button switches only the window')
+    assert.equal(thirty?.params.get('window'), '30', 'the 30-day button switches only the window')
+    for (const link of windowButtons) {
+      assert.equal(link.params.get('repo'), repoA, 'a window switch keeps the repository filter')
+      assert.equal(link.params.get('status'), 'failed', 'a window switch keeps the status filter')
+      assert.equal(link.params.get('kind'), 'iterate', 'a window switch keeps the kind filter')
+    }
+
+    // Both pagers: the repository pager must keep the window and the filter, and
+    // the jobs pager is the positive control that already did. They are told
+    // apart by their hash because each carries the other's page key.
+    const pagers = links.filter((link) => link.params.has('reposPage') || link.params.has('jobsPage'))
+    assert.equal(pagers.length, 2, 'both pagers render with one page link each')
+    for (const link of pagers) {
+      assert.equal(link.params.get('window'), '30', 'paging keeps the 30-day window')
+      assert.equal(link.params.get('repo'), repoA, 'paging keeps the repository filter')
+      assert.equal(link.params.get('status'), 'failed', 'paging keeps the status filter')
+      assert.equal(link.params.get('kind'), 'iterate', 'paging keeps the kind filter')
+    }
+    assert.equal(pagers.filter((link) => link.hash === '#add-repo').length, 1, 'the repository table has its pager')
+    assert.equal(pagers.filter((link) => link.hash === '#jobs').length, 1, 'the job table has its pager')
+
+    // The "Clear filters" link on a filtered list must still drop the filter and
+    // keep the window. Exactly one renders here: the form's.
+    const clearOnFiltered = links.filter((link) => link.label === 'Clear filters')
+    assert.equal(clearOnFiltered.length, 1, 'a filtered, non-empty list offers one clear link')
+    assert.equal(clearOnFiltered[0]?.params.get('window'), '30', 'clearing the filter keeps the 30-day window')
+    assert.equal(clearOnFiltered[0]?.params.get('repo'), null, 'clearing the filter drops the filter')
+
+    // The empty state offers its own clear link, and it renders only when the
+    // filter matches nothing — so it needs its own request, or "every clear link
+    // carries window=30" would pass on the form link alone.
+    const empty = await built.app.inject({ method: 'GET', url: `/dashboard?repo=${repoB}&status=failed&window=30`, headers: { cookie } })
+    assert.equal(empty.statusCode, 200)
+    assert.match(empty.body, /No jobs match these filters/, 'the filter with no rows renders the empty state')
+    const clearOnEmpty = dashboardLinks(empty.body).filter((link) => link.label === 'Clear filters')
+    assert.equal(clearOnEmpty.length, 2, 'the empty state renders the form clear link and its own')
+    for (const link of clearOnEmpty) {
+      assert.equal(link.params.get('window'), '30', 'both clear links keep the 30-day window')
+      assert.equal(link.params.get('repo'), null, 'clear filters drops the filter it clears')
+    }
+
+    // Explicit exclusion: the navigation landing link is a fresh start, not a
+    // state-carrying control, and it must stay bare.
+    const bare = links.filter((link) => link.href === '/dashboard')
+    assert.equal(bare.length, 1, 'the only state-free dashboard link is the navigation landing')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
+
 test('applying a filter keeps the 30-day window it was set in', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
