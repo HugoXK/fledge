@@ -20,6 +20,7 @@
 import { readFileSync, appendFileSync } from 'node:fs'
 import { evaluateGate } from './lib/review-gate.mjs'
 import { apiClient, arg, loadPolicy, pullRequestNumber, readEvent } from './lib/gate-env.mjs'
+import { reviewThreadsClient } from './lib/review-threads.mjs'
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
 const REPO = process.env.GITHUB_REPOSITORY ?? ''
@@ -42,6 +43,7 @@ if (REPO === '') fail('GITHUB_REPOSITORY is not set')
 if (!Number.isInteger(prNumber) || prNumber <= 0) fail('cannot determine the pull request number')
 
 const api = apiClient({ token: TOKEN, base: API, userAgent: 'fledge-review-gate' })
+const threads = reviewThreadsClient({ token: TOKEN, base: API, userAgent: 'fledge-review-gate' })
 const policy = await loadPolicy({
   api,
   repo: REPO,
@@ -52,6 +54,7 @@ const policy = await loadPolicy({
 
 const outcome = await evaluateGate({
   api,
+  threads,
   repo: REPO,
   policy,
   prNumber,

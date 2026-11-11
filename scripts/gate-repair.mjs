@@ -27,6 +27,7 @@
 import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import { evaluateGate } from './lib/review-gate.mjs'
 import { apiClient, arg, loadPolicy, pullRequestNumber, readEvent } from './lib/gate-env.mjs'
+import { reviewThreadsClient } from './lib/review-threads.mjs'
 import { REQUIRED_CONTEXT, isRepairCandidate, repairPlan } from './lib/gate-repair.mjs'
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
@@ -63,9 +64,10 @@ if (!Number.isInteger(prNumber) || prNumber <= 0) stop(1, 'cannot determine the 
 
 const localPolicy = existsSync('.github/agent/review-policy.json') ? JSON.parse(readFileSync('.github/agent/review-policy.json', 'utf8')) : {}
 const api = apiClient({ token: TOKEN, base: API, userAgent: 'fledge-gate-repair' })
+const threads = reviewThreadsClient({ token: TOKEN, base: API, userAgent: 'fledge-gate-repair' })
 const policy = await loadPolicy({ api, repo: REPO, ev, eventPath: EVENT, localPolicy }).catch((error) => stop(1, `cannot read the review policy: ${error.message}`))
 
-const outcome = await evaluateGate({ api, repo: REPO, policy, prNumber, tier: arg(process.argv, '--tier', undefined), sha: arg(process.argv, '--sha', undefined) })
+const outcome = await evaluateGate({ api, threads, repo: REPO, policy, prNumber, tier: arg(process.argv, '--tier', undefined), sha: arg(process.argv, '--sha', undefined) })
 if (!outcome.ok && (outcome.kind === 'error' || outcome.kind === 'hold')) {
   // Nothing valid to re-run: an error would only reproduce itself, and a hold is
   // a maintainer decision rather than a verdict. The recorded conclusion stands.

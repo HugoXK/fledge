@@ -97,6 +97,11 @@ not a conclusion.
 - **T2/T3:** a **PASS at the same tip** from a reviewer in
   `.github/agent/review-policy.json`, where the author of the tip may never PASS
   it, and green `ci-ok`. The agent that gated it enqueues it itself.
+- A green required check means **the tip can merge**, not only that the code
+  compiles: `review-gate` reads the tip's review threads and fails on an
+  unresolved one, naming its `path:line`, because the branch requires
+  conversation resolution and the merge API refuses such a tip no matter what the
+  checks say (#308).
 - Any new commit voids the PASS. Re-run the Verifier on the new tip.
 - Never admin-merge, never bypass a required check, never force-push `main`.
 - One PR per issue. Push to the existing branch instead of opening a duplicate.
