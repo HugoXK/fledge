@@ -78,6 +78,34 @@ export function rejectedEmail(user: UserRow, reason: string): { subject: string;
   }
 }
 
+// #265: the notice the sweep sends exactly once. Both languages in one mail
+// because the console locale is not stored: the reader is whoever registered,
+// and the rule, the exemption and the way back must all be readable without it.
+export function trialExpiredEmail(user: UserRow, baseUrl: string): { subject: string; text: string } {
+  return {
+    subject: '[Fledge] 预览试用已结束 / Preview trial ended',
+    text: [
+      `@${user.login}，你好：`,
+      '',
+      '你的 Fledge 预览试用已经结束：注册后 7 天内没有绑定任何仓库。',
+      '如果你曾经绑定过仓库（即使后来移除了），这条规则不适用于你——回复这封邮件，我们会恢复你的账号。',
+      '想继续使用，请联系管理员重新批准这个账号；重新批准后不会再按 7 天规则收走访问。',
+      '',
+      `登录：${baseUrl}`,
+      '',
+      '---',
+      '',
+      `@${user.login}, hello:`,
+      '',
+      'Your Fledge preview trial has ended: no repository was connected within 7 days of registration.',
+      'If you connected a repository at any point, even one you removed later, this rule does not apply to you — reply to this mail and we will restore the account.',
+      'To keep using Fledge, ask the administrator to re-approve the account; a re-approved account is not subject to the 7-day rule again.',
+      '',
+      `Sign in: ${baseUrl}`,
+    ].join('\n'),
+  }
+}
+
 export function quotaExhaustedEmail(user: UserRow, baseUrl: string): { subject: string; text: string } {
   return {
     subject: '[Fledge] 平台额度已用完，请配置自己的模型 API',

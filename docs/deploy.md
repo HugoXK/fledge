@@ -249,12 +249,35 @@ routine does not — so the mechanical release pull request needs that one human
 edit before it can merge, and adding the READMEs to the mechanical set instead is
 the separate release-policy decision, not part of this check.
 
-The nightly workflow pushes `release/v<next>` and stops before the pull request,
-because a pull request opened with `GITHUB_TOKEN` starts no `pull_request`
-workflow and would never get a `ci-ok`. Open it with the team account — never
-with the Reviewer's `HugoXK-bot` token — as
-`GITHUB_TOKEN=… node scripts/release-open.mjs --artifact release-plan.json --version <next> --sha <branch tip>`:
-the tool re-runs `scripts/version.mjs check` and `scripts/changelog.mjs check`
+The nightly workflow pushes `release/v<next>` and then opens exactly one release
+pull request for it, because a pull request opened with `GITHUB_TOKEN` starts no
+`pull_request` workflow and would never get a `ci-ok`.
+
+The opener runs on the repository secret **`RELEASE_OPEN_TOKEN`** (Settings →
+Secrets and variables → Actions). Set it to a token for the team account —
+never the Reviewer's `HugoXK-bot` account — scoped to this repository alone, with
+`Contents: read` and `Pull requests: write` — it does not need push, because the
+workflow pushes `release/v<next>` before the opener runs. The opener reads
+`GET /user` and
+refuses a credential whose login is the review policy's `requiredPass`, so the
+reviewer account cannot open the release pull request even if it were installed
+by mistake. The token reaches the step through the environment only; it is never
+an argument, an output or a log line.
+
+A missing secret is the `blocked` state, not a failed night: the step reports it
+in the job summary and on #80, records it in the `release-plan` artifact, and
+opens nothing. A refused precondition — the branch at another commit, `main`
+moved since the plan, a path outside the mechanical set, the version or changelog
+check failing in the fetched tree — is a red run with the reason in the same
+three places. Dry runs and nights that pushed nothing never reach the write path.
+
+A manual run is still possible and uses the same tool:
+
+```sh
+GITHUB_TOKEN=… node scripts/release-open.mjs --artifact release-plan.json --version <next> --sha <branch tip>
+```
+
+The tool re-runs `scripts/version.mjs check` and `scripts/changelog.mjs check`
 against the branch's contents fetched through the API (never the branch's own
 copies of those scripts), refuses when `main` moved since the plan or the diff
 leaves `CHANGELOG.md`, `changelog.d/`, `docker-compose.yml`, `package-lock.json`

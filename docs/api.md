@@ -183,6 +183,29 @@ request's URL in `error`, the attempt is audited as `job.duplicate_work`, and th
 `job_duplicate_work` event is recorded. No branch is created and no second pull
 request is opened.
 
+A duplicate is one of two facts, and the preflight keeps them apart (#174). An
+open pull request means the work is in flight. If nothing is in flight, the same
+match is repeated over the merged pull requests
+(`GET /repos/:owner/:name/pulls?state=closed`, three pages, merged only), and a
+match there means the fix already landed: the caller gets
+`code: "ALREADY_FIXED"` instead, and the record names the evidence — the audit
+detail reads `already fixed by <pull request url> (<merge commit>)` and the event
+meta carries `outcome=already-fixed;pr=<url>;commit=<sha>`. The merged read costs up to
+three pages of 100, so it runs only when no open pull request matched, and the
+issue read happens only when a merged candidate matched. A pull
+request that was closed without merging is never evidence: it is dropped while
+the list is read.
+
+A merged pull request that only *mentions* the issue is not proof the fix landed —
+its title, body or head branch can cite an issue it does not close. So the issue
+itself decides: after a merged candidate matches, the preflight reads
+`GET /repos/:owner/:name/issues/:N` once and answers `ALREADY_FIXED` only when the
+issue is closed; an open issue lets the job through and records nothing, because
+a mention is not a fact.
+
+The refusal never creates a job, so it has no job page; the banner on the
+repository page is where a maintainer reads it.
+
 The preflight is read-only and best-effort. It runs only for an iterate job that
 does not already carry a `prUrl` — a follow-up job owns its pull request — and a
 GitHub failure is logged and lets the job through, so an API outage cannot block

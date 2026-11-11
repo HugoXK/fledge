@@ -111,6 +111,9 @@ export const FAILURE_CODES = [
   'STAGE_EVIDENCE_MISSING',
   'BRIDGE_ERROR',
   'REPO_DISABLED',
+  'PROVIDER_BUDGET_EXCEEDED',
+  'PROVIDER_RATE_LIMITED',
+  'PROVIDER_CALL_NEVER_STARTED',
 ] as const
 
 export type FailureCode = (typeof FAILURE_CODES)[number]
@@ -126,6 +129,13 @@ export const FAILURE_CODE_KIND: Record<FailureCode, FailureKind> = {
   STAGE_EVIDENCE_MISSING: 'stage_evidence',
   BRIDGE_ERROR: 'bridge',
   REPO_DISABLED: 'workflow',
+  // #260: the provider refused the model call inside the instance. It reaches
+  // Fledge either as the DSH send error (relayed by the bridge) or as a role
+  // session that ended with zero model calls; neither is a bridge outage, and
+  // neither is retried as a transient stall.
+  PROVIDER_BUDGET_EXCEEDED: 'quota',
+  PROVIDER_RATE_LIMITED: 'quota',
+  PROVIDER_CALL_NEVER_STARTED: 'model',
 }
 
 const FAILURE_SENTENCES: Record<FailureCode, [string, string]> = {
@@ -139,6 +149,9 @@ const FAILURE_SENTENCES: Record<FailureCode, [string, string]> = {
   STAGE_EVIDENCE_MISSING: ['任务缺少阶段证据，已停止。', 'The job is missing stage evidence, so it stopped.'],
   BRIDGE_ERROR: ['FlyBot 实例不可用，任务无法启动。', 'The FlyBot instance for this repository is unavailable.'],
   REPO_DISABLED: ['这个仓库已停用。', 'This repository is disabled.'],
+  PROVIDER_BUDGET_EXCEEDED: ['模型供应商拒绝了这次调用：实例的 DSH 预算已用完。请检查供应商额度，或配置自己的模型 API 后重试。', 'The model provider refused the call: the DSH budget of the instance is used up. Check the provider quota, or add your own model API, then retry.'],
+  PROVIDER_RATE_LIMITED: ['模型供应商限流，拒绝了这次调用（剩余额度 0）。请等限流恢复，或配置自己的模型 API 后重试。', 'The model provider rate-limited the call (remaining quota 0). Wait for the limit to reset, or add your own model API, then retry.'],
+  PROVIDER_CALL_NEVER_STARTED: ['实例里的会话在派发后没有发起任何模型调用：供应商额度或限流拒绝了这次调用。请检查 DSH 的供应商额度/密钥，或配置自己的模型 API 后重试。', 'The instance session made no model call after the job was dispatched: the provider budget or rate limit refused it. Check the DSH provider quota/key, or add your own model API, then retry.'],
 }
 
 // The parameterised form of a failure sentence, used only when the refusal
@@ -162,6 +175,11 @@ const REFUSAL_SENTENCES: Record<string, [string, string]> = {
   JOB_LIMIT: ['平台同时运行的任务数已达上限（{detail} 个），请稍后再试。', 'The platform already has {detail} jobs running at once; retry in a moment.'],
   BOT_MODEL_ASSIGNMENT_FAILED: ['机器人模型未就绪：{detail}；请在仓库设置里重新应用模型。', 'The bot models are not ready: {detail}; re-apply the models in the repository settings.'],
   BRANCH_MISSING: ['目标分支 {branch} 不存在或不可访问。', 'The target branch {branch} does not exist, or this account cannot read it.'],
+  // #174: already-fixed work is refused with its own code, so the banner says the
+  // fix is in rather than that someone else is still working on it. Like every
+  // refusal here it never reaches `jobs.error_code` — the enqueue path refuses
+  // before a job row exists.
+  ALREADY_FIXED: ['这个 issue 的修复已经合入上游：{detail}', 'The fix for this issue is already merged upstream: {detail}'],
   // #283: the platform stop outranks every other refusal, so its sentence has to
   // read as an operator decision rather than as a problem the reader caused.
   PLATFORM_PAUSED: ['平台已紧急停止，暂不接受新任务；等管理员恢复后再试。', 'The platform is stopped for an emergency, so no new job is accepted; retry once an admin resumes it.'],
@@ -226,6 +244,18 @@ export function failureBannerSentence(locale: Locale, value: string | null | und
   return t(`任务未能开始（${code}）。`, `The job could not start (${code}).`)
 }
 
+// #260: the dispatch path must name the provider refusal, not fold it into
+// BRIDGE_ERROR. This reads the message the bridge relayed (the DSH send error or
+// the DSH answer to it) and answers with the code, so `jobs.error_code` carries
+// the category to the retry policy and the job page.
+export function providerRefusalCode(text: string | null | undefined): FailureCode | null {
+  const value = String(text ?? '').toLowerCase()
+  if (value === '') return null
+  if (/budget has been exceeded|budget_exceeded|max budget|current cost:/.test(value)) return 'PROVIDER_BUDGET_EXCEEDED'
+  if (/rate limit exceeded|remaining:\s*0|too many requests/.test(value)) return 'PROVIDER_RATE_LIMITED'
+  return null
+}
+
 export function failureLabel(t: (zh: string, en: string) => string, kind: FailureKind | string): string {
   const info = FAILURES[kind as FailureKind] ?? FAILURES.unknown
   return t(info.label[0], info.label[1])
@@ -243,7 +273,11 @@ export function classifyFailure(job: Pick<JobRow, 'status' | 'error' | 'kind'> &
   // reported as an authorization problem. Our marker is the observable fact, so it
   // decides before the vocabulary does.
   if (/bridge unreachable/.test(text)) return FAILURES.bridge
-  if (/quota|额度|预算|budget|fledge_quota_exhausted/.test(text)) return FAILURES.quota
+  // #260: DSH refuses a turn with "Budget has been exceeded! Current cost: ..."
+  // or "Rate limit exceeded ... Remaining: 0". The second wording used to fall
+  // through to the GitHub pattern ("rate limit"), i.e. a transitory category that
+  // earned two blind retries, so the provider vocabulary decides before it.
+  if (/quota|额度|预算|budget|fledge_quota_exhausted|current cost:|remaining:\s*0/.test(text)) return FAILURES.quota
   // `401|403` used to be unanchored against the whole sentence, and that sentence
   // carries the bridge endpoint: an ephemeral port such as 127.0.0.1:40100 made a
   // dead bridge read as "GitHub authorization expired". Only a real status code

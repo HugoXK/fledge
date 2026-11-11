@@ -10,14 +10,15 @@ import { log } from '../lib/log.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
-import { classifyFailure, type FailureCode } from '../lib/failure.js'
+import { classifyFailure, providerRefusalCode, type FailureCode } from '../lib/failure.js'
 import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
-import { findDuplicatePullRequest, issueNumberFromText } from '../lib/duplicates.js'
+import { duplicateOutcome, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
 import { evaluateTestEvidence, type VerificationResult } from '../lib/verification.js'
 import { observedAttribution } from '../lib/teamStats.js'
+import { sweepExpiredTrials, type TrialSweepResult } from '../users/trial.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
@@ -146,6 +147,7 @@ function terminalFingerprint(input: {
 
 export class Jobs {
   private timer: NodeJS.Timeout | null = null
+  private trialTimer: NodeJS.Timeout | null = null
   private questionBusy = false
   private readonly followUpLocks = new Set<string>()
   private ticking = false
@@ -374,11 +376,41 @@ export class Jobs {
     try {
       const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
       const client = new GithubClient(token, this.config.github.apiBase)
-      const duplicate = findDuplicatePullRequest(issue, repository, await client.listOpenPullRequests(owner, name))
-      if (duplicate === null) return { ok: true }
-      this.store.audit(repo.user_id, 'job.duplicate_work', `${repository} issue #${issue} -> ${duplicate.url}`)
-      this.store.event('job_duplicate_work', { userId: repo.user_id, repoId: repo.id, meta: `issue=${issue};pr=${duplicate.url}`.slice(0, 400) })
-      return { ok: false, code: 'DUPLICATE_WORK', error: `已有 PR 覆盖这个 issue：${duplicate.url}`, detail: duplicate.url }
+      const outcome = await duplicateOutcome(
+        issue,
+        repository,
+        await client.listOpenPullRequests(owner, name),
+        () => client.listMergedPullRequests(owner, name),
+        () => client.issueIsClosed(owner, name, issue),
+      )
+      if (outcome === null) return { ok: true }
+      // #174: the two outcomes are recorded apart on purpose — an open pull request
+      // is work in flight, a merged one is the fix already being in, and only the
+      // second carries the commit that proves it. The record is the audit detail
+      // and the event meta (no job row exists at this point, by design).
+      const evidence =
+        outcome.kind === 'already-fixed'
+          ? ` (${outcome.mergeCommitSha ?? 'merge commit not reported'}, merged ${outcome.mergedAt.slice(0, 10)})`
+          : ''
+      this.store.audit(
+        repo.user_id,
+        'job.duplicate_work',
+        `${repository} issue #${issue} -> ${outcome.kind === 'already-fixed' ? 'already fixed by' : 'open PR'} ${outcome.url}${evidence}`,
+      )
+      this.store.event('job_duplicate_work', {
+        userId: repo.user_id,
+        repoId: repo.id,
+        meta: `issue=${issue};outcome=${outcome.kind};pr=${outcome.url}${outcome.kind === 'already-fixed' ? `;commit=${outcome.mergeCommitSha ?? ''}` : ''}`.slice(0, 400),
+      })
+      if (outcome.kind === 'already-fixed') {
+        return {
+          ok: false,
+          code: 'ALREADY_FIXED',
+          error: `这个 issue 的修复已经合入上游：${outcome.url}`,
+          detail: outcome.url,
+        }
+      }
+      return { ok: false, code: 'DUPLICATE_WORK', error: `已有 PR 覆盖这个 issue：${outcome.url}`, detail: outcome.url }
     } catch (error) {
       log.warn('duplicate preflight failed', { repo: repo.id, error: String(error) })
       return { ok: true }
@@ -694,12 +726,17 @@ export class Jobs {
     } catch (error) {
       revoke()
       const message = String(error instanceof Error ? error.message : error)
-      this.store.updateJob(job.id, { status: 'failed', error: message.slice(0, 1000), error_code: 'BRIDGE_ERROR', finished_at: nowIso() })
+      // #260: BRIDGE_ERROR is a transient category, so a provider refusal relayed
+      // by the bridge (a budget or rate-limit answer to the send) used to be
+      // retried twice as if the instance had been down. The refusal has its own
+      // code; only a failure that names neither keeps the bridge category.
+      const startCode: FailureCode = providerRefusalCode(message) ?? 'BRIDGE_ERROR'
+      this.store.updateJob(job.id, { status: 'failed', error: message.slice(0, 1000), error_code: startCode, finished_at: nowIso() })
       this.store.releaseJobLease(job.id)
       this.clearLeaseHeartbeat(job.id)
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
       else this.store.updateRepo(repo.id, { last_status: 'failed' })
-      this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${message}`)
+      this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${message}`, startCode)
       this.store.audit(user.id, 'job.failed', `${job.id}: ${message.slice(0, 300)}`)
       log.error('job start failed', { job: job.id, error: message })
       return { ok: false, job: this.store.getJob(job.id), error: message, code: 'RUNNER_ERROR' }
@@ -850,6 +887,9 @@ export class Jobs {
     // callback lost — leaves no stored marker; it stays manual and is stated in
     // docs/architecture.md.
     if (job.kind === 'review' && job.review_score !== null) return
+    // #260: a provider refusal is not a transient stall. Retrying it burns the
+    // slot against the same exhausted budget, which is what the owner observed.
+    if (providerRefusalCode(job.error) !== null || (job.error_code ?? '').startsWith('PROVIDER_')) return
     const repo = this.store.getRepo(job.repo_id)
     if (repo === undefined || repo.enabled !== 1) return
     const failure = classifyFailure({ status: 'failed', error: job.error, kind: job.kind })
@@ -2162,12 +2202,13 @@ export class Jobs {
     } catch (error) {
       revoke()
       const message = String(error instanceof Error ? error.message : error)
-      this.store.updateJob(job.id, { status: 'failed', error: message.slice(0, 1000), finished_at: nowIso() })
+      const startCode: FailureCode = providerRefusalCode(message) ?? 'BRIDGE_ERROR'
+      this.store.updateJob(job.id, { status: 'failed', error: message.slice(0, 1000), error_code: startCode, finished_at: nowIso() })
       this.store.releaseJobLease(job.id)
       this.clearLeaseHeartbeat(job.id)
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
       else this.store.updateRepo(repo.id, { last_status: 'failed' })
-      this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${message}`)
+      this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${message}`, startCode)
       this.store.audit(user.id, 'job.failed', `${job.id}: ${message.slice(0, 300)}`)
       log.error('queued job start failed', { job: job.id, error: message })
     }
@@ -2195,6 +2236,38 @@ export class Jobs {
     return active >= this.config.runner.maxActiveJobs
   }
 
+  // #260: a job that goes silent has two very different causes. A session that
+  // ran and stopped heartbeating is a stall; a session whose turn ended without
+  // a single model call never started work, and the usual reason is the provider
+  // refusing the call. `state` is the only surface that tells them apart (it
+  // carries per-session call counts), so it is read once, bounded, and only when
+  // the job is already about to be failed.
+  private stallRoleLabels(kind: string): string[] {
+    // `state` names a session by its role key, the label is for display.
+    if (kind === 'review') return ['reviewer']
+    if (kind === 'scope') return ['product']
+    if (kind === 'verify') return ['test']
+    return ['chief', 'lead']
+  }
+
+  private async stalledWithoutModelCall(job: JobRow): Promise<boolean> {
+    if (this.instances === undefined) return false
+    const instance = this.store.getRepoInstance(job.repo_id)
+    if (instance === undefined || instance.status !== 'ready') return false
+    const started = Date.parse(job.started_at ?? job.created_at)
+    if (!Number.isFinite(started)) return false
+    let state
+    try {
+      state = await this.instances.teamState(job.repo_id, 5_000)
+    } catch (error) {
+      log.warn('stall evidence unavailable', { job: job.id, error: String(error) })
+      return false
+    }
+    const labels = this.stallRoleLabels(job.kind)
+    return state.timeline.some((entry) =>
+      entry.kind === 'ended' && labels.includes(entry.role) && entry.calls === 0 && entry.at >= started)
+  }
+
   private async tickOnce(): Promise<void> {
     const handled = new Set<string>()
     setGauge('fledge_jobs_active', this.store.countActiveJobs(), {}, 'Active jobs')
@@ -2207,7 +2280,17 @@ export class Jobs {
         const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
         if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
       }
-      this.finish(job.id, { status: 'failed', error: `任务停滞：超过 ${this.config.runner.stallMinutes} 分钟没有心跳。`, errorCode: 'JOB_STALLED' }, revoke)
+      // #260: before calling a silent job a stall, read the instance state once
+      // (bounded). A role session whose turn ended with zero model calls never
+      // started one, and that is a provider refusal, not a heartbeat stall.
+      const noModelCall = await this.stalledWithoutModelCall(job)
+      this.finish(job.id, {
+        status: 'failed',
+        error: noModelCall
+          ? '任务失败：实例里的会话在派发后没有发起任何模型调用（供应商额度或限流拒绝了这次调用）。'
+          : `任务停滞：超过 ${this.config.runner.stallMinutes} 分钟没有心跳。`,
+        errorCode: noModelCall ? 'PROVIDER_CALL_NEVER_STARTED' : 'JOB_STALLED',
+      }, revoke)
     }
     const staleBefore = addMinutes(-this.config.runner.timeoutMinutes)
     const queuedStaleBefore = this.config.runner.queueDispatch ? addMinutes(-this.config.runner.timeoutMinutes) : addMinutes(-10)
@@ -2343,6 +2426,16 @@ export class Jobs {
     return Date.now() - last >= Math.max(15, repo.review_interval_minutes) * 60_000
   }
 
+  // #265: the preview-trial sweep runs on its own clock rather than inside the
+  // job tick, which can be skipped while a dispatch is in flight. The first
+  // scheduled run is one interval after boot; an operator who needs it now runs
+  // `npm run trial:sweep`.
+  async runTrialSweep(now: Date = new Date()): Promise<TrialSweepResult> {
+    const result = await sweepExpiredTrials(this.store, this.mailer, this.config, { now })
+    if (result.rejected.length > 0) log.info('preview trials ended', { rejected: result.rejected.length, emailed: result.emailed })
+    return result
+  }
+
   start(): void {
     if (this.timer !== null) return
     this.stopped = false
@@ -2350,6 +2443,10 @@ export class Jobs {
       this.tick().catch((error) => log.error('scheduler tick failed', { error: String(error) }))
     }, 60_000)
     this.timer.unref()
+    this.trialTimer = setInterval(() => {
+      void this.runTrialSweep().catch((error) => log.error('trial sweep failed', { error: String(error) }))
+    }, 3_600_000)
+    this.trialTimer.unref()
     void this.tick().catch((error) => log.error('scheduler first tick failed', { error: String(error) }))
   }
 
@@ -2357,6 +2454,8 @@ export class Jobs {
     this.stopped = true
     if (this.timer !== null) clearInterval(this.timer)
     this.timer = null
+    if (this.trialTimer !== null) clearInterval(this.trialTimer)
+    this.trialTimer = null
   }
 
   async drain(timeoutMs: number): Promise<void> {

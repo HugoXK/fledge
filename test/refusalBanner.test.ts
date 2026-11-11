@@ -405,3 +405,24 @@ test('the duplicate refusal carries the pull request URL as its detail', async (
     await github.close()
   }
 })
+
+test('already-fixed work reads as the fix being in, and not as work in flight', () => {
+  // #174: the two duplicates must be distinguishable where the maintainer reads
+  // them, not only in the audit row.
+  const url = 'https://github.com/acme/demo/pull/7'
+  assert.equal(
+    failureBannerSentence('zh', `ALREADY_FIXED:${url}`),
+    `这个 issue 的修复已经合入上游：${url}`,
+    'the Chinese banner does not say the fix already landed',
+  )
+  assert.equal(
+    failureBannerSentence('en', `ALREADY_FIXED:${url}`),
+    `The fix for this issue is already merged upstream: ${url}`,
+    'the English banner does not say the fix already landed',
+  )
+  assert.equal(
+    failureBannerSentence('en', `DUPLICATE_WORK:${url}`),
+    `A pull request already covers this issue: ${url}`,
+    'the open-pull-request refusal lost its own sentence',
+  )
+})

@@ -4,6 +4,7 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { Jobs } from '../src/jobs/service.js'
 import { MockRunner } from '../src/jobs/mock.js'
+import { failureBannerSentence } from '../src/lib/failure.js'
 import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
 
 // #283: the platform emergency stop. The card asks for one operator action that
@@ -82,6 +83,17 @@ test('a platform stop refuses new enqueues, drains the running job and records o
     })
     assert.equal(refused.statusCode, 302)
     assert.match(String(refused.headers.location), /[?&]error=PLATFORM_PAUSED(?:%3A|:)/)
+
+    // What the user reads is the banner template, not the shorter inline message
+    // the service returns: `failureSentence` resolves the code against
+    // `REFUSAL_SENTENCES` first and only falls through to the writer's text when
+    // the code has no entry. Pin the exact sentence in both languages, so the two
+    // strings cannot drift apart again without this failing.
+    assert.equal(
+      failureBannerSentence('en', 'PLATFORM_PAUSED'),
+      'The platform is stopped for an emergency, so no new job is accepted; retry once an admin resumes it.',
+    )
+    assert.equal(failureBannerSentence('zh', 'PLATFORM_PAUSED'), '平台已紧急停止，暂不接受新任务；等管理员恢复后再试。')
 
     // The scheduler does not enqueue for a due repository either: the guard has
     // to be in the admission path, not only on the route.

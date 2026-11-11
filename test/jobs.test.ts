@@ -1613,6 +1613,78 @@ test('an iterate job with an existing issue PR is rejected as duplicate', async 
   }
 })
 
+test('an iterate job whose fix already landed is refused as already-fixed, not as work in flight', async () => {
+  // #174: the preflight only listed open pull requests, so a re-run of work that
+  // had already merged was blocked with the same verdict as a genuine duplicate.
+  const github = await startFakeServer((request, response) => {
+    const path = request.url ?? ''
+    if (path.includes('/pulls?state=open')) return json(response, 200, [])
+    if (path.includes('/pulls?state=closed')) {
+      return json(response, 200, [
+        { number: 7, html_url: 'https://github.com/o/dup/pull/7', title: 'Fix it', body: 'Fixes https://github.com/o/dup/issues/42', head: { ref: 'fix' }, base: { ref: 'main' }, merged_at: '2026-11-09T10:00:00Z', merge_commit_sha: 'merge-sha-7' },
+      ])
+    }
+    if (path.includes('/issues/42')) return json(response, 200, { number: 42, state: 'closed' })
+    // Everything after the duplicate check succeeds, so the red half at the base
+    // is the missing verdict and the job it let through, not an unrelated refusal.
+    if (path.includes('/branches/main')) return json(response, 200, { name: 'main', commit: { sha: 'sha-main' } })
+    if (path.includes('/contents/')) return json(response, 200, [])
+    return json(response, 404, { message: 'Not Found' })
+  })
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'flybot', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'fixed-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_fixed', userId: user.id, owner: 'o', name: 'dup', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_fixed', repoId: repo.id, userId: user.id, title: 'Fix #42', detail: '', issueUrl: 'https://github.com/o/dup/issues/42' })
+    const result = await jobs.enqueue(repo, 'manual', 'Fix this issue', 'iterate', { workItemId: item.id })
+    assert.equal(result.ok, false)
+    assert.equal(result.code, 'ALREADY_FIXED', 'already-fixed work is still reported as a duplicate in flight')
+    const audit = store.listAudit().find((row) => row.action === 'job.duplicate_work')
+    assert.match(audit?.detail ?? '', /already fixed by https:\/\/github\.com\/o\/dup\/pull\/7/, 'the audit row does not name the merged pull request')
+    assert.match(audit?.detail ?? '', /merge-sha-7/, 'the audit row does not carry the merge commit')
+    assert.equal(store.listJobsForRepo(repo.id).length, 0, 'a job was created for work that already landed')
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
+
+test('a merged pull request that only mentions the issue lets the work through while the issue is open', async () => {
+  // #174 review at fe217420: a merged `Follow-up to #42` was enough to refuse a
+  // job and to tell the maintainer the fix was already in. The issue is the fact
+  // that decides it, so an open issue is not a fix however the pull request reads.
+  const github = await startFakeServer((request, response) => {
+    const path = request.url ?? ''
+    if (path.includes('/pulls?state=open')) return json(response, 200, [])
+    if (path.includes('/pulls?state=closed')) {
+      return json(response, 200, [
+        { number: 7, html_url: 'https://github.com/o/dup/pull/7', title: 'Follow-up to #42', body: 'This does not close #42', head: { ref: 'follow-up' }, base: { ref: 'main' }, merged_at: '2026-11-09T10:00:00Z', merge_commit_sha: 'merge-sha-7' },
+      ])
+    }
+    if (path.includes('/issues/42')) return json(response, 200, { number: 42, state: 'open' })
+    if (path.includes('/branches/main')) return json(response, 200, { name: 'main', commit: { sha: 'sha-main' } })
+    if (path.includes('/contents/')) return json(response, 200, [])
+    return json(response, 404, { message: 'Not Found' })
+  })
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'flybot', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'mention-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_mention', userId: user.id, owner: 'o', name: 'dup', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_mention', repoId: repo.id, userId: user.id, title: 'Fix #42', detail: '', issueUrl: 'https://github.com/o/dup/issues/42' })
+    const result = await jobs.enqueue(repo, 'manual', 'Fix this issue', 'iterate', { workItemId: item.id })
+    assert.notEqual(result.code, 'ALREADY_FIXED', 'an open issue was reported as already fixed')
+    assert.equal(store.listJobsForRepo(repo.id).length, 1, 'the job was refused for an issue nobody fixed')
+    assert.equal(store.listAudit().filter((row) => row.action === 'job.duplicate_work').length, 0, 'a mention was recorded as a fact')
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
+
 test('a rejected pull request preflight fails open and still starts the job', async () => {
   const github = await startFakeServer((request, response) => {
     const path = request.url ?? ''

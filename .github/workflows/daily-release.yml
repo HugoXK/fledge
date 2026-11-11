@@ -4,17 +4,19 @@ name: Daily minor release
 # (14:30 UTC) when the rule in issue #80 is satisfied, and the annotated tag for
 # that release once its mechanical pull request is merged.
 #
-# Two jobs, two triggers, no stored credential:
-#   release  plans the night and pushes `release/v<version>` with the automatic
-#            token. Opening the pull request is #187's half, so nothing here
-#            opens, merges or publishes one.
+# Two jobs, two triggers, two credentials:
+#   release  plans the night, pushes `release/v<version>` with the automatic
+#            token and opens exactly one release pull request with the team
+#            token (`RELEASE_OPEN_TOKEN`). Without that secret the night reports
+#            `blocked` and opens nothing; a refused precondition is red. It never
+#            merges or publishes a pull request.
 #   tag      recognises the merge of that branch on `main` and writes the tag
 #            through the Git data API, then dispatches the publish run at it.
 #
-# A branch pushed with `GITHUB_TOKEN` starts no workflow, so the release pull
-# request carries no checks of its own until a commit is pushed to it — that is
-# #187's half, which is why the drive decision is kept in the artifact and not
-# acted on here.
+# A branch pushed with `GITHUB_TOKEN` starts no workflow, so a pull request
+# opened with it would never get a `ci-ok`. The opener is the team account for
+# that reason alone, never the Reviewer's account: scripts/release-open.mjs reads
+# `GET /user` and refuses when the credential is the policy's requiredPass.
 
 on:
   schedule:
@@ -191,7 +193,7 @@ jobs:
             REMOTE_SHA="$(git rev-parse "refs/remotes/origin/${BRANCH}")"
             if [ "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse "refs/remotes/origin/${BRANCH}^{tree}")" ]; then
               echo "already pushed ${BRANCH} at ${REMOTE_SHA} — same content, nothing to do" >> "$GITHUB_STEP_SUMMARY"
-              printf 'pushed=%s\nbranch=%s\n' "$REMOTE_SHA" "$BRANCH" >> "$GITHUB_OUTPUT"
+              printf 'pushed=%s\nbranch=%s\nversion=%s\n' "$REMOTE_SHA" "$BRANCH" "$VERSION" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             echo "::error::${BRANCH} already exists at ${REMOTE_SHA} with different content; refusing to overwrite it"
@@ -199,16 +201,71 @@ jobs:
           fi
           git push origin "$BRANCH"
           PUSHED="$(git rev-parse HEAD)"
-          printf 'pushed=%s\nbranch=%s\n' "$PUSHED" "$BRANCH" >> "$GITHUB_OUTPUT"
+          printf 'pushed=%s\nbranch=%s\nversion=%s\n' "$PUSHED" "$BRANCH" "$VERSION" >> "$GITHUB_OUTPUT"
           echo "pushed ${BRANCH} at ${PUSHED}" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Write the plan artifact
+        # Written on every run, failed or not, so a red night still leaves the
+        # state it saw behind for whoever reads the run. The opener reads it, so
+        # it comes before the write path.
+        if: ${{ always() }}
+        env:
+          MAIN_SHA: ${{ steps.state.outputs.main_sha }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg mainSha "${MAIN_SHA:-unknown}" \
+            --argjson plan "$(cat /tmp/plan.json 2>/dev/null || echo null)" \
+            --argjson drive "$(cat /tmp/drive.json 2>/dev/null || echo null)" \
+            '{ mainSha: $mainSha, plan: $plan, drive: $drive }' > release-plan.json
+          cat release-plan.json
+
+      - name: Open the release pull request
+        id: open
+        # A dry run and a night that pushed nothing stay out of the write path.
+        # The token is the repository secret, read by the script from the
+        # environment: it never appears in an argument, an output or a log. A
+        # missing secret is the `blocked` state — reported here, in the artifact
+        # and on #80 — not a failed night; a refusal by the tool is red.
+        if: ${{ inputs.dry_run != true && steps.push.outputs.pushed != '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_OPEN_TOKEN }}
+          PUSHED: ${{ steps.push.outputs.pushed }}
+          VERSION: ${{ steps.push.outputs.version }}
+        run: |
+          set -euo pipefail
+          STATE=blocked
+          DETAIL='RELEASE_OPEN_TOKEN is not set; the release pull request was not opened'
+          CODE=0
+          if [ -n "$GITHUB_TOKEN" ]; then
+            set +e
+            node scripts/release-open.mjs --artifact release-plan.json --version "$VERSION" --sha "$PUSHED" > /tmp/open.json
+            CODE=$?
+            set -e
+            if [ "$CODE" -eq 0 ]; then
+              STATE="$(jq -r '.status' /tmp/open.json)"
+              DETAIL="$(jq -r 'if (.pr // "") == "" then .reason else "#\(.pr) \(.reason)" end' /tmp/open.json)"
+              OPENED_BY="$(jq -r '.identity // ""' /tmp/open.json)"
+              if [ -n "$OPENED_BY" ]; then DETAIL="${DETAIL} (opened by ${OPENED_BY})"; fi
+            else
+              DETAIL="release-open refused: $(jq -r '.reason // "no reason recorded"' /tmp/open.json 2>/dev/null || echo 'unreadable output')"
+            fi
+          fi
+          printf 'state=%s\ndetail=%s\n' "$STATE" "$DETAIL" >> "$GITHUB_OUTPUT"
+          echo "- release pull request: **${STATE}** — ${DETAIL}" >> "$GITHUB_STEP_SUMMARY"
+          exit "$CODE"
+
       - name: Comment on #80
-        if: ${{ inputs.dry_run != true }}
+        # `always()` so a refused opener still says why on #80: the open state is
+        # the record, and a red night must not be silent about it.
+        if: ${{ always() && inputs.dry_run != true }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PUSHED: ${{ steps.push.outputs.pushed }}
           BRANCH: ${{ steps.push.outputs.branch }}
           MAIN_SHA: ${{ steps.state.outputs.main_sha }}
+          OPEN_STATE: ${{ steps.open.outputs.state }}
+          OPEN_DETAIL: ${{ steps.open.outputs.detail }}
         run: |
           set -euo pipefail
           if [ -z "$PUSHED" ]; then
@@ -224,7 +281,9 @@ jobs:
           CI_OK="$(jq -r '.ciOk' /tmp/state.json)"
           # The marker is version plus pushed sha: a night that pushes nothing new
           # repeats nothing here, so the issue does not get a line every day.
-          MARKER="<!-- daily-release:v${PLAN_NEXT}:${PUSHED} -->"
+          OPEN_STATE="${OPEN_STATE:-not-run}"
+          OPEN_DETAIL="${OPEN_DETAIL:-the opener did not run, so no pull request state is recorded}"
+          MARKER="<!-- daily-release:v${PLAN_NEXT}:${PUSHED}:${OPEN_STATE} -->"
           LAST_LINE="$(gh api --paginate "repos/${REPO}/issues/80/comments?per_page=100" \
             | jq -s -r 'flatten | map(.body | split("\n") | first) | map(select(startswith("<!-- daily-release:"))) | last // ""')"
           if [ "$LAST_LINE" = "$MARKER" ]; then
@@ -241,27 +300,13 @@ jobs:
             "- features among them: **${PLAN_FEATURES}** (need 5)" \
             "- changelog fragments released: **${PLAN_FRAGMENTS}** (need 1)" \
             "- latest \`ci-ok\` on \`main\`: **${CI_OK}** (rule 4)" \
+            "- release pull request: **${OPEN_STATE}** — ${OPEN_DETAIL}" \
             "" \
-            "The branch is the mechanical set — \`CHANGELOG.md\`, \`changelog.d/\`, \`package.json\`, \`package-lock.json\`, \`docker-compose.yml\` — nothing else. The pull request and the tag are not created by this run; the tag follows the merge on \`main\`, through the Git data API." \
+            "The branch is the mechanical set — \`CHANGELOG.md\`, \`changelog.d/\`, \`package.json\`, \`package-lock.json\`, \`docker-compose.yml\` — nothing else. The pull request is opened by the team token above and is never merged here; the tag follows the merge on \`main\`, through the Git data API." \
             "" \
             "Compare: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${LAST_TAG:-HEAD}...${BRANCH}")"
           gh issue comment 80 --body "$BODY"
           echo "commented ${MARKER} on #80" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Write the plan artifact
-        # Written on every run, failed or not, so a red night still leaves the
-        # state it saw behind for whoever reads the run.
-        if: ${{ always() }}
-        env:
-          MAIN_SHA: ${{ steps.state.outputs.main_sha }}
-        run: |
-          set -euo pipefail
-          jq -n \
-            --arg mainSha "${MAIN_SHA:-unknown}" \
-            --argjson plan "$(cat /tmp/plan.json 2>/dev/null || echo null)" \
-            --argjson drive "$(cat /tmp/drive.json 2>/dev/null || echo null)" \
-            '{ mainSha: $mainSha, plan: $plan, drive: $drive }' > release-plan.json
-          cat release-plan.json
 
       - name: Keep the plan artifact
         if: ${{ always() }}

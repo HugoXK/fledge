@@ -448,13 +448,29 @@ ran too long. The bridge URL is stored by origin and path only, so a token in
 its query or userinfo never reaches the job row or the job page.
 
 A failure also carries a stable **code** in `jobs.error_code`, written by the job
-service where the failure happens. Seven codes are written to a row today:
+service where the failure happens. Ten codes are written to a row today:
 `JOB_STALLED`, `JOB_LEASE_EXPIRED`, `JOB_TIMEOUT`, `QUOTA_EXHAUSTED`,
-`STAGE_EVIDENCE_MISSING`, `BRIDGE_ERROR` and `REPO_DISABLED`. Three more are in
-the vocabulary but have no writer: `REPO_CREDENTIAL_INVALID`,
-`JOB_BUDGET_EXCEEDED` and `DUPLICATE_WORK` name refusals that stop an enqueue
-before a job row exists, so they travel on the redirect instead (below) and are
-reserved for a row if one of them ever finishes a job.
+`STAGE_EVIDENCE_MISSING`, `BRIDGE_ERROR`, `REPO_DISABLED`,
+`PROVIDER_BUDGET_EXCEEDED`, `PROVIDER_RATE_LIMITED` and
+`PROVIDER_CALL_NEVER_STARTED`. Three more are in the vocabulary but have no
+writer: `REPO_CREDENTIAL_INVALID`, `JOB_BUDGET_EXCEEDED` and `DUPLICATE_WORK`
+name refusals that stop an enqueue before a job row exists, so they travel on the
+redirect instead (below) and are reserved for a row if one of them ever finishes
+a job.
+
+A provider refusal is not a bridge outage and not a stall, and it is stored as
+neither. `/run` answers a refused send with `502 {error, detail}`, where `detail`
+is the DSH answer to the send (a used-up budget, a zero remaining rate limit);
+the runner keeps that text in the dispatch error and the service stores it with
+the provider code instead of `BRIDGE_ERROR`, which is a transient category. The
+retry policy refuses `PROVIDER_*` as well: retrying against the same exhausted
+budget only burns the slot. When the send was accepted and the session still
+never called the model, nothing about the provider reaches Fledge — the DSH
+`state` surface carries per-session call counters but no error text — so the
+stall sweep reads `state` once with a 5s bound before it fails a silent job: a
+role session whose turn ended with zero model calls is reported as
+`PROVIDER_CALL_NEVER_STARTED`, and anything else stays `JOB_STALLED`. A failed
+state read changes nothing; the job keeps the heartbeat sentence.
 
 The code, not the text, decides the sentence a reader sees: `failureSentence`
 (`src/lib/failure.ts`) builds it in the reader's language for the job-page
@@ -780,6 +796,21 @@ time rather than an email address; a repository added and later removed still
 counts as used, because the `repo.added` audit row is the evidence. The
 `events` table records activation and intervention events only; no prompt or
 token data.
+
+The sweep behind that page (`src/users/trial.ts`, run hourly by the job service,
+or by hand with `npm run trial:sweep -- [--dry-run] [--login <login>]`) selects
+`status = approved`, `role = user`, registered more than 7 days ago, with no
+`repos` row, no `repo.added` audit, no `jobs` row and no `trial.expired` audit.
+The status change and the `trial.expired` audit row commit as one transaction, so
+a crash cannot leave an account rejected with no record of why; the notice is
+mailed after that commit, and a failed send cannot cause a second rejection
+because the row is already there. The bilingual notice names the 7-day rule, the
+used-account exemption and the way back: an administrator re-approves the
+account, which is not swept again because of that audit row — a rejected account
+cannot resubmit, so the notice must not promise that. The audit row is also what
+makes the sweep idempotent: a rerun offers nothing and mails nobody, and an
+account restored by hand stays skipped. Operator output carries the login and the
+registration date, never an address.
 
 ### Email notifications
 
