@@ -166,8 +166,11 @@ export function classifyFailure(job: Pick<JobRow, 'status' | 'error' | 'kind'> &
   if (/token|权限|credential|401|403|re-authoriz|authorization/.test(text)) return FAILURES.credential
   if (/stage_evidence_missing|阶段证据|缺少范围|缺少失败测试|缺少通过测试|缺少验收|缺少测试计划/.test(text)) return FAILURES.stage_evidence
   if (/停滞|心跳|no callback|stall/.test(text)) return FAILURES.stalled
-  if (/timeout|timed out|超时/.test(text)) return FAILURES.timeout
+  // #163: a dispatch that timed out at the bridge is an instance problem, not a
+  // task that ran too long, and its message carries the preserved transport cause
+  // (the word "timeout" included), so the bridge pattern has to win here.
   if (/bridge|instance|dsh|container|实例/.test(text)) return FAILURES.bridge
+  if (/timeout|timed out|超时/.test(text)) return FAILURES.timeout
   if (/review|审核|changes requested/.test(text)) return FAILURES.review
   if (/branch|分支|fork|upstream|duplicate|job_active|已有任务|work item|排队|already finished|已结束/.test(text)) return FAILURES.workflow
   if (/github|rate limit|pull request|merge|webhook|pr /.test(text)) return FAILURES.github

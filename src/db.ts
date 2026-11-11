@@ -227,6 +227,9 @@ export interface JobRow {
   callback_fingerprint: string | null
   path_guard_json: string | null
   verification_json: string | null
+  continuity_json: string | null
+  output_kind: string | null
+  continuity_used: number
   retry_attempt: number
   retry_of: string | null
   lease_owner: string | null
@@ -558,6 +561,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   callback_fingerprint TEXT,
   path_guard_json TEXT,
   verification_json TEXT,
+  continuity_json TEXT,
+  output_kind TEXT,
+  continuity_used INTEGER NOT NULL DEFAULT 0,
   retry_attempt INTEGER NOT NULL DEFAULT 0,
   retry_of TEXT,
   lease_owner TEXT,
@@ -997,6 +1003,9 @@ export class Store {
     if (!jobColumns.has('callback_fingerprint')) this.run('ALTER TABLE jobs ADD COLUMN callback_fingerprint TEXT')
     if (!jobColumns.has('path_guard_json')) this.run('ALTER TABLE jobs ADD COLUMN path_guard_json TEXT')
     if (!jobColumns.has('verification_json')) this.run('ALTER TABLE jobs ADD COLUMN verification_json TEXT')
+    if (!jobColumns.has('continuity_json')) this.run('ALTER TABLE jobs ADD COLUMN continuity_json TEXT')
+    if (!jobColumns.has('output_kind')) this.run('ALTER TABLE jobs ADD COLUMN output_kind TEXT')
+    if (!jobColumns.has('continuity_used')) this.run('ALTER TABLE jobs ADD COLUMN continuity_used INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('retry_attempt')) this.run('ALTER TABLE jobs ADD COLUMN retry_attempt INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('retry_of')) this.run('ALTER TABLE jobs ADD COLUMN retry_of TEXT')
     if (!jobColumns.has('last_callback_at')) this.run('ALTER TABLE jobs ADD COLUMN last_callback_at TEXT')
@@ -1324,7 +1333,7 @@ export class Store {
 
   listArtifactVersions(artifact?: string, limit = 50): ArtifactVersionRow[] {
     return artifact === undefined
-      ? this.all<ArtifactVersionRow>('SELECT * FROM artifact_versions ORDER BY created_at DESC LIMIT ?', limit)
+      ? this.all<ArtifactVersionRow>('SELECT * FROM artifact_versions ORDER BY created_at DESC, rowid DESC LIMIT ?', limit)
       : this.all<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE artifact = ? ORDER BY version DESC LIMIT ?', artifact, limit)
   }
 
@@ -1945,7 +1954,7 @@ export class Store {
   }
 
   listReposPage(userId: string, limit: number, offset: number): RepoRow[] {
-    return this.all<RepoRow>('SELECT * FROM repos WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?', userId, limit, offset)
+    return this.all<RepoRow>('SELECT * FROM repos WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?', userId, limit, offset)
   }
 
   countReposForUser(userId: string): number {
@@ -2039,7 +2048,7 @@ export class Store {
     this.run('DELETE FROM repo_instances WHERE repo_id = ?', repoId)
   }
 
-  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null }): JobRow {
+  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; createdAt?: string }): JobRow {
     this.run(
       `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, base_branch, work_item_id, priority, base_sha, retry_attempt, retry_of, created_at)
        VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -2057,7 +2066,7 @@ export class Store {
       input.baseSha ?? null,
       input.retryAttempt ?? 0,
       input.retryOf ?? null,
-      nowIso(),
+      input.createdAt ?? nowIso(),
     )
     return this.getJob(input.id)!
   }
@@ -2067,15 +2076,42 @@ export class Store {
   }
 
   listJobs(userId: string, limit = 20): JobRow[] {
-    return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?', userId, limit)
+    return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?', userId, limit)
   }
 
-  listJobsPageForUser(userId: string, limit: number, offset: number): JobRow[] {
-    return this.all<JobRow>('SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?', userId, limit, offset)
+  // #232: the dashboard filters by repository, status and kind in SQL so the
+  // count and the page agree, and so the filters compose with the pagination
+  // offset instead of slicing a filtered array in memory.
+  private jobsForUserWhere(userId: string, filter?: { repo?: string; status?: string; kind?: string }): { sql: string; params: unknown[] } {
+    const clauses = ['user_id = ?']
+    const params: unknown[] = [userId]
+    if (filter?.repo !== undefined && filter.repo !== '') {
+      clauses.push('repo_id = ?')
+      params.push(filter.repo)
+    }
+    if (filter?.status !== undefined && filter.status !== '') {
+      clauses.push('status = ?')
+      params.push(filter.status)
+    }
+    if (filter?.kind !== undefined && filter.kind !== '') {
+      clauses.push('kind = ?')
+      params.push(filter.kind)
+    }
+    return { sql: clauses.join(' AND '), params }
   }
 
-  countJobsForUser(userId: string): number {
-    return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM jobs WHERE user_id = ?', userId)?.n ?? 0)
+  listJobsPageForUser(userId: string, limit: number, offset: number, filter?: { repo?: string; status?: string; kind?: string }): JobRow[] {
+    const where = this.jobsForUserWhere(userId, filter)
+    // #232: `created_at` is not unique — a batch of jobs seeded in the same
+    // millisecond ties, and SQLite then has no stable order, so the same row can
+    // leave page 1 and never appear on page 2. The shared `newestJobOrder` is
+    // what the other job reads use, so a page and a "newest job" query agree.
+    return this.all<JobRow>(`SELECT * FROM jobs WHERE ${where.sql} ORDER BY ${newestJobOrder('jobs')} LIMIT ? OFFSET ?`, ...where.params, limit, offset)
+  }
+
+  countJobsForUser(userId: string, filter?: { repo?: string; status?: string; kind?: string }): number {
+    const where = this.jobsForUserWhere(userId, filter)
+    return Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM jobs WHERE ${where.sql}`, ...where.params)?.n ?? 0)
   }
 
   // #227: the first-run summary asks about this account's first job, not about a
@@ -2093,11 +2129,11 @@ export class Store {
   }
 
   listJobsForRepo(repoId: string, limit = 20): JobRow[] {
-    return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC LIMIT ?', repoId, limit)
+    return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?', repoId, limit)
   }
 
   listPrJobsForRepo(repoId: string, limit = 20): JobRow[] {
-    return this.all<JobRow>("SELECT * FROM jobs WHERE repo_id = ? AND pr_url IS NOT NULL AND kind = 'iterate' AND (pr_state IS NULL OR pr_state != 'merged') ORDER BY created_at DESC LIMIT ?", repoId, limit)
+    return this.all<JobRow>("SELECT * FROM jobs WHERE repo_id = ? AND pr_url IS NOT NULL AND kind = 'iterate' AND (pr_state IS NULL OR pr_state != 'merged') ORDER BY created_at DESC, rowid DESC LIMIT ?", repoId, limit)
   }
 
   // For each pull request URL, the one iterate job that decides its merge:
@@ -2123,7 +2159,7 @@ export class Store {
   }
 
   listJobsPageForRepo(repoId: string, limit: number, offset: number): JobRow[] {
-    return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?', repoId, limit, offset)
+    return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?', repoId, limit, offset)
   }
 
   countJobsForRepo(repoId: string): number {
@@ -2189,11 +2225,11 @@ export class Store {
   }
 
   failedJobsSince(sinceIso: string, limit = 5000): JobRow[] {
-    return this.all<JobRow>("SELECT * FROM jobs WHERE created_at >= ? AND status IN ('failed', 'quota_exhausted') ORDER BY created_at DESC LIMIT ?", sinceIso, limit)
+    return this.all<JobRow>("SELECT * FROM jobs WHERE created_at >= ? AND status IN ('failed', 'quota_exhausted') ORDER BY created_at DESC, rowid DESC LIMIT ?", sinceIso, limit)
   }
 
   activeJobForRepo(repoId: string): JobRow | undefined {
-    return this.get<JobRow>("SELECT * FROM jobs WHERE repo_id = ? AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1", repoId)
+    return this.get<JobRow>("SELECT * FROM jobs WHERE repo_id = ? AND status IN ('queued','running') ORDER BY created_at DESC, rowid DESC LIMIT 1", repoId)
   }
 
   listActiveJobsForUser(userId: string): JobRow[] {
@@ -2279,7 +2315,8 @@ export class Store {
     )
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
+
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'output_kind' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -2554,7 +2591,7 @@ export class Store {
   }
 
   listNotifications(userId: string, limit = 20): NotificationRow[] {
-    return this.all<NotificationRow>('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?', userId, limit)
+    return this.all<NotificationRow>('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?', userId, limit)
   }
 
   markNotificationsRead(userId: string): void {
@@ -2657,7 +2694,7 @@ export class Store {
     }
     const where = clauses.length === 0 ? '' : ` WHERE ${clauses.join(' AND ')}`
     if (count) return { sql: `SELECT COUNT(*) AS n FROM jobs${where}`, params }
-    return { sql: `SELECT * FROM jobs${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`, params: [...params, limit, offset] }
+    return { sql: `SELECT * FROM jobs${where} ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`, params: [...params, limit, offset] }
   }
 
   searchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string }, limit: number, offset: number): JobRow[] {

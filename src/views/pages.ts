@@ -16,6 +16,7 @@ import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verifi
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import { classifyFailure, failureLabel, failureSentence, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { STAGE_MODES } from '../lib/stages.js'
+import { JOB_FILTER_KINDS, JOB_FILTER_STATUSES, jobFilterIsActive, jobFilterLabels, jobFilterParams, kindFilterLabel, statusFilterLabel, type JobFilter } from '../lib/jobFilters.js'
 import type { InstallationRepo } from '../repos/app.js'
 import { localizeMessage, localizeNotification, translator, type Locale, type Translate } from '../i18n.js'
 import { parseTeam, type TeamLiveState, type TeamQuestionState } from '../flybot/instances.js'
@@ -427,7 +428,7 @@ export function landingPage(config: Config, viewer?: Viewer | null, devLogin = f
   // The same two predicates the route guard calls; the page must not decide this alone.
   const oauth = oauthConfigured(config)
   const tokenLogin = tokenLoginEnabled(config)
-  const tokenForm = `<details class="card narrow" id="token-login" open style="margin:24px 0 0">
+  const tokenForm = `<details class="card narrow mt-24" id="token-login" open>
       <summary>${escapeHtml(t('使用 GitHub token 登录（备用）', 'Sign in with a GitHub token (fallback)'))}</summary>
       <form method="post" action="/auth/token" class="form">
         <label>${escapeHtml(t('GitHub token', 'GitHub token'))} <input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required autocomplete="off" /></label>
@@ -492,6 +493,35 @@ export function rejectedPage(config: Config, viewer: Viewer, locale: Locale = 'z
   return layout({ title: t('申请未通过', 'Application not approved'), viewer, body, config, locale, path: '/apply/status' })
 }
 
+// #232: the filter is a plain GET form, so the browser owns the state and a
+// refresh, a shared link and the pagination links all describe the same list.
+function jobFilterForm(locale: Locale, filter: JobFilter, repos: Array<{ id: string; label: string }>, windowDays: number): string {
+  const t = translator(locale)
+  const options = (values: Array<{ value: string; label: string }>, selected: string): string =>
+    values
+      .map((option) => `<option value="${escapeHtml(option.value)}"${option.value === selected ? ' selected' : ''}>${escapeHtml(option.label)}</option>`)
+      .join('')
+  return `<form method="get" action="/dashboard#jobs" class="job-filters" data-job-filter>
+    ${windowDays === 30 ? '<input type="hidden" name="window" value="30" />' : ''}
+    <label>${escapeHtml(t('仓库', 'Repository'))}<select name="repo">${options(
+      [{ value: '', label: t('全部仓库', 'All repositories') }, ...repos.map((repo) => ({ value: repo.id, label: repo.label }))],
+      filter.repo,
+    )}</select></label>
+    <label>${escapeHtml(t('状态', 'Status'))}<select name="status">${options(
+      [{ value: '', label: t('全部状态', 'All statuses') }, ...JOB_FILTER_STATUSES.map((status) => ({ value: status, label: statusFilterLabel(t, status) }))],
+      filter.status,
+    )}</select></label>
+    <label>${escapeHtml(t('类型', 'Kind'))}<select name="kind">${options(
+      [{ value: '', label: t('全部类型', 'All kinds') }, ...JOB_FILTER_KINDS.map((kind) => ({ value: kind, label: kindFilterLabel(t, kind) }))],
+      filter.kind,
+    )}</select></label>
+    <div class="job-filter-actions">
+      <button class="btn btn-small" type="submit">${escapeHtml(t('筛选', 'Filter'))}</button>
+      ${jobFilterIsActive(filter) ? `<a class="link" href="/dashboard#jobs">${escapeHtml(t('清除筛选', 'Clear filters'))}</a>` : ''}
+    </div>
+  </form>`
+}
+
 // #227: one primary action at a time. Done steps collapse to a tick, the current
 // step carries the only button, and a blocked step states its reason instead of
 // offering a control that cannot work yet.
@@ -499,7 +529,7 @@ function setupSection(setup: SetupState | undefined, t: Translate): string {
   if (setup === undefined) return ''
   const outcome = firstRunOutcome(setup, t)
   if (outcome !== null) {
-    return `<section class="card setup-card" id="first-run" data-first-pr>
+    return `<section class="card" id="first-run" data-first-pr>
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('第一次运行', 'FIRST RUN'))}</div>
@@ -530,7 +560,7 @@ function setupSection(setup: SetupState | undefined, t: Translate): string {
       </li>`
     })
     .join('')
-  return `<section class="card setup-card" id="setup" data-setup data-setup-next="${checklist.next?.key ?? ''}">
+  return `<section class="card" id="setup" data-setup data-setup-next="${checklist.next?.key ?? ''}">
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('开始使用', 'GETTING STARTED'))}</div>
@@ -568,6 +598,8 @@ export function dashboardPage(input: {
   reposTotal?: number
   jobsPage?: number
   jobsTotal?: number
+  jobFilter?: JobFilter
+  repoOptions?: Array<{ id: string; label: string }>
   setup?: SetupState
   notice?: string
   error?: string
@@ -581,6 +613,8 @@ export function dashboardPage(input: {
   const reposTotal = input.reposTotal ?? repos.length
   const jobsPage = input.jobsPage ?? 1
   const jobsTotal = input.jobsTotal ?? jobs.length
+  const jobFilter = input.jobFilter ?? { repo: '', status: '' as const, kind: '' }
+  const repoOptions = input.repoOptions ?? []
   const t = translator(locale)
   const quota = quotaView(viewer.user, config)
   const repoRows = repos.length === 0
@@ -681,9 +715,20 @@ export function dashboardPage(input: {
   </section>
 
   <section class="card" id="jobs">
-    <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
-    ${jobTable(locale, jobs, { body: t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })}
-    ${pager('/dashboard', 'jobsPage', jobsPage, jobsTotal, 10, t, { reposPage }, '#jobs')}
+    <div class="row between">
+      <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
+      <span class="fine">${escapeHtml(t(`共 ${jobsTotal} 个任务`, `${jobsTotal} job${jobsTotal === 1 ? '' : 's'}`))}</span>
+    </div>
+    ${jobFilterForm(locale, jobFilter, repoOptions, windowDays)}
+    ${jobFilterIsActive(jobFilter) && jobs.length === 0
+      ? renderState({
+          kind: 'empty',
+          title: t('没有任务符合这些筛选。', 'No jobs match these filters'),
+          body: jobFilterLabels(jobFilter, repoOptions, t).join(t('、', ', ')),
+          action: { href: '/dashboard#jobs', label: t('清除筛选', 'Clear filters') },
+        })
+      : jobTable(locale, jobs, { body: t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })}
+    ${pager('/dashboard', 'jobsPage', jobsPage, jobsTotal, 10, t, { reposPage, ...(windowDays === 30 ? { window: 30 } : {}), ...jobFilterParams(jobFilter) }, '#jobs')}
   </section>`
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
@@ -894,16 +939,16 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     <form method="post" action="/repos/${escapeHtml(repo.id)}/work" class="form">
       ${csrf(viewer)}
       <div class="row">
-        <label style="flex:1">${escapeHtml(t('标题', 'Title'))} <input name="title" required maxlength="200" /></label>
-        <label>${escapeHtml(t('优先级', 'Priority'))} <input name="priority" type="number" min="0" max="100" value="0" style="width:90px" /></label>
+        <label class="grow">${escapeHtml(t('标题', 'Title'))} <input name="title" required maxlength="200" /></label>
+        <label>${escapeHtml(t('优先级', 'Priority'))} <input name="priority" type="number" min="0" max="100" value="0" class="w-90" /></label>
       </div>
       <div class="row">
-        <label style="flex:1">${escapeHtml(t('Issue URL（可选）', 'Issue URL (optional)'))} <input name="issueUrl" placeholder="https://github.com/owner/repo/issues/1" /></label>
+        <label class="grow">${escapeHtml(t('Issue URL（可选）', 'Issue URL (optional)'))} <input name="issueUrl" placeholder="https://github.com/owner/repo/issues/1" /></label>
       </div>
       <label>${escapeHtml(t('说明', 'Detail'))} <textarea name="detail" rows="3" placeholder="${escapeHtml(t('用户问题、现状、验收标准。', 'User problem, current state, acceptance criteria.'))}"></textarea></label>
       <button class="btn" type="submit">${escapeHtml(t('创建工作项', 'Create work item'))}</button>
     </form>
-    <div class="table-scroll" style="margin-top:14px"><table><thead><tr><th>${escapeHtml(t('工作项', 'Work item'))}</th><th>${escapeHtml(t('状态', 'State'))}</th><th>${escapeHtml(t('优先级', 'Priority'))}</th><th>Issue / PR</th><th>${escapeHtml(t('任务', 'Job'))}</th><th></th></tr></thead><tbody>${workRows}</tbody></table></div>
+    <div class="table-scroll mt-14"><table><thead><tr><th>${escapeHtml(t('工作项', 'Work item'))}</th><th>${escapeHtml(t('状态', 'State'))}</th><th>${escapeHtml(t('优先级', 'Priority'))}</th><th>Issue / PR</th><th>${escapeHtml(t('任务', 'Job'))}</th><th></th></tr></thead><tbody>${workRows}</tbody></table></div>
   </section>`;
   const prRows = prJobs.length === 0
     ? stateCell(7, { kind: 'empty', title: t('没有待处理的 PR。', 'No pull requests waiting.'), body: t('任务产出 PR 后会出现在这里；没有就是真的没有在等。', 'A pull request appears here once a job opens one; an empty list means nothing is waiting.'), action: { href: `/repos/${escapeHtml(repo.id)}`, label: t('回到仓库', 'Back to repository') } })
@@ -966,8 +1011,8 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </div>
         <label class="check"><input type="checkbox" name="planRequired" value="1" ${repo.plan_required === 1 ? 'checked' : ''} /> ${escapeHtml(t('先出计划，批准后执行', 'Plan first; execute only after approval'))}${infoTip(t('开启后“立即运行”先生成计划；maintainer 批准计划后才写代码。', 'When on, Run now creates a plan; code is written only after a maintainer approves it.'))}</label>
         <div class="row">
-          <label style="flex:1">${escapeHtml(t('允许修改路径（可选）', 'Allowed paths (optional)'))}${infoTip(t('逗号或换行分隔。批准计划时会填入执行 prompt；不是硬性沙箱。', 'Comma or newline separated. Included in the execution prompt at plan approval; not a hard sandbox.'))} <input name="allowPaths" value="${escapeHtml(repo.allow_paths)}" placeholder="src/, docs/" /></label>
-          <label style="flex:1">${escapeHtml(t('禁止修改路径（可选）', 'Forbidden paths (optional)'))} <input name="denyPaths" value="${escapeHtml(repo.deny_paths)}" placeholder=".github/, deploy/" /></label>
+          <label class="grow">${escapeHtml(t('允许修改路径（可选）', 'Allowed paths (optional)'))}${infoTip(t('逗号或换行分隔。批准计划时会填入执行 prompt；不是硬性沙箱。', 'Comma or newline separated. Included in the execution prompt at plan approval; not a hard sandbox.'))} <input name="allowPaths" value="${escapeHtml(repo.allow_paths)}" placeholder="src/, docs/" /></label>
+          <label class="grow">${escapeHtml(t('禁止修改路径（可选）', 'Forbidden paths (optional)'))} <input name="denyPaths" value="${escapeHtml(repo.deny_paths)}" placeholder=".github/, deploy/" /></label>
         </div>
         <div class="row">
           <label>${escapeHtml(t('合并方式', 'Merge method'))} <select name="mergeMethod">${['squash', 'merge', 'rebase'].map((method) => `<option value="${method}"${(repo.merge_method || 'squash') === method ? ' selected' : ''}>${method}</option>`).join('')}</select></label>
@@ -984,10 +1029,10 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </div>
         <p class="fine">${escapeHtml(t('本月已用', 'Spent this month'))} ${escapeHtml(quotaMoney(repoSpendCny))}${repo.monthly_budget_cny > 0 ? ` / ${escapeHtml(quotaMoney(repo.monthly_budget_cny))}` : ''}</p>
         <div class="row">
-          <label style="flex:1">${escapeHtml(t('可用模型', 'Available models'))}${infoTip(t('提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。', 'Providers and models are managed in Settings; select only the models this repository may use.'))}
+          <label class="grow">${escapeHtml(t('可用模型', 'Available models'))}${infoTip(t('提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。', 'Providers and models are managed in Settings; select only the models this repository may use.'))}
             ${models.length === 0
               ? `<span class="muted">${escapeHtml(t('还没有模型。先到 Settings 添加提供方和模型。', 'No models yet. Add a provider and models in Settings.'))}</span>`
-              : `<span class="list">${[...new Set(models.map((model) => model.provider_label))].map((provider) => `<div style="margin-bottom:6px"><strong>${escapeHtml(provider)}</strong><br />${models.filter((model) => model.provider_label === provider).map((model) => `<label class="check"><input type="checkbox" name="modelIds" value="${escapeHtml(model.id)}" ${repoModelIds.has(model.id) ? 'checked' : ''} /> ${escapeHtml(model.label)} <small class="muted">${escapeHtml(model.model)}</small></label>`).join('')}</div>`).join('')}</span>`}
+              : `<span class="list">${[...new Set(models.map((model) => model.provider_label))].map((provider) => `<div class="mb-6"><strong>${escapeHtml(provider)}</strong><br />${models.filter((model) => model.provider_label === provider).map((model) => `<label class="check"><input type="checkbox" name="modelIds" value="${escapeHtml(model.id)}" ${repoModelIds.has(model.id) ? 'checked' : ''} /> ${escapeHtml(model.label)} <small class="muted">${escapeHtml(model.model)}</small></label>`).join('')}</div>`).join('')}</span>`}
           </label>
         </div>
         <label>${escapeHtml(t('默认模型', 'Default model'))} <select name="defaultModelId"><option value="">${escapeHtml(t('平台默认', 'Platform default'))}</option>${models.map((model) => `<option value="${escapeHtml(model.id)}"${repoDefaultModelId === model.id ? ' selected' : ''}>${escapeHtml(model.provider_label)} · ${escapeHtml(model.label)}${repoModelIds.has(model.id) ? '' : ' *'}</option>`).join('')}</select></label>
@@ -1000,13 +1045,13 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </details>` : ''}
         <button class="btn" type="submit">${escapeHtml(t('保存', 'Save'))}</button>
       </form>
-      ${repo.models_dirty === 1 ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/models/apply" style="margin-top:12px">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('应用模型并重启工作区', 'Apply models and restart workspace'))}</button><p class="fine">${escapeHtml(t('有运行中的任务时会拒绝重启。', 'Restart is refused while a job is running.'))}</p></form>` : ''}
+      ${repo.models_dirty === 1 ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/models/apply" class="mt-12">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('应用模型并重启工作区', 'Apply models and restart workspace'))}</button><p class="fine">${escapeHtml(t('有运行中的任务时会拒绝重启。', 'Restart is refused while a job is running.'))}</p></form>` : ''}
     </div>
     <div class="card" id="connection">
       <h2>${escapeHtml(t('连接', 'Connection'))}</h2>
       <p class="muted">${escapeHtml(t('GitHub token 已加密保存；页面不会显示明文。如果仓库或 token 变了，删除后重新添加。', 'The GitHub token is encrypted and never rendered in plain text. If the repository or token changes, delete and add it again.'))}</p>
       <p class="fine">${escapeHtml(t('审核最近运行', 'Last review'))} ${escapeHtml(repo.last_review_at === null ? t('尚未运行', 'Not run yet') : humanTimeShort(repo.last_review_at))}${reviewStatus}</p>
-      <div class="row" style="margin-bottom:12px">
+      <div class="row mb-12">
         <form method="post" action="/repos/${escapeHtml(repo.id)}/refresh">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('重新检测上游 / fork', 'Refresh upstream / fork'))}</button></form>
       </div>
       <p class="fine">${escapeHtml(t('平台只通过 GitHub API 读取元数据、创建 fork 和分支/PR；不会 clone 到公共磁盘。', 'The platform only uses the GitHub API to read metadata, create forks and open branches/PRs; it never clones to public disk.'))}</p>
@@ -1249,8 +1294,8 @@ export function settingsPage(input: {
           <form method="post" action="/settings/providers/${escapeHtml(provider.id)}/models" class="form">
             ${csrf(viewer)}
             <div class="row">
-              <label style="flex:1">Model ID <input name="model" required maxlength="120" placeholder="deepseek-chat" /></label>
-              <label style="flex:1">${escapeHtml(t('显示名', 'Label'))} <input name="label" maxlength="120" placeholder="${escapeHtml(t('可选', 'optional'))}" /></label>
+              <label class="grow">Model ID <input name="model" required maxlength="120" placeholder="deepseek-chat" /></label>
+              <label class="grow">${escapeHtml(t('显示名', 'Label'))} <input name="label" maxlength="120" placeholder="${escapeHtml(t('可选', 'optional'))}" /></label>
             </div>
             <button class="btn" type="submit">${escapeHtml(t('添加模型并测试', 'Add model and test'))}</button>
           </form>
@@ -1262,8 +1307,8 @@ export function settingsPage(input: {
             <form method="post" action="/settings/providers/${escapeHtml(provider.id)}/update" class="form">
               ${csrf(viewer)}
               <div class="row">
-                <label style="flex:1">${escapeHtml(t('名称', 'Label'))} <input name="label" value="${escapeHtml(provider.label)}" maxlength="80" /></label>
-                <label style="flex:1">Base URL <input name="baseUrl" value="${escapeHtml(provider.base_url)}" /></label>
+                <label class="grow">${escapeHtml(t('名称', 'Label'))} <input name="label" value="${escapeHtml(provider.label)}" maxlength="80" /></label>
+                <label class="grow">Base URL <input name="baseUrl" value="${escapeHtml(provider.base_url)}" /></label>
               </div>
               <label>API Key <input name="apiKey" type="password" placeholder="${escapeHtml(t('留空不修改', 'Leave blank to keep'))}" autocomplete="off" /></label>
               ${canPrivate ? `<label class="check"><input type="checkbox" name="allowPrivate" value="1"${provider.allow_private === 1 ? ' checked' : ''} /> ${escapeHtml(t('允许 HTTP / 内网地址', 'Allow HTTP / private address'))}</label>` : ''}
@@ -1275,8 +1320,8 @@ export function settingsPage(input: {
     <form method="post" action="/settings/providers" class="form">
       ${csrf(viewer)}
       <div class="row">
-        <label style="flex:1">${escapeHtml(t('名称', 'Label'))} <input name="label" required maxlength="80" placeholder="DeepSeek / local" /></label>
-        <label style="flex:1">Base URL <input name="baseUrl" required placeholder="https://api.example.com/v1" autocomplete="off" /></label>
+        <label class="grow">${escapeHtml(t('名称', 'Label'))} <input name="label" required maxlength="80" placeholder="DeepSeek / local" /></label>
+        <label class="grow">Base URL <input name="baseUrl" required placeholder="https://api.example.com/v1" autocomplete="off" /></label>
       </div>
       <label>API Key <input name="apiKey" required type="password" placeholder="sk-…" autocomplete="off" /></label>
       ${config.allowPrivateModelUrls || viewer.user.allow_private_models === 1 || viewer.user.role === 'superadmin' ? `<label class="check"><input type="checkbox" name="allowPrivate" value="1" /> ${escapeHtml(t('允许 HTTP / 内网地址（Fledge 必须能访问）', 'Allow HTTP / private address (Fledge must be able to reach it)'))}</label>` : `<p class="fine">${escapeHtml(t('需要管理员在 Admin 中为你的账号开启“内网模型”权限，或由运维设置 ALLOW_PRIVATE_MODEL_URLS=true。', 'An admin must enable private models for your account in Admin, or the operator must set ALLOW_PRIVATE_MODEL_URLS=true.'))}</p>`}
@@ -1687,7 +1732,7 @@ export function workspacePage(input: {
           </a>`,
         )
         .join('')}</div>
-      ${repos.length > 4 ? `<p class="fine" style="margin:12px 0 0"><a class="link fine-link" href="/dashboard">${escapeHtml(t(`查看其余 ${repos.length - 4} 个仓库`, `View the other ${repos.length - 4} repositories`))}</a></p>` : ''}`
+      ${repos.length > 4 ? `<p class="fine more-note"><a class="link fine-link" href="/dashboard">${escapeHtml(t(`查看其余 ${repos.length - 4} 个仓库`, `View the other ${repos.length - 4} repositories`))}</a></p>` : ''}`
   const initial = viewer.user.login.slice(0, 1).toUpperCase()
   const avatar = viewer.user.avatar_url === null || viewer.user.avatar_url === ''
     ? `<span class="workspace-avatar workspace-avatar-fallback" aria-hidden="true">${escapeHtml(initial)}</span>`
@@ -1725,7 +1770,7 @@ export function workspacePage(input: {
   <section class="card">
     <div class="row between"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2><a class="link" href="/dashboard">${escapeHtml(t('查看全部', 'View all'))}</a></div>
     ${jobList(locale, recent, reposById, { body: t('在仓库页点“立即运行”创建第一个任务；每个任务只开一个 PR。', 'Run the first job from a repository page; each job opens at most one pull request.'), action: { href: '/dashboard', label: t('打开仓库', 'Open a repository') } })}
-    ${jobsTotal > recent.length ? `<p class="fine" style="margin:12px 0 0"><a class="link fine-link" href="/dashboard#jobs">${escapeHtml(t(`查看其余 ${jobsTotal - recent.length} 个任务`, `View the other ${jobsTotal - recent.length} jobs`))}</a></p>` : ''}
+    ${jobsTotal > recent.length ? `<p class="fine more-note"><a class="link fine-link" href="/dashboard#jobs">${escapeHtml(t(`查看其余 ${jobsTotal - recent.length} 个任务`, `View the other ${jobsTotal - recent.length} jobs`))}</a></p>` : ''}
   </section>`
   return layout({ title: t('工作区', 'Workspace'), viewer, body, config, locale, path: '/console', active: 'console', notice, error })
 }
@@ -1816,7 +1861,7 @@ export function jobPage(input: {
     ? `<section class="card">
         <div class="row between"><div><h2>${escapeHtml(t('计划审批', 'Plan approval'))}</h2><p class="muted">${job.plan_rejected_at !== null ? escapeHtml(t('计划已被拒绝。', 'This plan was rejected.')) : job.plan_approved_at !== null ? escapeHtml(t('计划已批准；可以执行。', 'This plan is approved and can be executed.')) : escapeHtml(t('等待 maintainer 批准计划。', 'Waiting for a maintainer to approve the plan.'))}</p></div><span class="badge ${job.plan_approved_at !== null ? 'good' : job.plan_rejected_at !== null ? 'bad' : 'busy'}">${job.plan_approved_at !== null ? escapeHtml(t('已批准', 'Approved')) : job.plan_rejected_at !== null ? escapeHtml(t('已拒绝', 'Rejected')) : escapeHtml(t('待批准', 'Pending'))}</span></div>
         ${repo.repo_role === 'maintainer' && job.plan_approved_at === null && job.plan_rejected_at === null ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/approve-plan" class="form">${csrf(viewer)}
-          <div class="row"><label style="flex:1">${escapeHtml(t('允许修改路径', 'Allowed paths'))} <input name="allowPaths" value="${escapeHtml(job.plan_allow_paths ?? repo.allow_paths)}" placeholder="src/, docs/" /></label><label style="flex:1">${escapeHtml(t('禁止修改路径', 'Forbidden paths'))} <input name="denyPaths" value="${escapeHtml(job.plan_deny_paths ?? repo.deny_paths)}" placeholder=".github/, deploy/" /></label></div>
+          <div class="row"><label class="grow">${escapeHtml(t('允许修改路径', 'Allowed paths'))} <input name="allowPaths" value="${escapeHtml(job.plan_allow_paths ?? repo.allow_paths)}" placeholder="src/, docs/" /></label><label class="grow">${escapeHtml(t('禁止修改路径', 'Forbidden paths'))} <input name="denyPaths" value="${escapeHtml(job.plan_deny_paths ?? repo.deny_paths)}" placeholder=".github/, deploy/" /></label></div>
           <div class="row"><button class="btn" type="submit">${escapeHtml(t('批准计划', 'Approve plan'))}</button><button class="btn btn-danger" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/reject-plan" data-confirm="${escapeHtml(t('拒绝这个计划？', 'Reject this plan?'))}">${escapeHtml(t('拒绝', 'Reject'))}</button></div>
         </form>` : job.plan_approved_at !== null ? `<p class="fine">${escapeHtml(t('批准人', 'Approved by'))} ${escapeHtml(job.plan_approved_by ?? '—')} · ${escapeHtml(t('允许路径', 'Allowed'))} ${escapeHtml(job.plan_allow_paths ?? '—')} · ${escapeHtml(t('禁止路径', 'Forbidden'))} ${escapeHtml(job.plan_deny_paths ?? '—')}</p>` : ''}
       </section>`
@@ -1877,7 +1922,7 @@ export function jobPage(input: {
         </div>`}
     ${pathGuard === null
       ? ''
-      : `<h3 style="margin-top:16px">${escapeHtml(t('路径守卫', 'Path guard'))}</h3>
+      : `<h3 class="mt-16">${escapeHtml(t('路径守卫', 'Path guard'))}</h3>
         <p class="fine">${pathGuard.ok
           ? escapeHtml(t('改动文件都在允许范围内。', 'All changed files are within the allowed paths.'))
           : pathGuard.truncated === true
@@ -2153,7 +2198,7 @@ export function agentWorkspacePage(input: {
         <iframe class="workspace-frame" src="/repos/${escapeHtml(repo.id)}/workspace/app/" title="${escapeHtml(t('Fledge 工作区', 'Fledge workspace'))}" allow="clipboard-read; clipboard-write"></iframe>
       </section>`
     : `<section class="card"><p class="muted">${escapeHtml(t('实例就绪后才能打开工作区。', 'The workspace opens after the instance is ready.'))}</p></section>`}
-  <p class="fine" style="text-align:right">Fledge · powered by FlyBot</p>`
+  <p class="fine text-right">Fledge · powered by FlyBot</p>`
   return layout({ title: `${t('工作区', 'Workspace')} · ${repo.upstream_name || repo.name}`, viewer, body, config, locale, path: `/repos/${repo.id}/workspace`, active: 'dashboard', notice, error })
 }
 
@@ -2201,7 +2246,7 @@ export function adminWebhooksPage(input: {
       </div>
     </form>
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('收到', 'Received'))}</th><th>${escapeHtml(t('事件', 'Event'))}</th><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('错误', 'Error'))}</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
-    ${pages <= 1 ? '' : `<div class="row between" style="margin-top:12px"><span class="fine">${escapeHtml(t(`第 ${page} / ${pages} 页`, `Page ${page} of ${pages}`))}</span><div class="row"><a class="btn btn-ghost btn-small" href="/admin/webhooks?${query({ page: Math.max(1, page - 1) })}">${escapeHtml(t('上一页', 'Previous'))}</a><a class="btn btn-ghost btn-small" href="/admin/webhooks?${query({ page: Math.min(pages, page + 1) })}">${escapeHtml(t('下一页', 'Next'))}</a></div></div>`}
+    ${pages <= 1 ? '' : `<div class="row between mt-12"><span class="fine">${escapeHtml(t(`第 ${page} / ${pages} 页`, `Page ${page} of ${pages}`))}</span><div class="row"><a class="btn btn-ghost btn-small" href="/admin/webhooks?${query({ page: Math.max(1, page - 1) })}">${escapeHtml(t('上一页', 'Previous'))}</a><a class="btn btn-ghost btn-small" href="/admin/webhooks?${query({ page: Math.min(pages, page + 1) })}">${escapeHtml(t('下一页', 'Next'))}</a></div></div>`}
   </section>`
   return layout({ title: t('Webhook deliveries', 'Webhook deliveries'), viewer, body, config, locale, path: '/admin/webhooks', active: 'admin', notice, error })
 }

@@ -27,6 +27,7 @@ import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
 import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale } from './i18n.js'
 import { normalizeInterval } from './lib/intervals.js'
+import { parseJobFilters } from './lib/jobFilters.js'
 import { isValidBranchName } from './lib/branches.js'
 import { allowedRepoRoles, parseRepoRole, roleAllowed } from './lib/repoRole.js'
 import { isWorkItemState, MAINTAINER_ONLY_STATES, WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
@@ -644,8 +645,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const personal = store.personalMetrics(viewer.user.id, since)
     const alerts = store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny })
     const perPage = 10
+    const allRepos = store.listRepos(viewer.user.id)
+    // #232: the job filters are read from the query on every request and applied
+    // in SQL, so the URL, the count and the page always describe the same list.
+    const jobFilter = parseJobFilters(
+      { repo: queryText(request, 'repo'), status: queryText(request, 'status'), kind: queryText(request, 'kind') },
+      allRepos.map((repo) => repo.id),
+    )
     const reposTotal = store.countReposForUser(viewer.user.id)
-    const jobsTotal = store.countJobsForUser(viewer.user.id)
+    const jobsTotal = store.countJobsForUser(viewer.user.id, jobFilter)
     const pageNumber = (name: string, total: number): number => {
       const pages = Math.max(1, Math.ceil(total / perPage))
       const n = Number(queryText(request, name))
@@ -654,8 +662,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const reposPage = pageNumber('reposPage', reposTotal)
     const jobsPage = pageNumber('jobsPage', jobsTotal)
     const repos = store.listReposPage(viewer.user.id, perPage, (reposPage - 1) * perPage)
-    const jobs = store.listJobsPageForUser(viewer.user.id, perPage, (jobsPage - 1) * perPage)
-    const allRepos = store.listRepos(viewer.user.id)
+    const jobs = store.listJobsPageForUser(viewer.user.id, perPage, (jobsPage - 1) * perPage, jobFilter)
     const questions = await inboxForUser(viewer.user.id, allRepos)
     const firstJob = store.firstJobForUser(viewer.user.id)
     // #227: the checklist state is read from the database on this request, never
@@ -684,6 +691,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         reposTotal,
         jobsPage,
         jobsTotal,
+        jobFilter,
+        repoOptions: allRepos.map((repo) => ({ id: repo.id, label: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}` })),
         questions,
         personal,
         windowDays,

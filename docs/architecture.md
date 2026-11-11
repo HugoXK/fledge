@@ -99,6 +99,11 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   (`.fine-link`) and the class carries the floor. Text fields, selects and
   textareas are 16px below 641px, the size below which iOS zooms a focused
   field.
+- **Dashboard job filters** (`src/lib/jobFilters.ts`): `/dashboard` accepts
+  `repo`, `status` and `kind` as GET parameters and applies them in SQL, so the
+  count, the page and the pagination links describe the same list; a value the
+  account cannot use is dropped rather than turned into an error page, and the
+  filter lives in the URL rather than in a client store.
 - **Redirect targets**: every `next=` / `returnTo` value goes through one helper
   that returns a path on this site or the fallback. It validates the parsed
   result, not the input, so a value that is a plain path before parsing and
@@ -149,14 +154,17 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   waiting for the 90-minute job timeout. Queue admission rejects a new job when
   the global or per-user cap is reached. The lease and queue columns are schema
   version 33.
-- **No worker process**: a 60-second tick schedules due iterate jobs and, when
-  the user selected the maintainer role and the upstream grants admin/maintain permission, review jobs for all open PRs.
-  The interval is the minimum gap between runs, not a cap on PRs or issues; a
-  repository can accumulate many PRs/issues over time. A run is skipped while
-  another job for that repository is active. The global concurrency cap is 2.
-  Iteration cadence ranges from every 15 minutes to every 30 days; review
-  cadence from every 6 hours to every 30 days. Jobs that exceed the timeout are
-  failed.
+- **No worker process**: a 60-second tick chooses the next job for a due repo.
+  With open work it follows up the highest-priority item (or reviews its PR when
+  a maintainer reviewer is due); with no open work it starts an `iterate` from
+  the goal. The latest three run digests and open work items are carried into
+  the goal as bounded data. The interval is the minimum gap between runs, not a
+  cap on PRs or issues; it stretches to the last run's duration plus a cooldown
+  and backs off after two unproductive (failed, zero-output or meta) runs. A run
+  is skipped while another job for that repository is active. The global
+  concurrency cap is 2. Iteration cadence ranges from every 15 minutes to every
+  30 days; review cadence from every 6 hours to every 30 days. Jobs that exceed
+  the timeout are failed.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
@@ -191,8 +199,10 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   repository can require a plan before code; a maintainer approves or
   rejects it with allowed/forbidden path constraints, and execution is blocked
   until approval. Iterate jobs preflight the target branch, record the base SHA
-  and warn when the fork is behind. Work-item states do not gate the scheduler;
-  see "Scheduled work and work items" below.
+  and warn when the fork is behind. An open work item changes what the next
+  scheduled run continues; it never blocks a due repository (#219). Work-item
+  states do not gate the scheduler; see "Scheduled work, continuity and work
+  items" below.
 - **Auto-merge switch**: off by default. Only a maintainer can enable it. When
   it is on, Fledge (not the agent) verifies the PR is open and mergeable, every
   check run is green, the combined commit status is not failing, and no current
@@ -381,7 +391,14 @@ a concrete next step: re-authorize GitHub, open Settings, refresh the repository
 or retry. The raw error stays available under "Technical detail" for operators.
 The admin metrics page aggregates the same categories for the selected window.
 The classifier lives in `src/lib/failure.ts`; it does not change job state or
-hide the original error.
+hide the original error. A dispatch that never reached the bridge is stored as a
+`FlyBot bridge ...` error by `src/jobs/flybot.ts`, so it lands in `bridge` rather
+than `unknown`: that message is the only place the failing component is known,
+and it keeps the transport cause inside it. Because the preserved cause can
+itself name a timeout, the `bridge` pattern is matched before `timeout` — a
+dispatch that the bridge did not answer is an instance problem, not a task that
+ran too long. The bridge URL is stored by origin and path only, so a token in
+its query or userinfo never reaches the job row or the job page.
 
 A failure also carries a stable **code** in `jobs.error_code`, written by the job
 service where the failure happens: `REPO_CREDENTIAL_INVALID`, `JOB_STALLED`,
@@ -416,10 +433,20 @@ re-check; nothing rewrites history.
 
 The same pass records a verification snapshot: PR state, head SHA, check runs,
 combined commit status, reviews, claimed test evidence against the check runs,
-and the reasons a merge is not ready. A claimed green test with a failing test
-check is contradicted and blocks the merge. The job
+and the reasons a merge is not ready. Test evidence counts only a check whose
+name identifies a test job (`test`, `tests`, `spec`, `specs` and the common
+runner names, matched on word boundaries) whose conclusion is `success`:
+`skipped` and `neutral` are completions without a verdict, so they leave the
+evidence unverified rather than contradicted, and a claim that no test check
+supports blocks the merge with "Test evidence is claimed but no test check
+passed." A claimed green test with a failing test check is contradicted and
+blocks the merge. The job
 page and the delivery list show `ready`, `blocked` or `not verified`, and
-`POST /repos/:id/jobs/:jobId/recheck` refreshes it on demand. Verification never
+`POST /repos/:id/jobs/:jobId/recheck` refreshes it on demand. `ready` requires
+both halves of the evidence: a path guard that passed and a verification
+snapshot that passed. A row with only one of them reports `not verified` and
+names the half that never ran, because a refused merge leaves exactly that shape
+(`tryMerge` stores the guard before it verifies). Verification never
 replaces the merge gate's own re-check at the tip. The evidence row inside the
 card carries that combined verdict rather than the PR evidence alone, so a pull
 request the path guard blocks never renders as evidence passed; the row names the
@@ -460,13 +487,25 @@ and a failed delivery can be retried. Opening checks or approving a review
 triggers an auto-merge reconcile, and the scheduler re-checks open Fledge PRs at
 most every `AUTO_MERGE_RECONCILE_MINUTES`.
 
-### Scheduled work and work items
+### Scheduled work, continuity and work items
 
-Work items are a tracking board, not a second scheduler lock. No work-item
-state blocks a scheduled iterate job: the only blocks are an active job for the
-same repository, a failing credential and a duplicate issue. A failed job
+Work items are a tracking board, not a second scheduler lock. No work-item state
+blocks a scheduled iterate job: the only blocks are an active job for the same
+repository, a failing credential and a duplicate issue (#219, #238). A failed job
 returns its `assigned`/`in_progress` work item to `triaged` so a later schedule
 can pick it up.
+
+A due repository is never skipped because work is open. `decideNextJob()` carries
+the highest-priority open item into a `followup` job, or a `review` when the item
+has a PR and a maintainer reviewer is due. With no open work it starts a fresh
+`iterate`. The job goal gets a bounded `Carry-over` block with the last three run
+digests and up to four open items; the block is data, not an instruction, and is
+capped well below the 4000-character goal limit. Each finished run is classified
+as `pr`, `issue`, `review`, `zero`, `meta` or `failed`. A meta issue
+(`存量/盘点/清账/reconcile/inventory/backlog audit`) is closed on the tracking
+board and notifies the owner instead of counting as a productive run. Two
+consecutive failed, zero-output or meta iterate runs double the effective
+interval up to a 4x cap; the manual run path and reviews bypass the backoff.
 
 ### Team session reconciliation
 
@@ -751,7 +790,9 @@ queued ──► running ──► succeeded
 - `running` is set when the bridge accepts the job (or immediately for the mock).
 - `succeeded` / `failed` come from the callback or the mock.
 - The repo records `last_run_at` and `last_status`; a scheduled job is skipped if
-  another job for the repo is active.
+  another job for the repo is active. `jobs.continuity_json` stores the run
+  digest, `jobs.output_kind` its classification and `jobs.continuity_used`
+  whether the carry-over block was injected.
 
 The claim/worker dispatch model, the `queued` meaning and the idempotent
 callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
