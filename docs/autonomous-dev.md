@@ -117,7 +117,7 @@ State:
 | `agent-ready` | Clear, unblocked, no open design conflict |
 | `agent-working` | A claim is live |
 | `agent-pr` | A PR exists |
-| `hold` | Automation leaves it alone; pair with a `Record only` comment |
+| `hold` | Automation leaves it alone; on an issue it means approved but not claimable, and the gate refuses it |
 
 Controller-managed (never by hand): `risk:T0`…`risk:T3`, `status:done`.
 
@@ -133,18 +133,27 @@ All four:
    write: it never adds `agent-ready`, never assigns, and never edits the body.
    `agent-ready` is added by the Lead and only by the Lead.
 
-The hash is sha256 over the **whole** decoded body, first 12 hex, whitespace
-included — the convention every published PASS was written with. Any body edit
-voids the PASS. The Lead recomputes it with
+The hash is sha256 over the decoded body, first 12 hex. A verdict may name
+either the raw body or the body with trailing whitespace stripped — several
+published verdicts were taken over the stripped form — and the gate honours
+both, printing ` (trimmed)` on any line that matched the stripped form. Any
+other byte difference is a material edit and voids the PASS. One definition
+serves both ends: `scripts/lib/issue-body-hash.mjs` is what the gate reads with
+and what `scripts/issue-hash.mjs` prints, so a verdict writer records from the
+same function instead of trimming by hand. The Lead recomputes it with
 
 ```sh
-node scripts/issue-gate.mjs --issue <N>   # ok | stale-pass | no-pass | bad-passer | changes | corrupt-body
+node scripts/issue-gate.mjs --issue <N>   # ok | stale-pass | no-pass | bad-passer | changes | corrupt-body | hold
+node scripts/issue-hash.mjs --issue <N>   # raw <hash> / trimmed <hash> for a verdict line
 ```
 
 immediately before adding `agent-ready` — never from an earlier run in the same
 session, never from memory, never from the PASS text alone. A `changes` line
 (exit 4) blocks the label exactly like a missing PASS, and a verdict from
-anyone other than the policy's `requiredPass` is not a PASS at all.
+anyone other than the policy's `requiredPass` is not a PASS at all. A `hold`
+line (exit 7) means the card is approved but not claimable: `hold` replaces
+`ok` and nothing else, so a held card with `changes` still reports `changes`,
+and a held card with no verdict still reports `no-pass`.
 
 Known limit, stated rather than papered over: a byte-for-byte revert back to the
 PASSed text **does** revive the PASS, because the gate compares the live body

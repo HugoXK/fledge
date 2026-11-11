@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -271,4 +272,109 @@ test('a body that decodes with a replacement character is refused, with no hash 
   assert.equal(result.code, 5)
   assert.equal(result.stdout, 'issue-gate: corrupt-body #76\n')
   assert.doesNotMatch(result.stdout, /[0-9a-f]{12}/)
+})
+
+// --- #324: one comparator, two forms, and `hold` ---------------------------
+//
+// A verdict names the body it read. Some published verdicts were taken over the
+// body with trailing whitespace stripped, and the gate compared the raw form
+// only, so a live CHANGES read as `no-pass` on six cards. The comparator is one
+// module used by the gate and by the tool a verdict writer records with; the
+// suffix names the form that matched on every line that can match.
+
+function trimmedHash(body: string): string {
+  return bodyHash(body.replace(/\s+$/u, ''))
+}
+
+test('a pass written over the trimmed body still passes, and names the form', async () => {
+  const body = 'Goal: a gate that reads both forms.\n\n'
+  assert.notEqual(bodyHash(body), trimmedHash(body))
+
+  const result = await runGate({ body, comments: [verdictComment({ kind: 'PASS', hash: trimmedHash(body), login: 'HugoXK-bot' })] })
+
+  assert.equal(result.code, 0)
+  assert.equal(result.stdout, `issue-gate: ok #76 ${trimmedHash(body)} (trimmed)\n`)
+})
+
+test('a changes written over the trimmed body still blocks', async () => {
+  const body = 'Goal: a gate that reads both forms.\n\n'
+  assert.notEqual(bodyHash(body), trimmedHash(body))
+
+  const result = await runGate({ body, comments: [verdictComment({ kind: 'CHANGES', hash: trimmedHash(body), login: 'HugoXK-bot' })] })
+
+  assert.equal(result.code, 4)
+  assert.equal(result.stdout, `issue-gate: changes #76 ${trimmedHash(body)} (trimmed)\n`)
+})
+
+test('a real edit stays stale in both directions, with no tolerance', async () => {
+  const body = 'Version A.\n'
+  const edited = 'Version B.\n'
+  const stalePass = await runGate({ body: edited, comments: [verdictComment({ kind: 'PASS', hash: bodyHash(body), login: 'HugoXK-bot' })] })
+  assert.equal(stalePass.code, 1)
+  assert.equal(stalePass.stdout, `issue-gate: stale-pass #76 passed=${bodyHash(body)} current=${bodyHash(edited)}\n`)
+
+  const staleChanges = await runGate({ body: edited, comments: [verdictComment({ kind: 'CHANGES', hash: bodyHash(body), login: 'HugoXK-bot' })] })
+  assert.equal(staleChanges.code, 2)
+  assert.equal(staleChanges.stdout, 'issue-gate: no-pass #76\n')
+})
+
+test('a held card with a live pass refuses with exit 7 and never prints ok', async () => {
+  const body = 'Body under test.\n'
+  const hash = bodyHash(body)
+
+  const result = await runGate({ body, labels: ['hold'], comments: [verdictComment({ kind: 'PASS', hash, login: 'HugoXK-bot' })] })
+
+  assert.equal(result.code, 7)
+  assert.equal(result.stdout, `issue-gate: hold #76 ${hash}\n`)
+  assert.doesNotMatch(result.stdout, /ok/)
+})
+
+test('hold does not mask a changes verdict at the live body', async () => {
+  const body = 'Body under test.\n'
+  const hash = bodyHash(body)
+
+  const result = await runGate({ body, labels: ['hold'], comments: [verdictComment({ kind: 'CHANGES', hash, login: 'HugoXK-bot' })] })
+
+  assert.equal(result.code, 4)
+  assert.equal(result.stdout, `issue-gate: changes #76 ${hash}\n`)
+})
+
+test('hold does not mask a missing pass', async () => {
+  const result = await runGate({ body: 'Body under test.\n', labels: ['hold'], comments: [] })
+
+  assert.equal(result.code, 2)
+  assert.equal(result.stdout, 'issue-gate: no-pass #76\n')
+})
+
+test('hold does not mask a stale pass', async () => {
+  const body = 'Version A.\n'
+  const edited = 'Version B.\n'
+
+  const result = await runGate({ body: edited, labels: ['hold'], comments: [verdictComment({ kind: 'PASS', hash: bodyHash(body), login: 'HugoXK-bot' })] })
+
+  assert.equal(result.code, 1)
+  assert.equal(result.stdout, `issue-gate: stale-pass #76 passed=${bodyHash(body)} current=${bodyHash(edited)}\n`)
+})
+
+test('a body without trailing whitespace matches raw and prints no suffix', async () => {
+  const body = 'Body with no trailing newline.'
+  assert.equal(bodyHash(body), trimmedHash(body))
+
+  const result = await runGate({ body, labels: ['hold'], comments: [verdictComment({ kind: 'PASS', hash: bodyHash(body), login: 'HugoXK-bot' })] })
+
+  assert.equal(result.code, 7)
+  assert.equal(result.stdout, `issue-gate: hold #76 ${bodyHash(body)}\n`)
+  assert.doesNotMatch(result.stdout, /trimmed/)
+})
+
+// Chief's condition: one normalisation point. The gate must not carry its own
+// hash copy, and the recorder-side tool must compute through the same module.
+test('the gate and the recording tool share one hash definition', () => {
+  const gate = readFileSync(gateScript, 'utf8')
+  assert.match(gate, /from '\.\/lib\/issue-body-hash\.mjs'/, 'the gate imports the one comparator')
+  assert.doesNotMatch(gate, /createHash/, 'a second hash definition in the gate is the rejected fix')
+
+  const recorder = readFileSync(new URL('../scripts/issue-hash.mjs', import.meta.url), 'utf8')
+  assert.match(recorder, /from '\.\/lib\/issue-body-hash\.mjs'/, 'the recording side calls the same comparator')
+  assert.doesNotMatch(recorder, /createHash/, 'the recording side must not compute its own hash')
 })
