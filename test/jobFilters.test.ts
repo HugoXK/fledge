@@ -155,24 +155,43 @@ interface DashboardLink {
   params: URLSearchParams
 }
 
-/** Every `/dashboard` anchor in rendered HTML, with its label and parsed query. */
+/** Every `/dashboard` anchor in rendered HTML, with its plain-text label and parsed query. */
 function dashboardLinks(html: string): DashboardLink[] {
   const links: DashboardLink[] = []
-  const pattern = /<a\b[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g
+  // Every label this test selects by is plain text between the tags, so the
+  // capture group stops at the next `<` and nothing is stripped afterwards: a
+  // sanitize-looking helper in an assertion is its own defect, and an earlier
+  // version of this line raised a CodeQL high result (incomplete multi-character
+  // sanitization) on this file.
+  const pattern = /<a\b[^>]*href="([^"]*)"[^>]*>([^<]*)</g
   let match = pattern.exec(html)
   while (match !== null) {
-    // The renderer escapes `&` in an href, so parse the decoded query.
-    const href = (match[1] ?? '').replace(/&amp;/g, '&')
-    const label = (match[2] ?? '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+    const href = match[1] ?? ''
+    const label = (match[2] ?? '').trim()
     match = pattern.exec(html)
     if (!href.startsWith('/dashboard')) continue
     const hashAt = href.indexOf('#')
     const withoutHash = hashAt === -1 ? href : href.slice(0, hashAt)
     const queryAt = withoutHash.indexOf('?')
     const query = queryAt === -1 ? '' : withoutHash.slice(queryAt + 1)
-    links.push({ href, label, hash: hashAt === -1 ? '' : href.slice(hashAt), params: new URLSearchParams(query) })
+    links.push({ href, label, hash: hashAt === -1 ? '' : href.slice(hashAt), params: dashboardQuery(query) })
   }
   return links
+}
+
+/**
+ * The href is HTML-escaped, so the query separator arrives as `&amp;`. Split on
+ * that entity instead of unescaping the string: no character sequence is
+ * rewritten, and every value is still read back as data.
+ */
+function dashboardQuery(query: string): URLSearchParams {
+  const params = new URLSearchParams()
+  for (const pair of query.split('&amp;')) {
+    const at = pair.indexOf('=')
+    if (at === -1) continue
+    params.set(pair.slice(0, at), decodeURIComponent(pair.slice(at + 1)))
+  }
+  return params
 }
 
 test('every dashboard control keeps the state it is not changing', async () => {
