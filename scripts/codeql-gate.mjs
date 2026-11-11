@@ -113,7 +113,16 @@ async function readThreads() {
     return nodes
   }
   const prNumber = pullRequestNumber(readEvent(process.env.GITHUB_EVENT_PATH ?? ''), argument('--pr', undefined))
-  if (REPO === '' || TOKEN === '' || !Number.isInteger(prNumber) || prNumber <= 0) return null
+  // Two cases used to collapse into the same silent `null`. A run with no pull
+  // request (a push to main, the weekly schedule) really has nothing to read, and
+  // saying nothing is the truth. A pull request run whose credential is missing has
+  // a thread list this gate cannot see; silencing that is how the advisory stayed
+  // dark inside Actions, so it takes the same sentence as a failed request.
+  if (!Number.isInteger(prNumber) || prNumber <= 0) return null
+  if (REPO === '' || TOKEN === '') {
+    const missing = [REPO === '' ? 'GITHUB_REPOSITORY' : '', TOKEN === '' ? 'GITHUB_TOKEN' : ''].filter(Boolean)
+    throw new Error(`no ${missing.join(' or ')} in this pull request run, so the review threads of #${prNumber} cannot be read`)
+  }
   const read = reviewThreadsClient({
     token: TOKEN,
     base: process.env.GITHUB_API_URL ?? 'https://api.github.com',
