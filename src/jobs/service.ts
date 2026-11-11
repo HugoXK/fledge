@@ -467,7 +467,20 @@ export class Jobs {
     })
     const priorJobs = this.store.listJobs(user.id, 1).length
     const priority = options.priority ?? (trigger === 'followup' ? 20 : trigger === 'manual' ? 10 : 0)
-    const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null })
+    let job: JobRow
+    try {
+      job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null })
+    } catch (error) {
+      // SQLite reports the column of a partial unique index, not its name, so
+      // this index surfaces as "UNIQUE constraint failed: jobs.repo_id". Only
+      // that column with a live active row for the repository means "queue busy";
+      // a duplicate jobs.id, a foreign-key or a NOT NULL failure is a bug and has
+      // to surface instead of being reported as a busy queue.
+      if (/UNIQUE constraint failed: jobs\.repo_id/.test(String(error)) && this.store.activeJobForRepo(repo.id) !== undefined) {
+        return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
+      }
+      throw error
+    }
     if (continuityUsed) this.store.updateJob(job.id, { continuity_used: 1 })
     if (options.workItemId !== undefined) {
       this.store.updateWorkItem(options.workItemId, { state: 'in_progress', job_id: job.id, assignee_user_id: user.id })

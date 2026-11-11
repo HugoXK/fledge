@@ -230,8 +230,9 @@ test('one job secret cannot drive another job callback or credential', async () 
   try {
     const secretA = 'secret-a'
     const secretB = 'secret-b'
+    const repoB = s.store.createRepo({ id: 'repo_secret_scope_b', userId: s.repo.user_id, owner: s.repo.owner, name: `${s.repo.name}-scope-b`, defaultBranch: s.repo.default_branch, tokenEnc: s.repo.token_enc, permission: s.repo.permission, repoRole: s.repo.repo_role, upstreamOwner: s.repo.upstream_owner, upstreamName: s.repo.upstream_name, goal: '', autoIterate: false, intervalMinutes: 1440 })
     s.store.createJob({ id: 'job_scope_a', repoId: s.repo.id, userId: s.repo.user_id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secretA), platformTokenHash: '', kind: 'iterate' })
-    s.store.createJob({ id: 'job_scope_b', repoId: s.repo.id, userId: s.repo.user_id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secretB), platformTokenHash: '', kind: 'iterate' })
+    s.store.createJob({ id: 'job_scope_b', repoId: repoB.id, userId: s.repo.user_id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secretB), platformTokenHash: '', kind: 'iterate' })
 
     const callback = await s.jobs.handleCallback('job_scope_b', secretA, { status: 'succeeded' })
     assert.equal(callback.ok, false)

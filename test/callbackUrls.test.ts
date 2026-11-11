@@ -57,9 +57,40 @@ function runningJob(h: Harness, kind = 'iterate'): { id: string; secret: string 
   jobCounter += 1
   const id = `job_callback_url_${jobCounter}`
   const secret = `callback-url-secret-${jobCounter}`
+  // The first job keeps the harness repository so follow-up assertions can see
+  // it; later jobs get their own repository row to keep the one-active-job
+  // invariant while several callbacks are in flight.
+  const useBase = h.store.listJobsForRepo(h.repo.id, 1).length === 0
+  const repo = useBase ? h.repo : h.store.createRepo({
+    id: `repo_callback_url_${jobCounter}`,
+    userId: h.repo.user_id,
+    owner: h.repo.owner,
+    name: `${h.repo.name}-${jobCounter}`,
+    defaultBranch: h.repo.default_branch,
+    tokenEnc: h.repo.token_enc,
+    permission: h.repo.permission,
+    repoRole: h.repo.repo_role,
+    autoMerge: h.repo.auto_merge === 1,
+    roleCheckedAt: h.repo.role_checked_at,
+    goal: h.repo.goal,
+    autoIterate: h.repo.auto_iterate === 1,
+    intervalMinutes: h.repo.interval_minutes,
+    upstreamOwner: h.repo.upstream_owner,
+    upstreamName: h.repo.upstream_name,
+    upstreamDefaultBranch: h.repo.upstream_default_branch,
+    upstreamHtmlUrl: h.repo.upstream_html_url,
+    forkOwner: h.repo.fork_owner,
+    forkName: h.repo.fork_name,
+    forkDefaultBranch: h.repo.fork_default_branch,
+    forkHtmlUrl: h.repo.fork_html_url,
+    targetBranch: h.repo.target_branch,
+    isFork: h.repo.is_fork === 1,
+    canReview: h.repo.can_review === 1,
+    canCreateIssue: h.repo.can_create_issue === 1,
+  })
   h.store.createJob({
     id,
-    repoId: h.repo.id,
+    repoId: repo.id,
     userId: h.repo.user_id,
     trigger: 'manual',
     goal: 'g',
