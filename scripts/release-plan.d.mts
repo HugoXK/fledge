@@ -19,6 +19,9 @@ export interface ReleasePlanInput {
   /** Commit time of lastTag. When given, older merges are excluded; optional
    * because the issue's input shape leaves the windowing to the caller. */
   lastTagCommittedAt?: string
+  /** The nightly run time (ISO). With the last tag's commit time it decides
+   * whether this is a patch release in the same ISO week or a new minor. */
+  releaseAt?: string
 }
 
 export interface ReleasePlanResult {
@@ -26,6 +29,7 @@ export interface ReleasePlanResult {
   features: number
   fragments: number
   nextVersion: string
+  bump: 'minor' | 'patch' | ''
   reason: string
   shouldRelease: boolean
 }

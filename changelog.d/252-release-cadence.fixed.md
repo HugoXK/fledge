@@ -1,0 +1,1 @@
+The daily release now follows the weekly cadence: the first release of an ISO week bumps the minor, and every later release in the same week bumps the patch. The planner reads the last tag's commit time and the workflow's run time, and the review gate uses the same rule so a patch release PR still earns the mechanical-release exemption.
