@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { Store } from '../src/db.js'
 import { repoPage } from '../src/views/pages.js'
 import { makeTerminalJob, makeUser, testConfig } from './helpers.js'
+import { runRepoTabs } from './stubDom.js'
 
 // #234: /repos/:id is one long scroll today. The six sections and the sticky
 // subnav are a regroup of cards that already render, so the failure this pins
@@ -227,4 +228,75 @@ test('the tab script follows the hash and the deep links', () => {
   } finally {
     rendered.close()
   }
+})
+
+test('the skip link does not steal the tab', () => {
+  const tabs = runRepoTabs({ hash: '#work' })
+  assert.equal(tabs.active(), 'work', 'a section deep link did not open its section')
+  assert.equal(tabs.current(), '#work', 'the section deep link did not mark its tab')
+
+  // The layout's "skip to content" link is a hash that belongs to no section.
+  // Switching the visible section there would throw a keyboard reader out of
+  // the tab they were on, so an unknown hash must change nothing.
+  tabs.hash('#main')
+  assert.equal(tabs.active(), 'work', 'the skip link threw the reader back to Overview')
+  assert.equal(tabs.current(), '#work', 'the skip link moved the current tab')
+  assert.deepEqual(tabs.scrolled(), [], 'the skip link scrolled the page')
+})
+
+test('an inner anchor still opens the section that holds it', () => {
+  const tabs = runRepoTabs({ hash: '#overview' })
+  tabs.hash('#board')
+  assert.equal(tabs.active(), 'work', 'an inner deep link did not open the section that holds it')
+  assert.equal(tabs.current(), '#work', 'an inner deep link did not move the current tab')
+  assert.deepEqual(tabs.scrolled(), ['board'], 'the inner target was not scrolled to')
+})
+
+test('an inner anchor lands clear of the subnav band', () => {
+  const css = readFileSync(new URL('../public/app.css', import.meta.url), 'utf8')
+  const declaration = (selector: string, property: string): string => {
+    const index = css.indexOf(`${selector} {`)
+    assert.ok(index >= 0, `stylesheet has no ${selector} rule`)
+    const body = css.slice(css.indexOf('{', index) + 1, css.indexOf('}', index))
+    const match = body.match(new RegExp(`${property}:\\s*([^;]+);`))
+    assert.ok(match !== null, `${selector} has no ${property}`)
+    return (match[1] ?? '').trim()
+  }
+
+  const offset = declaration('.repo-page [id]', 'scroll-margin-top')
+  assert.match(offset, /var\(--header-h\)/, 'an inner anchor no longer clears the header')
+  assert.match(offset, /var\(--subnav-h\)/, 'an inner anchor does not clear the sticky subnav, so it lands under it')
+  // The band and the offset read the same token, so tuning one cannot silently
+  // leave the other behind.
+  assert.match(declaration('.repo-subnav', 'min-height'), /var\(--subnav-h\)/, 'the subnav band no longer uses the shared height token')
+
+  const tokens = new Map<string, string>()
+  for (const match of css.matchAll(/--([a-z0-9-]+):\s*([^;]+);/g)) {
+    const name = match[1] ?? ''
+    if (!tokens.has(name)) tokens.set(name, (match[2] ?? '').trim())
+  }
+  const px = (expression: string, depth = 0): number => {
+    assert.ok(depth < 6, `stylesheet token does not resolve: ${expression}`)
+    const substituted = expression
+      .replace(/var\(--([a-z0-9-]+)\)/g, (_whole, name: string) => {
+        const value = tokens.get(name)
+        assert.ok(value !== undefined, `stylesheet uses an undefined token --${name}`)
+        return `(${px(value, depth + 1)})`
+      })
+      .replace(/calc/g, '')
+      .replace(/[()]/g, '')
+      .replace(/px/g, '')
+    return substituted.split('+').reduce((sum, term) => {
+      const product = term.split('*').reduce((acc, factor) => acc * Number(factor.trim()), 1)
+      return sum + product
+    }, 0)
+  }
+
+  const header = px(tokens.get('header-h') ?? '0px')
+  const band = px(tokens.get('subnav-h') ?? '0px')
+  // Test measured the band at 70-131px on 1280x800: 61px of chrome.
+  assert.ok(band >= 61, `the subnav band is ${band}px, thinner than the 61px measured on 1280x800`)
+  const inner = px(offset)
+  assert.ok(inner >= header + band, `an inner anchor stops at ${inner}px, inside the ${header + band}px of chrome`)
+  assert.ok(inner - (header + band) >= px(tokens.get('space-4') ?? '0px'), `an inner anchor lands ${inner - (header + band)}px below the band, less than one spacing step`)
 })

@@ -19,14 +19,19 @@
     for (const node of section.querySelectorAll('[id]')) owner.set(node.id, section.id)
   }
 
-  const activate = (requested) => {
-    const id = owner.get(requested) ?? 'overview'
+  // The layout ships other hashes — the "skip to content" link is #main — and
+  // switching the visible section for those threw a keyboard reader out of the
+  // tab they were on, so a hash outside the six sections changes nothing.
+  const activate = (requested, fallback = false) => {
+    const id = owner.get(requested) ?? (fallback ? 'overview' : null)
+    if (id === null) return false
     for (const section of sections) section.classList.toggle('is-active', section.id === id)
     for (const link of links) {
       if (link.getAttribute('href') === '#' + id) link.setAttribute('aria-current', 'page')
       else link.removeAttribute('aria-current')
     }
     page.classList.add('is-tabbed')
+    return true
   }
 
   const requested = () => {
@@ -37,10 +42,10 @@
     }
   }
 
-  activate(requested())
+  activate(requested(), true)
   window.addEventListener('hashchange', () => {
     const id = requested()
-    activate(id)
+    if (!activate(id)) return
     const target = document.getElementById(id)
     if (target !== null) target.scrollIntoView({ block: 'start' })
   })

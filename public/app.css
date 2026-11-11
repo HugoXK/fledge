@@ -296,9 +296,15 @@ p { margin: 0 0 12px; }
    subnav keeps the six sections one tap away and sticks under the sticky
    header; the sections collapse only once public/repoTabs.js has run, so a
    reader without a script still gets the whole page instead of an empty one. */
+/* Repo page fix: an inner anchor (#board, #repo-settings) is not a section, so the
+   global [id] offset stopped at the header and the sticky subnav covered the
+   target. The band height is one token here, read by both the subnav and the
+   inner-id offset, so the two cannot drift apart. */
+.repo-page { --subnav-h: calc(var(--touch) + 2 * var(--space-2) + 1px); }
+.repo-page [id] { scroll-margin-top: calc(var(--header-h) + var(--subnav-h) + var(--space-4)); }
 .repo-subnav {
   position: sticky; top: var(--header-h); z-index: 15;
-  display: flex; gap: var(--space-2); margin: 0 0 var(--space-4);
+  display: flex; gap: var(--space-2); margin: 0 0 var(--space-4); min-height: var(--subnav-h);
   padding: var(--space-2) 0; overflow-x: auto; scrollbar-width: none;
   border-bottom: 1px solid var(--line); background: var(--bg);
 }
