@@ -489,7 +489,12 @@ the reader's language with their parameter filled in. A code whose table entry
 carries `{detail}` keeps that parameter too — the duplicate-work refusal names the
 pull request that already covers the issue (`DUPLICATE_WORK:<url>`) — so the value
 the service found survives the redirect instead of being dropped when the sentence
-is rebuilt. A code with no sentence
+is rebuilt. A refusal that names a pull request (`DUPLICATE_WORK` for work in
+flight, `ALREADY_FIXED` for a fix that landed) renders that value as a link, so the
+maintainer opens the pull request the refusal came from instead of copying a URL out
+of the sentence; the anchor is built only for a `github.com` pull request URL,
+because the banner value arrives as a query parameter and any other value stays
+escaped text. A code with no sentence
 keeps the text that travelled with it, which the dictionary translates as it did
 before this change, so no refusal reads worse than at base; only a bare code with
 neither a sentence nor a text renders a sentence naming the code, so an unknown
