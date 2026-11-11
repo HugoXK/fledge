@@ -20,6 +20,10 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      # #307: the gate names the accepted-severity results whose review thread is
+      # still open at the tip, and the thread list is only readable through
+      # GraphQL's `pullRequest.reviewThreads`. Read-only, and only this job.
+      pull-requests: read
       security-events: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

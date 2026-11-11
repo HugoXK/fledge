@@ -88,3 +88,30 @@ export function addedAlerts(baselineKeys, alerts) {
   const known = new Set(baselineKeys)
   return highAlerts(alerts).filter((alert) => !known.has(alertKey(alert)))
 }
+
+// #307: this gate passes a medium or low result by severity, and the branch still
+// refuses the merge while that result's review thread is open — `review-gate` owns
+// that decision (#308) and fails on any unresolved thread. Two readers describing
+// different sets is how #299 looked green on every required check and was refused
+// by the merge API, so the accepted set is the one this gate has to name: it is
+// passing results a maintainer cannot merge over.
+export function acceptedAlerts(alerts) {
+  return alerts.filter((alert) => alert.severity !== 'high' && alert.severity !== 'critical')
+}
+
+// A thread points at the place its comment was posted. `line` is null once the
+// thread is outdated, which is exactly the state #299's four threads were in when
+// their fix landed, so `originalLine` decides when `line` does not — the same rule
+// `review-gate` prints by.
+export function threadAt(alert, threads) {
+  const line = Number.isInteger(alert?.line) ? alert.line : null
+  const path = String(alert?.path ?? '')
+  if (line === null || path === '') return null
+  for (const thread of threads ?? []) {
+    if (thread?.isResolved === true) continue
+    if (String(thread?.path ?? '') !== path) continue
+    const threadLine = Number.isInteger(thread?.line) ? thread.line : Number.isInteger(thread?.originalLine) ? thread.originalLine : null
+    if (threadLine === line) return thread
+  }
+  return null
+}
