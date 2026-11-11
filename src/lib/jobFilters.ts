@@ -1,4 +1,5 @@
 import type { JobStatus } from '../db.js'
+import type { JobKind } from '../jobs/runner.js'
 import type { Translate } from '../i18n.js'
 
 // #232: the dashboard's job filters. The state is the URL — `repo`, `status`,
@@ -7,7 +8,11 @@ import type { Translate } from '../i18n.js'
 // store filters in SQL, and the page renders the query back into its links.
 
 export const JOB_FILTER_STATUSES: JobStatus[] = ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted']
-export const JOB_FILTER_KINDS: string[] = ['iterate', 'review', 'plan', 'research']
+// The one list of kinds a job can have is `JobKind` in `src/jobs/runner.ts`; a
+// second copy here is how `scope` and `verify` went missing from the form while
+// `research` — a kind no job can have — was offered. `KIND_LABELS` is typed by
+// that union, so adding a kind there breaks this file's build until it is listed.
+export const JOB_FILTER_KINDS: JobKind[] = ['iterate', 'review', 'plan', 'scope', 'verify']
 
 export interface JobFilter {
   repo: string
@@ -26,7 +31,7 @@ export function parseJobFilters(
   return {
     repo: repoIds.includes(repo) ? repo : '',
     status: JOB_FILTER_STATUSES.includes(status as JobStatus) ? (status as JobStatus) : '',
-    kind: JOB_FILTER_KINDS.includes(kind) ? kind : '',
+    kind: (JOB_FILTER_KINDS as string[]).includes(kind) ? kind : '',
   }
 }
 
@@ -53,11 +58,12 @@ const STATUS_LABELS: Record<string, [string, string]> = {
   quota_exhausted: ['额度用尽', 'Quota exhausted'],
 }
 
-const KIND_LABELS: Record<string, [string, string]> = {
+const KIND_LABELS: Record<JobKind, [string, string]> = {
   iterate: ['迭代', 'Iterate'],
   review: ['审核', 'Review'],
   plan: ['计划', 'Plan'],
-  research: ['分析', 'Research'],
+  scope: ['范围', 'Scope'],
+  verify: ['验证', 'Verify'],
 }
 
 export function statusFilterLabel(t: Translate, status: string): string {
@@ -66,7 +72,7 @@ export function statusFilterLabel(t: Translate, status: string): string {
 }
 
 export function kindFilterLabel(t: Translate, kind: string): string {
-  const label = KIND_LABELS[kind]
+  const label = (KIND_LABELS as Record<string, [string, string] | undefined>)[kind]
   return label === undefined ? kind : t(label[0], label[1])
 }
 

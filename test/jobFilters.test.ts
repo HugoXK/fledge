@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { jobFilterIsActive, jobFilterParams, parseJobFilters } from '../src/lib/jobFilters.js'
+import { JOB_FILTER_KINDS, jobFilterIsActive, jobFilterParams, parseJobFilters } from '../src/lib/jobFilters.js'
 import { makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
 
 // #232: the dashboard's job table is ten rows per page with no way to narrow it,
@@ -123,6 +123,46 @@ test('applying a filter keeps the 30-day window it was set in', async () => {
 
     const narrow = await built.app.inject({ method: 'GET', url: '/dashboard?status=failed', headers: { cookie } })
     assert.doesNotMatch(narrow.body, /name="window" value="30"/, 'the default 7-day view adds no parameter')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
+
+test('the kind filter offers every job kind the runner can start, and nothing else', async () => {
+  // The kinds a job can have are the JobKind union in `src/jobs/runner.ts`:
+  // iterate, review, plan, scope, verify. A filter list that is a second, stale
+  // copy of that union silently hides the jobs a user wants to find — `scope`
+  // and `verify` are started by the work-item buttons — and offers a kind no job
+  // can have.
+  assert.deepEqual([...JOB_FILTER_KINDS].sort(), ['iterate', 'plan', 'review', 'scope', 'verify'], 'the filter list is the JobKind union')
+
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'filters-kinds', status: 'approved' })
+    const cookie = `${sessionFor(built, user).cookie}; fledge_lang=en`
+    const repo = store.createRepo({ id: 'repo_k', userId: user.id, owner: 'o', name: 'k', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    makeJobs(store, user.id, repo.id, 'scope', 2, 'succeeded', 'scope')
+    makeJobs(store, user.id, repo.id, 'verify', 2, 'succeeded', 'verify')
+    makeJobs(store, user.id, repo.id, 'iter', 2, 'succeeded', 'iterate')
+
+    const page = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
+    for (const kind of ['iterate', 'review', 'plan', 'scope', 'verify']) {
+      assert.match(page.body, new RegExp(`<option value="${kind}"`), `the form offers ${kind}`)
+    }
+    assert.doesNotMatch(page.body, /<option value="research"/, 'the form offers no kind a job cannot have')
+
+    const scope = await built.app.inject({ method: 'GET', url: '/dashboard?kind=scope', headers: { cookie } })
+    assert.equal((scope.body.match(/data-job-id="job_scope/g) ?? []).length, 2, 'a scope job is filterable')
+    assert.doesNotMatch(scope.body, /data-job-id="job_iter0"/, 'and the other kinds are not in the filtered page')
+
+    const verify = await built.app.inject({ method: 'GET', url: '/dashboard?kind=verify', headers: { cookie } })
+    assert.equal((verify.body.match(/data-job-id="job_verify/g) ?? []).length, 2, 'a verify job is filterable')
+
+    assert.deepEqual(parseJobFilters({ kind: 'scope' }, [repo.id]), { repo: '', status: '', kind: 'scope' }, 'the parser keeps scope')
+    assert.deepEqual(parseJobFilters({ kind: 'research' }, [repo.id]), { repo: '', status: '', kind: '' }, 'research is not a job kind, so it is dropped')
   } finally {
     await built.app.close()
     store.close()
