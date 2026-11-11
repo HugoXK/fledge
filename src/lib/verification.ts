@@ -76,6 +76,18 @@ export function mergeReadiness(job: Pick<JobRow, 'pr_url' | 'path_guard_json' | 
   if (verification !== null && !verification.ok) {
     return { state: 'blocked', reasons: verification.reasons.length === 0 ? ['Evidence verification failed.'] : verification.reasons }
   }
-  if (guard === null && verification === null) return { state: 'unknown', reasons: ['Not verified yet.'] }
+  // Ready is a claim about both halves of the evidence. A half-filled row means
+  // "we did not look", which is not "it is fine": `tryMerge` stores the path
+  // guard on its own before it verifies, so a refused merge leaves exactly this
+  // shape, and the console must not print the greenest state over it.
+  if (guard === null && verification === null) {
+    return { state: 'unknown', reasons: ['Not verified yet: neither the path guard nor the evidence verification has run.'] }
+  }
+  if (guard === null) {
+    return { state: 'unknown', reasons: ['The path guard has not been checked yet: the changed files were never measured against the allow/deny lists.'] }
+  }
+  if (verification === null) {
+    return { state: 'unknown', reasons: ['The pull request evidence has not been verified yet: checks, reviews and test evidence were never read.'] }
+  }
   return { state: 'ready', reasons: [] }
 }

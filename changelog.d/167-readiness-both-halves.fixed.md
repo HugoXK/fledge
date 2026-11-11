@@ -1,0 +1,1 @@
+A pull request whose path guard was written but whose evidence was never verified no longer renders as Ready / 可合并. The console and the job page now require both halves of the merge evidence: a guard-only or evidence-only row reports Not verified and names the half that never ran, which is the shape a refused merge leaves behind.

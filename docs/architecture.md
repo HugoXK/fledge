@@ -405,7 +405,11 @@ combined commit status, reviews, claimed test evidence against the check runs,
 and the reasons a merge is not ready. A claimed green test with a failing test
 check is contradicted and blocks the merge. The job
 page and the delivery list show `ready`, `blocked` or `not verified`, and
-`POST /repos/:id/jobs/:jobId/recheck` refreshes it on demand. Verification never
+`POST /repos/:id/jobs/:jobId/recheck` refreshes it on demand. `ready` requires
+both halves of the evidence: a path guard that passed and a verification
+snapshot that passed. A row with only one of them reports `not verified` and
+names the half that never ran, because a refused merge leaves exactly that shape
+(`tryMerge` stores the guard before it verifies). Verification never
 replaces the merge gate's own re-check at the tip. The evidence row inside the
 card carries that combined verdict rather than the PR evidence alone, so a pull
 request the path guard blocks never renders as evidence passed; the row names the

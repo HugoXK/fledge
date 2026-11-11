@@ -15,13 +15,28 @@ test('path guard violations block merge readiness', () => {
   assert.match(readiness.reasons[0] ?? '', /\.github\/x/)
 })
 
-test('verified evidence decides ready or blocked', () => {
-  const ok = { ok: true, checkedAt: '2026-01-01T00:00:00.000Z', sha: 'abc', prState: 'open', draft: false, mergeableState: 'clean', checks: { total: 1, green: 1, failing: [], pending: [] }, combinedStatus: 'success', reviews: { changesRequested: false, approvals: 0 }, reasons: [] }
-  assert.equal(mergeReadiness({ ...base, verification_json: JSON.stringify(ok) }).state, 'ready')
-  assert.equal(parseVerification(JSON.stringify(ok))?.ok, true)
+const okVerification = { ok: true, checkedAt: '2026-01-01T00:00:00.000Z', sha: 'abc', prState: 'open', draft: false, mergeableState: 'clean', checks: { total: 1, green: 1, failing: [], pending: [] }, combinedStatus: 'success', reviews: { changesRequested: false, approvals: 0 }, reasons: [] }
+const okGuard = { ok: true, checkedAt: '2026-01-01T00:00:00.000Z', allow: ['src/'], deny: [], files: ['src/a.ts'], violations: [] }
+
+test('verified evidence decides blocked, and evidence alone is not ready', () => {
+  assert.equal(parseVerification(JSON.stringify(okVerification))?.ok, true)
   assert.equal(parsePathGuard(null), null)
-  const blocked = { ...ok, ok: false, reasons: ['Failing checks: ci'] }
+  const blocked = { ...okVerification, ok: false, reasons: ['Failing checks: ci'] }
   assert.equal(mergeReadiness({ ...base, verification_json: JSON.stringify(blocked) }).state, 'blocked')
+})
+
+test('readiness needs both halves of the evidence', () => {
+  const guardOnly = mergeReadiness({ ...base, path_guard_json: JSON.stringify(okGuard) })
+  assert.equal(guardOnly.state, 'unknown', 'a path guard without an evidence check is not a merge verdict')
+  assert.match(guardOnly.reasons.join(' '), /evidence/i, 'the reason names the missing evidence verification')
+
+  const verificationOnly = mergeReadiness({ ...base, verification_json: JSON.stringify(okVerification) })
+  assert.equal(verificationOnly.state, 'unknown', 'evidence without a path guard is not a merge verdict')
+  assert.match(verificationOnly.reasons.join(' '), /path guard/i, 'the reason names the missing path guard')
+
+  const both = mergeReadiness({ ...base, path_guard_json: JSON.stringify(okGuard), verification_json: JSON.stringify(okVerification) })
+  assert.equal(both.state, 'ready', 'both halves present and passing is ready')
+  assert.deepEqual(both.reasons, [])
 })
 
 test('claimed test evidence must agree with the check runs', () => {
