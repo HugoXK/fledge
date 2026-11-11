@@ -174,8 +174,9 @@ test('daily digests still send while two jobs are active', async () => {
     const user = makeUser(store, { login: 'digest-busy-user', status: 'approved' })
     store.setEmailDailyDigest(user.id, true)
     store.createRepo({ id: 'repo_digest_busy', userId: user.id, owner: 'o', name: 'dbusy', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createRepo({ id: 'repo_digest_busy_2', userId: user.id, owner: 'o', name: 'dbusy2', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.createJob({ id: 'job_busy_1', repoId: 'repo_digest_busy', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h1', platformTokenHash: '' })
-    store.createJob({ id: 'job_busy_2', repoId: 'repo_digest_busy', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
+    store.createJob({ id: 'job_busy_2', repoId: 'repo_digest_busy_2', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
     store.updateJob('job_busy_1', { status: 'running' })
     store.updateJob('job_busy_2', { status: 'running' })
     await jobs.tick()
@@ -1744,22 +1745,15 @@ test('claimQueuedJob leases the highest-priority queued job exactly once', () =>
   }
 })
 
-test('only one queued job per repository is claimable at a time', () => {
+test('the database refuses a second active job for a repository', () => {
   const { store, repoId, userId } = leaseSetup()
   try {
     leaseMakeJob(store, repoId, userId, 'job_first', 0)
+    assert.throws(() => leaseMakeJob(store, repoId, userId, 'job_second', 10), /UNIQUE|constraint/i)
+
+    store.updateJob('job_first', { status: 'succeeded', finished_at: new Date().toISOString() })
     leaseMakeJob(store, repoId, userId, 'job_second', 10)
-
-    const first = store.claimQueuedJob('worker-1', 60_000)
-    assert.equal(first?.id, 'job_second')
-    assert.equal(store.claimQueuedJob('worker-2', 60_000), undefined)
-
-    store.updateJob('job_second', { status: 'running' })
-    assert.equal(store.claimQueuedJob('worker-2', 60_000), undefined)
-
-    store.updateJob('job_second', { status: 'succeeded', finished_at: new Date().toISOString() })
-    const next = store.claimQueuedJob('worker-2', 60_000)
-    assert.equal(next?.id, 'job_first')
+    assert.equal(store.getJob('job_second')?.status, 'queued')
   } finally {
     store.close()
   }

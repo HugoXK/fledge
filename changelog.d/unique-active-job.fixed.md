@@ -1,0 +1,1 @@
+Fledge now enforces at most one queued or running job per repository with a partial unique index. Two concurrent enqueues for the same repository return `JOB_ACTIVE` for the loser instead of starting duplicate work.

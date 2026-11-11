@@ -128,7 +128,8 @@ test('a running job without started_at is still eligible for timeout cleanup', (
     assert.equal(store.getJob('job_stale')?.started_at, null)
     const stale = store.staleRunningJobs(new Date(Date.now() + 60_000).toISOString())
     assert.equal(stale.some((job) => job.id === 'job_stale'), true)
-    store.createJob({ id: 'job_stale_queued', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb2', platformTokenHash: '' })
+    store.createRepo({ id: 'repo_stale_2', userId: user.id, owner: 'o', name: 'stale2', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_stale_queued', repoId: 'repo_stale_2', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb2', platformTokenHash: '' })
     const staleQueued = store.staleQueuedJobs(new Date(Date.now() + 60_000).toISOString())
     assert.equal(staleQueued.some((job) => job.id === 'job_stale_queued'), true)
   } finally {
@@ -482,10 +483,10 @@ test('alerts surface stalled jobs, stale PRs and near-budget repositories', () =
   try {
     const user = makeUser(store, { login: 'alert-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_alerts', userId: user.id, owner: 'o', name: 'alerts', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440, monthlyBudgetCny: 1 })
-    store.createJob({ id: 'job_stalled_alert', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-alert', platformTokenHash: '' })
-    store.updateJob('job_stalled_alert', { status: 'running', started_at: '2000-01-01T00:00:00.000Z' })
     store.createJob({ id: 'job_pr_alert', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-pr', platformTokenHash: '' })
     store.updateJob('job_pr_alert', { status: 'succeeded', pr_url: 'https://github.com/o/alerts/pull/1', pr_state: 'open' })
+    store.createJob({ id: 'job_stalled_alert', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-alert', platformTokenHash: '' })
+    store.updateJob('job_stalled_alert', { status: 'running', started_at: '2000-01-01T00:00:00.000Z' })
     store.db.exec("UPDATE jobs SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = 'job_pr_alert'")
     store.recordUsage(user.id, null, 0.9, null, repo.id)
     store.markRepoCredential(repo.id, 'invalid')

@@ -569,6 +569,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS jobs_repo_idx ON jobs(repo_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS jobs_user_idx ON jobs(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
+CREATE UNIQUE INDEX IF NOT EXISTS jobs_one_active_per_repo ON jobs(repo_id) WHERE status IN ('queued','running');
 
 CREATE TABLE IF NOT EXISTS api_tokens (
   id TEXT PRIMARY KEY,
@@ -860,6 +861,7 @@ export class Store {
   migrateIndexes(): void {
     this.run('CREATE INDEX IF NOT EXISTS quota_ledger_repo_idx ON quota_ledger(repo_id, at DESC)')
     this.run('CREATE INDEX IF NOT EXISTS jobs_pr_state_idx ON jobs(pr_state, created_at DESC)')
+    this.run("CREATE UNIQUE INDEX IF NOT EXISTS jobs_one_active_per_repo ON jobs(repo_id) WHERE status IN ('queued','running')")
   }
 
   backfillTokenRepoIds(): void {

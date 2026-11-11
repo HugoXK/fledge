@@ -64,19 +64,16 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   current section with `aria-current="page"`, derived from the route and
   overridable with `active`. The sticky header owns `--header-h` (re-declared
   per breakpoint); `[id] { scroll-margin-top }` and the workspace frame's height
-  both follow it, so an anchor is never hidden under the header and the frame's
-  bottom lands at the viewport bottom. The shell's controls keep a 44px touch
-  target. At or below 960px the header is one **fixed** 64px row and the
+  both follow it, so an anchor is never hidden under the header when it wraps
+  and the frame's bottom lands at the viewport bottom. The shell's controls keep
+  a 44px touch target. Below 641px the header is one **fixed** 64px row and the
   navigation collapses behind a `data-nav-toggle` button that publishes
   `aria-expanded`; the open menu is an absolutely positioned panel, so it
   overlays the page and `--header-h` keeps the collapsed height while it is
-  open. The toggle itself is hidden above 960px by a base rule, so the desktop
-  header never shows a control whose panel does not exist there. Every
-  destination the wide header lists is still rendered in the panel, so a
-  collapsed header loses no route. The 641-960px band used to keep the wrapped
-  two-row header — 215px at 768px, a quarter of a tablet screen — and #233
-  widened the compact row to cover it; the phone's own 640px block re-declares
-  the same row with tighter padding. Below 420px the row also drops the wordmark (the
+  open. The toggle itself is hidden outside the phone band by a base rule, so
+  the desktop header never shows a control whose panel does not exist there.
+  Every destination the wide header lists is still rendered in the panel,
+  so a phone loses no route. Below 420px the row also drops the wordmark (the
   mark and its own `aria-label` stay) and tightens its padding and gaps: at a
   360px viewport with a classic 15px scrollbar the row has 301px of usable
   width, and the wordmark is the one child that can leave without taking a
@@ -136,8 +133,10 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   claim and dispatch the job. A running job renews its five-minute lease every
   minute, and the tick reaper fails a job whose worker stops renewing instead of
   waiting for the 90-minute job timeout. Queue admission rejects a new job when
-  the global or per-user cap is reached. The lease and queue columns are schema
-  version 33.
+  the global or per-user cap is reached. A partial unique index
+  (`jobs_one_active_per_repo`) makes the one-active-job-per-repository rule a
+  database invariant, not only a read-time check. The lease and queue columns are
+  schema version 33.
 - **No worker process**: a 60-second tick schedules due iterate jobs and, when
   the user selected the maintainer role and the upstream grants admin/maintain permission, review jobs for all open PRs.
   The interval is the minimum gap between runs, not a cap on PRs or issues; a
