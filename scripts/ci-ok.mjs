@@ -35,6 +35,10 @@ export const REQUIRED_JOBS = [
   'action-pins',
   'workflow-lint',
   'secret-scan',
+  // #304: the CodeQL analysis conclusion, read by `scripts/codeql-required.mjs`.
+  // It is deliberately absent from SKIPPABLE_ON: a gate skipped on the event that
+  // merges would be vacuous. On `schedule` the job itself exits 0 with its reason.
+  'codeql-required',
 ]
 
 // A required job that cannot run on every event, with the events on which

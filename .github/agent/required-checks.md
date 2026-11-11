@@ -23,7 +23,8 @@ be listed by its `name:`.
 `ci-ok` is the aggregate: `lint`, `typecheck`, `test` (Node 22 and 24),
 `coverage`, `build`, `docker` (build, vulnerability scan, smoke run), `audit`
 (runtime and full graph), `changelog`, `version`, `risk`, `restore-drill`,
-`dependency-review`, `action-pins`, `workflow-lint`, `secret-scan`. The list
+`dependency-review`, `action-pins`, `workflow-lint`, `secret-scan`,
+`codeql-required` (the analysis for the event's commit is green). The list
 asserted by the gate is `REQUIRED_JOBS` in `scripts/ci-ok.mjs`, and
 `test/ciOk.test.ts` fails when it and `needs:` in `ci.yml` drift apart.
 
