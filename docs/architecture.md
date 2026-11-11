@@ -179,9 +179,9 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   priority, and an `agent-ready` label moves a proposed item to triaged. A
   repository can require a plan before code; a maintainer approves or
   rejects it with allowed/forbidden path constraints, and execution is blocked
-  until approval. Iterate jobs preflight the target branch, record the base SHA,
-  warn when the fork is behind, and scheduled work is skipped while an active
-  work item is open.
+  until approval. Iterate jobs preflight the target branch, record the base SHA
+  and warn when the fork is behind. Work-item states do not gate the scheduler;
+  see "Scheduled work and work items" below.
 - **Auto-merge switch**: off by default. Only a maintainer can enable it. When
   it is on, Fledge (not the agent) verifies the PR is open and mergeable, every
   check run is green, the combined commit status is not failing, and no current
@@ -437,11 +437,11 @@ most every `AUTO_MERGE_RECONCILE_MINUTES`.
 
 ### Scheduled work and work items
 
-Work items are a tracking board, not a second scheduler lock. A scheduled
-iterate job is blocked by an active job for the same repository, a failing
-credential or a duplicate issue, but not by a `pr_ready`, `in_review` or stale
-`in_progress` item. A failed job returns its `assigned`/`in_progress` work item
-to `triaged` so a later schedule can pick it up.
+Work items are a tracking board, not a second scheduler lock. No work-item
+state blocks a scheduled iterate job: the only blocks are an active job for the
+same repository, a failing credential and a duplicate issue. A failed job
+returns its `assigned`/`in_progress` work item to `triaged` so a later schedule
+can pick it up.
 
 ### Team session reconciliation
 
