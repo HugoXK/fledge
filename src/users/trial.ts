@@ -43,10 +43,16 @@ export async function sweepExpiredTrials(
   if (result.dryRun) return result
 
   for (const row of eligible) {
-    // Reject and audit before the mail: if the notice fails the account is still
-    // ended and recorded, and the next run cannot mail it a second time.
-    store.setUserStatus(row.id, 'rejected', 'trial.sweep')
-    store.audit(row.id, 'trial.expired', `no repository within ${TRIAL_DAYS} days of approval`)
+    // Reject and audit as one write, before the mail: a restart between two
+    // autocommitted statements would leave a rejected account with no
+    // `trial.expired` row — `inactive` in the console, nothing to explain it and
+    // nobody to mail. The mail stays outside the transaction, so the row is
+    // committed before the notice leaves and a failed send still cannot cause a
+    // second rejection on the next run.
+    store.transaction(() => {
+      store.setUserStatus(row.id, 'rejected', 'trial.sweep')
+      store.audit(row.id, 'trial.expired', `no repository within ${TRIAL_DAYS} days of registration`)
+    })
     result.rejected.push(row.login)
 
     const user = store.userById(row.id)

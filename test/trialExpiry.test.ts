@@ -45,6 +45,46 @@ test('an approved user past the seventh day without a repository is rejected, au
     assert.match(mail.text, /7 天/, 'the Chinese side must name the 7-day rule')
     assert.match(mail.text, /7 days/, 'the English side must name the 7-day rule')
     assert.match(mail.text, /仓库/, 'the notice must name the repository exemption')
+    // The clock is registration, not approval: the sweep cuts on `users.created_at`,
+    // so a mail dated from approval tells an account a rule it was never judged by.
+    assert.match(mail.text, /注册后 ?7 天/, 'the Chinese side must date the rule from registration')
+    assert.match(mail.text, /7 days of registration/, 'the English side must date the rule from registration')
+    assert.doesNotMatch(mail.text, /批准后 ?7 天/, 'the Chinese side dates the rule from approval')
+    assert.doesNotMatch(mail.text, /7 days of approval/, 'the English side dates the rule from approval')
+    // A rejected account cannot resubmit (`submitApplication` only moves
+    // onboarding -> pending), so the only way back is the admin's re-approve.
+    assert.match(mail.text, /管理员/, 'the notice must name the administrator as the way back')
+    assert.match(mail.text, /administrator/, 'the notice must name the administrator as the way back')
+    assert.doesNotMatch(mail.text, /重新申请/, 'the notice promises a resubmission the app does not offer')
+    assert.doesNotMatch(mail.text, /apply again/, 'the notice promises a resubmission the app does not offer')
+  } finally {
+    store.close()
+  }
+})
+
+test('the rejection and its audit row are one write, so a failed audit leaves the account untouched', async () => {
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  try {
+    const user = makeUser(store, { login: 'trial-atomic', status: 'approved' })
+    backdate(store, user.id, 8)
+
+    // Two autocommitted statements would leave the account rejected with no
+    // `trial.expired` row: the console would render it `inactive`, nothing could
+    // say why, and the notice would never be sent.
+    store.audit = () => {
+      throw new Error('audit write failed')
+    }
+
+    await assert.rejects(
+      () => sweepExpiredTrials(store, mailer, testConfig(), { now: new Date(NOW) }),
+      /audit write failed/,
+      'a failed audit row did not surface',
+    )
+
+    assert.equal(store.userById(user.id)?.status, 'approved', 'the rejection survived without its audit row')
+    assert.equal(trialAudits(store, user.id), 0, 'the audit row was written anyway')
+    assert.equal(mailer.messages.length, 0, 'the notice went out for a rejection that was rolled back')
   } finally {
     store.close()
   }

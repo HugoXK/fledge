@@ -172,9 +172,10 @@ per day. Test mail is rate-limited to one per minute.
   `npm run trial:sweep -- [--dry-run] [--login <login>]`). It writes one
   `trial.expired` audit row and sends one bilingual notice, and it never deletes
   an account or a repository. Anyone with a `repos` row or a `repo.added` audit,
-  anyone with a job, admins and the super admin are never selected; the audit row
-  makes a rerun a no-op, and the operator output carries the login and the
-  registration date, never an address.
+  anyone with a job, admins and the super admin are never selected. The status
+  change and its audit row commit together and the notice is sent afterwards, so
+  the audit row is the record and a rerun is a no-op; the operator output carries
+  the login and the registration date, never an address.
 
 ### Team console and agent controls
 
