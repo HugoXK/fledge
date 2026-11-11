@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { addedAlerts, alertKey, highAlerts, parseSarif } from '../scripts/lib/codeql-alerts.mjs'
+import { addedAlerts, alertKey, highAlerts, parseSarif, severityOf } from '../scripts/lib/codeql-alerts.mjs'
 import type { CodeqlAlert } from '../scripts/lib/codeql-alerts.mjs'
 
 interface Spec {
@@ -103,8 +103,13 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
     'js/missing-rate-limiting|src/app.ts|2846',
     'js/missing-rate-limiting|src/app.ts|432',
     'js/missing-rate-limiting|src/app.ts|467',
+    'js/missing-rate-limiting|src/app.ts|477',
     'js/missing-rate-limiting|src/app.ts|487',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|125',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|150',
   ])
+  const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
+  assert.equal(dismissed.length, 3, 'the three dismissed false-positive results are recorded with their reason')
   assert.deepEqual(addedAlerts(keys, baseline.alerts).map((alert) => alertKey(alert)), [], 'the baseline must not fail its own alerts')
 })
 
@@ -190,4 +195,36 @@ test('a moved line is an added result and fails until the baseline records it', 
   const run = runGate(sarifDir, baselinePath)
   assert.equal(run.code, 1, 'the same rule at a new line is a new key')
   assert.match(run.stderr, /new high result js\/missing-rate-limiting at src\/app\.ts:432/)
+})
+
+// Fail closed is for security, not for every quality query: CodeQL scores only
+// security queries with a CVSS value, so promoting a `note` maintainability
+// finding to high would make the gate red on main for a class it exists to
+// ignore.
+test('a security result with no readable score is high; a quality result keeps its level', () => {
+  const security = { id: 'js/missing-rate-limiting', properties: { tags: ['security'], 'security-severity': 'not-a-number' } }
+  const qualityNote = { id: 'js/unneeded-defensive-code', properties: { tags: ['quality', 'maintainability'] } }
+  const qualityWarning = { id: 'js/template-syntax-in-string-literal', properties: { tags: ['correctness', 'quality'] } }
+  assert.equal(severityOf({ level: 'warning' }, security), 'high', 'a security query without a readable score fails closed')
+  assert.equal(severityOf({ level: 'note' }, qualityNote), 'low', 'a quality note is not promoted')
+  assert.equal(severityOf({ level: 'warning' }, qualityWarning), 'medium', 'a quality warning is not promoted')
+  assert.equal(severityOf({ level: 'warning' }, undefined), 'high', 'an unresolved rule cannot be judged and fails closed')
+})
+
+test('a dismissed result that the baseline records is not counted as added', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  // GitHub keeps dismissed alerts out of the SARIF's suppressions, so the gate
+  // cannot tell them apart from open ones: the baseline is the record that the
+  // result was already reviewed and dismissed.
+  writeFileSync(baselinePath, JSON.stringify({
+    recordedAtSha: 'a'.repeat(40),
+    alerts: [{ ruleId: 'js/missing-rate-limiting', path: 'src/gateway/gateway.ts', line: 125, severity: 'high', reason: 'alert #41, dismissed false positive' }],
+  }))
+  writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([{ rule: 'js/missing-rate-limiting', severity: '7.5', path: 'src/gateway/gateway.ts', line: 125 }]))
+  const run = runGate(sarifDir, baselinePath)
+  assert.equal(run.code, 0, `a recorded dismissed result must not fail the gate: ${run.stderr}`)
+  assert.match(run.stdout, /parsed 1 result\(s\), 1 high\/critical, 0 added/)
 })

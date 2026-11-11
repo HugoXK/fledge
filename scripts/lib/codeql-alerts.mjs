@@ -26,11 +26,18 @@ export function severityOf(result, rule) {
     if (numeric >= 4) return 'medium'
     return 'low'
   }
-  // Fail closed. A result whose severity cannot be read off its rule is treated
-  // as high: guessing downward from `level` is how this gate went blind to four
-  // high results that carried no readable security-severity through the rule it
-  // looked at. A gate that cannot tell is not a gate that passes.
-  return 'high'
+  // The severity is undeterminable from the score, so fail closed where that
+  // matters: a security query with no readable security-severity is high, and so
+  // is a result whose rule could not be resolved at all (that is the blindness
+  // this gate had: the query-pack rules live under tool.extensions, not under
+  // the driver). A resolved non-security query is a quality or correctness
+  // finding; it never carried a CVSS score, and its own `level` is the label the
+  // analysis assigned, so the old bands still apply to it.
+  const tags = Array.isArray(rule?.properties?.tags) ? rule.properties.tags : []
+  if (rule === undefined || rule === null) return 'high'
+  if (tags.includes('security') || result?.level === 'error') return 'high'
+  if (result?.level === 'warning') return 'medium'
+  return 'low'
 }
 
 export function parseSarif(document) {
