@@ -1262,6 +1262,27 @@ test('hasRan ignores a command after the block boundary', () => {
   assert.equal(hasRan(body), false)
 })
 
+// The heading boundary (`#141`/`#143` added it, `#160` pins it): a `Ran:` block
+// ends at any ATX heading. A heading carries no colon, so the `Not run[:：]`
+// alternative cannot catch one, and a bullet under the heading is not something
+// the reviewer ran.
+test('hasRan ends the block at an ATX heading and its bullet does not count', () => {
+  const bodies = [
+    ['Ran:', '- opened the dashboard', '', '## Not run', '- npm ci (CI only)'].join('\n'),
+    ['Ran:', '- opened the dashboard', '', '### Not run', '- npm ci (CI only)'].join('\n'),
+    ['Ran:', '- opened the dashboard', '', '### ', '- npm ci (CI only)'].join('\n'),
+    ['Ran:', '- opened the dashboard', '', '#### What I did not run here', '- npm ci (CI only)'].join('\n'),
+  ]
+  for (const body of bodies) assert.equal(hasRan(body), false, body)
+})
+
+// Control: the heading ends the block, it does not erase what came before it.
+// Without this the cases above would also pass if `Ran:` stopped counting at all.
+test('hasRan still counts a command listed before the heading', () => {
+  const body = ['Ran:', '- npm ci', '', '### Not run', '- npm ci (CI only)'].join('\n')
+  assert.equal(hasRan(body), true)
+})
+
 // Case 7 stays at the gate level: a PASS that lists real commands but no
 // `Not run:` line is still rejected. That is `hasNotRun`, which this change does
 // not touch, so the case guards the gate rather than the predicate.
