@@ -31,7 +31,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/repos` | approved + CSRF | Add an upstream repository; Fledge checks or creates the user's fork |
 | GET | `/repos/:id` | owner | Repo detail, including the selected role, delivery board and allowed roles (`?workState=...` filters the work-item list) |
 | GET | `/readyz` | public | Database and per-repository instance readiness summary |
-| GET | `/metrics` | loopback or bearer token | Prometheus metrics (`METRICS_TOKEN`) |
+| GET | `/metrics` | `Authorization: Bearer <METRICS_TOKEN>` only | Prometheus metrics; a production start refuses an empty `METRICS_TOKEN`, so there is no unauthenticated production path, and a `?token=` query value is not accepted |
 | GET | `/api/read/metrics` | approved | Read-only metrics: a super admin gets the global window, users get their own personal window (`?window=7 or 30`) |
 | POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job; plan-first repositories enqueue a plan |
 | POST | `/repos/:id/work` | owner + CSRF | Create a work item |
