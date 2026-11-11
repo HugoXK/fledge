@@ -672,14 +672,13 @@ vs unattributed cost, scope/verify/iterate/review counts, Lead-only and grounded
 attribution events, and recent events. `/admin/search` filters jobs and audit entries by the same user
 visibility as the admin page and can export the current result as CSV.
 
-`/admin/trials` shows every approved account that has not added a repository
-yet, with the state derived at read time instead of stored: `running` and
-`expiring` inside the 7-day preview, `eligible` once it lapses, `expired` when
-the audit row `trial.expired` exists, and `exempt_used`/`exempt_admin`/
-`inactive` for the accounts that never expire. The page is read-only, offers a
-`?trial=` filter, and shows the login and the audit time rather than an email
-address; a repository added and later removed still counts as used, because the
-`repo.added` audit row is the evidence. The
+`/admin/trials` shows every account, with the state derived at read time instead
+of stored: `running` and `expiring` inside the 7-day preview, `eligible` once it
+lapses, `expired` when the audit row `trial.expired` exists, and
+`exempt_used`/`exempt_admin`/`inactive` for the accounts that never expire. The
+page is read-only, offers a `?trial=` filter, and shows the login and the audit
+time rather than an email address; a repository added and later removed still
+counts as used, because the `repo.added` audit row is the evidence. The
 `events` table records activation and intervention events only; no prompt or
 token data.
 
