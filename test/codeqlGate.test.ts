@@ -35,11 +35,14 @@ function tempDir(t: TestContext): string {
   return dir
 }
 
-function runGate(sarifDir: string, baselinePath: string, extra: string[] = []) {
+// The gate is a CLI, so its environment is its input: `env` replaces the
+// inherited one wholesale, which is how a test can say "this run has a pull
+// request and no token" without depending on the machine it runs on.
+function runGate(sarifDir: string, baselinePath: string, extra: string[] = [], env: Record<string, string> = {}) {
   const result = spawnSync(
     process.execPath,
     ['scripts/codeql-gate.mjs', '--sarif', sarifDir, '--baseline', baselinePath, ...extra],
-    { encoding: 'utf8' },
+    { encoding: 'utf8', env: { ...process.env, ...env } },
   )
   return { code: result.status, stdout: result.stdout, stderr: result.stderr }
 }
@@ -344,4 +347,83 @@ test('an open thread on a line this analysis did not report costs no advisory', 
   const run = runGate(sarifDir, baselinePath, ['--threads', threadsPath])
   assert.equal(run.code, 0)
   assert.doesNotMatch(`${run.stdout}${run.stderr}`, /accepted-by-severity/, 'an advisory names only a result this run reported')
+})
+
+// The advisory above is only worth anything if the gate can actually read the
+// threads in Actions, and the two ways it can end up with none are not the same
+// verdict. A push to `main` has no pull request: nothing to read, and silence is
+// the truth. A pull request run that has no token (a step inherits no
+// `GITHUB_TOKEN`; it is not a default environment variable) has a thread list it
+// cannot see, and staying silent there is the bug this pair pins: green job,
+// green check, and a merge the author is never told about.
+function writeEvent(dir: string, payload: Record<string, unknown>): string {
+  const path = join(dir, 'event.json')
+  writeFileSync(path, JSON.stringify(payload))
+  return path
+}
+
+test('a pull request run with no token says it cannot read the threads, and the job stays green', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+  writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([MEDIUM]))
+  const eventPath = writeEvent(dir, { pull_request: { number: 323, base: { ref: 'main' } } })
+
+  const run = runGate(sarifDir, baselinePath, [], {
+    GITHUB_EVENT_PATH: eventPath,
+    GITHUB_REPOSITORY: 'HugoXK/fledge',
+    GITHUB_REF: 'refs/pull/323/merge',
+    GITHUB_TOKEN: '',
+    GH_TOKEN: '',
+  })
+  const output = `${run.stdout}${run.stderr}`
+  assert.equal(run.code, 0, `a token this step was never given is not a gate failure: ${output}`)
+  assert.match(
+    run.stderr,
+    /codeql-gate: cannot read the review threads, so accepted-severity results are not named here/,
+    'a pull request whose threads could not be read must say so, not print a clean ok',
+  )
+  assert.match(run.stderr, /#323/, 'the line names the pull request whose threads it could not read')
+  assert.match(run.stdout, /codeql-gate: ok \(parsed 1 result\(s\), 0 high\/critical, 0 added/)
+})
+
+test('a run with no pull request has nothing to read and stays quiet', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+  writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([MEDIUM]))
+
+  // Exactly the scheduled-and-push shape: no event payload, `GITHUB_REF` on main,
+  // and no token to read anything with.
+  const run = runGate(sarifDir, baselinePath, [], {
+    GITHUB_EVENT_PATH: '',
+    GITHUB_REPOSITORY: 'HugoXK/fledge',
+    GITHUB_REF: 'refs/heads/main',
+    GITHUB_TOKEN: '',
+    GH_TOKEN: '',
+  })
+  const output = `${run.stdout}${run.stderr}`
+  assert.equal(run.code, 0)
+  assert.doesNotMatch(
+    output,
+    /cannot read the review threads/,
+    'no pull request is nothing to read, not a read this gate failed at',
+  )
+  assert.match(run.stdout, /codeql-gate: ok \(/)
+})
+
+test('the CodeQL job hands the gate a token, because a step has none by default', () => {
+  const workflow = readFileSync('.github/workflows/codeql.yml', 'utf8')
+  const step = workflow.slice(workflow.indexOf('Fail on a new high or critical CodeQL result'))
+  assert.ok(step !== '', 'codeql.yml must still run the gate step')
+  const beforeRun = step.slice(0, step.indexOf('run:'))
+  assert.match(
+    beforeRun,
+    /GITHUB_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/,
+    'the gate step must map GITHUB_TOKEN itself: `pull-requests: read` grants the permission but hands the process no credential',
+  )
 })
