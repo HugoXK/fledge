@@ -159,7 +159,8 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   is skipped while another job for that repository is active. The global
   concurrency cap is 2. Iteration cadence ranges from every 15 minutes to every
   30 days; review cadence from every 6 hours to every 30 days. Jobs that exceed
-  the timeout are failed.- **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
+  the timeout are failed.
+- **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
   against the upstream; issues are created on the upstream. If the token user
