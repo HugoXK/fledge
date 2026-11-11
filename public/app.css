@@ -462,6 +462,40 @@ textarea { resize: vertical; min-height: 70px; }
 .agreement h2:first-child { margin-top: 0; }
 .agreement p { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
 
+/* Issue 230: the dashboard leads with one next action. The card carries the
+   only primary button above the fold, and the disclosure below it holds the
+   summaries, so the first screen is a decision instead of a wall of equal
+   cards. Both keep the tokens: no new colour, radius or size scale. */
+#next-action {
+  border-color: rgba(123, 149, 255, 0.34);
+  background: linear-gradient(120deg, rgba(76, 102, 245, 0.14), transparent 62%), var(--panel);
+}
+#next-action h2 { margin-bottom: var(--space-2); }
+#next-action .muted { margin: 0 0 var(--space-4); max-width: 62ch; }
+#next-action .btn { min-height: var(--touch); display: inline-flex; align-items: center; }
+.secondary {
+  margin: var(--space-2) 0 var(--space-6);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+}
+.secondary > summary {
+  display: flex; align-items: center; gap: var(--space-2);
+  min-height: var(--touch); padding: 0 var(--space-4);
+  color: var(--muted); font-size: var(--text-sm); font-weight: 600;
+  cursor: pointer; list-style: none;
+}
+.secondary > summary::-webkit-details-marker { display: none; }
+.secondary > summary::before { content: '▸'; color: var(--accent); }
+.secondary[open] > summary::before { content: '▾'; }
+.secondary > summary:hover { color: var(--text); }
+.secondary-body { padding: 0 var(--space-4) var(--space-1); }
+.secondary-body > .card,
+.secondary-body > .cols > .card {
+  background: transparent; border: 0; border-radius: 0; box-shadow: none;
+  border-top: 1px solid var(--line); padding: var(--space-4) 0; margin-bottom: 0;
+}
+.secondary-body > .quota-card { flex-wrap: wrap; gap: var(--space-3); }
 .workspace-hero { display: flex; align-items: center; justify-content: space-between; gap: 28px; flex-wrap: wrap; padding: 28px 0 24px; }
 .workspace-intro { max-width: 760px; }
 .workspace-user { display: flex; align-items: center; gap: 16px; }

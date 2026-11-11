@@ -693,6 +693,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobsTotal,
         jobFilter,
         repoOptions: allRepos.map((repo) => ({ id: repo.id, label: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}` })),
+        allRepos,
         questions,
         personal,
         windowDays,
