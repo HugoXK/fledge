@@ -147,3 +147,13 @@ test('every throttle in src/app.ts takes its key from the normalized client addr
   }
 })
 
+
+test('the gateway throttles join the normalized key instead of raw request.ip', () => {
+  const source = readFileSync(new URL('../src/gateway/gateway.ts', import.meta.url), 'utf8')
+  const takes = source.split('\n').map((line) => line.trim()).filter((line) => line.includes('.take('))
+  assert.equal(takes.length, 2, `the gateway limiter call count changed: ${takes.length}`)
+  for (const line of takes) {
+    assert.ok(line.includes('rateLimitKey(request)'), `a gateway limiter key skips the normalizer: ${line}`)
+    assert.ok(!line.includes('${request.ip}'), `a gateway limiter keys on raw request.ip: ${line}`)
+  }
+})

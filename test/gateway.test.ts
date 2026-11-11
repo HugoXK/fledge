@@ -213,3 +213,46 @@ test('repository model aliases route to the configured provider', async () => {
     await provider.close()
   }
 })
+
+// The gateway owns two limiters that are not in src/app.ts. They must key on the
+// same normalized client identity, or one IPv6 client with a routed /64 mints a
+// fresh bucket per address and the 240/min limit is worth nothing.
+const GATEWAY_LIMIT = 240
+
+test('the gateway throttle shares one bucket across an IPv6 /64 and refuses past the limit', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    for (let i = 0; i < GATEWAY_LIMIT; i += 1) {
+      const response = await built.app.inject({ method: 'GET', url: '/v1/models', remoteAddress: '2001:db8:1:2::1' })
+      assert.notEqual(response.statusCode, 429, `request ${i + 1} of the window was throttled early`)
+    }
+    const same64 = await built.app.inject({ method: 'GET', url: '/v1/models', remoteAddress: '2001:db8:1:2::beef' })
+    assert.equal(same64.statusCode, 429, `a second address inside the same /64 answered ${same64.statusCode} instead of 429`)
+    const other64 = await built.app.inject({ method: 'GET', url: '/v1/models', remoteAddress: '2001:db8:1:3::1' })
+    assert.notEqual(other64.statusCode, 429, 'a different /64 shares the exhausted bucket')
+  } finally {
+    await built.close()
+  }
+})
+
+test('two different IPv6 /64s never share a gateway bucket', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    for (let i = 0; i < GATEWAY_LIMIT; i += 1) {
+      const response = await built.app.inject({ method: 'GET', url: '/v1/models', remoteAddress: '2001:db8:2:1::1' })
+      assert.notEqual(response.statusCode, 429, `request ${i + 1} of the window was throttled early`)
+    }
+    const first = await built.app.inject({ method: 'GET', url: '/v1/models', remoteAddress: '2001:db8:2:1::2' })
+    assert.equal(first.statusCode, 429, 'the exhausted /64 is still refused')
+    for (let i = 0; i < GATEWAY_LIMIT; i += 1) {
+      const response = await built.app.inject({ method: 'GET', url: '/v1/models', remoteAddress: '2001:db8:2:2::1' })
+      assert.notEqual(response.statusCode, 429, `the neighbour /64 was throttled at request ${i + 1} by another /64's bucket`)
+    }
+  } finally {
+    await built.close()
+  }
+})
