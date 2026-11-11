@@ -100,7 +100,7 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   assert.match(baseline.recordedAtSha, /^[0-9a-f]{40}$/)
   const keys = baseline.alerts.map((alert) => alertKey(alert))
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|2846',
+    'js/missing-rate-limiting|src/app.ts|2851',
     'js/missing-rate-limiting|src/app.ts|432',
     'js/missing-rate-limiting|src/app.ts|467',
     'js/missing-rate-limiting|src/app.ts|477',
