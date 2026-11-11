@@ -6,18 +6,23 @@ import { mergeReadiness } from '../src/lib/verification.js'
 import { encryptSecret } from '../src/lib/secrets.js'
 import { json, makeUser, MemoryMailer, startFakeServer, testConfig } from './helpers.js'
 
-// #134: the panel and the merge gate read the same snapshot, so the agreement is
-// asserted on one run: a job that claims a green test while its only test check
-// was skipped must render 未核实 / Unverified and must not be ready to merge.
-test('a skipped test check is not evidence and does not make the PR ready', async () => {
+// #134: the panel and the merge gate read the same row, so the agreement is
+// asserted end to end on one run: a job that claims a green test while its only
+// test check was skipped must render 未核实 / Unverified, must not be ready to
+// merge, and must not be merged by the gate that actually performs the merge.
+test('a skipped test check is not evidence, does not make the PR ready and does not let the gate merge it', async () => {
+  const requests: string[] = []
   const github = await startFakeServer((request, response) => {
     const path = request.url ?? ''
+    requests.push(`${request.method ?? ''} ${path}`)
     if (path.includes('/pulls/8/files')) return json(response, 200, [{ filename: 'src/x.ts', status: 'modified', additions: 1, deletions: 0 }])
     if (path.includes('/pulls/8/reviews')) return json(response, 200, [])
     if (path.includes('/commits/sha8/check-runs')) {
       return json(response, 200, { check_runs: [{ name: 'test (22)', status: 'completed', conclusion: 'skipped' }, { name: 'lint', status: 'completed', conclusion: 'success' }] })
     }
     if (path.includes('/commits/sha8/status')) return json(response, 200, { state: 'success', statuses: [] })
+    if (path.includes('/branches/main/protection')) return json(response, 200, { required_status_checks: { contexts: ['lint'] }, required_pull_request_reviews: { required_approving_review_count: 0 } })
+    if (path.includes('/pulls/8/merge')) return json(response, 200, { merged: true, sha: 'merge-sha' })
     if (path.includes('/pulls/8')) return json(response, 200, { number: 8, html_url: 'https://github.com/o/evidence/pull/8', title: 'fix', state: 'open', head: { ref: 'fledge/x', sha: 'sha8' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false })
     return json(response, 404, { message: 'Not Found' })
   })
@@ -39,6 +44,14 @@ test('a skipped test check is not evidence and does not make the PR ready', asyn
     assert.deepEqual(verification.testEvidence?.failingChecks, [])
     assert.match((verification.reasons ?? []).join('; '), /test evidence/i)
     assert.equal(mergeReadiness(store.getJob(job.id)!).state, 'blocked')
+
+    // The gate that actually merges reads the same row: `mergeCleanPrs` must
+    // refuse this PR too, and the refusal must happen before the merge call.
+    const merge = await jobs.mergeCleanPrs(repo.id)
+    assert.deepEqual(merge.merged, [], 'a claim no test check supports must not be merged')
+    assert.equal(merge.skipped.length, 1)
+    assert.equal(merge.skipped[0]?.jobId, job.id)
+    assert.equal(requests.filter((line) => line.startsWith('PUT ') && line.includes('/merge')).length, 0, 'no merge request is sent')
   } finally {
     store.close()
     await github.close()
