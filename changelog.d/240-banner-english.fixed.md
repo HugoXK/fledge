@@ -1,0 +1,1 @@
+The English console now shows redirect banners in English: the 63 route messages that only had a Chinese form gained an English entry or localizer in `src/i18n.ts`, and a test walks every `reply.redirect(...)` so a new banner without an English form fails `npm test`.
