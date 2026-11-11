@@ -294,6 +294,24 @@ analysis that really ran and legitimately found nothing passes
 malformed JSON body and a document with no `runs` entry each fail closed with a
 message naming which of the three it was.
 
+A result this gate accepts by severity is not always mergeable: the branch also
+requires conversation resolution, so a medium finding whose thread is still open
+blocks a merge that this gate passes. `#307` closes that gap without adding a
+second blocker — `review-gate` owns the decision, `codeql-gate` owns the
+explanation. On the pass path the gate prints one `accepted-by-severity` line per
+accepted result whose review thread is unresolved at the tip, with the
+`path:line` to resolve, and the job stays green; the pair of cases is pinned in
+`test/codeqlGate.test.ts`, resolved threads stay quiet and a thread on a line the
+run did not report costs no line. The thread list comes from the same
+`scripts/lib/review-threads.mjs` reader `review-gate` uses, which is why the
+`analyze` job carries `pull-requests: read`: no other step needs it. The gate step
+maps `GITHUB_TOKEN` itself, because a step inherits no token and the permission
+alone grants no credential. The two empty-handed cases are told apart on purpose:
+a read that fails, and a pull request run that has no token or repository, print
+that they could not read the threads and name the pull request, so no result is
+implied to be resolved; a run with no pull request at all — a push to `main`, the
+scheduled analysis — has nothing to read and stays quiet.
+
 Every action a workflow runs is pinned to a 40-hex commit with the tag it came
 from in a trailing comment, and the `action-pins` job fails the build on a
 floating tag: a tag is a pointer the action's owner can move, and whatever it

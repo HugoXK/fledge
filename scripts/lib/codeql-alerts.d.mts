@@ -22,3 +22,16 @@ export declare function highAlerts(alerts: CodeqlAlert[]): CodeqlAlert[]
 export declare function alertKey(alert: CodeqlAlert): string
 
 export declare function addedAlerts(baselineKeys: string[], alerts: CodeqlAlert[]): CodeqlAlert[]
+
+export interface ReviewThread {
+  isResolved: boolean
+  isOutdated: boolean
+  path: string
+  line: number | null
+  originalLine: number | null
+}
+
+// #307: the accepted-severity results, and the thread that keeps the merge open.
+export declare function acceptedAlerts(alerts: CodeqlAlert[]): CodeqlAlert[]
+
+export declare function threadAt(alert: CodeqlAlert, threads: ReviewThread[]): ReviewThread | null
