@@ -61,10 +61,12 @@ them; this page only fixes the names and the values.
 | Type | `--text-lg` | `16px` | card heading |
 | Type | `--text-xl` | `19px` | section heading |
 | Type | `--text-2xl` | `32px` | page heading |
-| Radius | `--radius-sm` | `8px` | inputs, chips |
-| Radius | `--radius-md` | `12px` | cards, inset blocks |
-| Radius | `--radius-lg` | `18px` | large cards |
-| Radius | `--radius` | `16px` | legacy card radius |
+| Radius | `--radius-xs` | `6px` | small chips and inline code |
+| Radius | `--radius-sm` | `8px` | controls, inputs and small panels |
+| Radius | `--radius-md` | `12px` | rows, inputs and inset blocks |
+| Radius | `--radius-lg` | `18px` | feature and hero panels |
+| Radius | `--radius` | `16px` | the card shell |
+| Radius | `--radius-pill` | `999px` | badges, pills and the meter |
 | Motion | `--motion-fast` | `120ms` | hover, colour change |
 | Motion | `--motion-base` | `180ms` | layout and opacity change |
 | Motion | `--ease` | `cubic-bezier(0.2, 0.7, 0.3, 1)` | standard easing |
@@ -85,6 +87,31 @@ them; this page only fixes the names and the values.
   (`--surface-*`), not a `rgba()` literal repeated in a rule.
 - No new token without a row in this table. Test `test/uiTokens.test.ts` fails
   when a token exists in `:root` and this page does not name it.
+
+## Surfaces, radii and accents (#229)
+
+The templates carry no layout of their own. `src/views/pages.ts` used to hold 25
+inline `style="` attributes — 13 of them `flex:1`, the rest four different
+spacing values, one 90px width and one right alignment — which is how the same
+card ended up with a 10px corner in one view and a 12px corner in another. Three
+rules replace them:
+
+- **One spacing vocabulary.** A view asks for `.grow`, `.mt-12`, `.mt-14`,
+  `.mt-16`, `.mt-24`, `.mb-6`, `.mb-12`, `.more-note`, `.text-right` or `.w-90`,
+  declared once in `public/app.css`. A view that needs a fifth offset adds it
+  there, not in an attribute. The only inline style left in a view is the quota
+  meter's fill width, which is data (`used / initial`), not layout.
+- **One radius scale.** Every `border-radius` in the stylesheet is one of the six
+  Radius rows above; raw pixel corners are gone. `50%` stays legal for a circle.
+- **One interactive accent.** `--accent`, `--accent-strong`, `--accent-hover` and
+  `--accent-ink` are the only colours an interactive control may use — buttons,
+  links, the current nav item, focus rings, selected chips, pills and badges.
+  `--brand`, `--brand-2` and `--mint` are decoration only: the wordmark gradient,
+  the feature and stat accents and the meter's fill. A coloured panel never
+  stands for something clickable.
+
+`test/uiSurfaces.test.ts` pins all three, including the count (`pages.ts` may
+carry exactly one `style="`).
 
 ## Contrast (对比度)
 
