@@ -42,6 +42,17 @@ const SHA = 'a'.repeat(40)
 const RUN_URL = 'https://github.com/HugoXK/fledge/actions/runs/1'
 const CLEARING_SHA = 'b'.repeat(40)
 
+// The body names the run on its own `Run:` line. Comparing that line to the
+// expected value is exact equality; asking whether the body *contains* a URL is
+// the substring check CodeQL flags, because it also passes for an arbitrary host
+// that happens to carry the URL in a query string.
+function field(body: string, name: string): string | undefined {
+  return body
+    .split('\n')
+    .find((line) => line.startsWith(`${name}: `))
+    ?.slice(name.length + 2)
+}
+
 function input(overrides: Record<string, unknown> = {}) {
   return {
     conclusion: 'failure',
@@ -65,7 +76,7 @@ test('red on main with no open tracker opens one', () => {
   const body = String(result.issue?.body ?? '')
   assert.ok(body.includes(SHA), 'the body names the head sha')
   assert.ok(body.includes('test (24)'), 'the body names the failing job')
-  assert.ok(body.includes(RUN_URL), 'the body names the run')
+  assert.equal(field(body, 'Run'), RUN_URL, 'the body names the run on its own line')
 })
 
 test('red with an open tracker comments on it and does not open a second issue', () => {
@@ -91,7 +102,7 @@ test('a green main closes the tracker with the clearing sha and the run', () => 
   assert.equal(result.tracker?.number, tracker.number)
   const body = String(result.body ?? '')
   assert.ok(body.includes(CLEARING_SHA), 'the close names the sha that returned main to green')
-  assert.ok(body.includes(RUN_URL), 'the close names the run that cleared it')
+  assert.equal(field(body, 'Run'), RUN_URL, 'the close names the run that cleared it')
 })
 
 test('a green main with no tracker does nothing', () => {
