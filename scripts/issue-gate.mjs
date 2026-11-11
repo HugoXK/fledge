@@ -6,20 +6,30 @@
 //   GITHUB_TOKEN=... node scripts/issue-gate.mjs --issue 76
 //   node scripts/issue-gate.mjs --issue 76 --api-base http://127.0.0.1:1234   # fixtures
 //
-// The hash is sha256 over the whole decoded body, first 12 hex, whitespace
-// included. That is the convention every published PASS was written with, so a
-// body that only differs in its trailing newline is a different body — and a
-// gate that strips it reports false positives on every such card.
+// The hash is sha256 over the whole decoded body, first 12 hex. Verdicts on the
+// board name one of two forms: the raw body, or the body with trailing
+// whitespace stripped. Both are honoured, and every line that matched prints
+// ` (trimmed)` when the stripped form was the one — a card whose CHANGES was
+// written over the trimmed body used to read as `no-pass`, which is a refused
+// body looking unblocked. The one definition is `scripts/lib/issue-body-hash.mjs`;
+// `scripts/issue-hash.mjs` is the tool a verdict writer records with, so the
+// reading and writing sides cannot drift.
 //
 // One machine line on stdout, one exit code:
 //
-//   0  issue-gate: ok #<N> <hash>
+//   0  issue-gate: ok #<N> <hash>[ (trimmed)]
 //   1  issue-gate: stale-pass #<N> passed=<hash> current=<hash>
 //   2  issue-gate: no-pass #<N>
 //   3  issue-gate: bad-passer #<N> <login>
-//   4  issue-gate: changes #<N> <hash>
+//   4  issue-gate: changes #<N> <hash>[ (trimmed)]
 //   5  issue-gate: corrupt-body #<N>
 //   6  the gate could not run (arguments, policy, HTTP, no token)
+//   7  issue-gate: hold #<N> <hash>[ (trimmed)]
+//
+// `hold` means approved but not claimable. It replaces `ok` and nothing else:
+// a held card whose live verdict is CHANGES still prints `changes` (exit 4), a
+// held card with no verdict still prints `no-pass` (exit 2), and a held card
+// whose PASS names another body still prints `stale-pass` (exit 1).
 //
 // Exit 6 exists so a caller can tell "the card is blocked" apart from "the
 // check broke"; folding them together would make an outage look like a verdict.
@@ -34,8 +44,8 @@
 // The machine half covers every other case; the human rule — a material edit
 // voids the approval — covers that window. This gate is not revert-proof.
 
-import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { bodyHashes, trimmedSuffix } from './lib/issue-body-hash.mjs'
 
 const DEFAULT_API = 'https://api.github.com'
 const VERDICT = /^Issue-review: (PASS|CHANGES) at issue #(\d+) body ([0-9a-f]{12})$/
@@ -110,7 +120,7 @@ if (issue.body.includes('\uFFFD')) {
   process.exit(5)
 }
 
-const bodyHash = createHash('sha256').update(Buffer.from(issue.body, 'utf8')).digest('hex').slice(0, 12)
+const hashes = bodyHashes(issue.body)
 
 // The newest verdict may sit on the last page: a single-page read returns an
 // older one with no error at all.
@@ -133,6 +143,7 @@ for (let page = 0; page < MAX_PAGES; page += 1) {
 
 const labels = (Array.isArray(issue.labels) ? issue.labels : []).map((label) => (typeof label === 'string' ? label : label?.name ?? ''))
 const agentReady = labels.includes('agent-ready')
+const held = labels.includes('hold')
 
 function report(code, line, reason) {
   console.log(line)
@@ -142,16 +153,26 @@ function report(code, line, reason) {
 
 // The latest verdict at the live body decides, whoever wrote it — a later
 // refusal beats an earlier approval, which is what makes the Lead's rule safe.
-const atBody = verdicts.filter((verdict) => verdict.hash === bodyHash)
+// A verdict matches if it names either form; the form it named is carried so
+// every line that matched can say which one it was.
+const atBody = verdicts
+  .map((verdict) => {
+    const form = verdict.hash === hashes.raw ? 'raw' : verdict.hash === hashes.trimmed ? 'trimmed' : null
+    return form === null ? null : { ...verdict, form }
+  })
+  .filter((verdict) => verdict !== null)
 const latestAtBody = atBody.at(-1)
 if (latestAtBody !== undefined) {
   if (latestAtBody.login !== requiredPass) {
     report(3, `issue-gate: bad-passer #${issueNumber} ${latestAtBody.login}`, `its verdict at the live body came from ${latestAtBody.login}, not ${requiredPass}`)
   }
   if (latestAtBody.kind === 'CHANGES') {
-    report(4, `issue-gate: changes #${issueNumber} ${bodyHash}`, 'the live verdict is CHANGES')
+    report(4, `issue-gate: changes #${issueNumber} ${latestAtBody.hash}${trimmedSuffix(latestAtBody.form)}`, 'the live verdict is CHANGES')
   }
-  report(0, `issue-gate: ok #${issueNumber} ${bodyHash}`)
+  if (held) {
+    report(7, `issue-gate: hold #${issueNumber} ${latestAtBody.hash}${trimmedSuffix(latestAtBody.form)}`, 'the card carries hold')
+  }
+  report(0, `issue-gate: ok #${issueNumber} ${latestAtBody.hash}${trimmedSuffix(latestAtBody.form)}`)
 }
 
 // No verdict names the live body. A PASS at an older body is the stale approval
@@ -159,7 +180,7 @@ if (latestAtBody !== undefined) {
 // line that can express it exists, and is reported as no pass.
 const latestPass = verdicts.filter((verdict) => verdict.login === requiredPass).at(-1)
 if (latestPass !== undefined && latestPass.kind === 'PASS') {
-  report(1, `issue-gate: stale-pass #${issueNumber} passed=${latestPass.hash} current=${bodyHash}`, `its PASS names ${latestPass.hash}, not the live body`)
+  report(1, `issue-gate: stale-pass #${issueNumber} passed=${latestPass.hash} current=${hashes.raw}`, `its PASS names ${latestPass.hash}, not the live body`)
 }
 if (latestPass !== undefined) {
   console.error(`issue-gate: note #${issueNumber} the newest verdict is CHANGES at ${latestPass.hash}, which is not the live body`)

@@ -507,6 +507,28 @@ export function rejectedPage(config: Config, viewer: Viewer, locale: Locale = 'z
   return layout({ title: t('申请未通过', 'Application not approved'), viewer, body, config, locale, path: '/apply/status' })
 }
 
+// #285: five controls on the jobs card rebuild the same query, and each may
+// change only its own parameter. The state a control must keep is read from one
+// place here, because a link that re-lists the keys itself is how the window
+// buttons lost the filter, both "Clear filters" links lost the window, and the
+// repository pager lost both.
+const NO_JOB_FILTER: JobFilter = { repo: '', status: '', kind: '' }
+
+/** The window and the active filter, as the query keys every control carries. */
+function dashboardStateParams(filter: JobFilter, windowDays: number): Record<string, string> {
+  return { ...(windowDays === 30 ? { window: '30' } : {}), ...jobFilterParams(filter) }
+}
+
+/** A `/dashboard` link that keeps the window and the filter unless `extra` changes them. */
+function dashboardHref(filter: JobFilter, windowDays: number, extra: Record<string, string> = {}, hash = '#jobs'): string {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries({ ...dashboardStateParams(filter, windowDays), ...extra })) {
+    if (value !== '') params.set(key, value)
+  }
+  const query = params.toString()
+  return query === '' ? `/dashboard${hash}` : `/dashboard?${query}${hash}`
+}
+
 // #232: the filter is a plain GET form, so the browser owns the state and a
 // refresh, a shared link and the pagination links all describe the same list.
 function jobFilterForm(locale: Locale, filter: JobFilter, repos: Array<{ id: string; label: string }>, windowDays: number): string {
@@ -531,7 +553,7 @@ function jobFilterForm(locale: Locale, filter: JobFilter, repos: Array<{ id: str
     )}</select></label>
     <div class="job-filter-actions">
       <button class="btn btn-small" type="submit">${escapeHtml(t('筛选', 'Filter'))}</button>
-      ${jobFilterIsActive(filter) ? `<a class="link" href="/dashboard#jobs">${escapeHtml(t('清除筛选', 'Clear filters'))}</a>` : ''}
+      ${jobFilterIsActive(filter) ? `<a class="link" href="${escapeHtml(dashboardHref(NO_JOB_FILTER, windowDays))}">${escapeHtml(t('清除筛选', 'Clear filters'))}</a>` : ''}
     </div>
   </form>`
 }
@@ -872,8 +894,8 @@ export function dashboardPage(input: {
         <p class="muted">${escapeHtml(t(`最近 ${windowDays} 天；只统计你自己的工作。缺失数据用 — 表示。`, `Last ${windowDays} days; your work only. Missing data is shown as —.`))}</p>
       </div>
       <div class="row">
-        <a class="btn ${windowDays === 7 ? '' : 'btn-ghost'}" href="/dashboard?window=7">${escapeHtml(t('7 天', '7 days'))}</a>
-        <a class="btn ${windowDays === 30 ? '' : 'btn-ghost'}" href="/dashboard?window=30">${escapeHtml(t('30 天', '30 days'))}</a>
+        <a class="btn ${windowDays === 7 ? '' : 'btn-ghost'}" href="${escapeHtml(dashboardHref(jobFilter, windowDays, { window: '7' }))}">${escapeHtml(t('7 天', '7 days'))}</a>
+        <a class="btn ${windowDays === 30 ? '' : 'btn-ghost'}" href="${escapeHtml(dashboardHref(jobFilter, windowDays, { window: '30' }))}">${escapeHtml(t('30 天', '30 days'))}</a>
       </div>
     </div>
     ${personal !== undefined && personal.jobs === 0 ? `<p class="fine">${escapeHtml(t('还没有任务。先添加仓库并选择角色，然后运行一次。', 'No jobs yet. Add a repository, choose a role, and run one.'))} <a class="link" href="#add-repo">${escapeHtml(t('添加仓库', 'Add repository'))}</a></p>` : ''}
@@ -897,7 +919,7 @@ export function dashboardPage(input: {
     <div class="card">
       <h2>${escapeHtml(t('仓库', 'Repositories'))}</h2>
       <div class="table-scroll"><table class="table-cards"><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('模式', 'Mode'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('上次运行', 'Last run'))}</th><th></th></tr></thead><tbody>${repoRows}</tbody></table></div>
-      ${pager('/dashboard', 'reposPage', reposPage, reposTotal, 10, t, { jobsPage }, '#add-repo')}
+      ${pager('/dashboard', 'reposPage', reposPage, reposTotal, 10, t, { ...dashboardStateParams(jobFilter, windowDays), jobsPage }, '#add-repo')}
     </div>
     <div class="card" id="add-repo">
       <h2>${escapeHtml(t('添加仓库', 'Add repository'))}</h2>
@@ -917,7 +939,7 @@ export function dashboardPage(input: {
           kind: 'empty',
           title: t('没有任务符合这些筛选。', 'No jobs match these filters'),
           body: jobFilterLabels(jobFilter, repoOptions, t).join(t('、', ', ')),
-          action: { href: '/dashboard#jobs', label: t('清除筛选', 'Clear filters') },
+          action: { href: dashboardHref(NO_JOB_FILTER, windowDays), label: t('清除筛选', 'Clear filters') },
         })
       : jobTable(locale, jobs, { body: t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })}
     ${pager('/dashboard', 'jobsPage', jobsPage, jobsTotal, 10, t, { reposPage, ...(windowDays === 30 ? { window: 30 } : {}), ...jobFilterParams(jobFilter) }, '#jobs')}

@@ -255,9 +255,19 @@ scope, not `hold`, not an umbrella, not team-via-groups work, and
 `review:approved` from the Reviewer whose PASS names the live body hash. The Lead
 recomputes that hash with `node scripts/issue-gate.mjs --issue <N>` immediately
 before adding the label; a `changes` line blocks it exactly like a missing PASS,
-and the person who wrote the issue never adds the label. Any body edit voids the
-PASS — a byte-for-byte revert revives it, because GitHub exposes no edit history,
-so the gate is not revert-proof. Agents develop only `agent-ready` issues.
+and the person who wrote the issue never adds the label. A verdict may name the
+raw body or the trailing-whitespace-stripped one; the gate accepts both and
+prints ` (trimmed)` when the stripped form matched, because trailing whitespace
+is not a material edit. Any other byte difference voids the PASS — a
+byte-for-byte revert revives it, because GitHub exposes no edit history, so the
+gate is not revert-proof. Agents develop only `agent-ready` issues.
+
+A held issue is approved but not claimable. `hold` on an issue makes the gate
+print `issue-gate: hold #<N> <hash>` and exit 7 instead of `ok`, even when a PASS
+names the live body; it replaces `ok` only, so `changes`, `stale-pass`,
+`no-pass`, `bad-passer` and `corrupt-body` keep their precedence. The label alone
+is the machine signal for an issue; the `Record only — do not merge` comment
+remains the rule for the merge queue.
 
 ## Every write says who wrote it
 

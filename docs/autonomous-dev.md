@@ -117,7 +117,7 @@ State:
 | `agent-ready` | Clear, unblocked, no open design conflict |
 | `agent-working` | A claim is live |
 | `agent-pr` | A PR exists |
-| `hold` | Automation leaves it alone; pair with a `Record only` comment |
+| `hold` | Automation leaves it alone; on an issue it means approved but not claimable, and the gate refuses it |
 
 Controller-managed (never by hand): `risk:T0`…`risk:T3`, `status:done`.
 
@@ -133,18 +133,27 @@ All four:
    write: it never adds `agent-ready`, never assigns, and never edits the body.
    `agent-ready` is added by the Lead and only by the Lead.
 
-The hash is sha256 over the **whole** decoded body, first 12 hex, whitespace
-included — the convention every published PASS was written with. Any body edit
-voids the PASS. The Lead recomputes it with
+The hash is sha256 over the decoded body, first 12 hex. A verdict may name
+either the raw body or the body with trailing whitespace stripped — several
+published verdicts were taken over the stripped form — and the gate honours
+both, printing ` (trimmed)` on any line that matched the stripped form. Any
+other byte difference is a material edit and voids the PASS. One definition
+serves both ends: `scripts/lib/issue-body-hash.mjs` is what the gate reads with
+and what `scripts/issue-hash.mjs` prints, so a verdict writer records from the
+same function instead of trimming by hand. The Lead recomputes it with
 
 ```sh
-node scripts/issue-gate.mjs --issue <N>   # ok | stale-pass | no-pass | bad-passer | changes | corrupt-body
+node scripts/issue-gate.mjs --issue <N>   # ok | stale-pass | no-pass | bad-passer | changes | corrupt-body | hold
+node scripts/issue-hash.mjs --issue <N>   # raw <hash> / trimmed <hash> for a verdict line
 ```
 
 immediately before adding `agent-ready` — never from an earlier run in the same
 session, never from memory, never from the PASS text alone. A `changes` line
 (exit 4) blocks the label exactly like a missing PASS, and a verdict from
-anyone other than the policy's `requiredPass` is not a PASS at all.
+anyone other than the policy's `requiredPass` is not a PASS at all. A `hold`
+line (exit 7) means the card is approved but not claimable: `hold` replaces
+`ok` and nothing else, so a held card with `changes` still reports `changes`,
+and a held card with no verdict still reports `no-pass`.
 
 Known limit, stated rather than papered over: a byte-for-byte revert back to the
 PASSed text **does** revive the PASS, because the gate compares the live body
@@ -200,6 +209,7 @@ file is the record and not the gate — branch protection is an owner action.
 - `action-pins` (every `uses:` is a 40-hex commit pin with its tag comment)
 - `workflow-lint` (actionlint over the workflow tree, plus the template-injection check)
 - `secret-scan` (gitleaks over the commit range, full history on `main`)
+- `codeql-required` (the CodeQL analysis for this event's commit exists and is green)
 
 A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
 `skipped`, `cancelled` or a job absent from `needs`, except where
@@ -326,6 +336,24 @@ a read that fails, and a pull request run that has no token or repository, print
 that they could not read the threads and name the pull request, so no result is
 implied to be resolved; a run with no pull request at all — a push to `main`, the
 scheduled analysis — has nothing to read and stays quiet.
+
+Enforcement is a second question and `#304` answers it: `analyze` runs in
+`codeql.yml`, so `ci-ok` in `ci.yml` could not aggregate its conclusion and no
+required context named it — a red analysis blocked only itself. The
+`codeql-required` job reads the completed run of `codeql.yml` for this event's
+commit and fails `ci-ok` when that analysis is red or absent, so the verdict is
+required through the aggregate that already gates every merge. The commit is
+chosen per event (`scripts/lib/codeql-required.mjs`): `push` and
+`workflow_dispatch` gate the commit they run on; `pull_request` gates the pull
+request head, which is the commit the analysis run reports, because `GITHUB_SHA`
+on that event is the `refs/pull/N/merge` commit; `merge_group` gates
+`pull_requests[0].head_sha`, never the synthetic merge commit — nothing analyzes
+that commit, so waiting on it would block every queue entry — and `codeql.yml`
+gains no `merge_group:` trigger for the same reason. The wait for a slow analysis
+is bounded at ten minutes with twenty-second polls, because failing on the first
+poll would turn a queued runner into a red required check. A scheduled run exits
+0 with its reason and is not in `SKIPPABLE_ON`: the gate must never be skippable
+on the event that merges.
 
 Every action a workflow runs is pinned to a 40-hex commit with the tag it came
 from in a trailing comment, and the `action-pins` job fails the build on a

@@ -431,10 +431,48 @@ jobs:
             gitleaks git --config .gitleaks.toml --redact --verbose --log-opts="$range" .
           fi
 
+  # #304: the analysis was not a required check. `analyze` lives in codeql.yml, so
+  # this file's aggregate could not see its conclusion and no required context
+  # named it — a pull request could add a high result and merge with every
+  # required check green. This job turns that conclusion into a required verdict.
+  #
+  # It reads the analysis this event's commit already has rather than starting
+  # one, and the commit is chosen per event in scripts/lib/codeql-required.mjs: a
+  # `merge_group` run reads the queued pull request head, because the synthetic
+  # merge commit is analyzed by nothing and waiting on it would block every queue
+  # entry. The wait for a slow analysis is bounded there too (ten minutes,
+  # twenty-second polls); failing on the first poll would turn a queued runner
+  # into a red required check.
+  codeql-required:
+    name: codeql-required
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # A job-level block replaces the workflow set, so both scopes are named.
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: The analysis for this commit must exist and be green
+        env:
+          # A step inherits no token; the lookup needs one, mapped the way
+          # review-gate.yml maps its own.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        # No `npm ci`: the script is plain node and reads only the API and the
+        # event payload, so a dependency install cannot be the thing that fails.
+        run: node scripts/codeql-required.mjs
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [lint, typecheck, test, coverage, build, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan]
+    needs: [lint, typecheck, test, coverage, build, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

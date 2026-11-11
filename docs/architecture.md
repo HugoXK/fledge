@@ -138,7 +138,11 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   `repo`, `status` and `kind` as GET parameters and applies them in SQL, so the
   count, the page and the pagination links describe the same list; a value the
   account cannot use is dropped rather than turned into an error page, and the
-  filter lives in the URL rather than in a client store.
+  filter lives in the URL rather than in a client store. Every control that
+  rebuilds that URL keeps the state it is not changing: the 7/30-day window,
+  both "Clear filters" links and both pagers read the keys from one helper, so
+  the filter survives a window switch and a page click, and the window survives
+  a filter and a clear.
 - **Redirect targets**: every `next=` / `returnTo` value goes through one helper
   that returns a path on this site or the fallback. It validates the parsed
   result, not the input, so a value that is a plain path before parsing and
@@ -192,7 +196,11 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   database invariant, not only a read-time check; a database written before the
   index existed is deduped when it opens — keep a running job (else the oldest
   queued one) and fail the rest with `JOB_DUPLICATE_ACTIVE_SUPERSEDED` and an
-  audit row, so a duplicate row cannot turn startup into a boot failure. The
+  audit row, so a duplicate row cannot turn startup into a boot failure. A
+  demoted row that was running a work item resets that item to `triaged` in the
+  same transaction (a legal `in_progress -> triaged` edge in
+  `WORK_ITEM_TRANSITIONS`) and its audit row names the item id, because the item
+  would otherwise stay `in_progress` behind a job that can never finish. The
   lease and queue columns are schema version 33.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
