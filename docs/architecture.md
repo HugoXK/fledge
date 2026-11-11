@@ -762,6 +762,18 @@ counts as used, because the `repo.added` audit row is the evidence. The
 `events` table records activation and intervention events only; no prompt or
 token data.
 
+The sweep behind that page (`src/users/trial.ts`, run hourly by the job service,
+or by hand with `npm run trial:sweep -- [--dry-run] [--login <login>]`) selects
+`status = approved`, `role = user`, registered more than 7 days ago, with no
+`repos` row, no `repo.added` audit, no `jobs` row and no `trial.expired` audit.
+It sets the account to `rejected`, writes one `trial.expired` audit row and sends
+one bilingual notice that names the 7-day rule, the used-account exemption and
+the way back. The audit row is what makes the sweep idempotent: a rerun offers
+nothing and mails nobody, and an account whose status was restored by hand stays
+skipped. The notice is mailed after the audit row, so a failed send cannot cause
+a second rejection; the failure is logged and reported. Operator output carries
+the login and the registration date, never an address.
+
 ### Email notifications
 
 Fledge sends mail from the configured `MAIL_FROM` (production:

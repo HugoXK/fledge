@@ -364,6 +364,14 @@ export interface PromotionRow {
   created_at: string
 }
 
+// #265: what the sweep may end. No address and no display name — the operator
+// output is built from this, and it stays safe to paste into a terminal.
+export interface TrialExpiryCandidate {
+  id: string
+  login: string
+  created_at: string
+}
+
 // #279: one row per user for the read-only preview-trial view. `repo_added_at`
 // and `expired_at` are audit lookups, not columns: the sweep owns the audit row,
 // this view only reads it.
@@ -1252,8 +1260,30 @@ export class Store {
     )
   }
 
-  userActivity(id: string): { repos: number; jobs: number; lastJobAt: string | null } {
-    const row = this.get<{ repos: number; jobs: number; last_job_at: string | null }>(
+  // #265: the sweep's own selection, one query so eligibility cannot drift from
+  // the console's rule (`src/lib/trials.ts`). `trial.expired` in the audit log is
+  // the idempotency record, so an account that already carries one is never
+  // offered again, and an account whose status is written back to approved by
+  // hand is still skipped.
+  trialExpiryCandidates(cutoffIso: string, login?: string): TrialExpiryCandidate[] {
+    const filter = login === undefined ? '' : ' AND u.login = ?'
+    const args: unknown[] = login === undefined ? [cutoffIso] : [cutoffIso, login]
+    return this.all<TrialExpiryCandidate>(
+      `SELECT u.id, u.login, u.created_at
+         FROM users u
+        WHERE u.status = 'approved'
+          AND u.role = 'user'
+          AND u.created_at <= ?
+          AND NOT EXISTS (SELECT 1 FROM repos r WHERE r.user_id = u.id)
+          AND NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.user_id = u.id AND a.action = 'repo.added')
+          AND NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.user_id = u.id AND a.action = 'trial.expired')
+          AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.user_id = u.id)${filter}
+        ORDER BY u.created_at ASC`,
+      ...args,
+    )
+  }
+
+  userActivity(id: string): { repos: number; jobs: number; lastJobAt: string | null } {    const row = this.get<{ repos: number; jobs: number; last_job_at: string | null }>(
       `SELECT (SELECT COUNT(*) FROM repos WHERE user_id = ?) AS repos,
               (SELECT COUNT(*) FROM jobs WHERE user_id = ?) AS jobs,
               (SELECT MAX(created_at) FROM jobs WHERE user_id = ?) AS last_job_at`,

@@ -27,7 +27,8 @@
     "evolution:report": "node scripts/evolution-shadow.mjs --report",
     "db:restore-drill:ci": "node scripts/restore-drill-ci.mjs",
     "secret:scan": "node scripts/secret-scan.mjs",
-    "slo:report": "node scripts/slo-report.mjs"
+    "slo:report": "node scripts/slo-report.mjs",
+    "trial:sweep": "tsx scripts/trial-sweep.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.5",

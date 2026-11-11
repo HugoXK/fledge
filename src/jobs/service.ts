@@ -18,6 +18,7 @@ import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
 import { evaluateTestEvidence, type VerificationResult } from '../lib/verification.js'
 import { observedAttribution } from '../lib/teamStats.js'
+import { sweepExpiredTrials, type TrialSweepResult } from '../users/trial.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
@@ -112,6 +113,7 @@ function terminalFingerprint(input: {
 
 export class Jobs {
   private timer: NodeJS.Timeout | null = null
+  private trialTimer: NodeJS.Timeout | null = null
   private questionBusy = false
   private readonly followUpLocks = new Set<string>()
   private ticking = false
@@ -2214,6 +2216,16 @@ export class Jobs {
     return Date.now() - last >= Math.max(15, repo.review_interval_minutes) * 60_000
   }
 
+  // #265: the preview-trial sweep runs on its own clock rather than inside the
+  // job tick, which can be skipped while a dispatch is in flight. The first
+  // scheduled run is one interval after boot; an operator who needs it now runs
+  // `npm run trial:sweep`.
+  async runTrialSweep(now: Date = new Date()): Promise<TrialSweepResult> {
+    const result = await sweepExpiredTrials(this.store, this.mailer, this.config, { now })
+    if (result.rejected.length > 0) log.info('preview trials ended', { rejected: result.rejected.length, emailed: result.emailed })
+    return result
+  }
+
   start(): void {
     if (this.timer !== null) return
     this.stopped = false
@@ -2221,6 +2233,10 @@ export class Jobs {
       this.tick().catch((error) => log.error('scheduler tick failed', { error: String(error) }))
     }, 60_000)
     this.timer.unref()
+    this.trialTimer = setInterval(() => {
+      void this.runTrialSweep().catch((error) => log.error('trial sweep failed', { error: String(error) }))
+    }, 3_600_000)
+    this.trialTimer.unref()
     void this.tick().catch((error) => log.error('scheduler first tick failed', { error: String(error) }))
   }
 
@@ -2228,6 +2244,8 @@ export class Jobs {
     this.stopped = true
     if (this.timer !== null) clearInterval(this.timer)
     this.timer = null
+    if (this.trialTimer !== null) clearInterval(this.trialTimer)
+    this.trialTimer = null
   }
 
   async drain(timeoutMs: number): Promise<void> {
