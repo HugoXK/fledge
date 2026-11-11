@@ -215,7 +215,9 @@ test('secondary sections collapse into one disclosure and lose nothing', () => {
   for (const marker of ['id="quota"', 'id="delivery"', 'id="jobs"', 'id="add-repo"']) {
     assert.ok(html.indexOf(marker) > html.indexOf('data-secondary'), `${marker} stays inside the disclosure`)
   }
-  assert.match(html, /<table>/, 'the repository table is still rendered, only collapsed')
+  // The table now carries `class="table-cards"` (#130), so the marker is the
+  // element, not the bare tag that carried no attribute.
+  assert.match(html, /<table\b/, 'the repository table is still rendered, only collapsed')
   assert.match(html, /Recent jobs/, 'the job section is still rendered')
 })
 

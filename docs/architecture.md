@@ -369,7 +369,14 @@ every width: it lays out as a table from 641px up and, below 641px, each row
 becomes a card whose cells carry their column name in a `data-label` attribute
 (`public/app.css`, the `max-width: 640px` block). The cells therefore never sit
 behind a horizontal scroll on a phone, and a new column must emit `data-label`
-in `jobRows` to stay readable there. Between 641px and 960px a wide table (the
+in `jobRows` to stay readable there. The rest of the data tables reuse the same
+block through one class, `table-cards`: the `/admin` users and audit tables, the
+dashboard repository table, the repository page's delivery, board and work-item
+tables, and the support view's repository and job tables. Adding the class and a
+`data-label` per cell is the whole change; a table must not grow a second card
+mechanism. The delivery board is the one exception, `table-cards table-cards-head`:
+its header row is the stage filter, so it stays in the flow and reflows as a
+wrapping row of links above the cards instead of disappearing. Between 641px and 960px a wide table (the
 delivery board is 952px wide at 768) can still be wider than its `.table-scroll`
 box, so that band draws an always-present classic scrollbar — an explicit track
 plus `scrollbar-width`/`scrollbar-color` for Firefox — instead of relying on a
