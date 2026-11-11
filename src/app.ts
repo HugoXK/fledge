@@ -2521,6 +2521,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // it survives a restart, and this route reports what the drain did rather than
   // a bare "stopped".
   app.post('/admin/platform/stop', async (request, reply) => {
+    // Same limiter and window as the other mutating form (`/approve/:token`), and
+    // an HTML page rather than the JSON 429 the API routes send: this is a form
+    // post from a browser, and a raw JSON body would replace the page.
+    if (!loginLimiter.take(`platform-stop:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以停止平台。', 'ADMIN_ONLY')
     const t = translator(request.locale ?? 'zh')
@@ -2536,6 +2540,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/admin/platform/resume', async (request, reply) => {
+    if (!loginLimiter.take(`platform-resume:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以恢复平台。', 'ADMIN_ONLY')
     const t = translator(request.locale ?? 'zh')

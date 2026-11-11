@@ -271,3 +271,61 @@ test('without a bridge a running job is cancelled with a terminal reason instead
     store.close()
   }
 })
+
+test('a burst against the stop and resume routes is refused at the same threshold as the other mutating forms', async () => {
+  const f = await platformFixture()
+  try {
+    const session = sessionFor(f.built, f.admin)
+    // 30 requests per minute is the window the other mutating form in this file
+    // (`POST /approve/:token`) uses, so the 31st request in the window is the
+    // first refusal, and it is refused before it can act.
+    const allowed: number[] = []
+    for (let i = 0; i < 30; i += 1) {
+      const response = await f.built.app.inject({
+        method: 'POST',
+        url: '/admin/platform/stop',
+        headers: posting(session),
+        payload: formBody({ csrf: session.csrf, reason: `burst ${i}` }),
+      })
+      allowed.push(response.statusCode)
+    }
+    assert.deepEqual([...new Set(allowed)], [302], 'the stop route closed the window early')
+
+    const refused = await f.built.app.inject({
+      method: 'POST',
+      url: '/admin/platform/stop',
+      headers: posting(session),
+      payload: formBody({ csrf: session.csrf, reason: 'burst refused' }),
+    })
+    assert.equal(refused.statusCode, 429, 'a burst past the form threshold was accepted')
+    assert.match(String(refused.headers['content-type']), /text\/html/, 'a form route answered a browser with a machine body')
+    // The limiter has to run before the action: the refused call wrote no second
+    // audit row and did not re-drain the platform.
+    assert.equal(stopAudits(f.store), 1)
+    assert.equal(f.built.jobs.platformStop()?.reason, 'burst 0', 'the refused stop overwrote the record')
+
+    const resumeAllowed: number[] = []
+    for (let i = 0; i < 30; i += 1) {
+      const response = await f.built.app.inject({
+        method: 'POST',
+        url: '/admin/platform/resume',
+        headers: posting(session),
+        payload: formBody({ csrf: session.csrf }),
+      })
+      resumeAllowed.push(response.statusCode)
+    }
+    assert.deepEqual([...new Set(resumeAllowed)], [302], 'the resume route closed the window early')
+
+    const resumeRefused = await f.built.app.inject({
+      method: 'POST',
+      url: '/admin/platform/resume',
+      headers: posting(session),
+      payload: formBody({ csrf: session.csrf }),
+    })
+    assert.equal(resumeRefused.statusCode, 429, 'a burst past the form threshold was accepted on resume')
+    const resumedAudits = f.store.listAuditPageForUsers(null, 100, 0).filter((row) => row.action === 'platform.resumed').length
+    assert.equal(resumedAudits, 1, 'the refused resume wrote another audit row')
+  } finally {
+    await f.built.close()
+  }
+})
