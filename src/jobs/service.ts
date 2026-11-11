@@ -427,7 +427,7 @@ export class Jobs {
           return { updated: 0, skipped: ['model-check'] }
         })
         if (assignment.skipped.length > 0) {
-          return { ok: false, error: `机器人模型未就绪：${assignment.skipped.join(', ')}；请在仓库设置里重新应用模型。`, code: 'BOT_MODEL_ASSIGNMENT_FAILED' }
+          return { ok: false, error: `机器人模型未就绪：${assignment.skipped.join(', ')}；请在仓库设置里重新应用模型。`, code: 'BOT_MODEL_ASSIGNMENT_FAILED', detail: assignment.skipped.join(', ') }
         }
         const reviewer = kind === 'review' ? bridge.team.reviewer : null
         const role: 'chief' | 'lead' | 'reviewer' | 'product' | 'test' = kind === 'review'
@@ -454,7 +454,7 @@ export class Jobs {
       return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
     }
     if (!this.config.runner.queueDispatch && this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) {
-      return { ok: false, error: `平台当前已有 ${this.config.runner.maxActiveJobs} 个任务在运行，请稍后再试。`, code: 'JOB_LIMIT' }
+      return { ok: false, error: `平台当前已有 ${this.config.runner.maxActiveJobs} 个任务在运行，请稍后再试。`, code: 'JOB_LIMIT', detail: String(this.config.runner.maxActiveJobs) }
     }
 
     const platformToken = `flg_${randomToken(32)}`

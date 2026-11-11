@@ -1,4 +1,5 @@
 import type { JobRow } from '../db.js'
+import { localizeMessage, translator, type Locale } from '../i18n.js'
 
 export type FailureKind =
   | 'quota'
@@ -150,21 +151,12 @@ const REFUSAL_SENTENCES: Record<string, [string, string]> = {
   REPO_BUDGET_EXHAUSTED: ['仓库月度预算已用完，请在仓库设置里提高预算，或等下个月再试。', "This repository's monthly budget is used up; raise it in the repository settings or wait for the next month, then retry."],
   QUEUE_FULL: ['任务队列已满，请稍后再试。', 'The job queue is full; retry in a moment.'],
   QUEUE_LIMIT: ['你排队的任务过多，请等其中几个结束后再试。', 'You have too many jobs queued; wait for some of them to finish, then retry.'],
+  JOB_LIMIT: ['平台同时运行的任务数已达上限（{detail} 个），请稍后再试。', 'The platform already has {detail} jobs running at once; retry in a moment.'],
+  BOT_MODEL_ASSIGNMENT_FAILED: ['机器人模型未就绪：{detail}；请在仓库设置里重新应用模型。', 'The bot models are not ready: {detail}; re-apply the models in the repository settings.'],
   BRANCH_MISSING: ['目标分支 {branch} 不存在或不可访问。', 'The target branch {branch} does not exist, or this account cannot read it.'],
 }
 
 const BRANCH_EMPTY: [string, string] = ['目标分支不存在或不可访问。', 'The target branch does not exist, or this account cannot read it.']
-
-// Whether a refusal code has a sentence of its own. The redirect carries the code
-// only for those; any other refusal travels as the writer's text, which the banner
-// translates through the dictionary exactly as it did before #231, so an unmapped
-// refusal never reads worse than base.
-export function refusalSentenceKnown(code: string | null | undefined): boolean {
-  const key = String(code ?? '').trim()
-  if (key === '') return false
-  if (errorCodeOf(key) !== null) return true
-  return Object.prototype.hasOwnProperty.call(REFUSAL_SENTENCES, key)
-}
 
 export function errorCodeOf(value: string | null | undefined): FailureCode | null {
   const code = String(value ?? '').trim()
@@ -176,26 +168,34 @@ export function failureSentence(t: (zh: string, en: string) => string, code: str
   if (known !== null) return t(FAILURE_SENTENCES[known][0], FAILURE_SENTENCES[known][1])
   const refusal = REFUSAL_SENTENCES[String(code ?? '').trim()]
   if (refusal === undefined) return null
-  const branch = detail.trim()
-  if (!refusal[0].includes('{branch}')) return t(refusal[0], refusal[1])
-  if (branch === '') return t(BRANCH_EMPTY[0], BRANCH_EMPTY[1])
-  return t(refusal[0].replace('{branch}', branch), refusal[1].replace('{branch}', branch))
+  const value = String(detail ?? '').trim()
+  if (refusal[0].includes('{branch}') && value === '') return t(BRANCH_EMPTY[0], BRANCH_EMPTY[1])
+  // A parameterised sentence without its parameter says nothing useful; returning
+  // null lets the banner fall through to the text the service wrote.
+  if (refusal[0].includes('{detail}') && value === '') return null
+  const fill = (text: string): string => text.replace('{branch}', value).replace('{detail}', value)
+  return t(fill(refusal[0]), fill(refusal[1]))
 }
 
 // The banner is built in this order, so a refusal is never worse than base:
-//   1. a code with a sentence entry gets that sentence in the reader's language;
-//   2. anything else is not a code, so this returns null and `layout` keeps the
-//      dictionary translation of the writer's text;
-//   3. a bare code with neither a sentence nor a text names itself in the reader's
-//      language, so an unknown refusal cannot leak the writer's Chinese.
-export function failureBannerSentence(t: (zh: string, en: string) => string, value: string | null | undefined): string | null {
+//   1. a code with a sentence entry gets that sentence in the reader's language,
+//      with its parameter (`BRANCH_MISSING:main`, `JOB_LIMIT:2`) filled in;
+//   2. a value that is not a code is left to `layout`'s dictionary call;
+//   3. a code with no sentence keeps the writer's text that travelled after the
+//      colon, translated by the same dictionary the banner used before #231;
+//   4. only a bare code with neither a sentence nor a text names itself.
+const CODE_VALUE = /^[A-Z][A-Z0-9_]+$/
+
+export function failureBannerSentence(locale: Locale, value: string | null | undefined): string | null {
   const raw = String(value ?? '')
   const separator = raw.indexOf(':')
   const code = separator === -1 ? raw : raw.slice(0, separator)
   const detail = separator === -1 ? '' : raw.slice(separator + 1)
+  if (!CODE_VALUE.test(code)) return null
+  const t = translator(locale)
   const sentence = failureSentence(t, code, detail)
   if (sentence !== null) return sentence
-  if (!/^[A-Z][A-Z0-9_]+$/.test(code)) return null
+  if (detail !== '') return localizeMessage(locale, detail) ?? null
   return t(`任务未能开始（${code}）。`, `The job could not start (${code}).`)
 }
 

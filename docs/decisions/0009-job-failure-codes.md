@@ -35,17 +35,20 @@ three are reserved: `REPO_CREDENTIAL_INVALID`, `JOB_BUDGET_EXCEEDED` and
 they reach the reader on the redirect instead, and the vocabulary keeps a row for
 them should one ever finish a job.
 
-A refusal is localized the same way, in three steps. A code with a sentence of
-its own travels on the `error` query parameter (`QUEUE_FULL`, `QUEUE_LIMIT`,
-`REPO_BUDGET_EXHAUSTED`, `REPO_CREDENTIAL_INVALID`, and `BRANCH_MISSING`, which
-names the branch after a colon), and `layout()` builds the banner from it rather
-than echoing the service's text. A refusal whose code has no sentence of its own
-travels as the writer's text, which the dictionary translates exactly as it did
-before this change — `BRANCH_INVALID`, `JOB_ACTIVE` and `REVIEW_DISABLED` are the
-reachable ones — so a refusal never reads worse than at base. Only a bare code
-with neither a sentence nor a text renders a sentence that names the code, so a
-value nobody has given a sentence cannot carry the writer's Chinese to an English
-reader.
+A refusal is localized the same way, in three steps. The route puts the refusal
+code on the `error` query parameter together with the payload after a colon: the
+code's own parameter where it has one (`BRANCH_MISSING:main`, `JOB_LIMIT:2`,
+`BOT_MODEL_ASSIGNMENT_FAILED:chief, lead`) or else the sentence the service wrote.
+`layout()` then asks the sentence table first, so a code with an entry reads in
+the reader's language with its parameter filled in (`QUEUE_FULL`, `QUEUE_LIMIT`,
+`REPO_BUDGET_EXHAUSTED`, `REPO_CREDENTIAL_INVALID`, `JOB_LIMIT`,
+`BOT_MODEL_ASSIGNMENT_FAILED`, `BRANCH_MISSING`). A code with no entry keeps the
+writer's text that travelled with it, translated by the same dictionary the
+banner used before this change — `BRANCH_INVALID`, `JOB_ACTIVE` and
+`REVIEW_DISABLED` are the reachable ones — so a refusal never reads worse than at
+base. Only a bare code with neither a sentence nor a text renders a sentence that
+names the code, so a value nobody has given a sentence cannot carry the writer's
+Chinese to an English reader.
 
 The read path localizes by the code: `failureSentence` builds the sentence in the
 reader's language for the job-page summary, the dashboard summary and the

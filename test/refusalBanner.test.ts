@@ -137,7 +137,7 @@ test('a queue-full refusal carries its code through the redirect', async () => {
     })
     assert.equal(response.statusCode, 302)
     const location = String(response.headers.location)
-    assert.match(location, /[?&]error=QUEUE_FULL$/, `the redirect did not carry the refusal code: ${location}`)
+    assert.match(location, /[?&]error=QUEUE_FULL(?:%3A|:)/, `the redirect did not carry the refusal code: ${location}`)
 
     const page = await built.app.inject({ method: 'GET', url: location, headers: { cookie: session.cookie, 'accept-language': 'en' } })
     assert.equal(page.statusCode, 200)
@@ -212,7 +212,7 @@ test('every enqueue button carries the refusal code, not the service sentence', 
       const response = await built.app.inject({ method: 'POST', url, headers: posting, payload: formBody({ csrf: session.csrf }) })
       assert.equal(response.statusCode, 302, `${name} did not redirect`)
       const location = String(response.headers.location)
-      assert.match(location, /[?&]error=QUEUE_FULL(#work)?$/, `the ${name} redirect carried the service sentence instead of the code: ${location}`)
+      assert.match(location, new RegExp(`[?&]error=QUEUE_FULL(?:%3A|:).*?(?:#work)?$`), `the ${name} redirect did not carry the code and its sentence: ${location}`)
       const page = await built.app.inject({ method: 'GET', url: location, headers: { cookie: session.cookie, 'accept-language': 'en' } })
       assert.equal(page.statusCode, 200)
       const text = banner(page.body)
@@ -291,7 +291,7 @@ test('a refusal code with no sentence of its own keeps the dictionary sentence',
       const response = await built.app.inject({ method: 'POST', url: item.url, headers: posting, payload: formBody({ csrf: session.csrf }) })
       assert.equal(response.statusCode, 302, `${item.name} did not redirect`)
       const location = String(response.headers.location)
-      assert.doesNotMatch(location, new RegExp(`error=${item.code}`), `${item.name} still travelled as a bare code: ${location}`)
+      assert.match(location, new RegExp(`error=${item.code}(?:%3A|:)`), `${item.name} did not carry its code: ${location}`)
       assert.match(location, new RegExp(encodeURIComponent(item.text.slice(0, 6)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `${item.name} did not carry the writer text: ${location}`)
       const en = await built.app.inject({ method: 'GET', url: location, headers: { cookie: session.cookie, 'accept-language': 'en' } })
       const enText = banner(en.body)
@@ -306,13 +306,20 @@ test('a refusal code with no sentence of its own keeps the dictionary sentence',
   }
 })
 
-// The order itself, without a route: a sentence entry wins, a bare code with no
-// entry is the stub, and anything that is not a code stays on the dictionary.
-test('the banner prefers the sentence table, then the dictionary, then the code stub', () => {
-  const t = translator('en')
-  assert.match(failureBannerSentence(t, 'JOB_LEASE_EXPIRED') ?? '', /lease expired/i)
-  assert.equal(failureBannerSentence(t, 'ROLE_REQUIRED'), 'The job could not start (ROLE_REQUIRED).')
-  assert.equal(failureBannerSentence(t, '表单已过期，请刷新页面后重试。'), null, 'a text banner must stay on the dictionary')
+// The order itself, without a route: a sentence entry wins, a code with no entry
+// uses the text that travelled after the colon (the dictionary translates it), a
+// bare unknown code names itself, and anything that is not a code stays on the
+// dictionary. `JOB_LIMIT` and `BOT_MODEL_ASSIGNMENT_FAILED` carry parameters.
+test('the banner prefers the sentence table, then the writer text, then the code stub', () => {
+  assert.match(failureBannerSentence('en', 'JOB_LEASE_EXPIRED:任务租约过期：worker 未续约。') ?? '', /lease expired/i)
+  assert.equal(failureBannerSentence('en', 'BRANCH_INVALID:目标分支格式不正确。'), 'The target branch name is invalid.', 'a code with no sentence must keep the dictionary sentence')
+  assert.match(failureBannerSentence('en', 'BRANCH_INVALID:一个没人翻译过的拒绝。') ?? '', /一个没人翻译过的拒绝。/, 'a text the dictionary does not know is shown as written, never replaced by the stub')
+  assert.equal(failureBannerSentence('en', 'SOMETHING_UNMAPPED_IN_THE_TABLE'), 'The job could not start (SOMETHING_UNMAPPED_IN_THE_TABLE).', 'the stub is for a bare code with neither a sentence nor a text')
+  assert.equal(failureBannerSentence('en', '表单已过期，请刷新页面后重试。'), null, 'a text banner must stay on the dictionary')
+  assert.match(failureBannerSentence('en', 'JOB_LIMIT:3') ?? '', /already has 3 jobs running/i)
+  assert.match(failureBannerSentence('zh', 'JOB_LIMIT:3') ?? '', /3 个/)
+  assert.match(failureBannerSentence('en', 'BOT_MODEL_ASSIGNMENT_FAILED:chief, lead') ?? '', /chief, lead/)
+  assert.match(failureBannerSentence('en', 'BRANCH_MISSING:main') ?? '', /target branch main/i)
 })
 
 // The two job-button refusals whose text had no dictionary row: at base an `en`

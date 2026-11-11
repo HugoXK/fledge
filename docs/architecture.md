@@ -458,14 +458,15 @@ for a message no code covers — which is why a new failure adds a code rather t
 a dictionary row.
 
 A refusal carries its code too. The job service answers an enqueue it will not
-start with a code, and a code with a sentence of its own travels on the redirect
-(`QUEUE_FULL`, `QUEUE_LIMIT`, `REPO_BUDGET_EXHAUSTED`, `REPO_CREDENTIAL_INVALID`,
-and `BRANCH_MISSING`, which names the branch after a colon that a git ref cannot
-contain), so the banner reads in the reader's language. A refusal code with no
-sentence of its own keeps the writer's text on the redirect, which the dictionary
-translates as it did before this change, so no refusal reads worse than at base;
-only a bare code with neither a sentence nor a text renders a sentence naming the
-code, so an unknown value cannot leak. The raw text stays in `jobs.error`, under "Technical detail"
+start with a code, and the route puts that code on the redirect with the payload
+after a colon: the code's own parameter where it has one (`BRANCH_MISSING:main`,
+`JOB_LIMIT:2`, `BOT_MODEL_ASSIGNMENT_FAILED:chief, lead`) or else the sentence the
+service wrote. The banner asks the sentence table first, so those codes read in
+the reader's language with their parameter filled in. A code with no sentence
+keeps the text that travelled with it, which the dictionary translates as it did
+before this change, so no refusal reads worse than at base; only a bare code with
+neither a sentence nor a text renders a sentence naming the code, so an unknown
+value cannot leak. The raw text stays in `jobs.error`, under "Technical detail"
 and in the notification row, for operators and for the API, and "Technical
 detail" prints it as written rather than translating it. The choice is
 recorded in `docs/decisions/0009-job-failure-codes.md`.
@@ -738,7 +739,15 @@ Admins get a read-only `/admin/metrics` funnel:
 users, approved, repos, users with jobs/PRs, success rate, job cost, attributed
 vs unattributed cost, scope/verify/iterate/review counts, Lead-only and grounded
 attribution events, and recent events. `/admin/search` filters jobs and audit entries by the same user
-visibility as the admin page and can export the current result as CSV. The
+visibility as the admin page and can export the current result as CSV.
+
+`/admin/trials` shows every account, with the state derived at read time instead
+of stored: `running` and `expiring` inside the 7-day preview, `eligible` once it
+lapses, `expired` when the audit row `trial.expired` exists, and
+`exempt_used`/`exempt_admin`/`inactive` for the accounts that never expire. The
+page is read-only, offers a `?trial=` filter, and shows the login and the audit
+time rather than an email address; a repository added and later removed still
+counts as used, because the `repo.added` audit row is the evidence. The
 `events` table records activation and intervention events only; no prompt or
 token data.
 

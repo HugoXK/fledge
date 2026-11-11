@@ -10,6 +10,7 @@ import { openStore, type JobRow, type RepoRow, type Store, type UserRow } from '
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
 import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions } from './auth/session.js'
+import { isTrialFilter } from './lib/trials.js'
 import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
 import { notifyEmail } from './email/recipient.js'
@@ -17,7 +18,7 @@ import { registerGateway } from './gateway/gateway.js'
 import { assertSafeModelUrl } from './gateway/modelUrl.js'
 import { quotaView } from './gateway/quota.js'
 import { parseAttributionJson } from './lib/attribution.js'
-import { failureBreakdown, refusalSentenceKnown } from './lib/failure.js'
+import { failureBreakdown } from './lib/failure.js'
 import { Jobs } from './jobs/service.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
@@ -42,6 +43,7 @@ import { Approvals } from './users/approval.js'
 import {
   adminPage,
   adminSupportPage,
+  adminTrialsPage,
   adminSearchPage,
   adminWebhooksPage,
   approvalPage,
@@ -96,13 +98,14 @@ function httpError(statusCode: number, message: string, code = 'REQUEST_FAILED')
 function refusalValue(result: { code?: string; detail?: string; error?: string }, fallback: string): string {
   const code = result.code ?? ''
   const text = result.error ?? fallback
-  // A code with a sentence of its own travels as the code, so the banner reads it
-  // in the reader's language. Any other code travels as the writer's text, which
-  // keeps the dictionary sentence the button had before #231 instead of trading it
-  // for a code the reader cannot use.
-  if (code === '' || !refusalSentenceKnown(code)) return text
+  // A discussed refusal travels as `CODE:payload`. The code lets the banner build
+  // a sentence in the reader's language where the table has one; the payload is
+  // the refusal's own parameter (the branch, the limit, the models) or, for a code
+  // with no sentence yet, the sentence the service wrote, which the banner then
+  // translates through the dictionary it used before #231.
+  if (code === '') return text
   const detail = result.detail ?? ''
-  return detail === '' ? code : `${code}:${detail}`
+  return `${code}:${detail !== '' ? detail : text}`
 }
 
 function queryText(request: FastifyRequest, name: string): string | undefined {
@@ -2305,6 +2308,21 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repos: store.listRepos(user.id),
       jobs: store.listJobsPageForUser(user.id, 20, 0),
       audit: store.listAuditPageForUsers([user.id], 20, 0),
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
+  })
+
+  app.get('/admin/trials', async (request, reply) => {
+    const viewer = requireAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    const requested = queryText(request, 'trial') ?? ''
+    return reply.type('text/html').send(adminTrialsPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      rows: store.trialCandidates(),
+      filter: isTrialFilter(requested) ? requested : 'all',
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))

@@ -76,10 +76,11 @@ export function layout(options: LayoutOptions): string {
   const path = options.path ?? '/'
   const t = translator(locale)
   const notice = localizeMessage(locale, options.notice)
-  // A refusal is carried as its code (`QUEUE_FULL`, `BRANCH_MISSING:main`), so the
-  // banner is one sentence in the reader's language; anything that is not a code
-  // stays on the dictionary, as before.
-  const error = failureBannerSentence(t, options.error) ?? localizeMessage(locale, options.error)
+  // A refusal travels as its code, with the writer's text after the colon when the
+  // code has no sentence of its own (`QUEUE_FULL:…`, `BRANCH_MISSING:main`); the
+  // builder owns the three-step order, so anything that is not a code stays here
+  // on the dictionary, as before.
+  const error = failureBannerSentence(locale, options.error) ?? localizeMessage(locale, options.error)
   const preview = viewer !== undefined && viewer !== null && viewer.preview === true
   const release = options.release ?? releaseSurface()
   const section = active ?? sectionForPath(path)
