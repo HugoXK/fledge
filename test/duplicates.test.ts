@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { findDuplicatePullRequest, issueNumberFromText } from '../src/lib/duplicates.js'
+import { duplicateOutcome, findDuplicatePullRequest, issueNumberFromText } from '../src/lib/duplicates.js'
 
 function pull(number: number, fields: { title?: string; body?: string; head?: string } = {}) {
   return {
@@ -96,4 +96,71 @@ test('a body with many issue references cannot stall the event loop', () => {
 test('a path ending in a separator is not a repository reference', () => {
   assert.equal(issueNumberFromText('see other/repo/ #42', 'o/dup'), 42)
   assert.equal(issueNumberFromText('see other/repo/#42', 'o/dup'), 42)
+})
+
+function mergedPull(number: number, fields: { title?: string; body?: string; head?: string; mergeCommitSha?: string | null } = {}) {
+  return {
+    ...pull(number, fields),
+    mergedAt: '2026-11-09T10:00:00Z',
+    mergeCommitSha: fields.mergeCommitSha ?? `sha-merge-${number}`,
+  }
+}
+
+test('a duplicate is either work in flight or work that already landed, and the two are not confused', async () => {
+  // #174: a re-run of already-fixed work used to be refused exactly like a genuine
+  // duplicate, so a maintainer could not tell "someone is on it" from "it is in".
+  const open = [pull(9, { body: 'Fixes https://github.com/o/dup/issues/42' })]
+  const mergedNotAsked = async () => {
+    throw new Error('the merged read must not run when an open pull request already matches')
+  }
+  const issueNotAsked = async () => {
+    throw new Error('the issue read must not run when an open pull request already matches')
+  }
+  assert.deepEqual(await duplicateOutcome(42, 'o/dup', open, mergedNotAsked, issueNotAsked), {
+    kind: 'open-pr',
+    url: 'https://github.com/o/dup/pull/9',
+  })
+
+  const merged = [mergedPull(7, { body: 'Closes #42', mergeCommitSha: 'merge-sha-7' })]
+  assert.deepEqual(await duplicateOutcome(42, 'o/dup', [], async () => merged, async () => true), {
+    kind: 'already-fixed',
+    url: 'https://github.com/o/dup/pull/7',
+    mergeCommitSha: 'merge-sha-7',
+    mergedAt: '2026-11-09T10:00:00Z',
+  })
+
+  assert.equal(await duplicateOutcome(42, 'o/dup', [], async () => [mergedPull(8, { body: 'Unrelated work' })], async () => true), null)
+})
+
+test('a merged pull request that only mentions the issue is no proof, while the issue is open', async () => {
+  // #174 review at fe217420: the merged list was matched with the same reference
+  // matcher as open work, which accepts a mention in the title, body or branch
+  // name. A merged `Follow-up to #42` therefore told the maintainer "already
+  // merged upstream" about an issue nobody had fixed. Only a closed issue makes
+  // the merged reference the fix.
+  const mention = [mergedPull(7, { title: 'Follow-up to #42', body: 'This does not close #42' })]
+  assert.equal(
+    await duplicateOutcome(42, 'o/dup', [], async () => mention, async () => false),
+    null,
+    'a mention of an open issue was reported as the fix',
+  )
+  assert.deepEqual(
+    await duplicateOutcome(42, 'o/dup', [], async () => mention, async () => true),
+    { kind: 'already-fixed', url: 'https://github.com/o/dup/pull/7', mergeCommitSha: 'sha-merge-7', mergedAt: '2026-11-09T10:00:00Z' },
+    'a closed issue plus a merged reference is the fix',
+  )
+})
+
+test('the issue is only read when a merged pull request actually matched', async () => {
+  let asked = 0
+  const confirm = async () => {
+    asked += 1
+    return true
+  }
+  await duplicateOutcome(42, 'o/dup', [pull(9, { body: 'Fixes #42' })], async () => [mergedPull(7, { body: 'Closes #42' })], confirm)
+  assert.equal(asked, 0, 'work in flight still paid for the issue read')
+  await duplicateOutcome(42, 'o/dup', [], async () => [mergedPull(8, { body: 'Unrelated' })], confirm)
+  assert.equal(asked, 0, 'no merged match still paid for the issue read')
+  await duplicateOutcome(42, 'o/dup', [], async () => [mergedPull(7, { body: 'Closes #42' })], confirm)
+  assert.equal(asked, 1, 'the merged match did not confirm the issue state')
 })

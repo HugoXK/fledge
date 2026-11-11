@@ -69,7 +69,9 @@ export function issueNumberFromText(text: string, repository?: string): number |
   return referenceNumber(sameRepoIssueUrl(repository).exec(text)) ?? bareReferences(text, repository)[0] ?? null
 }
 
-export function findDuplicatePullRequest(issueNumber: number, repository: string, pulls: OpenPullRequest[]): OpenPullRequest | null {
+// Generic over the pull request shape so a caller that passes merged pull
+// requests gets the merge evidence back instead of the open-listing interface.
+export function findDuplicatePullRequest<T extends OpenPullRequest>(issueNumber: number, repository: string, pulls: T[]): T | null {
   const sameRepo = sameRepoReference(repository, issueNumber)
   for (const pull of pulls) {
     for (const text of [pull.title, pull.body, pull.head]) {
@@ -77,4 +79,42 @@ export function findDuplicatePullRequest(issueNumber: number, repository: string
     }
   }
   return null
+}
+
+// #174: "someone is already on it" and "this already landed" are different facts,
+// and a maintainer needs the difference. An open pull request proves work in
+// flight; a merged one proves the fix is in, and its merge commit is the evidence
+// to read. The two outcomes are computed together so no caller can report one as
+// the other.
+export interface MergedPullRequest extends OpenPullRequest {
+  mergedAt: string
+  mergeCommitSha: string | null
+}
+
+export type DuplicateOutcome =
+  | { kind: 'open-pr'; url: string }
+  | { kind: 'already-fixed'; url: string; mergeCommitSha: string | null; mergedAt: string }
+
+// The merged list costs one more read, so it is requested lazily: a duplicate that
+// is still open answers without it, and only work with nothing in flight pays for
+// the history read.
+//
+// A merged pull request that merely *mentions* the issue is not the fix: the same
+// matcher accepts a reference in a title, a body or a head branch name, and `This
+// does not close #42` is routine on an active repository. The issue's own state is
+// the fact that decides it, so it is read once, only after a merged candidate
+// matched, and an open issue lets the work through rather than refusing it.
+export async function duplicateOutcome(
+  issueNumber: number,
+  repository: string,
+  open: OpenPullRequest[],
+  merged: () => Promise<MergedPullRequest[]>,
+  issueIsClosed: () => Promise<boolean>,
+): Promise<DuplicateOutcome | null> {
+  const inFlight = findDuplicatePullRequest(issueNumber, repository, open)
+  if (inFlight !== null) return { kind: 'open-pr', url: inFlight.url }
+  const landed = findDuplicatePullRequest(issueNumber, repository, await merged())
+  if (landed === null) return null
+  if (!(await issueIsClosed())) return null
+  return { kind: 'already-fixed', url: landed.url, mergeCommitSha: landed.mergeCommitSha, mergedAt: landed.mergedAt }
 }
