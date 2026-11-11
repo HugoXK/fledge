@@ -47,27 +47,41 @@ if (files.length === 0) {
 
 const alerts = []
 for (const file of files) {
+  let document
   try {
-    alerts.push(...parseSarif(JSON.parse(readFileSync(file, 'utf8'))))
+    document = JSON.parse(readFileSync(file, 'utf8'))
   } catch (error) {
     console.error(`codeql-gate: ${file} is not readable SARIF: ${error.message}`)
     process.exit(1)
   }
+  // "Read and found nothing" and "never analysed anything" are different
+  // verdicts: only the second is a blind gate.
+  const runs = Array.isArray(document.runs) ? document.runs.length : 0
+  if (runs === 0) {
+    const shape = Array.isArray(document.runs) ? 'runs: 0' : 'runs: missing or not a list'
+    console.error(`codeql-gate: ${file} has no analysis run (${shape}); a SARIF that analysed nothing is a blind gate, not a clean one`)
+    process.exit(1)
+  }
+  alerts.push(...parseSarif(document))
 }
 
 const baselineKeys = (baseline.alerts ?? []).map((alert) => alertKey(alert))
 const added = addedAlerts(baselineKeys, alerts)
 const highs = highAlerts(alerts)
+// Printed next to every verdict: a run that produced no results and one that
+// produced a hundred but called none of them high must not look the same from
+// the outside.
+const summary = `parsed ${alerts.length} result(s), ${highs.length} high/critical`
 
 for (const alert of added) {
   console.error(`codeql-gate: new ${alert.severity} result ${alert.ruleId} at ${alert.path}:${alert.line}`)
 }
 
 if (added.length > 0) {
-  console.error(`codeql-gate: ${added.length} new high/critical result(s); the baseline at ${baseline.recordedAtSha ?? 'an unrecorded sha'} holds ${baselineKeys.length}`)
+  console.error(`codeql-gate: ${summary}, ${added.length} added; the baseline at ${baseline.recordedAtSha ?? 'an unrecorded sha'} holds ${baselineKeys.length}`)
   process.exit(1)
 }
 
 console.log(
-  `codeql-gate: ok (${highs.length} high/critical result(s), all in the baseline of ${baselineKeys.length} recorded at ${baseline.recordedAtSha ?? 'an unrecorded sha'})`,
+  `codeql-gate: ok (${summary}, 0 added; all in the baseline of ${baselineKeys.length} recorded at ${baseline.recordedAtSha ?? 'an unrecorded sha'})`,
 )

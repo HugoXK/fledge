@@ -1,0 +1,1 @@
+The dashboard now opens with one next action instead of a wall of equally weighted cards: the question, alert, failed job or setup step that needs you, with the link that fixes it, and a quiet all-clear that names the next scheduled automatic run when nothing does. The summaries, repository table and recent jobs move into one collapsed disclosure, and no section is removed.

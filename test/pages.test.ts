@@ -5,7 +5,7 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
-import { formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
+import { formBody, json, makeTerminalJob, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
 import { appReposPage, dashboardPage, jobPage, landingPage, metricsPage, repoPage, settingsPage, workspacePage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
 import { localizeMessage } from '../src/i18n.js'
@@ -455,7 +455,7 @@ test('a repository job table paginates at ten per page', async () => {
     const user = makeUser(store, { login: 'repo-page-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_jobs_page', userId: user.id, owner: 'o', name: 'jobs', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     for (let i = 0; i < 11; i += 1) {
-      store.createJob({ id: `job_repo_page_${i}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+      makeTerminalJob(store, { id: `job_repo_page_${i}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
     }
     const { cookie } = sessionFor(built, user)
     const first = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
@@ -1188,6 +1188,39 @@ test('non-empty data regions render exactly as before, with no state wrapper', (
     const timelineCard = cardAfterHeading(jobHtml, 'Timeline')
     assert.match(timelineCard, /job\.enqueued/)
     assert.doesNotMatch(timelineCard, /data-state=/, 'a non-empty timeline gains no state wrapper')
+  } finally {
+    store.close()
+  }
+})
+
+test('a pull request with half the merge evidence never renders as Ready', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'half-evidence-user', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const repo = store.createRepo({ id: 'repo_half_evidence', userId: user.id, owner: 'o', name: 'half', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_half_evidence', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    // The production shape: `tryMerge` writes the path guard on its own, then
+    // refuses on failing checks, so the row keeps a guard and no verification.
+    const guard = { ok: true, checkedAt: new Date().toISOString(), allow: ['src/'], deny: [], files: ['src/a.ts'], violations: [] }
+    store.updateJob(job.id, { pr_url: 'https://github.com/o/half/pull/9', pr_state: 'open', path_guard_json: JSON.stringify(guard) })
+    const row = store.getJob(job.id)
+    assert.notEqual(row, undefined)
+
+    const repoHtml = repoPage({ config, locale: 'en', viewer, repo, jobs: [], prJobs: [row!] })
+    const link = repoHtml.indexOf('/pull/9')
+    assert.notEqual(link, -1, 'the pull request row is rendered')
+    const rowHtml = repoHtml.slice(repoHtml.lastIndexOf('<tr>', link), repoHtml.indexOf('</tr>', link))
+    assert.match(rowHtml, /Not verified/, 'the Verified cell says the half was never measured')
+    assert.doesNotMatch(rowHtml, />Ready</, 'a half-verified pull request never renders the Ready badge')
+    assert.doesNotMatch(rowHtml, /可合并/, 'the Chinese badge is not Ready either')
+
+    const jobHtml = jobPage({ config, locale: 'en', viewer, repo, job: row!, events: [] })
+    const card = cardAfterHeading(jobHtml, 'PR verification')
+    assert.match(card, /Not verified/, 'the job page badge says not verified')
+    assert.doesNotMatch(card, />Ready</, 'the job page never prints the Ready badge above "No verification yet."')
+    assert.match(card, /No verification yet\./, 'the card still states that no verification ran')
   } finally {
     store.close()
   }

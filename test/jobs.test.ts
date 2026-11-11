@@ -176,8 +176,9 @@ test('daily digests still send while two jobs are active', async () => {
     const user = makeUser(store, { login: 'digest-busy-user', status: 'approved' })
     store.setEmailDailyDigest(user.id, true)
     store.createRepo({ id: 'repo_digest_busy', userId: user.id, owner: 'o', name: 'dbusy', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createRepo({ id: 'repo_digest_busy_2', userId: user.id, owner: 'o', name: 'dbusy2', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.createJob({ id: 'job_busy_1', repoId: 'repo_digest_busy', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h1', platformTokenHash: '' })
-    store.createJob({ id: 'job_busy_2', repoId: 'repo_digest_busy', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
+    store.createJob({ id: 'job_busy_2', repoId: 'repo_digest_busy_2', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
     store.updateJob('job_busy_1', { status: 'running' })
     store.updateJob('job_busy_2', { status: 'running' })
     await jobs.tick()
@@ -1728,6 +1729,11 @@ test('scheduled jobs carry the previous run and open work, and classify meta out
     assert.match(goal, /work_open state=triaged/)
     assert.equal(store.getJob(result.job!.id)?.continuity_used, 1)
 
+    // The invariant allows one active job per repository, so the carried-over job
+    // has to finish before the meta-output case enqueues its own.
+    store.updateJob(result.job!.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    store.releaseJobLease(result.job!.id)
+
     const secret = 'callback-secret'
     store.createJob({
       id: 'job_meta', repoId: repo.id, userId: user.id, trigger: 'schedule',
@@ -1976,22 +1982,36 @@ test('a due maintainer continues the open PR when the review interval is not due
   assert.equal(next.kind === 'followup' ? next.prUrl : null, 'https://x/pr/3')
 })
 
-test('only one queued job per repository is claimable at a time', () => {
+test('the database refuses a second active job for a repository', () => {
   const { store, repoId, userId } = leaseSetup()
   try {
     leaseMakeJob(store, repoId, userId, 'job_first', 0)
+    assert.throws(() => leaseMakeJob(store, repoId, userId, 'job_second', 10), /UNIQUE|constraint/i)
+
+    store.updateJob('job_first', { status: 'succeeded', finished_at: new Date().toISOString() })
     leaseMakeJob(store, repoId, userId, 'job_second', 10)
+    assert.equal(store.getJob('job_second')?.status, 'queued')
+  } finally {
+    store.close()
+  }
+})
 
+// #248 pinned "only one queued job per repository is claimable at a time" with a
+// read-time check; #245 replaced that check with the partial unique index, so
+// two queued rows for one repository can no longer exist at all. The claiming
+// half of that case still holds and is kept: a claimed job is not offered again,
+// and a finished one frees the repository for the next job.
+test('a claimed job is not claimable again until it finishes', () => {
+  const { store, repoId, userId } = leaseSetup()
+  try {
+    leaseMakeJob(store, repoId, userId, 'job_first', 0)
     const first = store.claimQueuedJob('worker-1', 60_000)
-    assert.equal(first?.id, 'job_second')
-    assert.equal(store.claimQueuedJob('worker-2', 60_000), undefined)
+    assert.equal(first?.id, 'job_first')
+    assert.equal(store.claimQueuedJob('worker-2', 60_000), undefined, 'a running job is not offered again')
 
-    store.updateJob('job_second', { status: 'running' })
-    assert.equal(store.claimQueuedJob('worker-2', 60_000), undefined)
-
-    store.updateJob('job_second', { status: 'succeeded', finished_at: new Date().toISOString() })
-    const next = store.claimQueuedJob('worker-2', 60_000)
-    assert.equal(next?.id, 'job_first')
+    store.updateJob('job_first', { status: 'succeeded', finished_at: new Date().toISOString() })
+    leaseMakeJob(store, repoId, userId, 'job_second', 10)
+    assert.equal(store.claimQueuedJob('worker-2', 60_000)?.id, 'job_second')
   } finally {
     store.close()
   }
@@ -2181,6 +2201,144 @@ test('the dispatcher respects maxActiveJobs and releases the next repo after the
     await jobs.tick()
     assert.equal(calls.length, 2)
     assert.equal(store.getJob(second.job!.id)?.status, 'running')
+  } finally {
+    store.close()
+  }
+})
+
+test('only the one-active-job index is reported as a busy queue', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'noop', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer(), new InstanceManager(store, config))
+  const stubCreateJob = (thunk: () => never): void => {
+    Object.defineProperty(store, 'createJob', { value: () => thunk(), configurable: true })
+  }
+  try {
+    const user = makeUser(store, { login: 'busy-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_busy', userId: user.id, owner: 'o', name: 'busy', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    // A concurrent enqueue wins the race between the read-time check and this
+    // insert: SQLite names the column of the partial unique index, and the
+    // caller must see a busy queue instead of a 500.
+    stubCreateJob(() => {
+      store.db.exec(`INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, created_at) VALUES ('job_busy_racer', 'repo_busy', '${user.id}', 'queued', 'manual', 'g', 'cb_racer', '${new Date().toISOString()}')`)
+      throw new Error('UNIQUE constraint failed: jobs.repo_id')
+    })
+    assert.deepEqual(await jobs.enqueue(repo, 'manual'), { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' })
+
+    // Any other constraint failure is a bug and has to surface instead.
+    store.db.exec("UPDATE jobs SET status = 'failed' WHERE id = 'job_busy_racer'")
+    stubCreateJob(() => { throw new Error('UNIQUE constraint failed: jobs.id') })
+    await assert.rejects(() => jobs.enqueue(repo, 'manual'), /jobs\.id/)
+  } finally {
+    store.close()
+  }
+})
+
+// #261 review finding: `summary` is the progress field every running heartbeat
+// writes, so a review that reported progress and then failed transiently is the
+// production shape — and it must still get its one retry.
+test('a review that reported one progress heartbeat still gets its one retry', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'review-heartbeat-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_review_heartbeat', userId: user.id, owner: 'o', name: 'heartbeat', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 720, canReview: true, reviewerEnabled: true })
+    const secret = 'review-heartbeat-secret'
+
+    store.createJob({ id: 'job_review_heartbeat', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review' })
+    store.updateJob('job_review_heartbeat', { status: 'running', pr_url: 'https://github.com/o/heartbeat/pull/4' })
+    await jobs.handleCallback('job_review_heartbeat', secret, { status: 'running', summary: 'reviewing pull request 4: reading the diff' })
+    assert.equal(store.getJob('job_review_heartbeat')?.summary, 'reviewing pull request 4: reading the diff', 'the heartbeat stored a progress line')
+
+    await jobs.handleCallback('job_review_heartbeat', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    const pending = store.listSettings('retry_pending:')
+    assert.equal(pending.length, 1, 'progress is not a posted verdict, so the transient failure still retries')
+    assert.equal(pending[0]?.key, 'retry_pending:job_review_heartbeat')
+  } finally {
+    store.close()
+  }
+})
+
+// The half that actually runs: the due retry becomes one review job that keeps
+// the original's pull request and work item, and never a second work item.
+test('a due review retry becomes one review job with retry_of and retry_attempt', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'review-release-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_review_release', userId: user.id, owner: 'o', name: 'release', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 720, canReview: true, reviewerEnabled: true })
+    const item = store.createWorkItem({ id: 'work_review_release', repoId: repo.id, userId: user.id, title: 'review the pull request', prUrl: 'https://github.com/o/release/pull/5', state: 'pr_ready' })
+    const secret = 'review-release-secret'
+
+    store.createJob({ id: 'job_review_release', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review', workItemId: item.id })
+    store.updateJob('job_review_release', { status: 'running', pr_url: 'https://github.com/o/release/pull/5' })
+    await jobs.handleCallback('job_review_release', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+
+    const key = 'retry_pending:job_review_release'
+    const pending = JSON.parse(store.getSetting(key) ?? '{}') as Record<string, unknown>
+    store.setSetting(key, JSON.stringify({ ...pending, dueAt: new Date(Date.now() - 1_000).toISOString() }))
+    await jobs.tick()
+
+    assert.equal(store.getSetting(key), undefined, 'a released retry row is consumed once')
+    const retries = store.listJobsForRepo(repo.id, 10).filter((job) => job.retry_of === 'job_review_release')
+    assert.equal(retries.length, 1, 'exactly one review job is created')
+    const retry = retries[0]!
+    assert.equal(retry.kind, 'review')
+    assert.equal(retry.retry_attempt, 1)
+    assert.equal(retry.pr_url, 'https://github.com/o/release/pull/5', 'the retry keeps the pull request it reviews')
+    assert.equal(retry.work_item_id, item.id, 'and the work item it belongs to')
+    assert.equal(store.listWorkItems(repo.id).length, 1, 'no second work item is created')
+
+    await jobs.tick()
+    assert.equal(store.listJobsForRepo(repo.id, 10).filter((job) => job.retry_of === 'job_review_release').length, 1, 'a second tick does not duplicate the retry')
+  } finally {
+    store.close()
+  }
+})
+
+test('a failed review schedules one retry and keeps its pull request and work item', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'review-retry-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_review_retry', userId: user.id, owner: 'o', name: 'reviewed', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 720, canReview: true, reviewerEnabled: true })
+    const item = store.createWorkItem({ id: 'work_review', repoId: repo.id, userId: user.id, title: 'review the pull request', prUrl: 'https://github.com/o/reviewed/pull/9', state: 'pr_ready' })
+    const secret = 'review-secret'
+
+    store.createJob({ id: 'job_review_retry', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review', workItemId: item.id })
+    store.updateJob('job_review_retry', { status: 'running', pr_url: 'https://github.com/o/reviewed/pull/9' })
+    await jobs.handleCallback('job_review_retry', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    const pending = store.listSettings('retry_pending:')
+    assert.equal(pending.length, 1)
+    assert.equal(pending[0]?.key, 'retry_pending:job_review_retry')
+    const row = JSON.parse(pending[0]?.value ?? '{}') as { attempt?: number; kind?: string; workItemId?: string | null; prUrl?: string | null }
+    assert.equal(row.attempt, 1)
+    assert.equal(row.kind, 'review')
+    assert.equal(row.workItemId, 'work_review')
+    assert.equal(row.prUrl, 'https://github.com/o/reviewed/pull/9')
+
+    // One retry is the bound: a second transient failure stays manual.
+    store.createJob({ id: 'job_review_retry_2', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review', retryAttempt: 1 })
+    store.updateJob('job_review_retry_2', { status: 'running' })
+    await jobs.handleCallback('job_review_retry_2', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    assert.equal(store.listSettings('retry_pending:').length, 1)
+
+    // A quota failure is not transient for a review either.
+    store.createJob({ id: 'job_review_quota', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review' })
+    store.updateJob('job_review_quota', { status: 'running' })
+    await jobs.handleCallback('job_review_quota', secret, { status: 'failed', error: '平台额度已用完' })
+    assert.equal(store.listSettings('retry_pending:').length, 1)
+
+    // A review that already produced a result is not re-run blindly: its comments
+    // are posted, so a blind retry could duplicate the COMMENT review.
+    store.createJob({ id: 'job_review_posted', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review' })
+    store.updateJob('job_review_posted', { status: 'running', review_score: 4, summary: 'posted 3 review comments' })
+    await jobs.handleCallback('job_review_posted', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    assert.equal(store.listSettings('retry_pending:').length, 1)
   } finally {
     store.close()
   }

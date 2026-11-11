@@ -71,23 +71,44 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   job's PR link when it opened one, "finished" with a link to Recent jobs when it
   succeeded without a PR, "running" while it is queued or running, and the retry
   path on the repository page when it failed.
+- **Next action** (`src/views/pages.ts`, `nextActionFor`): `/dashboard` opens
+  with one server-derived action instead of a wall of equal cards. The order is
+  the order a person would take them — an open question only they can answer, an
+  exhausted platform quota, the most urgent alert (stalled or slow job, stale
+  PR, invalid credential, repository budget), the account's newest failed job,
+  the unfinished first-run step — and when none applies, an all-clear that names
+  the known next scheduled automatic run (a repository the scheduler has never
+  run is not a known time and never shadows one), or says that no repository runs
+  automatically. Every source is one the route already loads, so the block cannot
+  disagree with the sections below it. The newest job is read on its own, not
+  from the job-table slice: the table is paged and filtered, and `?jobsPage=2` or
+  `?status=` must not change the sentence the page opens with. The first-run
+  checklist becomes the detail of the same action and does not render a second
+  primary button for that step; the quota, delivery, repository table and
+  recent-job sections move into one `<details>` that starts collapsed, and it
+  renders open whenever the next action points inside it — the add-repository
+  form, the inbox or the attention table — because a browser does not open
+  `<details>` for an in-page anchor, so that link is never hidden behind a tap.
+  The job table's own pager and filter form target `#jobs`, which is inside the
+  same element, so a page loaded with `?jobsPage=2` or an active
+  `repo`/`status`/`kind` filter also renders the disclosure open; otherwise Next
+  and Apply would land on a hidden table. A failed job whose message the
+  platform only writes in Chinese is named by its failure class on a page in the
+  other language, and the raw sentence stays on the job page.
 - **Shell** (`src/views/layout.ts`, `public/app.css`): the main nav marks the
   current section with `aria-current="page"`, derived from the route and
   overridable with `active`. The sticky header owns `--header-h` (re-declared
   per breakpoint); `[id] { scroll-margin-top }` and the workspace frame's height
-  both follow it, so an anchor is never hidden under the header and the frame's
-  bottom lands at the viewport bottom. The shell's controls keep a 44px touch
-  target. At or below 960px the header is one **fixed** 64px row and the
+  both follow it, so an anchor is never hidden under the header when it wraps
+  and the frame's bottom lands at the viewport bottom. The shell's controls keep
+  a 44px touch target. Below 641px the header is one **fixed** 64px row and the
   navigation collapses behind a `data-nav-toggle` button that publishes
   `aria-expanded`; the open menu is an absolutely positioned panel, so it
   overlays the page and `--header-h` keeps the collapsed height while it is
-  open. The toggle itself is hidden above 960px by a base rule, so the desktop
-  header never shows a control whose panel does not exist there. Every
-  destination the wide header lists is still rendered in the panel, so a
-  collapsed header loses no route. The 641-960px band used to keep the wrapped
-  two-row header — 215px at 768px, a quarter of a tablet screen — and #233
-  widened the compact row to cover it; the phone's own 640px block re-declares
-  the same row with tighter padding. Below 420px the row also drops the wordmark (the
+  open. The toggle itself is hidden outside the phone band by a base rule, so
+  the desktop header never shows a control whose panel does not exist there.
+  Every destination the wide header lists is still rendered in the panel,
+  so a phone loses no route. Below 420px the row also drops the wordmark (the
   mark and its own `aria-label` stay) and tightens its padding and gaps: at a
   360px viewport with a classic 15px scrollbar the row has 301px of usable
   width, and the wordmark is the one child that can leave without taking a
@@ -99,6 +120,20 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   (`.fine-link`) and the class carries the floor. Text fields, selects and
   textareas are 16px below 641px, the size below which iOS zooms a focused
   field.
+- **Repository page tabs** (`src/views/pages.ts` `repoPage`, `public/repoTabs.js`):
+  `/repos/:id` renders six sections — Overview, Delivery, Work, Team, Settings,
+  Danger — behind a sticky subnav. The sections are a regroup of the cards the
+  page already renders: nothing new is computed, no route is added, and the ten
+  ids the page published before (`#inbox`, `#chief`, `#role`, `#board`, `#work`,
+  `#delivery`, `#repo-settings`, `#connection`, `#jobs`, `#danger`) are still on
+  or inside a section, so an old link lands where it used to. `#overview`,
+  `#team` and `#settings` are the anchors this adds. The markup ships all six
+  sections expanded, and `public/repoTabs.js` collapses them and moves
+  `aria-current="page"` as the hash changes — an inner anchor such as `#board`
+  opens the section that holds it — so a reader without the script still gets
+  the whole page. The bar sticks at `var(--header-h)` and scrolls horizontally
+  in the phone band; the tab is a 44px `--touch` target and the current tab
+  paints with `--accent-strong`, the one interactive accent.
 - **Dashboard job filters** (`src/lib/jobFilters.ts`): `/dashboard` accepts
   `repo`, `status` and `kind` as GET parameters and applies them in SQL, so the
   count, the page and the pagination links describe the same list; a value the
@@ -152,8 +187,13 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   claim and dispatch the job. A running job renews its five-minute lease every
   minute, and the tick reaper fails a job whose worker stops renewing instead of
   waiting for the 90-minute job timeout. Queue admission rejects a new job when
-  the global or per-user cap is reached. The lease and queue columns are schema
-  version 33.
+  the global or per-user cap is reached. A partial unique index
+  (`jobs_one_active_per_repo`) makes the one-active-job-per-repository rule a
+  database invariant, not only a read-time check; a database written before the
+  index existed is deduped when it opens — keep a running job (else the oldest
+  queued one) and fail the rest with `JOB_DUPLICATE_ACTIVE_SUPERSEDED` and an
+  audit row, so a duplicate row cannot turn startup into a boot failure. The
+  lease and queue columns are schema version 33.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
   a maintainer reviewer is due); with no open work it starts an `iterate` from
@@ -428,7 +468,11 @@ supports blocks the merge with "Test evidence is claimed but no test check
 passed." A claimed green test with a failing test check is contradicted and
 blocks the merge. The job
 page and the delivery list show `ready`, `blocked` or `not verified`, and
-`POST /repos/:id/jobs/:jobId/recheck` refreshes it on demand. Verification never
+`POST /repos/:id/jobs/:jobId/recheck` refreshes it on demand. `ready` requires
+both halves of the evidence: a path guard that passed and a verification
+snapshot that passed. A row with only one of them reports `not verified` and
+names the half that never ran, because a refused merge leaves exactly that shape
+(`tryMerge` stores the guard before it verifies). Verification never
 replaces the merge gate's own re-check at the tip. The evidence row inside the
 card carries that combined verdict rather than the PR evidence alone, so a pull
 request the path guard blocks never renders as evidence passed; the row names the
@@ -441,7 +485,17 @@ timeout, stalled) separately from permanent ones (quota, credential, stage
 evidence, workflow, review, path). A transient failure schedules at most two
 durable retries with 1 and 2 minute delays, stored under `retry_pending:` in
 settings; the scheduler releases a due retry only when the repository has no
-active job and its instance is ready. Permanent failures stay manual. Platform
+active job and its instance is ready. A `review` job gets a narrower policy of
+its own: only `bridge`, `model`, `timeout` and `stalled` are retried, at most
+once per failed review, with the same 1-minute cooldown and 30-minute cap and the
+same pull request and work item; a review that already recorded a
+`review_score` is never retried automatically, because its verdict is already
+posted. `summary` is the job's progress line, written on every running heartbeat,
+not a post marker, so it does not block a retry. If a review posted its comments
+and then lost the terminal callback, nothing stored tells that apart from a
+review that never posted; that residual case is manual. `github`, `quota`,
+`credential` and `review` failures stay manual.
+Permanent failures stay manual. Platform
 concurrency is `PLATFORM_MAX_ACTIVE_JOBS` (default 2), not a hard-coded literal.
 
 ### Metrics, traces, shutdown and webhook replay
@@ -654,7 +708,15 @@ Admins get a read-only `/admin/metrics` funnel:
 users, approved, repos, users with jobs/PRs, success rate, job cost, attributed
 vs unattributed cost, scope/verify/iterate/review counts, Lead-only and grounded
 attribution events, and recent events. `/admin/search` filters jobs and audit entries by the same user
-visibility as the admin page and can export the current result as CSV. The
+visibility as the admin page and can export the current result as CSV.
+
+`/admin/trials` shows every account, with the state derived at read time instead
+of stored: `running` and `expiring` inside the 7-day preview, `eligible` once it
+lapses, `expired` when the audit row `trial.expired` exists, and
+`exempt_used`/`exempt_admin`/`inactive` for the accounts that never expire. The
+page is read-only, offers a `?trial=` filter, and shows the login and the audit
+time rather than an email address; a repository added and later removed still
+counts as used, because the `repo.added` audit row is the evidence. The
 `events` table records activation and intervention events only; no prompt or
 token data.
 

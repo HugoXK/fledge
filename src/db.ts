@@ -362,6 +362,21 @@ export interface PromotionRow {
   created_at: string
 }
 
+// #279: one row per user for the read-only preview-trial view. `repo_added_at`
+// and `expired_at` are audit lookups, not columns: the sweep owns the audit row,
+// this view only reads it.
+export interface TrialCandidate {
+  id: string
+  login: string
+  created_at: string
+  last_login_at: string | null
+  status: string
+  role: string
+  repos: number
+  repo_added_at: string | null
+  expired_at: string | null
+}
+
 export interface AlertView {
   kind: string
   level: 'info' | 'warning' | 'critical'
@@ -866,6 +881,46 @@ export class Store {
   migrateIndexes(): void {
     this.run('CREATE INDEX IF NOT EXISTS quota_ledger_repo_idx ON quota_ledger(repo_id, at DESC)')
     this.run('CREATE INDEX IF NOT EXISTS jobs_pr_state_idx ON jobs(pr_state, created_at DESC)')
+    this.ensureOneActiveJobIndex()
+  }
+
+  // The unique index below is created in the constructor, so a database written
+  // before it existed cannot be left holding two queued/running rows for one
+  // repository: the DDL would throw and the process would never boot. Resolve
+  // those rows deterministically instead. Rule: keep a running job (never fail a
+  // job that is executing; the newest one if several are), otherwise keep the
+  // oldest queued job, and fail every other active row with a stated reason and
+  // one audit line.
+  private ensureOneActiveJobIndex(): void {
+    const ddl = "CREATE UNIQUE INDEX IF NOT EXISTS jobs_one_active_per_repo ON jobs(repo_id) WHERE status IN ('queued','running')"
+    try {
+      this.run(ddl)
+      return
+    } catch (error) {
+      if (!/UNIQUE constraint failed/i.test(String(error))) throw error
+    }
+    try {
+      this.transaction(() => {
+        this.resolveDuplicateActiveJobs()
+        this.run(ddl)
+      })
+    } catch (error) {
+      const offenders = this.all<{ repo_id: string }>("SELECT repo_id FROM jobs WHERE status IN ('queued','running') GROUP BY repo_id HAVING COUNT(*) > 1").map((row) => row.repo_id)
+      throw new Error(`cannot enforce one active job per repository; still duplicated: ${offenders.join(', ') || 'unknown'} (${error instanceof Error ? error.message : String(error)})`)
+    }
+  }
+
+  private resolveDuplicateActiveJobs(): void {
+    const duplicateRepos = this.all<{ repo_id: string }>("SELECT repo_id FROM jobs WHERE status IN ('queued','running') GROUP BY repo_id HAVING COUNT(*) > 1")
+    for (const { repo_id: repoId } of duplicateRepos) {
+      const running = this.all<{ id: string; user_id: string }>("SELECT id, user_id FROM jobs WHERE repo_id = ? AND status = 'running' ORDER BY created_at DESC, rowid DESC", repoId)
+      const queued = this.all<{ id: string; user_id: string }>("SELECT id, user_id FROM jobs WHERE repo_id = ? AND status = 'queued' ORDER BY created_at ASC, rowid ASC", repoId)
+      const demoted = running.length > 0 ? [...running.slice(1), ...queued] : queued.slice(1)
+      for (const row of demoted) {
+        this.run("UPDATE jobs SET status = 'failed', error = 'JOB_DUPLICATE_ACTIVE_SUPERSEDED', finished_at = ? WHERE id = ?", nowIso(), row.id)
+        this.audit(row.user_id, 'job.duplicate_active_superseded', `${row.id}: ${repoId}`)
+      }
+    }
   }
 
   backfillTokenRepoIds(): void {
@@ -1174,6 +1229,20 @@ export class Store {
       user.application_submitted_at,
     )
     return Number(row?.n ?? 0) + 1
+  }
+
+  // #279: the preview-trial sweep (#265) writes a `trial.expired` audit row, and
+  // the admin console had no read path for it. One query, because the view needs
+  // the same three counts for every user and a per-row loop would be N+1.
+  trialCandidates(): TrialCandidate[] {
+    return this.all<TrialCandidate>(
+      `SELECT u.id, u.login, u.created_at, u.last_login_at, u.status, u.role,
+              (SELECT COUNT(*) FROM repos r WHERE r.user_id = u.id) AS repos,
+              (SELECT MAX(a.at) FROM audit_log a WHERE a.user_id = u.id AND a.action = 'repo.added') AS repo_added_at,
+              (SELECT MAX(a.at) FROM audit_log a WHERE a.user_id = u.id AND a.action = 'trial.expired') AS expired_at
+         FROM users u
+        ORDER BY u.created_at ASC`,
+    )
   }
 
   userActivity(id: string): { repos: number; jobs: number; lastJobAt: string | null } {

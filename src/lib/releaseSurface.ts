@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { projectRoot, readPackageVersion } from './projectRoot.js'
 
 // What this process was shipped with, read from local files only: the release
 // routine keeps `package.json` and `CHANGELOG.md` in step, and `changelog.d` is
@@ -20,9 +21,10 @@ export interface ReleaseSurface {
 const SECTION = /^##\s*\[([^\]]+)\]\s*[—–-]\s*(\d{4}-\d{2}-\d{2})\s*$/m
 
 function readVersion(root: string): string | null {
+  // Same reader as `/healthz`: one resolver, so the footer cannot report a
+  // version the process is not running.
   try {
-    const parsed = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version?: unknown }
-    return typeof parsed.version === 'string' && parsed.version !== '' ? parsed.version : null
+    return readPackageVersion(root)
   } catch {
     return null
   }
@@ -61,6 +63,6 @@ let cached: ReleaseSurface | undefined
 
 /** The surface for the running process, read once and reused by every page. */
 export function releaseSurface(): ReleaseSurface {
-  cached ??= readReleaseSurface(process.cwd())
+  cached ??= readReleaseSurface(projectRoot())
   return cached
 }

@@ -11,7 +11,7 @@ import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
 import { classifyFailure } from '../lib/failure.js'
-import { retryDecision } from '../lib/retry.js'
+import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
 import { findDuplicatePullRequest, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
@@ -467,7 +467,20 @@ export class Jobs {
     })
     const priorJobs = this.store.listJobs(user.id, 1).length
     const priority = options.priority ?? (trigger === 'followup' ? 20 : trigger === 'manual' ? 10 : 0)
-    const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null })
+    let job: JobRow
+    try {
+      job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null })
+    } catch (error) {
+      // SQLite reports the column of a partial unique index, not its name, so
+      // this index surfaces as "UNIQUE constraint failed: jobs.repo_id". Only
+      // that column with a live active row for the repository means "queue busy";
+      // a duplicate jobs.id, a foreign-key or a NOT NULL failure is a bug and has
+      // to surface instead of being reported as a busy queue.
+      if (/UNIQUE constraint failed: jobs\.repo_id/.test(String(error)) && this.store.activeJobForRepo(repo.id) !== undefined) {
+        return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
+      }
+      throw error
+    }
     if (continuityUsed) this.store.updateJob(job.id, { continuity_used: 1 })
     if (options.workItemId !== undefined) {
       this.store.updateWorkItem(options.workItemId, { state: 'in_progress', job_id: job.id, assignee_user_id: user.id })
@@ -702,11 +715,19 @@ export class Jobs {
   }
 
   private scheduleRetry(job: JobRow): void {
-    if (job.kind !== 'iterate' && job.kind !== 'verify') return
+    if (job.kind !== 'iterate' && job.kind !== 'verify' && job.kind !== 'review') return
+    // A review that already recorded a score posted its verdict, so a blind retry
+    // could post a second COMMENT set. `summary` is not that signal: every running
+    // heartbeat writes it as the progress line (the bridge posts one after each
+    // major step), so gating on it refused exactly the transient failures this
+    // policy exists for. The residual case — comments posted but the terminal
+    // callback lost — leaves no stored marker; it stays manual and is stated in
+    // docs/architecture.md.
+    if (job.kind === 'review' && job.review_score !== null) return
     const repo = this.store.getRepo(job.repo_id)
     if (repo === undefined || repo.enabled !== 1) return
     const failure = classifyFailure({ status: 'failed', error: job.error, kind: job.kind })
-    const decision = retryDecision(failure?.kind, job.retry_attempt)
+    const decision = job.kind === 'review' ? reviewRetryDecision(failure?.kind, job.retry_attempt) : retryDecision(failure?.kind, job.retry_attempt)
     if (!decision.retry) return
     const key = `retry_pending:${job.id}`
     if (this.store.getSetting(key) !== undefined) return

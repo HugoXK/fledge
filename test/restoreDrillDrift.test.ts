@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Store } from '../src/db.js'
-import { makeUser } from './helpers.js'
+import { makeTerminalJob, makeUser } from './helpers.js'
 
 // #90: the drill used to compare a point-in-time copy with the live source, so
 // any write since the copy was taken turned a healthy backup into a red drill.
@@ -43,8 +43,8 @@ function seed(dbPath: string): void {
   try {
     const user = makeUser(store, { login: 'drift-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_drift', userId: user.id, owner: 'o', name: 'drift', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
-    store.createJob({ id: 'job_drift_1', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h1', platformTokenHash: '' })
-    store.createJob({ id: 'job_drift_2', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
+    makeTerminalJob(store, { id: 'job_drift_1', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h1', platformTokenHash: '' })
+    makeTerminalJob(store, { id: 'job_drift_2', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
   } finally {
     store.close()
   }
@@ -58,7 +58,7 @@ function addJobs(dbPath: string, ids: string[]): void {
     const user = store.get<{ id: string }>('SELECT id FROM users LIMIT 1')
     assert.ok(repo !== undefined && user !== undefined, 'the seeded database must hold a repo and a user')
     for (const id of ids) {
-      store.createJob({ id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: id, platformTokenHash: '' })
+      makeTerminalJob(store, { id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: id, platformTokenHash: '' })
     }
   } finally {
     store.close()

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Store } from '../src/db.js'
-import { makeUser } from './helpers.js'
+import { makeTerminalJob, makeUser } from './helpers.js'
 
 const script = fileURLToPath(new URL('../scripts/backup.mjs', import.meta.url))
 
@@ -35,8 +35,8 @@ function seed(dbPath: string): void {
   try {
     const user = makeUser(store, { login: 'backup-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_backup', userId: user.id, owner: 'o', name: 'backup', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
-    store.createJob({ id: 'job_backup_1', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h1', platformTokenHash: '' })
-    store.createJob({ id: 'job_backup_2', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
+    makeTerminalJob(store, { id: 'job_backup_1', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h1', platformTokenHash: '' })
+    makeTerminalJob(store, { id: 'job_backup_2', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
   } finally {
     store.close()
   }

@@ -222,7 +222,11 @@ otherwise). Squash merges mean a secret added and then deleted on a branch is in
 neither the head tree nor the pull request diff, and only the range still holds
 it. The config is `.gitleaks.toml`; it deliberately carries no `paths`
 allowlist, because that suppresses every finding in a file, including a real
-token pasted later.
+token pasted later. The one reviewed exception is `.gitleaksignore`, whose
+single line is a fingerprint — one commit, one path, one rule, one line — for
+the synthetic fixture in the initial commit that #185 removed from the tree; a
+token committed afterwards is still a finding, which is why the exception names
+a commit rather than a path.
 
 `coverage` enforces a line floor with a number: `test:coverage` in
 `package.json` (`--test-coverage-lines=84`, measured 84.59% at the commit that
@@ -239,14 +243,32 @@ CodeQL is gated on its own diff, not globally. `github/codeql-action/analyze`
 exits 0 whether it found a sink or nothing at all, so the job runs
 `scripts/codeql-gate.mjs` afterwards: it reads the SARIF that run just wrote and
 fails on a high or critical result the recorded baseline does not already hold.
-The baseline is `.github/agent/codeql-baseline.json` — every open high/critical
-alert at its `recordedAtSha`, by rule id, path and line, which today is the four
-`js/missing-rate-limiting` findings in `src/app.ts` (issues #62–#65). They stay
-open and none is dismissed: the gate exists so a pull request cannot quietly add
-a fifth while working beside them. The same step runs on a push to `main`, so new
+The baseline is `.github/agent/codeql-baseline.json` — every high/critical result
+the analysis at the recorded sha emits, by rule id, path and line. It holds seven
+entries today: the four open `js/missing-rate-limiting` findings in `src/app.ts`
+(issues #62–#65) and three results GitHub already carries as dismissed false
+positive (alert #36 in `src/app.ts`, alerts #41 and #42 in
+`src/gateway/gateway.ts`). The lines follow the tree that ships the file, because
+the gate compares against the pull request's own tree; a reviewed PR that inserts
+before an anchor refreshes that line and says so in its body. The four open alerts
+stay open: the gate exists so a pull request cannot quietly add a fifth while
+working beside them. The three dismissed entries are recorded so a decision
+already reviewed in the alert UI does not fail the gate again — recording them
+dismisses nothing. The same step runs on a push to `main`, so new
 highs cannot accumulate there either. Changing the baseline is a reviewed commit,
 and the PR that does it says why the alert is accepted; a line that drifts for an
 unrelated reason fails loudly rather than being silently re-labelled.
+`security-severity` is read whether the SARIF writes it as a number or a string,
+and rules a query pack keeps under `tool.extensions[].rules` are resolved by
+`ruleId` and `ruleIndex`. A security result whose severity cannot be read — and
+a result whose rule cannot be resolved — counts as high; a resolved quality
+query keeps its analysis level. Every verdict is printed with
+`parsed N result(s), H high/critical` so a run that found nothing can be told
+apart from a clean one. Those are different verdicts: a SARIF written by an
+analysis that really ran and legitimately found nothing passes
+(`parsed 0 result(s), 0 high/critical, 0 added`), while a missing file, a
+malformed JSON body and a document with no `runs` entry each fail closed with a
+message naming which of the three it was.
 
 Every action a workflow runs is pinned to a 40-hex commit with the tag it came
 from in a trailing comment, and the `action-pins` job fails the build on a

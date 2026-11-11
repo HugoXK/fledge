@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { adminPage } from '../src/views/pages.js'
 import { layout } from '../src/views/layout.js'
-import { readReleaseSurface } from '../src/lib/releaseSurface.js'
+import { readReleaseSurface, releaseSurface } from '../src/lib/releaseSurface.js'
+import { VERSION } from '../src/version.js'
 import { Store } from '../src/db.js'
 import { makeUser, testConfig } from './helpers.js'
 
@@ -121,4 +122,28 @@ test('the runtime image carries CHANGELOG.md and changelog.d so the card is neve
   assert.ok(runtime !== '', 'the Dockerfile has a runtime stage')
   assert.match(runtime, /^COPY CHANGELOG\.md /m, 'the runtime stage copies CHANGELOG.md')
   assert.match(runtime, /^COPY changelog\.d /m, 'the runtime stage copies changelog.d')
+})
+
+// Started from anywhere that is not the checkout root — a systemd unit with its
+// own `WorkingDirectory`, a container with a different root — the footer used to
+// read `package.json` through `process.cwd()` while `/healthz` read it through
+// the module. One running process could then report two versions, and only one
+// of them was the one it shipped.
+test('the running surface reads package.json from the module root, not the working directory', () => {
+  const expected = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version
+  const original = process.cwd()
+  const elsewhere = mkdtempSync(join(tmpdir(), 'fledge-cwd-'))
+  try {
+    process.chdir(elsewhere)
+    assert.equal(VERSION, expected, '/healthz serves the version of the checkout the code was built from')
+    assert.equal(releaseSurface().version, expected, 'the footer and /admin must not depend on the directory the process was started from')
+  } finally {
+    process.chdir(original)
+    rmSync(elsewhere, { recursive: true, force: true })
+  }
+})
+
+test('no reader in the release surface falls back to the working directory', () => {
+  const source = readFileSync(new URL('../src/lib/releaseSurface.ts', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /process\.cwd\(\)/, 'a working-directory root is how the two surfaces came to disagree')
 })

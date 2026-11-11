@@ -128,7 +128,8 @@ test('a running job without started_at is still eligible for timeout cleanup', (
     assert.equal(store.getJob('job_stale')?.started_at, null)
     const stale = store.staleRunningJobs(new Date(Date.now() + 60_000).toISOString())
     assert.equal(stale.some((job) => job.id === 'job_stale'), true)
-    store.createJob({ id: 'job_stale_queued', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb2', platformTokenHash: '' })
+    store.createRepo({ id: 'repo_stale_2', userId: user.id, owner: 'o', name: 'stale2', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_stale_queued', repoId: 'repo_stale_2', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb2', platformTokenHash: '' })
     const staleQueued = store.staleQueuedJobs(new Date(Date.now() + 60_000).toISOString())
     assert.equal(staleQueued.some((job) => job.id === 'job_stale_queued'), true)
   } finally {
@@ -154,6 +155,49 @@ test('the role backfill runs once and future schema versions are refused', () =>
     reopened.close()
 
     assert.throws(() => new Store(path), /newer than this build/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a database with two active jobs for one repository opens and keeps the running or oldest job', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-dupe-'))
+  const path = join(dir, 'fledge.db')
+  try {
+    const store = new Store(path)
+    const user = makeUser(store, { login: 'dupe-user', status: 'approved' })
+    const queuedRepo = store.createRepo({ id: 'repo_dupe', userId: user.id, owner: 'o', name: 'dupe', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const runningRepo = store.createRepo({ id: 'repo_dupe_running', userId: user.id, owner: 'o', name: 'dupe-running', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    // A file written before the invariant may already hold two active rows for
+    // one repository; seed exactly that so reopening has to resolve it.
+    store.db.exec('DROP INDEX IF EXISTS jobs_one_active_per_repo')
+    store.createJob({ id: 'job_dupe_old', repoId: queuedRepo.id, userId: user.id, trigger: 'manual', goal: 'old', callbackHash: 'cb_old', platformTokenHash: '' })
+    store.createJob({ id: 'job_dupe_new', repoId: queuedRepo.id, userId: user.id, trigger: 'manual', goal: 'new', callbackHash: 'cb_new', platformTokenHash: '' })
+    store.createJob({ id: 'job_dupe_running', repoId: runningRepo.id, userId: user.id, trigger: 'manual', goal: 'running', callbackHash: 'cb_running', platformTokenHash: '' })
+    store.createJob({ id: 'job_dupe_queued', repoId: runningRepo.id, userId: user.id, trigger: 'manual', goal: 'queued', callbackHash: 'cb_queued', platformTokenHash: '' })
+    store.db.exec("UPDATE jobs SET created_at = '2026-01-01T00:00:00.000Z' WHERE id = 'job_dupe_old'")
+    store.db.exec("UPDATE jobs SET created_at = '2026-01-01T00:00:01.000Z' WHERE id = 'job_dupe_new'")
+    store.db.exec("UPDATE jobs SET status = 'running', created_at = '2026-01-01T00:00:02.000Z' WHERE id = 'job_dupe_running'")
+    store.db.exec("UPDATE jobs SET created_at = '2026-01-01T00:00:03.000Z' WHERE id = 'job_dupe_queued'")
+    store.close()
+
+    const reopened = new Store(path)
+    try {
+      // No running job: the oldest queued row survives and the later one is failed.
+      assert.equal(reopened.getJob('job_dupe_old')?.status, 'queued')
+      assert.equal(reopened.getJob('job_dupe_new')?.status, 'failed')
+      assert.equal(reopened.getJob('job_dupe_new')?.error, 'JOB_DUPLICATE_ACTIVE_SUPERSEDED')
+      assert.notEqual(reopened.getJob('job_dupe_new')?.finished_at, null)
+      // A running job is never failed for the index, even when an older row is queued.
+      assert.equal(reopened.getJob('job_dupe_running')?.status, 'running')
+      assert.equal(reopened.getJob('job_dupe_queued')?.status, 'failed')
+      const demoted = reopened.listAudit(10).filter((row) => row.action === 'job.duplicate_active_superseded').map((row) => row.detail).sort()
+      assert.deepEqual(demoted, ['job_dupe_new: repo_dupe', 'job_dupe_queued: repo_dupe_running'])
+      // The invariant is back: a second active row for one repository is refused.
+      assert.throws(() => reopened.createJob({ id: 'job_dupe_extra', repoId: runningRepo.id, userId: user.id, trigger: 'manual', goal: 'extra', callbackHash: 'cb_extra', platformTokenHash: '' }), /UNIQUE constraint failed/)
+    } finally {
+      reopened.close()
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -482,10 +526,10 @@ test('alerts surface stalled jobs, stale PRs and near-budget repositories', () =
   try {
     const user = makeUser(store, { login: 'alert-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_alerts', userId: user.id, owner: 'o', name: 'alerts', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440, monthlyBudgetCny: 1 })
-    store.createJob({ id: 'job_stalled_alert', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-alert', platformTokenHash: '' })
-    store.updateJob('job_stalled_alert', { status: 'running', started_at: '2000-01-01T00:00:00.000Z' })
     store.createJob({ id: 'job_pr_alert', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-pr', platformTokenHash: '' })
     store.updateJob('job_pr_alert', { status: 'succeeded', pr_url: 'https://github.com/o/alerts/pull/1', pr_state: 'open' })
+    store.createJob({ id: 'job_stalled_alert', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-alert', platformTokenHash: '' })
+    store.updateJob('job_stalled_alert', { status: 'running', started_at: '2000-01-01T00:00:00.000Z' })
     store.db.exec("UPDATE jobs SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = 'job_pr_alert'")
     store.recordUsage(user.id, null, 0.9, null, repo.id)
     store.markRepoCredential(repo.id, 'invalid')
