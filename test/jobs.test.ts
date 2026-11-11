@@ -2234,3 +2234,48 @@ test('only the one-active-job index is reported as a busy queue', async () => {
     store.close()
   }
 })
+
+test('a failed review schedules one retry and keeps its pull request and work item', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'review-retry-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_review_retry', userId: user.id, owner: 'o', name: 'reviewed', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 720, canReview: true, reviewerEnabled: true })
+    const item = store.createWorkItem({ id: 'work_review', repoId: repo.id, userId: user.id, title: 'review the pull request', prUrl: 'https://github.com/o/reviewed/pull/9', state: 'pr_ready' })
+    const secret = 'review-secret'
+
+    store.createJob({ id: 'job_review_retry', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review', workItemId: item.id })
+    store.updateJob('job_review_retry', { status: 'running', pr_url: 'https://github.com/o/reviewed/pull/9' })
+    await jobs.handleCallback('job_review_retry', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    const pending = store.listSettings('retry_pending:')
+    assert.equal(pending.length, 1)
+    assert.equal(pending[0]?.key, 'retry_pending:job_review_retry')
+    const row = JSON.parse(pending[0]?.value ?? '{}') as { attempt?: number; kind?: string; workItemId?: string | null; prUrl?: string | null }
+    assert.equal(row.attempt, 1)
+    assert.equal(row.kind, 'review')
+    assert.equal(row.workItemId, 'work_review')
+    assert.equal(row.prUrl, 'https://github.com/o/reviewed/pull/9')
+
+    // One retry is the bound: a second transient failure stays manual.
+    store.createJob({ id: 'job_review_retry_2', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review', retryAttempt: 1 })
+    store.updateJob('job_review_retry_2', { status: 'running' })
+    await jobs.handleCallback('job_review_retry_2', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    assert.equal(store.listSettings('retry_pending:').length, 1)
+
+    // A quota failure is not transient for a review either.
+    store.createJob({ id: 'job_review_quota', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review' })
+    store.updateJob('job_review_quota', { status: 'running' })
+    await jobs.handleCallback('job_review_quota', secret, { status: 'failed', error: '平台额度已用完' })
+    assert.equal(store.listSettings('retry_pending:').length, 1)
+
+    // A review that already produced a result is not re-run blindly: its comments
+    // are posted, so a blind retry could duplicate the COMMENT review.
+    store.createJob({ id: 'job_review_posted', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review' })
+    store.updateJob('job_review_posted', { status: 'running', review_score: 4, summary: 'posted 3 review comments' })
+    await jobs.handleCallback('job_review_posted', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    assert.equal(store.listSettings('retry_pending:').length, 1)
+  } finally {
+    store.close()
+  }
+})

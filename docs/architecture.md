@@ -447,7 +447,13 @@ timeout, stalled) separately from permanent ones (quota, credential, stage
 evidence, workflow, review, path). A transient failure schedules at most two
 durable retries with 1 and 2 minute delays, stored under `retry_pending:` in
 settings; the scheduler releases a due retry only when the repository has no
-active job and its instance is ready. Permanent failures stay manual. Platform
+active job and its instance is ready. A `review` job gets a narrower policy of
+its own: only `bridge`, `model`, `timeout` and `stalled` are retried, at most
+once per failed review, with the same 1-minute cooldown and 30-minute cap and the
+same pull request and work item; a review that already recorded a score or a
+summary is never retried automatically, because it may have posted its comments
+already. `github`, `quota`, `credential` and `review` failures stay manual.
+Permanent failures stay manual. Platform
 concurrency is `PLATFORM_MAX_ACTIVE_JOBS` (default 2), not a hard-coded literal.
 
 ### Metrics, traces, shutdown and webhook replay
