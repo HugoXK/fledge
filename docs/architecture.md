@@ -630,6 +630,13 @@ work writes `platform.drain_incomplete` with the count. A resume deletes the row
 and reports the repositories the tick will consider (`nextTickDue()` is a read: it
 makes no bridge call and no enqueue); it does not replay the set the stop froze.
 
+`/admin` renders the row on every request, above the panels: who stopped the
+platform, when, why, and the resume action. The stop route's `?notice=` line is a
+one-shot report and is gone on reload; the banner is the durable answer, so a
+second admin sees the same state. A row that cannot be parsed still renders the
+banner and says the record is unreadable, because that row still stops
+scheduling; it never renders a blank operator or time as if they were facts.
+
 ### Team session reconciliation
 
 A DSH restart can create new session IDs for the Chief and role bots. Fledge

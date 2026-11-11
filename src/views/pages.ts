@@ -24,6 +24,7 @@ import type { InstallationRepo } from '../repos/app.js'
 import { localizeMessage, localizeNotification, translator, type Locale, type Translate } from '../i18n.js'
 import { parseTeam, type TeamLiveState, type TeamQuestionState } from '../flybot/instances.js'
 import type { ChiefMessage } from '../lib/chiefTranscript.js'
+import type { PlatformStopRecord } from '../jobs/service.js'
 
 export interface InboxQuestion extends TeamQuestionState {
   repoId: string
@@ -1692,6 +1693,12 @@ export function adminPage(input: {
   releaseStatus?: ReleaseStatusSnapshot | null
   /** Defaults to reading `config.backup.dir`; a test passes a fixture directory. */
   backup?: BackupStatus
+  /**
+   * `jobs.platformStop()` read fresh for this request. Null means the platform is
+   * running; `{at:'', by:'', reason:''}` means the row exists but cannot be parsed,
+   * which is still a stop.
+   */
+  platformStop?: PlatformStopRecord | null
 }): string {
   const { config, locale, viewer, users, jobs, jobsPage, jobsTotal, audit, auditPage, auditTotal, perPage, activity, notice, error } = input
   const release = input.release ?? releaseSurface()
@@ -1864,7 +1871,31 @@ export function adminPage(input: {
     </div>
     <p class="muted">${escapeHtml(t('只读：本卡片列出备份目录并核对清单，不会打开正在备份的数据库，也没有备份、恢复或删除按钮。', 'Read-only: this card lists the backup directory and checks the manifests. It never opens the database being backed up, and carries no backup, restore or delete control.'))} ${escapeHtml(t('大小与每个副本核对；sha256 只核对最新副本。', 'Size is compared on every copy; sha256 only on the newest.'))}${newest === null ? ` ${escapeHtml(t('在主机上运行', 'Run'))} <code>npm run db:backup</code> ${escapeHtml(t('后，下一份副本会出现在这里。', 'on the host; the next copy appears here.'))}` : ''}</p>
   </section>`
-  const body = `<section class="card">
+  // #317: the stop route reports its result once in a redirect notice, and a
+  // reload drops that line.
+  // The record is read fresh per request, so the banner states who stopped the
+  // platform, when and why on every render. A corrupt row parses to three empty
+  // strings: it is still a stop, so it says so and never shows a blank operator
+  // as if it were a fact.
+  const stop = input.platformStop ?? null
+  const stopBanner = stop === null
+    ? ''
+    : (() => {
+        const unreadable = stop.at === '' && stop.by === '' && stop.reason === ''
+        const facts = unreadable
+          ? `<li>${escapeHtml(t('停机记录无法读取，平台仍按停止处理。', 'The stop record cannot be read; the platform stays stopped.'))}</li>`
+          : [
+              `<li>${escapeHtml(t('操作者：', 'Operator: '))}<b>@${escapeHtml(stop.by === '' ? '—' : stop.by)}</b></li>`,
+              `<li>${escapeHtml(t('时间：', 'Time: '))}${stop.at === '' ? escapeHtml('—') : `<time datetime="${escapeHtml(stop.at)}">${escapeHtml(humanTimeShort(stop.at))}</time>`}</li>`,
+              `<li>${escapeHtml(t('原因：', 'Reason: '))}${stop.reason === '' ? escapeHtml(t('未给出原因', 'no reason given')) : escapeHtml(stop.reason)}</li>`,
+            ].join('')
+        return `<div class="banner bad" data-platform-stopped role="status">
+    <strong>${escapeHtml(t('平台已停止。', 'Platform is stopped.'))}</strong>
+    <ul>${facts}</ul>
+    <form method="post" action="/admin/platform/resume" class="row">${csrf(viewer)}<button class="btn btn-danger" type="submit">${escapeHtml(t('恢复平台', 'Resume platform'))}</button></form>
+  </div>`
+      })()
+  const body = `${stopBanner}<section class="card">
     <div class="eyebrow">${escapeHtml(t('管理', 'ADMIN'))}</div>
     <h1>${escapeHtml(t('审批与额度', 'Approvals & quota'))}</h1>
     <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}${superadmin ? ` · <a class="link" href="/admin/metrics">${escapeHtml(t('产品指标', 'Product metrics'))}</a> · <a class="link" href="/admin/webhooks">${escapeHtml(t('Webhook deliveries', 'Webhook deliveries'))}</a>` : ''} · <a class="link" href="/admin/search">${escapeHtml(t('审计与任务', 'Audit and jobs'))}</a> · <a class="link" href="/admin/trials">${escapeHtml(t('试用预览', 'Preview trials'))}</a></p>
