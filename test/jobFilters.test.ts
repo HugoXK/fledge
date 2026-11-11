@@ -14,10 +14,17 @@ import { makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
 // and the result set move together, pagination keeps them, and an invalid value
 // is dropped rather than turned into an error page.
 
+// A page is ordered by `created_at`, and inserting a batch in one millisecond
+// leaves every row tied, so the recorded order has to be stated rather than
+// raced. Each seeded job steps the clock by one second off a fixed origin, and
+// each call continues after the previous one, so a later batch really is newer.
+let jobClock = Date.parse('2026-01-01T00:00:00.000Z')
+
 function makeJobs(store: Store, userId: string, repoId: string, prefix: string, count: number, status: 'failed' | 'succeeded', kind = 'iterate'): void {
   for (let index = 0; index < count; index += 1) {
     const id = `job_${prefix}${index}`
-    store.createJob({ id, repoId, userId, trigger: 'manual', goal: 'goal', callbackHash: `hash-${id}`, platformTokenHash: '', kind })
+    jobClock += 1000
+    store.createJob({ id, repoId, userId, trigger: 'manual', goal: 'goal', callbackHash: `hash-${id}`, platformTokenHash: '', kind, createdAt: new Date(jobClock).toISOString() })
     store.updateJob(id, { status })
   }
 }
@@ -65,6 +72,31 @@ test('the store filters compose, and the count matches the rows', () => {
   }
 })
 
+// #232: the CI failure this pins. A batch of jobs written in the same
+// millisecond ties on `created_at`, and without a tiebreaker SQLite is free to
+// return them in storage order — the same row can then sit on page 1 and page 2
+// at once, or fall out of both. `rowid DESC` makes the newest insert of a tie
+// come first, so the pages partition the set.
+test('jobs written in the same millisecond page in insertion order', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'filters-ties', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_ties', userId: user.id, owner: 'o', name: 'ties', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const createdAt = '2026-01-01T00:00:00.000Z'
+    for (const id of ['job_t0', 'job_t1', 'job_t2']) {
+      store.createJob({ id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'goal', callbackHash: `hash-${id}`, platformTokenHash: '', kind: 'iterate', createdAt })
+      store.updateJob(id, { status: 'failed' })
+    }
+
+    const first = store.listJobsPageForUser(user.id, 2, 0, { repo: '', status: '', kind: '' })
+    const second = store.listJobsPageForUser(user.id, 2, 2, { repo: '', status: '', kind: '' })
+    assert.deepEqual(first.map((job) => job.id), ['job_t2', 'job_t1'], 'a tie is broken by insertion order, newest first')
+    assert.deepEqual(second.map((job) => job.id), ['job_t0'], 'the pages partition the set instead of overlapping')
+  } finally {
+    store.close()
+  }
+})
+
 test('the URL and the result set move together, and pagination keeps the filter', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
@@ -101,6 +133,9 @@ test('the URL and the result set move together, and pagination keeps the filter'
     const cleared = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
     assert.match(cleared.body, /data-job-id="job_s0"/, 'clearing restores the unfiltered list')
     assert.doesNotMatch(cleared.body, /No jobs match these filters/)
+    const newer = cleared.body.indexOf('data-job-id="job_s2"')
+    const older = cleared.body.indexOf('data-job-id="job_s0"')
+    assert.ok(newer !== -1 && older !== -1 && newer < older, 'the page is ordered newest first, so job_s2 precedes job_s0')
   } finally {
     await built.app.close()
     store.close()
