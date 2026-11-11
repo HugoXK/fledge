@@ -785,14 +785,20 @@ The manifest is checked in three steps and the card never claims more than it
 did: `size` is compared always; `sha256` is compared only for the newest copy and
 only when that copy is at most 4 MiB (`SHA256_MAX_BYTES`), because hashing is the
 only read of a copy's bytes on a render path and a bounded burst keeps `/admin`
-responsive on a slow disk. A larger copy reads "not checked (copy above N MiB)" —
+responsive on a slow disk. Every other copy is compared by size alone and reads
+"size matches, sha256 not checked (only the newest copy is hashed)", so a render
+reads at most one copy's bytes and at most 4 MiB of them, not the 14 copies
+`scripts/backup.mjs` keeps. A larger copy reads "not checked (copy above N MiB)" —
 not a pass; `npm run db:restore-drill` is what verifies it. A copy with no
 manifest, or a manifest that names another file or cannot be parsed, is its own
 row, so "stopped running" (stale) and "running, producing bad copies" (mismatch)
-never share a sentence. A failed run writes no file at all, so the console can
-report it only as staleness plus a mismatch; the drill prints its verdict and
-records nothing, so the card says "restore drill: none recorded" rather than a
-green it cannot prove.
+never share a sentence. The copies line follows the same rule: only `differs`
+counts a contradiction, copies without a manifest and copies whose `sha256` was
+not read are named in their own words, and a directory with no copy says "nothing
+to check" instead of claiming every copy matches. A failed run writes no file at
+all, so the console can report it only as staleness plus a mismatch; the drill
+prints its verdict and records nothing, so the card says "restore drill: none
+recorded" rather than a green it cannot prove.
 
 ### Operational alerts
 

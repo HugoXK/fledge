@@ -50,8 +50,9 @@ function makeBackupDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'fledge-admin-backup-'))
   // The newest copy is in step with its manifest.
   writeCopy(dir, '2026-11-09T02-00-00-000Z', 'newest backup bytes\n', {})
-  // Same size as its manifest records, different digest: only hashing the copy
-  // can tell that it is not the file the backup wrote.
+  // Same size as its manifest records, different digest. Only the newest copy is
+  // hashed on a render, so this one must read "size matches, sha256 not checked"
+  // rather than borrowing a comparison that never happened.
   writeCopy(dir, '2026-11-08T02-00-00-000Z', 'older backup bytes!\n', { sha256: 'f'.repeat(64) })
   // Written before manifests existed: the drill reports that as a warning, so
   // the console must name it rather than call it a match.
@@ -88,7 +89,7 @@ function card(html: string): string {
   return match[0]
 }
 
-test('the backup surface names the newest copy, its age and the manifest that no longer matches', () => {
+test('the backup surface names the newest copy, its age and what its manifest said', () => {
   const dir = makeBackupDir()
   try {
     const status = readBackupStatus({ dir, now: NOW })
@@ -101,13 +102,33 @@ test('the backup surface names the newest copy, its age and the manifest that no
     assert.equal(newest.manifest, 'matches')
     assert.equal(newest.ageHours, 34)
     assert.equal(status.stale, true)
-    const mismatched = status.copies.find((copy) => copy.manifest === 'differs')
-    assert.ok(mismatched !== undefined)
-    assert.equal(mismatched.name, 'fledge-2026-11-08T02-00-00-000Z.db')
-    assert.equal(mismatched.manifestDetail, 'sha256')
+    assert.equal(status.matching, 1)
+    assert.equal(status.differing, 0)
+    // The older copy records another digest, but its bytes are not read: only the
+    // newest copy is hashed, so this row says what was checked and no more.
+    const older = status.copies.find((copy) => copy.name === 'fledge-2026-11-08T02-00-00-000Z.db')
+    assert.ok(older !== undefined)
+    assert.equal(older.manifest, 'size-only')
+    assert.equal(older.manifestDetail, null)
     const bare = status.copies.find((copy) => copy.manifest === 'missing')
     assert.ok(bare !== undefined)
     assert.equal(bare.name, 'fledge-2026-11-07T02-00-00-000Z.db')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a newest copy whose bytes disagree with its manifest is reported as differing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-admin-backup-sha-'))
+  try {
+    // Size agrees with the manifest, the digest does not: only reading the bytes
+    // of the newest copy can find this, and that copy is the one that is read.
+    writeCopy(dir, '2026-11-09T02-00-00-000Z', 'newest backup bytes\n', { sha256: '0'.repeat(64) })
+    const status = readBackupStatus({ dir, now: NOW })
+    assert.equal(status.newest?.manifest, 'differs')
+    assert.equal(status.newest?.manifestDetail, 'sha256')
+    assert.equal(status.matching, 0)
+    assert.equal(status.differing, 1)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -149,6 +170,47 @@ test('a copy above the hashing cap is reported as not checked, never as a match'
   }
 })
 
+test('the copies summary counts contradictions only, and names the rest in their own words', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-admin-backup-summary-'))
+  try {
+    // Newest above the cap: its size agrees, its sha256 is never read.
+    const name = 'fledge-2026-11-09T02-00-00-000Z.db'
+    const path = join(dir, name)
+    writeFileSync(path, '')
+    truncateSync(path, SHA256_MAX_BYTES + 1)
+    const record = {
+      copy: name,
+      createdAt: '2026-11-09T02:00:00.000Z',
+      size: SHA256_MAX_BYTES + 1,
+      sha256: 'a'.repeat(64),
+      schemaVersion: 3,
+      tables: {},
+    }
+    writeFileSync(`${path}.json`, `${JSON.stringify(record, null, 2)}\n`)
+    // An older copy from before manifests existed: nothing to compare it with.
+    writeCopy(dir, '2026-11-08T02-00-00-000Z', 'no manifest here\n', 'none')
+    const status = readBackupStatus({ dir, now: NOW })
+    assert.equal(status.copies.length, 2)
+    assert.equal(status.matching, 0)
+    // Neither copy contradicts a manifest, and neither is summed as if it had.
+    assert.equal(status.differing, 0)
+
+    const en = card(renderAdmin('en', status))
+    assert.match(en, /2 copies · no copy differs from its manifest · 1 without a manifest · 1 with sha256 not checked/)
+    assert.doesNotMatch(en, /not matching the manifest/)
+    assert.doesNotMatch(en, /all match their manifest/)
+    // The rows still say what each copy is, so the sentence is not the only truth.
+    assert.match(en, /not checked \(copy above 4 MiB\)/)
+    assert.match(en, /missing/)
+
+    const zh = card(renderAdmin('zh', status))
+    assert.match(zh, /2 个副本 · 没有副本与清单不符 · 1 个没有清单 · 1 个未核对 sha256/)
+    assert.doesNotMatch(zh, /都与清单相符/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('a directory with no copy is refused by name, not shown as healthy', () => {
   const root = mkdtempSync(join(tmpdir(), 'fledge-admin-backup-empty-'))
   try {
@@ -162,7 +224,7 @@ test('a directory with no copy is refused by name, not shown as healthy', () => 
   }
 })
 
-test('the admin card shows the newest copy, the staleness, the mismatch and no restore or delete control', () => {
+test('the admin card shows the newest copy, the staleness, the unhashed older copy and no restore or delete control', () => {
   const dir = makeBackupDir()
   try {
     const status = readBackupStatus({ dir, now: NOW })
@@ -171,7 +233,12 @@ test('the admin card shows the newest copy, the staleness, the mismatch and no r
     assert.match(en, /fledge-2026-11-09T02-00-00-000Z\.db/)
     assert.match(en, /34 hours/)
     assert.match(en, /older than the expected 26 hours/)
-    assert.match(en, /differs \(sha256\)/)
+    assert.match(en, /matches \(size and sha256\)/)
+    // The older copy is compared by size only, and the card says exactly that.
+    assert.match(en, /size matches, sha256 not checked \(only the newest copy is hashed\)/)
+    assert.match(en, /no copy differs from its manifest/)
+    assert.match(en, /1 without a manifest/)
+    assert.match(en, /Size is compared on every copy; sha256 only on the newest\./)
     assert.match(en, /Restore drill/)
     assert.match(en, /none recorded/)
     assert.doesNotMatch(card(en), /<form|<button/)
@@ -181,9 +248,29 @@ test('the admin card shows the newest copy, the staleness, the mismatch and no r
     assert.match(zh, /fledge-2026-11-09T02-00-00-000Z\.db/)
     assert.match(zh, /34 小时/)
     assert.match(zh, /预期的 26 小时/)
+    assert.match(zh, /相符（大小与 sha256 一致）/)
+    assert.match(zh, /大小相符，未核对 sha256（只核对最新副本）/)
+    assert.match(zh, /大小与每个副本核对；sha256 只核对最新副本。/)
     assert.match(zh, /恢复演练/)
     assert.match(zh, /没有记录/)
     assert.doesNotMatch(card(zh), /<form|<button/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a card with a newest copy that disagrees says so and counts exactly one', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-admin-backup-differs-'))
+  try {
+    writeCopy(dir, '2026-11-09T02-00-00-000Z', 'newest backup bytes\n', { sha256: '0'.repeat(64) })
+    const status = readBackupStatus({ dir, now: NOW })
+    const en = renderAdmin('en', status)
+    assert.match(en, /differs \(sha256\)/)
+    assert.match(en, /1 differs from its manifest/)
+    assert.doesNotMatch(en, /no copy differs from its manifest/)
+    const zh = renderAdmin('zh', status)
+    assert.match(zh, /不符（sha256）/)
+    assert.match(zh, /1 个与清单不符/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -197,11 +284,15 @@ test('an instance that never wrote a backup says so, and names the command that 
     assert.match(en, /No backup copy recorded yet/)
     assert.match(en, /npm run db:backup/)
     assert.doesNotMatch(card(en), /<form|<button/)
+    // Zero copies is "nothing to check", never "all match their manifest".
+    assert.match(en, /0 copies · nothing to check/)
     assert.doesNotMatch(card(en), /matches its manifest/)
+    assert.doesNotMatch(card(en), /all match their manifest/)
 
     const zh = renderAdmin('zh', status)
     assert.match(zh, /还没有记录备份副本/)
     assert.match(zh, /npm run db:backup/)
+    assert.match(zh, /0 个副本 · 没有副本可核对/)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

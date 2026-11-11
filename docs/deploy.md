@@ -344,8 +344,12 @@ error anywhere, so the card can only show it as staleness. It never opens
 `fledge.db`, and it carries no backup, restore or delete control; those stay
 host commands. Hashing is bounded: the card hashes only the newest copy, and
 only when that copy is at most 4 MiB, so a page render cannot stall on a large
-dump. Above the cap the row says the `sha256` was not checked, which is not a
-pass — `npm run db:restore-drill` is the command that verifies a large copy. The
+dump; every older copy is compared by size only and reads `size matches, sha256
+not checked (only the newest copy is hashed)`. Above the cap the newest row says
+the `sha256` was not checked, which is not a pass — `npm run db:restore-drill` is
+the command that verifies a large copy. The copies line counts only copies a
+manifest contradicts and names the rest separately, so `0 copies · nothing to
+check` is what an empty directory says. The
 drill prints its verdict and records nothing, so the card says `none recorded`
 rather than showing a green it cannot prove.
 

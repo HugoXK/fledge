@@ -8,13 +8,28 @@ import { join } from 'node:path'
 // module lists and reads files and never touches `fledge.db`.
 export const DEFAULT_EXPECTED_HOURS = 26
 
-// Hashing is the only read of a copy's bytes during a page render, so it is
-// bounded: 4 MiB is a short burst even on a slow disk, and a larger copy is
-// reported as not checked. `npm run db:restore-drill` is what verifies a big
-// copy; this page must not stall to repeat it.
+// Hashing is the only read of a copy's bytes on a render path, so it is bounded
+// twice: only the newest copy is hashed, and only while that copy is at most
+// 4 MiB. `scripts/backup.mjs` keeps 14 copies, so hashing every copy would turn
+// each `/admin` render into up to ~56 MiB of reads, for manifests the page does
+// not need to answer "is the newest copy the file the writer recorded?".
+// `npm run db:restore-drill` is what verifies a large or older copy; this page
+// must not stall to repeat it.
 export const SHA256_MAX_BYTES = 4 * 1024 * 1024
 
-export type ManifestState = 'matches' | 'differs' | 'not-checked' | 'missing' | 'unreadable'
+export type ManifestState =
+  /** Size and sha256 both agree. Only the newest copy can reach this state. */
+  | 'matches'
+  /** A manifest contradicts the copy: its size, or the newest copy's sha256. */
+  | 'differs'
+  /** The newest copy is above `SHA256_MAX_BYTES`, so its sha256 was not read. */
+  | 'not-checked'
+  /** Size agrees; sha256 was not compared, because only the newest copy is. */
+  | 'size-only'
+  /** No manifest beside the copy. */
+  | 'missing'
+  /** A manifest exists but cannot be read as one. */
+  | 'unreadable'
 
 export interface BackupCopyStatus {
   name: string
@@ -38,9 +53,14 @@ export interface BackupStatus {
   /** True only when a copy exists and is older than the expected interval. */
   stale: boolean
   expectedHours: number
-  /** Copies a manifest vouches for, and copies it does not. */
+  /** Copies whose size and sha256 both agree with the manifest. */
   matching: number
-  mismatched: number
+  /**
+   * Copies a manifest contradicts. Copies that were never compared - no
+   * manifest, or a sha256 the page did not read - are counted separately by the
+   * view, so this number never stands for a check that did not happen.
+   */
+  differing: number
 }
 
 // `fledge-2026-11-09T02-00-00-000Z.db`: the writer's ISO stamp with the colons
@@ -80,7 +100,14 @@ function sha256Sync(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
 }
 
-function inspect(dir: string, name: string, now: number): BackupCopyStatus | null {
+interface Inspected {
+  copy: BackupCopyStatus
+  /** The parsed manifest, or null when there is none or it cannot be read. */
+  record: ManifestRecord | null
+  path: string
+}
+
+function inspect(dir: string, name: string, now: number): Inspected | null {
   const path = join(dir, name)
   let sizeBytes: number
   try {
@@ -102,23 +129,44 @@ function inspect(dir: string, name: string, now: number): BackupCopyStatus | nul
   } else if (manifest.size !== sizeBytes) {
     state = 'differs'
     detail = 'size'
-  } else if (sizeBytes > SHA256_MAX_BYTES) {
-    state = 'not-checked'
   } else {
-    try {
-      state = sha256Sync(path) === manifest.sha256 ? 'matches' : 'differs'
-      detail = state === 'differs' ? 'sha256' : null
-    } catch {
-      state = 'unreadable'
-    }
+    // Size agrees. Whether the bytes do is decided for the newest copy only,
+    // by `resolveHash` below; an older copy keeps this row rather than reading
+    // bytes no one asked about.
+    state = 'size-only'
   }
   return {
-    name,
-    createdAt: stamped?.createdAt ?? (time === null ? null : new Date(time).toISOString()),
-    sizeBytes,
-    ageHours: time === null ? null : (now - time) / 3_600_000,
-    manifest: state,
-    manifestDetail: detail,
+    copy: {
+      name,
+      createdAt: stamped?.createdAt ?? (time === null ? null : new Date(time).toISOString()),
+      sizeBytes,
+      ageHours: time === null ? null : (now - time) / 3_600_000,
+      manifest: state,
+      manifestDetail: detail,
+    },
+    record: manifest === 'missing' || manifest === 'unreadable' ? null : manifest,
+    path,
+  }
+}
+
+// The one place this module reads a copy's bytes: the newest copy, after its
+// size already agreed, while it is under the cap. Above the cap it says so.
+function resolveHash(entry: Inspected): void {
+  const copy = entry.copy
+  if (entry.record === null || copy.manifest !== 'size-only') return
+  if (copy.sizeBytes > SHA256_MAX_BYTES) {
+    copy.manifest = 'not-checked'
+    return
+  }
+  try {
+    if (sha256Sync(entry.path) === entry.record.sha256) {
+      copy.manifest = 'matches'
+    } else {
+      copy.manifest = 'differs'
+      copy.manifestDetail = 'sha256'
+    }
+  } catch {
+    copy.manifest = 'unreadable'
   }
 }
 
@@ -142,24 +190,34 @@ export function readBackupStatus(input: {
   try {
     names = readdirSync(input.dir).filter((name) => name.endsWith('.db') && name.startsWith('fledge-'))
   } catch {
-    return { dir: input.dir, present: false, copies: [], newest: null, stale: false, expectedHours, matching: 0, mismatched: 0 }
+    return {
+      dir: input.dir,
+      present: false,
+      copies: [],
+      newest: null,
+      stale: false,
+      expectedHours,
+      matching: 0,
+      differing: 0,
+    }
   }
-  const copies = names
+  const inspected = names
     .map((name) => inspect(input.dir, name, now))
-    .filter((copy): copy is BackupCopyStatus => copy !== null)
+    .filter((entry): entry is Inspected => entry !== null)
     // Smallest age first: that is the newest copy. A copy whose date cannot be
     // read sorts last rather than claiming to be the freshest.
-    .sort((left, right) => (left.ageHours ?? Number.POSITIVE_INFINITY) - (right.ageHours ?? Number.POSITIVE_INFINITY))
-  const newest = copies[0] ?? null
-  const matching = copies.filter((copy) => copy.manifest === 'matches').length
+    .sort((left, right) => (left.copy.ageHours ?? Number.POSITIVE_INFINITY) - (right.copy.ageHours ?? Number.POSITIVE_INFINITY))
+  const newest = inspected[0] ?? null
+  if (newest !== null) resolveHash(newest)
+  const copies = inspected.map((entry) => entry.copy)
   return {
     dir: input.dir,
     present: true,
     copies,
-    newest,
-    stale: newest?.ageHours !== null && newest?.ageHours !== undefined && newest.ageHours > expectedHours,
+    newest: newest?.copy ?? null,
+    stale: newest !== null && newest.copy.ageHours !== null && newest.copy.ageHours > expectedHours,
     expectedHours,
-    matching,
-    mismatched: copies.length - matching,
+    matching: copies.filter((copy) => copy.manifest === 'matches').length,
+    differing: copies.filter((copy) => copy.manifest === 'differs').length,
   }
 }

@@ -1745,6 +1745,8 @@ export function adminPage(input: {
         return copy.manifestDetail === 'size' ? t('不符（大小）', 'differs (size)') : t('不符（sha256）', 'differs (sha256)')
       case 'not-checked':
         return t(`未检查（副本大于 ${Math.round(SHA256_MAX_BYTES / (1024 * 1024))} MiB）`, `not checked (copy above ${Math.round(SHA256_MAX_BYTES / (1024 * 1024))} MiB)`)
+      case 'size-only':
+        return t('大小相符，未核对 sha256（只核对最新副本）', 'size matches, sha256 not checked (only the newest copy is hashed)')
       case 'missing':
         return t('缺失', 'missing')
       default:
@@ -1758,9 +1760,22 @@ export function adminPage(input: {
       ? t(`${backupHours(newest.ageHours)}，超过预期的 ${backup.expectedHours} 小时`, `${backupHours(newest.ageHours)}, older than the expected ${backup.expectedHours} hours`)
       : t(`${backupHours(newest.ageHours)}，在预期的 ${backup.expectedHours} 小时以内`, `${backupHours(newest.ageHours)}, within the expected ${backup.expectedHours} hours`)
   const copyCount = backup.copies.length === 1 ? t('1 个副本', '1 copy') : t(`${backup.copies.length} 个副本`, `${backup.copies.length} copies`)
-  const copyAgreement = backup.mismatched === 0
-    ? t('都与清单相符', 'all match their manifest')
-    : t(`${backup.mismatched} 个与清单不符`, `${backup.mismatched} not matching the manifest`)
+  // One sentence per kind of fact, so a copy that was never compared is never
+  // summed into "does not match": only `differs` counts a contradiction, and
+  // copies without a manifest and copies whose sha256 was not read say so in
+  // their own words.
+  const differingText = backup.differing === 1
+    ? t('1 个与清单不符', '1 differs from its manifest')
+    : t(`${backup.differing} 个与清单不符`, `${backup.differing} differ from their manifest`)
+  const unmanifested = backup.copies.filter((copy) => copy.manifest === 'missing' || copy.manifest === 'unreadable').length
+  const unhashed = backup.copies.filter((copy) => copy.manifest === 'not-checked' || copy.manifest === 'size-only').length
+  const copyAgreement = backup.copies.length === 0
+    ? t('没有副本可核对', 'nothing to check')
+    : [
+        backup.differing === 0 ? t('没有副本与清单不符', 'no copy differs from its manifest') : differingText,
+        unmanifested === 0 ? null : t(`${unmanifested} 个没有清单`, `${unmanifested} without a manifest`),
+        unhashed === 0 ? null : t(`${unhashed} 个未核对 sha256`, `${unhashed} with sha256 not checked`),
+      ].filter((part): part is string => part !== null).join(' · ')
   const mismatchRows = backup.copies
     .filter((copy) => copy.manifest !== 'matches')
     .map((copy) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(copy.name)}</strong><small>${escapeHtml(manifestText(copy))} · ${escapeHtml(backupSize(copy.sizeBytes))} · ${escapeHtml(humanTimeShort(copy.createdAt))}</small></div></div>`)
@@ -1775,7 +1790,7 @@ export function adminPage(input: {
       ${mismatchRows}
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('恢复演练', 'Restore drill'))}</strong><small>${escapeHtml(t('没有记录', 'none recorded'))}</small></div></div>
     </div>
-    <p class="muted">${escapeHtml(t('只读：本卡片列出备份目录并核对清单，不会打开正在备份的数据库，也没有备份、恢复或删除按钮。', 'Read-only: this card lists the backup directory and checks the manifests. It never opens the database being backed up, and carries no backup, restore or delete control.'))}${newest === null ? ` ${escapeHtml(t('在主机上运行', 'Run'))} <code>npm run db:backup</code> ${escapeHtml(t('后，下一份副本会出现在这里。', 'on the host; the next copy appears here.'))}` : ''}</p>
+    <p class="muted">${escapeHtml(t('只读：本卡片列出备份目录并核对清单，不会打开正在备份的数据库，也没有备份、恢复或删除按钮。', 'Read-only: this card lists the backup directory and checks the manifests. It never opens the database being backed up, and carries no backup, restore or delete control.'))} ${escapeHtml(t('大小与每个副本核对；sha256 只核对最新副本。', 'Size is compared on every copy; sha256 only on the newest.'))}${newest === null ? ` ${escapeHtml(t('在主机上运行', 'Run'))} <code>npm run db:backup</code> ${escapeHtml(t('后，下一份副本会出现在这里。', 'on the host; the next copy appears here.'))}` : ''}</p>
   </section>`
   const body = `<section class="card">
     <div class="eyebrow">${escapeHtml(t('管理', 'ADMIN'))}</div>
