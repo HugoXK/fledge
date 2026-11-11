@@ -1,11 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
-import { formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
+import { formBody, json, makeTerminalJob, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
 import { appReposPage, dashboardPage, jobPage, landingPage, metricsPage, repoPage, settingsPage, workspacePage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
 import { localizeMessage } from '../src/i18n.js'
@@ -455,7 +455,7 @@ test('a repository job table paginates at ten per page', async () => {
     const user = makeUser(store, { login: 'repo-page-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_jobs_page', userId: user.id, owner: 'o', name: 'jobs', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     for (let i = 0; i < 11; i += 1) {
-      store.createJob({ id: `job_repo_page_${i}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+      makeTerminalJob(store, { id: `job_repo_page_${i}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
     }
     const { cookie } = sessionFor(built, user)
     const first = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
@@ -1190,5 +1190,381 @@ test('non-empty data regions render exactly as before, with no state wrapper', (
     assert.doesNotMatch(timelineCard, /data-state=/, 'a non-empty timeline gains no state wrapper')
   } finally {
     store.close()
+  }
+})
+
+test('a pull request with half the merge evidence never renders as Ready', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'half-evidence-user', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const repo = store.createRepo({ id: 'repo_half_evidence', userId: user.id, owner: 'o', name: 'half', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_half_evidence', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    // The production shape: `tryMerge` writes the path guard on its own, then
+    // refuses on failing checks, so the row keeps a guard and no verification.
+    const guard = { ok: true, checkedAt: new Date().toISOString(), allow: ['src/'], deny: [], files: ['src/a.ts'], violations: [] }
+    store.updateJob(job.id, { pr_url: 'https://github.com/o/half/pull/9', pr_state: 'open', path_guard_json: JSON.stringify(guard) })
+    const row = store.getJob(job.id)
+    assert.notEqual(row, undefined)
+
+    const repoHtml = repoPage({ config, locale: 'en', viewer, repo, jobs: [], prJobs: [row!] })
+    const link = repoHtml.indexOf('/pull/9')
+    assert.notEqual(link, -1, 'the pull request row is rendered')
+    const rowHtml = repoHtml.slice(repoHtml.lastIndexOf('<tr>', link), repoHtml.indexOf('</tr>', link))
+    assert.match(rowHtml, /Not verified/, 'the Verified cell says the half was never measured')
+    assert.doesNotMatch(rowHtml, />Ready</, 'a half-verified pull request never renders the Ready badge')
+    assert.doesNotMatch(rowHtml, /可合并/, 'the Chinese badge is not Ready either')
+
+    const jobHtml = jobPage({ config, locale: 'en', viewer, repo, job: row!, events: [] })
+    const card = cardAfterHeading(jobHtml, 'PR verification')
+    assert.match(card, /Not verified/, 'the job page badge says not verified')
+    assert.doesNotMatch(card, />Ready</, 'the job page never prints the Ready badge above "No verification yet."')
+    assert.match(card, /No verification yet\./, 'the card still states that no verification ran')
+  } finally {
+    store.close()
+  }
+})
+
+// --- Redirect banner localization (#240) -----------------------------------
+//
+// A banner sentence reaches a redirect through one of two sinks: S1
+// `encodeURIComponent(...)` at the call site, or S2 `withMessage`/`fail`, which
+// encode it inside the helper. Every `reply.redirect(...)` is walked, so a third
+// helper or a hand-built query fails here instead of shipping a Chinese banner
+// to /lang/en. The guard is the whole set, not the texts the issue listed, so a
+// banner added by a later PR has to bring its English form with it.
+
+const CJK = /[\u4e00-\u9fff]/
+
+type BannerText = { source: string; rendered: string }
+
+type Interpolation = { body: string; start: number; end: number }
+
+function skipQuoted(text: string, start: number): number {
+  const quote = text[start] ?? ''
+  let index = start + 1
+  while (index < text.length) {
+    const char = text[index]
+    if (char === '\\') { index += 2; continue }
+    if (char === quote) return index
+    index += 1
+  }
+  throw new Error(`unterminated string at ${start}`)
+}
+
+function skipTemplate(text: string, start: number): number {
+  let index = start + 1
+  while (index < text.length) {
+    const char = text[index]
+    if (char === '\\') { index += 2; continue }
+    if (char === '`') return index
+    if (char === '$' && text[index + 1] === '{') {
+      index = balanced(text, index + 1).end + 1
+      continue
+    }
+    index += 1
+  }
+  throw new Error(`unterminated template at ${start}`)
+}
+
+function balanced(text: string, start: number): { body: string; end: number } {
+  let depth = 0
+  let index = start
+  while (index < text.length) {
+    const char = text[index]
+    if (char === '`') { index = skipTemplate(text, index) + 1; continue }
+    if (char === '"' || char === "'") { index = skipQuoted(text, index) + 1; continue }
+    if (char === '(' || char === '[' || char === '{') depth += 1
+    else if (char === ')' || char === ']' || char === '}') {
+      depth -= 1
+      if (depth === 0) return { body: text.slice(start + 1, index), end: index }
+    }
+    index += 1
+  }
+  throw new Error(`unbalanced expression at ${start}`)
+}
+
+function scanInterpolations(text: string, offset: number): Interpolation[] {
+  const found: Interpolation[] = []
+  let index = 0
+  while (index < text.length) {
+    const char = text[index]
+    if (char === '`') {
+      const end = skipTemplate(text, index)
+      const content = text.slice(index + 1, end)
+      let cursor = 0
+      while (cursor < content.length) {
+        const inner = content[cursor]
+        if (inner === '\\') { cursor += 2; continue }
+        if (inner === '$' && content[cursor + 1] === '{') {
+          const part = balanced(content, cursor + 1)
+          const start = offset + index + 1 + cursor
+          found.push({ body: part.body, start, end: start + (part.end - cursor) })
+          found.push(...scanInterpolations(part.body, start + 2))
+          cursor = part.end + 1
+          continue
+        }
+        cursor += 1
+      }
+      index = end + 1
+      continue
+    }
+    if (char === '"' || char === "'") { index = skipQuoted(text, index) + 1; continue }
+    if (char === '$' && text[index + 1] === '{') {
+      const part = balanced(text, index + 1)
+      const start = offset + index
+      found.push({ body: part.body, start, end: start + (part.end - index) })
+      found.push(...scanInterpolations(part.body, start + 2))
+      index = part.end + 1
+      continue
+    }
+    index += 1
+  }
+  return found
+}
+
+function splitTopLevel(body: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let current = ''
+  let index = 0
+  while (index < body.length) {
+    const char = body[index]
+    if (char === '`') { const end = skipTemplate(body, index); current += body.slice(index, end + 1); index = end + 1; continue }
+    if (char === '"' || char === "'") { const end = skipQuoted(body, index); current += body.slice(index, end + 1); index = end + 1; continue }
+    if (char === '(' || char === '[' || char === '{') depth += 1
+    if (char === ')' || char === ']' || char === '}') depth -= 1
+    if (char === ',' && depth === 0) { parts.push(current.trim()); current = ''; index += 1; continue }
+    current += char
+    index += 1
+  }
+  if (current.trim() !== '') parts.push(current.trim())
+  return parts
+}
+
+type Binding = { kind: 'array'; parts: string[] } | { kind: 'expression'; expression: string }
+
+function bindingBefore(source: string, name: string, before: number): Binding | undefined {
+  const pattern = new RegExp(`const ${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} =`, 'g')
+  let found: number | undefined
+  for (const match of source.matchAll(pattern)) {
+    if (match.index !== undefined && match.index < before) found = match.index
+  }
+  if (found === undefined) return undefined
+  let index = found + `const ${name} =`.length
+  while (index < source.length && /\s/.test(source[index] ?? '')) index += 1
+  if (source[index] === '[') {
+    const part = balanced(source, index)
+    const parts = splitTopLevel(part.body)
+    const pushPattern = new RegExp(`\\b${name}\\.push\\(`, 'g')
+    for (const match of source.matchAll(pushPattern)) {
+      if (match.index === undefined || match.index < found || match.index > before) continue
+      const call = balanced(source, match.index + match[0].length - 1)
+      parts.push(call.body)
+    }
+    return { kind: 'array', parts }
+  }
+  let end = index
+  let depth = 0
+  while (end < source.length) {
+    const char = source[end]
+    if (char === '`') { end = skipTemplate(source, end) + 1; continue }
+    if (char === '"' || char === "'") { end = skipQuoted(source, end) + 1; continue }
+    if (char === '(' || char === '[' || char === '{') depth += 1
+    if (char === ')' || char === ']' || char === '}') {
+      if (depth === 0) break
+      depth -= 1
+    }
+    if ((char === '\n' || char === ';') && depth === 0) break
+    end += 1
+  }
+  return { kind: 'expression', expression: source.slice(index, end).trim() }
+}
+
+function renderTemplate(content: string): string {
+  let rendered = ''
+  let index = 0
+  while (index < content.length) {
+    const char = content[index]
+    if (char === '\\') { rendered += content.slice(index, index + 2); index += 2; continue }
+    if (char === '$' && content[index + 1] === '{') {
+      const part = balanced(content, index + 1)
+      // A clause written as `condition ? '' : '...'` renders empty in the
+      // common case; a fixed `2` is the representative for a value.
+      rendered += /\?\s*''\s*:/.test(part.body) ? '' : '2'
+      index = part.end + 1
+      continue
+    }
+    rendered += char
+    index += 1
+  }
+  return rendered
+}
+
+function textsOf(expression: string, depth = 0): BannerText[] {
+  const found: BannerText[] = []
+  let index = 0
+  while (index < expression.length) {
+    const char = expression[index]
+    if (char === 't' && expression[index + 1] === '(' && !/[\w$.]/.test(expression[index - 1] ?? '')) {
+      // `t(zh, en)` already carries both languages; its Chinese arm is not a
+      // banner that needs a row.
+      index = balanced(expression, index + 1).end + 1
+      continue
+    }
+    if (char === '"' || char === "'") {
+      const end = skipQuoted(expression, index)
+      const value = expression.slice(index + 1, end)
+      if (CJK.test(value)) found.push({ source: value, rendered: value })
+      index = end + 1
+      continue
+    }
+    if (char === '`') {
+      const end = skipTemplate(expression, index)
+      const content = expression.slice(index + 1, end)
+      if (CJK.test(content)) found.push({ source: content, rendered: renderTemplate(content) })
+      index = end + 1
+      continue
+    }
+    if (depth < 4 && char === '$' && expression[index + 1] === '{') {
+      const part = balanced(expression, index + 1)
+      found.push(...textsOf(part.body, depth + 1))
+      index = part.end + 1
+      continue
+    }
+    index += 1
+  }
+  return found
+}
+
+function sinkValue(expression: string): { allowed: boolean; message: string } {
+  const trimmed = expression.trim()
+  if (trimmed.startsWith('withMessage(')) {
+    const args = splitTopLevel(balanced(trimmed, trimmed.indexOf('(')).body)
+    return { allowed: true, message: args[1] ?? '' }
+  }
+  if (trimmed.startsWith('fail(')) {
+    const args = splitTopLevel(balanced(trimmed, trimmed.indexOf('(')).body)
+    return { allowed: true, message: args[0] ?? '' }
+  }
+  if (trimmed.startsWith('encodeURIComponent(')) {
+    return { allowed: true, message: balanced(trimmed, trimmed.indexOf('(')).body }
+  }
+  return { allowed: false, message: trimmed }
+}
+
+function bannerTexts(source: string): { texts: BannerText[]; bypasses: string[] } {
+  const texts: BannerText[] = []
+  const bypasses: string[] = []
+  const seen = new Set<string>()
+
+  function collect(expression: string): void {
+    for (const entry of textsOf(expression)) {
+      if (seen.has(entry.rendered)) continue
+      seen.add(entry.rendered)
+      texts.push(entry)
+    }
+  }
+
+  function push(message: string, at: number): void {
+    const trimmed = message.trim()
+    if (trimmed === '') return
+    if (/^[A-Za-z_$][\w$]*$/.test(trimmed)) {
+      const binding = bindingBefore(source, trimmed, at)
+      if (binding === undefined) return
+      if (binding.kind === 'array') {
+        for (const part of binding.parts) collect(part)
+        return
+      }
+      collect(binding.expression)
+      return
+    }
+    collect(trimmed)
+  }
+
+  function isKeyExpression(expression: string, at: number): boolean {
+    const trimmed = expression.trim()
+    if (/'notice'/.test(trimmed) && /'error'/.test(trimmed)) return true
+    if (!/^[A-Za-z_$][\w$]*$/.test(trimmed)) return false
+    const binding = bindingBefore(source, trimmed, at)
+    return binding?.kind === 'expression' && /'notice'/.test(binding.expression) && /'error'/.test(binding.expression)
+  }
+
+  for (const match of source.matchAll(/reply\.redirect\(/g)) {
+    if (match.index === undefined) continue
+    const at = match.index
+    const arg = balanced(source, at + match[0].length - 1).body.trim()
+    if (arg.startsWith('withMessage(') || arg.startsWith('fail(')) {
+      const parsed = sinkValue(arg)
+      push(parsed.message, at)
+      continue
+    }
+    let found = false
+    const parts = scanInterpolations(arg, 0).sort((left, right) => left.start - right.start)
+    for (let position = 0; position < parts.length; position += 1) {
+      const part = parts[position]
+      if (part === undefined) continue
+      const prefix = arg.slice(0, part.start)
+      let isValue = /(?:notice|error)=$/.test(prefix)
+      if (!isValue && prefix.endsWith('}=')) {
+        const previous = parts[position - 1]
+        isValue = previous !== undefined && previous.end === prefix.length - 2 && isKeyExpression(previous.body, at)
+      }
+      if (!isValue) {
+        if (prefix.endsWith('}=')) bypasses.push(`a notice/error key this rule cannot follow in a redirect at offset ${at}`)
+        continue
+      }
+      const parsed = sinkValue(part.body)
+      if (!parsed.allowed) { bypasses.push(`${part.body.trim()} in a redirect at offset ${at}`); continue }
+      found = true
+      push(parsed.message, at)
+    }
+    const concat = /(?:notice|error)=(['"])\s*\+\s*([\s\S]+)$/.exec(arg)
+    if (concat !== null) {
+      const parsed = sinkValue(concat[2] ?? '')
+      if (!parsed.allowed) bypasses.push(`${(concat[2] ?? '').trim()} in a redirect at offset ${at}`)
+      else { found = true; push(parsed.message, at) }
+    }
+    if (!found && /[?&](?:notice|error)=\S/.test(arg)) bypasses.push(`a banner query with no readable value in a redirect at offset ${at}`)
+  }
+  return { texts, bypasses }
+}
+
+test('every redirect banner value has an English form', () => {
+  const source = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8')
+  const { texts, bypasses } = bannerTexts(source)
+  assert.deepEqual(
+    bypasses,
+    [],
+    'every notice=/error= value must be encodeURIComponent at the call site or withMessage/fail; a third helper or a hand-built query fails here',
+  )
+  assert.ok(texts.length >= 100, `the extraction read ${texts.length} banner texts; it is meant to cover every redirect in src/app.ts`)
+  const unresolved = [...new Set(texts.map((entry) => entry.rendered))]
+    .filter((text) => CJK.test(localizeMessage('en', text) ?? ''))
+    .sort()
+  assert.deepEqual(
+    unresolved,
+    [],
+    'these banner texts have no English form; add a MESSAGES row (plain) or a localizer (interpolated) in src/i18n.ts',
+  )
+
+  // A clause a route appends inside the same value is not a text of its own, so
+  // the composed shapes are pinned here as a route renders them.
+  for (const composed of [
+    '已合并 1 个 PR，跳过 2 个（最新任务还没有成功）',
+    '已合并 0 个 PR，跳过 1 个（未通过合并检查）',
+    '2 个模型已通过测试并保存；失败：a, b',
+  ]) {
+    assert.doesNotMatch(localizeMessage('en', composed) ?? '', CJK, `a composed banner keeps Chinese: ${composed}`)
+  }
+
+  // The same rule across files: only src/app.ts may build a redirect banner.
+  const directory = new URL('../src/', import.meta.url)
+  for (const entry of readdirSync(directory, { recursive: true })) {
+    const file = String(entry)
+    if (!file.endsWith('.ts') || file === 'app.ts') continue
+    const text = readFileSync(new URL(file, directory), 'utf8')
+    assert.doesNotMatch(text, /\?(?:error|notice)=/, `${file} builds a redirect banner outside src/app.ts`)
   }
 })

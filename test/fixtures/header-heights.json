@@ -1,6 +1,6 @@
 {
-  "source": "HugoXK/fledge#94 (rendered header) and #133 (collapsed phone header)",
-  "method": "The 960px and wide values are rendered measurements from #94: document.querySelector('.top').offsetHeight in Chromium, over the 46 + 28 renders recorded there (locale and default-font-size variants), tallest per breakpoint. The phone value is not a rendered maximum: #133 gives the header a fixed height below 641px, a 64px row plus the 1px bottom border of .top, so no locale, label or default font size can grow it. The rendered confirmation at 360/390/430 in both locales is the phone matrix #133 asks Test to run at the tip.",
+  "source": "HugoXK/fledge#94 (rendered wide header), #133 (collapsed phone header) and #233 (the same collapsed row at 641-960px)",
+  "method": "The wide value is a rendered measurement from #94: document.querySelector('.top').offsetHeight in Chromium, over the 46 + 28 renders recorded there (locale and default-font-size variants), tallest at 1280. The two compact values are not rendered maxima: #133 and #233 give the header a fixed height at or below 960px, a 64px row plus the 1px bottom border of .top, so no locale, label or default font size can grow them. The rendered confirmation at 360/390/430 (phone) and 641/768/900/960 (tablet, both locales, logged in) is the matrix #133 and #233 ask Test to run at the tip.",
   "headroom": 20,
   "renders": [
     {
@@ -12,8 +12,8 @@
     {
       "breakpoint": "@media (max-width: 960px)",
       "media": "(max-width: 960px)",
-      "viewport": "390-960",
-      "measured": 194.9
+      "viewport": "641-960",
+      "measured": 65
     },
     {
       "breakpoint": "wide",

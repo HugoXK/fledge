@@ -181,6 +181,24 @@ A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
 `skipped`, `cancelled` or a job absent from `needs`, except where
 `SKIPPABLE_ON` records that an event has nothing for that job to read.
 
+### Write sessions, one PR per branch, and verification servers
+
+Hard rule 8 in `AGENTS.md` points at these four rules; they are repeated here
+with the commands they name, because a gate only works if it can be run:
+
+1. **One write session per repository.** A bot works in one branch or worktree at
+   a time. A second concurrent write session is how a duplicate PR appears.
+2. **One branch, one open PR.** Before opening, query
+   `GET /repos/{owner}/{repo}/pulls?head={owner}:{branch}&state=open`; if a pull
+   request exists, push to it. A second PR on that branch is closed the moment it
+   appears.
+3. **One worktree, one writer.** No two bots and no two sessions share one
+   worktree.
+4. **Dedicated ports for verification servers.** Never `8080`, the documented
+   default, and never a port another session may use. Start the server from an
+   isolated worktree at the reviewed tip, and accept a measurement only after the
+   response matches the tree it claims to serve.
+
 ### Supply-chain gates
 
 `docker` scans the built image with trivy at `HIGH,CRITICAL` and fails the build
@@ -204,7 +222,11 @@ otherwise). Squash merges mean a secret added and then deleted on a branch is in
 neither the head tree nor the pull request diff, and only the range still holds
 it. The config is `.gitleaks.toml`; it deliberately carries no `paths`
 allowlist, because that suppresses every finding in a file, including a real
-token pasted later.
+token pasted later. The one reviewed exception is `.gitleaksignore`, whose
+single line is a fingerprint — one commit, one path, one rule, one line — for
+the synthetic fixture in the initial commit that #185 removed from the tree; a
+token committed afterwards is still a finding, which is why the exception names
+a commit rather than a path.
 
 `coverage` enforces a line floor with a number: `test:coverage` in
 `package.json` (`--test-coverage-lines=84`, measured 84.59% at the commit that
@@ -229,6 +251,13 @@ a fifth while working beside them. The same step runs on a push to `main`, so ne
 highs cannot accumulate there either. Changing the baseline is a reviewed commit,
 and the PR that does it says why the alert is accepted; a line that drifts for an
 unrelated reason fails loudly rather than being silently re-labelled.
+`security-severity` is read whether the SARIF writes it as a number or a string,
+and rules a query pack keeps under `tool.extensions[].rules` are resolved by
+`ruleId` and `ruleIndex`. A security result whose severity cannot be read — and
+a result whose rule cannot be resolved — counts as high; a resolved quality
+query keeps its analysis level. Every verdict is printed with
+`parsed N result(s), H high/critical` so a blind run can be told apart from a
+clean one; an empty parse exits 1.
 
 Every action a workflow runs is pinned to a 40-hex commit with the tag it came
 from in a trailing comment, and the `action-pins` job fails the build on a
@@ -338,17 +367,20 @@ git commit -m "release: v0.1.1"
 git tag v0.1.1
 ```
 
-The nightly minor release is planned by `scripts/release-plan.mjs`, a pure
-function with no I/O, no clock and no environment. It takes the latest tag, the
-package version, the merged pull requests since that tag (number, title, labels,
-`mergedAt`), the `changelog.d/` fragments, whether a release pull request is
-open and the existing tags; it returns the counts, the next minor version, a
-named reason and `shouldRelease`. It releases only when at least 10 pull
-requests merged since the tag, at least 5 of them are features, at least one
-fragment exists, the package version matches the tag and no release pull request
-or `v<next>` tag already exists. Every other case is a reason and no release;
-nothing is guessed. `git log` may only cross-check the pull-request numbers, and
-a disagreement never changes the decision.
+The nightly release is planned by `scripts/release-plan.mjs`, a pure function
+with no I/O, no clock and no environment. It takes the latest tag, the package
+version, the tagged commit time, the workflow's run time, the merged pull
+requests since that tag (number, title, labels, `mergedAt`), the `changelog.d/`
+fragments, whether a release pull request is open and the existing tags; it
+returns the counts, the next version, a `bump` of `minor` or `patch`, a named
+reason and `shouldRelease`. The first release of an ISO week bumps the minor;
+later releases in that same week bump the patch. If either timestamp is
+unreadable the planner falls back to the minor. It releases only when at least
+10 pull requests merged since the tag, at least 5 of them are features, at least
+one fragment exists, the package version matches the tag and no release pull
+request or `v<next>` tag already exists. Every other case is a reason and no
+release; nothing is guessed. `git log` may only cross-check the pull-request
+numbers, and a disagreement never changes the decision.
 
 The release workflow runs `npm run check`, builds the image, publishes it to
 GHCR and creates the GitHub release from the changelog. The tag must point at a

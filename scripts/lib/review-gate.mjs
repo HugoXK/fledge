@@ -13,6 +13,7 @@
 //     the base ref, the tier from the API and the verdicts from the API.
 import { tierForFiles, loadRules } from './risk.mjs'
 import { mechanicalDiffShape, mechanicalRelease } from './mechanical-release.mjs'
+import { compareVersions, nextReleaseVersion } from './release-version.mjs'
 
 export const REQUIRED_CONTEXT = 'review-gate'
 
@@ -124,15 +125,29 @@ export async function paginate(api, path, maxPages = 4) {
   return out
 }
 
-// The mechanical release is the next minor: read the base branch's package.json
-// and add one to the minor. Unreadable or unparsable means no exemption.
-async function expectedNextVersion(api, repo, ref) {
+// The mechanical release follows the same cadence as the planner: the first
+// release of an ISO week bumps the minor, later releases in that week bump the
+// patch. The week comes from the last tag's commit time and the head commit's
+// committer time (the branch the release routine pushed that night). Unreadable
+// dates fall back to the minor, so the gate never exempts a patch it cannot
+// explain.
+async function expectedNextVersion(api, repo, ref, headSha) {
   try {
     const file = await api(`/repos/${repo}/contents/package.json?ref=${encodeURIComponent(ref)}`)
     const text = Buffer.from(String(file?.content ?? ''), 'base64').toString('utf8')
-    const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(JSON.parse(text)?.version ?? ''))
-    if (match === null) return ''
-    return `${Number(match[1])}.${Number(match[2]) + 1}.0`
+    const packageVersion = String(JSON.parse(text)?.version ?? '')
+    const refs = await paginate(api, `/repos/${repo}/git/matching-refs/tags/v`)
+    const tags = (Array.isArray(refs) ? refs : [])
+      .map((entry) => String(entry?.ref ?? '').replace(/^refs\/tags\//, ''))
+      .filter((tag) => /^v\d+\.\d+\.\d+$/.test(tag))
+      .sort((left, right) => compareVersions(left.slice(1), right.slice(1)))
+    const lastTag = tags.at(-1) ?? ''
+    const lastTagCommittedAt = lastTag === ''
+      ? ''
+      : String((await api(`/repos/${repo}/commits/${encodeURIComponent(lastTag)}`))?.commit?.committer?.date ?? '')
+    const head = await api(`/repos/${repo}/commits/${encodeURIComponent(headSha)}`)
+    const releaseAt = String(head?.commit?.committer?.date ?? '')
+    return nextReleaseVersion({ packageVersion, lastTagCommittedAt, releaseAt }).version
   } catch {
     return ''
   }
@@ -183,7 +198,7 @@ export async function evaluateGate({ api, repo, policy, prNumber, tier: tierOver
   const identity = sameRepo
     ? mechanicalRelease({ branch: pr.head?.ref, title: pr.title, files: files.map((file) => String(file.filename)) })
     : { mechanical: false, version: '', reason: `${headRepo === '' ? 'the head repository' : headRepo} is not ${repo}` }
-  const nextVersion = identity.mechanical ? await expectedNextVersion(api, repo, String(pr.base?.sha ?? '')) : ''
+  const nextVersion = identity.mechanical ? await expectedNextVersion(api, repo, String(pr.base?.sha ?? ''), headSha) : ''
   const versionMatches = identity.mechanical && nextVersion !== '' && identity.version === nextVersion
   const shape = versionMatches
     ? mechanicalDiffShape(files, identity.version)

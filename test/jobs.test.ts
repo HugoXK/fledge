@@ -1,9 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
+import type { JobRow, RepoRow, WorkItemRow } from '../src/db.js'
 import { InstanceManager } from '../src/flybot/instances.js'
 import { PLAYBOOK_VERSION, playbookFingerprint } from '../src/flybot/playbook.js'
 import { Jobs } from '../src/jobs/service.js'
+import { buildCarryOver, buildRunDigest, classifyOutput, decideNextJob, failureStreak, isMetaTitle, lastDurationMs } from '../src/jobs/continuity.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
 import { json, makeUser, MemoryMailer, readBody, startFakeServer, testConfig } from './helpers.js'
@@ -174,8 +176,9 @@ test('daily digests still send while two jobs are active', async () => {
     const user = makeUser(store, { login: 'digest-busy-user', status: 'approved' })
     store.setEmailDailyDigest(user.id, true)
     store.createRepo({ id: 'repo_digest_busy', userId: user.id, owner: 'o', name: 'dbusy', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createRepo({ id: 'repo_digest_busy_2', userId: user.id, owner: 'o', name: 'dbusy2', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.createJob({ id: 'job_busy_1', repoId: 'repo_digest_busy', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h1', platformTokenHash: '' })
-    store.createJob({ id: 'job_busy_2', repoId: 'repo_digest_busy', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
+    store.createJob({ id: 'job_busy_2', repoId: 'repo_digest_busy_2', userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
     store.updateJob('job_busy_1', { status: 'running' })
     store.updateJob('job_busy_2', { status: 'running' })
     await jobs.tick()
@@ -1680,5 +1683,663 @@ test('a dispatch without an issue reference makes no GitHub call', async () => {
   } finally {
     store.close()
     await github.close()
+  }
+})
+
+test('scheduled jobs carry the previous run and open work, and classify meta output', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = {
+    name: 'capture',
+    async run(context) {
+      contexts.push(context)
+      return { status: 'running' }
+    },
+  }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'continuity-user', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_continuity_job', userId: user.id, owner: 'o', name: 'continuity',
+      defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
+      repoRole: 'developer', goal: 'fix bugs', autoIterate: true, intervalMinutes: 60,
+    })
+    store.createJob({
+      id: 'job_prev', repoId: repo.id, userId: user.id, trigger: 'schedule',
+      goal: 'fix bugs', callbackHash: 'h', platformTokenHash: '', kind: 'iterate',
+    })
+    const at = new Date().toISOString()
+    store.updateJob('job_prev', {
+      status: 'succeeded', summary: 'created issue #1',
+      issue_url: 'https://github.com/o/continuity/issues/1',
+      started_at: at, finished_at: at,
+    })
+    store.createWorkItem({
+      id: 'work_open', repoId: repo.id, userId: user.id,
+      title: 'fix the thing', issueUrl: 'https://github.com/o/continuity/issues/1',
+      state: 'triaged',
+    })
+
+    const result = await jobs.enqueue(repo, 'schedule', undefined, 'iterate')
+    assert.equal(result.ok, true)
+    const goal = contexts[0]?.goal ?? ''
+    assert.match(goal, /\[Carry-over/)
+    assert.match(goal, /created issue #1/)
+    assert.match(goal, /work_open state=triaged/)
+    assert.equal(store.getJob(result.job!.id)?.continuity_used, 1)
+
+    // The invariant allows one active job per repository, so the carried-over job
+    // has to finish before the meta-output case enqueues its own.
+    store.updateJob(result.job!.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    store.releaseJobLease(result.job!.id)
+
+    const secret = 'callback-secret'
+    store.createJob({
+      id: 'job_meta', repoId: repo.id, userId: user.id, trigger: 'schedule',
+      goal: '存量清账', callbackHash: sha256Hex(secret), platformTokenHash: '',
+    })
+    store.updateJob('job_meta', { status: 'running' })
+    const cb = await jobs.handleCallback('job_meta', secret, {
+      status: 'succeeded', issueUrl: 'https://github.com/o/continuity/issues/2', summary: '存量清账',
+    })
+    assert.equal(cb.ok, true)
+    const row = store.getJob('job_meta')
+    assert.equal(row?.output_kind, 'meta')
+    assert.match(row?.continuity_json ?? '', /"output_kind":"meta"/)
+    const metaItem = store.findWorkItemByIssueUrl(repo.id, 'https://github.com/o/continuity/issues/2')
+    assert.equal(metaItem?.state, 'closed')
+  } finally {
+    store.close()
+  }
+})
+
+function queueRepoFor(store: Store, userId: string, id: string): ReturnType<Store['createRepo']> {
+  return store.createRepo({
+    id,
+    userId,
+    owner: 'o',
+    name: id,
+    defaultBranch: 'main',
+    tokenEnc: 'x',
+    permission: 'admin',
+    repoRole: 'maintainer',
+    goal: '',
+    autoIterate: false,
+    intervalMinutes: 1440,
+    canReview: true,
+    reviewerEnabled: true,
+  })
+}
+
+function leaseSetup(): { store: Store; repoId: string; repo2Id: string; userId: string } {
+  const store = new Store(':memory:')
+  const user = makeUser(store, { login: 'lease-user', status: 'approved' })
+  const repo = queueRepoFor(store, user.id, 'repo_lease')
+  const repo2 = queueRepoFor(store, user.id, 'repo_lease_2')
+  return { store, repoId: repo.id, repo2Id: repo2.id, userId: user.id }
+}
+
+function leaseMakeJob(store: Store, repoId: string, userId: string, id: string, priority = 0): void {
+  store.createJob({
+    id,
+    repoId,
+    userId,
+    trigger: 'schedule',
+    goal: 'g',
+    callbackHash: 'h',
+    platformTokenHash: '',
+    kind: 'iterate',
+    priority,
+  })
+}
+
+test('claimQueuedJob leases the highest-priority queued job exactly once', () => {
+  const { store, repoId, repo2Id, userId } = leaseSetup()
+  try {
+    leaseMakeJob(store, repo2Id, userId, 'job_low', 0)
+    leaseMakeJob(store, repoId, userId, 'job_high', 10)
+
+    const first = store.claimQueuedJob('worker-1', 60_000)
+    assert.equal(first?.id, 'job_high')
+    assert.equal(first?.lease_owner, 'worker-1')
+    assert.ok(first?.lease_until)
+
+    const second = store.claimQueuedJob('worker-2', 60_000)
+    assert.equal(second?.id, 'job_low')
+    assert.equal(second?.lease_owner, 'worker-2')
+
+    assert.equal(store.claimQueuedJob('worker-3', 60_000), undefined)
+  } finally {
+    store.close()
+  }
+})
+
+// -- scheduled-iteration continuity -----------------------------------------
+
+const now = Date.now()
+const iso = (offsetMs = 0): string => new Date(now + offsetMs).toISOString()
+
+function repo(overrides: Partial<RepoRow> = {}): RepoRow {
+  return {
+    id: 'repo_1', user_id: 'usr_1', owner: 'octo', name: 'demo',
+    default_branch: 'main', token_enc: 'x', goal: 'fix bugs',
+    enabled: 1, auto_iterate: 1, interval_minutes: 60, last_run_at: null,
+    last_status: null, created_at: iso(-86_400_000),
+    upstream_owner: 'octo', upstream_name: 'demo', fork_owner: 'octo',
+    fork_name: 'demo', upstream_default_branch: 'main',
+    fork_default_branch: 'main', is_fork: 0, fork_created: 0,
+    permission: 'write', can_review: 1, can_create_issue: 1,
+    reviewer_enabled: 0, review_interval_minutes: 1440,
+    last_review_at: null, last_review_status: null,
+    upstream_html_url: 'https://github.com/octo/demo',
+    fork_html_url: 'https://github.com/octo/demo',
+    installation_id: null, target_branch: 'main', job_mode: 'iterate',
+    repo_role: 'developer', auto_merge: 0, role_checked_at: null,
+    plan_required: 0, allow_paths: '', deny_paths: '', merge_method: 'squash',
+    require_protection: 1, monthly_budget_cny: 0, job_budget_cny: 0,
+    protection_state: null, protection_checked_at: null, stage_mode: 'off',
+    models_dirty: 0, credential_state: 'ok', consecutive_failures: 0,
+    allow_private_models: 0, ...overrides,
+  } as RepoRow
+}
+
+function workItem(overrides: Partial<WorkItemRow> = {}): WorkItemRow {
+  return {
+    id: 'work_1', repo_id: 'repo_1', user_id: 'usr_1', title: 'fix the thing',
+    detail: '', issue_url: 'https://github.com/octo/demo/issues/1', pr_url: null,
+    state: 'triaged', priority: 0, assignee_user_id: null, job_id: null,
+    pr_state: null, merged_at: null, merge_commit: null,
+    created_at: iso(-3_600_000), updated_at: iso(-3_600_000), ...overrides,
+  }
+}
+
+function job(overrides: Partial<JobRow> = {}): JobRow {
+  return {
+    id: 'job_1', repo_id: 'repo_1', user_id: 'usr_1', status: 'succeeded',
+    trigger: 'schedule', goal: 'fix bugs', branch: null, base_branch: 'main',
+    pr_url: null, summary: 'did a thing', error: null, cost_usd: 0,
+    platform_token_hash: null, callback_hash: 'h', kind: 'iterate',
+    issue_url: null, pr_state: null, review_score: null,
+    attribution_json: null, evidence_json: null, checkpoint: null,
+    team_stats_json: null, work_item_id: null, priority: 0,
+    plan_approved_at: null, plan_approved_by: null, plan_rejected_at: null,
+    plan_allow_paths: null, plan_deny_paths: null, base_sha: null,
+    callback_fingerprint: null, path_guard_json: null,
+    verification_json: null, continuity_json: null, output_kind: null,
+    continuity_used: 0, retry_attempt: 0, retry_of: null,
+    created_at: iso(-3_600_000), started_at: iso(-3_000_000),
+    last_callback_at: null, finished_at: iso(-2_400_000), ...overrides,
+  } as JobRow
+}
+
+test('meta titles are recognised and classified separately', () => {
+  assert.equal(isMetaTitle('【存量清账】open PR 82 + open issue 248'), true)
+  assert.equal(isMetaTitle('fix: the about-you entry'), false)
+  assert.equal(classifyOutput({ status: 'succeeded', kind: 'iterate', prUrl: 'https://x/pr/1' }), 'pr')
+  assert.equal(classifyOutput({ status: 'succeeded', kind: 'iterate', issueUrl: 'https://x/issues/1' }), 'issue')
+  assert.equal(classifyOutput({ status: 'succeeded', kind: 'iterate' }), 'zero')
+  assert.equal(classifyOutput({ status: 'succeeded', kind: 'iterate', issueUrl: 'https://x/issues/1', summary: '存量清账' }), 'meta')
+  assert.equal(classifyOutput({ status: 'succeeded', kind: 'review' }), 'review')
+  assert.equal(classifyOutput({ status: 'failed', kind: 'iterate', prUrl: 'https://x/pr/1' }), 'failed')
+  // The carry-over block names the forbidden words, so reading the goal would
+  // classify every scheduled issue as meta.
+  const carried = buildRunDigest(
+    job({
+      id: 'job_carried',
+      goal: '[Carry-over - auto-generated state, not a new goal]\nDo not create inventory, backlog, or "存量/盘点/清账" issues.',
+      issue_url: 'https://x/issues/1',
+    }),
+    { status: 'succeeded' },
+  )
+  assert.equal(carried.output_kind, 'issue')
+})
+
+test('carry-over is bounded, names the open work and is explicitly data', () => {
+  const text = buildCarryOver({
+    recent: [job({ id: 'job_2', summary: 'created issue #2', issue_url: 'https://x/issues/2' })],
+    openWork: [workItem({ pr_url: 'https://x/pr/3', state: 'pr_ready' })],
+    maxChars: 500,
+  })
+  assert.ok(text.length <= 500)
+  assert.match(text, /not a new goal/)
+  assert.match(text, /Recent runs:/)
+  assert.match(text, /Open work:/)
+  assert.match(text, /work_1 state=pr_ready/)
+  assert.match(text, /https:\/\/x\/pr\/3/)
+})
+
+test('a due repo with no open work starts one iterate job', () => {
+  const next = decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-2 * 3_600_000), intervalMinutes: 60,
+    lastDurationMs: 1_000, failureStreak: 0, openWork: [], reviewerEnabled: false, reviewDue: true,
+  })
+  assert.deepEqual(next, { kind: 'iterate' })
+})
+
+test('open work continues instead of starting another isolated iterate', () => {
+  const pr = workItem({ pr_url: 'https://x/pr/3', state: 'pr_ready' })
+  const followup = decideNextJob({
+    repo: repo({ repo_role: 'developer' }), now, lastRunAt: iso(-2 * 3_600_000),
+    intervalMinutes: 60, lastDurationMs: 0, failureStreak: 0, openWork: [pr], reviewerEnabled: true, reviewDue: true,
+  })
+  assert.equal(followup.kind, 'followup')
+  assert.equal(followup.kind === 'followup' ? followup.workItemId : null, 'work_1')
+
+  const review = decideNextJob({
+    repo: repo({ repo_role: 'maintainer' }), now, lastRunAt: iso(-2 * 3_600_000),
+    intervalMinutes: 60, lastDurationMs: 0, failureStreak: 0, openWork: [pr], reviewerEnabled: true, reviewDue: true,
+  })
+  assert.equal(review.kind, 'review')
+  assert.equal(review.kind === 'review' ? review.prUrl : null, 'https://x/pr/3')
+
+  const scoped = decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-2 * 3_600_000), intervalMinutes: 60,
+    lastDurationMs: 0, failureStreak: 0, openWork: [workItem()], reviewerEnabled: false, reviewDue: false,
+  })
+  assert.equal(scoped.kind, 'followup')
+})
+
+test('the interval respects the last duration and backs off after failures', () => {
+  const recent = [job({ status: 'failed' }), job({ id: 'job_0', status: 'failed' })]
+  assert.equal(failureStreak(recent), 2)
+  assert.equal(lastDurationMs(recent), 600_000)
+  assert.equal(
+    failureStreak([
+      job({ id: 'job_zero_1', status: 'succeeded', output_kind: 'zero' }),
+      job({ id: 'job_zero_2', status: 'succeeded', output_kind: 'zero' }),
+    ]),
+    2,
+  )
+  assert.equal(
+    failureStreak([
+      job({ id: 'job_review_failed', kind: 'review', status: 'failed' }),
+      job({ id: 'job_iterate_ok', status: 'succeeded', output_kind: 'pr' }),
+    ]),
+    0,
+  )
+  const notDue = decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-90 * 60_000), intervalMinutes: 60,
+    lastDurationMs: 60 * 60_000, failureStreak: 1, openWork: [], reviewerEnabled: false, reviewDue: true,
+  })
+  assert.equal(notDue.kind, 'none')
+  const backedOff = decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-90 * 60_000), intervalMinutes: 60,
+    lastDurationMs: 0, failureStreak: 3, openWork: [], reviewerEnabled: false, reviewDue: true,
+  })
+  assert.equal(backedOff.kind, 'none')
+})
+
+
+test('a due maintainer continues the open PR when the review interval is not due', () => {
+  const pr = workItem({ pr_url: 'https://x/pr/3', state: 'pr_ready' })
+  const next = decideNextJob({
+    repo: repo({ repo_role: 'maintainer' }), now, lastRunAt: iso(-2 * 3_600_000),
+    intervalMinutes: 60, lastDurationMs: 0, failureStreak: 0, openWork: [pr],
+    reviewerEnabled: true, reviewDue: false,
+  })
+  assert.equal(next.kind, 'followup')
+  assert.equal(next.kind === 'followup' ? next.prUrl : null, 'https://x/pr/3')
+})
+
+test('the database refuses a second active job for a repository', () => {
+  const { store, repoId, userId } = leaseSetup()
+  try {
+    leaseMakeJob(store, repoId, userId, 'job_first', 0)
+    assert.throws(() => leaseMakeJob(store, repoId, userId, 'job_second', 10), /UNIQUE|constraint/i)
+
+    store.updateJob('job_first', { status: 'succeeded', finished_at: new Date().toISOString() })
+    leaseMakeJob(store, repoId, userId, 'job_second', 10)
+    assert.equal(store.getJob('job_second')?.status, 'queued')
+  } finally {
+    store.close()
+  }
+})
+
+// #248 pinned "only one queued job per repository is claimable at a time" with a
+// read-time check; #245 replaced that check with the partial unique index, so
+// two queued rows for one repository can no longer exist at all. The claiming
+// half of that case still holds and is kept: a claimed job is not offered again,
+// and a finished one frees the repository for the next job.
+test('a claimed job is not claimable again until it finishes', () => {
+  const { store, repoId, userId } = leaseSetup()
+  try {
+    leaseMakeJob(store, repoId, userId, 'job_first', 0)
+    const first = store.claimQueuedJob('worker-1', 60_000)
+    assert.equal(first?.id, 'job_first')
+    assert.equal(store.claimQueuedJob('worker-2', 60_000), undefined, 'a running job is not offered again')
+
+    store.updateJob('job_first', { status: 'succeeded', finished_at: new Date().toISOString() })
+    leaseMakeJob(store, repoId, userId, 'job_second', 10)
+    assert.equal(store.claimQueuedJob('worker-2', 60_000)?.id, 'job_second')
+  } finally {
+    store.close()
+  }
+})
+
+test('a lease can only be renewed or released by its owner', () => {
+  const { store, repoId, userId } = leaseSetup()
+  try {
+    leaseMakeJob(store, repoId, userId, 'job_a')
+    const claimed = store.claimQueuedJob('worker-1', 60_000)
+    assert.equal(claimed?.id, 'job_a')
+
+    assert.equal(store.renewJobLease('job_a', 'worker-2', 60_000), false)
+    assert.equal(store.renewJobLease('job_a', 'worker-1', 60_000), true)
+
+    store.releaseJobLease('job_a')
+    const reclaimed = store.claimQueuedJob('worker-2', 60_000)
+    assert.equal(reclaimed?.id, 'job_a')
+    assert.equal(reclaimed?.lease_owner, 'worker-2')
+  } finally {
+    store.close()
+  }
+})
+
+test('an expired lease is reclaimable by another worker', async () => {
+  const { store, repoId, userId } = leaseSetup()
+  try {
+    leaseMakeJob(store, repoId, userId, 'job_exp')
+    const first = store.claimQueuedJob('worker-1', 1)
+    assert.equal(first?.id, 'job_exp')
+
+    await new Promise((resolve) => setTimeout(resolve, 15))
+    const expired = store.expiredLeaseJobs(new Date().toISOString())
+    assert.ok(expired.some((job) => job.id === 'job_exp'))
+
+    const second = store.claimQueuedJob('worker-2', 60_000)
+    assert.equal(second?.id, 'job_exp')
+    assert.equal(second?.lease_owner, 'worker-2')
+  } finally {
+    store.close()
+  }
+})
+
+test('an expired lease is failed by the tick reaper', async () => {
+  const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'dead-lease-user', status: 'approved' })
+    const repo = queueRepoFor(store, user.id, 'repo_dead_lease')
+    leaseMakeJob(store, repo.id, user.id, 'job_dead_lease')
+    assert.equal(store.claimQueuedJob('dead-worker', 1)?.id, 'job_dead_lease')
+    await new Promise((resolve) => setTimeout(resolve, 15))
+    await jobs.tick()
+    const row = store.getJob('job_dead_lease')
+    assert.equal(row?.status, 'failed')
+    assert.match(row?.error ?? '', /租约过期/)
+  } finally {
+    store.close()
+  }
+})
+
+test('QUEUE_DISPATCH enqueues first and dispatches the claimed job on the tick', async () => {
+  const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true, maxActiveJobs: 1 } })
+  const store = new Store(':memory:')
+  const calls: RunnerContext[] = []
+  const runner: Runner = {
+    name: 'capture',
+    async run(context) {
+      calls.push(context)
+      return { status: 'succeeded', summary: 'ok' }
+    },
+  }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'queue-user', status: 'approved' })
+    const repo = queueRepoFor(store, user.id, 'repo_queue_one')
+
+    const queued = await jobs.enqueue(repo, 'manual')
+    assert.equal(queued.ok, true)
+    assert.equal(queued.job?.status, 'queued')
+    assert.equal(queued.job?.lease_owner, null)
+    assert.equal(calls.length, 0)
+
+    await jobs.tick()
+
+    assert.equal(calls.length, 1)
+    const done = store.getJob(queued.job!.id)
+    assert.equal(done?.status, 'succeeded')
+    assert.equal(done?.lease_owner, null)
+  } finally {
+    store.close()
+  }
+})
+
+test('a queued job older than ten minutes is not failed before the dispatcher claims it', async () => {
+  const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true, maxActiveJobs: 1 } })
+  const store = new Store(':memory:')
+  const calls: RunnerContext[] = []
+  const runner: Runner = {
+    name: 'capture',
+    async run(context) {
+      calls.push(context)
+      return { status: 'succeeded', summary: 'ok' }
+    },
+  }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'queue-old-user', status: 'approved' })
+    const repo = queueRepoFor(store, user.id, 'repo_queue_old')
+    const queued = await jobs.enqueue(repo, 'manual')
+    assert.equal(queued.ok, true)
+    store.run('UPDATE jobs SET created_at = ? WHERE id = ?', new Date(Date.now() - 20 * 60_000).toISOString(), queued.job!.id)
+
+    await jobs.tick()
+
+    assert.equal(calls.length, 1)
+    assert.equal(store.getJob(queued.job!.id)?.status, 'succeeded')
+  } finally {
+    store.close()
+  }
+})
+
+test('queue admission control rejects a full queue', async () => {
+  const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true, maxQueueDepth: 1, maxUserQueue: 10 } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'queue-full-user', status: 'approved' })
+    const one = queueRepoFor(store, user.id, 'repo_queue_full_one')
+    const two = queueRepoFor(store, user.id, 'repo_queue_full_two')
+    assert.equal((await jobs.enqueue(one, 'manual')).ok, true)
+    const rejected = await jobs.enqueue(two, 'manual')
+    assert.equal(rejected.ok, false)
+    assert.equal(rejected.code, 'QUEUE_FULL')
+  } finally {
+    store.close()
+  }
+})
+
+test('queue admission control rejects a user backlog', async () => {
+  const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true, maxQueueDepth: 10, maxUserQueue: 1 } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'queue-limit-user', status: 'approved' })
+    const one = queueRepoFor(store, user.id, 'repo_queue_limit_one')
+    const two = queueRepoFor(store, user.id, 'repo_queue_limit_two')
+    assert.equal((await jobs.enqueue(one, 'manual')).ok, true)
+    const rejected = await jobs.enqueue(two, 'manual')
+    assert.equal(rejected.ok, false)
+    assert.equal(rejected.code, 'QUEUE_LIMIT')
+  } finally {
+    store.close()
+  }
+})
+
+test('the dispatcher respects maxActiveJobs and releases the next repo after the first finishes', async () => {
+  const config = testConfig({ runner: { ...testConfig().runner, queueDispatch: true, maxActiveJobs: 1 } })
+  const store = new Store(':memory:')
+  const calls: RunnerContext[] = []
+  const runner: Runner = {
+    name: 'capture',
+    async run(context) {
+      calls.push(context)
+      return { status: 'running' }
+    },
+  }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'queue-cap-user', status: 'approved' })
+    const one = queueRepoFor(store, user.id, 'repo_queue_one')
+    const two = queueRepoFor(store, user.id, 'repo_queue_two')
+    const first = await jobs.enqueue(one, 'manual')
+    const second = await jobs.enqueue(two, 'manual')
+    assert.equal(first.ok, true)
+    assert.equal(second.ok, true)
+
+    await jobs.tick()
+    assert.equal(calls.length, 1)
+    const firstJob = store.getJob(first.job!.id)
+    assert.equal(firstJob?.status, 'running')
+    assert.equal(store.getJob(second.job!.id)?.status, 'queued')
+
+    store.updateJob(first.job!.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    store.releaseJobLease(first.job!.id)
+    await jobs.tick()
+    assert.equal(calls.length, 2)
+    assert.equal(store.getJob(second.job!.id)?.status, 'running')
+  } finally {
+    store.close()
+  }
+})
+
+test('only the one-active-job index is reported as a busy queue', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'noop', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer(), new InstanceManager(store, config))
+  const stubCreateJob = (thunk: () => never): void => {
+    Object.defineProperty(store, 'createJob', { value: () => thunk(), configurable: true })
+  }
+  try {
+    const user = makeUser(store, { login: 'busy-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_busy', userId: user.id, owner: 'o', name: 'busy', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    // A concurrent enqueue wins the race between the read-time check and this
+    // insert: SQLite names the column of the partial unique index, and the
+    // caller must see a busy queue instead of a 500.
+    stubCreateJob(() => {
+      store.db.exec(`INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, created_at) VALUES ('job_busy_racer', 'repo_busy', '${user.id}', 'queued', 'manual', 'g', 'cb_racer', '${new Date().toISOString()}')`)
+      throw new Error('UNIQUE constraint failed: jobs.repo_id')
+    })
+    assert.deepEqual(await jobs.enqueue(repo, 'manual'), { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' })
+
+    // Any other constraint failure is a bug and has to surface instead.
+    store.db.exec("UPDATE jobs SET status = 'failed' WHERE id = 'job_busy_racer'")
+    stubCreateJob(() => { throw new Error('UNIQUE constraint failed: jobs.id') })
+    await assert.rejects(() => jobs.enqueue(repo, 'manual'), /jobs\.id/)
+  } finally {
+    store.close()
+  }
+})
+
+// #261 review finding: `summary` is the progress field every running heartbeat
+// writes, so a review that reported progress and then failed transiently is the
+// production shape — and it must still get its one retry.
+test('a review that reported one progress heartbeat still gets its one retry', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'review-heartbeat-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_review_heartbeat', userId: user.id, owner: 'o', name: 'heartbeat', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 720, canReview: true, reviewerEnabled: true })
+    const secret = 'review-heartbeat-secret'
+
+    store.createJob({ id: 'job_review_heartbeat', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review' })
+    store.updateJob('job_review_heartbeat', { status: 'running', pr_url: 'https://github.com/o/heartbeat/pull/4' })
+    await jobs.handleCallback('job_review_heartbeat', secret, { status: 'running', summary: 'reviewing pull request 4: reading the diff' })
+    assert.equal(store.getJob('job_review_heartbeat')?.summary, 'reviewing pull request 4: reading the diff', 'the heartbeat stored a progress line')
+
+    await jobs.handleCallback('job_review_heartbeat', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    const pending = store.listSettings('retry_pending:')
+    assert.equal(pending.length, 1, 'progress is not a posted verdict, so the transient failure still retries')
+    assert.equal(pending[0]?.key, 'retry_pending:job_review_heartbeat')
+  } finally {
+    store.close()
+  }
+})
+
+// The half that actually runs: the due retry becomes one review job that keeps
+// the original's pull request and work item, and never a second work item.
+test('a due review retry becomes one review job with retry_of and retry_attempt', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'review-release-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_review_release', userId: user.id, owner: 'o', name: 'release', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 720, canReview: true, reviewerEnabled: true })
+    const item = store.createWorkItem({ id: 'work_review_release', repoId: repo.id, userId: user.id, title: 'review the pull request', prUrl: 'https://github.com/o/release/pull/5', state: 'pr_ready' })
+    const secret = 'review-release-secret'
+
+    store.createJob({ id: 'job_review_release', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review', workItemId: item.id })
+    store.updateJob('job_review_release', { status: 'running', pr_url: 'https://github.com/o/release/pull/5' })
+    await jobs.handleCallback('job_review_release', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+
+    const key = 'retry_pending:job_review_release'
+    const pending = JSON.parse(store.getSetting(key) ?? '{}') as Record<string, unknown>
+    store.setSetting(key, JSON.stringify({ ...pending, dueAt: new Date(Date.now() - 1_000).toISOString() }))
+    await jobs.tick()
+
+    assert.equal(store.getSetting(key), undefined, 'a released retry row is consumed once')
+    const retries = store.listJobsForRepo(repo.id, 10).filter((job) => job.retry_of === 'job_review_release')
+    assert.equal(retries.length, 1, 'exactly one review job is created')
+    const retry = retries[0]!
+    assert.equal(retry.kind, 'review')
+    assert.equal(retry.retry_attempt, 1)
+    assert.equal(retry.pr_url, 'https://github.com/o/release/pull/5', 'the retry keeps the pull request it reviews')
+    assert.equal(retry.work_item_id, item.id, 'and the work item it belongs to')
+    assert.equal(store.listWorkItems(repo.id).length, 1, 'no second work item is created')
+
+    await jobs.tick()
+    assert.equal(store.listJobsForRepo(repo.id, 10).filter((job) => job.retry_of === 'job_review_release').length, 1, 'a second tick does not duplicate the retry')
+  } finally {
+    store.close()
+  }
+})
+
+test('a failed review schedules one retry and keeps its pull request and work item', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'review-retry-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_review_retry', userId: user.id, owner: 'o', name: 'reviewed', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 720, canReview: true, reviewerEnabled: true })
+    const item = store.createWorkItem({ id: 'work_review', repoId: repo.id, userId: user.id, title: 'review the pull request', prUrl: 'https://github.com/o/reviewed/pull/9', state: 'pr_ready' })
+    const secret = 'review-secret'
+
+    store.createJob({ id: 'job_review_retry', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review', workItemId: item.id })
+    store.updateJob('job_review_retry', { status: 'running', pr_url: 'https://github.com/o/reviewed/pull/9' })
+    await jobs.handleCallback('job_review_retry', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    const pending = store.listSettings('retry_pending:')
+    assert.equal(pending.length, 1)
+    assert.equal(pending[0]?.key, 'retry_pending:job_review_retry')
+    const row = JSON.parse(pending[0]?.value ?? '{}') as { attempt?: number; kind?: string; workItemId?: string | null; prUrl?: string | null }
+    assert.equal(row.attempt, 1)
+    assert.equal(row.kind, 'review')
+    assert.equal(row.workItemId, 'work_review')
+    assert.equal(row.prUrl, 'https://github.com/o/reviewed/pull/9')
+
+    // One retry is the bound: a second transient failure stays manual.
+    store.createJob({ id: 'job_review_retry_2', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review', retryAttempt: 1 })
+    store.updateJob('job_review_retry_2', { status: 'running' })
+    await jobs.handleCallback('job_review_retry_2', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    assert.equal(store.listSettings('retry_pending:').length, 1)
+
+    // A quota failure is not transient for a review either.
+    store.createJob({ id: 'job_review_quota', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review' })
+    store.updateJob('job_review_quota', { status: 'running' })
+    await jobs.handleCallback('job_review_quota', secret, { status: 'failed', error: '平台额度已用完' })
+    assert.equal(store.listSettings('retry_pending:').length, 1)
+
+    // A review that already produced a result is not re-run blindly: its comments
+    // are posted, so a blind retry could duplicate the COMMENT review.
+    store.createJob({ id: 'job_review_posted', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review' })
+    store.updateJob('job_review_posted', { status: 'running', review_score: 4, summary: 'posted 3 review comments' })
+    await jobs.handleCallback('job_review_posted', secret, { status: 'failed', error: 'FlyBot bridge 502' })
+    assert.equal(store.listSettings('retry_pending:').length, 1)
+  } finally {
+    store.close()
   }
 })

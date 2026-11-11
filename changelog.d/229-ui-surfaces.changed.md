@@ -1,0 +1,1 @@
+The console's cards, lists, tables and buttons now take one radius scale, one primary accent and one rectangle of spacing: the templates no longer carry layout in `style` attributes, the corners that sat one or two pixels apart are a named step, and only the blue accent colours a control while the brand green stays decorative, so a coloured panel no longer looks clickable.

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Store } from '../src/db.js'
-import { makeUser } from './helpers.js'
+import { makeTerminalJob, makeUser } from './helpers.js'
 
 const require = createRequire(import.meta.url)
 const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: string) => { exec(sql: string): void; close(): void } }
@@ -45,8 +45,8 @@ function seed(dbPath: string): void {
   try {
     const user = makeUser(store, { login: 'drill-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_drill', userId: user.id, owner: 'o', name: 'drill', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
-    store.createJob({ id: 'job_drill_1', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h1', platformTokenHash: '' })
-    store.createJob({ id: 'job_drill_2', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
+    makeTerminalJob(store, { id: 'job_drill_1', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h1', platformTokenHash: '' })
+    makeTerminalJob(store, { id: 'job_drill_2', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h2', platformTokenHash: '' })
   } finally {
     store.close()
   }

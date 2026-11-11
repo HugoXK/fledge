@@ -1,1 +1,0 @@
-The path guard now reads every changed file a pull request reports, up to 3,000, and refuses the merge when the list is cut off instead of calling the change clear; the job page shows how many files were checked against how many the pull request reports.

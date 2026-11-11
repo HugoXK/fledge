@@ -228,11 +228,23 @@ not a multi-writer cluster.
 
 ### Daily release pull request
 
+The version follows the weekly cadence: the first release of an ISO week (the
+Monday 22:30 Asia/Shanghai run) bumps the minor (`0.3.4 -> 0.4.0`); every later
+release in the same week bumps the patch (`0.4.0 -> 0.4.1`). The planner reads
+the last tag's commit time and the workflow's run time; if either is unreadable
+it falls back to the minor, which is the first-release behaviour.
+
+A release that changes user-facing behaviour updates `README.md`,
+`README.zh.md` and the relevant `docs/` page in the same pull request. The
+documentation site builds from this repository's `README.md`, `README.zh.md` and
+`docs/` rather than a pinned copy, so the release pull request and the docs site
+stay in step.
+
 The nightly workflow pushes `release/v<next>` and stops before the pull request,
 because a pull request opened with `GITHUB_TOKEN` starts no `pull_request`
 workflow and would never get a `ci-ok`. Open it with the team account — never
 with the Reviewer's `HugoXK-bot` token — as
-`GITHUB_TOKEN=… node scripts/release-open.mjs --artifact release-plan.json --version 0.4.0 --sha <branch tip>`:
+`GITHUB_TOKEN=… node scripts/release-open.mjs --artifact release-plan.json --version <next> --sha <branch tip>`:
 the tool re-runs `scripts/version.mjs check` and `scripts/changelog.mjs check`
 against the branch's contents fetched through the API (never the branch's own
 copies of those scripts), refuses when `main` moved since the plan or the diff

@@ -1,0 +1,1 @@
+Jobs now enter a durable queue when `QUEUE_DISPATCH=1`: the tick claims one job per repository with a lease, decrypts the job's short-lived callback and model-token secrets and dispatches it. With the flag off the inline path is unchanged. The job row records the lease and the encrypted dispatch secrets at schema version 33.

@@ -3,7 +3,7 @@ import { resetGithubBudget } from '../src/lib/githubBudget.js'
 import type { AddressInfo } from 'node:net'
 import { randomBytes } from 'node:crypto'
 import { loadConfig, type Config } from '../src/config.js'
-import type { Store, UserRow } from '../src/db.js'
+import type { JobRow, Store, UserRow } from '../src/db.js'
 import type { Mailer, MailMessage } from '../src/email/mailer.js'
 import { randomId, sha256Hex } from '../src/lib/secrets.js'
 import type { BuiltApp } from '../src/app.js'
@@ -24,7 +24,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     tokenEncryptionKey: randomBytes(32).toString('base64'),
     dataDir: '/tmp/fledge-test',
     dbPath: ':memory:',
-    runner: { mode: 'mock', bridgeUrl: '', bridgeToken: '', timeoutMinutes: 45, stallMinutes: 30, maxActiveJobs: 2 },
+    runner: { mode: 'mock', bridgeUrl: '', bridgeToken: '', timeoutMinutes: 45, stallMinutes: 30, maxActiveJobs: 2, queueDispatch: false, maxQueueDepth: 100, maxUserQueue: 20 },
     allowTokenLoginOnly: true,
     mail: {
       transport: 'console',
@@ -61,6 +61,14 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     autoMerge: { ...base.autoMerge, ...overrides.autoMerge },
     ops: { ...base.ops, ...overrides.ops },
   }
+}
+
+// Tests that need many historical jobs for one repository must not leave more
+// than one active row: the jobs_one_active_per_repo index is a real invariant.
+export function makeTerminalJob(store: Store, input: Parameters<Store['createJob']>[0]): JobRow {
+  const job = store.createJob(input)
+  store.updateJob(job.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+  return job
 }
 
 export function makeUser(store: Store, options: { login?: string; admin?: boolean; superadmin?: boolean; status?: 'pending' | 'approved' | 'rejected'; quota?: number } = {}): UserRow {

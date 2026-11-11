@@ -8,10 +8,11 @@
 // Anything ambiguous fails closed: an unparsable version, a version that does
 // not match the last tag, or a count that cannot be trusted never releases.
 
+import { nextReleaseVersion } from './lib/release-version.mjs'
+
 export const MIN_PRS = 10
 export const MIN_FEATURES = 5
 
-const VERSION = /^(\d+)\.(\d+)\.(\d+)$/
 // "feat: x", "feat(ui): x", "feature: x", "feature(scope): x". A conventional
 // `feat!:` is deliberately not matched: the rule names those two prefixes, and
 // under-counting a feature is the conservative direction.
@@ -80,6 +81,7 @@ export function planRelease(input) {
     existingTags,
     crossCheck,
     lastTagCommittedAt,
+    releaseAt,
   } = input ?? {}
 
   const fragmentList = Array.isArray(fragments) ? fragments : []
@@ -97,13 +99,12 @@ export function planRelease(input) {
   const total = counted.length
   const features = counted.filter(isFeature).length
 
-  const nextVersion = (() => {
-    const match = VERSION.exec(typeof packageVersion === 'string' ? packageVersion : '')
-    if (match === null) return ''
-    const major = Number(match[1])
-    const minor = Number(match[2])
-    return `${major}.${minor + 1}.0`
-  })()
+  const next = nextReleaseVersion({
+    packageVersion: typeof packageVersion === 'string' ? packageVersion : '',
+    lastTagCommittedAt,
+    releaseAt,
+  })
+  const nextVersion = next.version
 
   const tokens = []
   if (nextVersion === '') tokens.push('invalid-version')
@@ -122,6 +123,7 @@ export function planRelease(input) {
     features,
     fragments: fragmentList.length,
     nextVersion,
+    bump: next.bump,
     reason: tokens.join('; '),
     shouldRelease: tokens[0] === 'ok',
   }
