@@ -482,7 +482,7 @@ function setupSection(setup: SetupState | undefined, t: Translate): string {
   if (setup === undefined) return ''
   const outcome = firstRunOutcome(setup, t)
   if (outcome !== null) {
-    return `<section class="card setup-card" id="first-run" data-first-pr>
+    return `<section class="card" id="first-run" data-first-pr>
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('第一次运行', 'FIRST RUN'))}</div>
@@ -513,7 +513,7 @@ function setupSection(setup: SetupState | undefined, t: Translate): string {
       </li>`
     })
     .join('')
-  return `<section class="card setup-card" id="setup" data-setup data-setup-next="${checklist.next?.key ?? ''}">
+  return `<section class="card" id="setup" data-setup data-setup-next="${checklist.next?.key ?? ''}">
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('开始使用', 'GETTING STARTED'))}</div>
