@@ -162,6 +162,9 @@ const REFUSAL_SENTENCES: Record<string, [string, string]> = {
   JOB_LIMIT: ['平台同时运行的任务数已达上限（{detail} 个），请稍后再试。', 'The platform already has {detail} jobs running at once; retry in a moment.'],
   BOT_MODEL_ASSIGNMENT_FAILED: ['机器人模型未就绪：{detail}；请在仓库设置里重新应用模型。', 'The bot models are not ready: {detail}; re-apply the models in the repository settings.'],
   BRANCH_MISSING: ['目标分支 {branch} 不存在或不可访问。', 'The target branch {branch} does not exist, or this account cannot read it.'],
+  // #283: the platform stop outranks every other refusal, so its sentence has to
+  // read as an operator decision rather than as a problem the reader caused.
+  PLATFORM_PAUSED: ['平台已紧急停止，暂不接受新任务；等管理员恢复后再试。', 'The platform is stopped for an emergency, so no new job is accepted; retry once an admin resumes it.'],
 }
 
 const BRANCH_EMPTY: [string, string] = ['目标分支不存在或不可访问。', 'The target branch does not exist, or this account cannot read it.']
