@@ -293,9 +293,12 @@ server {
 The app trusts only the hops named in `TRUST_PROXY`, never every hop.
 `$proxy_add_x_forwarded_for` appends `$remote_addr`, so the address nginx actually
 saw is the rightmost `X-Forwarded-For` entry, and that is the value Fledge uses as
-`request.ip`, as the rate-limit bucket key and for the `/metrics` loopback check.
-Everything to the left of it is caller-supplied and ignored, so a client cannot
-mint a new bucket by rotating the header.
+`request.ip`, as the input to the rate-limit bucket key and for the `/metrics`
+loopback check. Everything to the left of it is caller-supplied and ignored, so a
+client cannot mint a new bucket by rotating the header. Every limiter, including
+the gateway's two, derives its key from that address through one helper: IPv4 is
+exact and IPv6 keeps only its `/64` prefix, so rotating the low bits inside a
+routed `/64` does not mint a fresh bucket either.
 
 | Topology | `TRUST_PROXY` |
 |---|---|
