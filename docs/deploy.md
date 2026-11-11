@@ -240,6 +240,15 @@ documentation site builds from this repository's `README.md`, `README.zh.md` and
 `docs/` rather than a pinned copy, so the release pull request and the docs site
 stay in step.
 
+The status line each README carries is checked against `package.json`:
+`test/readmeStatus.test.ts` runs in `npm run check`, so `ci-ok` is red on a
+release pull request that bumps the version without updating both status lines,
+and the failure names the file and the line to edit. The two READMEs sit outside
+the mechanical release set on purpose — a person writes the status line, the
+routine does not — so the mechanical release pull request needs that one human
+edit before it can merge, and adding the READMEs to the mechanical set instead is
+the separate release-policy decision, not part of this check.
+
 The nightly workflow pushes `release/v<next>` and stops before the pull request,
 because a pull request opened with `GITHUB_TOKEN` starts no `pull_request`
 workflow and would never get a `ci-ok`. Open it with the team account — never
