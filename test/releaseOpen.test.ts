@@ -40,6 +40,8 @@ interface Fixture {
   changelogEntries?: Array<{ name: string; type: string }>
   pullStatus?: number
   maintainerCanModify?: boolean
+  login?: string
+  userStatus?: number
 }
 
 function makeServer(fixture: Fixture = {}) {
@@ -63,6 +65,10 @@ function makeServer(fixture: Fixture = {}) {
     const body = init?.body === undefined ? undefined : (JSON.parse(String(init.body)) as Record<string, unknown>)
     calls.push({ method, route, body })
 
+    if (method === 'GET' && route === 'https://api.github.com/user') {
+      if (fixture.userStatus !== undefined) return json({ message: 'Not Found' }, fixture.userStatus)
+      return json({ login: fixture.login ?? 'FledgePlatformTeam' })
+    }
     if (method === 'GET' && route === '') {
       return json({ full_name: REPO, permissions: { push: fixture.permissionsPush ?? true } }, 200, { 'x-oauth-scopes': 'repo, workflow' })
     }
@@ -269,15 +275,17 @@ test('refuses when main moved since the plan was made', async () => {
   assert.equal(posts(calls).length, 0)
 })
 
-test('refuses without writing when the credential cannot push', async () => {
+test('opens the pull request with a credential that cannot push', async () => {
+  // #310 review: the release token is scoped `Contents: read` + `Pull requests:
+  // write`, so `permissions.push` is false — and that is correct, because the
+  // workflow pushes the branch and `POST /pulls` needs only pull-request write.
+  // Refusing on `permissions.push` made every night blocked on a token that was
+  // scoped right, which is the defect this test now pins from the other side.
   const { result, calls } = await run({}, { permissionsPush: false })
-  assert.equal(result.status, 'refused')
-  assert.match(result.reason, /permissions\.push/)
-  assert.equal(posts(calls).length, 0)
-  // The refusal happens before any branch or content read, so nothing else could
-  // have been written either.
-  assert.deepEqual(calls.map((call) => `${call.method} ${call.route}`), ['GET '])
-  assert.equal(exitCodeFor(result), 1)
+  assert.equal(result.status, 'opened', `a correctly scoped token was refused: ${result.status === 'refused' ? result.reason : ''}`)
+  assert.equal(result.permissions?.push, false, 'the observed permission is no longer recorded as a fact')
+  assert.equal(posts(calls).filter((call) => call.route === '/pulls').length, 1)
+  assert.equal(exitCodeFor(result), 0)
 })
 
 test('refuses a pull request that came back not maintainer-editable', async () => {
@@ -322,4 +330,30 @@ test('the module carries no tag route and no tag-shaped export', () => {
 
 test('the surface the tool materialises is exactly the mechanical release set', () => {
   assert.deepEqual([...SURFACE_PATHS].sort(), ['CHANGELOG.md', 'changelog.d', 'docker-compose.yml', 'package-lock.json', 'package.json'])
+})
+
+test('a run without the team token is blocked before any request is made', async () => {
+  const { result, calls } = await run({ token: '' })
+  assert.equal(result.status, 'blocked')
+  assert.match(result.reason, /RELEASE_OPEN_TOKEN/)
+  assert.equal(calls.length, 0, 'a blocked run calls no endpoint, least of all POST /pulls')
+})
+
+test('a blocked run exits zero, so the night reports it instead of dying', () => {
+  assert.equal(exitCodeFor({ status: 'blocked' }), 0)
+  assert.equal(exitCodeFor({ status: 'refused' }), 1)
+})
+
+test('the reviewer account may not open the release pull request', async () => {
+  const { result, calls } = await run({}, { login: 'HugoXK-bot' })
+  assert.equal(result.status, 'refused')
+  assert.match(result.reason, /HugoXK-bot/)
+  assert.equal(posts(calls).length, 0, 'the reviewer credential never reaches the write endpoint')
+})
+
+test('an unreadable credential identity is refused, not guessed', async () => {
+  const { result, calls } = await run({}, { userStatus: 500 })
+  assert.equal(result.status, 'refused')
+  assert.match(result.reason, /identity|account/i)
+  assert.equal(posts(calls).length, 0)
 })

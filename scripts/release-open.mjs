@@ -17,6 +17,13 @@
 // `GITHUB_TOKEN` is read from the environment and used only as a request header;
 // it never appears in an argument. `GITHUB_REPOSITORY` (or `--repo`) names the
 // repository.
+//
+// In Actions the token is the repository secret `RELEASE_OPEN_TOKEN` — a team
+// account, never the Reviewer's account named by
+// `.github/agent/review-policy.json` `requiredPass`. The tool reads `GET /user`
+// and refuses when the credential belongs to that account, so the identity is a
+// fact the run records, not a claim the workflow makes. A missing token is the
+// `blocked` state (exit 0): the night reports it and opens nothing.
 
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
@@ -40,6 +47,9 @@ export function releaseBranch(version) {
 }
 
 export function exitCodeFor(result) {
+  // `blocked` is the unconfigured-credential state, not a failure of the night:
+  // the run is green, the summary and #80 say what is missing. A `refused`
+  // decision is a red run, because the branch was ready and the tool declined.
   return result?.status === 'refused' ? 1 : 0
 }
 
@@ -72,10 +82,10 @@ function messageOf(payload) {
   return ''
 }
 
-async function apiCall(api, method, path, body) {
+async function request(api, method, url, body) {
   const headers = { accept: 'application/vnd.github+json', authorization: `Bearer ${api.token}` }
   if (body !== undefined) headers['content-type'] = 'application/json'
-  const response = await api.fetch(`https://api.github.com/repos/${api.repo}${path}`, {
+  const response = await api.fetch(url, {
     method,
     headers,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -90,6 +100,28 @@ async function apiCall(api, method, path, body) {
     }
   }
   return { status: Number(response.status ?? 0), payload, headers: response.headers }
+}
+
+async function apiCall(api, method, path, body) {
+  return request(api, method, `https://api.github.com/repos/${api.repo}${path}`, body)
+}
+
+async function apiRoot(api, method, path) {
+  return request(api, method, `https://api.github.com${path}`)
+}
+
+// The identity the policy reserves for review. A read failure yields no reserved
+// login — the policy file ships beside this script, and the workflow refuses a
+// missing token before this is reached — but an account the API names as the
+// reviewer is refused below, so the two credentials can never be the same one.
+function reservedOpenerLogins() {
+  try {
+    const policy = JSON.parse(readFileSync(new URL('../.github/agent/review-policy.json', import.meta.url), 'utf8'))
+    const login = typeof policy?.requiredPass === 'string' ? policy.requiredPass.trim() : ''
+    return login === '' ? [] : [login]
+  } catch {
+    return []
+  }
 }
 
 async function contentFile(api, branch, path) {
@@ -180,7 +212,9 @@ export async function runReleaseOpen(options) {
 
   if (typeof fetchImpl !== 'function') return refuse('no fetch implementation to call the API with')
   if (!/^[^/\s]+\/[^/\s]+$/.test(String(repo))) return refuse(`the repository "${String(repo)}" is not owner/name`)
-  if (typeof token !== 'string' || token === '') return refuse('GITHUB_TOKEN is not set; nothing was written')
+  if (typeof token !== 'string' || token === '') {
+    return { status: 'blocked', reason: 'RELEASE_OPEN_TOKEN is not set, so no release pull request was opened; add the repository secret' }
+  }
 
   const plan = artifact?.plan ?? {}
   const wanted = String(version ?? plan.nextVersion ?? '')
@@ -192,16 +226,30 @@ export async function runReleaseOpen(options) {
   const branch = releaseBranch(wanted)
   const api = { repo, token, fetch: fetchImpl }
 
-  // (2a) What the credential can be trusted to prove: it can push, so the pull
-  // request it opens will start the gated workflows. Kind and breadth are outside
-  // this tool's reach; the JSON records what was observed.
+  // (2a) What the credential can be trusted to prove. It needs `Pull requests:
+  // write` to open the pull request; it does **not** need push, because the nightly
+  // workflow pushed the branch already and a fine-grained `Contents: read` +
+  // `Pull requests: write` token is the least privilege that opens one. Refusing on
+  // `permissions.push` refused exactly that token (#310 review). Kind and breadth
+  // are outside this tool's reach; the JSON records what was observed.
   const repository = await apiCall(api, 'GET', '')
   if (repository.status === 404) return refuse(`this credential cannot see ${repo}`)
   if (repository.status !== 200) return refuse(`GET /repos/${repo} answered ${repository.status}${messageOf(repository.payload) === '' ? '' : `: ${messageOf(repository.payload)}`}`)
   const permissions = repository.payload?.permissions ?? {}
   const scopes = headerOf(repository.headers, 'x-oauth-scopes')
-  if (permissions.push !== true) {
-    return refuse(`the credential cannot push to ${repo} (permissions.push is ${String(permissions.push)}); nothing was written`, { permissions, scopes })
+
+  // (2b) Who this credential is. The reviewer account may post the PASS but may
+  // not open the release pull request: one account holding both would let the
+  // same identity author and approve the same tip.
+  const who = await apiRoot(api, 'GET', '/user')
+  if (who.status === 401) return refuse('the credential is not accepted by GET /user; nothing was written', { permissions, scopes })
+  if (who.status !== 200) {
+    return refuse(`GET /user answered ${who.status}${messageOf(who.payload) === '' ? '' : `: ${messageOf(who.payload)}`}; the credential's identity is unreadable, so nothing was written`, { permissions, scopes })
+  }
+  const login = String(who.payload?.login ?? '')
+  if (login === '') return refuse(`GET /user did not name the credential's account; nothing was written`, { permissions, scopes })
+  if (reservedOpenerLogins().includes(login)) {
+    return refuse(`the credential belongs to ${login}, the review account; the release pull request must be opened by the team account, so nothing was written`, { permissions, scopes })
   }
 
   const open = await apiCall(api, 'GET', '/pulls?state=open&per_page=100')
@@ -213,7 +261,7 @@ export async function runReleaseOpen(options) {
   if (reuse !== undefined) {
     // (a) Reuse, never duplicate: even a plan that says `open-release-pr` is the
     // state this branch exists to reuse.
-    return { status: 'reused', reason: `pull request #${String(reuse.number)} already has ${branch} at ${sha}`, pr: Number(reuse.number), permissions, scopes }
+    return { status: 'reused', reason: `pull request #${String(reuse.number)} already has ${branch} at ${sha}`, pr: Number(reuse.number), identity: login, permissions, scopes }
   }
   const conflicting = sameBranch[0]
   if (conflicting !== undefined) {
@@ -305,6 +353,7 @@ export async function runReleaseOpen(options) {
       status: 'opened',
       reason: `opened pull request #${number} for ${branch} at ${sha}`,
       pr: number,
+      identity: login,
       url: String(created.payload?.html_url ?? ''),
       branch,
       sha,

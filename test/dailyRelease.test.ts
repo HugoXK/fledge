@@ -92,11 +92,12 @@ test('permissions are declared per job, and there is no file-level block to wide
   })
 })
 
-test('the automatic token is the only secret in the file', () => {
+test('the team token is the only stored secret, and it is not the reviewer token', () => {
   const names = [...daily.matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map((match) => String(match[1]))
   assert.ok(names.length > 0, 'the file uses the automatic token')
-  for (const name of names) assert.equal(name, 'GITHUB_TOKEN', `secrets.${name} is not the automatic token`)
-  assert.equal(daily.includes('RELEASE_TOKEN'), false, 'the stored token is gone, not merely unused')
+  assert.deepEqual([...new Set(names)].sort(), ['GITHUB_TOKEN', 'RELEASE_OPEN_TOKEN'], 'exactly two credentials: the automatic token and the opener')
+  assert.equal(daily.includes('RELEASE_TOKEN'), false, 'the old stored token is gone, not merely unused')
+  assert.equal(daily.includes('HugoXK-bot'), false, 'the reviewer identity is never wired into the release run')
   assert.equal(/token: \$\{\{/.test(daily), false, 'the checkout uses the default token')
 })
 
@@ -105,7 +106,7 @@ test('each job states its own trigger, so an ordinary merge cannot plan, push or
   assert.match(job('tag'), /if: github\.event_name == 'push'/)
 })
 
-test('the file never opens, merges or releases a pull request, and never creates a tag with a git command', () => {
+test('the file never creates, merges or releases a pull request with gh, and never creates a tag with a git command', () => {
   for (const forbidden of ['gh pr create', 'gh pr merge', 'gh release', 'git tag', 'git push origin "$TAG"', 'git push --tags', '--admin']) {
     assert.equal(daily.includes(forbidden), false, `"${forbidden}" must not appear`)
   }
@@ -136,24 +137,49 @@ test('the publish run is dispatched at the tag, and the comment goes to issue 80
 })
 
 test('a dry run writes the summary and the artifact, and pushes and comments nothing', () => {
-  const pushStep = between('      - name: Push the release branch', '      - name: Comment on #80')
+  const pushStep = between('      - name: Push the release branch', '      - name: Write the plan artifact')
   assert.match(pushStep, /if: \$\{\{ inputs\.dry_run != true \}\}/)
-  const commentStep = between('      - name: Comment on #80', '      - name: Write the plan artifact')
-  assert.match(commentStep, /if: \$\{\{ inputs\.dry_run != true \}\}/)
-  const artifactStep = between('      - name: Write the plan artifact', '      - name: Keep the plan artifact')
+  const openStep = between('      - name: Open the release pull request', '      - name: Comment on #80')
+  assert.match(openStep, /if: \$\{\{ inputs\.dry_run != true && steps\.push\.outputs\.pushed != '' \}\}/)
+  const commentStep = between('      - name: Comment on #80', '      - name: Keep the plan artifact')
+  assert.match(commentStep, /if: \$\{\{ always\(\) && inputs\.dry_run != true \}\}/)
+  const artifactStep = between('      - name: Write the plan artifact', '      - name: Open the release pull request')
   assert.equal(artifactStep.includes('dry_run'), false, 'the artifact is written on every run')
   assert.match(daily, /name: release-plan/)
 })
 
+test('the nightly run opens the release pull request with the team token', () => {
+  const step = between('      - name: Open the release pull request', '      - name: Comment on #80')
+  assert.match(step, /node scripts\/release-open\.mjs --artifact release-plan\.json --version "\$VERSION" --sha "\$PUSHED"/)
+  assert.match(step, /GITHUB_TOKEN: \$\{\{ secrets\.RELEASE_OPEN_TOKEN \}\}/)
+  assert.equal(/release-open\.mjs[^\n]*GITHUB_TOKEN/.test(step), false, 'the token is read from the environment, never passed in an argument')
+})
+
+test('a missing token reports blocked, opens nothing, and the plan artifact is still written first', () => {
+  const step = between('      - name: Open the release pull request', '      - name: Comment on #80')
+  assert.match(step, /if \[ -n "\$GITHUB_TOKEN" \]/)
+  assert.match(step, /STATE=blocked/)
+  assert.ok(daily.indexOf('- name: Write the plan artifact') < daily.indexOf('- name: Open the release pull request'), 'the opener reads the artifact, so it is written first')
+  assert.match(between('      - name: Write the plan artifact', '      - name: Open the release pull request'), /if: \$\{\{ always\(\) \}\}/)
+})
+
+test('the #80 comment carries the open state, and still posts after a refusal', () => {
+  const step = between('      - name: Comment on #80', '      - name: Keep the plan artifact')
+  assert.match(step, /OPEN_STATE: \$\{\{ steps\.open\.outputs\.state \}\}/)
+  assert.match(step, /OPEN_DETAIL: \$\{\{ steps\.open\.outputs\.detail \}\}/)
+  assert.match(step, /daily-release:v\$\{PLAN_NEXT\}:\$\{PUSHED\}:\$\{OPEN_STATE\}/, 'the marker carries the open state, so a blocked night that later opens says so once')
+  assert.match(step, /release pull request: \*\*\$\{OPEN_STATE\}\*\*/)
+})
+
 test('the comment is posted only when the pushed sha or the plan changed', () => {
-  const commentStep = between('      - name: Comment on #80', '      - name: Write the plan artifact')
+  const commentStep = between('      - name: Comment on #80', '      - name: Keep the plan artifact')
   assert.match(commentStep, /issues\/80\/comments/)
   assert.match(commentStep, /daily-release:v/)
   assert.match(commentStep, /already commented/)
 })
 
 test('the mechanical release branch push is idempotent and never forced', () => {
-  const pushStep = between('      - name: Push the release branch', '      - name: Comment on #80')
+  const pushStep = between('      - name: Push the release branch', '      - name: Write the plan artifact')
   assert.match(pushStep, /already pushed/)
   assert.equal(/--force/.test(pushStep), false)
   assert.ok(pushStep.includes('git push origin "$BRANCH"'))
