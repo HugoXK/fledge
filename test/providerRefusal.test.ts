@@ -33,8 +33,8 @@ const RATE_TEXT = 'Rate limit exceeded: Current limit: 50, Remaining: 0'
 const zh = (zhText: string): string => zhText
 
 test('the provider budget and rate-limit vocabulary is quota, not a bridge or GitHub failure', () => {
-  assert.equal(classifyFailure({ status: 'failed', error: BUDGET_TEXT })?.kind, 'quota')
-  assert.equal(classifyFailure({ status: 'failed', error: RATE_TEXT })?.kind, 'quota', 'Remaining: 0 is the provider refusing, not a GitHub rate limit')
+  assert.equal(classifyFailure({ status: 'failed', kind: 'review', error: BUDGET_TEXT })?.kind, 'quota')
+  assert.equal(classifyFailure({ status: 'failed', kind: 'review', error: RATE_TEXT })?.kind, 'quota', 'Remaining: 0 is the provider refusing, not a GitHub rate limit')
   assert.equal(retryDecision('quota', 0).retry, false, 'a budget refusal is not retried')
 })
 
@@ -158,7 +158,7 @@ test('a stall whose role session never called the model names the provider, not 
     const job = h.store.getJob(jobId)!
     assert.equal(job.status, 'failed')
     assert.equal(job.error_code, 'PROVIDER_CALL_NEVER_STARTED', 'a turn that ended with no model call is a provider refusal')
-    assert.match(job.error, /模型调用/)
+    assert.match(job.error ?? '', /模型调用/)
     assert.equal(h.store.listSettings('retry_pending:').length, 0, 'a provider refusal is not retried as a transient stall')
   } finally {
     await close(bridge.server)

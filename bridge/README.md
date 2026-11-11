@@ -69,7 +69,14 @@ loopback only; keep it that way.
 ```
 
 The bridge returns `202 {ok:true}` once DSH accepted the message. It does not wait
-for the job; the agent reports back to Fledge. `sessionId` in the payload routes
+for the job; the agent reports back to Fledge.
+
+A send DSH does not accept answers `502 {error, detail}`. `detail` is the DSH
+answer itself, redacted and truncated to 300 characters — for a provider that is
+over budget or rate limiting this is the only place Fledge ever sees the real
+cause, so it is relayed verbatim instead of being replaced with a generic
+"could not reach DSH". Fledge classifies on that text and stores the provider
+failure code. `sessionId` in the payload routes
 the job to a repository-specific Lead, Product, Test or Reviewer session. `kind`
 may be `iterate`, `plan`, `scope`, `verify` or `review`.
 

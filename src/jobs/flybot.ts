@@ -113,6 +113,18 @@ function bridgeEndpoint(url: string): string {
   }
 }
 
+// A bridge failure body is JSON (`{error, detail}`) since #260 and was a plain
+// string before. Both shapes have to reach `jobs.error` unchanged, because the
+// classifier reads that text and the job page shows it.
+function bridgeFailureText(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown; detail?: unknown }
+    const parts = [parsed.error, parsed.detail].filter((part): part is string => typeof part === 'string' && part !== '')
+    if (parts.length > 0) return parts.join(': ')
+  } catch {}
+  return text
+}
+
 export class FlyBotRunner implements Runner {
   readonly name = 'flybot'
 
@@ -190,7 +202,10 @@ export class FlyBotRunner implements Runner {
     observeHistogram('fledge_bridge_request_seconds', (Date.now() - startedAt) / 1000, { kind: context.kind }, 'Bridge request duration')
     if (!response.ok) {
       endSpan(span, 'ERROR', `bridge ${response.status}`, { status: response.status })
-      throw new Error(`FlyBot bridge ${response.status}: ${text.slice(0, 300)}`)
+      // #260: the bridge now answers a refused send with `{error, detail}` where
+      // `detail` is the DSH refusal (a provider budget or rate-limit answer).
+      // Keep that text: it is the only provider signal Fledge ever receives.
+      throw new Error(`FlyBot bridge ${response.status}: ${bridgeFailureText(text).slice(0, 400)}`)
     }
     endSpan(span, 'OK', undefined, { status: response.status })
     log.info('job handed to FlyBot bridge', { job: context.job.id, kind: context.kind, status: response.status })

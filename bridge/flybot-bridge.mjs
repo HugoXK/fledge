@@ -112,6 +112,21 @@ async function dshApi(endpoint, payload) {
   return body === '' ? {} : JSON.parse(body)
 }
 
+// #260: the DSH answer to the send is the only place Fledge can learn that the
+// model provider refused the turn (its budget is used up, or it is rate
+// limiting). It used to be discarded at this boundary - every failure became
+// "could not reach DSH" - so a budget refusal reached Fledge as a bridge outage,
+// was stored as BRIDGE_ERROR, and was retried twice. The answer is relayed as
+// the job-failed detail instead, redacted and bounded.
+function refusalText(body) {
+  if (body === null || typeof body !== 'object') return ''
+  const error = body.error
+  if (typeof error === 'string') return error
+  if (error !== null && typeof error === 'object' && typeof error.message === 'string') return error.message
+  if (body.ok === false) return typeof body.message === 'string' ? body.message : 'the session refused the job'
+  return ''
+}
+
 async function sendToBot(text, sessionId) {
   const cookie = await dshCookie()
   const response = await fetch(`${WEB}/api/bot`, {
@@ -121,7 +136,20 @@ async function sendToBot(text, sessionId) {
     signal: AbortSignal.timeout(30_000),
   })
   const body = await response.text()
-  if (!response.ok) throw new Error(`DSH /api/bot ${response.status}: ${body.slice(0, 300)}`)
+  if (!response.ok) {
+    let detail = body.slice(0, 300)
+    try {
+      const extracted = refusalText(JSON.parse(body))
+      if (extracted !== '') detail = extracted
+    } catch {}
+    throw new Error(`DSH /api/bot ${response.status}: ${detail.slice(0, 300)}`)
+  }
+  let parsed = null
+  try {
+    parsed = body === '' ? null : JSON.parse(body)
+  } catch {}
+  const refusal = refusalText(parsed)
+  if (refusal !== '') throw new Error(`DSH refused the job: ${refusal}`)
   return body
 }
 
@@ -312,8 +340,9 @@ const server = http.createServer(async (request, response) => {
     logEvent('job-forwarded', { jobId: job.jobId, kind: job.kind ?? 'iterate', repo: `${job.upstream?.owner || job.repo?.owner}/${job.upstream?.name || job.repo?.name}`, session: sessionId.slice(0, 12) })
     return json(response, 202, { ok: true, accepted: true })
   } catch (error) {
-    logEvent('job-failed', { jobId: job.jobId, error: redact(String(error)) })
-    return json(response, 502, { error: 'could not reach DSH' })
+    const detail = redact(String(error instanceof Error ? error.message : error)).slice(0, 300)
+    logEvent('job-failed', { jobId: job.jobId, error: detail })
+    return json(response, 502, { error: 'DSH did not accept the job', detail })
   }
 })
 

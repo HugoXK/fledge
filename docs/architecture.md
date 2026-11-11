@@ -448,13 +448,29 @@ ran too long. The bridge URL is stored by origin and path only, so a token in
 its query or userinfo never reaches the job row or the job page.
 
 A failure also carries a stable **code** in `jobs.error_code`, written by the job
-service where the failure happens. Seven codes are written to a row today:
+service where the failure happens. Ten codes are written to a row today:
 `JOB_STALLED`, `JOB_LEASE_EXPIRED`, `JOB_TIMEOUT`, `QUOTA_EXHAUSTED`,
-`STAGE_EVIDENCE_MISSING`, `BRIDGE_ERROR` and `REPO_DISABLED`. Three more are in
-the vocabulary but have no writer: `REPO_CREDENTIAL_INVALID`,
-`JOB_BUDGET_EXCEEDED` and `DUPLICATE_WORK` name refusals that stop an enqueue
-before a job row exists, so they travel on the redirect instead (below) and are
-reserved for a row if one of them ever finishes a job.
+`STAGE_EVIDENCE_MISSING`, `BRIDGE_ERROR`, `REPO_DISABLED`,
+`PROVIDER_BUDGET_EXCEEDED`, `PROVIDER_RATE_LIMITED` and
+`PROVIDER_CALL_NEVER_STARTED`. Three more are in the vocabulary but have no
+writer: `REPO_CREDENTIAL_INVALID`, `JOB_BUDGET_EXCEEDED` and `DUPLICATE_WORK`
+name refusals that stop an enqueue before a job row exists, so they travel on the
+redirect instead (below) and are reserved for a row if one of them ever finishes
+a job.
+
+A provider refusal is not a bridge outage and not a stall, and it is stored as
+neither. `/run` answers a refused send with `502 {error, detail}`, where `detail`
+is the DSH answer to the send (a used-up budget, a zero remaining rate limit);
+the runner keeps that text in the dispatch error and the service stores it with
+the provider code instead of `BRIDGE_ERROR`, which is a transient category. The
+retry policy refuses `PROVIDER_*` as well: retrying against the same exhausted
+budget only burns the slot. When the send was accepted and the session still
+never called the model, nothing about the provider reaches Fledge — the DSH
+`state` surface carries per-session call counters but no error text — so the
+stall sweep reads `state` once with a 5s bound before it fails a silent job: a
+role session whose turn ended with zero model calls is reported as
+`PROVIDER_CALL_NEVER_STARTED`, and anything else stays `JOB_STALLED`. A failed
+state read changes nothing; the job keeps the heartbeat sentence.
 
 The code, not the text, decides the sentence a reader sees: `failureSentence`
 (`src/lib/failure.ts`) builds it in the reader's language for the job-page
