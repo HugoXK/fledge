@@ -138,6 +138,17 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   renders the simple UI while advanced routes stay blocked. An admin can open a
   read-only support view for a visible user and that user's jobs; it never
   mutates data or triggers work.
+- **Dispatch leases and queue mode**: every running job records `lease_owner`
+  and `lease_until`; the terminal transition clears them. `Store.claimQueuedJob`
+  atomically claims one queued row per repository, and `expiredLeaseJobs` is the
+  recovery query. `QUEUE_DISPATCH=false` keeps the inline path; setting it to
+  `true` makes `enqueue` store the callback secret and job token encrypted
+  (`callback_secret_enc`, `platform_token_enc`) and lets the tick's worker loop
+  claim and dispatch the job. A running job renews its five-minute lease every
+  minute, and the tick reaper fails a job whose worker stops renewing instead of
+  waiting for the 90-minute job timeout. Queue admission rejects a new job when
+  the global or per-user cap is reached. The lease and queue columns are schema
+  version 33.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
   a maintainer reviewer is due); with no open work it starts an `iterate` from
@@ -148,8 +159,7 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   is skipped while another job for that repository is active. The global
   concurrency cap is 2. Iteration cadence ranges from every 15 minutes to every
   30 days; review cadence from every 6 hours to every 30 days. Jobs that exceed
-  the timeout are failed.
-- **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
+  the timeout are failed.- **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
   against the upstream; issues are created on the upstream. If the token user

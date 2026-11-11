@@ -18,7 +18,7 @@ import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
 import { evaluateTestEvidence, type VerificationResult } from '../lib/verification.js'
 import { observedAttribution } from '../lib/teamStats.js'
-import { decryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
+import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
 import { GithubApp } from '../repos/app.js'
@@ -115,6 +115,7 @@ export class Jobs {
   private stopped = false
   private lastPruneAt = 0
   private readonly credentialCache = new Map<string, { at: number }>()
+  private readonly leaseTimers = new Map<string, NodeJS.Timeout>()
   private readonly quotaNotifier: QuotaNotifier
 
   constructor(
@@ -349,6 +350,16 @@ export class Jobs {
     if (active !== undefined) return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
     const user = this.store.userById(repo.user_id)
     if (user === undefined || user.status !== 'approved') return { ok: false, error: '用户不可用', code: 'USER_UNAVAILABLE' }
+    if (this.config.runner.queueDispatch) {
+      if (this.store.countQueuedJobs() >= this.config.runner.maxQueueDepth) {
+        incCounter('fledge_admission_rejected_total', { reason: 'queue_full' }, 1, 'Queue admission rejections')
+        return { ok: false, error: '任务队列已满，请稍后再试。', code: 'QUEUE_FULL' }
+      }
+      if (this.store.countQueuedJobsForUser(user.id) >= this.config.runner.maxUserQueue) {
+        incCounter('fledge_admission_rejected_total', { reason: 'queue_limit' }, 1, 'Queue admission rejections')
+        return { ok: false, error: '你排队的任务过多，请稍后再试。', code: 'QUEUE_LIMIT' }
+      }
+    }
     if (kind !== 'iterate') {
       const credential = await this.checkCredential(repo)
       if (!credential.ok) return { ok: false, error: credential.error ?? 'GitHub token 权限不足。', code: credential.code ?? 'REPO_CREDENTIAL_INVALID' }
@@ -400,7 +411,7 @@ export class Jobs {
     }
 
     let flybot: { url: string; token: string; sessionId: string; role: 'chief' | 'lead' | 'reviewer' | 'product' | 'test'; leadName: string } | undefined
-    if (this.config.flybot.instanceImage !== '') {
+    if (!this.config.runner.queueDispatch && this.config.flybot.instanceImage !== '') {
       if (this.instances === undefined) return { ok: false, error: 'FlyBot 实例管理器未配置', code: 'INSTANCE_UNAVAILABLE' }
       try {
         await this.instances.ensurePlaybook(repo.id).catch((error) => {
@@ -439,7 +450,7 @@ export class Jobs {
     if (this.store.activeJobForRepo(repo.id) !== undefined) {
       return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
     }
-    if (this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) {
+    if (!this.config.runner.queueDispatch && this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) {
       return { ok: false, error: `平台当前已有 ${this.config.runner.maxActiveJobs} 个任务在运行，请稍后再试。`, code: 'JOB_LIMIT' }
     }
 
@@ -474,6 +485,14 @@ export class Jobs {
     else this.store.updateRepo(repo.id, { last_status: 'queued' })
     this.store.audit(user.id, 'job.enqueued', `${job.id} ${repo.owner}/${repo.name} (${kind}, ${trigger})`)
 
+    if (this.config.runner.queueDispatch) {
+      this.store.updateJob(job.id, {
+        callback_secret_enc: encryptSecret(callbackSecret, this.config.tokenEncryptionKey),
+        platform_token_enc: encryptSecret(platformToken, this.config.tokenEncryptionKey),
+      })
+      return { ok: true, job: this.store.getJob(job.id) ?? job }
+    }
+
     const revoke = (): void => {
       const row = this.store.findApiToken(tokenRow.token_hash)
       if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
@@ -494,7 +513,13 @@ export class Jobs {
     try {
       // Mark the job running before dispatch: the bridge may send its first
       // heartbeat as soon as the agent is up, and a queued row may not accept one.
-      this.store.updateJob(job.id, { status: 'running', started_at: nowIso() })
+      this.store.updateJob(job.id, {
+        status: 'running',
+        started_at: nowIso(),
+        lease_owner: 'inline',
+        lease_until: addMinutes(5),
+      })
+      this.startLeaseHeartbeat(job.id, 'inline', 5 * 60_000)
       observeHistogram('fledge_job_queue_seconds', Math.max(0, (Date.now() - Date.parse(job.created_at)) / 1000), { kind }, 'Time from enqueue to dispatch')
       this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.running', step: kind })
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'running' })
@@ -532,6 +557,8 @@ export class Jobs {
       revoke()
       const message = String(error instanceof Error ? error.message : error)
       this.store.updateJob(job.id, { status: 'failed', error: message.slice(0, 1000), finished_at: nowIso() })
+      this.store.releaseJobLease(job.id)
+      this.clearLeaseHeartbeat(job.id)
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
       else this.store.updateRepo(repo.id, { last_status: 'failed' })
       this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${message}`)
@@ -601,6 +628,8 @@ export class Jobs {
       finished_at: nowIso(),
     })
     if (!claimed) return false
+    this.store.releaseJobLease(jobId)
+    this.clearLeaseHeartbeat(jobId)
     incCounter('fledge_jobs_total', { status: result.status, kind: job.kind }, 1, 'Jobs by terminal status')
     const started = Date.parse(job.started_at ?? job.created_at)
     const ended = Date.parse(nowIso())
@@ -1827,10 +1856,187 @@ export class Jobs {
     }
   }
 
+  // Durable dispatcher: claim queued jobs up to the running cap. The inline
+  // path in enqueue() stays the default; QUEUE_DISPATCH turns this on.
+  private async dispatchQueued(): Promise<void> {
+    const worker = `worker:${process.pid}`
+    const leaseMs = 5 * 60_000
+    for (;;) {
+      if (this.store.countRunningJobs() >= this.config.runner.maxActiveJobs) return
+      const job = this.store.claimQueuedJob(worker, leaseMs)
+      if (job === undefined) return
+      await this.dispatchClaimed(job, worker)
+    }
+  }
+
+  private async dispatchClaimed(job: JobRow, worker: string): Promise<void> {
+    const kind = job.kind as JobKind
+    const repo = this.store.getRepo(job.repo_id)
+    const user = this.store.userById(job.user_id)
+    const revoke = (): void => {
+      const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
+      if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
+    }
+    const fail = (error: string): void => {
+      this.finish(job.id, { status: 'failed', error }, revoke)
+    }
+    if (repo === undefined) return fail('仓库不存在')
+    if (user === undefined || user.status !== 'approved') return fail('用户不可用')
+    if (repo.enabled !== 1) return fail('这个仓库已停用')
+    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') return fail('请先选择你在这个仓库的角色。')
+    if (kind === 'review' && repo.repo_role !== 'maintainer') return fail('只有 maintainer 可以运行审核任务。')
+    if (job.callback_secret_enc === null || job.platform_token_enc === null) {
+      return fail('任务缺少调度密钥，无法派发。')
+    }
+    let callbackSecret: string
+    let platformToken: string
+    try {
+      callbackSecret = decryptSecret(job.callback_secret_enc, this.config.tokenEncryptionKey)
+      platformToken = decryptSecret(job.platform_token_enc, this.config.tokenEncryptionKey)
+    } catch (error) {
+      return fail(`任务密钥无法解密：${String(error)}`)
+    }
+    const platformFunded = user.own_llm_base_url === null || user.own_llm_base_url === '' || user.own_llm_key_enc === null
+    if (platformFunded && quotaView(user, this.config).exhausted) {
+      this.finish(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。' }, revoke)
+      await this.quotaNotifier.notify(user)
+      return
+    }
+
+    let flybot: { url: string; token: string; sessionId: string; role: 'chief' | 'lead' | 'reviewer' | 'product' | 'test'; leadName: string } | undefined
+    if (this.config.flybot.instanceImage !== '') {
+      if (this.instances === undefined) return fail('FlyBot 实例管理器未配置')
+      try {
+        await this.instances.ensurePlaybook(repo.id).catch((error) => {
+          log.warn('team playbook not refreshed', { repo: repo.id, error: String(error) })
+        })
+        await this.instances.refreshTeam(repo.id).catch((error) => log.warn('team session refresh before dispatch failed', { repo: repo.id, error: String(error) }))
+        const bridge = this.instances.bridgeFor(repo.id)
+        const assignment = await this.instances.applyBotModels(repo.id).catch((error) => {
+          log.warn('bot model check before dispatch failed', { repo: repo.id, error: String(error) })
+          return { updated: 0, skipped: ['model-check'] }
+        })
+        if (assignment.skipped.length > 0) {
+          return fail(`机器人模型未就绪：${assignment.skipped.join(', ')}；请在仓库设置里重新应用模型。`)
+        }
+        const reviewer = kind === 'review' ? bridge.team.reviewer : null
+        const role: 'chief' | 'lead' | 'reviewer' | 'product' | 'test' = kind === 'review'
+          ? 'reviewer'
+          : kind === 'scope'
+            ? 'product'
+            : kind === 'verify'
+              ? 'test'
+              : bridge.team.chief !== '' ? 'chief' : 'lead'
+        const sessionId = kind === 'review'
+          ? (reviewer ?? '')
+          : kind === 'scope'
+            ? bridge.team.product
+            : kind === 'verify'
+              ? bridge.team.test
+              : bridge.team.chief !== '' ? bridge.team.chief : bridge.team.lead
+        flybot = { url: bridge.url, token: bridge.token, sessionId, role, leadName: `${bridge.team.team} Lead` }
+      } catch (error) {
+        return fail(error instanceof Error ? error.message : String(error))
+      }
+    }
+
+    const baseBranch = job.base_branch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch))
+    this.store.updateJob(job.id, {
+      status: 'running',
+      started_at: nowIso(),
+      lease_owner: worker,
+      lease_until: addMinutes(5),
+    })
+    this.startLeaseHeartbeat(job.id, worker, 5 * 60_000)
+    observeHistogram('fledge_job_queue_seconds', Math.max(0, (Date.now() - Date.parse(job.created_at)) / 1000), { kind }, 'Time from enqueue to dispatch')
+    this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.running', step: kind })
+    if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'running' })
+    else this.store.updateRepo(repo.id, { last_status: 'running' })
+
+    const upstream: RepoRef = {
+      owner: repo.upstream_owner || repo.owner,
+      name: repo.upstream_name || repo.name,
+      defaultBranch: baseBranch,
+      htmlUrl: repo.upstream_html_url ?? `https://github.com/${repo.owner}/${repo.name}`,
+    }
+    const fork: RepoRef = {
+      owner: repo.fork_owner || repo.owner,
+      name: repo.fork_name || repo.name,
+      defaultBranch: repo.fork_default_branch || repo.default_branch,
+      htmlUrl: repo.fork_html_url ?? `https://github.com/${repo.owner}/${repo.name}`,
+    }
+    try {
+      const result = await this.runner.run({
+        job,
+        repo,
+        user,
+        kind,
+        goal: job.goal,
+        upstream,
+        fork,
+        isFork: repo.is_fork === 1,
+        permission: repo.permission,
+        repoRole: repo.repo_role === 'maintainer' || repo.repo_role === 'developer' ? repo.repo_role : null,
+        autoMerge: kind === 'iterate' && repo.repo_role === 'maintainer' && repo.auto_merge === 1,
+        canReview: repo.can_review === 1,
+        canCreateIssue: repo.can_create_issue === 1,
+        callback: { url: `${this.config.baseUrl}/api/jobs/${job.id}/callback`, secret: callbackSecret },
+        credential: { url: `${this.config.baseUrl}/api/jobs/${job.id}/credential`, secret: callbackSecret },
+        platform: { baseUrl: `${this.config.baseUrl}/v1`, model: this.config.llm.model, token: platformToken },
+        ...(flybot === undefined ? {} : { flybot }),
+        timeoutMinutes: this.config.runner.timeoutMinutes,
+      })
+      if (result.status === 'running') return
+      this.finish(job.id, {
+        status: result.status === 'succeeded' ? 'succeeded' : 'failed',
+        branch: result.branch,
+        prUrl: result.prUrl,
+        issueUrl: result.issueUrl,
+        reviewScore: result.reviewScore,
+        summary: result.summary,
+        error: result.error,
+      }, revoke)
+    } catch (error) {
+      revoke()
+      const message = String(error instanceof Error ? error.message : error)
+      this.store.updateJob(job.id, { status: 'failed', error: message.slice(0, 1000), finished_at: nowIso() })
+      this.store.releaseJobLease(job.id)
+      this.clearLeaseHeartbeat(job.id)
+      if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
+      else this.store.updateRepo(repo.id, { last_status: 'failed' })
+      this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${message}`)
+      this.store.audit(user.id, 'job.failed', `${job.id}: ${message.slice(0, 300)}`)
+      log.error('queued job start failed', { job: job.id, error: message })
+    }
+  }
+
+  private startLeaseHeartbeat(jobId: string, owner: string, leaseMs: number): void {
+    this.clearLeaseHeartbeat(jobId)
+    const timer = setInterval(() => {
+      if (!this.store.renewJobLease(jobId, owner, leaseMs)) this.clearLeaseHeartbeat(jobId)
+    }, Math.max(1000, Math.floor(leaseMs / 5)))
+    timer.unref()
+    this.leaseTimers.set(jobId, timer)
+  }
+
+  private clearLeaseHeartbeat(jobId: string): void {
+    const timer = this.leaseTimers.get(jobId)
+    if (timer !== undefined) {
+      clearInterval(timer)
+      this.leaseTimers.delete(jobId)
+    }
+  }
+
+  private atCapacity(): boolean {
+    const active = this.config.runner.queueDispatch ? this.store.countRunningJobs() : this.store.countActiveJobs()
+    return active >= this.config.runner.maxActiveJobs
+  }
+
   private async tickOnce(): Promise<void> {
     const handled = new Set<string>()
     setGauge('fledge_jobs_active', this.store.countActiveJobs(), {}, 'Active jobs')
     setGauge('fledge_jobs_queued', this.store.listQueuedJobs().length, {}, 'Queued jobs')
+    setGauge('fledge_queue_depth', this.store.countQueuedJobs(), {}, 'Queued jobs waiting for a worker')
     const stalledBefore = addMinutes(-this.config.runner.stallMinutes)
     for (const job of this.store.stalledRunningJobs(stalledBefore)) {
       handled.add(job.id)
@@ -1841,13 +2047,24 @@ export class Jobs {
       this.finish(job.id, { status: 'failed', error: `任务停滞：超过 ${this.config.runner.stallMinutes} 分钟没有心跳。` }, revoke)
     }
     const staleBefore = addMinutes(-this.config.runner.timeoutMinutes)
-    const staleJobs = [...this.store.staleQueuedJobs(addMinutes(-10)), ...this.store.staleRunningJobs(staleBefore)].filter((job) => !handled.has(job.id))
+    const queuedStaleBefore = this.config.runner.queueDispatch ? addMinutes(-this.config.runner.timeoutMinutes) : addMinutes(-10)
+    const staleJobs = [...this.store.staleQueuedJobs(queuedStaleBefore), ...this.store.staleRunningJobs(staleBefore)].filter((job) => !handled.has(job.id))
     for (const job of staleJobs) {
       const revoke = (): void => {
         const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
         if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
       }
       this.finish(job.id, { status: 'failed', error: job.status === 'queued' ? '任务排队超时未启动' : '任务超时未回报' }, revoke)
+    }
+    for (const job of this.store.expiredLeaseJobs(nowIso())) {
+      if (handled.has(job.id)) continue
+      handled.add(job.id)
+      const revoke = (): void => {
+        const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
+        if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
+      }
+      incCounter('fledge_lease_expired_total', { kind: job.kind }, 1, 'Jobs whose worker lease expired')
+      this.finish(job.id, { status: 'failed', error: '任务租约过期：worker 未续约。' }, revoke)
     }
     this.store.deleteExpiredJobTokens()
     if (Date.now() - this.lastPruneAt > 60 * 60 * 1_000) {
@@ -1863,9 +2080,12 @@ export class Jobs {
     await this.notifyQuestions().catch((error) => log.warn('question notification pass failed', { error: String(error) }))
     await this.notifyOpsAlerts().catch((error) => log.warn('ops alert pass failed', { error: String(error) }))
     await this.maybeSendDigests().catch((error) => log.warn('daily digest pass failed', { error: String(error) }))
-    if (this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) return
+    if (this.config.runner.queueDispatch) {
+      await this.dispatchQueued().catch((error) => log.warn('queue dispatch failed', { error: String(error) }))
+    }
+    if (this.atCapacity()) return
     for (const listed of this.store.listReviewRepos()) {
-      if (this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) break
+      if (this.atCapacity()) break
       let repo = listed
       if (!this.roleFresh(repo)) {
         const refreshed = await this.refreshRepoAccess(repo)
@@ -1879,10 +2099,15 @@ export class Jobs {
       if (!this.dueReview(repo)) continue
       const result = await this.enqueue(repo, 'schedule', undefined, 'review')
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
-      log.info('scheduled review', { repo: `${repo.owner}/${repo.name}`, ok: result.ok, job: result.job?.id })
+      log.info('scheduled review', {
+        repo: `${repo.owner}/${repo.name}`,
+        ok: result.ok,
+        job: result.job?.id,
+        ...(result.ok ? {} : { code: result.code, error: result.error }),
+      })
     }
     for (const listed of this.store.listAutoRepos()) {
-      if (this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) break
+      if (this.atCapacity()) break
       let repo = listed
       if (repo.auto_merge === 1 && repo.repo_role === 'maintainer' && !this.roleFresh(repo)) {
         const refreshed = await this.refreshRepoAccess(repo)
@@ -1915,7 +2140,13 @@ export class Jobs {
             })
           : await this.enqueue(repo, 'schedule', undefined, 'iterate')
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
-      log.info('scheduled job', { repo: `${repo.owner}/${repo.name}`, ok: result.ok, kind: next.kind, job: result.job?.id })
+      log.info('scheduled job', {
+        repo: `${repo.owner}/${repo.name}`,
+        ok: result.ok,
+        kind: next.kind,
+        job: result.job?.id,
+        ...(result.ok ? {} : { code: result.code, error: result.error }),
+      })
     }
   }
 
