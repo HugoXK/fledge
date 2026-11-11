@@ -162,8 +162,19 @@ export function classifyFailure(job: Pick<JobRow, 'status' | 'error' | 'kind'> &
   const code = errorCodeOf(job.error_code)
   if (code !== null) return FAILURES[FAILURE_CODE_KIND[code]]
   const text = String(job.error ?? '').toLowerCase()
+  // #231 review/Node 24: `src/jobs/flybot.ts` writes "FlyBot bridge unreachable
+  // (<endpoint>): <cause>". The cause is the runtime's text and Node 22 and 24
+  // word one refused fetch differently - the 24 wording carries a credential word
+  // and used to win the first matching pattern below, so a transport failure was
+  // reported as an authorization problem. Our marker is the observable fact, so it
+  // decides before the vocabulary does.
+  if (/bridge unreachable/.test(text)) return FAILURES.bridge
   if (/quota|额度|预算|budget|fledge_quota_exhausted/.test(text)) return FAILURES.quota
-  if (/token|权限|credential|401|403|re-authoriz|authorization/.test(text)) return FAILURES.credential
+  // `401|403` used to be unanchored against the whole sentence, and that sentence
+  // carries the bridge endpoint: an ephemeral port such as 127.0.0.1:40100 made a
+  // dead bridge read as "GitHub authorization expired". Only a real status code
+  // matches now.
+  if (/token|权限|credential|(?<!\d)40[13](?!\d)|re-authoriz|authorization/.test(text)) return FAILURES.credential
   if (/stage_evidence_missing|阶段证据|缺少范围|缺少失败测试|缺少通过测试|缺少验收|缺少测试计划/.test(text)) return FAILURES.stage_evidence
   if (/停滞|心跳|no callback|stall/.test(text)) return FAILURES.stalled
   // #163: a dispatch that timed out at the bridge is an instance problem, not a

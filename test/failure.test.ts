@@ -96,6 +96,32 @@ function withUrl(context: RunnerContext, url: string): RunnerContext {
   return { ...context, flybot: { ...context.flybot!, url, token: 'bridge-token' } }
 }
 
+// The dispatch error is our own sentence plus whatever the runtime appended as
+// the cause, and that cause is not stable across Node majors: on 24 its wording
+// contains a credential word, which used to outrank the bridge pattern. The
+// marker we write decides, not the vocabulary the cause happens to carry.
+test('the dispatch marker outranks whatever the cause text carries', () => {
+  const message = "FlyBot bridge unreachable (http://127.0.0.1:9/run): TypeError: fetch failed (authorization header rejected; token unchanged)"
+  assert.equal(classifyFailure({ ...base, error: message })?.kind, 'bridge')
+})
+
+// #231 finding 3, the live red on main's `ci-ok`: the dispatch sentence carries
+// the endpoint, and `401|403` was matched anywhere in it, so a refused bridge on a
+// port like 40100 became "GitHub authorization expired" on the job page. The marker
+// and the anchored status code are what decide; the port is noise.
+test('a refused bridge whose port carries 401 or 403 is still a bridge failure', () => {
+  for (const port of [40100, 40301, 14013]) {
+    const message = `FlyBot bridge unreachable (http://127.0.0.1:${port}/run): fetch failed`
+    assert.equal(classifyFailure({ ...base, error: message })?.kind, 'bridge', `port ${port} misclassified`)
+  }
+})
+
+test('a real 401 or 403 from the GitHub API stays a credential failure', () => {
+  assert.equal(classifyFailure({ ...base, error: 'GitHub API returned 401 Unauthorized for acme/demo' })?.kind, 'credential')
+  assert.equal(classifyFailure({ ...base, error: 'HTTP 403 from the GitHub API' })?.kind, 'credential')
+  assert.equal(classifyFailure({ ...base, error: 'status 401' })?.kind, 'credential')
+})
+
 test('a dispatch transport failure is a bridge failure', async () => {
   const context = await capturedDispatchContext()
   const url = await refusedUrl()
