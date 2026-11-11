@@ -60,7 +60,7 @@ test('anchors offset by the sticky header height instead of a literal number', (
   assert.match(rule(css, ':root'), /--header-h:\s*\d+px/, ':root must declare --header-h')
   const mobile = css.slice(css.indexOf('@media (max-width: 960px)'))
   const block = mobile.slice(0, mobile.indexOf('@media (max-width: 640px)'))
-  assert.match(block, /--header-h:\s*\d+px/, 'the 960px breakpoint must re-declare --header-h for the taller header')
+  assert.match(block, /--header-h:\s*\d+px/, 'the 960px breakpoint must re-declare --header-h for its own fixed row')
 })
 
 function mediaBlock(css: string, media: string): string {
