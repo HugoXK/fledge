@@ -178,3 +178,117 @@ export function runApp(options: RunAppOptions = {}): NavHarness {
     autoSelectDisabled: () => autoSelect.disabled,
   }
 }
+
+// #234's repository tabs. repoTabs.js ships to the browser, so the only way to
+// see what a deep link does is to run it: the stub below is the markup it
+// queries — `.repo-page`, `#repo-tabs` with one link per section, the six
+// `.repo-section` nodes and the ids inside them — plus a `location.hash` a test
+// can change, which fires the script's own `hashchange` listener.
+export interface RepoTabsHarness {
+  active: () => string | null
+  current: () => string | null
+  tabbed: () => boolean
+  scrolled: () => string[]
+  hash: (value: string) => void
+}
+
+export interface RepoTabsOptions {
+  sections?: Array<{ id: string; inner?: string[] }>
+  hash?: string
+}
+
+interface StubEl {
+  id: string
+  classList: {
+    add: (name: string) => void
+    remove: (name: string) => void
+    toggle: (name: string, force?: boolean) => void
+    contains: (name: string) => boolean
+  }
+  querySelectorAll: (selector: string) => StubEl[]
+  getAttribute: (name: string) => string | null
+  setAttribute: (name: string, value: string) => void
+  removeAttribute: (name: string) => void
+  scrollIntoView: (options?: { block?: string }) => void
+}
+
+export function runRepoTabs(options: RepoTabsOptions = {}): RepoTabsHarness {
+  const script = readFileSync(new URL('../public/repoTabs.js', import.meta.url), 'utf8')
+  const spec = options.sections ?? [
+    { id: 'overview', inner: ['inbox', 'chief'] },
+    { id: 'delivery', inner: ['jobs'] },
+    { id: 'work', inner: ['board'] },
+    { id: 'team', inner: ['role'] },
+    { id: 'settings', inner: ['repo-settings', 'connection', 'goal-settings'] },
+    { id: 'danger' },
+  ]
+  const scrolled: string[] = []
+
+  const element = (id: string, inner: string[] = []): StubEl => {
+    const classes = new Set<string>()
+    const attributes = new Map<string, string>()
+    const children = inner.map((childId) => element(childId))
+    return {
+      id,
+      classList: {
+        add: (name) => { classes.add(name) },
+        remove: (name) => { classes.delete(name) },
+        toggle: (name, force) => {
+          const on = force ?? !classes.has(name)
+          if (on) classes.add(name)
+          else classes.delete(name)
+        },
+        contains: (name) => classes.has(name),
+      },
+      querySelectorAll: (selector) => (selector === '[id]' ? children : []),
+      getAttribute: (name) => attributes.get(name) ?? null,
+      setAttribute: (name, value) => { attributes.set(name, String(value)) },
+      removeAttribute: (name) => { attributes.delete(name) },
+      scrollIntoView: () => { scrolled.push(id) },
+    }
+  }
+
+  const sections = spec.map((section) => element(section.id, section.inner ?? []))
+  const page = element('repo-page')
+  const byId = new Map<string, StubEl>([[page.id, page]])
+  const collect = (node: StubEl): void => {
+    byId.set(node.id, node)
+    for (const child of node.querySelectorAll('[id]')) collect(child)
+  }
+  for (const section of sections) collect(section)
+  page.querySelectorAll = (selector) => (selector === '.repo-section' ? sections : [])
+
+  const links = sections.map((section) => element(`repo-tab-${section.id}`))
+  links.forEach((link, index) => link.setAttribute('href', `#${sections[index]!.id}`))
+  const nav = element('repo-tabs')
+  nav.querySelectorAll = (selector) => (selector === 'a[href^="#"]' ? links : [])
+  byId.set(nav.id, nav)
+
+  let hash = options.hash ?? ''
+  const hashListeners: Array<() => void> = []
+  const context = createContext({
+    document: {
+      querySelector: (selector: string) => (selector === '.repo-page' ? page : null),
+      getElementById: (id: string) => byId.get(id) ?? null,
+    },
+    window: {
+      location: { get hash() { return hash } },
+      addEventListener: (type: string, listener: () => void) => {
+        if (type === 'hashchange') hashListeners.push(listener)
+      },
+    },
+  })
+  runInContext(script, context, { filename: 'public/repoTabs.js' })
+
+  const active = (): string | null => sections.find((section) => section.classList.contains('is-active'))?.id ?? null
+  return {
+    active,
+    current: () => links.find((link) => link.getAttribute('aria-current') === 'page')?.getAttribute('href') ?? null,
+    tabbed: () => page.classList.contains('is-tabbed'),
+    scrolled: () => [...scrolled],
+    hash: (value: string) => {
+      hash = value
+      for (const listener of hashListeners) listener()
+    },
+  }
+}

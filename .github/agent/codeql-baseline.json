@@ -6,7 +6,7 @@
     { "ruleId": "js/missing-rate-limiting", "path": "src/app.ts", "line": 469, "severity": "high", "reason": "alert #63, open" },
     { "ruleId": "js/missing-rate-limiting", "path": "src/app.ts", "line": 479, "severity": "high", "reason": "alert #36, dismissed false positive" },
     { "ruleId": "js/missing-rate-limiting", "path": "src/app.ts", "line": 489, "severity": "high", "reason": "alert #64, open" },
-    { "ruleId": "js/missing-rate-limiting", "path": "src/app.ts", "line": 2863, "severity": "high", "reason": "alert #65, open" },
+    { "ruleId": "js/missing-rate-limiting", "path": "src/app.ts", "line": 2868, "severity": "high", "reason": "alert #65, open" },
     { "ruleId": "js/missing-rate-limiting", "path": "src/gateway/gateway.ts", "line": 125, "severity": "high", "reason": "alert #41, dismissed false positive" },
     { "ruleId": "js/missing-rate-limiting", "path": "src/gateway/gateway.ts", "line": 150, "severity": "high", "reason": "alert #42, dismissed false positive" }
   ]
