@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // One verification command for a release (issue #280).
 //
-//   node scripts/verify-release.mjs --version 0.3.2 --base-url https://fledge.example
+//   METRICS_TOKEN=… node scripts/verify-release.mjs --version 0.3.2 --base-url https://fledge.example
 //   node scripts/verify-release.mjs --version 0.3.2 --fixtures status.json --json
 //
 // Reads the chain back from the API — plan, release branch, pull request,
@@ -95,7 +95,7 @@ function planFromPull(pull) {
   return { version: String(pull?.__version ?? ''), mainSha: match[1] ?? '', plannedAt: String(pull?.created_at ?? '') }
 }
 
-async function collect({ version, repo, token, baseUrl, packageVersion, fetchImpl }) {
+async function collect({ version, repo, token, baseUrl, packageVersion, fetchImpl, metricsToken = '' }) {
   const api = apiClient(repo, token, fetchImpl)
   const owner = String(repo).split('/')[0] ?? ''
   const branchName = `release/v${version}`
@@ -148,7 +148,14 @@ async function collect({ version, repo, token, baseUrl, packageVersion, fetchImp
   let healthz = null
   if (baseUrl !== '') {
     try {
-      const response = await fetchImpl(`${baseUrl}/healthz`, { signal: AbortSignal.timeout(10_000) })
+      // #236: `/healthz` serves `commit`/`builtAt` only on the METRICS_TOKEN
+      // bearer, so the running-instance link needs the same credential the
+      // /metrics scrape uses. Without it the probe still answers 200 but carries
+      // no commit, and this comparison would read "mismatch" on a healthy deploy.
+      const response = await fetchImpl(`${baseUrl}/healthz`, {
+        signal: AbortSignal.timeout(10_000),
+        headers: metricsToken === '' ? {} : { authorization: `Bearer ${metricsToken}` },
+      })
       if (response.ok) {
         const payload = await response.json()
         healthz = { version: String(payload?.version ?? ''), commit: String(payload?.commit ?? '') }
@@ -230,7 +237,7 @@ async function main() {
     const token = String(process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? '')
     if (repo === '') throw new UsageError('no repository: set GITHUB_REPOSITORY or pass --repo owner/name')
     if (token === '') throw new UsageError('no token: set GITHUB_TOKEN or pass --fixtures to replay a recorded chain')
-    input = await collect({ version, repo, token, baseUrl, packageVersion: local.version, fetchImpl: fetch })
+    input = await collect({ version, repo, token, baseUrl, packageVersion: local.version, fetchImpl: fetch, metricsToken: String(process.env.METRICS_TOKEN ?? '') })
   }
 
   const status = evaluateReleaseStatus(input)

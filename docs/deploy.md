@@ -44,7 +44,7 @@ Key settings:
 | `FLYBOT_BRIDGE_URL` / `FLYBOT_BRIDGE_TOKEN` | Bridge endpoint and shared secret |
 | `DATA_DIR` / `DB_PATH` | Defaults `./data`, `./data/fledge.db` |
 | `ALLOW_PRIVATE_MODEL_URLS` | Keep `false` for untrusted users |
-| `METRICS_TOKEN` | Required in production: `/metrics` answers only `Authorization: Bearer <token>` |
+| `METRICS_TOKEN` | Required in production: `/metrics`, and the `commit`/`builtAt` fields of `/healthz`, answer only `Authorization: Bearer <token>` |
 | `NOTIFY_WEBHOOK_URL` / `NOTIFY_WEBHOOK_SECRET` | Optional outbound notifications (Slack-compatible `text`); the secret is sent as a bearer token. When set, the URL must be an absolute `https:` URL |
 
 Production startup fails closed if the session/encryption keys, OAuth app,
@@ -172,7 +172,10 @@ docker compose up -d --build
 To make `/healthz` name the build, stamp it at build time so the image can carry
 the commit: `GIT_SHA=$(git rev-parse HEAD) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) docker compose build`.
 Without the stamp the image answers `unknown` — honest, and useless for
-identifying a deploy.
+identifying a deploy. The stamp is served only to an authorised caller: send
+`Authorization: Bearer $METRICS_TOKEN` (or, in a development build with no token
+configured, come from loopback). An unauthenticated `/healthz` still answers `200`
+with `ok`/`service`/`version`/`time`, but carries neither `commit` nor `builtAt`.
 
 Compose publishes the port on loopback, so nginx outside the container is the
 caller and its address is this project's bridge gateway. Read that value from the
@@ -295,11 +298,12 @@ reference with its digest, the SBOM artifact name and the attested digest — so
 the chain can be read back through the API alone:
 
 ```sh
-# the whole chain, from the plan to the running instance
-GITHUB_TOKEN=… node scripts/verify-release.mjs --version 0.3.2 --base-url https://fledge.hugoxk.online
+# the whole chain, from the plan to the running instance. METRICS_TOKEN is what
+# lets the script read /healthz's commit, which is bearer-only (#236).
+GITHUB_TOKEN=… METRICS_TOKEN=… node scripts/verify-release.mjs --version 0.3.2 --base-url https://fledge.hugoxk.online
 
 # the same check, rendered on /admin for an operator without a token
-GITHUB_TOKEN=… node scripts/verify-release.mjs --version 0.3.2 \
+GITHUB_TOKEN=… METRICS_TOKEN=… node scripts/verify-release.mjs --version 0.3.2 \
   --base-url https://fledge.hugoxk.online --write "${DATA_DIR}/release-status.json"
 ```
 
@@ -548,9 +552,12 @@ merged, so a tag on `main` is evidence of a released version, not of a rollout.
 
 ## 9. Monitoring
 
-- `GET /healthz` for liveness.
+- `GET /healthz` for liveness — unauthenticated, always `200`, and never gated.
 - After a deploy, compare `/healthz`'s `commit` with the commit you deployed: a
   mismatch or `unknown` means the running artifact is not the one you intended.
+  The field needs the bearer, so ask with
+  `curl -H "Authorization: Bearer $METRICS_TOKEN" https://<host>/healthz`; without
+  it the key is absent by design, not a deploy failure.
 - Watch for `level:"error"` in structured logs.
 - The Admin panel shows the audit trail and recent jobs.
 - Quota state: `GET /v1/models` with a user token, or the dashboard.
