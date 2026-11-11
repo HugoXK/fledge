@@ -156,6 +156,66 @@ const MESSAGES: Record<string, string> = {
   '仓库已停用': 'Repository disabled.',
   'FlyBot 实例已停止': 'FlyBot instance stopped.',
   '无法确认你的 GitHub maintain 权限；如这是你自己的仓库，请重新授权 GitHub。': 'Could not confirm your GitHub maintain permission; re-authorize GitHub if this is your repository.',
+  // Route banners (#240). A sentence a route hands to a redirect's notice/error
+  // value is a user-facing sentence too, so it lives here with the rest rather
+  // than as an English string at the call site; test/pages.test.ts walks every
+  // redirect and fails when a banner has no row or localizer.
+  'GitHub OAuth 未配置。': 'GitHub OAuth is not configured.',
+  'PR 已合并。': 'The pull request was merged.',
+  'PR 证据与路径检查通过。': 'The PR evidence and path checks passed.',
+  'Product 范围任务已排队。': 'The Product scoping job is queued.',
+  'Test 验证任务已排队。': 'The Test verification job is queued.',
+  'Webhook 已重试。': 'The webhook was retried.',
+  '不能从这个状态切换。': 'The work item cannot move from that state.',
+  '仓库已停用，任务不会再运行。': 'Repository disabled; no jobs will run again.',
+  '仓库已启用；自动迭代不会自动打开，需要时在设置里开启。': 'Repository enabled. Auto-iteration does not start by itself; turn it on in settings when you want it.',
+  '仓库连接已删除；GitHub 仓库不受影响。': 'The repository connection was deleted; the GitHub repository itself is unaffected.',
+  '任务已取消。': 'The job was canceled.',
+  '任务已暂停。': 'The job was paused.',
+  '取消失败。': 'Could not cancel the job.',
+  '只有 maintainer 可以合并 PR。': 'Only a maintainer can merge a pull request.',
+  '只有 maintainer 可以执行计划。': 'Only a maintainer can execute a plan.',
+  '只有 maintainer 可以执行这个操作。': 'Only a maintainer can do this.',
+  '只有 maintainer 可以批准计划。': 'Only a maintainer can approve a plan.',
+  '只有 maintainer 可以批量合并 PR。': 'Only a maintainer can merge pull requests in bulk.',
+  '只有 maintainer 可以拒绝计划。': 'Only a maintainer can reject a plan.',
+  '只有失败的 delivery 可以重试。': 'Only a failed delivery can be retried.',
+  '合并失败。': 'The merge failed.',
+  '安装回调缺少 installation_id；请在 GitHub App 设置的 Setup URL 指向 /auth/github/app/installed，或从已安装列表重新选择仓库。': 'The install callback is missing installation_id. Point the GitHub App Setup URL at /auth/github/app/installed, or pick the repository again from the installed list.',
+  '审批邮件仍然发送失败，请检查 SMTP 配置。': 'The approval email still cannot be sent; check the SMTP settings.',
+  '审批邮件已重新发送。': 'The approval email was sent again.',
+  '工作项任务已排队。': 'The work item job is queued.',
+  '工作项启动失败。': 'Could not start the work item.',
+  '工作项已创建。': 'Work item created.',
+  '工作项状态已更新。': 'Work item state updated.',
+  '工作项状态无效。': 'That work item state is invalid.',
+  '已允许这个用户配置 HTTP/内网模型。': 'This user may now configure HTTP/private-network models.',
+  '已恢复任务。': 'The job was resumed.',
+  '已禁止这个用户配置 HTTP/内网模型。': 'This user may no longer configure HTTP/private-network models.',
+  '恢复失败。': 'Could not resume the job.',
+  '暂停失败。': 'Could not pause the job.',
+  '模型已删除。': 'Model deleted.',
+  '模型已应用，工作区已重启。': 'Model applied and the workspace restarted.',
+  '模型已通过连接测试并保存。': 'The model passed the connection test and was saved.',
+  '模型应用失败。': 'Could not apply the model.',
+  '模型提供方已删除。': 'Model provider deleted.',
+  '模型提供方已更新。': 'Model provider updated.',
+  '模型提供方已添加。添加模型时会由 Fledge 测试连接。': 'Model provider added. Fledge tests the connection when you add a model.',
+  '范围任务启动失败。': 'Could not start the scoping job.',
+  '计划任务已排队。': 'Plan job queued.',
+  '计划任务已排队；批准后才会写代码。': 'Plan job queued; no code is written until it is approved.',
+  '计划尚未批准。': 'The plan has not been approved yet.',
+  '计划已批准，可以执行。': 'The plan was approved and can be executed.',
+  '计划已拒绝。': 'The plan was rejected.',
+  '请填写工作项标题。': 'Enter a work item title.',
+  '请输入仓库名确认删除。': 'Type the repository name to confirm deletion.',
+  '请选择至少一个模型。': 'Choose at least one model.',
+  '这个 delivery 没有可重试的 payload。': 'This delivery has no payload to retry.',
+  '这个工作项已经结束。': 'This work item is already finished.',
+  '这个工作项还没有 PR。': 'This work item has no pull request yet.',
+  '这封邮件刚刚发送过，24 小时内不重复发送。': 'This email was sent moments ago; it is not sent again within 24 hours.',
+  '重新检查失败。': 'The re-check failed.',
+  '验证任务启动失败。': 'Could not start the verification job.',
 }
 
 export function localizeMessage(locale: Locale, message: string | undefined): string | undefined {
@@ -174,6 +234,38 @@ export function localizeMessage(locale: Locale, message: string | undefined): st
   if (connectFailed !== null) return `Connection failed: ${connectFailed[1]}`
   const modelHttp = /^模型服务返回 HTTP (\d+)：(.+)$/.exec(message)
   if (modelHttp !== null) return `The model service returned HTTP ${modelHttp[1]}: ${modelHttp[2]}`
+  // Route banners whose value is built from data (#240). The rendered sentence
+  // is what reaches the console, so these match the rendered shape.
+  const merged = /^已合并 (\d+) 个 PR(?:，([\s\S]+))?$/.exec(message)
+  if (merged !== null) {
+    const count = merged[1] ?? '0'
+    const skipped = (merged[2] ?? '')
+      .replace(/跳过 (\d+) 个（最新任务还没有成功）/g, (_whole: string, skippedJobs: string) => `skipped ${skippedJobs} (the latest job has not succeeded)`)
+      .replace(/跳过 (\d+) 个（未通过合并检查）/g, (_whole: string, skippedPrs: string) => `skipped ${skippedPrs} (the merge checks did not pass)`)
+      .split('，')
+      .filter((part) => part !== '')
+      .join(', ')
+    return `Merged ${count} ${count === '1' ? 'pull request' : 'pull requests'}${skipped === '' ? '' : `, ${skipped}`}.`
+  }
+  const modelsSaved = /^(\d+) 个模型已通过测试并保存(?:；失败：([\s\S]+))?$/.exec(message)
+  if (modelsSaved !== null) {
+    const count = modelsSaved[1] ?? '0'
+    const failed = modelsSaved[2] === undefined ? '' : `; failed: ${modelsSaved[2]}`
+    return `${count} ${count === '1' ? 'model' : 'models'} passed the test and ${count === '1' ? 'was' : 'were'} saved${failed}.`
+  }
+  const providerTestFailed = /^提供方测试失败，未保存：([\s\S]+)$/.exec(message)
+  if (providerTestFailed !== null) return `The provider test failed and nothing was saved: ${providerTestFailed[1]}`
+  const modelsFound = /^发现 (\d+) 个模型。$/.exec(message)
+  if (modelsFound !== null) {
+    const count = modelsFound[1] ?? '0'
+    return `Found ${count} ${count === '1' ? 'model' : 'models'}.`
+  }
+  const modelsReadFailed = /^读取模型失败：([\s\S]+)$/.exec(message)
+  if (modelsReadFailed !== null) return `Could not read the models: ${modelsReadFailed[1]}`
+  const connectionTestFailed = /^连接测试失败，未保存：([\s\S]+)$/.exec(message)
+  if (connectionTestFailed !== null) return `The connection test failed and nothing was saved: ${connectionTestFailed[1]}`
+  const retryFailed = /^重试失败：([\s\S]+)$/.exec(message)
+  if (retryFailed !== null) return `Retry failed: ${retryFailed[1]}`
   return MESSAGES[message] ?? message
 }
 
