@@ -234,6 +234,12 @@ release in the same week bumps the patch (`0.4.0 -> 0.4.1`). The planner reads
 the last tag's commit time and the workflow's run time; if either is unreadable
 it falls back to the minor, which is the first-release behaviour.
 
+A release that changes user-facing behaviour updates `README.md`,
+`README.zh.md` and the relevant `docs/` page in the same pull request. The
+documentation site builds from this repository's `README.md`, `README.zh.md` and
+`docs/` rather than a pinned copy, so the release pull request and the docs site
+stay in step.
+
 The nightly workflow pushes `release/v<next>` and stops before the pull request,
 because a pull request opened with `GITHUB_TOKEN` starts no `pull_request`
 workflow and would never get a `ci-ok`. Open it with the team account — never
