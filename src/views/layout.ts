@@ -2,6 +2,7 @@ import type { UserRow } from '../db.js'
 import { quotaView, type QuotaView } from '../gateway/quota.js'
 import type { Config } from '../config.js'
 import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
+import { failureBannerSentence } from '../lib/failure.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 
 export function escapeHtml(value: unknown): string {
@@ -75,7 +76,11 @@ export function layout(options: LayoutOptions): string {
   const path = options.path ?? '/'
   const t = translator(locale)
   const notice = localizeMessage(locale, options.notice)
-  const error = localizeMessage(locale, options.error)
+  // A refusal travels as its code, with the writer's text after the colon when the
+  // code has no sentence of its own (`QUEUE_FULL:…`, `BRANCH_MISSING:main`); the
+  // builder owns the three-step order, so anything that is not a code stays here
+  // on the dictionary, as before.
+  const error = failureBannerSentence(locale, options.error) ?? localizeMessage(locale, options.error)
   const preview = viewer !== undefined && viewer !== null && viewer.preview === true
   const release = options.release ?? releaseSurface()
   const section = active ?? sectionForPath(path)

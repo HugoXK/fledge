@@ -447,6 +447,41 @@ dispatch that the bridge did not answer is an instance problem, not a task that
 ran too long. The bridge URL is stored by origin and path only, so a token in
 its query or userinfo never reaches the job row or the job page.
 
+A failure also carries a stable **code** in `jobs.error_code`, written by the job
+service where the failure happens. Seven codes are written to a row today:
+`JOB_STALLED`, `JOB_LEASE_EXPIRED`, `JOB_TIMEOUT`, `QUOTA_EXHAUSTED`,
+`STAGE_EVIDENCE_MISSING`, `BRIDGE_ERROR` and `REPO_DISABLED`. Three more are in
+the vocabulary but have no writer: `REPO_CREDENTIAL_INVALID`,
+`JOB_BUDGET_EXCEEDED` and `DUPLICATE_WORK` name refusals that stop an enqueue
+before a job row exists, so they travel on the redirect instead (below) and are
+reserved for a row if one of them ever finishes a job.
+
+The code, not the text, decides the sentence a reader sees: `failureSentence`
+(`src/lib/failure.ts`) builds it in the reader's language for the job-page
+summary, the dashboard summary and the notification list, and the category above
+is the code's kind. The regex classifier stays only for rows written before the
+column existed. `localizeMessage`'s exact-match dictionary remains the fallback
+for a message no code covers — which is why a new failure adds a code rather than
+a dictionary row.
+
+A refusal carries its code too. The job service answers an enqueue it will not
+start with a code, and the route puts that code on the redirect with the payload
+after a colon: the code's own parameter where it has one (`BRANCH_MISSING:main`,
+`JOB_LIMIT:2`, `BOT_MODEL_ASSIGNMENT_FAILED:chief, lead`) or else the sentence the
+service wrote. The banner asks the sentence table first, so those codes read in
+the reader's language with their parameter filled in. A code whose table entry
+carries `{detail}` keeps that parameter too — the duplicate-work refusal names the
+pull request that already covers the issue (`DUPLICATE_WORK:<url>`) — so the value
+the service found survives the redirect instead of being dropped when the sentence
+is rebuilt. A code with no sentence
+keeps the text that travelled with it, which the dictionary translates as it did
+before this change, so no refusal reads worse than at base; only a bare code with
+neither a sentence nor a text renders a sentence naming the code, so an unknown
+value cannot leak. The raw text stays in `jobs.error`, under "Technical detail"
+and in the notification row, for operators and for the API, and "Technical
+detail" prints it as written rather than translating it. The choice is
+recorded in `docs/decisions/0009-job-failure-codes.md`.
+
 ### Enforcement: path guard, evidence verification and merge readiness
 
 Plan path constraints are now enforced, not only included in the prompt. After a
@@ -748,14 +783,16 @@ not controlled by the digest/job switches.
 
 A notification row keeps the `kind` and stores the `message` exactly as the
 producer wrote it, so `src/jobs/service.ts` and `src/gateway/notifier.ts` write
-Chinese while the ops alerts in `src/db.ts` write English. The dashboard is the
-only reader, and it knows the reader's locale at render time: `noticeBlock`
-(`src/views/pages.ts`) passes the stored sentence through
-`localizeNotification` (`src/i18n.ts`), which rebuilds the sentence in the
-reader's language from the template it matches — both directions, with the
-interpolated job id, repo label, minutes and similar facts kept as data. A
-message no template knows, including every row written before this change,
-renders verbatim. Nothing is rewritten in the database and no column was added.
+Chinese while the ops alerts in `src/db.ts` write English. When the producer has
+one, the row also keeps the failure `code` (`notifications.code`). The dashboard
+is the only reader, and it knows the reader's locale at render time: `noticeBlock`
+(`src/views/pages.ts`) rebuilds a job-failure sentence from the `code` with
+`failureSentence`, and otherwise passes the stored sentence through
+`localizeNotification` (`src/i18n.ts`), which rebuilds it in the reader's
+language from the template it matches — both directions, with the interpolated
+job id, repo label, minutes and similar facts kept as data. A message no code and
+no template knows, including every row written before those existed, renders
+verbatim. Nothing is rewritten in the database.
 
 ### Release surface
 

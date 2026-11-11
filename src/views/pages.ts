@@ -14,7 +14,7 @@ import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '..
 import { parseEvidenceJson } from '../lib/evidence.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
-import { classifyFailure, failureLabel, type FailureAction, type FailureKind } from '../lib/failure.js'
+import { classifyFailure, failureLabel, failureSentence, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { filterTrials, trialCounts, trialStateOf, TRIAL_DAYS, type TrialCandidateSource, type TrialFilter } from '../lib/trials.js'
 import { STAGE_MODES } from '../lib/stages.js'
 import { JOB_FILTER_KINDS, JOB_FILTER_STATUSES, jobFilterIsActive, jobFilterLabels, jobFilterParams, kindFilterLabel, statusFilterLabel, type JobFilter } from '../lib/jobFilters.js'
@@ -250,7 +250,10 @@ function jobLinks(job: JobRow): string {
 }
 
 function jobSummary(locale: Locale, t: Translate, job: JobRow): string {
-  const raw = (localizeMessage(locale, (job.summary ?? job.error ?? '').trim()) ?? '').trim()
+  // #231: the failure code decides the sentence; the dictionary stays for a row
+  // that carries no code (a job written before the column, or a free-text summary).
+  const byCode = job.summary === null || job.summary.trim() === '' ? failureSentence(t, job.error_code) : null
+  const raw = (byCode ?? localizeMessage(locale, (job.summary ?? job.error ?? '').trim()) ?? '').trim()
   const cost = job.cost_usd > 0 ? ` · $${job.cost_usd.toFixed(4)}` : ''
   if (job.kind === 'review') {
     const score = job.review_score === null ? '' : ` · ${job.review_score}/100`
@@ -397,13 +400,37 @@ export function inboxSection(locale: Locale, viewer: Viewer, questions: InboxQue
   </section>`
 }
 
+// #231: a notification that carries a failure code rebuilds its sentence from the
+// code instead of translating the raw text, which is how "The job X failed:
+// GitHub token 权限不足…" used to reach an English reader. The stored row keeps the
+// text the writer produced, for operators and for the API.
+function noticeText(locale: Locale, t: Translate, entry: NotificationRow): string {
+  const sentence = failureSentence(t, entry.code)
+  if (sentence !== null) {
+    // The stored message keeps the wrapper its writer used, so the wrapper is
+    // rebuilt with `t()` instead of reused: a `zh` reader must not get
+    // "The job X failed:" around a Chinese sentence, and an `en` reader must not
+    // get "任务 X 失败：" around an English one.
+    const wrapper = /^(审核|任务) (\S+) 失败：|^The (review job|job) (\S+) failed: /.exec(entry.message)
+    if (wrapper !== null) {
+      const review = wrapper[1] === '审核' || wrapper[3] === 'review job'
+      const id = wrapper[2] ?? wrapper[4] ?? ''
+      return review
+        ? t(`审核 ${id} 失败：${sentence}`, `The review job ${id} failed: ${sentence}`)
+        : t(`任务 ${id} 失败：${sentence}`, `The job ${id} failed: ${sentence}`)
+    }
+    if (locale === 'en') return sentence
+  }
+  return localizeNotification(locale, entry.message)
+}
+
 function noticeBlock(locale: Locale, viewer: Viewer, notifications: NotificationRow[]): string {
   const t = translator(locale)
   const unread = notifications.filter((entry) => entry.read_at === null)
   if (unread.length === 0) return ''
   return `<div class="card notices"><h2>${escapeHtml(t('通知', 'Notifications'))}</h2>${unread
     .slice(0, 3)
-    .map((entry) => `<div class="notice"><span>${escapeHtml(localizeNotification(locale, entry.message))}</span><small>${escapeHtml(humanTimeShort(entry.created_at))}</small></div>`)
+    .map((entry) => `<div class="notice"><span>${escapeHtml(noticeText(locale, t, entry))}</span><small>${escapeHtml(humanTimeShort(entry.created_at))}</small></div>`)
     .join('')}<form method="post" action="/notifications/read">${csrf(viewer)}<button class="link" type="submit">${escapeHtml(t('全部标为已读', 'Mark all read'))}</button></form></div>`
 }
 
@@ -2065,7 +2092,7 @@ export function jobPage(input: {
       <h2>${escapeHtml(t('结果', 'Result'))}</h2>
       <p class="${job.kind === 'research' ? 'job-report' : ''}">${escapeHtml(jobSummary(locale, t, job))}</p>
       ${failure === null ? '' : renderState({ kind: 'error', title: failureLabel(t, failure.kind), body: t(failure.hint[0], failure.hint[1]), action: failureLink === '' ? { label: t('按上面的动作处理后再重试。', 'Fix the cause above, then retry.') } : { href: failureLink, label: failureActionLabel(t, failure.action) } })}
-      ${job.error === null || job.error === '' ? '' : `<details class="fine"><summary>${escapeHtml(t('技术详情', 'Technical detail'))}</summary><p>${escapeHtml(localizeMessage(locale, job.error) ?? job.error)}</p></details>`}
+      ${job.error === null || job.error === '' ? '' : `<details class="fine"><summary>${escapeHtml(t('技术详情', 'Technical detail'))}</summary><p>${escapeHtml(job.error)}</p></details>`}
       <p class="fine">${escapeHtml(t('成本', 'Cost'))} ${escapeHtml(cost)} · ${escapeHtml(t('创建', 'Created'))} ${escapeHtml(humanTimeShort(job.created_at))} · ${escapeHtml(t('结束', 'Finished'))} ${escapeHtml(humanTimeShort(job.finished_at))}</p>
       ${attribution === '' ? '' : `<p class="fine">${escapeHtml(attribution)}</p>`}
       ${job.checkpoint === null || job.checkpoint === '' ? '' : `<p class="fine"><strong>${escapeHtml(t('断点', 'Checkpoint'))}:</strong> ${escapeHtml(job.checkpoint)}</p>`}
