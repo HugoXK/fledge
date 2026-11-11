@@ -1,1 +1,0 @@
-On a phone the sticky header is now one fixed 64px row instead of a block that wrapped to 125px logged out and up to 255.9px logged in, and the workspace, repositories, settings and admin links move into a menu opened by a single labelled toggle that reports `aria-expanded` and closes on Escape, in both Chinese and English.
