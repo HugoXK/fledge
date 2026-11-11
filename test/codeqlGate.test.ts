@@ -99,12 +99,16 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   const baseline = JSON.parse(readFileSync('.github/agent/codeql-baseline.json', 'utf8')) as { recordedAtSha: string; alerts: CodeqlAlert[] }
   assert.match(baseline.recordedAtSha, /^[0-9a-f]{40}$/)
   const keys = baseline.alerts.map((alert) => alertKey(alert))
+  // Positions follow the tree that ships this file, not a frozen sha: the gate
+  // compares against the pull request's own tree, so a reviewed PR that inserts
+  // before an anchor refreshes that line (see the baseline note). The pins below
+  // stay exact so a silent re-label is still a failing test.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|2846',
-    'js/missing-rate-limiting|src/app.ts|432',
-    'js/missing-rate-limiting|src/app.ts|467',
-    'js/missing-rate-limiting|src/app.ts|477',
-    'js/missing-rate-limiting|src/app.ts|487',
+    'js/missing-rate-limiting|src/app.ts|2863',
+    'js/missing-rate-limiting|src/app.ts|434',
+    'js/missing-rate-limiting|src/app.ts|469',
+    'js/missing-rate-limiting|src/app.ts|479',
+    'js/missing-rate-limiting|src/app.ts|489',
     'js/missing-rate-limiting|src/gateway/gateway.ts|125',
     'js/missing-rate-limiting|src/gateway/gateway.ts|150',
   ])

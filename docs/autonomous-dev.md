@@ -244,8 +244,11 @@ exits 0 whether it found a sink or nothing at all, so the job runs
 `scripts/codeql-gate.mjs` afterwards: it reads the SARIF that run just wrote and
 fails on a high or critical result the recorded baseline does not already hold.
 The baseline is `.github/agent/codeql-baseline.json` — every open high/critical
-alert at its `recordedAtSha`, by rule id, path and line, which today is the four
-`js/missing-rate-limiting` findings in `src/app.ts` (issues #62–#65). They stay
+alert, by rule id, path and line, which today is the four `js/missing-rate-limiting`
+findings in `src/app.ts` (issues #62–#65) plus the three results GitHub already
+carries as dismissed. The lines follow the tree that ships the file, because the
+gate compares against the pull request's own tree; a reviewed PR that inserts
+before an anchor refreshes that line and says so in its body. They stay
 open and none is dismissed: the gate exists so a pull request cannot quietly add
 a fifth while working beside them. The same step runs on a push to `main`, so new
 highs cannot accumulate there either. Changing the baseline is a reviewed commit,
