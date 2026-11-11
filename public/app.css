@@ -292,6 +292,30 @@ p { margin: 0 0 12px; }
 .card::-webkit-scrollbar { height: 8px; }
 .card::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: var(--radius-pill); }
 .card.narrow { max-width: 620px; margin: 48px auto; }
+/* The repository page: /repos/:id was one long column of sixteen cards. The
+   subnav keeps the six sections one tap away and sticks under the sticky
+   header; the sections collapse only once public/repoTabs.js has run, so a
+   reader without a script still gets the whole page instead of an empty one. */
+.repo-subnav {
+  position: sticky; top: var(--header-h); z-index: 15;
+  display: flex; gap: var(--space-2); margin: 0 0 var(--space-4);
+  padding: var(--space-2) 0; overflow-x: auto; scrollbar-width: none;
+  border-bottom: 1px solid var(--line); background: var(--bg);
+}
+.repo-subnav::-webkit-scrollbar { display: none; }
+.repo-tab {
+  flex: 0 0 auto; display: inline-flex; align-items: center;
+  min-height: var(--touch); padding: 0 var(--space-4);
+  border: 1px solid var(--line); border-radius: var(--radius-pill);
+  color: var(--muted); font-size: 13px; font-weight: 600;
+  text-decoration: none; white-space: nowrap;
+}
+.repo-tab:hover { color: var(--text); border-color: var(--accent); }
+.repo-tab[aria-current="page"] { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--accent-ink); }
+.repo-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.repo-section { scroll-margin-top: calc(var(--header-h) + var(--space-7)); }
+.repo-page.is-tabbed .repo-section { display: none; }
+.repo-page.is-tabbed .repo-section.is-active { display: block; }
 .quota-card {
   display: flex; align-items: center; gap: 30px; justify-content: space-between;
   background: linear-gradient(120deg, rgba(76, 102, 245, 0.12), transparent 62%), var(--panel);
