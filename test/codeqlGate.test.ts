@@ -107,11 +107,12 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // before an anchor refreshes that line (see the baseline note). The pins below
   // stay exact so a silent re-label is still a failing test.
   // #251 moved these five route registrations: one import line at `:40` and
-  // five lines inside the webhook path. The pins move with the baseline in the
-  // same commit, which is what keeps "refreshed" from becoming "silently
-  // re-labelled".
+  // five lines inside the webhook path. #357 adds one line above the webhook
+  // route registration, so the `:2957` pin and its baseline entry move to
+  // `:2958` together in this commit, which is what keeps "refreshed" from
+  // becoming "silently re-labelled".
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|2957',
+    'js/missing-rate-limiting|src/app.ts|2958',
     'js/missing-rate-limiting|src/app.ts|469',
     'js/missing-rate-limiting|src/app.ts|504',
     'js/missing-rate-limiting|src/app.ts|514',
