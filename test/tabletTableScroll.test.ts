@@ -6,7 +6,7 @@ const css = readFileSync(new URL('../public/app.css', import.meta.url), 'utf8')
 
 function tabletBlock(): string {
   const marker = '@media (min-width: 641px) and (max-width: 960px)'
-  const start = css.lastIndexOf(marker)
+  const start = css.lastIndexOf(marker, css.indexOf('scrollbar-gutter: stable'))
   assert.ok(start !== -1, 'public/app.css has no tablet table block')
   const open = css.indexOf('{', start)
   const end = css.indexOf('\n}', open)
