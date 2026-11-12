@@ -1470,6 +1470,59 @@ export class Jobs {
     }
   }
 
+
+  // #359: a plan nobody approves must not hold the repository forever. The pass
+  // is deliberately narrow: it reuses the terminal `closed` state and records the
+  // reason on the work item, so WORK_ITEM_STATES and WORK_ITEM_TRANSITIONS stay
+  // untouched and `closed -> triaged` remains the reopening path. One reminder
+  // before the deadline, one expiry after it, each guarded by a settings key so a
+  // second tick is a no-op.
+  async expirePlans(): Promise<number> {
+    const nowMs = Date.now()
+    const expiryMs = this.config.plan.expiryDays * 86_400_000
+    const reminderMs = Math.max(0, expiryMs - this.config.plan.reminderDays * 86_400_000)
+    // Read once, from the earlier of the two thresholds: the pass then decides
+    // per row whether it is a reminder or an expiry.
+    const rows = this.store.unapprovedPlanJobs(new Date(nowMs - Math.min(expiryMs, reminderMs)).toISOString())
+    let expired = 0
+    for (const job of rows) {
+      const finished = job.finished_at === null ? Number.NaN : Date.parse(job.finished_at)
+      if (!Number.isFinite(finished)) continue
+      const age = nowMs - finished
+      if (age < reminderMs) continue
+      const repo = this.store.getRepo(job.repo_id)
+      const label = repo === undefined ? job.repo_id : `${repo.owner}/${repo.name}`
+      const deadline = new Date(finished + expiryMs).toISOString().slice(0, 10)
+      if (age < expiryMs) {
+        const key = `plan_reminded:${job.id}`.slice(0, 300)
+        if (this.store.getSetting(key) !== undefined) continue
+        this.store.setSetting(key, nowIso())
+        this.notifyPlan(job, `计划 ${job.id}（${label}）将在 ${deadline} 过期：请批准、拒绝或重新创建计划。`, 'plan.reminder')
+        continue
+      }
+      const key = `plan_expired:${job.id}`.slice(0, 300)
+      if (this.store.getSetting(key) !== undefined) continue
+      this.store.setSetting(key, nowIso())
+      const item = job.work_item_id === null ? undefined : this.store.getWorkItem(job.work_item_id)
+      // `merged` and `closed` are terminal: an item that already ended is not
+      // reopened by an expiry, it is only recorded.
+      if (item !== undefined && item.state !== 'merged' && item.state !== 'closed') {
+        this.store.updateWorkItem(item.id, { state: 'closed', closed_reason: 'plan_expired' })
+      }
+      this.store.audit(job.user_id, 'job.plan_expired', `${job.id}: ${label} unapproved for ${this.config.plan.expiryDays} days${item === undefined ? '' : ` item=${item.id}`}`)
+      this.notifyPlan(job, `计划 ${job.id}（${label}）在 ${deadline} 前未获批准，已过期关闭；重新创建计划可以继续。`, 'plan.expired')
+      expired += 1
+    }
+    return expired
+  }
+
+  // One reminder and one expiry each write exactly one notification and one
+  // webhook call; the settings keys above are what make the pass idempotent.
+  private notifyPlan(job: JobRow, message: string, code: string): void {
+    this.store.notify(job.user_id, 'job', message, code)
+    void sendNotificationWebhook(this.config, code, { text: message, repoId: job.repo_id, jobId: job.id })
+  }
+
   private async releaseAllPendingFollowups(): Promise<void> {
     const repoIds = new Set<string>()
     for (const row of this.store.listSettings('pending_followup:')) {
@@ -2485,6 +2538,7 @@ export class Jobs {
       await this.completeStoppedDrain(stopped).catch((error) => log.warn('platform drain pass failed', { error: String(error) }))
       return
     }
+    await this.expirePlans().catch((error) => log.warn('plan expiry pass failed', { error: String(error) }))
     await this.releaseAllPendingFollowups().catch((error) => log.warn('pending follow-up recovery failed', { error: String(error) }))
     await this.releaseDueRetries().catch((error) => log.warn('due retry release failed', { error: String(error) }))
     await this.reconcileAutoMerge().catch((error) => log.warn('auto-merge reconcile failed', { error: String(error) }))

@@ -250,7 +250,12 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   priority, and an `agent-ready` label moves a proposed item to triaged. A
   repository can require a plan before code; a maintainer approves or
   rejects it with allowed/forbidden path constraints, and execution is blocked
-  until approval. Iterate jobs preflight the target branch, record the base SHA
+  until approval. An answerless plan does not wait forever: one reminder is sent
+  `PLAN_REMINDER_DAYS` before the deadline, and at `PLAN_EXPIRY_DAYS` (default 7)
+  the tick closes the work item into the existing `closed` state with
+  `closed_reason = 'plan_expired'` and an audit row. No state or transition was
+  added for this: expiry reuses `closed`, the reason column carries the meaning,
+  and `closed -> triaged` is the reopening path. Iterate jobs preflight the target branch, record the base SHA
   and warn when the fork is behind. An open work item changes what the next
   scheduled run continues; it never blocks a due repository (#219). Work-item
   states do not gate the scheduler; see "Scheduled work, continuity and work
@@ -766,7 +771,13 @@ an enabled reviewer and no other job is active. A successful review
 moves the linked work item to `approved` (score >= 80 and no follow-ups) or
 `changes_requested`; follow-ups are queued on the same branch. Plan approval
 moves the work item to `assigned`, and the execute action enqueues the
-implementation with the work item attached. The repository work-item table shows
+implementation with the work item attached. While a plan waits, the repository
+page names its deadline and the three ways out (approve, reject, or create a new
+plan); once it has expired it cannot be approved again, whatever the work item's
+state: the refusal reads the plan's own deadline, so reopening the item (or an
+item that reached `merged` without an approval) never revives it and a new plan
+is the only way back. The banner only ever names a plan whose deadline is still
+ahead, so a past date is never printed in future tense. The repository work-item table shows
 the stage (Scope / Implement / Review / Merge) alongside the state.
 
 ### Repository lifecycle

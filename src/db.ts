@@ -258,6 +258,9 @@ export interface WorkItemRow {
   issue_url: string | null
   pr_url: string | null
   state: string
+  // Why a terminal `closed` item was closed (#359). NULL for every older row and
+  // for a close done by hand; `plan_expired` is the only value today.
+  closed_reason: string | null
   priority: number
   assignee_user_id: string | null
   job_id: string | null
@@ -689,6 +692,7 @@ CREATE TABLE IF NOT EXISTS work_items (
   issue_url TEXT,
   pr_url TEXT,
   state TEXT NOT NULL DEFAULT 'proposed',
+  closed_reason TEXT,
   priority INTEGER NOT NULL DEFAULT 0,
   assignee_user_id TEXT,
   job_id TEXT,
@@ -1108,6 +1112,11 @@ export class Store {
     if (!jobColumns.has('callback_secret_enc')) this.run('ALTER TABLE jobs ADD COLUMN callback_secret_enc TEXT')
     if (!jobColumns.has('platform_token_enc')) this.run('ALTER TABLE jobs ADD COLUMN platform_token_enc TEXT')
     if (!jobColumns.has('error_code')) this.run('ALTER TABLE jobs ADD COLUMN error_code TEXT')
+    // #359: additive on purpose; every existing row backfills as NULL, which is
+    // exactly "no recorded reason", so no close that happened earlier is read as
+    // a plan expiry.
+    const workItemColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(work_items)').map((row) => row.name))
+    if (!workItemColumns.has('closed_reason')) this.run('ALTER TABLE work_items ADD COLUMN closed_reason TEXT')
     const notificationColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(notifications)').map((row) => row.name))
     if (!notificationColumns.has('code')) this.run('ALTER TABLE notifications ADD COLUMN code TEXT')
     const tokenColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(api_tokens)').map((row) => row.name))
@@ -2310,13 +2319,13 @@ export class Store {
     return this.get<JobRow>(`SELECT * FROM jobs AS j WHERE j.user_id = ? AND j.pr_url = ? AND j.kind = 'iterate' ORDER BY ${newestJobOrder('j')} LIMIT 1`, userId, prUrl)
   }
 
-  createWorkItem(input: { id: string; repoId: string; userId: string; title: string; detail?: string; issueUrl?: string | null; prUrl?: string | null; state?: string; priority?: number; assigneeUserId?: string | null; jobId?: string | null; prState?: string | null; mergedAt?: string | null; mergeCommit?: string | null }): WorkItemRow {
+  createWorkItem(input: { id: string; repoId: string; userId: string; title: string; detail?: string; issueUrl?: string | null; prUrl?: string | null; state?: string; closedReason?: string | null; priority?: number; assigneeUserId?: string | null; jobId?: string | null; prState?: string | null; mergedAt?: string | null; mergeCommit?: string | null }): WorkItemRow {
     const at = nowIso()
     this.run(
-      `INSERT INTO work_items (id, repo_id, user_id, title, detail, issue_url, pr_url, state, priority, assignee_user_id, job_id, pr_state, merged_at, merge_commit, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO work_items (id, repo_id, user_id, title, detail, issue_url, pr_url, state, closed_reason, priority, assignee_user_id, job_id, pr_state, merged_at, merge_commit, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id, input.repoId, input.userId, input.title, input.detail ?? '', input.issueUrl ?? null, input.prUrl ?? null,
-      input.state ?? 'proposed', input.priority ?? 0, input.assigneeUserId ?? null, input.jobId ?? null,
+      input.state ?? 'proposed', input.closedReason ?? null, input.priority ?? 0, input.assigneeUserId ?? null, input.jobId ?? null,
       input.prState ?? null, input.mergedAt ?? null, input.mergeCommit ?? null, at, at,
     )
     return this.getWorkItem(input.id)!
@@ -2342,7 +2351,29 @@ export class Store {
     return this.all<WorkItemRow>("SELECT * FROM work_items WHERE repo_id = ? AND state NOT IN ('merged', 'closed') ORDER BY priority DESC, updated_at DESC", repoId)
   }
 
-  updateWorkItem(id: string, patch: Partial<Pick<WorkItemRow, 'title' | 'detail' | 'issue_url' | 'pr_url' | 'state' | 'priority' | 'assignee_user_id' | 'job_id' | 'pr_state' | 'merged_at' | 'merge_commit'>>): void {
+  // #359: every plan job that has waited for a decision since `finishedBeforeIso`,
+  // oldest first. Approval and rejection are both decisions, so neither row is
+  // returned: only a plan nobody answered can expire.
+  unapprovedPlanJobs(finishedBeforeIso: string): JobRow[] {
+    return this.all<JobRow>(
+      "SELECT * FROM jobs WHERE kind = 'plan' AND status = 'succeeded' AND plan_approved_at IS NULL AND plan_rejected_at IS NULL AND finished_at IS NOT NULL AND finished_at <= ? ORDER BY finished_at ASC, rowid ASC",
+      finishedBeforeIso,
+    )
+  }
+
+  // #359: `finishedAfterIso` is the deadline cutoff, not a formatting choice.
+  // Completion never clears `plan_approved_at`, so without it an expired plan
+  // stays the oldest unapproved row forever and the page keeps naming a plan
+  // whose deadline has already passed - even after a new plan exists.
+  pendingPlanJob(repoId: string, finishedAfterIso: string): JobRow | undefined {
+    return this.get<JobRow>(
+      "SELECT * FROM jobs WHERE repo_id = ? AND kind = 'plan' AND status = 'succeeded' AND plan_approved_at IS NULL AND plan_rejected_at IS NULL AND finished_at IS NOT NULL AND finished_at > ? ORDER BY finished_at ASC, rowid ASC LIMIT 1",
+      repoId,
+      finishedAfterIso,
+    )
+  }
+
+  updateWorkItem(id: string, patch: Partial<Pick<WorkItemRow, 'title' | 'detail' | 'issue_url' | 'pr_url' | 'state' | 'closed_reason' | 'priority' | 'assignee_user_id' | 'job_id' | 'pr_state' | 'merged_at' | 'merge_commit'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     entries.push(['updated_at', nowIso()])

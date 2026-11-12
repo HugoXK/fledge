@@ -110,14 +110,19 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // five lines inside the webhook path. #357 adds one line above the webhook
   // route registration (once from #357, and #353 adds four more: two in the
   // failure path, two in the retry route), so the pin and its baseline entry
-  // move to `:2962` together in this commit, which is what keeps "refreshed"
-  // from becoming "silently re-labelled". #358 moved the two gateway
-  // registrations the same way: two import lines and the `readAnswer` helper
-  // above them, 19 lines in total, with no new route and no change to the
-  // limiter call that opens each handler. The alerts (#41, #42, both dismissed
-  // false positive) are the same two.
+  // move to `:2962`. #359 inserts the pending-plan spread and the late-approval
+  // guard in the repository and plan routes, all above the webhook registration,
+  // which moved the same pair to `:2979` on its own tree. In a tree carrying
+  // both, the anchor is measured once rather than added: `#403`'s 21 lines and
+  // this PR's four compose to `:2983`, and the baseline entry and this pin move
+  // there together in the merge commit, which keeps "refreshed" from becoming
+  // "silently re-labelled". #358 moved the two gateway registrations the same
+  // way: two import lines and the `readAnswer` helper above them, 19 lines in
+  // total, with no new route and no change to the limiter call that opens each
+  // handler. The alerts (#41, #42, both dismissed false positive) are the same
+  // two.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|2962',
+    'js/missing-rate-limiting|src/app.ts|2983',
     'js/missing-rate-limiting|src/app.ts|469',
     'js/missing-rate-limiting|src/app.ts|504',
     'js/missing-rate-limiting|src/app.ts|514',
