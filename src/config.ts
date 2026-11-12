@@ -66,6 +66,8 @@ export interface Config {
     timeoutMinutes: number
     stallMinutes: number
     maxActiveJobs: number
+    /** Min gap between scheduled work sessions; an open work item does not wait for interval_minutes. */
+    workCooldownMinutes: number
     queueDispatch: boolean
     maxQueueDepth: number
     maxUserQueue: number
@@ -281,6 +283,10 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       timeoutMinutes: number('JOB_TIMEOUT_MINUTES', 90),
       stallMinutes: number('JOB_STALL_MINUTES', 30),
       maxActiveJobs: Math.max(1, number('PLATFORM_MAX_ACTIVE_JOBS', 2)),
+      // #478: a due repo with no work item must idle, and a work item must not
+      // wait for the old 12-hour interval. 15 is the smallest interval the UI
+      // already renders; a repo may choose a longer gap.
+      workCooldownMinutes: Math.max(15, number('WORK_SESSION_COOLDOWN_MINUTES', 15)),
       queueDispatch: bool('QUEUE_DISPATCH', false),
       maxQueueDepth: Math.max(1, number('QUEUE_MAX_DEPTH', 100)),
       maxUserQueue: Math.max(1, number('QUEUE_MAX_PER_USER', 20)),

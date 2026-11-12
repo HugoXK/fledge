@@ -2101,12 +2101,12 @@ test('carry-over is bounded, names the open work and is explicitly data', () => 
   assert.match(text, /https:\/\/x\/pr\/3/)
 })
 
-test('a due repo with no open work starts one iterate job', () => {
+test('a due repo with no open work stays idle instead of inventing a job', () => {
   const next = decideNextJob({
     repo: repo(), now, lastRunAt: iso(-2 * 3_600_000), intervalMinutes: 60,
     lastDurationMs: 1_000, failureStreak: 0, openWork: [], reviewerEnabled: false, reviewDue: true,
   })
-  assert.deepEqual(next, { kind: 'iterate' })
+  assert.deepEqual(next, { kind: 'none', reason: 'idle' })
 })
 
 test('open work continues instead of starting another isolated iterate', () => {
@@ -2151,7 +2151,7 @@ test('the interval respects the last duration and backs off after failures', () 
     0,
   )
   const notDue = decideNextJob({
-    repo: repo(), now, lastRunAt: iso(-90 * 60_000), intervalMinutes: 60,
+    repo: repo(), now, lastRunAt: iso(-30 * 60_000), intervalMinutes: 60,
     lastDurationMs: 60 * 60_000, failureStreak: 1, openWork: [], reviewerEnabled: false, reviewDue: true,
   })
   assert.equal(notDue.kind, 'none')
@@ -2162,6 +2162,58 @@ test('the interval respects the last duration and backs off after failures', () 
   assert.equal(backedOff.kind, 'none')
 })
 
+
+test('the scheduler idles with no work and starts once a work item appears', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = {
+    name: 'capture',
+    async run(context) {
+      contexts.push(context)
+      return { status: 'running' }
+    },
+  }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'scheduler-idle', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_scheduler_idle', userId: user.id, owner: 'o', name: 'idle',
+      defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
+      repoRole: 'developer', goal: 'fix bugs', autoIterate: true, intervalMinutes: 60,
+    })
+    await jobs.tick()
+    assert.equal(store.listJobsForRepo(repo.id).length, 0, 'no work means no job')
+    assert.equal(store.getRepo(repo.id)?.last_status, 'idle')
+
+    store.createWorkItem({
+      id: 'work_scheduler_idle', repoId: repo.id, userId: user.id,
+      title: 'fix the thing', issueUrl: 'https://github.com/o/idle/issues/1', state: 'triaged',
+    })
+    await jobs.tick()
+    const created = store.listJobsForRepo(repo.id)
+    assert.equal(created.length, 1)
+    assert.equal(created[0]?.kind, 'iterate')
+    assert.equal(created[0]?.work_item_id, 'work_scheduler_idle')
+    assert.equal(contexts.length, 1)
+  } finally {
+    store.close()
+  }
+})
+
+test('an open work item starts after the short work cooldown, not the legacy interval', () => {
+  const item = workItem()
+  const justDone = decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-9 * 60_000), intervalMinutes: 15,
+    lastDurationMs: 0, failureStreak: 0, openWork: [item], reviewerEnabled: false, reviewDue: true,
+  })
+  assert.equal(justDone.kind, 'none')
+  const ready = decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-16 * 60_000), intervalMinutes: 15,
+    lastDurationMs: 0, failureStreak: 0, openWork: [item], reviewerEnabled: false, reviewDue: true,
+  })
+  assert.equal(ready.kind, 'followup')
+})
 
 test('a due maintainer continues the open PR when the review interval is not due', () => {
   const pr = workItem({ pr_url: 'https://x/pr/3', state: 'pr_ready' })
