@@ -1,0 +1,1 @@
+The admin search page now pages its job and audit results twenty rows at a time, with links that keep the active filters and both sections' page numbers, so a result past the first page is reachable without editing the URL.

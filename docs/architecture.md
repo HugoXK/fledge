@@ -879,7 +879,8 @@ Admins get a read-only `/admin/metrics` funnel:
 users, approved, repos, users with jobs/PRs, success rate, job cost, attributed
 vs unattributed cost, scope/verify/iterate/review counts, Lead-only and grounded
 attribution events, and recent events. `/admin/search` filters jobs and audit entries by the same user
-visibility as the admin page and can export the current result as CSV.
+visibility as the admin page, pages each section twenty rows at a time with a pager that carries the
+active filters and the other section's page number, and can export the current result as CSV.
 
 `/admin/trials` shows every account, with the state derived at read time instead
 of stored: `running` and `expiring` inside the 7-day preview, `eligible` once it

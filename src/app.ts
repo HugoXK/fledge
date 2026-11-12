@@ -2447,6 +2447,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       jobsTotal,
       auditPage,
       auditTotal,
+      perPage,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
