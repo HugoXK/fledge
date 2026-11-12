@@ -882,7 +882,12 @@ nothing else, because "one mail per run" is what flooded an owner's inbox:
   (default 60, `0` disables coalescing) through
   `job_email_last_failure:<repoId>` in `settings`. Any success clears that key,
   even when it sends no mail, so the next failure is news again.
-- A **manual run, or a follow-up the owner asked for**, always mails its result.
+- A **run a person started** always mails its result. That is `jobs.owner_started`,
+  recorded when the run is enqueued: every `manual` console route marks it, and
+  so does the retry/resume button, which enqueues a `followup`. The trigger alone
+  cannot say it — `tick()` reaches the same `followup` trigger through
+  `decideNextJob()` for any due repository with an open work item, and that run
+  belongs to the digest.
 
 A server-side digest pass runs after
 `DIGEST_HOUR` in `DIGEST_TIMEZONE`, builds a 24-hour summary per approved user

@@ -1540,7 +1540,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : 'iterate'
     const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
     const resumePr = kind === 'iterate' && job.pr_url !== null
-    const result = await jobs.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {})
+    // #353: this route is a person pressing a button, so the run is theirs. The
+    // trigger alone cannot say that — `followup` is also what `tick()` enqueues.
+    const result = await jobs.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, { ownerStarted: true, ...(resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {}) })
     store.audit(viewer.user.id, 'job.retried', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
     if (!result.ok || result.job === undefined) {
       return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(refusalValue(result, '重试失败。'))}`)

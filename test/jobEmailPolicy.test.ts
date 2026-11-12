@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
 import type { RepoRow } from '../src/db.js'
 import { Jobs } from '../src/jobs/service.js'
+import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { jobEmailDecision } from '../src/lib/emailPolicy.js'
 import { sha256Hex } from '../src/lib/secrets.js'
 import { makeUser, MemoryMailer, testConfig } from './helpers.js'
@@ -32,19 +33,21 @@ function repoFor(store: Store, userId: string, id: string): RepoRow {
   })
 }
 
-function build(): { config: ReturnType<typeof testConfig>; store: Store; mailer: MemoryMailer; jobs: Jobs } {
+function build(): { config: ReturnType<typeof testConfig>; store: Store; mailer: MemoryMailer; jobs: Jobs; contexts: RunnerContext[] } {
   const config = testConfig()
   const store = new Store(':memory:')
   const mailer = new MemoryMailer()
-  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer)
-  return { config, store, mailer, jobs }
+  const contexts: RunnerContext[] = []
+  const runner: Runner = { name: 'capture', async run(context) { contexts.push(context); return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, mailer)
+  return { config, store, mailer, jobs, contexts }
 }
 
 let seq = 0
 async function run(
   jobs: Jobs,
   store: Store,
-  input: { repoId: string; userId: string; trigger: 'manual' | 'schedule' | 'followup'; status: 'succeeded' | 'failed'; error?: string; summary?: string; retryAttempt?: number },
+  input: { repoId: string; userId: string; trigger: 'manual' | 'schedule' | 'followup'; status: 'succeeded' | 'failed'; error?: string; summary?: string; retryAttempt?: number; ownerStarted?: boolean },
 ): Promise<void> {
   seq += 1
   const id = `job_mail_${seq}`
@@ -58,6 +61,9 @@ async function run(
     callbackHash: sha256Hex(secret),
     platformTokenHash: '',
     retryAttempt: input.retryAttempt ?? 0,
+    // The same rule `enqueue` applies: a manual run is a person's by
+    // construction, a follow-up only when the caller says so.
+    ownerStarted: input.ownerStarted ?? input.trigger === 'manual',
   })
   store.updateJob(id, { status: 'running' })
   const payload = input.status === 'succeeded'
@@ -147,6 +153,10 @@ test('a manual failure always mails, even inside the coalescing window', async (
     await run(jobs, store, { repoId: repo.id, userId: user.id, trigger: 'schedule', status: 'failed' })
     await run(jobs, store, { repoId: repo.id, userId: user.id, trigger: 'manual', status: 'failed' })
     assert.equal(failures(), 2)
+    // The retry/resume button enqueues a `followup`, and that run is the
+    // person's even though the trigger is the scheduler's word.
+    await run(jobs, store, { repoId: repo.id, userId: user.id, trigger: 'followup', status: 'failed', ownerStarted: true })
+    assert.equal(failures(), 3, 'a follow-up the owner asked for is never swallowed by the window')
   } finally {
     store.close()
   }
@@ -173,11 +183,11 @@ test('a transient failure that queued a retry mails nothing until the attempt is
 
 // The matrix above drives the service, which is the behaviour the card asks
 // for. These are the edges the service cannot cheaply reach: the exact window
-// boundary, a negative setting, and a trigger nobody has used yet.
-test('the pure policy keeps an unknown trigger on the scheduled side and honours the boundary exactly', () => {
+// boundary, a negative setting, and a run with no ownership mark.
+test('the pure policy keeps an unmarked run on the scheduled side and honours the boundary exactly', () => {
   const base = {
     status: 'failed' as const,
-    trigger: 'schedule',
+    ownerStarted: false,
     retryPending: false,
     successEmailEnabled: false,
     lastFailureMailAtMs: 1_000_000,
@@ -196,7 +206,7 @@ test('the pure policy keeps an unknown trigger on the scheduled side and honours
   const negative = jobEmailDecision({ ...base, cooldownMinutes: -5, nowMs: base.nowMs - 1 })
   assert.equal(negative.send, true, 'a negative window is not a mute either')
 
-  assert.equal(jobEmailDecision({ ...base, trigger: 'cron', nowMs: base.nowMs - 1 }).send, false, 'a trigger nobody has used yet is treated as scheduled')
+  assert.equal(jobEmailDecision({ ...base, ownerStarted: true, nowMs: base.nowMs - 1 }).send, true, 'a run a person started is never swallowed by the window')
 
   const retry = jobEmailDecision({ ...base, retryPending: true })
   assert.equal(retry.send, false)
@@ -205,4 +215,63 @@ test('the pure policy keeps an unknown trigger on the scheduled side and honours
   const scheduledSuccess = jobEmailDecision({ ...base, status: 'succeeded' })
   assert.equal(scheduledSuccess.send, false)
   assert.equal(scheduledSuccess.clearWindow, true, 'a success clears the window even when it sends nothing')
+})
+
+// #353 rework: `followup` is not proof that a person acted. `decideNextJob()`
+// returns `{ kind: 'followup' }` for any due repository with an open work item
+// (`src/jobs/continuity.ts:164`, `:166`) and `tick()` enqueues exactly that
+// (`src/jobs/service.ts:2487-2489`), so on an active repository the per-job
+// mail still flooded through this door. Ownership has to be recorded at the
+// place that knows a person acted, not inferred from the trigger.
+test('a follow-up the scheduler started takes the scheduled side of the policy', async () => {
+  const { store, mailer, jobs } = build()
+  try {
+    const user = makeUser(store, { login: 'tick-followup', status: 'approved' })
+    const repo = repoFor(store, user.id, 'repo_tick_followup')
+    const successes = (): number => mailer.messages.filter((message) => SUCCESS_SUBJECT.test(message.subject)).length
+    const failures = (): number => mailer.messages.filter((message) => FAILURE_SUBJECT.test(message.subject)).length
+
+    await run(jobs, store, { repoId: repo.id, userId: user.id, trigger: 'followup', status: 'succeeded' })
+    assert.equal(successes(), 0, 'the success switch is off, so a scheduler follow-up sends no per-job mail')
+
+    await run(jobs, store, { repoId: repo.id, userId: user.id, trigger: 'followup', status: 'failed' })
+    assert.equal(failures(), 1, 'the first failure of the window mails')
+    await run(jobs, store, { repoId: repo.id, userId: user.id, trigger: 'followup', status: 'failed' })
+    assert.equal(failures(), 1, 'a second failure inside the window coalesces instead of mailing again')
+  } finally {
+    store.close()
+  }
+})
+
+// The test above drives the policy with a row shaped the way `tick()` writes
+// it. This one goes through the real admission path so the mark itself is
+// proven: the row the scheduler creates carries no ownership, the row a console
+// route creates does, and only the second one mails a success with the switch
+// off.
+test('ownership is recorded at enqueue instead of inferred from the trigger', async () => {
+  const { store, mailer, jobs, contexts } = build()
+  try {
+    const user = makeUser(store, { login: 'owner-mark', status: 'approved' })
+    const repo = repoFor(store, user.id, 'repo_owner_mark')
+    const successes = (): number => mailer.messages.filter((message) => SUCCESS_SUBJECT.test(message.subject)).length
+
+    const item = store.createWorkItem({ id: 'work_owner_mark', repoId: repo.id, userId: user.id, title: 'Continue the open work', state: 'triaged' })
+    const scheduled = await jobs.enqueue(repo, 'followup', undefined, 'iterate', { workItemId: item.id })
+    assert.equal(scheduled.ok, true, scheduled.ok ? '' : scheduled.error)
+    const scheduledRow = store.getJob(scheduled.job!.id)!
+    assert.equal(scheduledRow.trigger, 'followup', 'the scheduler still takes the follow-up branch')
+    assert.equal(scheduledRow.owner_started, 0, 'tick() enqueues it without a person acting')
+    await jobs.handleCallback(scheduledRow.id, contexts.at(-1)!.callback.secret, { status: 'succeeded', summary: 'continued' })
+    assert.equal(successes(), 0, 'so its success belongs to the digest, not to the inbox')
+
+    const second = store.createWorkItem({ id: 'work_owner_mark_2', repoId: repo.id, userId: user.id, title: 'Run it by hand', state: 'triaged' })
+    const manual = await jobs.enqueue(repo, 'manual', undefined, 'iterate', { workItemId: second.id })
+    assert.equal(manual.ok, true, manual.ok ? '' : manual.error)
+    const manualRow = store.getJob(manual.job!.id)!
+    assert.equal(manualRow.owner_started, 1, 'a console route is a person by construction')
+    await jobs.handleCallback(manualRow.id, contexts.at(-1)!.callback.secret, { status: 'succeeded', summary: 'ran it' })
+    assert.equal(successes(), 1, 'the run a person started still mails its result')
+  } finally {
+    store.close()
+  }
 })

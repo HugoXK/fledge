@@ -11,8 +11,10 @@
  * - A scheduled success belongs to the daily digest. The owner can opt into a
  *   per-job success message, and the switch defaults off, so an existing user
  *   sees no change until they ask for one.
- * - A manual run — and a follow-up the owner asked for — is the owner's own act,
- *   so its result always mails.
+ * - A run a person started always mails. That is not the trigger: `followup`
+ *   is also what a due repository's continuation produces (`decideNextJob()`
+ *   returns it for any open work item, and `tick()` enqueues it), so ownership
+ *   is recorded when the run is enqueued and read back from the row.
  * - A failure that already queued a transient retry mails nothing; the retry's
  *   result is the one worth reading, and the retry can fail again.
  * - Failures for one repository coalesce inside `cooldownMinutes`. A success
@@ -37,8 +39,12 @@ export type JobEmailSkipReason =
 
 export interface JobEmailInput {
   status: JobEmailStatus
-  /** `jobs.trigger`: `manual`, `schedule` or `followup`. */
-  trigger: string
+  /**
+   * `jobs.owner_started === 1`: a person enqueued this run from the console
+   * (a manual run, or the retry/resume button). A `followup` a schedule started
+   * carries no mark, because nobody acted.
+   */
+  ownerStarted: boolean
   /** True when this failed attempt queued a retry, so this is not the last word. */
   retryPending: boolean
   /** `users.email_job_success === 1`. Defaults off for every existing user. */
@@ -53,14 +59,9 @@ export type JobEmailDecision =
   | { send: true; template: 'success' | 'failure'; clearWindow: boolean }
   | { send: false; reason: JobEmailSkipReason; clearWindow: boolean }
 
-/** A run the owner started himself, as opposed to one a schedule started. */
-export function isOwnerStartedTrigger(trigger: string): boolean {
-  return trigger === 'manual' || trigger === 'followup'
-}
-
 export function jobEmailDecision(input: JobEmailInput): JobEmailDecision {
   if (input.status === 'succeeded') {
-    if (isOwnerStartedTrigger(input.trigger)) return { send: true, template: 'success', clearWindow: true }
+    if (input.ownerStarted) return { send: true, template: 'success', clearWindow: true }
     if (input.successEmailEnabled) return { send: true, template: 'success', clearWindow: true }
     return { send: false, reason: 'scheduled-success', clearWindow: true }
   }
@@ -68,7 +69,7 @@ export function jobEmailDecision(input: JobEmailInput): JobEmailDecision {
   if (input.retryPending) return { send: false, reason: 'retry-pending', clearWindow: false }
   // The owner acted himself and wants to know the result; a coalescing window
   // must never swallow a run he started by hand.
-  if (isOwnerStartedTrigger(input.trigger)) return { send: true, template: 'failure', clearWindow: false }
+  if (input.ownerStarted) return { send: true, template: 'failure', clearWindow: false }
   const since = input.lastFailureMailAtMs
   // A non-positive or absent window is "coalescing off", not "suppress
   // everything": a bad setting must never silence a failure.

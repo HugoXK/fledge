@@ -524,7 +524,18 @@ export class Jobs {
     void sendNotificationWebhook(this.config, 'repo.credential_invalid', { text: `${repo.owner}/${repo.name}: GitHub token is invalid`, repoId: repo.id, error: message.slice(0, 300) })
   }
 
-  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string } = {}): Promise<EnqueueResult> {
+  /**
+   * #353: who started this run, recorded on the row so the mail policy reads a
+   * fact instead of guessing from the trigger. Every `manual` enqueue is a
+   * console route, so it is a person by construction; a `followup` is only a
+   * person's when the caller says so (the retry/resume button), because
+   * `tick()` reaches the same trigger through `decideNextJob()`.
+   */
+  private ownerStartedFor(trigger: string, options: { ownerStarted?: boolean }): boolean {
+    return options.ownerStarted ?? trigger === 'manual'
+  }
+
+  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean } = {}): Promise<EnqueueResult> {
     // #283: the platform stop outranks every other refusal. It is checked before
     // the per-repository and per-role gates so the answer says the platform is
     // stopped, not that this one repository is disabled, and it is checked in the
@@ -600,7 +611,7 @@ export class Jobs {
     const platformFunded = user.own_llm_base_url === null || user.own_llm_base_url === '' || user.own_llm_key_enc === null
 
     if (platformFunded && quotaView(user, this.config).exhausted) {
-      const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind })
+      const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind, ownerStarted: this.ownerStartedFor(trigger, options) })
       this.store.updateJob(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。', error_code: 'QUOTA_EXHAUSTED', finished_at: nowIso() })
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'quota_exhausted' })
       else if (kind === 'iterate') this.store.updateRepo(repo.id, { last_status: 'quota_exhausted', last_run_at: nowIso() })
@@ -668,7 +679,7 @@ export class Jobs {
     const priority = options.priority ?? (trigger === 'followup' ? 20 : trigger === 'manual' ? 10 : 0)
     let job: JobRow
     try {
-      job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null })
+      job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null, ownerStarted: this.ownerStartedFor(trigger, options) })
     } catch (error) {
       // SQLite reports the column of a partial unique index, not its name, so
       // this index surfaces as "UNIQUE constraint failed: jobs.repo_id". Only
@@ -1597,7 +1608,7 @@ export class Jobs {
     const storedAt = storedWindow === undefined ? Number.NaN : Date.parse(storedWindow)
     const decision = jobEmailDecision({
       status: result.status,
-      trigger: job.trigger,
+      ownerStarted: job.owner_started === 1,
       retryPending: options.retryPending === true,
       successEmailEnabled: user.email_job_success === 1,
       lastFailureMailAtMs: Number.isFinite(storedAt) ? storedAt : null,

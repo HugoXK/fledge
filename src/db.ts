@@ -233,6 +233,7 @@ export interface JobRow {
   continuity_json: string | null
   output_kind: string | null
   continuity_used: number
+  owner_started: number
   retry_attempt: number
   retry_of: string | null
   lease_owner: string | null
@@ -591,6 +592,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   continuity_json TEXT,
   output_kind TEXT,
   continuity_used INTEGER NOT NULL DEFAULT 0,
+  owner_started INTEGER NOT NULL DEFAULT 0,
   retry_attempt INTEGER NOT NULL DEFAULT 0,
   retry_of TEXT,
   lease_owner TEXT,
@@ -1089,6 +1091,7 @@ export class Store {
     if (!jobColumns.has('continuity_json')) this.run('ALTER TABLE jobs ADD COLUMN continuity_json TEXT')
     if (!jobColumns.has('output_kind')) this.run('ALTER TABLE jobs ADD COLUMN output_kind TEXT')
     if (!jobColumns.has('continuity_used')) this.run('ALTER TABLE jobs ADD COLUMN continuity_used INTEGER NOT NULL DEFAULT 0')
+    if (!jobColumns.has('owner_started')) this.run('ALTER TABLE jobs ADD COLUMN owner_started INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('retry_attempt')) this.run('ALTER TABLE jobs ADD COLUMN retry_attempt INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('retry_of')) this.run('ALTER TABLE jobs ADD COLUMN retry_of TEXT')
     if (!jobColumns.has('last_callback_at')) this.run('ALTER TABLE jobs ADD COLUMN last_callback_at TEXT')
@@ -2171,10 +2174,10 @@ export class Store {
     this.run('DELETE FROM repo_instances WHERE repo_id = ?', repoId)
   }
 
-  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; createdAt?: string }): JobRow {
+  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string }): JobRow {
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, base_branch, work_item_id, priority, base_sha, retry_attempt, retry_of, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, base_branch, work_item_id, priority, base_sha, retry_attempt, retry_of, owner_started, created_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -2189,6 +2192,7 @@ export class Store {
       input.baseSha ?? null,
       input.retryAttempt ?? 0,
       input.retryOf ?? null,
+      input.ownerStarted === true ? 1 : 0,
       input.createdAt ?? nowIso(),
     )
     return this.getJob(input.id)!

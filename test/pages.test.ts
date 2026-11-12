@@ -307,6 +307,7 @@ test('job detail shows evidence and can retry a failed job', async () => {
     assert.match(jobs[0]!.goal, /Resume from checkpoint:/)
     assert.match(jobs[0]!.goal, /done A; next B/)
     assert.equal(jobs[0]!.trigger, 'followup')
+    assert.equal(jobs[0]!.owner_started, 1, 'the retry button is a person pressing it, so the row records that')
     assert.equal(jobs[0]!.branch, 'fledge/fix')
     assert.equal(jobs[0]!.pr_url, 'https://github.com/o/r/pull/7')
     assert.equal(jobs[0]!.base_branch, 'main')
