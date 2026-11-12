@@ -351,7 +351,16 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
   // set-role, mail-probe) call loadConfig() to read one value, and a missing
   // production secret must not block an operator repair. The startup gate is
   // buildApp(), which src/index.ts also calls unguarded. See docs/deploy.md.
-  return { ...config, ...overrides }
+  const merged = { ...config, ...overrides }
+  // #420: the reminder is the deadline minus an offset, so a reminder at or after
+  // the deadline makes the window zero and every unapproved plan is "reminded" on
+  // the next tick with its deadline still days away. This is not a missing
+  // operator secret — it is a pair that cannot mean what the operator wrote, it
+  // happens in every environment, and only the merged value can see it.
+  if (merged.plan.reminderDays >= merged.plan.expiryDays) {
+    throw new Error(`PLAN_REMINDER_DAYS (${merged.plan.reminderDays}) must be smaller than PLAN_EXPIRY_DAYS (${merged.plan.expiryDays}); a reminder at or after the deadline is sent immediately.`)
+  }
+  return merged
 }
 
 function isAbsoluteHttpsUrl(value: string): boolean {
