@@ -108,22 +108,25 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // stay exact so a silent re-label is still a failing test.
   // #251 moved these five route registrations: one import line at `:40` and
   // five lines inside the webhook path. #357 adds one line above the webhook
-  // route registration, so the `:2957` pin and its baseline entry move to
-  // `:2958` together in that commit. #359 inserts the pending-plan spread and
-  // the late-approval guard in the repository and plan routes, all above the
-  // webhook registration, so the `:2958` pin and its baseline entry move to
-  // `:2974` together in that commit. The review rework adds the deadline cutoff
-  // and the cleared reason above the same registration, moving it to `:2979`
-  // in the same kind of commit, which is what keeps "refreshed" from becoming
-  // "silently re-labelled".
+  // route registration, so the `:2957` pin and its baseline entry moved to
+  // `:2958` together in that commit. #358 moved the two gateway registrations
+  // the same way: two import lines and the `readAnswer` helper above them, 19
+  // lines in total, with no new route and no change to the limiter call that
+  // opens each handler; alerts #41 and #42 stay the same two dismissed results.
+  // #359 inserts the pending-plan spread and the late-approval guard in the
+  // repository and plan routes, all above the webhook registration, so the
+  // `:2958` pin and its baseline entry moved to `:2974` in that commit, then to
+  // `:2979` with the review rework (deadline cutoff and the cleared reason) in
+  // the same kind of commit. Re-keying and the pin travel together every time,
+  // which is what keeps "refreshed" from becoming "silently re-labelled".
   assert.deepEqual([...keys].sort(), [
     'js/missing-rate-limiting|src/app.ts|2979',
     'js/missing-rate-limiting|src/app.ts|469',
     'js/missing-rate-limiting|src/app.ts|504',
     'js/missing-rate-limiting|src/app.ts|514',
     'js/missing-rate-limiting|src/app.ts|524',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|125',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|150',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|144',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|169',
   ])
   const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
   assert.equal(dismissed.length, 3, 'the three dismissed false-positive results are recorded with their reason')

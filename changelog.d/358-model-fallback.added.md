@@ -1,0 +1,1 @@
+A repository whose primary model is rate-limited or briefly unavailable now finishes the job on its next selected model instead of failing: the gateway retries only transient refusals, never an authorization failure, an exhausted provider quota or a policy refusal, and the job page and pull-request comment name the model that actually replied.

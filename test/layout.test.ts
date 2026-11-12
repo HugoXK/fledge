@@ -14,10 +14,10 @@ const headerHeights = JSON.parse(readFileSync(new URL('./fixtures/header-heights
   renders: { breakpoint: string; media: string | null; viewport: string; measured: number }[]
 }
 
-function render(path: string, options: { admin?: boolean } = {}): string {
+function render(path: string, options: { admin?: boolean; active?: string } = {}): string {
   const store = new Store(':memory:')
   const user = makeUser(store, { admin: options.admin === true })
-  return layout({ title: 'x', viewer: { user, csrfToken: 'csrf-token' }, body: '', config: testConfig(), locale: 'en', path })
+  return layout({ title: 'x', viewer: { user, csrfToken: 'csrf-token' }, body: '', config: testConfig(), locale: 'en', path, active: options.active })
 }
 
 function navAnchor(html: string, href: string): string {
@@ -26,30 +26,55 @@ function navAnchor(html: string, href: string): string {
   return match[0] ?? ''
 }
 
+function navBlock(html: string): string {
+  const match = html.match(/<nav class="nav" id="main-nav"[\s\S]*?<\/nav>/)
+  assert.ok(match !== null, 'main navigation is missing')
+  return match[0] ?? ''
+}
+
+// #93: at most one nav item may claim `aria-current="page"`, and only when the
+// route is that item's own page; a section match is `aria-current="true"`.
+function pageAnchors(html: string): string[] {
+  return navBlock(html).match(/<a [^>]*aria-current="page"[^>]*>/g) ?? []
+}
+
 function rule(css: string, selector: string): string {
   const match = css.match(new RegExp(`(?:^|\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`))
   assert.ok(match !== null, `public/app.css has no rule for ${selector}`)
   return match[1] ?? ''
 }
 
-test('the main navigation marks the current page with aria-current', () => {
-  const dashboard = render('/dashboard')
-  assert.match(navAnchor(dashboard, '/dashboard'), /aria-current="page"/)
-  assert.doesNotMatch(navAnchor(dashboard, '/console'), /aria-current/)
-  assert.doesNotMatch(navAnchor(dashboard, '/settings'), /aria-current/)
-
-  const consolePage = render('/console')
-  assert.match(navAnchor(consolePage, '/console'), /aria-current="page"/)
-  assert.doesNotMatch(navAnchor(consolePage, '/dashboard'), /aria-current/)
-
-  const settings = render('/settings')
-  assert.match(navAnchor(settings, '/settings'), /aria-current="page"/)
+test('the main navigation marks the page it is on, and only that page', () => {
+  for (const [path, href] of [['/dashboard', '/dashboard'], ['/dashboard/', '/dashboard'], ['/console', '/console'], ['/settings', '/settings']] as const) {
+    const html = render(path)
+    assert.match(navAnchor(html, href), /aria-current="page"/, `${path} does not mark ${href} as the page`)
+    assert.equal(pageAnchors(html).length, 1, `${path} claims more than one current page`)
+    for (const other of ['/console', '/dashboard', '/settings']) {
+      if (other === href) continue
+      assert.doesNotMatch(navAnchor(html, other), /aria-current/, `${path} marks ${other} too`)
+    }
+  }
 })
 
-test('nested routes keep their section marked and admin is marked for admins', () => {
-  assert.match(navAnchor(render('/repos/repo-1/jobs/job-1'), '/dashboard'), /aria-current="page"/)
+test('nested routes keep their section marked but never claim to be the page', () => {
+  const cases = [
+    { path: '/repos/repo-1/jobs/job-1', href: '/dashboard' },
+    { path: '/repos/r1/workspace', href: '/dashboard' },
+    { path: '/dashboard/extra', href: '/dashboard' },
+    { path: '/settings/model', href: '/settings' },
+    { path: '/admin/metrics', href: '/admin' },
+    { path: '/jobs/j1', href: '/dashboard', active: 'dashboard' }
+  ]
+  for (const item of cases) {
+    const html = render(item.path, { admin: true, active: item.active })
+    const anchor = navAnchor(html, item.href)
+    assert.match(anchor, /class="on"/, `${item.path} lost the section highlight`)
+    assert.match(anchor, /aria-current="true"/, `${item.path} does not announce its section`)
+    assert.doesNotMatch(anchor, /aria-current="page"/, `${item.path} claims to be the page`)
+    assert.equal(pageAnchors(html).length, 0, `${item.path} claims a current page`)
+  }
+
   const adminMetrics = render('/admin/metrics', { admin: true })
-  assert.match(navAnchor(adminMetrics, '/admin'), /aria-current="page"/)
   assert.doesNotMatch(navAnchor(adminMetrics, '/dashboard'), /aria-current/)
 })
 

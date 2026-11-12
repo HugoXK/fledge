@@ -63,8 +63,8 @@ test('a mismatch between the branch version and the title version is not an iden
   assert.equal(releaseIdentity({ branch: 'release/v0.3.0', title: 'feat: release: v0.3.0' }), null)
 })
 
-test('the mechanical file set is the five allowed paths and nothing else', () => {
-  for (const path of ['CHANGELOG.md', 'package.json', 'package-lock.json', 'docker-compose.yml', 'changelog.d/58-x.fixed.md', 'changelog.d/README.md']) {
+test('the mechanical file set is the seven allowed paths and nothing else', () => {
+  for (const path of ['CHANGELOG.md', 'package.json', 'package-lock.json', 'docker-compose.yml', 'README.md', 'README.zh.md', 'changelog.d/58-x.fixed.md', 'changelog.d/README.md']) {
     assert.equal(isMechanicalPath(path), true, path)
   }
   for (const path of ['src/app.ts', 'scripts/risk-gate.mjs', '.github/workflows/ci.yml', 'docs/deploy.md', 'changelog.d/README.md.bak']) {

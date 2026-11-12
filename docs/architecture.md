@@ -96,8 +96,10 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   platform only writes in Chinese is named by its failure class on a page in the
   other language, and the raw sentence stays on the job page.
 - **Shell** (`src/views/layout.ts`, `public/app.css`): the main nav marks the
-  current section with `aria-current="page"`, derived from the route and
-  overridable with `active`. The sticky header owns `--header-h` (re-declared
+  current page with `aria-current="page"` on the one link whose own target is the
+  route, derived from the route and overridable with `active`; a nested route
+  inside a section keeps the highlight and announces the generic
+  `aria-current="true"`, never `page`. The sticky header owns `--header-h` (re-declared
   per breakpoint); `[id] { scroll-margin-top }` and the workspace frame's height
   both follow it, so an anchor is never hidden under the header when it wraps
   and the frame's bottom lands at the viewport bottom. The shell's controls keep
@@ -285,6 +287,13 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   link.
 - Streaming is passed through; `stream_options.include_usage` is added so the
   final usage chunk can be metered.
+- A repository that selected several models falls back on a transient refusal:
+  the `is_default` model first, then the rest in the selection query's order
+  (`ORDER BY mp.created_at ASC, pm.created_at ASC`, `src/db.ts`), the same order
+  the per-instance picker walks; there is no order column. The job row records
+  the model that answered and the attempts of the **last chat call** —
+  `recordModel` rewrites `jobs.model_json` on every call — so an earlier
+  fallback is not retained across calls.
 
 The operator chooses the upstream through `PLATFORM_LLM_BASE_URL`; keep the
 real endpoint and key out of git and out of public documentation.

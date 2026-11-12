@@ -112,7 +112,7 @@ const body = String(pr.body ?? '')
 const paths = files.map((file) => file.filename)
 // The mechanical daily minor release (#80) is keyed on identity, not on the file
 // set: branch release/vX.Y.Z, title "release: vX.Y.Z" and every changed path
-// inside the five allowed paths. Only that shape skips the size rule and the risk
+// inside the seven allowed paths. Only that shape skips the size rule and the risk
 // label: a PR that merely touches the same files stays T3.
 const mechanical = mechanicalRelease({ branch: pr.head?.ref, title: pr.title, files: paths })
 

@@ -34,9 +34,11 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isMechanicalPath } from './lib/mechanical-release.mjs'
 
-// The five paths the mechanical release diff is limited to; the materialised tree
+// The seven paths the mechanical release diff is limited to; the materialised tree
 // holds exactly these and nothing else, so the number of content reads is bounded.
-export const SURFACE_PATHS = ['CHANGELOG.md', 'changelog.d', 'docker-compose.yml', 'package-lock.json', 'package.json']
+// The two READMEs joined the surface with #348: the release routine writes one
+// status line into each, and the suite fails on a tree that left them behind.
+export const SURFACE_PATHS = ['CHANGELOG.md', 'README.md', 'README.zh.md', 'changelog.d', 'docker-compose.yml', 'package-lock.json', 'package.json']
 
 const VERSION = /^\d+\.\d+\.\d+$/
 const SHA = /^[0-9a-f]{40}$/
