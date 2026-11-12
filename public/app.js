@@ -237,6 +237,13 @@
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') closeInfoTips()
   })
+  // The stylesheet's hover/focus reveal is the no-JavaScript fallback: without
+  // it the hint's text is unreachable. Only once these handlers exist may the
+  // explicit `aria-expanded` state take over, so a second tap and Escape really
+  // close the hint instead of leaving the CSS reveal in charge (WCAG 1.4.13 d).
+  // Set here, not at the top of the file, so a throw in an earlier block leaves
+  // the fallback in place rather than making every tip unopenable.
+  root.dataset.js = '1'
 
   document.querySelectorAll('[data-goal-template]').forEach((select) => {
     select.addEventListener('change', () => {
