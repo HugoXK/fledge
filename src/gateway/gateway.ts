@@ -7,6 +7,8 @@ import type { ApiTokenRow, RepoProviderModelRow, Store, UserRow } from '../db.js
 import { log } from '../lib/log.js'
 import { decryptSecret, sha256Hex } from '../lib/secrets.js'
 import { costUsdFromUsage, headerCost, quotaView } from './quota.js'
+import { modelOrder, retryableModelFailure } from './modelFallback.js'
+import type { ModelAttempt } from '../lib/modelRun.js'
 import { rateLimitKey, RateLimiter } from '../lib/rateLimit.js'
 import { GATEWAY_SCOPE } from '../lib/tokens.js'
 
@@ -82,6 +84,23 @@ function upstreamRequest(url: URL, headers: Record<string, string>, body: string
     request.write(body)
     request.end()
   })
+}
+
+// A refusal's body can be large; it is read only to decide retryability and to
+// answer the client, never kept.
+async function readAnswer(res: http.IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of res) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += buf.length
+    if (size > 1_048_576) {
+      res.destroy()
+      break
+    }
+    chunks.push(buf)
+  }
+  return Buffer.concat(chunks).toString('utf8')
 }
 
 function forwardHeaders(headers: http.IncomingHttpHeaders): Record<string, string> {
@@ -165,50 +184,101 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
     const authed = auth
     const body = (request.body ?? {}) as ChatBody
     const repoModel = auth.token.repo_id === null || typeof body.model !== 'string' ? undefined : store.providerModelForRun(auth.token.repo_id, body.model)
-    const target = targetFor(auth.user, config, body, repoModel)
-    if ('error' in target) return reply.code(503).send({ error: { type: 'platform_model_unavailable', message: target.error } })
-
-    const quota = quotaView(auth.user, config)
-    if (target.platformFunded && quota.exhausted) {
-      await deps.onQuotaBlocked?.(auth.user)
-      return quotaError(reply, auth.user, config)
-    }
-
     const stream = body.stream === true
-    const payload: ChatBody = { ...body, model: target.model }
-    if (stream) {
-      const existing = body.stream_options
-      payload.stream_options = {
-        ...(existing !== null && typeof existing === 'object' ? (existing as Record<string, unknown>) : {}),
-        include_usage: true,
-      }
-    }
-    const url = new URL(`${target.baseUrl}/chat/completions`)
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-      accept: stream ? 'text/event-stream' : 'application/json',
-      'accept-encoding': 'identity',
-      authorization: `Bearer ${target.key}`,
-      'user-agent': 'fledge/0.1',
-    }
-    const bodyText = JSON.stringify(payload)
     const jobId = auth.token.name.startsWith('job:') ? auth.token.name.slice(4) : null
     const started = Date.now()
+    const quota = quotaView(auth.user, config)
 
-    let upstream
-    try {
-      upstream = await upstreamRequest(url, headers, bodyText, stream ? 30 * 60_000 : 3 * 60_000)
-    } catch (error) {
-      log.error('gateway upstream failed', { error: String(error), platformFunded: target.platformFunded })
+    // #358: a repository's order decides the attempts, and only a retryable
+    // refusal moves to the next model. `is_default` is the head and the rest keep
+    // the query's order, so the picker in `src/flybot/instances.ts` and this loop
+    // cannot disagree about the primary. The platform model and a user's own single
+    // model have nothing behind them: they stay one attempt.
+    const selection = auth.token.repo_id === null ? [] : store.listRepoModelSelection(auth.token.repo_id)
+    const candidates: Array<RepoProviderModelRow | undefined> =
+      repoModel === undefined ? [undefined] : modelOrder(selection, repoModel.id)
+    const attempts: ModelAttempt[] = []
+    const quotaHeaders = (): Record<string, string> => ({
+      'x-fledge-quota-remaining-cny': quota.unlimited ? 'unlimited' : quota.remainingCny.toFixed(4),
+      'x-fledge-top-up-url': `${config.baseUrl}/settings`,
+    })
+
+    // The job names the model that actually ran and the models it fell through.
+    // The row is the record; a call whose job was deleted under it must not fail.
+    const recordModel = (winner: { id: string; label: string } | null): void => {
+      if (jobId === null) return
+      try {
+        store.updateJob(jobId, { model_json: JSON.stringify({ model: winner, attempts }) })
+      } catch (error) {
+        log.warn('gateway model record failed', { trace: jobId, error: String(error) })
+      }
+    }
+
+    let target: { baseUrl: string; key: string; model: string; platformFunded: boolean } | null = null
+    let targetLabel = ''
+    let upstream: Awaited<ReturnType<typeof upstreamRequest>> | null = null
+    let lastFailure: { status: number; text: string; headers: Record<string, string> } | null = null
+
+    for (const candidate of candidates) {
+      const attemptTarget = targetFor(auth.user, config, body, candidate)
+      if ('error' in attemptTarget) return reply.code(503).send({ error: { type: 'platform_model_unavailable', message: attemptTarget.error } })
+      if (attemptTarget.platformFunded && quota.exhausted) {
+        await deps.onQuotaBlocked?.(auth.user)
+        return quotaError(reply, auth.user, config)
+      }
+      const payload: ChatBody = { ...body, model: attemptTarget.model }
+      if (stream) {
+        const existing = body.stream_options
+        payload.stream_options = {
+          ...(existing !== null && typeof existing === 'object' ? (existing as Record<string, unknown>) : {}),
+          include_usage: true,
+        }
+      }
+      const attemptUrl = new URL(`${attemptTarget.baseUrl}/chat/completions`)
+      const attemptHeaders: Record<string, string> = {
+        'content-type': 'application/json',
+        accept: stream ? 'text/event-stream' : 'application/json',
+        'accept-encoding': 'identity',
+        authorization: `Bearer ${attemptTarget.key}`,
+        'user-agent': 'fledge/0.1',
+      }
+      const attemptName = { modelId: candidate?.id ?? attemptTarget.model, label: candidate?.label ?? attemptTarget.model }
+      let answer: Awaited<ReturnType<typeof upstreamRequest>>
+      try {
+        answer = await upstreamRequest(attemptUrl, attemptHeaders, JSON.stringify(payload), stream ? 30 * 60_000 : 3 * 60_000)
+      } catch (error) {
+        // Unreachable is the one retryable failure with no answer to forward.
+        log.error('gateway upstream failed', { error: String(error), platformFunded: attemptTarget.platformFunded })
+        attempts.push({ ...attemptName, status: 502, retryable: true })
+        continue
+      }
+      if (answer.status >= 200 && answer.status < 300) {
+        target = attemptTarget
+        targetLabel = attemptName.label
+        upstream = answer
+        break
+      }
+      const text = await readAnswer(answer.res)
+      const retryable = retryableModelFailure(answer.status, text)
+      attempts.push({ ...attemptName, status: answer.status, retryable })
+      lastFailure = { status: answer.status, text, headers: { ...forwardHeaders(answer.headers), ...quotaHeaders() } }
+      // Auth, an exhausted quota, a payment problem and a policy refusal are the
+      // repository's own answer: a second model must not mask them.
+      if (!retryable) break
+    }
+
+    if (upstream === null || target === null) {
+      recordModel(null)
+      if (lastFailure !== null) return reply.code(lastFailure.status).headers(lastFailure.headers).send(lastFailure.text)
       return reply.code(502).send({ error: { type: 'provider_error', message: 'The model provider could not be reached.' } })
     }
 
+    recordModel({ id: target.model, label: targetLabel })
     const funded = target.platformFunded
     const targetModel = target.model
     const costFromHeader = headerCost(upstream.headers)
     const writeHeaders = forwardHeaders(upstream.headers)
-    writeHeaders['x-fledge-quota-remaining-cny'] = quota.unlimited ? 'unlimited' : quota.remainingCny.toFixed(4)
-    writeHeaders['x-fledge-top-up-url'] = `${config.baseUrl}/settings`
+    Object.assign(writeHeaders, quotaHeaders())
 
     if (stream && upstream.status >= 200 && upstream.status < 300) {
       reply.hijack()

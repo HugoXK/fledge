@@ -14,7 +14,7 @@ const SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
 const OTHER = '0123456789abcdef0123456789abcdef01234567'
 const VERSION = '0.5.0'
 const BRANCH = releaseBranch(VERSION)
-const DEFAULT_FILES = ['CHANGELOG.md', 'changelog.d/187-release-open.added.md', 'docker-compose.yml', 'package-lock.json', 'package.json']
+const DEFAULT_FILES = ['CHANGELOG.md', 'README.md', 'README.zh.md', 'changelog.d/187-release-open.added.md', 'docker-compose.yml', 'package-lock.json', 'package.json']
 
 type Call = { method: string; route: string; body?: Record<string, unknown> }
 
@@ -51,6 +51,8 @@ function makeServer(fixture: Fixture = {}) {
     'package-lock.json': JSON.stringify({ version: VERSION }),
     'CHANGELOG.md': `## [${VERSION}]\n`,
     'docker-compose.yml': `image: fledge:${VERSION}\n`,
+    'README.md': `> **Status:** \`v${VERSION}\` is the latest release (2026-11-12) at <https://fledge.hugoxk.online/>.\n`,
+    'README.zh.md': `> **状态：** 最新发布是 \`v${VERSION}\`（2026-11-12）：<https://fledge.hugoxk.online/>。\n`,
     'changelog.d/README.md': '# Changelog fragments\n',
     'changelog.d/187-release-open.added.md': 'A verified release branch opens one pull request.\n',
   }
@@ -158,12 +160,14 @@ test('opens exactly one pull request from the verified branch and asserts what i
   assert.match(body, /features: \*\*6\*\*/)
 
   // The materialised tree was read back through the adapter, and the reads that
-  // built it are the exact five surfaces, nothing wider.
+  // built it are the exact seven surfaces, nothing wider.
   assert.deepEqual([...(result.fetched ?? [])].sort(), [
     'package.json',
     'package-lock.json',
     'CHANGELOG.md',
     'docker-compose.yml',
+    'README.md',
+    'README.zh.md',
     'changelog.d/README.md',
     'changelog.d/187-release-open.added.md',
   ].sort())
@@ -329,7 +333,27 @@ test('the module carries no tag route and no tag-shaped export', () => {
 })
 
 test('the surface the tool materialises is exactly the mechanical release set', () => {
-  assert.deepEqual([...SURFACE_PATHS].sort(), ['CHANGELOG.md', 'changelog.d', 'docker-compose.yml', 'package-lock.json', 'package.json'])
+  assert.deepEqual([...SURFACE_PATHS].sort(), [
+    'CHANGELOG.md',
+    'README.md',
+    'README.zh.md',
+    'changelog.d',
+    'docker-compose.yml',
+    'package-lock.json',
+    'package.json',
+  ])
+})
+
+// #348 (b): the tree the opener judges must carry both README status files, not
+// just the version fields. On its own this case is green as soon as the path list
+// widens, so it guards the surface only - the writer case in
+// `test/releaseStatusWriter.test.ts` is the half that proves a status line is
+// actually written.
+test('a release tree carries both README status files, not only the version fields', async () => {
+  const { result } = await run()
+  assert.equal(result.status, 'opened')
+  const readmes = [...(result.fetched ?? [])].filter((path) => path === 'README.md' || path === 'README.zh.md').sort()
+  assert.deepEqual(readmes, ['README.md', 'README.zh.md'])
 })
 
 test('a run without the team token is refused before any request is made', async () => {
