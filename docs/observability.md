@@ -53,6 +53,14 @@ npm run build
 PROMETHEUS_URL=http://127.0.0.1:9090 npm run slo:report
 ```
 
+Set `PROMETHEUS_AUTH_HEADER` when Prometheus needs authentication: it is sent as
+the request's `authorization` header and never travels in the URL. A
+`PROMETHEUS_URL` that carries a username or password is refused before any
+request — the credential is not scrubbed out of the URL, the URL itself is the
+error — because Node prints a URL it cannot use into its own error text, and that
+text lands in a terminal, a CI log or a shell history. A header is only sent over
+`https:` unless the host is loopback (`127.0.0.1`, `localhost` or `::1`).
+
 The report prints the 7-day success rate, remaining error budget, queue/job p95,
 bridge success and GitHub 429 rate. Missing series render as `n/a`, and so does a
 quiet window — counters present but flat — in the five rows that can then be
