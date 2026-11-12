@@ -117,10 +117,12 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // repository and plan routes, all above the webhook registration, so the
   // `:2958` pin and its baseline entry moved to `:2974` in that commit, then to
   // `:2979` with the review rework (deadline cutoff and the cleared reason) in
-  // the same kind of commit. Re-keying and the pin travel together every time,
-  // which is what keeps "refreshed" from becoming "silently re-labelled".
+  // the same kind of commit. #418 inserts the review-trend read model six lines
+  // above the webhook registration, so the `:2979` pin and its baseline entry
+  // moved to `:2985` together in that commit. Re-keying and the pin travel every
+  // time, which is what keeps "refreshed" from becoming "silently re-labelled".
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|2979',
+    'js/missing-rate-limiting|src/app.ts|2985',
     'js/missing-rate-limiting|src/app.ts|469',
     'js/missing-rate-limiting|src/app.ts|504',
     'js/missing-rate-limiting|src/app.ts|514',
