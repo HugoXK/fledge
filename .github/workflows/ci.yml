@@ -498,10 +498,14 @@ jobs:
   #
   # It is deliberately not in `ci-ok`'s `needs`: a reporter that fails must not
   # be able to fail the merge gate as well.
+  #
+  # Its `needs` mirrors `ci-ok`'s so the tracker can name the jobs that actually
+  # failed. With only `ci-ok` in the list the reporter saw the aggregate and
+  # nothing else, and every tracker said "ci-ok did not report success".
   main-health:
     name: main-health
     if: always() && github.ref == 'refs/heads/main'
-    needs: [ci-ok]
+    needs: [ci-ok, lint, typecheck, test, coverage, build, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

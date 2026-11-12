@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { decision, MAIN_REF, RED_LABEL, RED_TITLE } from '../scripts/lib/main-health.mjs'
+import * as health from '../scripts/lib/main-health.mjs'
 
 // #305: a red `main` was invisible. `ci-ok` computed the commit's health and
 // stopped; nothing opened a card, commented or notified anyone, and on
@@ -132,6 +133,89 @@ test('the newest tracker is the one commented on and closed', () => {
   assert.equal(decision(input({ conclusion: 'success', openTrackers: [older, newest] })).tracker?.number, newest.number)
 })
 
+// --- The two things that stopped the reporter doing its job ----------------
+//
+// The first review found both: (a) `gh issue create --label ci:main-red` against
+// a repository that has no such label is rejected before the issue exists, so
+// the first red main — the only case the feature exists for — opened nothing;
+// (b) `needs: [ci-ok]` meant the reporter could only ever see the aggregate, so
+// every tracker said "ci-ok did not report success" and never named a job.
+
+test('the reporter selection names failures and ignores the aggregate', () => {
+  const needs = {
+    'ci-ok': { result: 'failure' },
+    lint: { result: 'success' },
+    test: { result: 'failure' },
+    coverage: { result: 'cancelled' },
+    'dependency-review': { result: 'skipped' },
+  }
+  assert.deepEqual(
+    health.failingJobsFrom(needs),
+    ['test', 'coverage'],
+    'a skipped job did not fail; a cancelled job did',
+  )
+  assert.deepEqual(health.failingJobsFrom({}), [], 'no needs means no names, not a crash')
+})
+
+test('the tracker label is created before the first issue', async () => {
+  const calls: string[] = []
+  const result = await health.ensureTrackerLabel({
+    label: RED_LABEL,
+    listLabels: async () => {
+      calls.push('list')
+      return []
+    },
+    createLabel: async (name: string) => {
+      calls.push(`create ${name}`)
+    },
+  })
+  assert.equal(result.created, true)
+  assert.deepEqual(calls, ['list', `create ${RED_LABEL}`], 'the label must exist before the create call')
+})
+
+test('an existing tracker label is left alone', async () => {
+  let created = 0
+  const result = await health.ensureTrackerLabel({
+    label: RED_LABEL,
+    listLabels: async () => ['bug', RED_LABEL],
+    createLabel: async () => {
+      created += 1
+    },
+  })
+  assert.equal(result.created, false)
+  assert.equal(created, 0, 'a label that already exists must not be created again')
+})
+
+test('a label created by a concurrent run is not an error', async () => {
+  let listed = 0
+  const result = await health.ensureTrackerLabel({
+    label: RED_LABEL,
+    listLabels: async () => {
+      listed += 1
+      return listed === 1 ? [] : [RED_LABEL]
+    },
+    createLabel: async () => {
+      throw new Error('HTTP 422: Validation Failed (already_exists)')
+    },
+  })
+  assert.equal(result.present, true)
+  assert.equal(result.created, false, 'the other run created it; this one reports presence')
+})
+
+test('a label that cannot be created fails by name, not as an unnamed 422', async () => {
+  await assert.rejects(
+    health.ensureTrackerLabel({
+      label: RED_LABEL,
+      listLabels: async () => [],
+      createLabel: async () => {
+        throw new Error('HTTP 403: Resource not accessible by integration')
+      },
+    }),
+    new RegExp(RED_LABEL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    'the failure must name the label so the red job says what is missing',
+  )
+})
+
 // --- The workflow half -----------------------------------------------------
 
 const ci = read('.github/workflows/ci.yml')
@@ -173,4 +257,36 @@ test('every action in the reporter is pinned to a full commit sha', () => {
     if (value.startsWith('./') || value.startsWith('docker://')) continue
     assert.match(value, /@[0-9a-f]{40}$/, `${value} must be a full 40-hex pin`)
   }
+})
+
+function needsOf(job: string): string[] {
+  const line = jobBlock(ci, job).match(/^ {4}needs: \[(.*)\]$/m)?.[1] ?? ''
+  return line
+    .split(',')
+    .map((name) => name.trim())
+    .filter((name) => name !== '')
+}
+
+test('the reporter depends on the jobs it must name, not only the aggregate', () => {
+  const required = needsOf('ci-ok')
+  const reporter = needsOf('main-health')
+  assert.ok(required.length > 1, 'ci-ok gates on the individual jobs')
+  for (const job of required) {
+    assert.ok(
+      reporter.includes(job),
+      `main-health must depend on ${job} to name it as failing; it depends on ${reporter.join(', ')}`,
+    )
+  }
+  assert.ok(reporter.includes('ci-ok'), 'the aggregate result still decides green or red')
+})
+
+test('the runner bootstraps the label before it lists or creates', () => {
+  const runner = read('scripts/main-health.mjs')
+  const bootstrap = runner.indexOf('ensureTrackerLabel(')
+  const list = runner.indexOf("'issue', 'list'")
+  const create = runner.indexOf("'issue', 'create'")
+  assert.ok(bootstrap !== -1, 'the runner must ensure the tracker label exists')
+  assert.ok(list !== -1 && create !== -1)
+  assert.ok(bootstrap < list, 'the label must exist before the tracker lookup')
+  assert.ok(bootstrap < create, 'the label must exist before the create that names it')
 })

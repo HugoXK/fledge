@@ -28,8 +28,44 @@ export const RED_TITLE = 'ci: main is red'
 // push to the default branch.
 export const MAIN_EVENTS = ['push', 'schedule', 'workflow_dispatch']
 
+// The label is created by the reporter before its first use. `gh issue create
+// --label <unknown>` is rejected with a 422 before the issue exists, so without
+// this the first red `main` — the only case the feature exists for — would fail
+// at exactly the moment it matters.
+export const RED_LABEL_COLOR = 'b60205'
+export const RED_LABEL_DESCRIPTION = 'a red default branch'
+
 function text(value) {
   return String(value ?? '')
+}
+
+// `needs` holds every job the reporter depends on plus the aggregate. A job's
+// result is one of success, failure, cancelled or skipped: only the first two
+// are about the job, and `skipped` (a job that does not run for this event) must
+// never be reported as a failing job.
+export function failingJobsFrom(needs) {
+  const entries = needs !== null && typeof needs === 'object' && !Array.isArray(needs) ? Object.entries(needs) : []
+  return entries
+    .filter(([name, value]) => name !== 'ci-ok' && ['failure', 'cancelled'].includes(text(value?.result)))
+    .map(([name]) => name)
+}
+
+// Both halves of the label's life are here so the runner has no policy of its
+// own: list, create only when absent, and treat a create that lost a race as
+// presence. A create that genuinely fails is a named error rather than a bare
+// 422 from `gh`, because the red job's log is the only place an operator sees it.
+export async function ensureTrackerLabel({ label = RED_LABEL, listLabels, createLabel } = {}) {
+  const has = (names) => (Array.isArray(names) ? names.map(text) : []).includes(label)
+  if (has(await listLabels())) return { present: true, created: false }
+  try {
+    await createLabel(label)
+    return { present: true, created: true }
+  } catch (error) {
+    if (has(await listLabels().catch(() => []))) return { present: true, created: false }
+    throw new Error(
+      `main-health: the ${label} label does not exist and could not be created (${text(error?.message ?? error)}); the first red main cannot open its tracker without it`,
+    )
+  }
 }
 
 function shortSha(sha) {

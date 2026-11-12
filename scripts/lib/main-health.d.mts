@@ -3,7 +3,26 @@
 export declare const MAIN_REF: string
 export declare const RED_LABEL: string
 export declare const RED_TITLE: string
+export declare const RED_LABEL_COLOR: string
+export declare const RED_LABEL_DESCRIPTION: string
 export declare const MAIN_EVENTS: string[]
+
+export type JobResult = 'success' | 'failure' | 'cancelled' | 'skipped' | (string & {})
+
+export declare function failingJobsFrom(needs?: Record<string, { result?: JobResult } | undefined>): string[]
+
+export interface EnsureTrackerLabelInput {
+  label?: string
+  listLabels: () => Promise<string[]>
+  createLabel: (label: string) => Promise<void>
+}
+
+export interface EnsureTrackerLabelResult {
+  present: boolean
+  created: boolean
+}
+
+export declare function ensureTrackerLabel(input: EnsureTrackerLabelInput): Promise<EnsureTrackerLabelResult>
 
 export interface OpenTracker {
   number: number

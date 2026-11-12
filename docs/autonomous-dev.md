@@ -218,17 +218,22 @@ A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
 ### A red `main` reports itself
 
 `ci-ok` still only computes the commit's health; the job that says so out loud is
-`main-health` in `ci.yml`. It depends on `ci-ok`, runs only on
-`refs/heads/main` (a push, the nightly schedule or a manual run), and is the one
-job in the file that holds `issues: write`. It opens a single issue labelled
-`ci:main-red` naming the head sha, the failing jobs and the run, comments on that
-issue while the branch stays red, and closes it with the clearing sha once
-`ci-ok` is green. The tracker is found by the label, never by its title, and
-`concurrency: ci-main-red` with `cancel-in-progress: false` stops two pushes in
-one red state from opening two issues. The decision is
-`scripts/lib/main-health.mjs` (pure, fixture-tested); `scripts/main-health.mjs`
-only applies it. A pull request or merge-queue ref can never reach the write:
-the job's condition and the module both refuse anything but `refs/heads/main`.
+`main-health` in `ci.yml`. It runs only on `refs/heads/main` (a push, the nightly
+schedule or a manual run), is the one job in the file that holds `issues: write`,
+and depends on every job `ci-ok` gates on as well as on `ci-ok` itself, so the
+tracker can name the jobs that actually failed rather than only the aggregate. It
+opens a single issue labelled `ci:main-red` naming the head sha, the failing jobs
+and the run, comments on that issue while the branch stays red, and closes it with
+the clearing sha once `ci-ok` is green. Before the first use the reporter creates
+the `ci:main-red` label itself (`gh label create`; present is a no-op), because
+`gh issue create --label <unknown>` is rejected before the issue exists, and a
+label it cannot create is a named failure in the job log. The tracker is found by
+the label, never by its title, and `concurrency: ci-main-red` with
+`cancel-in-progress: false` stops two pushes in one red state from opening two
+issues. The decision is `scripts/lib/main-health.mjs` (pure, fixture-tested);
+`scripts/main-health.mjs` only applies it. A pull request or merge-queue ref can
+never reach the write: the job's condition and the module both refuse anything
+but `refs/heads/main`.
 
 ### Write sessions, one PR per branch, and verification servers
 

@@ -10,10 +10,37 @@
 // open a duplicate on the next red run.
 
 import { execFileSync } from 'node:child_process'
-import { decision, RED_LABEL } from './lib/main-health.mjs'
+import {
+  decision,
+  ensureTrackerLabel,
+  failingJobsFrom,
+  RED_LABEL,
+  RED_LABEL_COLOR,
+  RED_LABEL_DESCRIPTION,
+} from './lib/main-health.mjs'
 
 function gh(args) {
   return execFileSync('gh', args, { encoding: 'utf8' }).trim()
+}
+
+function ghJson(args) {
+  const raw = gh(args)
+  return raw === '' ? [] : JSON.parse(raw)
+}
+
+// The label has to exist before the first red run uses it: `gh issue create
+// --label <unknown>` is a 422, and the first red `main` is the one case this
+// feature exists for. Creating it is a no-op on every later run, and doing it
+// before the lookup also means the listing is never against an unknown label.
+async function ensureLabel() {
+  const outcome = await ensureTrackerLabel({
+    label: RED_LABEL,
+    listLabels: async () => ghJson(['label', 'list', '--json', 'name', '--limit', '100']).map((entry) => entry.name),
+    createLabel: async (name) => {
+      gh(['label', 'create', name, '--color', RED_LABEL_COLOR, '--description', RED_LABEL_DESCRIPTION])
+    },
+  })
+  if (outcome.created) console.log(`main-health: created the ${RED_LABEL} label`)
 }
 
 function readNeeds() {
@@ -54,13 +81,13 @@ function apply(result) {
   console.log('main-health: nothing to report')
 }
 
-function main() {
+async function main() {
   const repository = process.env.GITHUB_REPOSITORY ?? ''
   const needs = readNeeds()
   const aggregate = needs['ci-ok']
-  const failingJobs = Object.entries(needs)
-    .filter(([name, value]) => name !== 'ci-ok' && String(value?.result ?? '') !== 'success')
-    .map(([name]) => name)
+  const failingJobs = failingJobsFrom(needs)
+
+  await ensureLabel()
 
   const openTrackers = JSON.parse(
     gh(['issue', 'list', '--label', RED_LABEL, '--state', 'open', '--json', 'number,title,createdAt', '--limit', '100']),
@@ -80,4 +107,9 @@ function main() {
   apply(result)
 }
 
-main()
+main().catch((error) => {
+  // The failure has to be readable in the job log: `ensureTrackerLabel` names
+  // the label it could not create instead of leaving a bare 422 from `gh`.
+  console.error(String(error?.message ?? error))
+  process.exitCode = 1
+})
