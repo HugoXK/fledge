@@ -1076,6 +1076,27 @@ states whether the maintainer enabled auto-merge. A missing step is omitted rath
 Both endpoints require `Authorization: Bearer <callbackSecret>`. The secret is
 generated per job, stored as a hash, and never appears in the UI.
 
+## Owner search
+
+`/search` answers "where is my X" without a query that can leave the signed-in
+owner's rows. The route in `src/app.ts` parses `q` plus optional `kind` and `repo`
+filters, then calls one store method per section — `Store.searchOwned` in
+`src/db.ts` — for repositories, jobs, work items and audit rows, and
+`searchPage` in `src/views/pages.ts` renders them, 20 rows per section with the
+cap stated on the page.
+
+The scoping is the point of the read model, so it lives in the SQL and not in the
+view: every section's clause carries `user_id = ?`, and the `repo` filter is
+resolved against that owner's own repository ids, which means a repository id
+belonging to someone else is dropped rather than answered — the page cannot be
+used to probe another account's ids. `LIKE` patterns are built by `likePattern`,
+which escapes `%`, `_` and `\` and appends `ESCAPE '\'`, so a user's `%` matches
+a literal `%`. Row types are `Pick<>`s of the full row types, so no section can
+render a token, a key or an email column: those are not selected at all. Audit
+rows carry no repository, so the audit section is labelled as unscoped rather
+than filtered by `repo`. An empty `q` renders the empty state instead of a
+listing, and every row links to the page that already owns it.
+
 ## Data model
 
 | Table | Purpose |
