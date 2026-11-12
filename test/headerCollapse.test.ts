@@ -161,7 +161,11 @@ test('the 420px band takes chrome off the row, never a control, so 360 fits with
   const block = mediaBlock(css, '(max-width: 420px)')
   assert.match(block, /\.brand > span:not\(\.mark\)\s*\{[^}]*display:\s*none/, 'below 420 the wordmark must leave the row, not a control')
   assert.match(block, /\.top-inner\s*\{[^}]*gap:\s*8px/, 'the row gaps must tighten below 420 for the 360px case')
-  assert.match(block, /\.top-inner\s*\{[^}]*padding:\s*0 10px/, 'the row padding must tighten below 420 for the 360px case')
+  assert.match(
+    block,
+    /\.top-inner\s*\{[^}]*padding:\s*0 calc\(10px \+ env\(safe-area-inset-right\)\) 0 calc\(10px \+ env\(safe-area-inset-left\)\)/,
+    'the row padding must tighten to 10px below 420 for the 360px case, with the notch insets added on top (#451)',
+  )
   // Everything that stays keeps its 44px floor: the escape hatch here is the
   // wordmark, not a smaller tap target. The toggle's full rule lives in the
   // phone block; the base rule only hides it above 641.
