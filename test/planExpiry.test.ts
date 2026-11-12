@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import type { JobRow } from '../src/db.js'
+import { loadConfig } from '../src/config.js'
 import { Jobs } from '../src/jobs/service.js'
 import type { Runner } from '../src/jobs/runner.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS } from '../src/lib/workItems.js'
@@ -292,4 +293,24 @@ test('an expired plan whose work item already ended records the expiry and tells
   } finally {
     store.close()
   }
+})
+
+// #420: the two variables are one deadline pair, not two independent numbers.
+// A reminder at or after the deadline makes the window zero, so every unapproved
+// plan is "reminded" on the next tick with the deadline still days away. The pair
+// is refused when it is loaded, where the operator can read both names, rather
+// than clamped into a quieter version of the same mistake.
+test('a reminder at or after the plan deadline is refused when the config loads', () => {
+  assert.throws(
+    () => loadConfig({ env: 'test', plan: { expiryDays: 3, reminderDays: 5 } }),
+    /PLAN_REMINDER_DAYS \(5\) must be smaller than PLAN_EXPIRY_DAYS \(3\)/,
+    'a reminder after the deadline is an operator error with both names in it',
+  )
+  assert.throws(
+    () => loadConfig({ env: 'test', plan: { expiryDays: 3, reminderDays: 3 } }),
+    /PLAN_REMINDER_DAYS/,
+    'a reminder exactly at the deadline collapses the window too, so equality is refused',
+  )
+  assert.doesNotThrow(() => loadConfig({ env: 'test', plan: { expiryDays: 7, reminderDays: 2 } }), 'the documented default pair still loads')
+  assert.doesNotThrow(() => loadConfig({ env: 'test', plan: { expiryDays: 7, reminderDays: 0 } }), 'no reminder at all stays a valid choice')
 })
