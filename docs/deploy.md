@@ -45,6 +45,7 @@ Key settings:
 | `DATA_DIR` / `DB_PATH` | Defaults `./data`, `./data/fledge.db` |
 | `ALLOW_PRIVATE_MODEL_URLS` | Keep `false` for untrusted users |
 | `METRICS_TOKEN` | Required in production: `/metrics`, and the `commit`/`builtAt` fields of `/healthz`, answer only `Authorization: Bearer <token>` |
+| `PLAN_EXPIRY_DAYS` / `PLAN_REMINDER_DAYS` | How long an unapproved plan may wait before the work item closes with `closed_reason = plan_expired` (default 7), and how many days before that deadline the single reminder is sent (default 2) |
 | `NOTIFY_WEBHOOK_URL` / `NOTIFY_WEBHOOK_SECRET` | Optional outbound notifications (Slack-compatible `text`); the secret is sent as a bearer token. When set, the URL must be an absolute `https:` URL |
 
 Production startup fails closed if the session/encryption keys, OAuth app,
@@ -246,11 +247,14 @@ stay in step.
 The status line each README carries is checked against `package.json`:
 `test/readmeStatus.test.ts` runs in `npm run check`, so `ci-ok` is red on a
 release pull request that bumps the version without updating both status lines,
-and the failure names the file and the line to edit. The two READMEs sit outside
-the mechanical release set on purpose — a person writes the status line, the
-routine does not — so the mechanical release pull request needs that one human
-edit before it can merge, and adding the READMEs to the mechanical set instead is
-the separate release-policy decision, not part of this check.
+and the failure names the file and the line to edit. The two READMEs are part of
+the mechanical release set, so the release routine writes those two lines itself
+(`#348`, which supersedes the T1 boundary `#263` drew): only the version token and
+the date move, the version is read back from the `package.json` the routine just
+wrote, and any other hunk in either README keeps its review like any other file.
+Before that, every release pull request was red by construction — `#347` was the
+one that showed it. The reasoning is recorded in
+[decisions/0011-mechanical-readme-status.md](decisions/0011-mechanical-readme-status.md).
 
 The nightly workflow pushes `release/v<next>` and then opens exactly one release
 pull request for it, because a pull request opened with `GITHUB_TOKEN` starts no
@@ -284,8 +288,9 @@ GITHUB_TOKEN=… node scripts/release-open.mjs --artifact release-plan.json --ve
 The tool re-runs `scripts/version.mjs check` and `scripts/changelog.mjs check`
 against the branch's contents fetched through the API (never the branch's own
 copies of those scripts), refuses when `main` moved since the plan or the diff
-leaves `CHANGELOG.md`, `changelog.d/`, `docker-compose.yml`, `package-lock.json`
-and `package.json`, reuses an open pull request at the same commit instead of
+leaves `CHANGELOG.md`, `README.md`, `README.zh.md`, `changelog.d/`,
+`docker-compose.yml`, `package-lock.json` and `package.json`, reuses an open pull
+request at the same commit instead of
 opening a second one, and prints the JSON it acted on. It writes that one pull
 request and nothing else, and it carries no tag endpoint: the tag stays in the
 workflow. A `POST /pulls` whose readback does not show

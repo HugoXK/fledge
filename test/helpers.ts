@@ -30,6 +30,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
       transport: 'console',
       from: 'no-reply@example.com',
       adminEmail: 'admin@example.com',
+      jobEmailCooldownMinutes: 60,
       smtp: { host: '', port: 465, secure: true, user: '', pass: '' },
     },
     github: {
@@ -60,6 +61,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     shutdown: { ...base.shutdown, ...overrides.shutdown },
     autoMerge: { ...base.autoMerge, ...overrides.autoMerge },
     ops: { ...base.ops, ...overrides.ops },
+    plan: { ...base.plan, ...overrides.plan },
     backup: { ...base.backup, ...overrides.backup },
   }
 }

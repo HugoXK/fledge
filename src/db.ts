@@ -40,6 +40,8 @@ export interface UserRow {
   quota_used_usd: number
   email_job_updates: number
   email_daily_digest: number
+  /** #353: also mail a success the schedule produced. Off by default. */
+  email_job_success: number
   notify_email: string | null
   github_token_enc: string | null
   github_token_scopes: string | null
@@ -89,6 +91,8 @@ export interface RepoRow {
   consecutive_failures: number
   monthly_budget_cny: number
   job_budget_cny: number
+  /** #357: `alert` (default), `pause` or `cancel` when a job crosses its budget. */
+  job_budget_action: string
   protection_state: string | null
   protection_checked_at: string | null
   auto_iterate: number
@@ -229,8 +233,10 @@ export interface JobRow {
   path_guard_json: string | null
   verification_json: string | null
   continuity_json: string | null
+  model_json: string | null
   output_kind: string | null
   continuity_used: number
+  owner_started: number
   retry_attempt: number
   retry_of: string | null
   lease_owner: string | null
@@ -252,6 +258,9 @@ export interface WorkItemRow {
   issue_url: string | null
   pr_url: string | null
   state: string
+  // Why a terminal `closed` item was closed (#359). NULL for every older row and
+  // for a close done by hand; `plan_expired` is the only value today.
+  closed_reason: string | null
   priority: number
   assignee_user_id: string | null
   job_id: string | null
@@ -418,6 +427,7 @@ CREATE TABLE IF NOT EXISTS users (
   quota_used_usd REAL NOT NULL DEFAULT 0,
   email_job_updates INTEGER NOT NULL DEFAULT 1,
   email_daily_digest INTEGER NOT NULL DEFAULT 1,
+  email_job_success INTEGER NOT NULL DEFAULT 0,
   notify_email TEXT,
   github_token_enc TEXT,
   github_token_scopes TEXT,
@@ -496,6 +506,7 @@ CREATE TABLE IF NOT EXISTS repos (
   consecutive_failures INTEGER NOT NULL DEFAULT 0,
   monthly_budget_cny REAL NOT NULL DEFAULT 0,
   job_budget_cny REAL NOT NULL DEFAULT 0,
+  job_budget_action TEXT NOT NULL DEFAULT 'alert',
   protection_state TEXT,
   protection_checked_at TEXT,
   auto_iterate INTEGER NOT NULL DEFAULT 0,
@@ -586,8 +597,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   path_guard_json TEXT,
   verification_json TEXT,
   continuity_json TEXT,
+  model_json TEXT,
   output_kind TEXT,
   continuity_used INTEGER NOT NULL DEFAULT 0,
+  owner_started INTEGER NOT NULL DEFAULT 0,
   retry_attempt INTEGER NOT NULL DEFAULT 0,
   retry_of TEXT,
   lease_owner TEXT,
@@ -679,6 +692,7 @@ CREATE TABLE IF NOT EXISTS work_items (
   issue_url TEXT,
   pr_url TEXT,
   state TEXT NOT NULL DEFAULT 'proposed',
+  closed_reason TEXT,
   priority INTEGER NOT NULL DEFAULT 0,
   assignee_user_id TEXT,
   job_id TEXT,
@@ -1004,6 +1018,7 @@ export class Store {
       ['quota_unlimited', 'INTEGER NOT NULL DEFAULT 0'],
       ['email_job_updates', 'INTEGER NOT NULL DEFAULT 1'],
       ['email_daily_digest', 'INTEGER NOT NULL DEFAULT 1'],
+      ['email_job_success', 'INTEGER NOT NULL DEFAULT 0'],
       ['notify_email', 'TEXT'],
       ['allow_private_models', 'INTEGER NOT NULL DEFAULT 0'],
       ['github_token_scopes', 'TEXT'],
@@ -1032,6 +1047,7 @@ export class Store {
       ['consecutive_failures', 'INTEGER NOT NULL DEFAULT 0'],
       ['monthly_budget_cny', 'REAL NOT NULL DEFAULT 0'],
       ['job_budget_cny', 'REAL NOT NULL DEFAULT 0'],
+      ['job_budget_action', "TEXT NOT NULL DEFAULT 'alert'"],
       ['protection_state', 'TEXT'],
       ['protection_checked_at', 'TEXT'],
       ['upstream_owner', "TEXT NOT NULL DEFAULT ''"],
@@ -1085,6 +1101,8 @@ export class Store {
     if (!jobColumns.has('continuity_json')) this.run('ALTER TABLE jobs ADD COLUMN continuity_json TEXT')
     if (!jobColumns.has('output_kind')) this.run('ALTER TABLE jobs ADD COLUMN output_kind TEXT')
     if (!jobColumns.has('continuity_used')) this.run('ALTER TABLE jobs ADD COLUMN continuity_used INTEGER NOT NULL DEFAULT 0')
+    if (!jobColumns.has('owner_started')) this.run('ALTER TABLE jobs ADD COLUMN owner_started INTEGER NOT NULL DEFAULT 0')
+    if (!jobColumns.has('model_json')) this.run('ALTER TABLE jobs ADD COLUMN model_json TEXT')
     if (!jobColumns.has('retry_attempt')) this.run('ALTER TABLE jobs ADD COLUMN retry_attempt INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('retry_of')) this.run('ALTER TABLE jobs ADD COLUMN retry_of TEXT')
     if (!jobColumns.has('last_callback_at')) this.run('ALTER TABLE jobs ADD COLUMN last_callback_at TEXT')
@@ -1094,6 +1112,11 @@ export class Store {
     if (!jobColumns.has('callback_secret_enc')) this.run('ALTER TABLE jobs ADD COLUMN callback_secret_enc TEXT')
     if (!jobColumns.has('platform_token_enc')) this.run('ALTER TABLE jobs ADD COLUMN platform_token_enc TEXT')
     if (!jobColumns.has('error_code')) this.run('ALTER TABLE jobs ADD COLUMN error_code TEXT')
+    // #359: additive on purpose; every existing row backfills as NULL, which is
+    // exactly "no recorded reason", so no close that happened earlier is read as
+    // a plan expiry.
+    const workItemColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(work_items)').map((row) => row.name))
+    if (!workItemColumns.has('closed_reason')) this.run('ALTER TABLE work_items ADD COLUMN closed_reason TEXT')
     const notificationColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(notifications)').map((row) => row.name))
     if (!notificationColumns.has('code')) this.run('ALTER TABLE notifications ADD COLUMN code TEXT')
     const tokenColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(api_tokens)').map((row) => row.name))
@@ -1342,6 +1365,10 @@ export class Store {
 
   setEmailDailyDigest(id: string, enabled: boolean): void {
     this.run('UPDATE users SET email_daily_digest = ? WHERE id = ?', enabled ? 1 : 0, id)
+  }
+
+  setEmailJobSuccess(id: string, enabled: boolean): void {
+    this.run('UPDATE users SET email_job_success = ? WHERE id = ?', enabled ? 1 : 0, id)
   }
 
   setNotifyEmail(id: string, email: string | null): void {
@@ -1994,6 +2021,7 @@ export class Store {
     stageMode?: string
     monthlyBudgetCny?: number
     jobBudgetCny?: number
+    jobBudgetAction?: string
     protectionState?: string | null
     protectionCheckedAt?: string | null
     upstreamOwner?: string
@@ -2016,9 +2044,9 @@ export class Store {
     this.run(
       `INSERT INTO repos (id, user_id, owner, name, default_branch, token_enc, installation_id, goal, enabled, auto_iterate, interval_minutes, created_at,
          upstream_owner, upstream_name, fork_owner, fork_name, upstream_default_branch, fork_default_branch, target_branch, job_mode,
-         repo_role, auto_merge, role_checked_at, plan_required, allow_paths, deny_paths, merge_method, require_protection, stage_mode, monthly_budget_cny, job_budget_cny, protection_state, protection_checked_at,
+         repo_role, auto_merge, role_checked_at, plan_required, allow_paths, deny_paths, merge_method, require_protection, stage_mode, monthly_budget_cny, job_budget_cny, job_budget_action, protection_state, protection_checked_at,
          is_fork, fork_created, permission, can_review, can_create_issue, reviewer_enabled, review_interval_minutes, upstream_html_url, fork_html_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.userId,
       input.owner,
@@ -2049,6 +2077,7 @@ export class Store {
       input.stageMode ?? 'off',
       input.monthlyBudgetCny ?? 0,
       input.jobBudgetCny ?? 0,
+      input.jobBudgetAction === 'pause' || input.jobBudgetAction === 'cancel' ? input.jobBudgetAction : 'alert',
       input.protectionState ?? null,
       input.protectionCheckedAt ?? null,
       input.isFork === true ? 1 : 0,
@@ -2091,7 +2120,7 @@ export class Store {
     return this.get<RepoRow>('SELECT * FROM repos WHERE user_id = ? AND lower(owner) = lower(?) AND lower(name) = lower(?)', userId, owner, name)
   }
 
-  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'plan_required' | 'allow_paths' | 'deny_paths' | 'merge_method' | 'require_protection' | 'stage_mode' | 'models_dirty' | 'credential_state' | 'consecutive_failures' | 'monthly_budget_cny' | 'job_budget_cny' | 'protection_state' | 'protection_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
+  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'plan_required' | 'allow_paths' | 'deny_paths' | 'merge_method' | 'require_protection' | 'stage_mode' | 'models_dirty' | 'credential_state' | 'consecutive_failures' | 'monthly_budget_cny' | 'job_budget_cny' | 'job_budget_action' | 'protection_state' | 'protection_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -2163,10 +2192,10 @@ export class Store {
     this.run('DELETE FROM repo_instances WHERE repo_id = ?', repoId)
   }
 
-  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; createdAt?: string }): JobRow {
+  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string }): JobRow {
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, base_branch, work_item_id, priority, base_sha, retry_attempt, retry_of, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, base_branch, work_item_id, priority, base_sha, retry_attempt, retry_of, owner_started, created_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -2181,6 +2210,7 @@ export class Store {
       input.baseSha ?? null,
       input.retryAttempt ?? 0,
       input.retryOf ?? null,
+      input.ownerStarted === true ? 1 : 0,
       input.createdAt ?? nowIso(),
     )
     return this.getJob(input.id)!
@@ -2289,13 +2319,13 @@ export class Store {
     return this.get<JobRow>(`SELECT * FROM jobs AS j WHERE j.user_id = ? AND j.pr_url = ? AND j.kind = 'iterate' ORDER BY ${newestJobOrder('j')} LIMIT 1`, userId, prUrl)
   }
 
-  createWorkItem(input: { id: string; repoId: string; userId: string; title: string; detail?: string; issueUrl?: string | null; prUrl?: string | null; state?: string; priority?: number; assigneeUserId?: string | null; jobId?: string | null; prState?: string | null; mergedAt?: string | null; mergeCommit?: string | null }): WorkItemRow {
+  createWorkItem(input: { id: string; repoId: string; userId: string; title: string; detail?: string; issueUrl?: string | null; prUrl?: string | null; state?: string; closedReason?: string | null; priority?: number; assigneeUserId?: string | null; jobId?: string | null; prState?: string | null; mergedAt?: string | null; mergeCommit?: string | null }): WorkItemRow {
     const at = nowIso()
     this.run(
-      `INSERT INTO work_items (id, repo_id, user_id, title, detail, issue_url, pr_url, state, priority, assignee_user_id, job_id, pr_state, merged_at, merge_commit, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO work_items (id, repo_id, user_id, title, detail, issue_url, pr_url, state, closed_reason, priority, assignee_user_id, job_id, pr_state, merged_at, merge_commit, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id, input.repoId, input.userId, input.title, input.detail ?? '', input.issueUrl ?? null, input.prUrl ?? null,
-      input.state ?? 'proposed', input.priority ?? 0, input.assigneeUserId ?? null, input.jobId ?? null,
+      input.state ?? 'proposed', input.closedReason ?? null, input.priority ?? 0, input.assigneeUserId ?? null, input.jobId ?? null,
       input.prState ?? null, input.mergedAt ?? null, input.mergeCommit ?? null, at, at,
     )
     return this.getWorkItem(input.id)!
@@ -2321,7 +2351,29 @@ export class Store {
     return this.all<WorkItemRow>("SELECT * FROM work_items WHERE repo_id = ? AND state NOT IN ('merged', 'closed') ORDER BY priority DESC, updated_at DESC", repoId)
   }
 
-  updateWorkItem(id: string, patch: Partial<Pick<WorkItemRow, 'title' | 'detail' | 'issue_url' | 'pr_url' | 'state' | 'priority' | 'assignee_user_id' | 'job_id' | 'pr_state' | 'merged_at' | 'merge_commit'>>): void {
+  // #359: every plan job that has waited for a decision since `finishedBeforeIso`,
+  // oldest first. Approval and rejection are both decisions, so neither row is
+  // returned: only a plan nobody answered can expire.
+  unapprovedPlanJobs(finishedBeforeIso: string): JobRow[] {
+    return this.all<JobRow>(
+      "SELECT * FROM jobs WHERE kind = 'plan' AND status = 'succeeded' AND plan_approved_at IS NULL AND plan_rejected_at IS NULL AND finished_at IS NOT NULL AND finished_at <= ? ORDER BY finished_at ASC, rowid ASC",
+      finishedBeforeIso,
+    )
+  }
+
+  // #359: `finishedAfterIso` is the deadline cutoff, not a formatting choice.
+  // Completion never clears `plan_approved_at`, so without it an expired plan
+  // stays the oldest unapproved row forever and the page keeps naming a plan
+  // whose deadline has already passed - even after a new plan exists.
+  pendingPlanJob(repoId: string, finishedAfterIso: string): JobRow | undefined {
+    return this.get<JobRow>(
+      "SELECT * FROM jobs WHERE repo_id = ? AND kind = 'plan' AND status = 'succeeded' AND plan_approved_at IS NULL AND plan_rejected_at IS NULL AND finished_at IS NOT NULL AND finished_at > ? ORDER BY finished_at ASC, rowid ASC LIMIT 1",
+      repoId,
+      finishedAfterIso,
+    )
+  }
+
+  updateWorkItem(id: string, patch: Partial<Pick<WorkItemRow, 'title' | 'detail' | 'issue_url' | 'pr_url' | 'state' | 'closed_reason' | 'priority' | 'assignee_user_id' | 'job_id' | 'pr_state' | 'merged_at' | 'merge_commit'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     entries.push(['updated_at', nowIso()])
@@ -2431,7 +2483,7 @@ export class Store {
   }
 
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'output_kind' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'model_json' | 'output_kind' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -2694,6 +2746,10 @@ export class Store {
   usageSince(userId: string, sinceIso: string): number {
     const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ? AND at >= ?', userId, sinceIso)
     return Number(row?.total ?? 0)
+  }
+
+  usageCountForJob(jobId: string): number {
+    return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM quota_ledger WHERE job_id = ?', jobId)?.n ?? 0)
   }
 
   usageForJob(jobId: string): number {

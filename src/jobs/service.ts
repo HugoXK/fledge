@@ -12,7 +12,9 @@ import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
 import { classifyFailure, providerRefusalCode, type FailureCode } from '../lib/failure.js'
+import { parseModelRun } from '../lib/modelRun.js'
 import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
+import { jobEmailDecision } from '../lib/emailPolicy.js'
 import { duplicateOutcome, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
@@ -298,6 +300,10 @@ export class Jobs {
     const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
     const resumePr = kind === 'iterate' && job.pr_url !== null
     const result = await this.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, {
+      // #353: both callers are a person — the console's retry button and an
+      // issue-thread `/fledge retry` — so the run is theirs. The trigger alone
+      // cannot say that: `followup` is also what `tick()` enqueues.
+      ownerStarted: true,
       ...(resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {}),
       ...(options.workItemId === undefined ? {} : { workItemId: options.workItemId }),
     })
@@ -549,7 +555,18 @@ export class Jobs {
     void sendNotificationWebhook(this.config, 'repo.credential_invalid', { text: `${repo.owner}/${repo.name}: GitHub token is invalid`, repoId: repo.id, error: message.slice(0, 300) })
   }
 
-  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string } = {}): Promise<EnqueueResult> {
+  /**
+   * #353: who started this run, recorded on the row so the mail policy reads a
+   * fact instead of guessing from the trigger. Every `manual` enqueue is a
+   * console route, so it is a person by construction; a `followup` is only a
+   * person's when the caller says so (the retry/resume button), because
+   * `tick()` reaches the same trigger through `decideNextJob()`.
+   */
+  private ownerStartedFor(trigger: string, options: { ownerStarted?: boolean }): boolean {
+    return options.ownerStarted ?? trigger === 'manual'
+  }
+
+  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean } = {}): Promise<EnqueueResult> {
     // #283: the platform stop outranks every other refusal. It is checked before
     // the per-repository and per-role gates so the answer says the platform is
     // stopped, not that this one repository is disabled, and it is checked in the
@@ -625,7 +642,7 @@ export class Jobs {
     const platformFunded = user.own_llm_base_url === null || user.own_llm_base_url === '' || user.own_llm_key_enc === null
 
     if (platformFunded && quotaView(user, this.config).exhausted) {
-      const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind })
+      const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind, ownerStarted: this.ownerStartedFor(trigger, options) })
       this.store.updateJob(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。', error_code: 'QUOTA_EXHAUSTED', finished_at: nowIso() })
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'quota_exhausted' })
       else if (kind === 'iterate') this.store.updateRepo(repo.id, { last_status: 'quota_exhausted', last_run_at: nowIso() })
@@ -693,7 +710,7 @@ export class Jobs {
     const priority = options.priority ?? (trigger === 'followup' ? 20 : trigger === 'manual' ? 10 : 0)
     let job: JobRow
     try {
-      job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null })
+      job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null, ownerStarted: this.ownerStartedFor(trigger, options) })
     } catch (error) {
       // SQLite reports the column of a partial unique index, not its name, so
       // this index surfaces as "UNIQUE constraint failed: jobs.repo_id". Only
@@ -913,7 +930,9 @@ export class Jobs {
     if (result.status === 'succeeded' && prUrl !== null) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
     if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? job.error ?? '未知原因'}`, this.store.getJob(jobId)?.error_code ?? null)
     if (result.status === 'succeeded' || result.status === 'failed') {
-      void this.sendJobEmail(job, result)
+      // #353: a success has no retry behind it, so its mail is decided here; a
+      // failure waits for the retry decision below.
+      if (result.status === 'succeeded') void this.sendJobEmail(job, result)
       void sendNotificationWebhook(this.config, `job.${result.status}`, {
         text: `${job.kind} job ${job.id} ${result.status}`,
         jobId: job.id,
@@ -942,7 +961,11 @@ export class Jobs {
     if (result.status === 'failed') {
       this.store.incrementRepoFailures(job.repo_id)
       this.checkRepeatedFailures(job)
-      this.scheduleRetry(this.store.getJob(jobId) ?? job)
+      // #353: the retry decision is part of the mail decision. A transient
+      // failure that queued a retry is not the last word, so it sends nothing
+      // and the retry's own result is the one that speaks.
+      const retryScheduled = this.scheduleRetry(this.store.getJob(jobId) ?? job)
+      void this.sendJobEmail(job, result, { retryPending: retryScheduled })
     }
     if (result.status === 'succeeded') {
       void this.afterSucceeded(job, prUrl ?? undefined, issueUrl ?? undefined, attribution).catch((error) => log.warn('post-job side effects failed', { trace: jobId, error: String(error) }))
@@ -953,8 +976,8 @@ export class Jobs {
     return true
   }
 
-  private scheduleRetry(job: JobRow): void {
-    if (job.kind !== 'iterate' && job.kind !== 'verify' && job.kind !== 'review') return
+  private scheduleRetry(job: JobRow): boolean {
+    if (job.kind !== 'iterate' && job.kind !== 'verify' && job.kind !== 'review') return false
     // A review that already recorded a score posted its verdict, so a blind retry
     // could post a second COMMENT set. `summary` is not that signal: every running
     // heartbeat writes it as the progress line (the bridge posts one after each
@@ -962,17 +985,17 @@ export class Jobs {
     // policy exists for. The residual case — comments posted but the terminal
     // callback lost — leaves no stored marker; it stays manual and is stated in
     // docs/architecture.md.
-    if (job.kind === 'review' && job.review_score !== null) return
+    if (job.kind === 'review' && job.review_score !== null) return false
     // #260: a provider refusal is not a transient stall. Retrying it burns the
     // slot against the same exhausted budget, which is what the owner observed.
-    if (providerRefusalCode(job.error) !== null || (job.error_code ?? '').startsWith('PROVIDER_')) return
+    if (providerRefusalCode(job.error) !== null || (job.error_code ?? '').startsWith('PROVIDER_')) return false
     const repo = this.store.getRepo(job.repo_id)
-    if (repo === undefined || repo.enabled !== 1) return
+    if (repo === undefined || repo.enabled !== 1) return false
     const failure = classifyFailure({ status: 'failed', error: job.error, kind: job.kind })
     const decision = job.kind === 'review' ? reviewRetryDecision(failure?.kind, job.retry_attempt) : retryDecision(failure?.kind, job.retry_attempt)
-    if (!decision.retry) return
+    if (!decision.retry) return false
     const key = `retry_pending:${job.id}`
-    if (this.store.getSetting(key) !== undefined) return
+    if (this.store.getSetting(key) !== undefined) return false
     const dueAt = new Date(Date.now() + decision.delayMs).toISOString()
     this.store.setSetting(key, JSON.stringify({
       dueAt,
@@ -989,6 +1012,7 @@ export class Jobs {
     this.store.audit(job.user_id, 'job.retry_scheduled', `${job.id}: ${decision.reason}, due ${dueAt}`)
     this.store.recordJobEvent({ jobId: job.id, repoId: job.repo_id, userId: job.user_id, kind: 'job.retry_scheduled', step: job.kind, meta: `${decision.reason}; due ${dueAt}` })
     this.store.notify(job.user_id, 'job', `任务 ${job.id} 属于临时失败，将在约 ${Math.round(decision.delayMs / 60_000)} 分钟后自动重试。`)
+    return true
   }
 
   private async releaseDueRetries(): Promise<void> {
@@ -1022,6 +1046,11 @@ export class Jobs {
         priority: input.priority,
         retryAttempt: input.attempt,
         retryOf: original.id,
+        // #353: the retry is released as a scheduled run, so it has to carry
+        // the original row's mark. Without it a person's run that failed
+        // transiently mails nothing: the failure waits for the retry, and the
+        // retry's success would take the scheduled side.
+        ownerStarted: original.owner_started === 1,
       })
       if (result.ok) {
         this.store.deleteSetting(row.key)
@@ -1471,6 +1500,59 @@ export class Jobs {
     }
   }
 
+
+  // #359: a plan nobody approves must not hold the repository forever. The pass
+  // is deliberately narrow: it reuses the terminal `closed` state and records the
+  // reason on the work item, so WORK_ITEM_STATES and WORK_ITEM_TRANSITIONS stay
+  // untouched and `closed -> triaged` remains the reopening path. One reminder
+  // before the deadline, one expiry after it, each guarded by a settings key so a
+  // second tick is a no-op.
+  async expirePlans(): Promise<number> {
+    const nowMs = Date.now()
+    const expiryMs = this.config.plan.expiryDays * 86_400_000
+    const reminderMs = Math.max(0, expiryMs - this.config.plan.reminderDays * 86_400_000)
+    // Read once, from the earlier of the two thresholds: the pass then decides
+    // per row whether it is a reminder or an expiry.
+    const rows = this.store.unapprovedPlanJobs(new Date(nowMs - Math.min(expiryMs, reminderMs)).toISOString())
+    let expired = 0
+    for (const job of rows) {
+      const finished = job.finished_at === null ? Number.NaN : Date.parse(job.finished_at)
+      if (!Number.isFinite(finished)) continue
+      const age = nowMs - finished
+      if (age < reminderMs) continue
+      const repo = this.store.getRepo(job.repo_id)
+      const label = repo === undefined ? job.repo_id : `${repo.owner}/${repo.name}`
+      const deadline = new Date(finished + expiryMs).toISOString().slice(0, 10)
+      if (age < expiryMs) {
+        const key = `plan_reminded:${job.id}`.slice(0, 300)
+        if (this.store.getSetting(key) !== undefined) continue
+        this.store.setSetting(key, nowIso())
+        this.notifyPlan(job, `计划 ${job.id}（${label}）将在 ${deadline} 过期：请批准、拒绝或重新创建计划。`, 'plan.reminder')
+        continue
+      }
+      const key = `plan_expired:${job.id}`.slice(0, 300)
+      if (this.store.getSetting(key) !== undefined) continue
+      this.store.setSetting(key, nowIso())
+      const item = job.work_item_id === null ? undefined : this.store.getWorkItem(job.work_item_id)
+      // `merged` and `closed` are terminal: an item that already ended is not
+      // reopened by an expiry, it is only recorded.
+      if (item !== undefined && item.state !== 'merged' && item.state !== 'closed') {
+        this.store.updateWorkItem(item.id, { state: 'closed', closed_reason: 'plan_expired' })
+      }
+      this.store.audit(job.user_id, 'job.plan_expired', `${job.id}: ${label} unapproved for ${this.config.plan.expiryDays} days${item === undefined ? '' : ` item=${item.id}`}`)
+      this.notifyPlan(job, `计划 ${job.id}（${label}）在 ${deadline} 前未获批准，已过期关闭；重新创建计划可以继续。`, 'plan.expired')
+      expired += 1
+    }
+    return expired
+  }
+
+  // One reminder and one expiry each write exactly one notification and one
+  // webhook call; the settings keys above are what make the pass idempotent.
+  private notifyPlan(job: JobRow, message: string, code: string): void {
+    this.store.notify(job.user_id, 'job', message, code)
+    void sendNotificationWebhook(this.config, code, { text: message, repoId: job.repo_id, jobId: job.id })
+  }
+
   private async releaseAllPendingFollowups(): Promise<void> {
     const repoIds = new Set<string>()
     for (const row of this.store.listSettings('pending_followup:')) {
@@ -1600,7 +1682,37 @@ export class Jobs {
     }
   }
 
-  private async sendJobEmail(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; prUrl?: string | null; issueUrl?: string | null; reviewScore?: number; summary?: string; error?: string }): Promise<void> {
+  // #357: the per-job budget used to be an after-the-spend alert. With `pause`
+  // or `cancel` it stops the job here, at the checkpoint that first sees a
+  // recorded cost, and the terminal callback that follows cannot revive it
+  // because a paused or cancelled job answers terminal reports with a 409.
+  private async enforceJobBudget(job: JobRow, repo: RepoRow | undefined): Promise<void> {
+    if (repo === undefined || repo.job_budget_cny <= 0) return
+    const action = repo.job_budget_action
+    if (action !== 'pause' && action !== 'cancel') return
+    // No ledger row is an unknown cost, not a zero one: a provider error
+    // deducts nothing, and reading that as "fits the budget" would be a lie.
+    if (this.store.usageCountForJob(job.id) === 0) {
+      const key = `job_budget_unknown:${job.id}`
+      if (this.store.getSetting(key) === undefined) {
+        this.store.setSetting(key, nowIso())
+        this.store.audit(job.user_id, 'job.budget_unknown', `${job.id}: no recorded cost at this checkpoint`)
+        this.store.recordJobEvent({ jobId: job.id, repoId: job.repo_id, userId: job.user_id, kind: 'job.budget_unknown', step: job.kind, meta: 'no cost row yet' })
+      }
+      return
+    }
+    const costCny = this.store.usageForJob(job.id) * this.config.quota.usdCny
+    if (!(costCny > repo.job_budget_cny)) return
+    const cancel = action === 'cancel'
+    const code = cancel ? 'JOB_BUDGET_CANCELLED' : 'JOB_BUDGET_PAUSED'
+    const reason = `${code}: 单任务成本 ${costCny.toFixed(2)} 元已超过预算 ${repo.job_budget_cny.toFixed(2)} 元。${cancel ? '提高单任务预算后重新开始任务。' : '提高单任务预算后从断点恢复，或重新开始任务。'}`
+    this.store.audit(job.user_id, cancel ? 'job.budget_cancelled' : 'job.budget_paused', `${job.id}: ${costCny.toFixed(4)} > ${repo.job_budget_cny}`)
+    this.store.notify(job.user_id, 'quota', `任务 ${job.id} 因单任务预算${cancel ? '取消' : '暂停'}：已用 ${costCny.toFixed(2)} 元，预算 ${repo.job_budget_cny.toFixed(2)} 元。提高预算或重新开始任务。`, code)
+    if (cancel) await this.cancelJob(job.id, reason)
+    else await this.pauseJob(job.id, reason)
+  }
+
+  private async sendJobEmail(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; prUrl?: string | null; issueUrl?: string | null; reviewScore?: number; summary?: string; error?: string }, options: { retryPending?: boolean } = {}): Promise<void> {
     if (result.status === 'quota_exhausted') return
     const user = this.store.userById(job.user_id)
     if (user === undefined || user.email_job_updates !== 1) return
@@ -1608,6 +1720,25 @@ export class Jobs {
     if (email === '') return
     const repo = this.store.getRepo(job.repo_id)
     if (repo === undefined) return
+    // #353: the per-job mail used to be unconditional, which is what flooded the
+    // inbox. The rule lives in `lib/emailPolicy.ts`; the store owns the window.
+    const windowKey = `job_email_last_failure:${repo.id}`.slice(0, 300)
+    const storedWindow = this.store.getSetting(windowKey)
+    const storedAt = storedWindow === undefined ? Number.NaN : Date.parse(storedWindow)
+    const decision = jobEmailDecision({
+      status: result.status,
+      trigger: job.trigger,
+      ownerStarted: job.owner_started === 1,
+      retryPending: options.retryPending === true,
+      successEmailEnabled: user.email_job_success === 1,
+      lastFailureMailAtMs: Number.isFinite(storedAt) ? storedAt : null,
+      nowMs: Date.now(),
+      cooldownMinutes: this.config.mail.jobEmailCooldownMinutes,
+    })
+    // A success closes the window even when it sends nothing: the repository is
+    // healthy again, so the next failure is news rather than the same incident.
+    if (decision.clearWindow && storedWindow !== undefined) this.store.deleteSetting(windowKey)
+    if (!decision.send) return
     const context = {
       repo: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`,
       jobId: job.id,
@@ -1620,8 +1751,10 @@ export class Jobs {
       reviewScore: result.reviewScore ?? job.review_score,
     }
     try {
-      const template = result.status === 'succeeded' ? jobSucceededEmail(user, context) : jobFailedEmail(user, context)
+      const template = decision.template === 'success' ? jobSucceededEmail(user, context) : jobFailedEmail(user, context)
       await this.mailer.send({ to: email, ...template })
+      // Only a failure opens the window; the success path already cleared it.
+      if (decision.template === 'failure') this.store.setSetting(windowKey, nowIso())
     } catch (error) {
       log.warn('job email failed', { trace: job.id, error: String(error) })
     }
@@ -1869,6 +2002,13 @@ export class Jobs {
     const teamLabel = team ?? `${owner}/${name}`
     const journey = attributionSentence(attribution)
     const autoMergeEnabled = repo.repo_role === 'maintainer' && repo.auto_merge === 1 && job.kind === 'iterate'
+    // #358: a fallback means the repository's primary did not answer, so the pull
+    // request names the model that produced the work instead of implying the
+    // configured default did.
+    const modelRun = parseModelRun(job.model_json)
+    const modelLine = modelRun === null || modelRun.model === null
+      ? []
+      : [`- Model: ${modelRun.model.label}${modelRun.attempts.length === 0 ? '' : ` (tried ${modelRun.attempts.map((entry) => `${entry.label} ${entry.status}`).join(', ')})`}`]
     const body = [
       '<details>',
       `<summary>Fledge automation · ${teamLabel} · job <code>${job.id}</code> (${job.trigger}, ${job.kind})</summary>`,
@@ -1878,6 +2018,7 @@ export class Jobs {
       autoMergeEnabled ? 'The maintainer enabled auto-merge for this repository; Fledge may merge only after checks pass and no changes are requested.' : 'Fledge does not merge by default; a human must review and merge.',
       '',
       `- Issue: ${result.issueUrl ?? 'none'}`,
+      ...modelLine,
       `- Fledge job: ${this.config.baseUrl}/repos/${job.repo_id}/jobs/${job.id}`,
       '</details>',
     ]
@@ -1983,6 +2124,9 @@ export class Jobs {
         step: job.kind,
         ...(summary === undefined ? {} : { meta: summary }),
       })
+      // #357: a checkpoint is the earliest place a recorded cost exists without
+      // a second model call, so it is where a pause/cancel budget acts.
+      await this.enforceJobBudget(job, repoRow)
       return { ok: true }
     }
     const revoke = (): void => {
@@ -2424,6 +2568,7 @@ export class Jobs {
       await this.completeStoppedDrain(stopped).catch((error) => log.warn('platform drain pass failed', { error: String(error) }))
       return
     }
+    await this.expirePlans().catch((error) => log.warn('plan expiry pass failed', { error: String(error) }))
     await this.releaseAllPendingFollowups().catch((error) => log.warn('pending follow-up recovery failed', { error: String(error) }))
     await this.releaseDueRetries().catch((error) => log.warn('due retry release failed', { error: String(error) }))
     await this.reconcileAutoMerge().catch((error) => log.warn('auto-merge reconcile failed', { error: String(error) }))

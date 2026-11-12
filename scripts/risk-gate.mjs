@@ -48,7 +48,7 @@ const base = arg('--base', process.env.RISK_BASE ?? 'origin/main')
 const head = arg('--head', 'HEAD')
 const json = process.argv.includes('--json')
 // The mechanical daily minor release is keyed on its branch and title, which only
-// the caller knows. Defaults describe "not a release PR", so a five-file diff
+// the caller knows. Defaults describe "not a release PR", so a release-shaped diff
 // without the key stays T3.
 const branch = arg('--branch', '')
 const title = arg('--title', '')

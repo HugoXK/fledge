@@ -1072,6 +1072,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         return []
       })
     }
+    const planDeadlineCutoff = new Date(Date.now() - config.plan.expiryDays * 86_400_000).toISOString()
+    const pendingPlan = store.pendingPlanJob(repo.id, planDeadlineCutoff)
     return reply.type('text/html').send(
       repoPage({
         config,
@@ -1082,6 +1084,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
         prJobs: store.listPrJobsForRepo(repo.id, 10),
         workItems: store.listWorkItems(repo.id),
+        // #359: the page names the deadline and the way out, so an ignored plan
+        // is a visible decision with a date rather than a silent wait.
+        ...(pendingPlan === undefined || pendingPlan.finished_at === null ? {} : {
+          pendingPlan: {
+            jobId: pendingPlan.id,
+            deadline: new Date(Date.parse(pendingPlan.finished_at) + config.plan.expiryDays * 86_400_000).toISOString().slice(0, 10),
+          },
+        }),
         ...(workState !== undefined && isWorkItemState(workState) ? { workState } : {}),
         models: store.listUserProviderModels(repo.user_id),
         repoModelIds: repoModels.map((model) => model.id),
@@ -1572,6 +1582,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id || job.kind !== 'plan' || job.status !== 'succeeded') throw httpError(404, '计划任务不存在或尚未完成。', 'PLAN_NOT_READY')
     if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以批准计划。')}`)
+    // #359: the deadline belongs to the plan, not to the work item's state. An
+    // item that was reopened and is now `triaged` (or one that reached `merged`
+    // without ever being approved) must not make a dead plan approvable again, so
+    // the refusal reads the plan's own age and a new plan is the only way back.
+    const planDeadline = job.finished_at === null ? Number.NaN : Date.parse(job.finished_at) + config.plan.expiryDays * 86_400_000
+    if (!Number.isFinite(planDeadline) || planDeadline <= Date.now()) {
+      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('计划已过期关闭，不能再批准；重新创建工作项即可生成新计划。')}`)
+    }
     const body = form(request)
     const allow = (body.allowPaths ?? repo.allow_paths).trim().slice(0, 2000)
     const deny = (body.denyPaths ?? repo.deny_paths).trim().slice(0, 2000)
@@ -1639,7 +1657,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (MAINTAINER_ONLY_STATES.has(state) && repo.repo_role !== 'maintainer') {
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('只有 maintainer 可以执行这个操作。')}#work`)
     }
-    const patch: { state: string; assignee_user_id?: string; pr_state?: string; merged_at?: string; merge_commit?: string | null } = { state }
+    // #359: `closed_reason` describes one close, not the item's past. Leaving
+    // `closed` clears it, or the table keeps printing "Closed - plan expired"
+    // for an item that was reopened and closed by hand later.
+    const patch: { state: string; closed_reason: string | null; assignee_user_id?: string; pr_state?: string; merged_at?: string; merge_commit?: string | null } = { state, closed_reason: state === 'closed' ? item.closed_reason : null }
     if (state === 'assigned' || state === 'in_progress') patch.assignee_user_id = viewer.user.id
     if (state === 'merged') {
       patch.pr_state = 'merged'
@@ -1954,6 +1975,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       stage_mode: parseStageMode(body.stageMode) ?? 'off',
       monthly_budget_cny: Math.max(0, Math.min(10000, Number(body.monthlyBudget) || 0)),
       job_budget_cny: Math.max(0, Math.min(10000, Number(body.jobBudget) || 0)),
+      job_budget_action: body.jobBudgetAction === 'pause' || body.jobBudgetAction === 'cancel' ? body.jobBudgetAction : 'alert',
       auto_iterate: body.auto === '1' ? 1 : 0,
       enabled: body.enabled === '1' ? 1 : 0,
       interval_minutes: interval,
@@ -1983,7 +2005,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         log.warn('team playbook not updated after goal change', { repo: repo.id, error: String(error) })
       })
     }
-    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} role=${repoRole}${roleChanged ? ' role=changed' : ''} autoMerge=${canMaintain && body.autoMerge === '1' ? 'on' : 'off'} planRequired=${body.planRequired === '1' ? 'on' : 'off'} merge=${body.mergeMethod ?? 'squash'} protection=${body.requireProtection === '1' ? 'required' : 'optional'} stage=${parseStageMode(body.stageMode) ?? 'off'} reviewer=${canMaintain && repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
+    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} role=${repoRole}${roleChanged ? ' role=changed' : ''} autoMerge=${canMaintain && body.autoMerge === '1' ? 'on' : 'off'} planRequired=${body.planRequired === '1' ? 'on' : 'off'} merge=${body.mergeMethod ?? 'squash'} protection=${body.requireProtection === '1' ? 'required' : 'optional'} budget=${body.jobBudgetAction === 'pause' || body.jobBudgetAction === 'cancel' ? body.jobBudgetAction : 'alert'} stage=${parseStageMode(body.stageMode) ?? 'off'} reviewer=${canMaintain && repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(goalChanged ? '设置已保存；团队规则已按新目标更新。' : '设置已保存。')}#repo-settings`)
   })
 
@@ -2201,12 +2223,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     const jobUpdates = body.jobUpdates === '1'
     const dailyDigest = body.dailyDigest === '1'
+    const jobSuccess = body.jobSuccess === '1'
     if (clear) store.setNotifyEmail(viewer.user.id, null)
     else if (rawEmail !== '') store.setNotifyEmail(viewer.user.id, rawEmail)
     store.setEmailJobUpdates(viewer.user.id, jobUpdates)
     store.setEmailDailyDigest(viewer.user.id, dailyDigest)
+    store.setEmailJobSuccess(viewer.user.id, jobSuccess)
     const saved = store.userById(viewer.user.id)
-    store.audit(viewer.user.id, 'settings.email', `email=${saved?.notify_email === null || saved?.notify_email === undefined ? 'github' : 'custom'} jobs=${jobUpdates ? 'on' : 'off'} digest=${dailyDigest ? 'on' : 'off'}`)
+    store.audit(viewer.user.id, 'settings.email', `email=${saved?.notify_email === null || saved?.notify_email === undefined ? 'github' : 'custom'} jobs=${jobUpdates ? 'on' : 'off'} digest=${dailyDigest ? 'on' : 'off'} success=${jobSuccess ? 'on' : 'off'}`)
     if (body.action === 'test') {
       const updated = saved
       const to = updated === undefined ? '' : notifyEmail(updated)

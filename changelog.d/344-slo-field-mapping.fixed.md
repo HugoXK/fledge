@@ -1,0 +1,1 @@
+The SLO report now pins each of its six metrics to its own PromQL expression, so a queue wait can no longer print under job duration: the expressions and the fields they fill come from one list, and the suite fails if a value lands under the wrong label. A report that cannot read Prometheus still exits non-zero with the named error, now exercised by the tests instead of by hand.

@@ -68,14 +68,34 @@ settings:
 - **Monthly repository budget (CNY)** — a rolling 30-day cap on the repository's
   attributed platform spend. A new job is refused with
   `REPO_BUDGET_EXHAUSTED` when the cap is reached.
-- **Per-job budget (CNY)** — an alerting threshold, not a hard stop. When a
-  finished job's attributed cost exceeds it, Fledge writes a
-  `job.budget_exceeded` audit entry and an in-app quota notification.
+- **Per-job budget (CNY)** — how far a single job may spend. `job_budget_action`
+  decides what happens when the job crosses it:
+
+  - `alert` (the default) — the old behaviour. When a **finished** job's
+    attributed cost exceeds the cap, Fledge writes a `job.budget_exceeded` audit
+    entry and an in-app quota notification, after the spend.
+  - `pause` — the job is paused at its **next checkpoint**, which is the
+    earliest point where the spend is already in the ledger and no second model
+    call is needed to learn it. The job records `JOB_BUDGET_PAUSED` with the
+    observed cost, the owner gets a notification, and the job page names the
+    action and the next step (raise the budget, then resume from the checkpoint
+    or start a new job).
+  - `cancel` — the same check, but the job ends `cancelled` with
+    `JOB_BUDGET_CANCELLED`, the job token is revoked and only a new job continues
+    the work.
+
+  A terminal callback that arrives after a `pause` or `cancel` is refused, so a
+  late result cannot revive a job the budget stopped. The threshold is never
+  compared against an unknown cost: a job with no `quota_ledger` row yet (a
+  provider error deducts nothing, so there may be none) is left running and the
+  checkpoint writes one `job.budget_unknown` audit entry instead of treating the
+  unknown as zero.
 
 Cost is attributed through `quota_ledger.repo_id`; rows written before that
 column existed fall back to the job's `repo_id` when they can be joined. Both
 caps default to `0` (disabled) and are recorded in the repository audit entry
-when changed.
+when changed; `job_budget_action` defaults to `alert`, so no existing repository
+changes behaviour until its maintainer picks a stop.
 
 ## Model providers and repository selection
 
@@ -133,3 +153,34 @@ It is enough to demonstrate real iteration on a small repository (roughly
 hundreds of thousands of flash-model tokens at the reference price) and small
 enough that an operator can gift it without a billing system. The number is a
 configuration value, not a business rule.
+
+## Model fallback
+
+A repository selects an ordered set of models (`repo_model_selection`). The
+`is_default` row is the primary; the remaining rows keep the order they are
+listed in, which is the order the selection query returns (provider first, then
+model). There is no separate order column, so the console's picker and the
+gateway read the same order.
+
+When a chat call to the primary is refused **transiently** — `429` rate limit,
+`408`, a `5xx`, an unreachable provider, or a `404` that says the model was
+retired — the gateway retries the same request on the next model in that order
+and answers with the first success. The job finishes once, on one model, and its
+row records which model replied plus the models it fell through (`jobs.model_json`).
+The record is per **chat call**, not per job: every call a job makes rewrites it,
+so a fallback that happened in an earlier call is not retained once a later call
+answers on the primary. The job page and the pull-request automation comment name
+the model of that last call.
+
+It never falls back on:
+
+| Refusal | Why not |
+|---|---|
+| `401` / `403` | The credential is the repository's, not the model's: another model behind the same key is no more likely to be accepted |
+| `402` | Payment or plan; changing model does not fix it |
+| `429` carrying `insufficient_quota` / billing / budget | An exhausted provider quota is not a rate limit; retrying it on another model spends the same account again |
+| A policy or content refusal | That is a decision about the request, not the model's health |
+
+One charge per answered call: a refused attempt returns no usage, so only the
+model that answered is billed, and the attempt list on the job shows the refused
+models without a cost.

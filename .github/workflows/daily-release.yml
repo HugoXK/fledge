@@ -282,7 +282,7 @@ jobs:
           git config user.name 'HugoXK'
           git config user.email 'ke.xu@zju.edu.cn'
           git checkout -b "$BRANCH"
-          git add CHANGELOG.md changelog.d package.json package-lock.json docker-compose.yml
+          git add CHANGELOG.md README.md README.zh.md changelog.d package.json package-lock.json docker-compose.yml
           git commit -m "release: v${VERSION}"
           # Idempotent: an unchanged branch is left alone and the night succeeds,
           # a branch with other content is a conflict and the night fails. It is
@@ -403,7 +403,7 @@ jobs:
             "- latest \`ci-ok\` on \`main\`: **${CI_OK}** (rule 4)" \
             "- release pull request: **${OPEN_STATE}** — ${OPEN_DETAIL}" \
             "" \
-            "The branch is the mechanical set — \`CHANGELOG.md\`, \`changelog.d/\`, \`package.json\`, \`package-lock.json\`, \`docker-compose.yml\` — nothing else. The pull request is opened by the team token above and is never merged here; the tag follows the merge on \`main\`, through the Git data API." \
+            "The branch carries only the mechanical release set, defined in one place: \`scripts/lib/mechanical-release.mjs\`. The pull request is opened by the team token above and is never merged here; the tag follows the merge on \`main\`, through the Git data API." \
             "" \
             "Compare: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${LAST_TAG:-HEAD}...${BRANCH}")"
           gh issue comment 80 --body "$BODY"

@@ -96,6 +96,51 @@ test('unlimited quota is shown instead of a finite balance', () => {
   }
 })
 
+test('the settings page offers the per-job success switch and states the coalescing policy', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'mail-success-switch', status: 'approved' })
+    const { cookie, csrf } = sessionFor(built, user)
+    const page = await built.app.inject({ method: 'GET', url: '/settings', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /name="jobSuccess"/, 'the switch is on the page')
+    assert.match(page.body, /计划任务成功时也单独发邮件/, 'the Chinese label is on the page')
+    assert.match(page.body, /失败按仓库合并/, 'the coalescing policy is stated in Chinese')
+    assert.doesNotMatch(page.body, /name="jobSuccess" value="1" checked/, 'the switch starts off for an existing user')
+    assert.equal(store.userById(user.id)?.email_job_success, 0)
+
+    // The UI bar requires both languages: the same page in English must carry
+    // the same switch and the same policy sentence, not a fallback.
+    const english = await built.app.inject({ method: 'GET', url: '/settings', headers: { cookie, 'accept-language': 'en' } })
+    assert.equal(english.statusCode, 200)
+    assert.match(english.body, /name="jobSuccess"/)
+    assert.match(english.body, /also email me when a scheduled job succeeds/i)
+    assert.match(english.body, /summarized in the daily summary/i)
+
+    const saved = await built.app.inject({
+      method: 'POST',
+      url: '/settings/notifications',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, jobUpdates: '1', dailyDigest: '1', jobSuccess: '1', action: 'save' }),
+    })
+    assert.equal(saved.statusCode, 302)
+    assert.equal(store.userById(user.id)?.email_job_success, 1)
+
+    const off = await built.app.inject({
+      method: 'POST',
+      url: '/settings/notifications',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, jobUpdates: '1', dailyDigest: '1', action: 'save' }),
+    })
+    assert.equal(off.statusCode, 302)
+    assert.equal(store.userById(user.id)?.email_job_success, 0, 'saving without the box turns it back off')
+  } finally {
+    await built.close()
+  }
+})
+
 test('email notification settings can be viewed and changed', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
@@ -262,6 +307,7 @@ test('job detail shows evidence and can retry a failed job', async () => {
     assert.match(jobs[0]!.goal, /Resume from checkpoint:/)
     assert.match(jobs[0]!.goal, /done A; next B/)
     assert.equal(jobs[0]!.trigger, 'followup')
+    assert.equal(jobs[0]!.owner_started, 1, 'the retry button is a person pressing it, so the row records that')
     assert.equal(jobs[0]!.branch, 'fledge/fix')
     assert.equal(jobs[0]!.pr_url, 'https://github.com/o/r/pull/7')
     assert.equal(jobs[0]!.base_branch, 'main')
@@ -1594,5 +1640,69 @@ test('every redirect banner value has an English form', () => {
     if (!file.endsWith('.ts') || file === 'app.ts') continue
     const text = readFileSync(new URL(file, directory), 'utf8')
     assert.doesNotMatch(text, /\?(?:error|notice)=/, `${file} builds a redirect banner outside src/app.ts`)
+  }
+})
+
+test('the repository settings can turn the per-job budget into a stop, in both languages', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'budget-settings', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_budget_settings', userId: user.id, owner: 'o', name: 'bs', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const { cookie, csrf } = sessionFor(built, user)
+
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /name="jobBudgetAction"/, 'the action is a form field')
+    assert.match(page.body, /只提醒（默认）/, 'alert is described as the default')
+    assert.match(page.body, /取消任务/, 'the Chinese action names are on the page')
+
+    const english = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie, 'accept-language': 'en' } })
+    assert.match(english.body, /Alert only \(default\)/)
+    assert.match(english.body, /Cancel the job/)
+
+    const save = (action: string): Promise<{ statusCode: number }> => built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/settings`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, goal: '', enabled: '1', interval: '1440', reviewInterval: '1440', jobBudget: '1.00', jobBudgetAction: action }),
+    })
+
+    assert.equal((await save('cancel')).statusCode, 302)
+    assert.equal(store.getRepo(repo.id)?.job_budget_action, 'cancel')
+    assert.equal(store.getRepo(repo.id)?.job_budget_cny, 1)
+
+    // Anything that is not one of the three known actions falls back to alert:
+    // a typo must never silently stop a job.
+    assert.equal((await save('explode')).statusCode, 302)
+    assert.equal(store.getRepo(repo.id)?.job_budget_action, 'alert')
+  } finally {
+    await built.close()
+  }
+})
+
+test('a job stopped by its budget names the action and the next step, in both languages', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'budget-page', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_budget_page', userId: user.id, owner: 'o', name: 'bp', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_budget_page', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob('job_budget_page', { status: 'paused', error: 'JOB_BUDGET_PAUSED: 单任务成本 0.72 元已超过预算 0.10 元。提高单任务预算后从断点恢复，或重新开始任务。', finished_at: null })
+    const { cookie } = sessionFor(built, user)
+
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/job_budget_page`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /已达单任务预算/)
+    assert.match(page.body, /提高单任务预算/, 'the page names the next step')
+    assert.match(page.body, /0\.72/, 'and the observed cost')
+
+    const english = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/job_budget_page`, headers: { cookie, 'accept-language': 'en' } })
+    assert.match(english.body, /Per-job budget reached/)
+    assert.match(english.body, /Raise the per-job budget/)
+  } finally {
+    await built.close()
   }
 })

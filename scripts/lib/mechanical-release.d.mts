@@ -2,6 +2,9 @@
 
 export declare const MECHANICAL_PATHS: string[]
 
+export declare const STATUS_MARKERS: Record<string, string>
+export declare const STATUS_FILES: string[]
+
 export interface ReleaseIdentity {
   version: string
 }
@@ -25,4 +28,6 @@ export interface DiffShapeResult {
 export declare function releaseIdentity(input?: { branch?: string; title?: string }): ReleaseIdentity | null
 export declare function isMechanicalPath(path: string): boolean
 export declare function mechanicalRelease(input?: { branch?: string; title?: string; files?: string[] }): MechanicalReleaseResult
+export declare function statusLineSkeleton(line: string): string | null
+export declare function rewriteStatusLine(text: string, marker: string, version: string, date: string): string | null
 export declare function mechanicalDiffShape(files: ChangedFile[], version: string): DiffShapeResult

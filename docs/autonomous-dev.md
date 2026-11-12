@@ -443,11 +443,17 @@ while the merge gate kept refusing.
   (`MAX_REPAIR_ATTEMPT`), so a run that a person already re-ran by hand is still
   reachable — the state a PASS usually arrives into. The cap is the loop bound:
   each re-run raises the attempt, so one failed run is re-run automatically twice
-  at most (1 → 2, then 2 → 3), and a run already above the cap has its red reported
-  as blocked on a new commit instead of being re-run again. Posting the same PASS
-  twice is therefore not a no-op — the second trigger re-runs the attempt-2 run —
-  while posting the same rejection twice writes nothing, because the red it painted
-  is already standing.
+  at most (1 → 2, then 2 → 3). Posting the same PASS twice is therefore not a
+  no-op — the second trigger re-runs the attempt-2 run — while posting the same
+  rejection twice writes nothing, because the red it painted is already standing;
+- above the cap the count cannot decide, so the blocking red check's own
+  `completed_at` does (#341). A red at or before the newest verdict was already
+  there when the PASS arrived and is repainted once (`STATE=repainted run=<id>
+  attempt=<n>`); a red after it is a genuine failure after the verdict and is
+  reported as blocked on a new commit; an attempt still `queued` or `in_progress`
+  is `STATE=wait` with no ids, because the API refuses a re-run of a live run. The
+  comparison uses the check's timestamp, never the run's `updated_at`, which moves
+  when any sibling job finishes. Without a verdict timestamp the plan fails closed.
 
 The comment path is the job `review-gate-comment`, never `review-gate`: its checks
 land on the default branch, and a skipped job would still publish a check run
@@ -456,9 +462,10 @@ association test only for `issue_comment`, so a stranger cannot start the
 `actions: write` job and the other three events never evaluate the association.
 A PASS that arrives after a rejection at the same SHA keeps the
 check red until the repair step re-runs the failed run at that SHA; that now
-happens without a hand step. A run already above the attempt cap (attempt 3, after
-two automatic re-runs) still needs a new commit to move the tip, and the step says
-so by name instead of exiting quietly.
+happens without a hand step. A run above the attempt cap (attempt 3, after
+two automatic re-runs) is repainted once when the red it owns predates the newest
+verdict, and otherwise needs a new commit to move the tip; the step says which by
+name instead of exiting quietly.
 
 `main` is protected by required `ci-ok`, `review-gate` and `pr-lint` plus
 conversation resolution; admins are enforced. This repository has no merge
@@ -472,7 +479,7 @@ admin merge.
 node scripts/changelog.mjs check
 node scripts/changelog.mjs preview
 node scripts/changelog.mjs release 0.1.1 --date 2026-10-31
-git add CHANGELOG.md changelog.d package.json package-lock.json
+git add CHANGELOG.md README.md README.zh.md changelog.d package.json package-lock.json
 git commit -m "release: v0.1.1"
 git tag v0.1.1
 ```
@@ -496,9 +503,13 @@ The release workflow runs `npm run check`, builds the image, publishes it to
 GHCR and creates the GitHub release from the changelog. The tag must point at a
 commit whose `CHANGELOG.md` has the matching section.
 
-The release PR touches only `CHANGELOG.md`, `changelog.d/`, `package.json`,
-`package-lock.json` and `docker-compose.yml`; anything else is a normal PR and
-needs a review. No release with no fragments.
+The release PR touches only `CHANGELOG.md`, `README.md`, `README.zh.md`,
+`changelog.d/`, `package.json`, `package-lock.json` and `docker-compose.yml`;
+anything else is a normal PR and needs a review. The two READMEs are on that list
+because the routine writes their status line (`#348`) — one line each, version and
+date, read back from the `package.json` it just wrote, and nothing else in either
+file: a README hunk that is not the status line is outside the surface. No release
+with no fragments.
 
 ### The daily drive
 
@@ -520,7 +531,7 @@ the state, asks the planner and the pure `decideDrive()` in
 | a `release/v<next>` branch has no pull request in any state and no tag | `STATE=orphan-branch` in the summary, naming the branch and its sha, and the run is red: this is a slot wedged by an earlier run, and only the owner deletes or adopts that branch |
 | a release PR is already open | no push; the drive decision goes to the artifact and the summary, and whoever calls `#187` owns the PR |
 | the rule is not met | write the counts and the reason to the job summary and exit 0 |
-| the trigger refuses: tag newer than the `14:30Z` boundary, release branch present, or a release pull request open | no push; the summary names the blocker and the run is green |
+| the trigger refuses: tag newer than the `14:30Z` boundary, a release branch present, or a release pull request open | no push; the summary names the blocker. Exit 0 only when the Decide step above already cleared the branch: a `release/v<next>` branch with no pull request and no tag is the orphan row, red and named, and no run repairs it |
 | a push before today's boundary with the previous boundary unreleased | plan; the summary says `catch-up` |
 | a dry run | the same summary and artifact, and no push and no comment |
 
@@ -575,19 +586,20 @@ present only as the two API calls.
 The mechanical class is keyed on identity, never on the file set alone:
 `scripts/lib/mechanical-release.mjs` requires the head branch `release/v<next>`,
 the title `release: v<next>` for the same `<next>`, and every changed path inside
-the five allowed paths. `pr-lint` uses it to skip the size rule (a release PR is
+the seven allowed paths. `pr-lint` uses it to skip the size rule (a release PR is
 ~33 files) and the `docs/deploy.md` obligation; `risk-gate` reports
 `risk-tier: T0; basis: mechanical release v<next>` when `ci.yml` passes
-`--branch` and `--title`. The same five-file diff without that key stays T3, which
-is what keeps the `package.json` review gate in place.
+`--branch` and `--title`. The same seven-file diff without that key stays T3,
+which is what keeps the `package.json` review gate in place.
 
 A branch name and a title are written by whoever opens the PR, so the identity is
 not enough on its own: `review-gate` asks `mechanicalDiffShape()` as well, and the
 exemption holds only when the diff is what the release routine writes — the
-version fields in `package.json` and `package-lock.json` and the image tag in
-`docker-compose.yml`, with any content allowed in `CHANGELOG.md` and
-`changelog.d/`. A dependency line, an environment change or a file the API
-returned without a patch keeps the PR at T3, where it needs a PASS like any other.
+version fields in `package.json` and `package-lock.json`, the image tag in
+`docker-compose.yml`, and in each README exactly one status line replaced with the
+same line at the identity's version and the release date, with any content allowed
+in `CHANGELOG.md` and `changelog.d/`. A dependency line, an environment change or a file the API returned
+without a patch keeps the PR at T3, where it needs a PASS like any other.
 Otherwise a release-named branch could carry a dependency change into `main` on a
 green `ci-ok` alone.
 

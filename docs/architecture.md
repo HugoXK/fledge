@@ -96,8 +96,10 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   platform only writes in Chinese is named by its failure class on a page in the
   other language, and the raw sentence stays on the job page.
 - **Shell** (`src/views/layout.ts`, `public/app.css`): the main nav marks the
-  current section with `aria-current="page"`, derived from the route and
-  overridable with `active`. The sticky header owns `--header-h` (re-declared
+  current page with `aria-current="page"` on the one link whose own target is the
+  route, derived from the route and overridable with `active`; a nested route
+  inside a section keeps the highlight and announces the generic
+  `aria-current="true"`, never `page`. The sticky header owns `--header-h` (re-declared
   per breakpoint); `[id] { scroll-margin-top }` and the workspace frame's height
   both follow it, so an anchor is never hidden under the header when it wraps
   and the frame's bottom lands at the viewport bottom. The shell's controls keep
@@ -248,7 +250,12 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   priority, and an `agent-ready` label moves a proposed item to triaged. A
   repository can require a plan before code; a maintainer approves or
   rejects it with allowed/forbidden path constraints, and execution is blocked
-  until approval. Iterate jobs preflight the target branch, record the base SHA
+  until approval. An answerless plan does not wait forever: one reminder is sent
+  `PLAN_REMINDER_DAYS` before the deadline, and at `PLAN_EXPIRY_DAYS` (default 7)
+  the tick closes the work item into the existing `closed` state with
+  `closed_reason = 'plan_expired'` and an audit row. No state or transition was
+  added for this: expiry reuses `closed`, the reason column carries the meaning,
+  and `closed -> triaged` is the reopening path. Iterate jobs preflight the target branch, record the base SHA
   and warn when the fork is behind. An open work item changes what the next
   scheduled run continues; it never blocks a due repository (#219). Work-item
   states do not gate the scheduler; see "Scheduled work, continuity and work
@@ -280,6 +287,13 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   link.
 - Streaming is passed through; `stream_options.include_usage` is added so the
   final usage chunk can be metered.
+- A repository that selected several models falls back on a transient refusal:
+  the `is_default` model first, then the rest in the selection query's order
+  (`ORDER BY mp.created_at ASC, pm.created_at ASC`, `src/db.ts`), the same order
+  the per-instance picker walks; there is no order column. The job row records
+  the model that answered and the attempts of the **last chat call** —
+  `recordModel` rewrites `jobs.model_json` on every call — so an earlier
+  fallback is not retained across calls.
 
 The operator chooses the upstream through `PLATFORM_LLM_BASE_URL`; keep the
 real endpoint and key out of git and out of public documentation.
@@ -603,7 +617,7 @@ Shutdown stops the scheduler, waits up to `SHUTDOWN_GRACE_SECONDS` for active
 jobs, closes HTTP, flushes traces and closes SQLite. Startup removes orphan
 retry/follow-up settings, orphan job events and instances.
 
-Open operational alerts are delivered to the repository owner in-app and via the optional notification webhook on the scheduler tick, with `OPS_ALERT_COOLDOWN_MINUTES` deduplication. GitHub calls go through a per-token budget (`GITHUB_REQUESTS_PER_MINUTE`) and
+A per-job budget is enforced according to `repos.job_budget_action` (`alert`, `pause` or `cancel`); `docs/quota.md` describes the checkpoint where a stop is applied and why an unknown cost is never compared. Open operational alerts are delivered to the repository owner in-app and via the optional notification webhook on the scheduler tick, with `OPS_ALERT_COOLDOWN_MINUTES` deduplication. GitHub calls go through a per-token budget (`GITHUB_REQUESTS_PER_MINUTE`) and
 honor `Retry-After` / `X-RateLimit-Reset` before retrying. GitHub webhooks are
 claimed by `X-GitHub-Delivery` in `webhook_deliveries`; a duplicate is a no-op
 and a failed delivery can be retried. Opening checks or approving a review
@@ -739,6 +753,19 @@ association, dedupes by comment id, creates or reuses the work item, and replies
 on the issue with the work-item/job/PR state. `/fledge approve` is maintainer-only
 and approves the latest completed plan.
 
+Four verbs act on the job the work item already has: `/fledge retry`,
+`/fledge pause`, `/fledge resume` and `/fledge cancel`. Retry goes through the
+same `Jobs.retryJob` mapping the console's retry button uses, so the two surfaces
+cannot drift, and a retried job that already carries a pull request continues it
+as a `followup` on the same branch instead of opening a second one. Pause and
+cancel call the existing stop paths, and the reply distinguishes a hard stop from
+a request the instance may not honour; resume creates the resumed job from the
+paused one. A verb with no work item, no job, or a job in a status it does not
+apply to is refused in the thread and creates nothing, so a command can never
+manufacture work. Each action reuses the existing audit strings (`job.retried`,
+`job.paused`, `job.resumed`, `job.cancelled`) and their timeline kinds rather
+than adding a second naming scheme.
+
 The inbox is also available as `GET /api/inbox/events`, a per-user SSE stream.
 The server reuses the cached inbox snapshot, sends the server-rendered inbox HTML
 when the question signature changes, and the browser replaces the section and
@@ -757,7 +784,13 @@ an enabled reviewer and no other job is active. A successful review
 moves the linked work item to `approved` (score >= 80 and no follow-ups) or
 `changes_requested`; follow-ups are queued on the same branch. Plan approval
 moves the work item to `assigned`, and the execute action enqueues the
-implementation with the work item attached. The repository work-item table shows
+implementation with the work item attached. While a plan waits, the repository
+page names its deadline and the three ways out (approve, reject, or create a new
+plan); once it has expired it cannot be approved again, whatever the work item's
+state: the refusal reads the plan's own deadline, so reopening the item (or an
+item that reached `merged` without an approval) never revives it and a new plan
+is the only way back. The banner only ever names a plan whose deadline is still
+ahead, so a past date is never printed in future tense. The repository work-item table shows
 the stage (Scope / Implement / Review / Merge) alongside the state.
 
 ### Repository lifecycle
@@ -865,9 +898,31 @@ Fledge sends mail from the configured `MAIL_FROM` (production:
 `flybot@hugoxk.online` sender; the two projects do not share a mailbox.
 
 Each user can set `notify_email` (blank falls back to the GitHub email),
-`email_job_updates` and `email_daily_digest`. Job mail covers success/failure
-and a new team question; question mails are deduped by
-`sessionId + questionId` in `settings`. A server-side digest pass runs after
+`email_job_updates`, `email_daily_digest` and `email_job_success`. Job mail
+covers failure and a new team question; question mails are deduped by
+`sessionId + questionId` in `settings`.
+
+Which finished job earns its own mail is decided by `src/lib/emailPolicy.ts` and
+nothing else, because "one mail per run" is what flooded an owner's inbox:
+
+- A **scheduled success** is carried by the daily digest. `email_job_success`
+  (off by default, so an existing user sees no change) asks for a per-job
+  success mail as well.
+- A **failure that queued a transient retry** sends nothing. The retry's own
+  result is the one that speaks, so one incident produces one mail instead of
+  one per attempt.
+- **Failures for one repository coalesce** inside `JOB_EMAIL_COOLDOWN_MINUTES`
+  (default 60, `0` disables coalescing) through
+  `job_email_last_failure:<repoId>` in `settings`. Any success clears that key,
+  even when it sends no mail, so the next failure is news again.
+- A **run a person started** always mails its result. That is `jobs.owner_started`,
+  recorded when the run is enqueued: every `manual` console route marks it, and
+  so does the retry/resume button, which enqueues a `followup`. The trigger alone
+  cannot say it — `tick()` reaches the same `followup` trigger through
+  `decideNextJob()` for any due repository with an open work item, and that run
+  belongs to the digest.
+
+A server-side digest pass runs after
 `DIGEST_HOUR` in `DIGEST_TIMEZONE`, builds a 24-hour summary per approved user
 (jobs, PRs, spend, next scheduled runs, open questions) and sends it once per
 day (`digest_sent:<userId>:<date>`). Templates include the repo, job id,

@@ -38,6 +38,8 @@ export interface Config {
     transport: MailTransport
     from: string
     adminEmail: string
+    /** #353: how long one repository's failure mail stays coalesced, in minutes. */
+    jobEmailCooldownMinutes: number
     smtp: {
       host: string
       port: number
@@ -89,6 +91,12 @@ export interface Config {
   }
   ops: {
     alertCooldownMinutes: number
+  }
+  plan: {
+    /** Days a plan may wait for a maintainer before it expires into `closed`. */
+    expiryDays: number
+    /** Days before the deadline when the single reminder is sent. */
+    reminderDays: number
   }
   digest: {
     hour: number
@@ -241,6 +249,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       transport: (text('MAIL_TRANSPORT', 'console') as MailTransport) || 'console',
       from: text('MAIL_FROM', 'no-reply@example.com'),
       adminEmail: text('ADMIN_EMAIL', 'admin@example.com'),
+      // #353: the window that keeps a failing repository from mailing once per run.
+      jobEmailCooldownMinutes: Math.max(0, number('JOB_EMAIL_COOLDOWN_MINUTES', 60)),
       smtp: {
         host: text('SMTP_HOST', 'smtp.yeah.net'),
         port: number('SMTP_PORT', 465),
@@ -286,6 +296,10 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     ops: {
       alertCooldownMinutes: Math.max(0, number('OPS_ALERT_COOLDOWN_MINUTES', 360)),
+    },
+    plan: {
+      expiryDays: Math.max(1, number('PLAN_EXPIRY_DAYS', 7)),
+      reminderDays: Math.max(0, number('PLAN_REMINDER_DAYS', 2)),
     },
     digest: {
       hour: Math.min(23, Math.max(0, number('DIGEST_HOUR', 9))),
