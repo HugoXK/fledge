@@ -232,6 +232,30 @@ test('a SARIF whose runs is missing or not a list names that shape', (t) => {
   assert.match(notList.stderr, /has no analysis run \(runs: missing or not a list\)/)
 })
 
+// #297: the three shapes that are not a SARIF document at all. A top-level
+// array, a string and a number are not plain objects either, yet each already
+// fails closed with the missing-or-not-a-list form rather than a crash, so the
+// null guard must not reach them or re-word a working refusal.
+test('a SARIF whose document is not an object keeps the missing-shape refusal', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+
+  for (const document of ['[]', '"x"', '42']) {
+    writeFileSync(join(sarifDir, 'head.sarif'), document)
+    const run = runGate(sarifDir, baselinePath)
+    assert.equal(run.code, 1, `a document that is ${document} must fail closed`)
+    assert.match(
+      run.stderr,
+      /has no analysis run \(runs: missing or not a list\)/,
+      `a document that is ${document} names the shape it was`,
+    )
+    assert.doesNotMatch(`${run.stdout}${run.stderr}`, /TypeError/, `a document that is ${document} must not crash`)
+  }
+})
+
 test('a malformed JSON body fails closed as unreadable, not as empty', (t) => {
   const dir = tempDir(t)
   const baselinePath = join(dir, 'baseline.json')
@@ -243,6 +267,27 @@ test('a malformed JSON body fails closed as unreadable, not as empty', (t) => {
   assert.equal(run.code, 1, 'an unparseable SARIF must fail closed')
   assert.match(run.stderr, /is not readable SARIF/)
   assert.doesNotMatch(`${run.stdout}${run.stderr}`, /parsed 0 result\(s\)/)
+})
+
+// #297: `JSON.parse('null')` returns `null`, and reading `runs` off a null
+// document throws `TypeError: Cannot read properties of null (reading 'runs')`,
+// which is a crash with a stack trace rather than a refusal. Without a shape it
+// has nothing to say about runs, so it is refused as unreadable, exactly like a
+// body that would not parse. The predicate is `document === null` and no wider
+// plain-object test: the three shapes pinned above keep their own message.
+test('a SARIF whose document is JSON null is refused by name, not with a TypeError', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+  writeFileSync(join(sarifDir, 'head.sarif'), 'null')
+  const run = runGate(sarifDir, baselinePath)
+  const output = `${run.stdout}${run.stderr}`
+  assert.equal(run.code, 1, 'a null SARIF must fail closed')
+  assert.match(run.stderr, /is not readable SARIF/, 'a null document is refused by name')
+  assert.doesNotMatch(output, /TypeError/, 'a refusal must not be a crash')
+  assert.doesNotMatch(output, /\n\s+at /, 'a refusal is one message, not a stack trace')
 })
 
 test('a moved line is an added result and fails until the baseline records it', (t) => {
