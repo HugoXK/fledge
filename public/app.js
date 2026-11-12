@@ -194,12 +194,20 @@
     }
     if (sections.length > 0 && typeof currentSection === 'function') {
       // One rule for the scroll position and for the tap, so the marker cannot
-      // disagree with the chip the user just pressed; at the document end the
-      // last section is current even though it never crosses the band.
+      // disagree with the chip the user just pressed. The band is the bottom of
+      // the sticky bar, which is where scroll-margin-top parks an anchored
+      // section, so the tapped chip keeps the marker; the last section stays
+      // current at the document end even though it never crosses that line.
+      // During the smooth scroll the marker follows the viewport through the
+      // sections in between, which is this rule working, not a second state.
       const pick = () => {
+        // scroll-margin-top is what parks a tapped section and the only place
+        // the bar's height is written; read it back so the band cannot disagree
+        // with the jump. Every nav target shares the rule.
+        const anchorOffset = parseFloat(getComputedStyle(sections[0].target).scrollMarginTop) || 0
         const id = currentSection({
           tops: sections.map((entry) => ({ id: entry.target.id, top: entry.target.getBoundingClientRect().top })),
-          bandTop: window.innerHeight * 0.2,
+          bandTop: scrollBandTop(window.innerHeight, anchorOffset),
           scrollY: window.scrollY,
           scrollHeight: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
           viewportHeight: window.innerHeight,

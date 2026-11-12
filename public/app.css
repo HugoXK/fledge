@@ -89,6 +89,12 @@
      text) over the measured height, so an anchor target still clears the
      header with the script off. */
   --header-h: 90px;
+  /* The section nav's height: 8px + 8px padding, the 44px touch target and the
+     1px bottom rule, which .section-nav below consumes unchanged at every
+     breakpoint. scroll-margin-top reads this token instead of a second number,
+     so an anchored section clears the bar instead of landing a few pixels under
+     it. */
+  --nav-h: 61px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --touch: 44px;
   --content: 1180px;
@@ -911,4 +917,4 @@ a.list-row:hover strong { color: var(--accent); }
 }
 .section-nav a:hover { color: var(--text); border-color: var(--accent); }
 .section-nav a[aria-current="true"] { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--accent-ink); }
-.section-nav ~ .card[id] { scroll-margin-top: calc(var(--header-h) + 56px); }
+.section-nav ~ .card[id] { scroll-margin-top: calc(var(--header-h) + var(--nav-h)); }
