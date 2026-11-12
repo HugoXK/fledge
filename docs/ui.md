@@ -136,6 +136,57 @@ computes the ratios from `:root` instead of trusting the palette:
 - A new text colour is added together with a row in the test's contrast list, so
   the ratio is checked in CI rather than in a browser.
 
+## Light theme (浅色主题)
+
+The console ships two palettes over one token set. A component asks for
+`var(--panel)` and `var(--text)`; it never tests the scheme, and no view gained a
+branch for it (#467). The token table above lists the dark palette, which is the
+default; the light palette redefines the same colour names:
+
+| Group | Token | Dark | Light | Light ratio |
+|---|---|---|---|---|
+| Surface | `--bg` | `#07090d` | `#f4f6f9` | `--text` 16.8:1 |
+| Surface | `--bg-soft` | `#0a0e14` | `#eef1f6` | `--muted-2` 5.2:1 |
+| Surface | `--panel` | `#0d1118` | `#ffffff` | `--muted-2` 6.1:1 |
+| Surface | `--panel-2` | `#111722` | `#f7f9fc` | `--muted-2` 5.8:1 |
+| Surface | `--surface-inset` | `#080d13` | `#e9edf3` | `--text` 14.6:1 |
+| Surface | `--field` | `#080c12` | `#ffffff` | `--text` 17.4:1 |
+| Line | `--line` | `#1c232d` | `#dbe1e9` | 1px divider, non-text |
+| Line | `--scroll-track` | `#5b6779` | `#828c9a` | 3.4:1 on `--panel`, 3.3:1 on `--scroll-thumb` |
+| Line | `--scroll-thumb` | `#c8d2de` | `#333c48` | 11.2:1 on `--panel` |
+| Text | `--text` | `#f2f5f9` | `#10161f` | 16.8:1 on `--bg` |
+| Text | `--muted` | `#98a2b3` | `#47515f` | 8.1:1 on `--panel` |
+| Text | `--muted-2` | `#8b96a6` | `#59636f` | 6.1:1 on `--panel`, 5.8:1 on `--panel-2` |
+| Accent | `--accent` | `#7b95ff` | `#2b4fd0` | 6.7:1 on `--panel` |
+| Accent | `--accent-ink` | `#ffffff` | `#ffffff` | 8.8:1 on `--accent-strong` |
+| Accent | `--brand` | `#b8f34a` | `#3f7a12` | 5.2:1 on `--panel` |
+| Accent | `--good` / `--mint` | `#67e8c7` | `#0a6e55` | 6.2:1 on `--panel` |
+| Accent | `--warn` | `#f0c674` | `#7a5200` | 6.9:1 on `--panel` |
+| Accent | `--danger` | `#ff8a8a` | `#b3261e` | 6.5:1 on `--panel` |
+| Accent | `--badge-ink` on `--badge-bg` | `#aab7c4` / `#1a222b` | `#414d5c` / `#e7ecf3` | 7.3:1 |
+
+How it is selected:
+
+- The system preference works with JavaScript off:
+  `@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { … } }`.
+  The dark palette is plain `:root`, so the stylesheet paints the right theme on
+  the first frame — no class is added after load and there is no flash.
+- An explicit choice wins over the system: `:root[data-theme="light"]` and
+  `:root[data-theme="dark"]` re-declare the colours and pin `color-scheme`.
+  `:root` carries `color-scheme: light dark`, so form controls, scrollbars and
+  the selection colour follow the palette instead of the operating system.
+  `::selection` uses `var(--text)`, which is dark ink on the pale tint in the
+  light palette.
+- `--paper` and `--accent-ink` stay `#ffffff` in both palettes by contract: they
+  paint the white iframe and the primary button's fill.
+- The light declarations appear twice (media query and attribute selector)
+  because the two cannot share a declaration block; both are kept in step by
+  `test/lightTheme.test.ts`, which reads each block out of the stylesheet,
+  rejects a missing or extra colour token, and recomputes every ratio above with
+  the same WCAG formula as `test/uiTokens.test.ts`.
+- `--shadow` softens to `rgba(15, 23, 42, 0.14)`; it is a shadow, not text, so it
+  carries no contrast requirement.
+
 ## Console states (控制台状态)
 
 Every list, panel and stream in the console renders through `renderState` in
@@ -196,6 +247,26 @@ unknown one:
   smooths a single review into a trend, and never hides it either.
 - Every cell is scoped to one repository and its owner: another user's
   repository, or another repository of the same owner, is not counted.
+
+## Visual matrix (多设备视觉矩阵)
+
+`npm run visual:matrix` boots a throwaway app on `127.0.0.1:18180` with the
+development login, a temporary SQLite database and the mock runner. It captures
+the landing page first, in a signed-out context, because `/` answers 302 to
+`/dashboard` for a visitor with a session: capturing it after the development
+login photographed the dashboard twice. It then signs in and renders the
+dashboard, settings, admin, add-repository and workspace surfaces at
+360/390/430/640/768/1024/1280/1440/1920 in both languages, fails when the
+document or an element leaves the viewport, and writes full-page screenshots
+under `visual-matrix/` (ignored by git). CI uploads that directory as the
+`visual-matrix` artifact. The matrix does not contact GitHub, SMTP or a FlyBot
+instance.
+
+On `/settings` it also checks the `#tokens` anchor — the target the zero-token
+empty state links to. A page without that element is a failure
+(`the page has no #tokens anchor to scroll to`), not a skipped measurement, and
+a section that starts under the sticky header fails separately. `test/pages.test.ts`
+pins the same rule for every in-page link the page renders.
 
 ## Owner search (#362)
 `/search` searches only the signed-in owner's rows — repositories, jobs, work items
