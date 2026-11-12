@@ -22,8 +22,10 @@
 // account, never the Reviewer's account named by
 // `.github/agent/review-policy.json` `requiredPass`. The tool reads `GET /user`
 // and refuses when the credential belongs to that account, so the identity is a
-// fact the run records, not a claim the workflow makes. A missing token is the
-// `blocked` state (exit 0): the night reports it and opens nothing.
+// fact the run records, not a claim the workflow makes. A missing token is
+// refused before any request, and red: the workflow checks the secret before it
+// pushes anything, so that refusal is the tool's own invariant, never a night
+// worth reporting green.
 
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
@@ -47,9 +49,10 @@ export function releaseBranch(version) {
 }
 
 export function exitCodeFor(result) {
-  // `blocked` is the unconfigured-credential state, not a failure of the night:
-  // the run is green, the summary and #80 say what is missing. A `refused`
-  // decision is a red run, because the branch was ready and the tool declined.
+  // A `refused` decision is a red run: either the branch was ready and the tool
+  // declined, or the credential the workflow checked is missing, which is an
+  // invariant failure rather than a state to report. `opened` and `reused` are
+  // the two write outcomes and exit zero.
   return result?.status === 'refused' ? 1 : 0
 }
 
@@ -213,7 +216,7 @@ export async function runReleaseOpen(options) {
   if (typeof fetchImpl !== 'function') return refuse('no fetch implementation to call the API with')
   if (!/^[^/\s]+\/[^/\s]+$/.test(String(repo))) return refuse(`the repository "${String(repo)}" is not owner/name`)
   if (typeof token !== 'string' || token === '') {
-    return { status: 'blocked', reason: 'RELEASE_OPEN_TOKEN is not set, so no release pull request was opened; add the repository secret' }
+    return refuse('RELEASE_OPEN_TOKEN is not set, so no release pull request was opened; add the repository secret')
   }
 
   const plan = artifact?.plan ?? {}

@@ -173,6 +173,20 @@ test('a missing opener token is a red precondition before the push, not a green 
   assert.equal(openStep.includes('STATE=blocked'), false, 'the blocked-green state is gone, not merely unused')
 })
 
+test('the Decide snippet itself turns the orphan reason into a red run', () => {
+  // The drive returns `report-blocked`; nothing asserted that the snippet in the
+  // workflow reads it as a red state rather than leaving a green night with the
+  // reason in a log line (#333 review). The reason carries branch and sha, so
+  // writing it into the summary is what names them.
+  const step = between('      - name: Decide', '      - name: Check the opener precondition')
+  assert.match(step, /decision\.action === "report-blocked"/)
+  assert.match(step, /startsWith\("orphan-branch"\)/)
+  assert.match(step, /STATE=orphan-branch/, 'the summary names the state')
+  assert.match(step, /\$\{decision\.reason\}/, 'the summary carries the reason, so branch and sha are named')
+  assert.match(step, /::error::/, 'the annotation makes the failure visible in the run UI')
+  assert.match(step, /process\.exitCode = 1/, 'the step exits red, not green')
+})
+
 test('the #80 comment carries the open state, and still posts after a refusal', () => {
   const step = between('      - name: Comment on #80', '      - name: Keep the plan artifact')
   assert.match(step, /OPEN_STATE: \$\{\{ steps\.open\.outputs\.state \}\}/)

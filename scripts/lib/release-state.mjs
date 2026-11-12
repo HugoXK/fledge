@@ -70,10 +70,14 @@ export function buildState({ lastTag, lastTagCommittedAt, packageVersion, fragme
   // request (`#333`), so every later run refuses to overwrite it and the slot is
   // wedged. The classification is here because this is where the branches, the
   // pull requests and the tags meet; the repair is the owner's, never a run's.
+  // A pull request only accounts for a branch of this repository: a fork PR whose
+  // head happened to be named `release/v0.3.2` used to clear the orphan and send
+  // the night back to the generic "different content" red. The same-repo
+  // predicate is the one the release candidate takes above.
   const tagNames = Array.isArray(tags) ? tags.map(String) : []
   const closedPrs = flattenPages(closedPages)
   const pullRequestHeads = new Set(
-    [...openPrs, ...closedPrs].map((pr) => String(pr?.head?.ref ?? '')).filter((ref) => ref !== ''),
+    [...openPrs, ...closedPrs].filter(isSameRepo).map((pr) => String(pr?.head?.ref ?? '')).filter((ref) => ref !== ''),
   )
   const releaseBranches = (Array.isArray(branches) ? branches : [])
     .map((entry) => {

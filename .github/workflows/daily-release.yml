@@ -7,9 +7,10 @@ name: Daily minor release
 # Two jobs, two triggers, two credentials:
 #   release  plans the night, pushes `release/v<version>` with the automatic
 #            token and opens exactly one release pull request with the team
-#            token (`RELEASE_OPEN_TOKEN`). Without that secret the night reports
-#            `blocked` and opens nothing; a refused precondition is red. It never
-#            merges or publishes a pull request.
+#            token (`RELEASE_OPEN_TOKEN`). Without that secret the night is red,
+#            pushes nothing and names the missing secret; it never reports a
+#            green blocked night after pushing a branch. It never merges or
+#            publishes a pull request.
 #   tag      recognises the merge of that branch on `main` and writes the tag
 #            through the Git data API, then dispatches the publish run at it.
 #

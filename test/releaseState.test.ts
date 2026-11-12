@@ -227,8 +227,11 @@ test('a newer foreign PR cannot shadow this repository\'s own release PR', () =>
 const ORPHAN_SHA = '224096bdadb3c2e683c4774dd8713f2dbc103fa6'
 const ORPHAN_BRANCH = { name: 'release/v0.3.2', commit: { sha: ORPHAN_SHA } }
 
+// The `branches` input is typed now that `| unknown` is gone from the
+// declaration: `GET /branches` answers `{ name, commit: { sha } }`, and typing
+// the fixture here is what keeps that shape honest instead of `unknown[]`.
 function orphanState({ branches = [ORPHAN_BRANCH], openPages = [], closedPages = [], tags = ['v0.3.1'] }: {
-  branches?: unknown[]
+  branches?: Array<{ name: string; commit: { sha: string } }>
   openPages?: unknown[]
   closedPages?: unknown[]
   tags?: string[]
@@ -272,6 +275,47 @@ test('a release branch with no pull request and no tag is an orphan, and the dri
   assert.match(decision.reason, /owner/, 'the reason says the repair is not the run\'s')
 })
 
+test('a pull request from another repository does not clear the orphan', () => {
+  // #333 review: the head-ref set was built from every pull request, so a fork
+  // PR whose branch happened to be `release/v0.3.2` suppressed the orphan and
+  // sent the night back to the generic "different content" red. A branch is only
+  // accounted for by a pull request that comes from this repository itself, the
+  // same predicate the release candidate takes above.
+  const fork = {
+    number: 301,
+    title: 'fix: an unrelated change',
+    head: { ref: 'release/v0.3.2', sha: ORPHAN_SHA, repo: { full_name: 'someone-else/fledge' } },
+    base: { repo: { full_name: 'HugoXK/fledge' } },
+    merged_at: null,
+  }
+  const state = orphanState({ openPages: [[fork]] })
+  assert.deepEqual(
+    state.orphanBranches,
+    [{ branch: 'release/v0.3.2', version: '0.3.2', tag: 'v0.3.2', sha: ORPHAN_SHA }],
+    'a fork branch with the same name is not this repository\'s branch',
+  )
+  assert.equal(driveOrphan(state).action, 'report-blocked')
+})
+
+test('an orphan blocks the night even when the release rule is not met', () => {
+  // The orphan check sits ahead of the rule gate: a wedged slot is red on every
+  // night until the owner clears it, including a night whose plan would not have
+  // released — that is the run which would otherwise reach the push step later
+  // and die there with a message about different content.
+  const state = orphanState()
+  const decision = decideDrive({
+    plan: { shouldRelease: false, nextVersion: '0.3.2', reason: 'only 9 merged PRs, need 10' },
+    openReleasePr: null,
+    mergedPrs: [],
+    tags: state.tags,
+    orphanBranches: state.orphanBranches,
+    ciOk: state.ciOk,
+    dryRun: false,
+  })
+  assert.equal(decision.action, 'report-blocked', 'the orphan is reported ahead of the rule gate')
+  assert.match(decision.reason, /^orphan-branch:/)
+})
+
 test('an orphan branch is not reported once a pull request or the tag exists', () => {
   const withOpenPr = orphanState({
     openPages: [[{ ...OWN_RELEASE_PR, head: { ...OWN_RELEASE_PR.head, ref: 'release/v0.3.2' } }]],
@@ -283,7 +327,7 @@ test('an orphan branch is not reported once a pull request or the tag exists', (
     closedPages: [[{
       number: 208,
       title: 'release: v0.3.2',
-      head: { ref: 'release/v0.3.2', sha: ORPHAN_SHA },
+      head: { ref: 'release/v0.3.2', sha: ORPHAN_SHA, repo: { full_name: 'HugoXK/fledge' } },
       base: { repo: { full_name: 'HugoXK/fledge' } },
       merged_at: '2026-11-11T16:00:00Z',
       merge_commit_sha: 'b'.repeat(40),
@@ -307,7 +351,7 @@ test('the existing reasons are unchanged when the branch is not an orphan', () =
     closedPages: [[{
       number: 208,
       title: 'release: v0.3.2',
-      head: { ref: 'release/v0.3.2', sha: ORPHAN_SHA },
+      head: { ref: 'release/v0.3.2', sha: ORPHAN_SHA, repo: { full_name: 'HugoXK/fledge' } },
       base: { repo: { full_name: 'HugoXK/fledge' } },
       merged_at: '2026-11-11T16:00:00Z',
       merge_commit_sha: 'b'.repeat(40),

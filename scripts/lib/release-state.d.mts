@@ -55,7 +55,7 @@ export declare function buildState(input: {
   closedPages?: unknown
   openPages?: unknown
   checks?: unknown
-  branches?: Array<ReleaseBranchEntry | string> | unknown
+  branches?: Array<ReleaseBranchEntry | string>
 }): ReleaseState
 
 export declare function plannerInput(state: ReleaseState): {
