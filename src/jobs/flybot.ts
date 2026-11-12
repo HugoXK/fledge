@@ -1,5 +1,4 @@
 import type { Config } from '../config.js'
-import { log } from '../lib/log.js'
 import { incCounter, observeHistogram } from '../lib/metrics.js'
 import { endSpan, startSpan } from '../lib/otel.js'
 import type { Runner, RunnerContext, RunnerResult } from './runner.js'
@@ -208,7 +207,7 @@ export class FlyBotRunner implements Runner {
       throw new Error(`FlyBot bridge ${response.status}: ${bridgeFailureText(text).slice(0, 400)}`)
     }
     endSpan(span, 'OK', undefined, { status: response.status })
-    log.info('job handed to FlyBot bridge', { job: context.job.id, kind: context.kind, status: response.status })
+    context.log.info('job handed to FlyBot bridge', { kind: context.kind, status: response.status })
     return { status: 'running' }
   }
 }

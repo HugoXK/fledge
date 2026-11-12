@@ -417,6 +417,16 @@ replayed without reading DSH memory. `team.role` events persist the per-role
 calls, tool and last activity that used to exist only in the final
 `team_stats_json` snapshot.
 
+Every log line written while one job is handled carries the job id under one key,
+`trace`: the service lines, the bridge handoff in `src/jobs/flybot.ts`, the mock
+runner and the gateway usage line. A runner receives the bound logger on
+`RunnerContext.log` instead of rebuilding the field, and the gateway only adds it
+when the call was made with a job token — a user's own request has no job in
+scope. The job page prints the same value next to the timeline as the token to
+search, and it is the `job_events.job_id` of that job, so one search returns the
+whole job. Pass-level lines (a scheduler pass, the shutdown check) have no job in
+scope and deliberately carry no `trace`.
+
 The repository page adds a compact delivery board grouped by work-item state; each state header links to a filtered work-item list (`?workState=`). The dashboard has two scopes. `/dashboard?window=7|30` shows the signed-in
 user's own delivery metrics: jobs, success rate, PRs, merged PRs, cost, open
 work items and the last job. `/admin/metrics` shows the global window with the
