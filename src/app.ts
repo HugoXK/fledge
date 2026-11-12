@@ -10,7 +10,7 @@ import { openStore, type JobRow, type RepoRow, type Store, type UserRow } from '
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
 import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions, type Viewer } from './auth/session.js'
-import { instanceLimitRefusal, repoLimitRefusal, type LimitRefusal } from './lib/limits.js'
+import { dedupeRepoNames, instanceLimitRefusal, repoLimitRefusal, type LimitRefusal } from './lib/limits.js'
 import { isTrialFilter } from './lib/trials.js'
 import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
@@ -1013,14 +1013,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`)
     }
     const byName = new Map(available.map((repo) => [repo.fullName.toLowerCase(), repo]))
-    const fresh = selected.filter((fullName) => {
-      const info = byName.get(fullName.toLowerCase())
+    // #457 review: the selection is counted once per repository. A repeated
+    // value ("o/a" and "O/A") would otherwise inflate both the repository
+    // arithmetic below and the instance count those additions would provision.
+    const chosen = dedupeRepoNames(selected)
+    const fresh = chosen.filter((fullName) => {
+      const info = byName.get(fullName)
       return info !== undefined && store.getRepoByOwnerName(viewer.user.id, info.owner, info.name) === undefined
     })
+    // `extra` is what this request would add: a selection that exactly fills the
+    // last free slots is allowed, and one with nothing fresh to create
+    // (extra 0) is never refused because it would create nothing.
     const refusal = repoLimitRefusal({
-      used: store.countReposForUser(viewer.user.id) + fresh.length,
+      used: store.countReposForUser(viewer.user.id),
       cap: config.limits.reposPerUser,
       admin: isAdminRole(viewer.user.role),
+      extra: fresh.length,
     })
     if (refusal !== null) return refuseLimit(request, reply, viewer, refusal, `/repos/new?installation=${installationId}`)
     // Every fresh repository is provisioned below, so the instance ceiling has
@@ -1032,8 +1040,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (instanceRefusal !== null) return refuseLimit(request, reply, viewer, instanceRefusal, `/repos/new?installation=${installationId}`)
     }
     const added: string[] = []
-    for (const fullName of selected) {
-      const repoInfo = byName.get(fullName.toLowerCase())
+    for (const fullName of chosen) {
+      const repoInfo = byName.get(fullName)
       if (repoInfo === undefined) continue
       if (store.getRepoByOwnerName(viewer.user.id, repoInfo.owner, repoInfo.name) !== undefined) continue
       try {

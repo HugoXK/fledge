@@ -135,13 +135,15 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // alerts (#41, #42, both dismissed false positive) are the same two. #457
   // then adds its limit guard, its two refusal helpers and its two add-path
   // call sites: the four top-of-file registrations read `:516`/`:551`/`:561`/`:571`
-  // on the merged tree and the webhook registration reads `:3189`, while the
+  // on the merged tree and the webhook registration reads `:3197`, while the
   // gateway pair stays `:155`/`:180`. #488 (the settings-anchor call site) and
   // #489 (`public/app.css` plus two layout tests) then merged without touching
   // `src/app.ts`, so the refresh onto `main@fd76f696` re-read all seven route
-  // lines on the merged tree and moved none of them.
+  // lines on the merged tree and moved none of them. The rework after review
+  // `901ad95` adds eight lines to the bulk add path below the four top-of-file
+  // registrations, so the webhook anchor reads `:3197` and the rest stay.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3189',
+    'js/missing-rate-limiting|src/app.ts|3197',
     'js/missing-rate-limiting|src/app.ts|516',
     'js/missing-rate-limiting|src/app.ts|551',
     'js/missing-rate-limiting|src/app.ts|561',
