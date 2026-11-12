@@ -1072,6 +1072,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         return []
       })
     }
+    const pendingPlan = store.pendingPlanJob(repo.id)
     return reply.type('text/html').send(
       repoPage({
         config,
@@ -1082,6 +1083,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
         prJobs: store.listPrJobsForRepo(repo.id, 10),
         workItems: store.listWorkItems(repo.id),
+        // #359: the page names the deadline and the way out, so an ignored plan
+        // is a visible decision with a date rather than a silent wait.
+        ...(pendingPlan === undefined || pendingPlan.finished_at === null ? {} : {
+          pendingPlan: {
+            jobId: pendingPlan.id,
+            deadline: new Date(Date.parse(pendingPlan.finished_at) + config.plan.expiryDays * 86_400_000).toISOString().slice(0, 10),
+          },
+        }),
         ...(workState !== undefined && isWorkItemState(workState) ? { workState } : {}),
         models: store.listUserProviderModels(repo.user_id),
         repoModelIds: repoModels.map((model) => model.id),
@@ -1576,6 +1585,13 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id || job.kind !== 'plan' || job.status !== 'succeeded') throw httpError(404, '计划任务不存在或尚未完成。', 'PLAN_NOT_READY')
     if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以批准计划。')}`)
+    // #359: expiry is terminal for this plan. A late approval would revive work
+    // the item no longer carries, so it is refused by name and the reopening path
+    // (`closed -> triaged`, then a new plan) stays the only way back.
+    const expiredItem = job.work_item_id === null ? undefined : store.getWorkItem(job.work_item_id)
+    if (expiredItem !== undefined && expiredItem.state === 'closed' && expiredItem.closed_reason === 'plan_expired') {
+      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('计划已过期关闭，不能再批准；重新创建工作项即可生成新计划。')}`)
+    }
     const body = form(request)
     const allow = (body.allowPaths ?? repo.allow_paths).trim().slice(0, 2000)
     const deny = (body.denyPaths ?? repo.deny_paths).trim().slice(0, 2000)
