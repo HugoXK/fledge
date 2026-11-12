@@ -5,6 +5,12 @@ import { mkdirSync } from 'node:fs'
 import { log } from './lib/log.js'
 import { nowIso } from './lib/time.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
+import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
+
+// #355: one settings row marks the PAT expiry backfill as done, so a later
+// operator token (explicitly minted without an expiry) is never given one by a
+// restart.
+const PAT_EXPIRY_BACKFILL_KEY = 'pat_expiry_backfilled'
 
 const require = createRequire(import.meta.url)
 
@@ -272,6 +278,9 @@ export interface ApiTokenRow {
   token_hash: string
   prefix: string
   repo_id: string | null
+  // #355: what the token may do. `gateway` is the only scope enforced today and
+  // is the default for every existing row.
+  scope: string
   expires_at: string | null
   revoked_at: string | null
   last_used_at: string | null
@@ -614,6 +623,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   token_hash TEXT NOT NULL UNIQUE,
   prefix TEXT NOT NULL,
   repo_id TEXT,
+  scope TEXT NOT NULL DEFAULT 'gateway',
   expires_at TEXT,
   revoked_at TEXT,
   last_used_at TEXT,
@@ -1102,6 +1112,22 @@ export class Store {
     if (!notificationColumns.has('code')) this.run('ALTER TABLE notifications ADD COLUMN code TEXT')
     const tokenColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(api_tokens)').map((row) => row.name))
     if (!tokenColumns.has('repo_id')) this.run('ALTER TABLE api_tokens ADD COLUMN repo_id TEXT')
+    // #355: the column is additive with a default, so existing rows are
+    // `gateway` without a second pass; the UPDATE also repairs a row that a
+    // partial upgrade left empty.
+    if (!tokenColumns.has('scope')) this.run("ALTER TABLE api_tokens ADD COLUMN scope TEXT NOT NULL DEFAULT 'gateway'")
+    this.run("UPDATE api_tokens SET scope = 'gateway' WHERE scope IS NULL OR scope = ''")
+    // A personal token minted before this change has no expiry and would live
+    // forever. Give each one a fresh finite window from the upgrade, once, so no
+    // token in use dies at the moment of the upgrade. Job and instance tokens
+    // keep the expiry their own lifecycle sets.
+    if (this.getSetting(PAT_EXPIRY_BACKFILL_KEY) === undefined) {
+      this.run(
+        "UPDATE api_tokens SET expires_at = ? WHERE kind = 'pat' AND expires_at IS NULL AND revoked_at IS NULL",
+        new Date(Date.now() + DEFAULT_PAT_EXPIRY_DAYS * 86_400_000).toISOString(),
+      )
+      this.setSetting(PAT_EXPIRY_BACKFILL_KEY, nowIso())
+    }
     const ledgerColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(quota_ledger)').map((row) => row.name))
     if (!ledgerColumns.has('repo_id')) this.run('ALTER TABLE quota_ledger ADD COLUMN repo_id TEXT')
     if (!jobColumns.has('base_branch')) this.run('ALTER TABLE jobs ADD COLUMN base_branch TEXT')
@@ -2499,9 +2525,9 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' AND created_at < ?", beforeIso)
   }
 
-  createApiToken(input: { id: string; userId: string; kind: string; name: string; tokenHash: string; prefix: string; repoId?: string | null; expiresAt: string | null }): ApiTokenRow {
+  createApiToken(input: { id: string; userId: string; kind: string; name: string; tokenHash: string; prefix: string; repoId?: string | null; scope?: string; expiresAt: string | null }): ApiTokenRow {
     this.run(
-      'INSERT INTO api_tokens (id, user_id, kind, name, token_hash, prefix, repo_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO api_tokens (id, user_id, kind, name, token_hash, prefix, repo_id, scope, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       input.id,
       input.userId,
       input.kind,
@@ -2509,6 +2535,7 @@ export class Store {
       input.tokenHash,
       input.prefix,
       input.repoId ?? null,
+      input.scope ?? 'gateway',
       input.expiresAt,
       nowIso(),
     )

@@ -207,6 +207,8 @@ const MESSAGES: Record<string, string> = {
   '计划任务已排队。': 'Plan job queued.',
   '计划任务已排队；批准后才会写代码。': 'Plan job queued; no code is written until it is approved.',
   '计划尚未批准。': 'The plan has not been approved yet.',
+  '不支持这个 token 范围。': 'That token scope is not supported.',
+  '只有管理员可以创建永不过期的 token。': 'Only an admin can create a token without an expiry.',
   '计划已批准，可以执行。': 'The plan was approved and can be executed.',
   '计划已拒绝。': 'The plan was rejected.',
   '请填写工作项标题。': 'Enter a work item title.',
