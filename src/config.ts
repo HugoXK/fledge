@@ -66,6 +66,8 @@ export interface Config {
     timeoutMinutes: number
     stallMinutes: number
     maxActiveJobs: number
+    /** Min gap between scheduled work sessions; an open work item does not wait for interval_minutes. */
+    workCooldownMinutes: number
     queueDispatch: boolean
     maxQueueDepth: number
     maxUserQueue: number
@@ -281,6 +283,10 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       timeoutMinutes: number('JOB_TIMEOUT_MINUTES', 90),
       stallMinutes: number('JOB_STALL_MINUTES', 30),
       maxActiveJobs: Math.max(1, number('PLATFORM_MAX_ACTIVE_JOBS', 2)),
+      // #478: a due repo with no work item must idle, and a work item must not
+      // wait for the old 12-hour interval. 15 is the smallest interval the UI
+      // already renders; a repo may choose a longer gap.
+      workCooldownMinutes: Math.max(15, number('WORK_SESSION_COOLDOWN_MINUTES', 15)),
       queueDispatch: bool('QUEUE_DISPATCH', false),
       maxQueueDepth: Math.max(1, number('QUEUE_MAX_DEPTH', 100)),
       maxUserQueue: Math.max(1, number('QUEUE_MAX_PER_USER', 20)),
@@ -351,7 +357,16 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
   // set-role, mail-probe) call loadConfig() to read one value, and a missing
   // production secret must not block an operator repair. The startup gate is
   // buildApp(), which src/index.ts also calls unguarded. See docs/deploy.md.
-  return { ...config, ...overrides }
+  const merged = { ...config, ...overrides }
+  // #420: the reminder is the deadline minus an offset, so a reminder at or after
+  // the deadline makes the window zero and every unapproved plan is "reminded" on
+  // the next tick with its deadline still days away. This is not a missing
+  // operator secret — it is a pair that cannot mean what the operator wrote, it
+  // happens in every environment, and only the merged value can see it.
+  if (merged.plan.reminderDays >= merged.plan.expiryDays) {
+    throw new Error(`PLAN_REMINDER_DAYS (${merged.plan.reminderDays}) must be smaller than PLAN_EXPIRY_DAYS (${merged.plan.expiryDays}); a reminder at or after the deadline is sent immediately.`)
+  }
+  return merged
 }
 
 function isAbsoluteHttpsUrl(value: string): boolean {

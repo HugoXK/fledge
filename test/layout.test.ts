@@ -162,3 +162,40 @@ test('the viewport opts into the notch and the CSS uses dvh and a safe-area inse
   assert.match(css, /env\(safe-area-inset-bottom\)/, 'the page must respect the bottom safe area')
   assert.match(css, /min-height:\s*min\(620px, 80dvh\)/, 'the workspace floor must not exceed the viewport')
 })
+
+test('info tips are buttons and destructive forms use the shared dialog', () => {
+  const pages = readFileSync(new URL('../src/views/pages.ts', import.meta.url), 'utf8')
+  assert.match(pages, /class="info-tip"[^>]*aria-expanded="false"/, 'an info tip must be a real button with an expanded state')
+  assert.doesNotMatch(pages, /<span class="info-tip"/, 'the old focus-only span must be gone')
+  const html = render('/dashboard')
+  assert.match(html, /<dialog id="confirm-dialog" class="confirm-dialog"/, 'the layout must render the shared confirmation dialog')
+  assert.match(html, /data-confirm-message/, 'the dialog must have a message slot')
+  const script = jsText()
+  assert.match(script, /querySelectorAll\(['"]\.info-tip['"]\)/, 'the script must wire the info tips')
+  assert.match(script, /showModal/, 'the script must open the native dialog')
+  assert.match(script, /data-confirm-message/, 'the script must fill the dialog message')
+})
+
+test('a tooltip is revealed by its own expanded state once the script runs, and by CSS alone without it', () => {
+  const css = cssText().replace(/\/\*[\s\S]*?\*\//g, '')
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((match) => ({
+    selector: (match[1] ?? '').trim(),
+    body: match[2] ?? '',
+  }))
+  const parts = rules.flatMap((rule) => rule.selector.split(',').map((part) => ({ selector: part.trim(), body: rule.body })))
+  // Without the script the hint has no state to toggle, so hover and focus must
+  // still reveal it — but only then. An unconditional `:hover`/`:focus` reveal
+  // outranks the script, so a dismissed tooltip stays on screen while the point
+  // rests on the control or the button keeps focus (WCAG 1.4.13 d).
+  const hoverOrFocus = parts.filter((part) => /\.info-tip:(hover|focus)::after/.test(part.selector))
+  assert.ok(hoverOrFocus.length > 0, 'the hover/focus reveal must stay in the sheet as the no-JavaScript fallback')
+  for (const part of hoverOrFocus) {
+    assert.match(part.selector, /^html:not\(\[data-js\]\) /, `a hover/focus reveal outside the fallback keeps a dismissed tooltip on screen: ${part.selector}`)
+  }
+  // Once the script runs, the explicit state is the only thing that reveals it.
+  const state = parts.find((part) => part.selector === '.info-tip[aria-expanded="true"]::after')
+  assert.ok(state !== undefined, 'the explicit expanded state must have its own reveal rule')
+  assert.match(state?.body ?? '', /display:\s*block/, 'the state rule must set display, not only opacity')
+  assert.match(state?.body ?? '', /opacity:\s*1/, 'the state rule must set opacity')
+  assert.match(jsText(), /dataset\.js\s*=\s*['"]1['"]/, 'the script must mark that it runs, or the fallback never hands the tooltip over to the state')
+})

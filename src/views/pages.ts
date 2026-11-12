@@ -1,5 +1,5 @@
 import type { Config } from '../config.js'
-import type { AlertView, AuditRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, ProviderModelRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
+import type { AlertView, AuditRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, ProviderModelRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
@@ -43,7 +43,7 @@ function csrf(viewer: Viewer): string {
 }
 
 function infoTip(text: string): string {
-  return `<span class="info-tip" tabindex="0" role="img" aria-label="${escapeHtml(text)}" data-tip="${escapeHtml(text)}">!</span>`
+  return `<button type="button" class="info-tip" aria-label="${escapeHtml(text)}" aria-expanded="false" data-tip="${escapeHtml(text)}">!</button>`
 }
 
 // Counts on the path-guard line are read as plain numbers in both languages.
@@ -837,7 +837,7 @@ export function dashboardPage(input: {
         .map(
           (repo) => `<tr data-repo-id="${escapeHtml(repo.id)}">
             <td data-label="${escapeHtml(t('仓库', 'Repository'))}"><a href="/repos/${escapeHtml(repo.id)}"><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></a>${repo.is_fork === 1 ? `<br /><small class="muted">${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}</small>` : ''} <span class="badge kind">${escapeHtml(repoRoleLabel(t, repo.repo_role))}</span>${repo.reviewer_enabled === 1 ? ' <span class="badge">reviewer</span>' : ''}${repo.repo_role === null ? `<br /><small class="muted">${escapeHtml(t('打开仓库选择角色', 'Open the repository to choose a role'))}</small>` : ''}</td>
-            <td data-label="${escapeHtml(t('模式', 'Mode'))}">${repo.auto_iterate === 1 ? `<span class="badge good">${escapeHtml(t('自动', 'Auto'))}</span><br /><small class="muted">${escapeHtml(intervalLabel(repo.interval_minutes, t))}</small>` : `<span class="badge">${escapeHtml(t('手动', 'Manual'))}</span>`}</td>
+            <td data-label="${escapeHtml(t('模式', 'Mode'))}">${repo.auto_iterate === 1 ? `<span class="badge good">${escapeHtml(t('自动工作', 'Auto work'))}</span>` : `<span class="badge">${escapeHtml(t('手动', 'Manual'))}</span>`}</td>
             <td data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, repo.last_status ?? 'idle')}</td>
             <td data-label="${escapeHtml(t('上次运行', 'Last run'))}">${escapeHtml(humanTimeShort(repo.last_run_at))}</td>
             <td data-label="${escapeHtml(t('操作', 'Actions'))}"><a class="link" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('打开', 'Open'))}</a></td>
@@ -852,7 +852,7 @@ export function dashboardPage(input: {
         <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定。模板会填入一个可执行的目标。', 'The more concrete the goal, the more stable the output. A template fills in a ready prompt.'))} <textarea id="goal-new" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
-          <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))}${infoTip(t('最小间隔，不是 PR/issue 总数上限；同一仓库同时最多一个任务，平台全局最多 2 个任务。手动运行会重置倒计时，审核任务不会。', 'Minimum gap, not a cap on PRs/issues; one job per repository and at most two platform-wide. A manual run resets the countdown; a review does not.'))} <select name="interval">${intervalOptions(t)}</select></label>
+          <label>${escapeHtml(t('最长空闲检查间隔', 'Max idle check interval'))}${infoTip(t('有开放工作项时按全局最短工作间隔推进；没有工作项时保持空闲，不会为了产出而开 PR/issue。这个值只是空闲检查的上限。', 'With open work items the global short work cooldown applies; with no work the repository stays idle and does not open a PR/issue to look busy. This value is only the idle-check upper bound.'))} <select name="interval">${intervalOptions(t)}</select></label>
         </div>
         <div class="row" data-review-group>
           <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时才可启用；审核任务独立于迭代任务。', 'Available only with the maintainer role and GitHub admin/maintain permission; review jobs run separately from iterate jobs.'))}</label>
@@ -1023,13 +1023,17 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const reviewStatus = repo.last_review_status === null ? '' : ` · ${badge(t, repo.last_review_status)}`
   const activeJob = input.activeJob ?? jobs.some((job) => job.status === 'queued' || job.status === 'running')
   const lastRun = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
-  const nextRun = repo.auto_iterate === 1 && Number.isFinite(lastRun) ? new Date(lastRun + repo.interval_minutes * 60_000) : null
+  const workCooldown = Math.min(repo.interval_minutes, config.runner.workCooldownMinutes)
+  const openWork = workItems.some((item) => item.state !== 'merged' && item.state !== 'closed')
+  const nextRun = repo.auto_iterate === 1 && openWork && Number.isFinite(lastRun) ? new Date(lastRun + workCooldown * 60_000) : null
   const nextRunText = repo.auto_iterate !== 1
-    ? t('自动迭代已关闭', 'Auto-iterate off')
-    : activeJob
-      ? t('当前任务结束后再排', 'After the active job finishes')
-      : nextRun === null
-        ? t('等待首次运行', 'Waiting for first run')
+    ? t('自动工作已关闭', 'Auto work off')
+    : !openWork
+      ? t('空闲：没有开放工作项', 'Idle: no open work item')
+      : activeJob
+        ? t('当前任务结束后再排', 'After the active job finishes')
+        : nextRun === null
+          ? t('等待首次运行', 'Waiting for first run')
         : nextRun.getTime() <= Date.now()
           ? t('等待调度', 'Waiting for the scheduler')
           : humanTimeShort(nextRun.toISOString())
@@ -1215,7 +1219,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   if (!repoEnabled) lifecycleItems.push(t('仓库已停用：不会自动或手动运行任务。', 'Repository disabled: no jobs run automatically or manually.'))
   if (flybotAvailable && instance?.status !== 'ready') lifecycleItems.push(t(`FlyBot ${instance === undefined ? '未创建' : statusLabel(t, instance.status)}：任务不会运行。`, `FlyBot is ${instance === undefined ? 'not created' : statusLabel(t, instance.status)}: jobs will not run.`))
   if (!credentialOk) lifecycleItems.push(t('GitHub 凭据失效：调度已暂停。', 'GitHub credentials are invalid: scheduling is paused.'))
-  if (repo.auto_iterate === 1 && (!repoEnabled || !flybotReady)) lifecycleItems.push(t('自动迭代已开启，但当前不会运行。', 'Auto-iteration is on but cannot run right now.'))
+  if (repo.auto_iterate === 1 && (!repoEnabled || !flybotReady)) lifecycleItems.push(t('自动工作已开启，但当前不会运行。', 'Auto work is on but cannot run right now.'))
   const lifecycleActions = [
     !repoEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/enable">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('启用仓库', 'Enable repository'))}</button></form>` : '',
     flybotAvailable && instance?.status !== 'ready' ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/instance">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('启动 FlyBot', 'Start FlyBot'))}</button></form>` : '',
@@ -1262,7 +1266,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" ${repo.auto_iterate === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
           <label class="check"><input type="checkbox" name="enabled" value="1" ${repo.enabled === 1 ? 'checked' : ''} /> ${escapeHtml(t('启用', 'Enabled'))}</label>
-          <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))} <select name="interval">${intervalOptions(t, repo.interval_minutes)}</select></label>
+          <label>${escapeHtml(t('最长空闲检查间隔', 'Max idle check interval'))}${infoTip(t('有工作项时按全局最短工作间隔推进；没有工作项时保持空闲。这个值只是空闲检查的上限。', 'Open work uses the global short cooldown; no work stays idle. This is only the idle-check upper bound.'))} <select name="interval">${intervalOptions(t, repo.interval_minutes)}</select></label>
         </div>
         <div class="row" data-review-group>
           <label class="check"><input type="checkbox" name="review" value="1" ${reviewerEnabled ? 'checked' : ''} ${canReview ? '' : 'disabled'} data-role-can-review="${githubCanReview ? '1' : '0'}" /> ${escapeHtml(t('启用 PR 审核', 'Enable PR reviewer'))}</label>
@@ -2168,7 +2172,7 @@ export function workspacePage(input: {
           (repo) => `<a class="list-row" href="/repos/${escapeHtml(repo.id)}">
             <div class="list-main">
               <strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong>
-              <small>${repo.auto_iterate === 1 ? `${escapeHtml(t('自动', 'Auto'))} · ${escapeHtml(intervalLabel(repo.interval_minutes, t))}` : escapeHtml(t('手动', 'Manual'))} · ${escapeHtml(t('上次运行', 'Last run'))} ${escapeHtml(humanTimeShort(repo.last_run_at))}${repo.is_fork === 1 ? ` · ${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}` : ''}</small>
+              <small>${repo.auto_iterate === 1 ? `${escapeHtml(t('自动工作', 'Auto work'))}` : escapeHtml(t('手动', 'Manual'))} · ${escapeHtml(t('上次运行', 'Last run'))} ${escapeHtml(humanTimeShort(repo.last_run_at))}${repo.is_fork === 1 ? ` · ${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}` : ''}</small>
             </div>
             <div class="list-meta">${badge(t, repo.last_status ?? 'idle')}${repo.reviewer_enabled === 1 ? ' <span class="badge">reviewer</span>' : ''}</div>
           </a>`,
@@ -2193,6 +2197,7 @@ export function workspacePage(input: {
     </div>
     <div class="workspace-actions">
       <a class="btn" href="/dashboard#add-repo">${escapeHtml(t('添加仓库', 'Add repository'))}</a>
+      <a class="btn btn-ghost" href="/search">${escapeHtml(t('搜索', 'Search'))}</a>
       <a class="btn btn-ghost" href="/settings">${escapeHtml(t('设置', 'Settings'))}</a>
       <a class="btn btn-ghost" href="${escapeHtml(config.services.docs)}" target="_blank" rel="noreferrer">${escapeHtml(t('文档', 'Docs'))}</a>
     </div>
@@ -2281,9 +2286,23 @@ export function jobPage(input: {
   // one that replied instead of the one the instance was configured with.
   const modelRun = parseModelRun(job.model_json)
   const triedText = (run: typeof modelRun): string => (run === null ? '' : run.attempts.map((entry) => `${entry.label} (${entry.status})`).join(', '))
+  // #407: a fallback an earlier call made is its own clause. The rule: it is stated
+  // unless the `tried` clause of this same line already names the model it ended
+  // on — only then would two clauses repeat one model. So the skip needs the tried
+  // clause to exist (`attempts` non-empty) and a model to compare against; a last
+  // call with no attempt or no winner keeps the pair visible. A row whose status is
+  // not a real HTTP code states the pair without inventing a number for it.
+  const fellBackText = (run: typeof modelRun): string => {
+    if (run === null || run.fallback === null) return ''
+    if (run.attempts.length > 0 && run.model !== null && run.fallback.to.label === run.model.label) return ''
+    const status = Number.isInteger(run.fallback.status) && run.fallback.status > 0 ? run.fallback.status : null
+    return ` · ${status === null
+      ? t(`此前调用回退至 ${run.fallback.to.label}`, `earlier call fell back to ${run.fallback.to.label}`)
+      : t(`此前调用回退（${status}）至 ${run.fallback.to.label}`, `earlier call fell back (${status}) to ${run.fallback.to.label}`)}`
+  }
   const modelLine = modelRun === null
     ? ''
-    : `<p class="fine" data-model><strong>${escapeHtml(t('模型', 'Model'))}:</strong> ${escapeHtml(modelRun.model === null ? t('没有完成的调用', 'no completed call') : modelRun.model.label)}${modelRun.attempts.length === 0 ? '' : escapeHtml(` · ${t(`此前尝试 ${triedText(modelRun)}`, `tried ${triedText(modelRun)}`)}`)}</p>`
+    : `<p class="fine" data-model><strong>${escapeHtml(t('模型', 'Model'))}:</strong> ${escapeHtml(modelRun.model === null ? t('没有完成的调用', 'no completed call') : modelRun.model.label)}${modelRun.attempts.length === 0 ? '' : escapeHtml(` · ${t(`此前尝试 ${triedText(modelRun)}`, `tried ${triedText(modelRun)}`)}`)}${escapeHtml(fellBackText(modelRun))}</p>`
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
   const teamStats = jobTeamStats(job)
@@ -2590,7 +2609,7 @@ export function appReposPage(input: {
       <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定。模板会填入一个可执行的目标。', 'The more concrete the goal, the more stable the output. A template fills in a ready prompt.'))} <textarea id="goal-app" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
       <div class="row">
         <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
-        <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))}${infoTip(t('最小间隔，不是 PR/issue 总数上限；同一仓库同时最多一个任务，平台全局最多 2 个任务。', 'Minimum gap, not a cap on PRs/issues; one job per repository and at most two platform-wide.'))} <select name="interval">${intervalOptions(t)}</select></label>
+        <label>${escapeHtml(t('最长空闲检查间隔', 'Max idle check interval'))}${infoTip(t('有工作项时按全局最短工作间隔推进；没有工作项时保持空闲，不会为了产出而开 PR/issue。这个值只是空闲检查的上限。', 'Open work uses the global short cooldown; no work stays idle and does not open a PR/issue to look busy. This is only the idle-check upper bound.'))} <select name="interval">${intervalOptions(t)}</select></label>
       </div>
       <div class="row">
         <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时才可启用。', 'Available only with the maintainer role and GitHub admin/maintain permission.'))}</label>
@@ -2827,6 +2846,47 @@ export function adminSupportPage(input: {
     <section class="card"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2><div class="table-scroll"><table class="table-cards"><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>PR</th><th>${escapeHtml(t('创建', 'Created'))}</th></tr></thead><tbody>${jobRows}</tbody></table></div></section>
     <section class="card"><h2>${escapeHtml(t('审计', 'Audit'))}</h2>${auditRows(locale, audit, usersById, true)}</section>`
   return layout({ title: `${t('支持视图', 'Support view')} @${user.login}`, viewer, body, config, locale, path: `/admin/users/${user.id}`, active: 'admin', notice, error })
+}
+
+// #362: the owner's own search. The route has already scoped the query to
+// `viewer.user.id` and validated every filter, so this only renders; a section
+// that matches nothing says so and offers the next step instead of going blank.
+export function searchPage(input: {
+  config: Config
+  locale: Locale
+  viewer: Viewer
+  repos: RepoRow[]
+  filters: { q: string; repo: string; status: string; kind: string; from: string; to: string }
+  results: OwnedSearch | null
+  cap: number
+  notice?: string
+  error?: string
+}): string {
+  const { config, locale, viewer, repos, filters, results, cap, notice, error } = input
+  const t = translator(locale)
+  // A goal or an audit detail can quote a support conversation, so a full address
+  // is masked on the way out even when the row itself carries one.
+  const text = (value: string | null | undefined): string => escapeHtml(String(value ?? '').replace(/[\w.+-]+@[\w.-]+/g, '***@***'))
+  const labels = new Map(repos.map((repo) => [repo.id, `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`]))
+  const table = (title: string, heads: string[], rows: string[], note: boolean, badgeText = ''): string => rows.length === 0 ? '' : `<section class="card"><h2>${escapeHtml(title)}${badgeText === '' ? '' : ` <span class="badge">${escapeHtml(badgeText)}</span>`}</h2><div class="table-scroll"><table><thead><tr>${heads.map((head) => `<th>${escapeHtml(head)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>${note ? `<p class="fine">${escapeHtml(t('还有更多结果，缩小关键词或加筛选。', 'More results — narrow the keyword or add a filter.'))}</p>` : ''}</section>`
+  const open = (url: string | null): string => url === null ? '—' : `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(t('打开', 'Open'))}</a>`
+  const empty = (title: string, body: string): string => `<div class="state state-empty" data-state="empty" role="status"><span class="state-icon" aria-hidden="true">0</span><div class="state-body"><strong>${escapeHtml(title)}</strong><p>${escapeHtml(body)}</p><div class="actions"><a class="btn btn-small" href="/console">${escapeHtml(t('回到工作区', 'Back to workspace'))}</a></div></div></div>`
+  const [reposOut, jobsOut, itemsOut, auditOut] = [results?.repos.rows ?? [], results?.jobs.rows ?? [], results?.workItems.rows ?? [], results?.audit.rows ?? []]
+  const sections = [
+    table(t('仓库', 'Repositories'), [t('仓库', 'Repository'), t('状态', 'Status')], reposOut.map((row) => `<tr><td><a href="/repos/${escapeHtml(row.id)}">${text(`${row.owner}/${row.name}`)}</a></td><td>${escapeHtml(row.enabled === 1 ? t('已启用', 'enabled') : t('已暂停', 'paused'))}</td></tr>`), results?.repos.capped === true),
+    table(t('任务', 'Jobs'), [t('任务', 'Job'), t('状态', 'Status'), t('摘要', 'Summary'), 'PR / Issue'], jobsOut.map((job) => `<tr><td><a href="/repos/${escapeHtml(job.repo_id)}/jobs/${escapeHtml(job.id)}"><code>${text(job.id)}</code></a><br /><span class="fine">${text(labels.get(job.repo_id) ?? job.repo_id)}</span></td><td>${badge(t, job.status)} <span class="badge kind">${text(job.kind)}</span></td><td>${text(job.summary ?? job.error ?? job.goal)}</td><td>${open(job.pr_url ?? job.issue_url)}</td></tr>`), results?.jobs.capped === true),
+    table(t('工作项', 'Work items'), [t('工作项', 'Work item'), t('状态', 'Status'), 'PR / Issue'], itemsOut.map((item) => `<tr><td><a href="/repos/${escapeHtml(item.repo_id)}/workspace">${text(item.title)}</a><br /><span class="fine">${text(labels.get(item.repo_id) ?? item.repo_id)} · ${text(item.id)}</span></td><td>${text(item.state)}</td><td>${open(item.pr_url ?? item.issue_url)}</td></tr>`), results?.workItems.capped === true),
+    // Audit rows carry no repository, so that filter does not narrow them and the
+    // section says so rather than quietly returning another repository's trail.
+    table(t('审计', 'Audit'), [t('时间', 'When'), t('动作', 'Action'), t('说明', 'Detail')], auditOut.map((row) => `<tr><td>${escapeHtml(humanTimeShort(row.at))}</td><td><code>${text(row.action)}</code></td><td>${text(row.detail ?? '—')}</td></tr>`), results?.audit.capped === true, filters.repo === '' ? '' : t('不限仓库', 'not scoped by repository')),
+  ].join('')
+  const option = (value: string, label: string, selected: string): string => `<option value="${escapeHtml(value)}"${value === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`
+  const all = t('全部', 'All')
+  const body = `<a class="back" href="/console">← ${escapeHtml(t('返回工作区', 'Back to workspace'))}</a>
+    <section class="card"><div class="eyebrow">${escapeHtml(t('搜索', 'SEARCH'))}</div><h1>${escapeHtml(t('在你的数据里查找', 'Search your own data'))}</h1><p class="muted">${escapeHtml(t(`只查你自己：仓库、任务、工作项和审计。每类最多显示前 ${cap} 条。`, `Your own data only: repositories, jobs, work items and audit. First ${cap} results per section.`))}</p>
+      <form method="get" action="/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" placeholder="${escapeHtml(t('任务 id、PR 链接、摘要…', 'job id, PR link, summary…'))}" /></label><label>${escapeHtml(t('仓库', 'Repository'))} <select name="repo">${[option('', t('全部仓库', 'All repositories'), filters.repo), ...repos.map((repo) => option(repo.id, labels.get(repo.id) ?? repo.id, filters.repo))].join('')}</select></label><label>${escapeHtml(t('状态', 'Status'))} <select name="status">${['', 'queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted'].map((value) => option(value, value === '' ? all : value, filters.status)).join('')}</select></label><label>${escapeHtml(t('类型', 'Kind'))} <select name="kind">${['', 'iterate', 'review', 'plan'].map((value) => option(value, value === '' ? all : value, filters.kind)).join('')}</select></label><label>${escapeHtml(t('从', 'From'))} <input name="from" value="${escapeHtml(filters.from)}" placeholder="YYYY-MM-DD" /></label><label>${escapeHtml(t('到', 'To'))} <input name="to" value="${escapeHtml(filters.to)}" placeholder="YYYY-MM-DD" /></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button></div></form></section>
+    ${results === null ? empty(t('输入关键词开始搜索。', 'Type a keyword to search.'), t('搜索范围只有你自己：仓库、任务、工作项和审计。', 'The scope is your own data only: repositories, jobs, work items and audit.')) : sections === '' ? empty(t('没有匹配的结果。', 'No matches.'), t('换一个关键词，缩短它，或清空仓库、状态、类型和日期筛选来缩小范围。', 'Try another keyword, shorten it, or clear the repository, status, kind and date filters to narrow your search.')) : sections}`
+  return layout({ title: t('搜索', 'Search'), viewer, body, config, locale, path: '/search', active: 'console', notice, error })
 }
 
 export function adminSearchPage(input: {

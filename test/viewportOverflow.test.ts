@@ -166,12 +166,17 @@ test('the info tooltip cannot put a fixed-width box past the right edge below 96
 
 test('the tooltip explanation stays reachable at every width', () => {
   for (const width of [360, 768, DESKTOP_WIDTH]) {
+    // Hover and focus reveal the hint only as the no-JavaScript fallback now; the
+    // script hands the reveal to `aria-expanded` (test/layout.test.ts pins that
+    // split). Deleting the fallback to pass the width check is still not a fix:
+    // with no script the hint would be unreachable.
     assert.equal(
-      lastValue('.info-tip:hover::after', 'opacity', width),
+      lastValue('html:not([data-js]) .info-tip:hover::after', 'opacity', width),
       '1',
       `at ${String(width)}px hovering must still reveal the tooltip; deleting it to pass the width check is not a fix`,
     )
-    assert.equal(lastValue('.info-tip:focus::after', 'opacity', width), '1')
+    assert.equal(lastValue('html:not([data-js]) .info-tip:focus::after', 'opacity', width), '1')
+    assert.equal(lastValue('.info-tip[aria-expanded="true"]::after', 'opacity', width), '1', 'the explicit state must reveal the hint whatever the width')
   }
 })
 
