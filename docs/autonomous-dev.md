@@ -326,12 +326,17 @@ apart from a clean one. Those are different verdicts: a SARIF written by an
 analysis that really ran and legitimately found nothing passes
 (`parsed 0 result(s), 0 high/critical, 0 added`), while a missing file, a
 malformed JSON body, a document with no `runs` entry and a `runs` slot that holds
-no run each fail closed with a message naming which of the four it was. The last
-one is the slot, not the list: `{"runs":[]}` and `{"runs":{}}` are the no-run
+no run each fail closed with a message naming which of the five it was. The
+fourth is the slot, not the list: `{"runs":[]}` and `{"runs":{}}` are the no-run
 shape, while `{"runs":[null]}` — and any other slot that is not a JSON object,
 an array included — is refused as `run <n> is not an object`, because the reader
 otherwise reaches for `run.tool` and reports zero results for a document no
-analysis wrote.
+analysis wrote. The fifth is the list itself: `{"runs":[{}]}` and
+`{"runs":[{"results":[]}]}` are both an analysis that really ran and found
+nothing, so both pass, while a `results` value that is present and is not a list
+— `null`, a number, a string or an object — is refused as
+`run <n> results is not a list`, because the reader would otherwise call it
+zero findings, crash on it, or iterate a string into one finding per character.
 
 A result this gate accepts by severity is not always mergeable: the branch also
 requires conversation resolution, so a medium finding whose thread is still open

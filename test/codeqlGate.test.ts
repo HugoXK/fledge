@@ -114,25 +114,26 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // guard in the repository and plan routes, all above the webhook registration,
   // which moved the same pair to `:2979` on its own tree. In a tree carrying
   // both, the anchor is measured once rather than added: `#403`'s 21 lines and
-  // this PR's four compose to `:2983`, and the baseline entry and this pin move
-  // there together in the merge commit, which keeps "refreshed" from becoming
-  // "silently re-labelled". #360 then merged `main c6939e68` into its own tree:
-  // the command verbs add lines above the webhook registration too, so the anchor
-  // is measured again on the merged tree at `:3031` — read off that tree, not
-  // computed from `2983` — with the baseline entry and this pin moving together
-  // in the same merge commit. #358 moved the two gateway registrations the same
-  // way: two import lines and the `readAnswer` helper above them, 19 lines in
-  // total, with no new route and no change to the limiter call that opens each
-  // handler. The alerts (#41, #42, both dismissed false positive) are the same
-  // two.
+  // this PR's four compose to `:2983`. #360's first merge of `main c6939e68`
+  // measured `:3031` on its merged tree, and this second merge re-measures it
+  // again: `#355`'s token route, `#361`'s read model and `#440`'s job changes
+  // all sit above the same registration since, so the tree carrying them reads
+  // `:3044` — read off this tree, never summed onto an older number. #355's
+  // first import line also lifted the four top-of-file registrations, which read
+  // `:470`/`:505`/`:515`/`:525` here rather than main's `:469`/`:504`/`:514`/
+  // `:524`, and its gateway rewrite lifted the two gateway registrations to
+  // `:154`/`:179`; #358 moved that pair the same way once before, with two
+  // imports and the `readAnswer` helper, and no new route and no change to the
+  // limiter call that opens each handler. No result is added or dismissed: the
+  // two gateway alerts (#41, #42) stay the same two dismissed false positives.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3031',
-    'js/missing-rate-limiting|src/app.ts|469',
-    'js/missing-rate-limiting|src/app.ts|504',
-    'js/missing-rate-limiting|src/app.ts|514',
-    'js/missing-rate-limiting|src/app.ts|524',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|144',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|169',
+    'js/missing-rate-limiting|src/app.ts|3044',
+    'js/missing-rate-limiting|src/app.ts|470',
+    'js/missing-rate-limiting|src/app.ts|505',
+    'js/missing-rate-limiting|src/app.ts|515',
+    'js/missing-rate-limiting|src/app.ts|525',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|154',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|179',
   ])
   const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
   assert.equal(dismissed.length, 3, 'the three dismissed false-positive results are recorded with their reason')
@@ -295,6 +296,95 @@ test('a run slot that is not a plain JSON object is refused by name', (t) => {
   const empty = runGate(sarifDir, baselinePath)
   assert.equal(empty.code, 0, `an analysis that found nothing is still the pass state: ${empty.stderr}`)
   assert.match(empty.stdout, /codeql-gate: ok \(parsed 0 result\(s\), 0 high\/critical, 0 added/)
+})
+
+// #385: one level below the slot. `results` is the list the reader iterates, and
+// `run?.results ?? []` turned three shapes into three wrong verdicts: `null` read
+// as a clean analysis, a number crashed the gate with a raw TypeError, and a
+// string was iterated per character into a high finding with an empty rule id.
+// A `results` value that is present and is not a list is refused by name at the
+// level that reads it, so the verdict is a refusal even when a caller reaches
+// `parseSarif` without the CLI's per-file loop.
+test('a run whose results is null is refused, not read as a clean analysis', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+
+  writeFileSync(join(sarifDir, 'head.sarif'), '{"version":"2.1.0","runs":[{"results":null}]}')
+  const run = runGate(sarifDir, baselinePath)
+  const output = `${run.stdout}${run.stderr}`
+  assert.equal(run.code, 1, 'a run with a null results list carries no verdict, so it must fail closed')
+  assert.match(run.stderr, /is not readable SARIF: run 0 results is not a list \(found null\)/)
+  assert.doesNotMatch(output, /parsed 0 result\(s\)/, 'a null results list must not be reported as a clean analysis')
+  assert.doesNotMatch(output, /TypeError/)
+  // The refusal belongs to the reader, so a caller that skips the gate's loop
+  // gets the same named error instead of an empty alert list.
+  assert.throws(() => parseSarif({ runs: [{ results: null }] }), /run 0 results is not a list \(found null\)/)
+
+  // The run index is the offending run's own: a good run in front of the bad
+  // one must not shift the message onto the run that was fine.
+  writeFileSync(join(sarifDir, 'head.sarif'), '{"version":"2.1.0","runs":[{"results":[]},{"results":null}]}')
+  const shifted = runGate(sarifDir, baselinePath)
+  assert.equal(shifted.code, 1, 'a bad results list after a good run still fails closed')
+  assert.match(shifted.stderr, /is not readable SARIF: run 1 results is not a list \(found null\)/)
+})
+
+test('a run whose results is a number is refused by name instead of crashing', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+
+  writeFileSync(join(sarifDir, 'head.sarif'), '{"version":"2.1.0","runs":[{"results":42}]}')
+  const run = runGate(sarifDir, baselinePath)
+  const output = `${run.stdout}${run.stderr}`
+  assert.equal(run.code, 1, 'a number is not a result list, so it must fail closed')
+  assert.match(run.stderr, /is not readable SARIF: run 0 results is not a list \(found number\)/)
+  assert.doesNotMatch(output, /TypeError/, 'a refusal, not a crash: the same standard as the slot guard')
+  assert.doesNotMatch(output, /parsed 0 result\(s\)/)
+})
+
+test('a run whose results is a string is refused instead of inventing a finding', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+
+  writeFileSync(join(sarifDir, 'head.sarif'), '{"version":"2.1.0","runs":[{"results":"x"}]}')
+  const run = runGate(sarifDir, baselinePath)
+  const output = `${run.stdout}${run.stderr}`
+  assert.equal(run.code, 1, 'a string is not a result list, so it must fail closed')
+  assert.match(run.stderr, /is not readable SARIF: run 0 results is not a list \(found string\)/)
+  // Iterating the string per character is how the gate invented `new high result
+  // at :0`; a gate that invents a finding is one refactor away from inventing an
+  // approval, so that line must not exist.
+  assert.doesNotMatch(output, /new high result/, 'a string must not be flattened into a fabricated finding')
+})
+
+test('a run with an empty results list or no results key still passes', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+
+  // Both shapes are a real analysis that legitimately found nothing: the empty
+  // list says so explicitly, and some producers omit `results` when there are
+  // none. Refusing either would turn a quiet night into a red one, which is the
+  // blindness this gate exists to avoid in the other direction.
+  for (const document of [
+    '{"version":"2.1.0","runs":[{"results":[]}]}',
+    '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"CodeQL","rules":[]}}}]}',
+  ]) {
+    writeFileSync(join(sarifDir, 'head.sarif'), document)
+    const run = runGate(sarifDir, baselinePath)
+    assert.equal(run.code, 0, `a zero-result analysis is the pass state: ${run.stderr}`)
+    assert.match(run.stdout, /codeql-gate: ok \(parsed 0 result\(s\), 0 high\/critical, 0 added/)
+  }
 })
 
 // #297: the three shapes that are not a SARIF document at all. A top-level
