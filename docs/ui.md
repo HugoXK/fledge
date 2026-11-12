@@ -91,6 +91,38 @@ them; this page only fixes the names and the values.
 - No new token without a row in this table. Test `test/uiTokens.test.ts` fails
   when a token exists in `:root` and this page does not name it.
 
+## Chinese typography (中文排版)
+
+The console renders both locales from one stylesheet, so a heading rule tuned for
+Latin is used for Chinese too. Latin heading tracking is negative — `h1` at
+`-0.02em`, `.brand` at `-0.03em`, `.workspace-user h1` and `.stat strong` at
+`-0.045em` — which tightens a Latin word and sets a Chinese heading as a solid
+block, because a Chinese glyph is square and already carries its own side
+bearing. The base stack is Latin-first, so a Chinese run inside an English
+sentence falls through two Latin faces before it reaches a CJK one and is set in
+two faces on one line.
+
+`public/app.css` keys a `:lang(zh)` block off `<html lang="zh-CN">`, which
+`src/views/layout.ts` already renders. The rules:
+
+- Every heading rule that carries negative tracking has a `:lang(zh)`
+  counterpart whose `letter-spacing` is `0`; the Latin rules keep theirs.
+- `h1`, `.hero-copy h1` and `.stat strong` get a taller Chinese `line-height`
+  (`1.18`, `1.14`, `1.15`). A Chinese rule never declares a different
+  `font-size`, so the locale changes the texture, never the scale.
+- `html:lang(zh) body` sets a CJK-first `font-family` and nothing else: the base
+  rule at `:215` is the `font` shorthand, so re-declaring `font` there would
+  reset the size and the line-height this block exists to protect.
+- Nothing is downloaded: the stack names faces the platform already has, so the
+  CSP and the request count are unchanged.
+
+`test/chineseTypography.test.ts` computes those relationships from
+`test/cssRules.ts`'s `parseRules` — coverage, scale equality, line-height, the
+stack — and pins the precondition that a Chinese render declares
+`<html lang="zh-CN"`, without which no `:lang(zh)` rule can match. The 360/768
+overflow half belongs to the visual matrix (`## Visual matrix (多设备视觉矩阵)`),
+not to a second harness.
+
 ## Surfaces, radii and accents (#229)
 
 The templates carry no layout of their own. `src/views/pages.ts` used to hold 25
