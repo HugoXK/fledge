@@ -16,3 +16,5 @@ coverage/
 npm-debug.log*
 SESSION_HANDOFF.md
 SESSION_HANDOFF*.md
+
+visual-matrix/
