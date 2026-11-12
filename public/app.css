@@ -8,6 +8,11 @@
      for a graphical object), because a column hidden behind a 1.5:1 thumb looks
      like a column that does not exist. */
 :root {
+  /* Both schemes are supported; each explicit data-theme pins one below, so a
+     light desktop with an explicit dark choice does not get half-light controls,
+     scrollbars and selection (WCAG 2.1 AA 1.4.11 assumes a control matches the
+     surface it sits on). */
+  color-scheme: light dark;
   --bg: #07090d;
   --bg-soft: #0a0e14;
   --panel: #0d1118;
@@ -100,6 +105,104 @@
   --card-pad: clamp(18px, 2.4vw, 28px);
 }
 
+/* Light palette (#467). Same token names, same 4/8 spacing and type scales; only
+   the colours move, so a component written against the tokens works in both and
+   no view tests the scheme. The palette appears twice on purpose: a media query
+   and an attribute selector cannot share one declaration block, and the system
+   preference has to work with JavaScript off, so neither branch can be dropped.
+   Ratios, measured with the same formula test/uiTokens.test.ts uses:
+   --text 16.8:1 on --bg, --muted-2 5.8:1 on --panel-2, --badge-ink 7.3:1 on
+   --badge-bg, --scroll-track 3.4:1 on --panel and 3.3:1 on --scroll-thumb. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #f4f6f9;
+    --bg-soft: #eef1f6;
+    --panel: #ffffff;
+    --panel-2: #f7f9fc;
+    --surface-sunken: #eef1f6;
+    --surface-inset: #e9edf3;
+    --surface-raised: #ffffff;
+    --field: #ffffff;
+    --track: #e8ecf2;
+    --row-line: #e4e9f0;
+    --raised-top: #ffffff;
+    --raised-bottom: #f3f6fa;
+    --line: #dbe1e9;
+    --line-strong: #b9c2cf;
+    --scroll-track: #828c9a;
+    --scroll-thumb: #333c48;
+    --text: #10161f;
+    --muted: #47515f;
+    --muted-2: #59636f;
+    --brand: #3f7a12;
+    --brand-2: #0e7a5c;
+    --accent: #2b4fd0;
+    --accent-strong: #1d3cb8;
+    --accent-hover: #2646c4;
+    --accent-ink: #ffffff;
+    --good: #0a6e55;
+    --warn: #7a5200;
+    --danger: #b3261e;
+    --mint: #0a6e55;
+    --blue: #2b4fd0;
+    --violet: #6236a8;
+    --mark-ink: #0b1220;
+    --badge-bg: #e7ecf3;
+    --badge-ink: #414d5c;
+    --lede-ink: #333e4d;
+    --tip-ink: #1a2330;
+    --paper: #ffffff;
+    --shadow: 0 24px 80px rgba(15, 23, 42, 0.14);
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f6f9;
+  --bg-soft: #eef1f6;
+  --panel: #ffffff;
+  --panel-2: #f7f9fc;
+  --surface-sunken: #eef1f6;
+  --surface-inset: #e9edf3;
+  --surface-raised: #ffffff;
+  --field: #ffffff;
+  --track: #e8ecf2;
+  --row-line: #e4e9f0;
+  --raised-top: #ffffff;
+  --raised-bottom: #f3f6fa;
+  --line: #dbe1e9;
+  --line-strong: #b9c2cf;
+  --scroll-track: #828c9a;
+  --scroll-thumb: #333c48;
+  --text: #10161f;
+  --muted: #47515f;
+  --muted-2: #59636f;
+  --brand: #3f7a12;
+  --brand-2: #0e7a5c;
+  --accent: #2b4fd0;
+  --accent-strong: #1d3cb8;
+  --accent-hover: #2646c4;
+  --accent-ink: #ffffff;
+  --good: #0a6e55;
+  --warn: #7a5200;
+  --danger: #b3261e;
+  --mint: #0a6e55;
+  --blue: #2b4fd0;
+  --violet: #6236a8;
+  --mark-ink: #0b1220;
+  --badge-bg: #e7ecf3;
+  --badge-ink: #414d5c;
+  --lede-ink: #333e4d;
+  --tip-ink: #1a2330;
+  --paper: #ffffff;
+  --shadow: 0 24px 80px rgba(15, 23, 42, 0.14);
+}
+
+/* An explicit dark choice must win over a light system preference: the media
+   branch above already excludes it, and this pins the controls' scheme too. */
+:root[data-theme="dark"] { color-scheme: dark; }
+
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 [id] { scroll-margin-top: var(--header-h); }
@@ -114,7 +217,7 @@ body {
   min-height: 100dvh;
   -webkit-font-smoothing: antialiased;
 }
-::selection { background: rgba(123, 149, 255, 0.34); color: var(--accent-ink); }
+::selection { background: rgba(123, 149, 255, 0.34); color: var(--text); }
 .skip-link { position: absolute; left: -9999px; top: 0; z-index: 100; padding: 10px 14px; border-radius: 0 0 var(--radius-sm) 0; background: var(--accent-strong); color: var(--accent-ink); font-weight: 700; }
 .skip-link:focus { left: 0; }
 a { color: var(--accent); text-decoration: none; }
