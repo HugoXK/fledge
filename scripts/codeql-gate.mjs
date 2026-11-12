@@ -36,6 +36,15 @@ function sarifFiles(path) {
     .map((name) => join(path, name))
 }
 
+// #342: "plain JSON object" is the predicate, and `typeof value === 'object'` is
+// not it, because JavaScript calls an array an object: the loose test would keep
+// passing `{"runs":[[]]}` while looking fixed. JSON.parse only produces objects,
+// arrays, strings, numbers, booleans and null, so excluding arrays is the whole
+// test.
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
 let files
 let baseline
 try {
@@ -78,6 +87,16 @@ for (const file of files) {
   if (runs === 0) {
     const shape = Array.isArray(document.runs) ? 'runs: 0' : 'runs: missing or not a list'
     console.error(`codeql-gate: ${file} has no analysis run (${shape}); a SARIF that analysed nothing is a blind gate, not a clean one`)
+    process.exit(1)
+  }
+  // #342: a slot with no run in it is the same blindness one level down. The
+  // reader below reaches for `run?.tool`, so a non-object slot yields zero
+  // results and this gate goes green on a document no analysis produced — a
+  // truncated or renamed SARIF would be read as clean rather than as an error.
+  // The count above cannot catch it: the slot exists, so `runs` is not 0.
+  for (const [index, run] of document.runs.entries()) {
+    if (isPlainObject(run)) continue
+    console.error(`codeql-gate: ${file} is not readable SARIF: run ${index} is not an object`)
     process.exit(1)
   }
   alerts.push(...parseSarif(document))

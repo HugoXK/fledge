@@ -321,8 +321,13 @@ query keeps its analysis level. Every verdict is printed with
 apart from a clean one. Those are different verdicts: a SARIF written by an
 analysis that really ran and legitimately found nothing passes
 (`parsed 0 result(s), 0 high/critical, 0 added`), while a missing file, a
-malformed JSON body and a document with no `runs` entry each fail closed with a
-message naming which of the three it was.
+malformed JSON body, a document with no `runs` entry and a `runs` slot that holds
+no run each fail closed with a message naming which of the four it was. The last
+one is the slot, not the list: `{"runs":[]}` and `{"runs":{}}` are the no-run
+shape, while `{"runs":[null]}` — and any other slot that is not a JSON object,
+an array included — is refused as `run <n> is not an object`, because the reader
+otherwise reaches for `run.tool` and reports zero results for a document no
+analysis wrote.
 
 A result this gate accepts by severity is not always mergeable: the branch also
 requires conversation resolution, so a medium finding whose thread is still open
