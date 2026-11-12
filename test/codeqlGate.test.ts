@@ -136,7 +136,10 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // then adds its limit guard, its two refusal helpers and its two add-path
   // call sites: the four top-of-file registrations read `:516`/`:551`/`:561`/`:571`
   // on the merged tree and the webhook registration reads `:3189`, while the
-  // gateway pair stays `:155`/`:180`.
+  // gateway pair stays `:155`/`:180`. #488 (the settings-anchor call site) and
+  // #489 (`public/app.css` plus two layout tests) then merged without touching
+  // `src/app.ts`, so the refresh onto `main@fd76f696` re-read all seven route
+  // lines on the merged tree and moved none of them.
   assert.deepEqual([...keys].sort(), [
     'js/missing-rate-limiting|src/app.ts|3189',
     'js/missing-rate-limiting|src/app.ts|516',
