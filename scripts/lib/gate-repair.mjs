@@ -49,8 +49,41 @@ export function isRepairCandidate(run, currentRunId) {
     && String(run.id) !== String(currentRunId ?? '')
 }
 
+// A run whose jobs the caller has to read even though it is above the cap: the
+// above-cap fallback (#341) decides on the red that run owns, and the in-flight
+// case needs its status. Exported so the caller widens the same set it widened
+// for the cap path instead of keeping a second, drifting list.
+export function isBlockingCandidate(run, currentRunId) {
+  return isGateRun(run)
+    && String(run.id) !== String(currentRunId ?? '')
+    && (run?.status !== 'completed' || Number(run.run_attempt ?? 0) > MAX_REPAIR_ATTEMPT)
+}
+
 function repairable(runs, currentRunId) {
   return (runs ?? []).filter((run) => isRepairCandidate(run, currentRunId))
+}
+
+function redOfSuite(reds, suiteId) {
+  if (suiteId === undefined || suiteId === null) return []
+  return reds.filter((check) => String(check?.check_suite?.id ?? '') === String(suiteId))
+}
+
+function newestCompletedAt(checks) {
+  return [...checks].sort((a, b) => Date.parse(b.completed_at ?? '') - Date.parse(a.completed_at ?? ''))[0]
+}
+
+// The run behind a red that the cap would otherwise stop. A red whose suite
+// belongs to one of these runs is the one that has to be repainted; when the
+// payload does not name suites (a fixture, or an older shape) the newest run in
+// the set stands in for it.
+function blockingRun(reds, runs, jobsFor, currentRunId) {
+  const above = (runs ?? []).filter((run) => isGateRun(run)
+    && String(run.id) !== String(currentRunId ?? '')
+    && Number(run.run_attempt ?? 0) > MAX_REPAIR_ATTEMPT)
+  const failed = above.filter((run) => (jobsFor(run.id) ?? []).some((job) => job.name === REQUIRED_CONTEXT && job.conclusion === 'failure'))
+  const pool = failed.length > 0 ? failed : above
+  const owning = pool.filter((run) => redOfSuite(reds, run?.check_suite_id).length > 0)
+  return [...(owning.length > 0 ? owning : pool)].sort(newestFirst)[0]
 }
 
 function startedAt(check) {
@@ -99,7 +132,7 @@ export function standingChecks(checkRuns) {
 // re-run at most twice if the same PASS is posted twice (1 -> 2, then 2 -> 3); once
 // it stands above the cap, a red it still owns is blocked on a new commit instead
 // of another re-run. That bound is what makes this loop terminate.
-export function repairPlan({ expected, checkRuns, runs, jobsFor, currentRunId }) {
+export function repairPlan({ expected, checkRuns, runs, jobsFor, currentRunId, verdictAt }) {
   const completed = standingChecks(checkRuns).filter((check) => check.status === 'completed')
   const reds = completed.filter((check) => check.conclusion !== 'success' && check.conclusion !== 'skipped')
   const candidates = repairable(runs, currentRunId)
@@ -117,8 +150,34 @@ export function repairPlan({ expected, checkRuns, runs, jobsFor, currentRunId })
     .sort(newestFirst)
     .map((run) => run.id)
   if (targets.length > 0) return { action: 'rerun', ids: targets, reason: `a failed review-gate run at this SHA is still below attempt ${MAX_REPAIR_ATTEMPT + 1}` }
-  if (reds.length > 0) {
-    return { action: 'blocked', ids: [], reason: `a failed review-gate still stands at this SHA and the run behind it is already at attempt ${MAX_REPAIR_ATTEMPT + 1}; a new commit is needed` }
+  if (reds.length === 0) return { action: 'none', ids: [], reason: 'no failed review-gate at this SHA' }
+
+  // #341: above the cap the attempt count cannot decide, because it cannot tell
+  // "this red is older than the standing PASS" from "this run failed after the
+  // PASS". The blocking red check's own `completed_at` can, and it is the field
+  // that only moves when the gate job itself re-runs. Equality is repaint on
+  // purpose: repaint is the harmless branch and blocked is the costly one, so
+  // the boundary must never resolve to blocked.
+  const blocking = blockingRun(reds, runs, jobsFor, currentRunId)
+  if (blocking === undefined) {
+    return { action: 'blocked', ids: [], reason: 'a failed review-gate still stands at this SHA and no gate run behind it can be re-run; a new commit is needed' }
   }
-  return { action: 'none', ids: [], reason: 'no failed review-gate at this SHA' }
+  if (blocking.status !== 'completed') {
+    // `POST /actions/runs/<id>/rerun` is refused while the run is live, and "a
+    // new commit is needed" would be false: the attempt still has to publish its
+    // own conclusion. Empty ids keep the caller's rerun loop out of reach.
+    return { action: 'wait', ids: [], reason: `run ${blocking.id} (attempt ${blocking.run_attempt}) is still ${String(blocking.status)}; the trigger after it settles decides again` }
+  }
+  const verdictMs = Date.parse(String(verdictAt ?? ''))
+  const red = newestCompletedAt(redOfSuite(reds, blocking?.check_suite_id).length > 0 ? redOfSuite(reds, blocking?.check_suite_id) : reds)
+  const redMs = Date.parse(String(red?.completed_at ?? ''))
+  if (!Number.isFinite(verdictMs) || !Number.isFinite(redMs)) {
+    // Fail closed: comparing against `undefined` would repaint on a belief.
+    const missing = Number.isFinite(verdictMs) ? 'the standing red has no completed_at' : 'no verdict timestamp was supplied'
+    return { action: 'blocked', ids: [], reason: `cannot compare the standing red to the newest verdict (${missing}); not repainting run ${blocking.id}` }
+  }
+  if (redMs <= verdictMs) {
+    return { action: 'repaint', ids: [blocking.id], runId: blocking.id, attempt: Number(blocking.run_attempt ?? 0), reason: `run ${blocking.id} is above attempt ${MAX_REPAIR_ATTEMPT} and its red completed at ${String(red.completed_at)}, at or before the newest verdict (${String(verdictAt)})` }
+  }
+  return { action: 'blocked', ids: [], reason: `run ${blocking.id} at attempt ${blocking.run_attempt} failed after the newest verdict (${String(red.completed_at)} > ${String(verdictAt)}); a new commit is needed` }
 }

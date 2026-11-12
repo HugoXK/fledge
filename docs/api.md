@@ -78,7 +78,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/admin/webhooks/:id/retry` | superadmin + CSRF | Retry one failed delivery from its stored payload |
 | GET | `/admin/metrics` | superadmin | Product funnel, delivery efficiency, daily trend, failure breakdown, cost breakdown, actionable alerts, team participation, attribution and stage metrics (`?window=7 or 30`) |
 | POST | `/settings/model` | approved + CSRF | Save/clear own model |
-| POST | `/settings/notifications` | approved + CSRF | Notification email, job/question mail, daily digest, test mail |
+| POST | `/settings/notifications` | approved + CSRF | Notification email, job/question mail, per-job success mail, daily digest, test mail |
 | POST | `/settings/tokens` | approved + CSRF | Create a `flg_` token |
 | POST | `/settings/tokens/:id/revoke` | owner + CSRF | Revoke a token |
 | POST | `/notifications/read` | approved + CSRF | Mark notifications read |

@@ -46,6 +46,8 @@ export interface UserRow {
   quota_used_usd: number
   email_job_updates: number
   email_daily_digest: number
+  /** #353: also mail a success the schedule produced. Off by default. */
+  email_job_success: number
   notify_email: string | null
   github_token_enc: string | null
   github_token_scopes: string | null
@@ -240,6 +242,7 @@ export interface JobRow {
   model_json: string | null
   output_kind: string | null
   continuity_used: number
+  owner_started: number
   retry_attempt: number
   retry_of: string | null
   lease_owner: string | null
@@ -433,6 +436,7 @@ CREATE TABLE IF NOT EXISTS users (
   quota_used_usd REAL NOT NULL DEFAULT 0,
   email_job_updates INTEGER NOT NULL DEFAULT 1,
   email_daily_digest INTEGER NOT NULL DEFAULT 1,
+  email_job_success INTEGER NOT NULL DEFAULT 0,
   notify_email TEXT,
   github_token_enc TEXT,
   github_token_scopes TEXT,
@@ -605,6 +609,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   model_json TEXT,
   output_kind TEXT,
   continuity_used INTEGER NOT NULL DEFAULT 0,
+  owner_started INTEGER NOT NULL DEFAULT 0,
   retry_attempt INTEGER NOT NULL DEFAULT 0,
   retry_of TEXT,
   lease_owner TEXT,
@@ -1023,6 +1028,7 @@ export class Store {
       ['quota_unlimited', 'INTEGER NOT NULL DEFAULT 0'],
       ['email_job_updates', 'INTEGER NOT NULL DEFAULT 1'],
       ['email_daily_digest', 'INTEGER NOT NULL DEFAULT 1'],
+      ['email_job_success', 'INTEGER NOT NULL DEFAULT 0'],
       ['notify_email', 'TEXT'],
       ['allow_private_models', 'INTEGER NOT NULL DEFAULT 0'],
       ['github_token_scopes', 'TEXT'],
@@ -1105,6 +1111,7 @@ export class Store {
     if (!jobColumns.has('continuity_json')) this.run('ALTER TABLE jobs ADD COLUMN continuity_json TEXT')
     if (!jobColumns.has('output_kind')) this.run('ALTER TABLE jobs ADD COLUMN output_kind TEXT')
     if (!jobColumns.has('continuity_used')) this.run('ALTER TABLE jobs ADD COLUMN continuity_used INTEGER NOT NULL DEFAULT 0')
+    if (!jobColumns.has('owner_started')) this.run('ALTER TABLE jobs ADD COLUMN owner_started INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('model_json')) this.run('ALTER TABLE jobs ADD COLUMN model_json TEXT')
     if (!jobColumns.has('retry_attempt')) this.run('ALTER TABLE jobs ADD COLUMN retry_attempt INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('retry_of')) this.run('ALTER TABLE jobs ADD COLUMN retry_of TEXT')
@@ -1384,6 +1391,10 @@ export class Store {
 
   setEmailDailyDigest(id: string, enabled: boolean): void {
     this.run('UPDATE users SET email_daily_digest = ? WHERE id = ?', enabled ? 1 : 0, id)
+  }
+
+  setEmailJobSuccess(id: string, enabled: boolean): void {
+    this.run('UPDATE users SET email_job_success = ? WHERE id = ?', enabled ? 1 : 0, id)
   }
 
   setNotifyEmail(id: string, email: string | null): void {
@@ -2207,10 +2218,10 @@ export class Store {
     this.run('DELETE FROM repo_instances WHERE repo_id = ?', repoId)
   }
 
-  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; createdAt?: string }): JobRow {
+  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string }): JobRow {
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, base_branch, work_item_id, priority, base_sha, retry_attempt, retry_of, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, base_branch, work_item_id, priority, base_sha, retry_attempt, retry_of, owner_started, created_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -2225,6 +2236,7 @@ export class Store {
       input.baseSha ?? null,
       input.retryAttempt ?? 0,
       input.retryOf ?? null,
+      input.ownerStarted === true ? 1 : 0,
       input.createdAt ?? nowIso(),
     )
     return this.getJob(input.id)!

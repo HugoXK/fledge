@@ -96,6 +96,51 @@ test('unlimited quota is shown instead of a finite balance', () => {
   }
 })
 
+test('the settings page offers the per-job success switch and states the coalescing policy', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'mail-success-switch', status: 'approved' })
+    const { cookie, csrf } = sessionFor(built, user)
+    const page = await built.app.inject({ method: 'GET', url: '/settings', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /name="jobSuccess"/, 'the switch is on the page')
+    assert.match(page.body, /计划任务成功时也单独发邮件/, 'the Chinese label is on the page')
+    assert.match(page.body, /失败按仓库合并/, 'the coalescing policy is stated in Chinese')
+    assert.doesNotMatch(page.body, /name="jobSuccess" value="1" checked/, 'the switch starts off for an existing user')
+    assert.equal(store.userById(user.id)?.email_job_success, 0)
+
+    // The UI bar requires both languages: the same page in English must carry
+    // the same switch and the same policy sentence, not a fallback.
+    const english = await built.app.inject({ method: 'GET', url: '/settings', headers: { cookie, 'accept-language': 'en' } })
+    assert.equal(english.statusCode, 200)
+    assert.match(english.body, /name="jobSuccess"/)
+    assert.match(english.body, /also email me when a scheduled job succeeds/i)
+    assert.match(english.body, /summarized in the daily summary/i)
+
+    const saved = await built.app.inject({
+      method: 'POST',
+      url: '/settings/notifications',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, jobUpdates: '1', dailyDigest: '1', jobSuccess: '1', action: 'save' }),
+    })
+    assert.equal(saved.statusCode, 302)
+    assert.equal(store.userById(user.id)?.email_job_success, 1)
+
+    const off = await built.app.inject({
+      method: 'POST',
+      url: '/settings/notifications',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, jobUpdates: '1', dailyDigest: '1', action: 'save' }),
+    })
+    assert.equal(off.statusCode, 302)
+    assert.equal(store.userById(user.id)?.email_job_success, 0, 'saving without the box turns it back off')
+  } finally {
+    await built.close()
+  }
+})
+
 test('email notification settings can be viewed and changed', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
@@ -262,6 +307,7 @@ test('job detail shows evidence and can retry a failed job', async () => {
     assert.match(jobs[0]!.goal, /Resume from checkpoint:/)
     assert.match(jobs[0]!.goal, /done A; next B/)
     assert.equal(jobs[0]!.trigger, 'followup')
+    assert.equal(jobs[0]!.owner_started, 1, 'the retry button is a person pressing it, so the row records that')
     assert.equal(jobs[0]!.branch, 'fledge/fix')
     assert.equal(jobs[0]!.pr_url, 'https://github.com/o/r/pull/7')
     assert.equal(jobs[0]!.base_branch, 'main')
