@@ -42,7 +42,7 @@ function mergedAt(pr) {
   return Number.isNaN(parsed) ? 0 : parsed
 }
 
-export function buildState({ lastTag, lastTagCommittedAt, packageVersion, fragments, tags, dryRun, closedPages, openPages, checks }) {
+export function buildState({ lastTag, lastTagCommittedAt, packageVersion, fragments, tags, dryRun, closedPages, openPages, checks, branches }) {
   const mergedPrs = flattenPages(closedPages)
     .filter((pr) => pr?.merged_at !== null && pr?.merged_at !== undefined)
     .sort((a, b) => mergedAt(a) - mergedAt(b))
@@ -64,6 +64,26 @@ export function buildState({ lastTag, lastTagCommittedAt, packageVersion, fragme
   const accepted = (pr) => isSameRepo(pr) && releaseIdentity({ branch: pr?.head?.ref, title: pr?.title }) !== null
   const candidate = titleMatched.find(accepted) ?? null
   const rejected = titleMatched.find((pr) => !accepted(pr)) ?? null
+
+  // A `release/v<version>` branch that no pull request in any state and no tag
+  // accounts for is an orphan: a run pushed it and then could not open the pull
+  // request (`#333`), so every later run refuses to overwrite it and the slot is
+  // wedged. The classification is here because this is where the branches, the
+  // pull requests and the tags meet; the repair is the owner's, never a run's.
+  const tagNames = Array.isArray(tags) ? tags.map(String) : []
+  const closedPrs = flattenPages(closedPages)
+  const pullRequestHeads = new Set(
+    [...openPrs, ...closedPrs].map((pr) => String(pr?.head?.ref ?? '')).filter((ref) => ref !== ''),
+  )
+  const releaseBranches = (Array.isArray(branches) ? branches : [])
+    .map((entry) => {
+      const name = String(typeof entry === 'string' ? entry : entry?.name ?? '')
+      const sha = String(typeof entry === 'string' ? '' : entry?.commit?.sha ?? entry?.sha ?? '')
+      const match = /^release\/v(\d+\.\d+\.\d+)$/.exec(name)
+      return match === null ? null : { branch: name, version: match[1], tag: `v${match[1]}`, sha }
+    })
+    .filter((entry) => entry !== null)
+    .filter((entry) => !pullRequestHeads.has(entry.branch) && !tagNames.includes(entry.tag))
   return {
     lastTag: String(lastTag ?? ''),
     lastTagCommittedAt: String(lastTagCommittedAt ?? ''),
@@ -83,6 +103,7 @@ export function buildState({ lastTag, lastTagCommittedAt, packageVersion, fragme
         },
     lastMerged: mergedPrs.at(-1) ?? null,
     mergedPrs,
+    orphanBranches: releaseBranches,
   }
 }
 

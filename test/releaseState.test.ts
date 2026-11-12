@@ -216,6 +216,122 @@ test('a newer foreign PR cannot shadow this repository\'s own release PR', () =>
   assert.equal(decision.pr, 199)
 })
 
+// --- the orphan branch (#333) -------------------------------------------------
+//
+// `release/v0.3.2` exists at a pushable sha with no pull request in any state and
+// no `v0.3.2` tag: a run pushed it, then refused to open the pull request. Every
+// later run died inside the push step with a message about "different content",
+// which is true but says nothing about the state. The classification lives where
+// the state is assembled, and the drive names it as the blocked state it is.
+
+const ORPHAN_SHA = '224096bdadb3c2e683c4774dd8713f2dbc103fa6'
+const ORPHAN_BRANCH = { name: 'release/v0.3.2', commit: { sha: ORPHAN_SHA } }
+
+function orphanState({ branches = [ORPHAN_BRANCH], openPages = [], closedPages = [], tags = ['v0.3.1'] }: {
+  branches?: unknown[]
+  openPages?: unknown[]
+  closedPages?: unknown[]
+  tags?: string[]
+} = {}) {
+  return buildState({
+    lastTag: 'v0.3.1',
+    lastTagCommittedAt: '2026-11-10T20:57:10Z',
+    packageVersion: '0.3.1',
+    fragments: 3,
+    tags,
+    branches,
+    closedPages,
+    openPages,
+    checks: [{ id: 9, name: 'ci-ok', conclusion: 'success' }],
+  })
+}
+
+const PLAN_0302 = { shouldRelease: true, nextVersion: '0.3.2', reason: 'the rule is met' }
+
+function driveOrphan(state: ReturnType<typeof orphanState>) {
+  return decideDrive({
+    plan: PLAN_0302,
+    openReleasePr: null,
+    mergedPrs: [],
+    tags: state.tags,
+    orphanBranches: state.orphanBranches,
+    ciOk: state.ciOk,
+    dryRun: false,
+  })
+}
+
+test('a release branch with no pull request and no tag is an orphan, and the drive blocks by name', () => {
+  const state = orphanState()
+  assert.deepEqual(state.orphanBranches, [{ branch: 'release/v0.3.2', version: '0.3.2', tag: 'v0.3.2', sha: ORPHAN_SHA }])
+
+  const decision = driveOrphan(state)
+  assert.equal(decision.action, 'report-blocked')
+  assert.match(decision.reason, /orphan-branch/)
+  assert.match(decision.reason, /release\/v0\.3\.2/)
+  assert.match(decision.reason, new RegExp(ORPHAN_SHA))
+  assert.match(decision.reason, /owner/, 'the reason says the repair is not the run\'s')
+})
+
+test('an orphan branch is not reported once a pull request or the tag exists', () => {
+  const withOpenPr = orphanState({
+    openPages: [[{ ...OWN_RELEASE_PR, head: { ...OWN_RELEASE_PR.head, ref: 'release/v0.3.2' } }]],
+  })
+  assert.deepEqual(withOpenPr.orphanBranches, [], 'an open pull request means the branch is not orphaned')
+
+  const withMergedPr = orphanState({
+    openPages: [],
+    closedPages: [[{
+      number: 208,
+      title: 'release: v0.3.2',
+      head: { ref: 'release/v0.3.2', sha: ORPHAN_SHA },
+      base: { repo: { full_name: 'HugoXK/fledge' } },
+      merged_at: '2026-11-11T16:00:00Z',
+      merge_commit_sha: 'b'.repeat(40),
+    }]],
+  })
+  assert.deepEqual(withMergedPr.orphanBranches, [], 'a merged pull request means the branch shipped, so the tag path owns it')
+
+  const withTag = orphanState({ tags: ['v0.3.1', 'v0.3.2'] })
+  assert.deepEqual(withTag.orphanBranches, [], 'the tag means the slot shipped')
+})
+
+test('the existing reasons are unchanged when the branch is not an orphan', () => {
+  const withTag = orphanState({ tags: ['v0.3.1', 'v0.3.2'] })
+  assert.equal(withTag.orphanBranches.length, 0)
+  const decision = driveOrphan(withTag)
+  assert.equal(decision.action, 'open-pr', 'with the tag present the next release is free to plan')
+  assert.doesNotMatch(decision.reason, /orphan-branch/)
+
+  const merged = orphanState({
+    openPages: [],
+    closedPages: [[{
+      number: 208,
+      title: 'release: v0.3.2',
+      head: { ref: 'release/v0.3.2', sha: ORPHAN_SHA },
+      base: { repo: { full_name: 'HugoXK/fledge' } },
+      merged_at: '2026-11-11T16:00:00Z',
+      merge_commit_sha: 'b'.repeat(40),
+    }]],
+  })
+  const tagDecision = decideDrive({
+    plan: PLAN_0302,
+    openReleasePr: null,
+    mergedPrs: [{ number: 208, title: 'release: v0.3.2', headRef: 'release/v0.3.2', mergeCommitSha: 'b'.repeat(40) }],
+    tags: merged.tags,
+    orphanBranches: merged.orphanBranches,
+    ciOk: merged.ciOk,
+    dryRun: false,
+  })
+  assert.equal(tagDecision.action, 'tag', 'a merged release PR without its tag is still tagged')
+  assert.doesNotMatch(tagDecision.reason, /orphan-branch/)
+})
+
+test('nothing is reported about branches when there is no release branch at all', () => {
+  const state = orphanState({ branches: [{ name: 'main', commit: { sha: 'c'.repeat(40) } }] })
+  assert.deepEqual(state.orphanBranches, [])
+  assert.doesNotMatch(driveOrphan(state).reason, /orphan-branch/)
+})
+
 test('the workflow plans from the tested projection, not an inline jq expression', () => {
   assert.match(workflow, /import \{ plannerInput \} from "\.\/scripts\/lib\/release-state\.mjs"/)
   assert.equal(workflow.includes('openReleasePr: (.openPr != null or .openPrRejected != null)'), false)

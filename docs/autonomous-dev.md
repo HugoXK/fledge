@@ -508,9 +508,20 @@ exactly one thing per night:
 | the rule is met and nothing is in flight | push `release/v<next>` with the mechanical commit and comment on `#80` with the counts, the branch and the pushed sha |
 | the same branch already exists with the same tree | `already pushed` — report it and exit 0 |
 | the same branch exists with other content | fail; the branch is never overwritten, so a review in progress cannot be discarded |
+| a `release/v<next>` branch has no pull request in any state and no tag | `STATE=orphan-branch` in the summary, naming the branch and its sha, and the run is red: this is a slot wedged by an earlier run, and only the owner deletes or adopts that branch |
 | a release PR is already open | no push; the drive decision goes to the artifact and the summary, and whoever calls `#187` owns the PR |
 | the rule is not met | write the counts and the reason to the job summary and exit 0 |
 | a dry run | the same summary and artifact, and no push and no comment |
+
+The push and the pull request are one action, so the credential that opens the
+pull request is a precondition checked **before** anything is pushed: with
+`RELEASE_OPEN_TOKEN` unset the `release` job is red, pushes no branch and names the
+missing secret. A branch is pushed only when the run can open its pull request, and
+the push step's `if:` names that precondition, so the state that wedged the slot —
+a pushed branch no pull request could be opened for — is not reachable again. The
+tree-equality guard above the push is untouched: it is the last thing between a
+stale branch and a wrong release. An orphan branch is reported, never repaired: no
+step creates, deletes, resets, adopts or force-pushes a `release/*` ref.
 
 The job never opens, merges or publishes a pull request, and the file contains no
 `gh pr` command at all: the pull-request half is `#187`. Rule 4 (the latest

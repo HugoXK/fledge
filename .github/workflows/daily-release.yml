@@ -82,13 +82,20 @@ jobs:
           gh api --paginate "repos/${REPO}/pulls?state=closed&per_page=100&sort=updated" | jq -s . > /tmp/prs.json
           gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" | jq -s . > /tmp/open.json
           gh api "repos/${REPO}/commits/main/check-runs?per_page=100" > /tmp/checks.json
+          # The release branches, for the orphan classification: a branch the
+          # routine pushed has to be distinguishable from one it never made
+          # (#333). `GET /branches` answers `{ name, commit: { sha } }`; the sha is
+          # what the blocked reason names.
+          gh api --paginate "repos/${REPO}/branches?per_page=100" \
+            | jq -s 'flatten | map({ name: .name, commit: { sha: (.commit.sha // "") } })' > /tmp/branches.json
           FRAGMENTS="$(ls changelog.d/*.md 2>/dev/null | grep -v '/README.md$' | wc -l | tr -d ' ')"
           TAGS="$(jq -c . /tmp/tags.json)"
           node scripts/release-state.mjs \
             --prs /tmp/prs.json --open /tmp/open.json --checks /tmp/checks.json \
+            --branches /tmp/branches.json \
             --tag "$TAG" --tag-time "$TAG_TIME" --version "$VERSION" \
             --fragments "$FRAGMENTS" --tags-json "$TAGS" --dry-run "$DRY_RUN" > /tmp/state.json
-          jq '{lastTag, packageVersion, fragments, ciOk, dryRun, openPr: (.openPr | {number, title} // null), lastMerged: (.lastMerged | {number, title} // null)}' /tmp/state.json
+          jq '{lastTag, packageVersion, fragments, ciOk, dryRun, orphanBranches, openPr: (.openPr | {number, title} // null), lastMerged: (.lastMerged | {number, title} // null)}' /tmp/state.json
 
       - name: Plan
         id: plan
@@ -154,6 +161,7 @@ jobs:
                   },
               mergedPrs: [],
               tags: state.tags,
+              orphanBranches: state.orphanBranches,
               ciOk: state.ciOk,
               dryRun: state.dryRun,
             })
@@ -161,13 +169,50 @@ jobs:
             appendFileSync(process.env.GITHUB_OUTPUT, `action=${decision.action}\nreason=${decision.reason}\nversion=${decision.version ?? ""}\ntag=${decision.tag ?? ""}\n`)
             appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- action: **${decision.action}** — ${decision.reason}\n`)
             console.log(JSON.stringify(decision))
+            // An orphan branch is a wedged slot, not a quiet night: the run is red
+            // and the summary names the state, the branch and its sha (#333).
+            if (decision.action === "report-blocked" && String(decision.reason).startsWith("orphan-branch")) {
+              appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- STATE=orphan-branch — ${decision.reason}\n`)
+              console.error(`::error::${decision.reason}`)
+              process.exitCode = 1
+            }
           '
+
+      - name: Check the opener precondition
+        id: opener
+        # The branch push exists only so a pull request can be opened for it, so
+        # the credential that opens the pull request is checked before anything is
+        # pushed (#333). Without this step a run pushed `release/v0.3.2` and then
+        # reported `blocked` while exiting 0, and the branch that no run could open
+        # a pull request for wedged every later night.
+        if: ${{ inputs.dry_run != true }}
+        env:
+          OPEN_TOKEN: ${{ secrets.RELEASE_OPEN_TOKEN }}
+          DECIDE_ACTION: ${{ steps.decide.outputs.action }}
+          DECIDE_VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$DECIDE_ACTION" != 'open-pr' ]; then
+            echo "no push is planned (${DECIDE_ACTION}), so the opener precondition is not needed" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ -z "$OPEN_TOKEN" ]; then
+            echo "::error::RELEASE_OPEN_TOKEN is not set: nothing was pushed, because release/v${DECIDE_VERSION} would be a branch no credential can open a pull request for — the orphan state #333 reports"
+            exit 1
+          fi
+          if [ "$DECIDE_VERSION" = "" ]; then
+            echo "::error::the drive selected open-pr without a version; refusing to push a branch that cannot be named"
+            exit 1
+          fi
+          echo "opener=ready version=${DECIDE_VERSION}" >> "$GITHUB_STEP_SUMMARY"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Push the release branch
         id: push
         # A manual dispatch defaults to a dry run: it writes the summary and the
-        # artifact and pushes nothing.
-        if: ${{ inputs.dry_run != true }}
+        # artifact and pushes nothing. The push also requires the opener's
+        # precondition, so it cannot run against a credential that is not there.
+        if: ${{ inputs.dry_run != true && steps.opener.outputs.ready == 'true' }}
         env:
           DECIDE_ACTION: ${{ steps.decide.outputs.action }}
           DECIDE_VERSION: ${{ steps.decide.outputs.version }}
@@ -224,9 +269,11 @@ jobs:
         id: open
         # A dry run and a night that pushed nothing stay out of the write path.
         # The token is the repository secret, read by the script from the
-        # environment: it never appears in an argument, an output or a log. A
-        # missing secret is the `blocked` state — reported here, in the artifact
-        # and on #80 — not a failed night; a refusal by the tool is red.
+        # environment: it never appears in an argument, an output or a log. Its
+        # presence is the precondition the step above checks before anything is
+        # pushed (#333), so this step runs only with the credential in place; the
+        # guard below is the invariant, not a state to report. A refusal by the
+        # tool is red.
         if: ${{ inputs.dry_run != true && steps.push.outputs.pushed != '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_OPEN_TOKEN }}
@@ -234,22 +281,23 @@ jobs:
           VERSION: ${{ steps.push.outputs.version }}
         run: |
           set -euo pipefail
-          STATE=blocked
-          DETAIL='RELEASE_OPEN_TOKEN is not set; the release pull request was not opened'
-          CODE=0
-          if [ -n "$GITHUB_TOKEN" ]; then
-            set +e
-            node scripts/release-open.mjs --artifact release-plan.json --version "$VERSION" --sha "$PUSHED" > /tmp/open.json
-            CODE=$?
-            set -e
-            if [ "$CODE" -eq 0 ]; then
-              STATE="$(jq -r '.status' /tmp/open.json)"
-              DETAIL="$(jq -r 'if (.pr // "") == "" then .reason else "#\(.pr) \(.reason)" end' /tmp/open.json)"
-              OPENED_BY="$(jq -r '.identity // ""' /tmp/open.json)"
-              if [ -n "$OPENED_BY" ]; then DETAIL="${DETAIL} (opened by ${OPENED_BY})"; fi
-            else
-              DETAIL="release-open refused: $(jq -r '.reason // "no reason recorded"' /tmp/open.json 2>/dev/null || echo 'unreadable output')"
-            fi
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "::error::RELEASE_OPEN_TOKEN is missing although the precondition passed; a pushed branch must not be reported as opened"
+            exit 1
+          fi
+          STATE=refused
+          DETAIL='the opener did not run'
+          set +e
+          node scripts/release-open.mjs --artifact release-plan.json --version "$VERSION" --sha "$PUSHED" > /tmp/open.json
+          CODE=$?
+          set -e
+          if [ "$CODE" -eq 0 ]; then
+            STATE="$(jq -r '.status' /tmp/open.json)"
+            DETAIL="$(jq -r 'if (.pr // "") == "" then .reason else "#\(.pr) \(.reason)" end' /tmp/open.json)"
+            OPENED_BY="$(jq -r '.identity // ""' /tmp/open.json)"
+            if [ -n "$OPENED_BY" ]; then DETAIL="${DETAIL} (opened by ${OPENED_BY})"; fi
+          else
+            DETAIL="release-open refused: $(jq -r '.reason // "no reason recorded"' /tmp/open.json 2>/dev/null || echo 'unreadable output')"
           fi
           printf 'state=%s\ndetail=%s\n' "$STATE" "$DETAIL" >> "$GITHUB_OUTPUT"
           echo "- release pull request: **${STATE}** — ${DETAIL}" >> "$GITHUB_STEP_SUMMARY"
