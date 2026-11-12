@@ -79,7 +79,18 @@ function referencedWorkspaces(botDir) {
     for (const item of strings) {
       names.add(item)
       names.add(basename(item))
-      if (item.includes('/') || item.includes(sep)) paths.add(resolve(item))
+      if (item.includes('/') || item.includes(sep)) {
+        // A reference is a path inside this repository's runtime tree, so a
+        // relative one resolves against the bot directory the state file lives
+        // in, never against whatever directory the timer happens to run from.
+        // Any r<number> segment on that path protects that snapshot too: a
+        // reference to `r11/checkout` must not leave `r11` removable.
+        const resolved = resolve(botDir, item)
+        paths.add(resolved)
+        for (const segment of resolved.split(sep)) {
+          if (RUN_NAME.test(segment)) names.add(segment)
+        }
+      }
     }
   }
   return { names, paths, unreadable }
@@ -171,12 +182,13 @@ function run(argv, env) {
   const parsed = parseArgs(argv)
   if (parsed.help) { console.log(USAGE); return 0 }
 
-  const root = resolve(
-    parsed.root
-      ?? env.ARTIFACT_RETENTION_ROOT
-      ?? env.FLYBOT_INSTANCE_ROOT
-      ?? join(env.DATA_DIR ?? join('.', 'data'), 'flybot-users'),
-  )
+  // `??` is the wrong operator for an environment: `.env.example` ships
+  // ARTIFACT_RETENTION_ROOT= with no value, and an empty string would stop the
+  // chain at the cwd (the documented timer runs from /opt/fledge), walking the
+  // wrong tree and reporting a clean run.
+  const configuredRoot = [parsed.root, env.ARTIFACT_RETENTION_ROOT, env.FLYBOT_INSTANCE_ROOT, join(env.DATA_DIR ?? join('.', 'data'), 'flybot-users')]
+    .find((value) => value !== undefined && value !== '')
+  const root = resolve(configuredRoot)
   if (root === resolve(sep)) fail(1, `refusing to treat the filesystem root as an instance root: ${root}`)
   if (!existsSync(root)) fail(1, `instance root not found: ${root}`)
 

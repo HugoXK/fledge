@@ -15,13 +15,14 @@ interface RunResult {
   stderr: string
 }
 
-function run(args: string[]): RunResult {
+function run(args: string[], extraEnv: Record<string, string> = {}): RunResult {
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue
     if (key.startsWith('ARTIFACT_RETENTION_') || key === 'FLYBOT_INSTANCE_ROOT') continue
     env[key] = value
   }
+  Object.assign(env, extraEnv)
   try {
     const stdout = execFileSync(process.execPath, [tool, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env })
     return { code: 0, stdout, stderr: '' }
@@ -160,5 +161,56 @@ test('a symlinked workspace is never followed or removed', () => {
   } finally {
     rmSync(outside, { recursive: true, force: true })
     cleanup(seeded)
+  }
+})
+
+test('an empty ARTIFACT_RETENTION_ROOT falls through to FLYBOT_INSTANCE_ROOT instead of walking the cwd', () => {
+  const seeded = seed('empty-root')
+  try {
+    // .env.example ships ARTIFACT_RETENTION_ROOT= with no value; `??` would stop
+    // the chain at '' and resolve it to the cwd, reporting a clean run over a
+    // tree it never looked at.
+    const result = run(['--dry-run'], { ARTIFACT_RETENTION_ROOT: '', FLYBOT_INSTANCE_ROOT: seeded.root })
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, new RegExp(`instance-root=${seeded.root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} `))
+    assert.match(result.stdout, /run=r41 .*action=remove/)
+    assert.match(result.stdout, /candidates=1 /)
+  } finally {
+    cleanup(seeded)
+  }
+})
+
+test('a state file that names a path inside a snapshot protects that snapshot', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-artifacts-nested-'))
+  const workspace = join(root, 'users', 'usr_1', 'repos', 'repo_1', 'data', 'bot', 'workspace')
+  mkdirSync(workspace, { recursive: true })
+  for (const name of ['r10', 'r11', 'r12', 'r13']) snapshot(join(workspace, name), 256, 40)
+  // A nested relative reference and a nested absolute one: neither names the
+  // snapshot itself, so matching only the whole string or its basename would
+  // leave r11 and r12 removable while the state file points inside them.
+  writeFileSync(
+    join(workspace, '..', 'state.json'),
+    JSON.stringify({ jobs: [{ workspace: 'r11/checkout' }, { workspace: join(workspace, 'r12', 'checkout') }] }),
+  )
+  try {
+    // The dry run is what prints one line per snapshot; --apply prints only what
+    // it removed. Both halves are checked so the reasons are read, not inferred.
+    const plan = run(['--root', root, '--dry-run', '--keep', '0', '--max-age-days', '0'])
+    assert.equal(plan.code, 0, plan.stderr)
+    for (const name of ['r11', 'r12']) {
+      assert.match(plan.stdout, new RegExp(`run=${name} .*action=keep reason=referenced`))
+    }
+    assert.match(plan.stdout, /candidates=2 /)
+    const applied = run(['--root', root, '--apply', '--keep', '0', '--max-age-days', '0'])
+    assert.equal(applied.code, 0, applied.stderr)
+    for (const name of ['r11', 'r12']) {
+      assert.ok(existsSync(join(workspace, name)), `${name} is named by a path inside it and must survive`)
+    }
+    for (const name of ['r10', 'r13']) {
+      assert.ok(!existsSync(join(workspace, name)), `${name} is referenced by nothing and must be removed`)
+    }
+    assert.match(applied.stdout, /removed=2 /)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
 })

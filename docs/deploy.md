@@ -623,6 +623,10 @@ npm run artifacts:prune -- --root /var/lib/fledge/flybot-users
 npm run artifacts:prune -- --root /var/lib/fledge/flybot-users --apply
 ```
 
+The root comes from `--root`, then `ARTIFACT_RETENTION_ROOT`, then
+`FLYBOT_INSTANCE_ROOT`, then the default data directory; an empty value counts
+as unset, which is why `.env.example` can ship `ARTIFACT_RETENTION_ROOT=`.
+
 The policy has two settings, and they answer different questions rather than
 naming one threshold twice:
 
@@ -634,8 +638,11 @@ naming one threshold twice:
 A snapshot is removed only when it is outside **both** windows, and never when:
 
 - `state.json` or `inflight.json` in the repository's `data/bot/` names it, as a
-  bare `r<number>` or as a path — a name is matched by its basename, and a state
-  file that cannot be parsed protects every snapshot in that repository;
+  bare `r<number>` or as a path — a name is matched by its basename, a path is
+  resolved against that repository's `data/bot/` rather than against the
+  directory the timer happens to run from, and any `r<number>` segment on it
+  protects that snapshot, so a reference to `r11/checkout` protects `r11`; a
+  state file that cannot be parsed protects every snapshot in that repository;
 - the entry is not a run snapshot (`scratch/`, `logs/`) or is a symlink, which is
   reported as `action=skip reason=symlink` and whose target is never walked or
   removed.
