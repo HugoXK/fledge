@@ -1149,6 +1149,7 @@ callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
 | Fledge → SMTP | credentials in env, never logged |
 | FlyBot bridge → Fledge | job callback secret; credential URL; job token |
 | Fledge → model provider | platform key or user key; SSRF guard on user URLs |
+| User → host resources | per-user ceilings on repositories (`LIMIT_REPOS_PER_USER`) and FlyBot instances (`LIMIT_INSTANCES_PER_USER`, optional `LIMIT_INSTANCES_GLOBAL`), refused before anything is created and audited as `limit.refused`; admins are exempt |
 | Admin email link | single-use 32-byte token, 7-day expiry |
 
 ## Failure modes
