@@ -4,13 +4,19 @@ name: Daily minor release
 # (14:30 UTC) when the rule in issue #80 is satisfied, and the annotated tag for
 # that release once its mechanical pull request is merged.
 #
-# Two jobs, two triggers, two credentials:
-#   release  plans the night, pushes `release/v<version>` with the automatic
-#            token and opens exactly one release pull request with the team
-#            token (`RELEASE_OPEN_TOKEN`). Without that secret the night is red,
+# Two jobs, three triggers, two credentials:
+#   release  plans the night on `schedule`, on `workflow_dispatch` and on a push
+#            to `main`, pushes `release/v<version>` with the automatic token and
+#            opens exactly one release pull request with the team token
+#            (`RELEASE_OPEN_TOKEN`). Without that secret the night is red,
 #            pushes nothing and names the missing secret; it never reports a
 #            green blocked night after pushing a branch. It never merges or
-#            publishes a pull request.
+#            publishes a pull request. Whether a run plans is decided by
+#            `scripts/lib/release-trigger.mjs`, not by the event name: the
+#            quantity the release rule counts changes only on a push, and
+#            `schedule` was delivered once in 68 runs (#315), so the push is the
+#            primary path and the `14:30Z` slot is filled at most once by
+#            either trigger.
 #   tag      recognises the merge of that branch on `main` and writes the tag
 #            through the Git data API, then dispatches the publish run at it.
 #
@@ -38,9 +44,13 @@ concurrency:
 jobs:
   release:
     name: plan the daily minor release and push its branch
-    # An ordinary merge to `main` must not plan, push or comment: that trigger
-    # belongs to the tag job below.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # A push to `main` is eligible, not tolerated: the quantity the rule counts
+    # (merged pull requests since the tag) changes only on a push, and the
+    # scheduler delivered one slot in 68 runs (#315). What keeps a merge quiet is
+    # the trigger predicate below, not this gate: it decides whether the `14:30Z`
+    # slot still needs filling, and the push, the pull request and the comment
+    # each depend on its answer.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -179,6 +189,48 @@ jobs:
             }
           '
 
+      - name: Trigger
+        id: trigger
+        # The slot policy (#315). A push and a schedule are both candidates; this
+        # step is the one place that says whether the night still needs filling,
+        # and it names the blocker when it does not: the rule's guards, an open
+        # release pull request, an existing `release/v<next>` branch, a tag newer
+        # than the `14:30Z` boundary, or a catch-up fill of the previous slot.
+        # `always()` keeps the line in the summary of a red run too, so a wedged
+        # or refused night still says what the trigger saw.
+        if: ${{ always() }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GUARDS_PASS: ${{ steps.plan.outputs.shouldRelease }}
+          GUARD_REASON: ${{ steps.plan.outputs.reason }}
+          NEXT_VERSION: ${{ steps.plan.outputs.nextVersion }}
+        run: |
+          set -euo pipefail
+          node --input-type=module -e '
+            import { readFileSync, appendFileSync } from "node:fs"
+            import { decideTrigger } from "./scripts/lib/release-trigger.mjs"
+            const state = JSON.parse(readFileSync("/tmp/state.json", "utf8"))
+            const branches = JSON.parse(readFileSync("/tmp/branches.json", "utf8")).map((entry) => entry.name)
+            const open = state.openPr
+            const event = String(process.env.EVENT_NAME ?? "")
+            const decision = decideTrigger({
+              event,
+              now: new Date().toISOString(),
+              tags: state.tags,
+              branches,
+              openReleasePullRequests: open === null || open === undefined
+                ? []
+                : [{ number: Number(open.number ?? 0), branch: String(open.head?.ref ?? "") }],
+              nextVersion: String(process.env.NEXT_VERSION ?? ""),
+              lastTagCommittedAt: state.lastTagCommittedAt,
+              guardsPass: process.env.GUARDS_PASS === "true",
+              guardReason: String(process.env.GUARD_REASON ?? ""),
+            })
+            appendFileSync(process.env.GITHUB_OUTPUT, `plan=${decision.plan}\nreason=${decision.reason}\ncatchUp=${decision.catchUp}\n`)
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- trigger=${event} plan=${decision.plan} catchUp=${decision.catchUp}\n- reason: ${decision.reason}\n`)
+            console.log(`trigger=${event} plan=${decision.plan} catchUp=${decision.catchUp} reason=${decision.reason}`)
+          '
+
       - name: Check the opener precondition
         id: opener
         # The branch push exists only so a pull request can be opened for it, so
@@ -186,7 +238,7 @@ jobs:
         # pushed (#333). Without this step a run pushed `release/v0.3.2` and then
         # reported `blocked` while exiting 0, and the branch that no run could open
         # a pull request for wedged every later night.
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ inputs.dry_run != true && steps.trigger.outputs.plan == 'true' }}
         env:
           OPEN_TOKEN: ${{ secrets.RELEASE_OPEN_TOKEN }}
           DECIDE_ACTION: ${{ steps.decide.outputs.action }}
@@ -213,7 +265,7 @@ jobs:
         # A manual dispatch defaults to a dry run: it writes the summary and the
         # artifact and pushes nothing. The push also requires the opener's
         # precondition, so it cannot run against a credential that is not there.
-        if: ${{ inputs.dry_run != true && steps.opener.outputs.ready == 'true' }}
+        if: ${{ inputs.dry_run != true && steps.trigger.outputs.plan == 'true' && steps.opener.outputs.ready == 'true' }}
         env:
           DECIDE_ACTION: ${{ steps.decide.outputs.action }}
           DECIDE_VERSION: ${{ steps.decide.outputs.version }}

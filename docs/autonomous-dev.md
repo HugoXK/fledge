@@ -493,15 +493,15 @@ needs a review. No release with no fragments.
 
 ### The daily drive
 
-`.github/workflows/daily-release.yml` has two jobs on two triggers and no stored
+`.github/workflows/daily-release.yml` has two jobs on three triggers and no stored
 credential: both run with the automatic `GITHUB_TOKEN`, and the token is scoped per
 job rather than at file level (`release`: contents write, pull-requests read, checks
 read, issues write; `tag`: contents write, pull-requests read, actions write).
 
-The `release` job runs at 22:30 Asia/Shanghai (`30 14 * * *`) and on
-`workflow_dispatch` (default `dry_run: true`). It collects the state, asks the
-planner and the pure `decideDrive()` in `scripts/lib/release-drive.mjs`, and does
-exactly one thing per night:
+The `release` job runs at 22:30 Asia/Shanghai (`30 14 * * *`), on
+`workflow_dispatch` (default `dry_run: true`) and on a push to `main`. It collects
+the state, asks the planner and the pure `decideDrive()` in
+`scripts/lib/release-drive.mjs`, and does exactly one thing per night:
 
 | Situation | Action |
 |---|---|
@@ -511,7 +511,25 @@ exactly one thing per night:
 | a `release/v<next>` branch has no pull request in any state and no tag | `STATE=orphan-branch` in the summary, naming the branch and its sha, and the run is red: this is a slot wedged by an earlier run, and only the owner deletes or adopts that branch |
 | a release PR is already open | no push; the drive decision goes to the artifact and the summary, and whoever calls `#187` owns the PR |
 | the rule is not met | write the counts and the reason to the job summary and exit 0 |
+| the trigger refuses: tag newer than the `14:30Z` boundary, release branch present, or a release pull request open | no push; the summary names the blocker and the run is green |
+| a push before today's boundary with the previous boundary unreleased | plan; the summary says `catch-up` |
 | a dry run | the same summary and artifact, and no push and no comment |
+
+A push is a planning trigger, not a tolerated one, and the event name no longer
+decides: the quantity the rule counts — merged pull requests since the tag —
+changes only on a push, so a push is sufficient, and a night with no merge has
+nothing to release. What actually gates the night is the pure
+`decideTrigger()` in `scripts/lib/release-trigger.mjs`: it plans only when the
+planner's guards pass, no `release/v<next>` branch exists, no release pull request
+is open and the newest tag is older than the most recent `14:30Z` boundary. That
+boundary is the at-most-once marker: after a plan the branch exists, after the
+merge the tag is newer than it, so no run has to remember an earlier one. A push
+before today's boundary that finds the previous boundary unreleased fills it and
+says `catch-up`, deliberately — a dropped slot must not cost a day. The run prints
+`trigger=`, `plan=`, `catchUp=` and `reason=` in the job summary, so a merge that
+planned nothing and a slot that was refused are both visible in the run history.
+The `schedule` stays as a second trigger; a delivery ratio of one slot in 68 runs
+(6h27m late) is why it is not the primary one (`#315`).
 
 The push and the pull request are one action, so the credential that opens the
 pull request is a precondition checked **before** anything is pushed: with

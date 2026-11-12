@@ -101,9 +101,26 @@ test('the team token is the only stored secret, and it is not the reviewer token
   assert.equal(/token: \$\{\{/.test(daily), false, 'the checkout uses the default token')
 })
 
-test('each job states its own trigger, so an ordinary merge cannot plan, push or comment', () => {
-  assert.match(job('release'), /if: github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'/)
+test('the release job runs on a push too, and the trigger predicate decides whether that push plans', () => {
+  // #315: the event name is no longer the planning gate. A push is eligible
+  // because the rule's input changes only on a push, and the summary says what
+  // the trigger decided, so an ordinary merge that plans nothing is still
+  // visible in the run history.
+  assert.match(job('release'), /if: github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch' \|\| github\.event_name == 'push'/)
   assert.match(job('tag'), /if: github\.event_name == 'push'/)
+  const step = between('      - name: Trigger', '      - name: Check the opener precondition')
+  assert.match(step, /id: trigger/)
+  assert.match(step, /if: \$\{\{ always\(\) \}\}/)
+  assert.match(step, /import \{ decideTrigger \} from "\.\/scripts\/lib\/release-trigger\.mjs"/)
+  assert.match(step, /trigger=\$\{event\} plan=\$\{decision\.plan\}/)
+  assert.equal(step.includes('gh api'), false, 'the trigger step reads the state the run already collected')
+})
+
+test('only the trigger can let a run push, and a manual dry run never does', () => {
+  const openerStep = between('      - name: Check the opener precondition', '      - name: Push the release branch')
+  assert.match(openerStep, /if: \$\{\{ inputs\.dry_run != true && steps\.trigger\.outputs\.plan == 'true' \}\}/)
+  const pushStep = between('      - name: Push the release branch', '      - name: Write the plan artifact')
+  assert.match(pushStep, /if: \$\{\{ inputs\.dry_run != true && steps\.trigger\.outputs\.plan == 'true' && steps\.opener\.outputs\.ready == 'true' \}\}/)
 })
 
 test('the file never creates, merges or releases a pull request with gh, and never creates a tag with a git command', () => {
@@ -138,7 +155,7 @@ test('the publish run is dispatched at the tag, and the comment goes to issue 80
 
 test('a dry run writes the summary and the artifact, and pushes and comments nothing', () => {
   const pushStep = between('      - name: Push the release branch', '      - name: Write the plan artifact')
-  assert.match(pushStep, /if: \$\{\{ inputs\.dry_run != true && steps\.opener\.outputs\.ready == 'true' \}\}/)
+  assert.match(pushStep, /if: \$\{\{ inputs\.dry_run != true && steps\.trigger\.outputs\.plan == 'true' && steps\.opener\.outputs\.ready == 'true' \}\}/)
   const openStep = between('      - name: Open the release pull request', '      - name: Comment on #80')
   assert.match(openStep, /if: \$\{\{ inputs\.dry_run != true && steps\.push\.outputs\.pushed != '' \}\}/)
   const commentStep = between('      - name: Comment on #80', '      - name: Keep the plan artifact')
@@ -257,6 +274,7 @@ test('the surface this branch adds is declared, and the workflow runs no other r
     'scripts/lib/release-drive.mjs',
     'scripts/lib/release-state.mjs',
     'scripts/lib/release-tag.mjs',
+    'scripts/lib/release-trigger.mjs',
     'scripts/release-plan.mjs',
   ])
   const imports = [...daily.matchAll(/from "\.\/(scripts\/[^"]+)"/g)].map((match) => String(match[1]))
