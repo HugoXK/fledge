@@ -321,6 +321,7 @@ export interface SessionRow {
   user_id: string
   created_at: string
   expires_at: string
+  recent_auth_at: string | null
   ip: string | null
   user_agent: string | null
 }
@@ -546,6 +547,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
+  recent_auth_at TEXT,
   ip TEXT,
   user_agent TEXT
 );
@@ -1241,6 +1243,8 @@ export class Store {
     this.run("UPDATE repos SET upstream_default_branch = default_branch WHERE upstream_default_branch = 'main'")
     this.run("UPDATE repos SET fork_default_branch = default_branch WHERE fork_default_branch = 'main'")
     this.run("UPDATE repos SET target_branch = upstream_default_branch WHERE target_branch = ''")
+    const sessionColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(sessions)').map((row) => row.name))
+    if (!sessionColumns.has('recent_auth_at')) this.run('ALTER TABLE sessions ADD COLUMN recent_auth_at TEXT')
     const jobColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(jobs)').map((row) => row.name))
     if (!jobColumns.has('kind')) this.run("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'iterate'")
     if (!jobColumns.has('issue_url')) this.run('ALTER TABLE jobs ADD COLUMN issue_url TEXT')
@@ -2341,16 +2345,22 @@ export class Store {
     )
   }
 
-  createSession(input: { idHash: string; userId: string; expiresAt: string; ip: string | null; userAgent: string | null }): void {
+  createSession(input: { idHash: string; userId: string; expiresAt: string; recentAuthAt: string; ip: string | null; userAgent: string | null }): void {
     this.run(
-      'INSERT INTO sessions (id_hash, user_id, created_at, expires_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO sessions (id_hash, user_id, created_at, expires_at, recent_auth_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?)',
       input.idHash,
       input.userId,
       nowIso(),
       input.expiresAt,
+      input.recentAuthAt,
       input.ip,
       input.userAgent,
     )
+  }
+
+  /** Records a fresh GitHub re-authentication on an existing session. */
+  markRecentAuth(idHash: string, at: string = nowIso()): void {
+    this.run('UPDATE sessions SET recent_auth_at = ? WHERE id_hash = ?', at, idHash)
   }
 
   getSession(idHash: string): SessionRow | undefined {
