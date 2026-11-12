@@ -1739,3 +1739,25 @@ test('admin search links every later page and keeps the filters per section', ()
     store.close()
   }
 })
+
+// #453 review: the settings page linked its zero-token empty state at `#tokens`
+// while the card carrying that anchor did not exist, so the visual matrix's
+// `getElementById('tokens')` returned null and its "section clears the sticky
+// header" assertion was skipped rather than failed. One test now covers the
+// class: every in-page link on the page that renders that empty state has to
+// point at an element that exists.
+test('every in-page anchor on the settings page has a matching target', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'anchor-user', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const html = settingsPage({ config, locale: 'en', viewer, tokens: [], providers: [] })
+    const targets = [...html.matchAll(/href="#([A-Za-z][\w:-]*)"/g)].map((match) => match[1] ?? '')
+    assert.ok(targets.includes('tokens'), 'the empty token list still links to the token form')
+    const missing = [...new Set(targets)].filter((id) => !html.includes(`id="${id}"`))
+    assert.deepEqual(missing, [], `in-page links without a target: ${missing.join(', ')}`)
+  } finally {
+    store.close()
+  }
+})

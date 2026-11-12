@@ -126,6 +126,33 @@ jobs:
           path: dist
           retention-days: 7
 
+  # A throwaway app boots at nine widths in both locales, renders the owner,
+  # account, repository, admin and workspace surfaces, and fails on page or
+  # element overflow. Screenshots are artifacts, not committed files.
+  visual:
+    name: visual
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run visual:matrix
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: visual-matrix
+          path: visual-matrix
+          if-no-files-found: warn
+          retention-days: 14
+
   # Build, scan, then run: a build that passes is not an image that starts, and
   # an image that starts is not one without a known high-severity package.
   docker:
@@ -472,7 +499,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [lint, typecheck, test, coverage, build, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required]
+    needs: [lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -505,7 +532,7 @@ jobs:
   main-health:
     name: main-health
     if: always() && github.ref == 'refs/heads/main'
-    needs: [ci-ok, lint, typecheck, test, coverage, build, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required]
+    needs: [ci-ok, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
