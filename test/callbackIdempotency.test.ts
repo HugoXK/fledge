@@ -16,14 +16,21 @@ const PR_ORIGIN = 'https://github.com'
 interface FakeGithub {
   url: string
   merges: string[]
+  comments: string[]
+  pendingComments: () => number
   close: () => Promise<void>
 }
 
 // A green, open PR on o/r; `delayMs` keeps the merge call in flight so a replay
 // arrives while the first delivery is still inside its side effects.
-async function fakeGithub(options: { delayMs?: number } = {}): Promise<FakeGithub> {
+// `commentDelayMs` does the same for the automation comment, so a case can close
+// its harness while the comment is still in flight.
+async function fakeGithub(options: { delayMs?: number; commentDelayMs?: number } = {}): Promise<FakeGithub> {
   const merges: string[] = []
+  const comments: string[] = []
   const delay = options.delayMs ?? 0
+  const commentDelay = options.commentDelayMs ?? 0
+  let pendingComments = 0
   const server = await startFakeServer((request, response) => {
     const method = request.method ?? 'GET'
     const url = request.url ?? ''
@@ -66,12 +73,24 @@ async function fakeGithub(options: { delayMs?: number } = {}): Promise<FakeGithu
       return
     }
     if (method === 'POST' && url === '/repos/o/r/issues/1/comments') {
-      json(response, 200, {})
+      comments.push(url)
+      pendingComments += 1
+      const answer = (): void => {
+        try {
+          json(response, 200, {})
+        } catch {
+          // The case already closed the socket; the pending count still clears.
+        } finally {
+          pendingComments -= 1
+        }
+      }
+      if (commentDelay > 0) setTimeout(answer, commentDelay)
+      else answer()
       return
     }
     json(response, 404, { message: 'Not Found' })
-  })
-  return { url: server.url, merges, close: server.close }
+  }, { abortOnClose: true })
+  return { url: server.url, merges, comments, pendingComments: () => pendingComments, close: server.close }
 }
 
 interface Harness {
@@ -82,8 +101,8 @@ interface Harness {
   close: () => Promise<void>
 }
 
-async function harness(options: { delayMs?: number; runner?: Runner } = {}): Promise<Harness> {
-  const github = await fakeGithub({ delayMs: options.delayMs })
+async function harness(options: { delayMs?: number; commentDelayMs?: number; runner?: Runner } = {}): Promise<Harness> {
+  const github = await fakeGithub({ delayMs: options.delayMs, commentDelayMs: options.commentDelayMs })
   const base = testConfig()
   const config = testConfig({ github: { ...base.github, apiBase: github.url } })
   const store = new Store(':memory:')
@@ -118,7 +137,15 @@ async function harness(options: { delayMs?: number; runner?: Runner } = {}): Pro
     jobs,
     repo,
     merges: github.merges,
-    close: async () => { store.close(); await github.close() },
+    close: async () => {
+      // The callback answers before its side effect finishes, so closing here
+      // first turns a teardown race into a misleading `automation comment
+      // failed` warning whenever a case exits early. Let the pending comment
+      // settle before the fake API (and the store it reports into) goes away.
+      await waitFor(() => github.pendingComments() === 0, 'the pending automation comment')
+      store.close()
+      await github.close()
+    },
   }
 }
 
@@ -156,6 +183,29 @@ function waitFor(check: () => boolean, what: string): Promise<void> {
     }
     tick()
   })
+}
+
+// Keep the suite's own automation-comment lines so a case can assert on them,
+// while every line still reaches the reporter: the runner writes through the
+// same stream, so swallowing output here would hide the test results.
+function watchAutomationComments(): { lines: string[]; restore: () => void } {
+  const lines: string[] = []
+  const stdoutWrite = process.stdout.write.bind(process.stdout)
+  const stderrWrite = process.stderr.write.bind(process.stderr)
+  const forward = (original: typeof process.stdout.write): typeof process.stdout.write => ((...args: Parameters<typeof process.stdout.write>) => {
+    const text = String(args[0])
+    if (text.includes('automation comment')) lines.push(text)
+    return original(...args)
+  }) as typeof process.stdout.write
+  process.stdout.write = forward(stdoutWrite)
+  process.stderr.write = forward(stderrWrite)
+  return {
+    lines,
+    restore: () => {
+      process.stdout.write = stdoutWrite as typeof process.stdout.write
+      process.stderr.write = stderrWrite
+    },
+  }
 }
 
 test('replaying the same terminal callback answers 200 duplicate and writes nothing twice', async () => {
@@ -352,4 +402,29 @@ test('a heartbeat during dispatch is accepted because the row is already running
     release()
     await h.close()
   }
+})
+
+// The teardown used to close the fake API while the automation comment was still
+// in flight, so a case that exited early — because an assertion threw — logged a
+// second, unrelated `automation comment failed … fetch failed` warning. The
+// warning belongs to the teardown, not to the behaviour under test.
+test('closing with the automation comment in flight logs no failure', async () => {
+  const watcher = watchAutomationComments()
+  const h = await harness({ commentDelayMs: 100 })
+  try {
+    const secret = 'comment-in-flight-secret'
+    const id = runningJob(h.store, h.repo, 'job_comment_in_flight', secret)
+    const payload = { status: 'succeeded' as const, prUrl: `${PR_ORIGIN}/o/r/pull/1`, summary: 'done' }
+    const result = await h.jobs.handleCallback(id, secret, payload)
+    assert.equal(result.ok, true, result.error ?? 'no error')
+  } finally {
+    // Whether this case passed or threw, the teardown releases the comment
+    // before the fake API goes away.
+    await h.close()
+    await new Promise((resolve) => setTimeout(resolve, 1_000))
+    watcher.restore()
+  }
+  const failed = watcher.lines.filter((line) => line.includes('automation comment failed'))
+  assert.deepEqual(failed, [], `the teardown logged a misleading failure:\n${watcher.lines.join('')}`)
+  assert.equal(watcher.lines.filter((line) => line.includes('automation comment posted')).length, 1, 'the comment settled instead of failing')
 })
