@@ -997,6 +997,34 @@ test('a clean guard and passing evidence still render Evidence passed', () => {
   }
 })
 
+test('the job page prints the trace token next to the timeline', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'trace-page-user', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const repo = store.createRepo({ id: 'repo_trace_page', userId: user.id, owner: 'o', name: 'tp', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_trace_page', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    const at = new Date().toISOString()
+    const events = [
+      { id: 1, at, job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.enqueued', role: null, step: 'iterate', meta: 'iterate:manual' },
+      { id: 2, at, job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.running', role: null, step: 'iterate', meta: null },
+    ]
+    const page = jobPage({ config, locale: 'en', viewer, repo, job, events })
+    const timeline = cardAfterHeading(page, 'Timeline')
+    const tokens = [...timeline.matchAll(/data-trace-token="([^"]*)"/g)]
+    assert.equal(tokens.length, 1, 'the timeline names exactly one search token')
+    assert.equal(tokens[0]?.[1], job.id, 'the token is the job id')
+    assert.match(timeline, new RegExp(`<code>${job.id}</code>`), 'the token is printed as text to copy')
+    for (const event of events) assert.equal(event.job_id, tokens[0]?.[1], 'the token matches every job_events.job_id in the timeline')
+
+    const zh = jobPage({ config, locale: 'zh', viewer, repo, job, events })
+    assert.match(cardAfterHeading(zh, '时间线'), new RegExp(`data-trace-token="${job.id}"`), 'the Chinese page prints the same token')
+  } finally {
+    store.close()
+  }
+})
+
 test('a failed job shows an actionable failure category and a recovery link', () => {
   const config = testConfig()
   const store = new Store(':memory:')
