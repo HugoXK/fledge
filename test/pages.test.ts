@@ -1752,7 +1752,7 @@ test('every in-page anchor on the settings page has a matching target', () => {
   try {
     const user = makeUser(store, { login: 'anchor-user', status: 'approved' })
     const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
-    const html = settingsPage({ config, locale: 'en', viewer, tokens: [], providers: [] })
+    const html = settingsPage({ config, locale: 'en', viewer, tokens: [], providers: [], sessions: [], currentSessionHash: 'csrf' })
     const targets = [...html.matchAll(/href="#([A-Za-z][\w:-]*)"/g)].map((match) => match[1] ?? '')
     assert.ok(targets.includes('tokens'), 'the empty token list still links to the token form')
     const missing = [...new Set(targets)].filter((id) => !html.includes(`id="${id}"`))
