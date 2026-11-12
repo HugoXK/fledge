@@ -250,7 +250,10 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
       if (!funded || costUsd <= 0) return
       store.recordUsage(auth!.user.id, jobId, costUsd, JSON.stringify({ model: targetModel, usage: usageValue, ms: Date.now() - started }), auth!.token.repo_id ?? null)
       if (jobId !== null) store.addJobCost(jobId, costUsd)
-      log.info('gateway usage', { user: auth!.user.login, costUsd, jobId, model: targetModel })
+      // #100: a call made with a job token is that job's spend; name the job
+      // under the same key every other job line uses. A call without a job in
+      // scope (a user's own PAT) carries no trace at all rather than a null one.
+      log.info('gateway usage', { user: auth!.user.login, costUsd, model: targetModel, ...(jobId === null ? {} : { trace: jobId }) })
       const updated = store.userById(auth!.user.id)
       if (updated !== undefined && quotaView(updated, config).exhausted) {
         store.notify(updated.id, 'quota', '平台额度已用完，请到 Settings → Model 配置你自己的模型 API。')

@@ -218,12 +218,12 @@ export class Jobs {
         const sessions = state.bots.filter((bot) => bot.activity === 'thinking' || bot.activity === 'working').map((bot) => bot.sessionId)
         if (sessions.length > 0) await this.instances.stopSessions(job.repo_id, sessions)
       } catch (error) {
-        log.warn('cancel job stop failed', { job: jobId, error: String(error) })
+        log.warn('cancel job stop failed', { trace: jobId, error: String(error) })
       }
     }
     const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
     if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
-    await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { job: jobId, error: String(error) }))
+    await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { trace: jobId, error: String(error) }))
     this.store.updateJob(jobId, { status: 'cancelled', error: reason.slice(0, 1000), finished_at: nowIso() })
     if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_status: 'cancelled' })
     else this.store.updateRepo(job.repo_id, { last_status: 'cancelled' })
@@ -247,12 +247,12 @@ export class Jobs {
         const sessions = state.bots.filter((bot) => bot.activity === 'thinking' || bot.activity === 'working').map((bot) => bot.sessionId)
         if (sessions.length > 0) await this.instances.stopSessions(job.repo_id, sessions)
       } catch (error) {
-        log.warn('pause job stop failed', { job: jobId, error: String(error) })
+        log.warn('pause job stop failed', { trace: jobId, error: String(error) })
       }
     }
     const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
     if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
-    await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { job: jobId, error: String(error) }))
+    await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { trace: jobId, error: String(error) }))
     this.store.updateJob(jobId, { status: 'paused', error: reason.slice(0, 1000) })
     this.store.updateRepo(job.repo_id, { last_status: 'paused', ...(job.kind === 'review' ? { last_review_status: 'paused' } : {}) })
     this.store.audit(job.user_id, 'job.paused', jobId)
@@ -721,6 +721,10 @@ export class Jobs {
       defaultBranch: repo.fork_default_branch || repo.default_branch,
       htmlUrl: repo.fork_html_url ?? `https://github.com/${repo.owner}/${repo.name}`,
     }
+    // #100: the job's own logger, built once and handed to the runner. Every
+    // line this job writes — here, in the runner, in the side effects — carries
+    // the same value under `trace`, so one search returns the whole job.
+    const jobLog = log.with({ trace: job.id })
     try {
       // Mark the job running before dispatch: the bridge may send its first
       // heartbeat as soon as the agent is up, and a queued row may not accept one.
@@ -737,6 +741,7 @@ export class Jobs {
       else this.store.updateRepo(repo.id, { last_status: 'running' })
       const result = await this.runner.run({
         job,
+        log: jobLog,
         repo,
         user,
         kind,
@@ -779,7 +784,7 @@ export class Jobs {
       else this.store.updateRepo(repo.id, { last_status: 'failed' })
       this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${message}`, startCode)
       this.store.audit(user.id, 'job.failed', `${job.id}: ${message.slice(0, 300)}`)
-      log.error('job start failed', { job: job.id, error: message })
+      jobLog.error('job start failed', { error: message })
       return { ok: false, job: this.store.getJob(job.id), error: message, code: 'RUNNER_ERROR' }
     }
   }
@@ -873,7 +878,7 @@ export class Jobs {
     if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_at: nowIso(), last_review_status: result.status })
     else this.store.updateRepo(job.repo_id, { last_status: result.status })
     void this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => {
-      log.warn('clear job model token failed', { job: jobId, error: String(error) })
+      log.warn('clear job model token failed', { trace: jobId, error: String(error) })
     })
     revoke()
     this.store.audit(job.user_id, `job.${result.status}`, jobId)
@@ -914,10 +919,10 @@ export class Jobs {
       this.scheduleRetry(this.store.getJob(jobId) ?? job)
     }
     if (result.status === 'succeeded') {
-      void this.afterSucceeded(job, prUrl ?? undefined, issueUrl ?? undefined, attribution).catch((error) => log.warn('post-job side effects failed', { job: jobId, error: String(error) }))
-      void this.autoQueueNextStage(jobId).catch((error) => log.warn('auto next stage failed', { job: jobId, error: String(error) }))
+      void this.afterSucceeded(job, prUrl ?? undefined, issueUrl ?? undefined, attribution).catch((error) => log.warn('post-job side effects failed', { trace: jobId, error: String(error) }))
+      void this.autoQueueNextStage(jobId).catch((error) => log.warn('auto next stage failed', { trace: jobId, error: String(error) }))
     } else {
-      void this.captureTeamStats(jobId, attribution).catch((error) => log.warn('team stats capture failed', { job: jobId, error: String(error) }))
+      void this.captureTeamStats(jobId, attribution).catch((error) => log.warn('team stats capture failed', { trace: jobId, error: String(error) }))
     }
     return true
   }
@@ -996,7 +1001,7 @@ export class Jobs {
         this.store.deleteSetting(row.key)
         this.store.audit(repo.user_id, 'job.retry_started', `${original.id} -> ${result.job?.id ?? ''}`)
         this.store.recordJobEvent({ jobId: original.id, repoId: repo.id, userId: repo.user_id, kind: 'job.retry_started', step: original.kind, meta: result.job?.id ?? null })
-        log.info('retry started', { job: original.id, retry: result.job?.id })
+        log.info('retry started', { trace: original.id, retry: result.job?.id })
       } else if (result.code !== 'JOB_ACTIVE' && result.code !== 'INSTANCE_NOT_READY') {
         this.store.deleteSetting(row.key)
         this.store.audit(repo.user_id, 'job.retry_dropped', `${original.id}: ${result.code ?? result.error ?? 'unknown'}`)
@@ -1198,7 +1203,7 @@ export class Jobs {
       const problems = [...verification.reasons, ...guard.violations.map((violation) => `${violation.file}: ${violation.reason}`)]
       return { ok: verification.ok && guard.ok, ...(problems.length === 0 ? {} : { message: problems.join('; ') }) }
     } catch (error) {
-      log.warn('pull request verification failed', { job: job.id, prUrl, error: String(error) })
+      log.warn('pull request verification failed', { trace: job.id, prUrl, error: String(error) })
       return { ok: false, message: error instanceof Error ? error.message : String(error) }
     }
   }
@@ -1351,7 +1356,7 @@ export class Jobs {
       return { ok: false, message: merged.message ?? 'GitHub 拒绝了合并。' }
     } catch (error) {
       this.store.audit(job.user_id, 'job.merge_failed', `${job.id}: ${String(error).slice(0, 300)}`)
-      log.warn('merge failed', { job: job.id, pr: number, error: String(error) })
+      log.warn('merge failed', { trace: job.id, pr: number, error: String(error) })
       return { ok: false, message: error instanceof Error ? error.message : String(error) }
     }
   }
@@ -1474,7 +1479,7 @@ export class Jobs {
       const result = await this.followUp(repo, input)
       if (!result.ok && result.code === 'JOB_ACTIVE') this.store.setSetting(row.key, row.value)
       if (!result.ok) log.warn('pending follow-up not queued', { repo: repoId, code: result.code, error: result.error })
-      else log.info('pending follow-up queued', { repo: repoId, job: result.job?.id })
+      else log.info('pending follow-up queued', { repo: repoId, trace: result.job?.id })
     }
   }
 
@@ -1559,12 +1564,12 @@ export class Jobs {
           const label = repo === undefined ? job.repo_id : `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`
           this.store.notify(job.user_id, 'team', `${label} 的本次任务只有 Lead 参与，其他团队角色没有实际介入。`)
           this.store.event('team_participation_low', { userId: job.user_id, repoId: job.repo_id, jobId, meta: 'lead-only' })
-          log.warn('team participation low', { job: jobId, repo: job.repo_id, roles: active })
+          log.warn('team participation low', { trace: jobId, repo: job.repo_id, roles: active })
         }
       }
       return observed
     } catch (error) {
-      log.warn('team stats capture failed', { job: jobId, error: String(error) })
+      log.warn('team stats capture failed', { trace: jobId, error: String(error) })
       return null
     }
   }
@@ -1592,7 +1597,7 @@ export class Jobs {
       const template = result.status === 'succeeded' ? jobSucceededEmail(user, context) : jobFailedEmail(user, context)
       await this.mailer.send({ to: email, ...template })
     } catch (error) {
-      log.warn('job email failed', { job: job.id, error: String(error) })
+      log.warn('job email failed', { trace: job.id, error: String(error) })
     }
   }
 
@@ -1708,7 +1713,7 @@ export class Jobs {
               }),
             })
           } catch (error) {
-            log.warn('question email failed', { job: job.id, error: String(error) })
+            log.warn('question email failed', { trace: job.id, error: String(error) })
           }
         }
       }
@@ -1854,9 +1859,9 @@ export class Jobs {
       const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
       const client = new GithubClient(token, this.config.github.apiBase)
       await client.comment(owner, name, number, body.join('\n'))
-      log.info('automation comment posted', { job: job.id, pr: number })
+      log.info('automation comment posted', { trace: job.id, pr: number })
     } catch (error) {
-      log.warn('automation comment failed', { job: job.id, pr: number, error: String(error) })
+      log.warn('automation comment failed', { trace: job.id, pr: number, error: String(error) })
     }
   }
 
@@ -2224,9 +2229,13 @@ export class Jobs {
       defaultBranch: repo.fork_default_branch || repo.default_branch,
       htmlUrl: repo.fork_html_url ?? `https://github.com/${repo.owner}/${repo.name}`,
     }
+    // #100: same binding as the inline dispatch — one logger per claimed job,
+    // handed to the runner so the queued path names its job the same way.
+    const jobLog = log.with({ trace: job.id })
     try {
       const result = await this.runner.run({
         job,
+        log: jobLog,
         repo,
         user,
         kind,
@@ -2266,7 +2275,7 @@ export class Jobs {
       else this.store.updateRepo(repo.id, { last_status: 'failed' })
       this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${message}`, startCode)
       this.store.audit(user.id, 'job.failed', `${job.id}: ${message.slice(0, 300)}`)
-      log.error('queued job start failed', { job: job.id, error: message })
+      jobLog.error('queued job start failed', { error: message })
     }
   }
 
@@ -2316,7 +2325,7 @@ export class Jobs {
     try {
       state = await this.instances.teamState(job.repo_id, 5_000)
     } catch (error) {
-      log.warn('stall evidence unavailable', { job: job.id, error: String(error) })
+      log.warn('stall evidence unavailable', { trace: job.id, error: String(error) })
       return false
     }
     const labels = this.stallRoleLabels(job.kind)
@@ -2417,7 +2426,7 @@ export class Jobs {
       log.info('scheduled review', {
         repo: `${repo.owner}/${repo.name}`,
         ok: result.ok,
-        job: result.job?.id,
+        trace: result.job?.id,
         ...(result.ok ? {} : { code: result.code, error: result.error }),
       })
     }
@@ -2459,7 +2468,7 @@ export class Jobs {
         repo: `${repo.owner}/${repo.name}`,
         ok: result.ok,
         kind: next.kind,
-        job: result.job?.id,
+        trace: result.job?.id,
         ...(result.ok ? {} : { code: result.code, error: result.error }),
       })
     }

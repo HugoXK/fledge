@@ -1,5 +1,6 @@
 import type { Config } from '../config.js'
 import type { JobRow, RepoRow, UserRow } from '../db.js'
+import type { Logger } from '../lib/log.js'
 import type { RepoRole } from '../lib/repoRole.js'
 import { FlyBotRunner } from './flybot.js'
 import { MockRunner } from './mock.js'
@@ -26,6 +27,10 @@ export interface RepoRef {
 
 export interface RunnerContext {
   job: JobRow
+  // #100: the job's own logger, already bound to `trace`. A runner writes its
+  // lines through this one instead of the module logger, so the job id is on
+  // every line of the handoff without each call site naming it.
+  log: Logger
   repo: RepoRow
   user: UserRow
   kind: JobKind

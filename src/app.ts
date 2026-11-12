@@ -2785,7 +2785,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         continue
       }
       const result = await jobs.followUp(repo, { prUrl, branch, baseBranch, reason, headSha, ...(instruction === '' ? {} : { instruction }) })
-      log.info('github follow-up', { repo: `${repo.owner}/${repo.name}`, pr: number, ok: result.ok, code: result.code, job: result.job?.id })
+      log.info('github follow-up', { repo: `${repo.owner}/${repo.name}`, pr: number, ok: result.ok, code: result.code, trace: result.job?.id })
     }
   }
 

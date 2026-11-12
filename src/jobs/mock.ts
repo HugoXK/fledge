@@ -1,11 +1,10 @@
-import { log } from '../lib/log.js'
 import type { Runner, RunnerContext, RunnerResult } from './runner.js'
 
 export class MockRunner implements Runner {
   readonly name = 'mock'
 
   async run(context: RunnerContext): Promise<RunnerResult> {
-    log.info('mock runner started', { job: context.job.id, repo: `${context.repo.owner}/${context.repo.name}`, kind: context.kind })
+    context.log.info('mock runner started', { repo: `${context.repo.owner}/${context.repo.name}`, kind: context.kind })
     await new Promise((resolve) => setTimeout(resolve, 250))
     if (context.kind === 'review') {
       return {
