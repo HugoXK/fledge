@@ -1064,6 +1064,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const questions = (await inboxForUser(viewer.user.id, store.listRepos(viewer.user.id))).filter((question) => question.repoId === repo.id)
     const workState = queryText(request, 'workState')
     const instance = store.getRepoInstance(repo.id)
+    // #361: two fixed windows, both read from the same rows the delivery card
+    // already reads. The route computes the cut-offs; the read model decides
+    // what each number means, including when a window has no review at all.
+    const trendSince = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString()
+    const reviewTrend = { week: store.reviewTrend(repo.id, trendSince(7)), month: store.reviewTrend(repo.id, trendSince(30)) }
     const repoModels = store.listRepoModelSelection(repo.id)
     let chiefMessages
     if ((viewer.user.role !== 'superadmin' || viewer.preview === true) && instance?.status === 'ready') {
@@ -1093,6 +1098,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
           },
         }),
         ...(workState !== undefined && isWorkItemState(workState) ? { workState } : {}),
+        reviewTrend,
         models: store.listUserProviderModels(repo.user_id),
         repoModelIds: repoModels.map((model) => model.id),
         repoBotModels: store.listRepoBotModels(repo.id),

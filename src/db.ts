@@ -5,6 +5,7 @@ import { mkdirSync } from 'node:fs'
 import { log } from './lib/log.js'
 import { nowIso } from './lib/time.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
+import { parseModelRun } from './lib/modelRun.js'
 
 const require = createRequire(import.meta.url)
 
@@ -25,6 +26,26 @@ const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: st
 export type UserStatus = 'onboarding' | 'pending' | 'approved' | 'rejected'
 export type UserRole = 'user' | 'admin' | 'superadmin'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'paused' | 'quota_exhausted'
+
+// #361: a repository's review history, read from rows that already exist.
+// A window is one `since`; the page asks for two. The outcome of a review is
+// not the work item's current state (a later fix moves it on), so the count
+// comes from the audit row the job service writes when the review finishes.
+export interface ReviewTrendWindow {
+  reviews: number
+  averageScore: number | null
+  outcomes: number
+  changesRequested: number
+  changesRequestedRate: number | null
+  medianPrOpenToReviewMs: number | null
+  medianPrOpenToMergeMs: number | null
+  models: Array<{ label: string; reviews: number }>
+  smallSample: boolean
+}
+
+// Below this many completed reviews the page says "small sample" instead of
+// letting one score read as a trend.
+export const REVIEW_TREND_SMALL_SAMPLE = 5
 
 export interface UserRow {
   id: string
@@ -1640,6 +1661,63 @@ export class Store {
       medianJobMs: median(jobDurations),
       medianMergeMs: median(mergeDurations),
       medianReviewMs: median(reviewDurations),
+    }
+  }
+
+  reviewTrend(repoId: string, sinceIso: string): ReviewTrendWindow {
+    const reviewJobs = this.all<JobRow>(
+      `SELECT * FROM jobs
+        WHERE repo_id = ? AND kind = 'review' AND status = 'succeeded'
+          AND review_score IS NOT NULL AND finished_at IS NOT NULL AND finished_at >= ?`,
+      repoId,
+      sinceIso,
+    )
+    const scores = reviewJobs.flatMap((job) => (job.review_score === null ? [] : [job.review_score]))
+    const averageScore = scores.length === 0 ? null : Math.round((scores.reduce((sum, score) => sum + score, 0) / scores.length) * 10) / 10
+    const outcomes = this.all<{ outcome: string }>(
+      `SELECT CASE WHEN a.detail LIKE '%: changes_requested score=%' THEN 'changes_requested' ELSE 'approved' END AS outcome
+         FROM audit_log a
+         JOIN work_items w ON w.id = substr(a.detail, 1, instr(a.detail, ':') - 1)
+        WHERE a.action = 'work_item.review_outcome' AND a.at >= ? AND w.repo_id = ?
+          AND (a.detail LIKE '%: changes_requested score=%' OR a.detail LIKE '%: approved score=%')`,
+      sinceIso,
+      repoId,
+    )
+    const changesRequested = outcomes.filter((row) => row.outcome === 'changes_requested').length
+    const reviewDelays = this.all<{ opened: string; reviewed: string }>(
+      `SELECT w.created_at AS opened, j.finished_at AS reviewed
+         FROM jobs j
+         JOIN work_items w ON w.id = j.work_item_id
+        WHERE j.repo_id = ? AND j.kind = 'review' AND j.status = 'succeeded'
+          AND j.finished_at IS NOT NULL AND j.finished_at >= ? AND w.pr_url IS NOT NULL`,
+      repoId,
+      sinceIso,
+    ).flatMap((row) => {
+      const value = durationMs(row.opened, row.reviewed)
+      return value === null ? [] : [value]
+    })
+    const mergeDelays = this.all<WorkItemRow>('SELECT * FROM work_items WHERE repo_id = ? AND merged_at IS NOT NULL AND merged_at >= ?', repoId, sinceIso).flatMap((item) => {
+      const value = durationMs(item.created_at, item.merged_at)
+      return value === null ? [] : [value]
+    })
+    const byModel = new Map<string, number>()
+    for (const job of reviewJobs) {
+      const label = parseModelRun(job.model_json)?.model?.label
+      if (label === undefined) continue
+      byModel.set(label, (byModel.get(label) ?? 0) + 1)
+    }
+    return {
+      reviews: reviewJobs.length,
+      averageScore,
+      outcomes: outcomes.length,
+      changesRequested,
+      changesRequestedRate: outcomes.length === 0 ? null : Math.round((changesRequested / outcomes.length) * 1000) / 10,
+      medianPrOpenToReviewMs: median(reviewDelays),
+      medianPrOpenToMergeMs: median(mergeDelays),
+      models: [...byModel.entries()]
+        .map(([label, reviews]) => ({ label, reviews }))
+        .sort((a, b) => b.reviews - a.reviews || a.label.localeCompare(b.label)),
+      smallSample: reviewJobs.length < REVIEW_TREND_SMALL_SAMPLE,
     }
   }
 

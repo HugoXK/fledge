@@ -160,3 +160,34 @@ and the accessibility contract are fixed:
 - Evidence for the change: `test/uiStates.test.ts` (7 assertions; 6 of them red
   on the base commit with only the renderer added), plus before/after captures
   under `docs/images/ui-v2/69-*.jpg` at 1280 and 360 in both languages.
+
+## Review trend numbers (审核趋势)
+
+The repository's **Delivery** section renders one card, `#review-trend`, with two
+fixed windows — 7 and 30 days — over the reviews this repository already
+recorded. No new table, job or model call is involved: the read model
+(`Store.reviewTrend`) reads `jobs`, `work_items` and the audit row the job
+service writes when a review finishes, because a work item's *current* state
+moves on with the next fix and is not a review outcome.
+
+| Cell | Meaning | When it is `—` |
+|---|---|---|
+| Reviews | completed review jobs with a score, terminated inside the window | no such review |
+| Average score | mean of those scores, one decimal | no scored review |
+| Changes requested | `changes_requested outcomes / outcomes recorded`, `x% (a/b)` | no outcome recorded in the window |
+| PR→review | median `review finished_at − work item created_at` for reviews linked to a PR | no linked PR review |
+| PR→merge | median `merged_at − created_at` for work items merged in the window | no merge |
+| Model | the model each review ran, `label ×n` | no recorded model |
+
+Rules the card follows, because a reader cannot tell a confident zero from an
+unknown one:
+
+- A window with no sample shows `—` in every cell and adds a
+  `data-trend-empty="<window>"` sentence. It never shows `0`, `0%` or `NaN`.
+- A rate is `—` when no outcome was recorded, and it always prints its own
+  denominator, so `50% (1/2)` cannot be misread as a percentage of all reviews.
+- Fewer than 5 completed reviews in the window renders the number **and** a
+  `data-trend-small-sample="1"` badge (`Small sample n=<n>`); the page never
+  smooths a single review into a trend, and never hides it either.
+- Every cell is scoped to one repository and its owner: another user's
+  repository, or another repository of the same owner, is not counted.
