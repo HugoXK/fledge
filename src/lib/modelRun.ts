@@ -14,9 +14,19 @@ export interface ModelAttempt {
   retryable: boolean
 }
 
+// The first fallback the job made, kept apart from `attempts` because those are
+// the last call's list: a job that fell back once and later answered on the
+// primary would otherwise lose the fallback the console exists to show.
+export interface ModelFallback {
+  from: { modelId: string; label: string }
+  to: { modelId: string; label: string }
+  status: number
+}
+
 export interface ModelRun {
   model: { id: string; label: string } | null
   attempts: ModelAttempt[]
+  fallback: ModelFallback | null
 }
 
 function attempt(value: unknown): ModelAttempt | null {
@@ -33,6 +43,25 @@ function attempt(value: unknown): ModelAttempt | null {
   }
 }
 
+function modelRef(value: unknown): { modelId: string; label: string } | null {
+  if (value === null || typeof value !== 'object') return null
+  const row = value as Record<string, unknown>
+  const modelId = typeof row.modelId === 'string' ? row.modelId : ''
+  if (modelId === '') return null
+  return { modelId, label: typeof row.label === 'string' && row.label !== '' ? row.label : modelId }
+}
+
+function fallbackOf(value: unknown): ModelFallback | null {
+  if (value === null || typeof value !== 'object') return null
+  const row = value as Record<string, unknown>
+  const from = modelRef(row.from)
+  const to = modelRef(row.to)
+  // One missing side is not half a fallback: render nothing rather than guess.
+  if (from === null || to === null) return null
+  const status = typeof row.status === 'number' && Number.isFinite(row.status) ? row.status : 0
+  return { from, to, status }
+}
+
 export function parseModelRun(value: string | null): ModelRun | null {
   if (value === null || value === '') return null
   let parsed: unknown
@@ -47,6 +76,7 @@ export function parseModelRun(value: string | null): ModelRun | null {
   const id = typeof modelRow?.id === 'string' ? modelRow.id : ''
   const model = id === '' ? null : { id, label: typeof modelRow?.label === 'string' && modelRow.label !== '' ? modelRow.label : id }
   const attempts = Array.isArray(row.attempts) ? row.attempts.map(attempt).filter((entry): entry is ModelAttempt => entry !== null) : []
-  if (model === null && attempts.length === 0) return null
-  return { model, attempts }
+  const fallback = fallbackOf(row.fallback)
+  if (model === null && attempts.length === 0 && fallback === null) return null
+  return { model, attempts, fallback }
 }
