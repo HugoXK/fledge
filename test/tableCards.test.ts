@@ -62,7 +62,9 @@ test('the card layout does not reach the tablet', () => {
 })
 
 function cardTables(html: string): string[] {
-  return [...html.matchAll(/<table class="[^"]*table-cards[^"]*">[\s\S]*?<\/table>/g)].map((match) => match[0])
+  // `#452` gives a priority table an id and an accessible name, so the tag can
+  // carry attributes after the class.
+  return [...html.matchAll(/<table class="[^"]*table-cards[^"]*"[^>]*>[\s\S]*?<\/table>/g)].map((match) => match[0])
 }
 
 function labelsOf(table: string): string[] {
