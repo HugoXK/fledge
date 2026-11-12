@@ -128,12 +128,15 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // import line above those four, which read `:471`/`:506`/`:516`/`:526` here,
   // and its `/search` route sits above the webhook registration, which measures
   // `:3036` on the merged tree; the two gateway registrations do not move and
-  // stay `:154`/`:179`. Every number above was read from the tree that ships
+  // stay `:154`/`:179`. #416 adds a 26-line export-cap refusal helper and its two
+  // call sites above the webhook registration, which measures `:3062` on this
+  // tree; the four top-of-file registrations and the two gateway registrations
+  // do not move. Every number above was read from the tree that ships
   // this file, never added to a base: no result was added or dismissed, and the
   // two gateway alerts (#41, #42, both dismissed false positive) are the same
   // two.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3036',
+    'js/missing-rate-limiting|src/app.ts|3062',
     'js/missing-rate-limiting|src/app.ts|471',
     'js/missing-rate-limiting|src/app.ts|506',
     'js/missing-rate-limiting|src/app.ts|516',
