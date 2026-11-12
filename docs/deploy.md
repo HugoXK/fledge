@@ -602,6 +602,56 @@ Development mail (`MAIL_TRANSPORT=console`) is written to
 (`npm run mail:outbox`), an instance with SMTP does not write it, and the
 directory may be deleted at any time.
 
+### Workspace snapshot retention
+
+Each agent run leaves a snapshot under
+`$FLYBOT_INSTANCE_ROOT/users/<user>/repos/<repo>/data/bot/workspace/r<number>`,
+and nothing in Fledge reclaims them. They are the runtime's working copies
+rather than Fledge rows, so the retention of user data (`#281`) does not reach
+them, and on the production host this tree is the largest thing under `data/`.
+The host-side alert script that watches it lives outside this repository and is
+not changed by the tool below.
+
+`scripts/artifact-retention.mjs` is the operator tool. It is a dry run unless
+`--apply` is given, and the only thing it can remove is an `r<number>` snapshot:
+
+```sh
+# candidates, their bytes and the total; nothing is touched
+npm run artifacts:prune -- --root /var/lib/fledge/flybot-users
+
+# remove exactly those candidates, print the audit line and the freed bytes
+npm run artifacts:prune -- --root /var/lib/fledge/flybot-users --apply
+```
+
+The policy has two settings, and they answer different questions rather than
+naming one threshold twice:
+
+- `--keep <n>` / `ARTIFACT_RETENTION_KEEP` (default `3`): how many of the newest
+  snapshots, by run number, survive whatever their age.
+- `--max-age-days <n>` / `ARTIFACT_RETENTION_MAX_AGE_DAYS` (default `14`): how
+  old a snapshot must be before it is a candidate at all.
+
+A snapshot is removed only when it is outside **both** windows, and never when:
+
+- `state.json` or `inflight.json` in the repository's `data/bot/` names it, as a
+  bare `r<number>` or as a path — a name is matched by its basename, and a state
+  file that cannot be parsed protects every snapshot in that repository;
+- the entry is not a run snapshot (`scratch/`, `logs/`) or is a symlink, which is
+  reported as `action=skip reason=symlink` and whose target is never walked or
+  removed.
+
+`--apply` prints one line per removal plus an
+`audit action=artifact-retention …` line naming the root, both windows, the
+counts and the freed bytes; that line is the record, and journald keeps it when
+the tool runs from a timer. The exit status is `0` for a clean run, `1` when a
+removal failed and `2` on a usage error, so a timer can alert on a non-zero one.
+Run it from a timer only after a dry run has shown the candidates:
+
+```sh
+# 04:10 daily, as the service user, after the dry run above has been reviewed
+10 4 * * *  cd /opt/fledge && node scripts/artifact-retention.mjs --root /var/lib/fledge/flybot-users --apply
+```
+
 ## 10. Go-live checklist
 
 - [ ] HTTPS `BASE_URL`; OAuth callback matches exactly.
