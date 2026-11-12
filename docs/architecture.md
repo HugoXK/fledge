@@ -466,6 +466,22 @@ product funnel, delivery efficiency (success and merge rate, median job and
 merge duration, review duration and score), cost by repository and by model,
 daily trend buckets, and current alerts. Alerts are localized, sorted by severity, and link to the affected repository or job; the dashboard shows the same alerts scoped to the signed-in user. Missing values render as `—`, never as a confident zero.
 
+The repository page's Delivery section also carries `#review-trend`, one row per
+fixed window (7 and 30 days). `Store.reviewTrend(repoId, sinceIso)` is a read
+model over rows the platform already stores — completed review jobs for the
+score, the recorded model and the PR link, `work_items` for when the pull request
+was opened and merged, and the `work_item.review_outcome` audit row for the
+outcome. The audit row, not the work item's state, is the outcome: a review that
+asks for changes moves the item to `changes_requested` and the next fix moves it
+on, so the current state would lose exactly the rework the trend is meant to
+show. There is no new table and no new job; the route computes the two cut-offs
+and the store returns one window each. A window with no review renders `—` in
+every cell with an empty-window sentence, the changes-requested rate prints its
+own denominator (`50% (1/2)`) or `—` when no review recorded an outcome, and
+fewer than `REVIEW_TREND_SMALL_SAMPLE` (5) reviews are shown with a
+`Small sample n=<n>` badge rather than smoothed into a trend. What each cell
+means is fixed in [ui.md](ui.md).
+
 `GET /api/read/metrics` exposes the same read model as JSON for an external
 control room: a normal user gets `personal`, a super admin gets the global sections.
 The route is read-only and session-scoped.
