@@ -885,9 +885,31 @@ Fledge sends mail from the configured `MAIL_FROM` (production:
 `flybot@hugoxk.online` sender; the two projects do not share a mailbox.
 
 Each user can set `notify_email` (blank falls back to the GitHub email),
-`email_job_updates` and `email_daily_digest`. Job mail covers success/failure
-and a new team question; question mails are deduped by
-`sessionId + questionId` in `settings`. A server-side digest pass runs after
+`email_job_updates`, `email_daily_digest` and `email_job_success`. Job mail
+covers failure and a new team question; question mails are deduped by
+`sessionId + questionId` in `settings`.
+
+Which finished job earns its own mail is decided by `src/lib/emailPolicy.ts` and
+nothing else, because "one mail per run" is what flooded an owner's inbox:
+
+- A **scheduled success** is carried by the daily digest. `email_job_success`
+  (off by default, so an existing user sees no change) asks for a per-job
+  success mail as well.
+- A **failure that queued a transient retry** sends nothing. The retry's own
+  result is the one that speaks, so one incident produces one mail instead of
+  one per attempt.
+- **Failures for one repository coalesce** inside `JOB_EMAIL_COOLDOWN_MINUTES`
+  (default 60, `0` disables coalescing) through
+  `job_email_last_failure:<repoId>` in `settings`. Any success clears that key,
+  even when it sends no mail, so the next failure is news again.
+- A **run a person started** always mails its result. That is `jobs.owner_started`,
+  recorded when the run is enqueued: every `manual` console route marks it, and
+  so does the retry/resume button, which enqueues a `followup`. The trigger alone
+  cannot say it — `tick()` reaches the same `followup` trigger through
+  `decideNextJob()` for any due repository with an open work item, and that run
+  belongs to the digest.
+
+A server-side digest pass runs after
 `DIGEST_HOUR` in `DIGEST_TIMEZONE`, builds a 24-hour summary per approved user
 (jobs, PRs, spend, next scheduled runs, open questions) and sends it once per
 day (`digest_sent:<userId>:<date>`). Templates include the repo, job id,

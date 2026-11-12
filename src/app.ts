@@ -1550,7 +1550,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : 'iterate'
     const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
     const resumePr = kind === 'iterate' && job.pr_url !== null
-    const result = await jobs.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {})
+    // #353: this route is a person pressing a button, so the run is theirs. The
+    // trigger alone cannot say that — `followup` is also what `tick()` enqueues.
+    const result = await jobs.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, { ownerStarted: true, ...(resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {}) })
     store.audit(viewer.user.id, 'job.retried', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
     if (!result.ok || result.job === undefined) {
       return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(refusalValue(result, '重试失败。'))}`)
@@ -2227,12 +2229,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     const jobUpdates = body.jobUpdates === '1'
     const dailyDigest = body.dailyDigest === '1'
+    const jobSuccess = body.jobSuccess === '1'
     if (clear) store.setNotifyEmail(viewer.user.id, null)
     else if (rawEmail !== '') store.setNotifyEmail(viewer.user.id, rawEmail)
     store.setEmailJobUpdates(viewer.user.id, jobUpdates)
     store.setEmailDailyDigest(viewer.user.id, dailyDigest)
+    store.setEmailJobSuccess(viewer.user.id, jobSuccess)
     const saved = store.userById(viewer.user.id)
-    store.audit(viewer.user.id, 'settings.email', `email=${saved?.notify_email === null || saved?.notify_email === undefined ? 'github' : 'custom'} jobs=${jobUpdates ? 'on' : 'off'} digest=${dailyDigest ? 'on' : 'off'}`)
+    store.audit(viewer.user.id, 'settings.email', `email=${saved?.notify_email === null || saved?.notify_email === undefined ? 'github' : 'custom'} jobs=${jobUpdates ? 'on' : 'off'} digest=${dailyDigest ? 'on' : 'off'} success=${jobSuccess ? 'on' : 'off'}`)
     if (body.action === 'test') {
       const updated = saved
       const to = updated === undefined ? '' : notifyEmail(updated)

@@ -1575,6 +1575,8 @@ export function settingsPage(input: {
       ${customEmail === '' ? '' : `<label class="check"><input type="checkbox" name="clear" value="1" /> ${escapeHtml(t('清除自定义邮箱，使用 GitHub 邮箱', 'Clear the custom email and use the GitHub email'))}</label>`}
       <label class="check"><input type="checkbox" name="jobUpdates" value="1" ${user.email_job_updates === 1 ? 'checked' : ''} /> ${escapeHtml(t('任务需要回答、完成或失败时发邮件', 'Email me when a job needs an answer, finishes or fails'))}</label>
       <label class="check"><input type="checkbox" name="dailyDigest" value="1" ${user.email_daily_digest === 1 ? 'checked' : ''} /> ${escapeHtml(t('每天发送一封今日摘要', 'Send a daily summary email'))}</label>
+      <label class="check"><input type="checkbox" name="jobSuccess" value="1" ${user.email_job_success === 1 ? 'checked' : ''} /> ${escapeHtml(t('计划任务成功时也单独发邮件（默认关闭，成功会汇总进每日摘要）', 'Also email me when a scheduled job succeeds (off by default; successes are summarized in the daily summary)'))}</label>
+      <p class="fine">${escapeHtml(t(`计划任务成功不再单独发邮件，而是汇总进每日摘要；失败按仓库合并，同一仓库 ${config.mail.jobEmailCooldownMinutes} 分钟内最多一封。你手动运行的任务，结果总是发邮件。`, `A scheduled success is summarized in the daily summary instead of its own mail; failures are coalesced so one repository sends at most one mail per ${config.mail.jobEmailCooldownMinutes} minutes. A run you started by hand always mails its result.`))}</p>
       <div class="row">
         <button class="btn" name="action" value="save" type="submit">${escapeHtml(t('保存通知设置', 'Save notification settings'))}</button>
         <button class="btn btn-ghost" name="action" value="test" type="submit">${escapeHtml(t('发送测试邮件', 'Send test email'))}</button>
