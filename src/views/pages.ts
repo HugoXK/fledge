@@ -1,5 +1,5 @@
 import type { Config } from '../config.js'
-import type { AlertView, AuditRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, ProviderModelRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
+import type { AlertView, AuditRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, ProviderModelRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
@@ -143,6 +143,19 @@ function maskEmail(email: string): string {
   const local = email.slice(0, at)
   const domain = email.slice(at + 1)
   return `${local.slice(0, 1)}***@${domain}`
+}
+
+// #356: a session row is recognisable without handing out the address. The last
+// IPv4 octet and everything past the second IPv6 group are dropped, so a user can
+// tell their own sessions apart but the page never carries a full address.
+function maskIp(ip: string | null): string {
+  if (ip === null || ip === '') return '—'
+  if (ip.includes(':')) {
+    const groups = ip.split(':').filter((group) => group !== '')
+    return `${groups.slice(0, 2).join(':')}::`
+  }
+  const parts = ip.split('.')
+  return parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}.0` : ip
 }
 
 function agreementHtml(text: string): string {
@@ -1514,6 +1527,8 @@ export function settingsPage(input: {
   locale: Locale
   viewer: Viewer
   tokens: ApiTokenRow[]
+  sessions: SessionRow[]
+  currentSessionHash: string
   providers: Array<ModelProviderRow & { models: ProviderModelRow[] }>
   discoveredProvider?: string
   discovered?: string[]
@@ -1521,7 +1536,7 @@ export function settingsPage(input: {
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, tokens, providers, discoveredProvider, discovered = [], newToken, notice, error } = input
+  const { config, locale, viewer, tokens, sessions, currentSessionHash, providers, discoveredProvider, discovered = [], newToken, notice, error } = input
   const t = translator(locale)
   const user = viewer.user
   const quota = quotaView(user, config)
@@ -1544,6 +1559,21 @@ export function settingsPage(input: {
           return `<tr><td><code>${escapeHtml(token.prefix)}…</code></td><td>${escapeHtml(token.name)}</td><td><code>${escapeHtml(token.scope)}</code></td><td>${escapeHtml(expires)}</td><td>${escapeHtml(humanTimeShort(token.last_used_at))}</td><td><form method="post" action="/settings/tokens/${escapeHtml(token.id)}/revoke">${csrf(viewer)}<button class="link" type="submit">${escapeHtml(t('撤销', 'Revoke'))}</button></form></td></tr>`
         })
         .join('')
+  const sessionRows = sessions.length === 0
+    ? stateCell(4, { kind: 'empty', title: t('只有当前这一个会话。', 'Only this session.'), body: t('在另一台设备登录后会在这里出现。', 'Another device appears here after it signs in.'), action: { href: '/settings', label: t('刷新', 'Refresh') } })
+    : sessions
+        .map((session) => {
+          const current = session.id_hash === currentSessionHash
+          const agent = (session.user_agent ?? '').trim()
+          const agentLabel = agent === '' ? t('未知客户端', 'Unknown client') : agent.length > 60 ? `${agent.slice(0, 60)}…` : agent
+          const marker = current ? `<span class="badge good">${escapeHtml(t('当前', 'Current'))}</span>` : ''
+          const action = current
+            ? marker
+            : `<form method="post" action="/settings/sessions/${escapeHtml(session.id_hash)}/revoke">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('撤销', 'Revoke'))}</button></form>`
+          return `<tr><td>${escapeHtml(maskIp(session.ip))}</td><td>${escapeHtml(agentLabel)}</td><td>${escapeHtml(humanTimeShort(session.created_at))}</td><td>${marker}${current ? '' : action}</td></tr>`
+        })
+        .join('')
+
   const body = `<section class="card">
     <div class="eyebrow">${escapeHtml(t('账户', 'ACCOUNT'))}</div>
     <h1>@${escapeHtml(user.login)}</h1>
@@ -1641,6 +1671,16 @@ export function settingsPage(input: {
       </label>
       <button class="btn" type="submit">${escapeHtml(t('创建 token', 'Create token'))}</button></form>
     <p class="fine">${escapeHtml(t('范围固定为 gateway：这是目前唯一会校验 token 的能力边界，暂时不提供单选项以外的选择。', 'The scope is fixed to gateway: it is the only capability boundary that checks a token today, so there is no choice to make yet.'))}</p>
+  </section>
+
+  <section class="card" id="sessions">
+    <h2>${escapeHtml(t('登录设备', 'Sessions'))}</h2>
+    <p class="muted">${escapeHtml(t('这些是当前有效的登录会话。撤销后那个 cookie 立即失效；退出其他会话不会退出当前这个。', 'These are the live sign-ins. Revoking one ends that cookie immediately; signing out the others keeps this one.'))}</p>
+    <div class="table-scroll"><table><thead><tr><th>IP</th><th>${escapeHtml(t('客户端', 'Client'))}</th><th>${escapeHtml(t('登录时间', 'Signed in'))}</th><th></th></tr></thead><tbody>${sessionRows}</tbody></table></div>
+    <div class="row">
+      <form method="post" action="/settings/sessions/revoke-others">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('退出其他会话', 'Sign out other sessions'))}</button></form>
+      <form method="post" action="/settings/sessions/rotate">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('轮换当前会话', 'Rotate this session'))}</button></form>
+    </div>
   </section>`
   return layout({ title: t('设置', 'Settings'), viewer, body, config, locale, path: '/settings', active: 'settings', notice, error })
 }
