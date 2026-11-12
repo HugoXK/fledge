@@ -1,0 +1,1 @@
+A multi-device visual matrix now boots Fledge with a throwaway database, signs in through the development login, renders the owner, account, repository, admin and workspace surfaces at nine widths in both languages, fails on page or element overflow, and uploads the screenshots as CI artifacts.

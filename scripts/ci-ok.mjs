@@ -25,6 +25,7 @@ export const REQUIRED_JOBS = [
   'test',
   'coverage',
   'build',
+  'visual',
   'docker',
   'audit',
   'changelog',
