@@ -96,8 +96,10 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   platform only writes in Chinese is named by its failure class on a page in the
   other language, and the raw sentence stays on the job page.
 - **Shell** (`src/views/layout.ts`, `public/app.css`): the main nav marks the
-  current section with `aria-current="page"`, derived from the route and
-  overridable with `active`. The sticky header owns `--header-h` (re-declared
+  current page with `aria-current="page"` on the one link whose own target is the
+  route, derived from the route and overridable with `active`; a nested route
+  inside a section keeps the highlight and announces the generic
+  `aria-current="true"`, never `page`. The sticky header owns `--header-h` (re-declared
   per breakpoint); `[id] { scroll-margin-top }` and the workspace frame's height
   both follow it, so an anchor is never hidden under the header when it wraps
   and the frame's bottom lands at the viewport bottom. The shell's controls keep
