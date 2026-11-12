@@ -1174,7 +1174,7 @@ callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
 
 | Boundary | Control |
 |---|---|
-| Browser → Fledge | session cookie, CSRF token on every form, rate limits |
+| Browser → Fledge | session cookie, CSRF token on every form, rate limits; destructive writes also need a GitHub re-authentication inside `RECENT_AUTH_MINUTES` (`sessions.recent_auth_at`, audited as `recent_auth_required`) |
 | Fledge → GitHub | user's fine-grained token; platform OAuth only for identity |
 | Fledge → SMTP | credentials in env, never logged |
 | FlyBot bridge → Fledge | job callback secret; credential URL; job token |
