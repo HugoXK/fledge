@@ -1218,7 +1218,7 @@ test('every empty data region uses the shared state component and points at its 
     assert.doesNotMatch(consoleRecent, /<p class="muted">No jobs yet\.<\/p>/, 'the console no longer falls back to a bare grey sentence')
     assert.match(consoleRecent, /class="actions"/, 'the console empty state carries an action')
 
-    const settingsHtml = settingsPage({ config, locale: 'en', viewer, tokens: [], providers: [] })
+    const settingsHtml = settingsPage({ config, locale: 'en', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] })
     const providerCard = cardWithId(settingsHtml, 'model-providers')
     assert.match(providerCard, /data-state="empty"/, 'settings renders the shared empty state when there is no provider')
     assert.doesNotMatch(providerCard, /<p class="muted">No model providers yet\.<\/p>/, 'settings no longer falls back to a bare grey sentence')
@@ -1253,7 +1253,7 @@ test('non-empty data regions render exactly as before, with no state wrapper', (
     assert.doesNotMatch(consoleRecent, /data-state=/, 'a non-empty recent-jobs list gains no state wrapper')
 
     const provider = store.createModelProvider({ id: 'prov_filled', userId: user.id, label: 'Filled provider', baseUrl: 'https://api.example.com/v1', keyEnc: 'x', allowPrivate: false })
-    const settingsHtml = settingsPage({ config, locale: 'en', viewer, tokens: [], providers: [{ ...provider, models: [] }] })
+    const settingsHtml = settingsPage({ config, locale: 'en', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [{ ...provider, models: [] }] })
     const providerCard = cardWithId(settingsHtml, 'model-providers')
     assert.match(providerCard, /Filled provider/)
     assert.doesNotMatch(providerCard, /data-state=/, 'a configured settings page gains no state wrapper')
