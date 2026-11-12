@@ -1,1 +1,0 @@
-A duplicate-work refusal now says which kind of duplicate it is: work still in flight (`DUPLICATE_WORK`, with the open pull request) or work that already landed (`ALREADY_FIXED`, with the merged pull request and its merge commit recorded in the audit detail and the event). Nothing else about dispatch changes: the preflight stays read-only and still creates no job.

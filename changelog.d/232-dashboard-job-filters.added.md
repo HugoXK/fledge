@@ -1,1 +1,0 @@
-The dashboard job list can now be narrowed by repository, status and kind. The filters live in the URL, so a refresh, a shared link and a pagination click all show the same list, an invalid value falls back to the unfiltered list instead of an error, and an empty result names the filters that produced it and clears them in one click.

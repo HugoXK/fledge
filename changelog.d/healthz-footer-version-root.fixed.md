@@ -1,1 +1,0 @@
-The footer and the `/admin` release card now report the same version `/healthz` serves. Both read `package.json` through one module-relative root instead of one of them using the process's working directory, so a process started outside the checkout — a systemd unit with its own `WorkingDirectory`, a container with a different root — can no longer report two versions of itself.
