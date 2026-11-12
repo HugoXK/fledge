@@ -1072,7 +1072,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         return []
       })
     }
-    const pendingPlan = store.pendingPlanJob(repo.id)
+    const planDeadlineCutoff = new Date(Date.now() - config.plan.expiryDays * 86_400_000).toISOString()
+    const pendingPlan = store.pendingPlanJob(repo.id, planDeadlineCutoff)
     return reply.type('text/html').send(
       repoPage({
         config,
@@ -1585,11 +1586,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id || job.kind !== 'plan' || job.status !== 'succeeded') throw httpError(404, '计划任务不存在或尚未完成。', 'PLAN_NOT_READY')
     if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以批准计划。')}`)
-    // #359: expiry is terminal for this plan. A late approval would revive work
-    // the item no longer carries, so it is refused by name and the reopening path
-    // (`closed -> triaged`, then a new plan) stays the only way back.
-    const expiredItem = job.work_item_id === null ? undefined : store.getWorkItem(job.work_item_id)
-    if (expiredItem !== undefined && expiredItem.state === 'closed' && expiredItem.closed_reason === 'plan_expired') {
+    // #359: the deadline belongs to the plan, not to the work item's state. An
+    // item that was reopened and is now `triaged` (or one that reached `merged`
+    // without ever being approved) must not make a dead plan approvable again, so
+    // the refusal reads the plan's own age and a new plan is the only way back.
+    const planDeadline = job.finished_at === null ? Number.NaN : Date.parse(job.finished_at) + config.plan.expiryDays * 86_400_000
+    if (!Number.isFinite(planDeadline) || planDeadline <= Date.now()) {
       return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('计划已过期关闭，不能再批准；重新创建工作项即可生成新计划。')}`)
     }
     const body = form(request)
@@ -1659,7 +1661,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (MAINTAINER_ONLY_STATES.has(state) && repo.repo_role !== 'maintainer') {
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('只有 maintainer 可以执行这个操作。')}#work`)
     }
-    const patch: { state: string; assignee_user_id?: string; pr_state?: string; merged_at?: string; merge_commit?: string | null } = { state }
+    // #359: `closed_reason` describes one close, not the item's past. Leaving
+    // `closed` clears it, or the table keeps printing "Closed - plan expired"
+    // for an item that was reopened and closed by hand later.
+    const patch: { state: string; closed_reason: string | null; assignee_user_id?: string; pr_state?: string; merged_at?: string; merge_commit?: string | null } = { state, closed_reason: state === 'closed' ? item.closed_reason : null }
     if (state === 'assigned' || state === 'in_progress') patch.assignee_user_id = viewer.user.id
     if (state === 'merged') {
       patch.pr_state = 'merged'

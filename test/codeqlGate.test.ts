@@ -112,10 +112,12 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // `:2958` together in that commit. #359 inserts the pending-plan spread and
   // the late-approval guard in the repository and plan routes, all above the
   // webhook registration, so the `:2958` pin and its baseline entry move to
-  // `:2974` together in this commit, which is what keeps "refreshed" from
-  // becoming "silently re-labelled".
+  // `:2974` together in that commit. The review rework adds the deadline cutoff
+  // and the cleared reason above the same registration, moving it to `:2979`
+  // in the same kind of commit, which is what keeps "refreshed" from becoming
+  // "silently re-labelled".
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|2974',
+    'js/missing-rate-limiting|src/app.ts|2979',
     'js/missing-rate-limiting|src/app.ts|469',
     'js/missing-rate-limiting|src/app.ts|504',
     'js/missing-rate-limiting|src/app.ts|514',

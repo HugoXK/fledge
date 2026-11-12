@@ -177,6 +177,21 @@ test('a late approval cannot revive an expired plan, and closed -> triaged still
     })
     assert.equal(reopened.statusCode, 302)
     assert.equal(store.getWorkItem(item.id)!.state, 'triaged')
+    // Leaving `closed` clears the reason: one close is not the item's history.
+    assert.equal(store.getWorkItem(item.id)!.closed_reason, null)
+
+    // The deadline belongs to the plan, so reopening the item does not make the
+    // dead plan approvable again - a new plan is the only way back.
+    const stillLate = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/jobs/${job.id}/approve-plan`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf }),
+    })
+    assert.equal(stillLate.statusCode, 302)
+    assert.match(String(stillLate.headers.location), /error=/)
+    assert.equal(store.getJob(job.id)!.plan_approved_at, null)
+    assert.equal(store.getWorkItem(item.id)!.state, 'triaged')
   } finally {
     // buildApp owns the store's lifetime here: close() closes it too.
     await built.close()
@@ -207,6 +222,27 @@ test('the repository page names the expired reason and the pending deadline', as
     assert.equal(pending.statusCode, 200)
     assert.match(pending.body, new RegExp(deadline))
     assert.match(pending.body, /批准|approve/i)
+
+    // One repository can hold a dead plan and a live one. The banner must name
+    // the live plan: the expired row is oldest, and completion never clears
+    // `plan_approved_at`, so a query without the deadline cutoff would print a
+    // past deadline in future tense and keep naming the dead plan.
+    const mixedRepo = expiryRepo(store, user, 'repo_page_mixed')
+    const deadJob = planJob(store, { id: 'job_page_mixed_dead', repoId: mixedRepo.id, userId: user.id, finishedAgoMs: 9 * DAY })
+    store.createWorkItem({ id: 'wi_page_mixed_dead', repoId: mixedRepo.id, userId: user.id, title: 'dead plan', state: 'closed', closedReason: 'plan_expired', jobId: deadJob.id })
+    const liveJob = planJob(store, { id: 'job_page_mixed_live', repoId: mixedRepo.id, userId: user.id, finishedAgoMs: 1 * DAY })
+    store.createWorkItem({ id: 'wi_page_mixed_live', repoId: mixedRepo.id, userId: user.id, title: 'live plan', state: 'assigned', jobId: liveJob.id })
+    const liveDeadline = new Date(Date.parse(store.getJob(liveJob.id)!.finished_at!) + 7 * DAY).toISOString().slice(0, 10)
+    const deadDeadline = new Date(Date.parse(store.getJob(deadJob.id)!.finished_at!) + 7 * DAY).toISOString().slice(0, 10)
+
+    const mixed = await built.app.inject({ method: 'GET', url: `/repos/${mixedRepo.id}`, headers: { cookie } })
+    assert.equal(mixed.statusCode, 200)
+    assert.match(mixed.body, new RegExp(liveDeadline))
+    assert.ok(!mixed.body.includes(deadDeadline), 'a past deadline must not be printed in future tense')
+    // The work-item table legitimately links the dead plan's job row; the banner
+    // is what must stop naming it, and the banner opens with `计划 <id> 将在`.
+    assert.ok(mixed.body.includes(`计划 ${liveJob.id}`), 'the banner must name the live plan')
+    assert.ok(!mixed.body.includes(`计划 ${deadJob.id}`), 'the banner must not name the expired plan')
   } finally {
     // buildApp owns the store's lifetime here: close() closes it too.
     await built.close()

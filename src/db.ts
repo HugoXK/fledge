@@ -2346,10 +2346,15 @@ export class Store {
     )
   }
 
-  pendingPlanJob(repoId: string): JobRow | undefined {
+  // #359: `finishedAfterIso` is the deadline cutoff, not a formatting choice.
+  // Completion never clears `plan_approved_at`, so without it an expired plan
+  // stays the oldest unapproved row forever and the page keeps naming a plan
+  // whose deadline has already passed - even after a new plan exists.
+  pendingPlanJob(repoId: string, finishedAfterIso: string): JobRow | undefined {
     return this.get<JobRow>(
-      "SELECT * FROM jobs WHERE repo_id = ? AND kind = 'plan' AND status = 'succeeded' AND plan_approved_at IS NULL AND plan_rejected_at IS NULL AND finished_at IS NOT NULL ORDER BY finished_at ASC, rowid ASC LIMIT 1",
+      "SELECT * FROM jobs WHERE repo_id = ? AND kind = 'plan' AND status = 'succeeded' AND plan_approved_at IS NULL AND plan_rejected_at IS NULL AND finished_at IS NOT NULL AND finished_at > ? ORDER BY finished_at ASC, rowid ASC LIMIT 1",
       repoId,
+      finishedAfterIso,
     )
   }
 
