@@ -214,3 +214,62 @@ test('a state file that names a path inside a snapshot protects that snapshot', 
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('an empty or whitespace-only ARTIFACT_RETENTION_KEEP is unset, not zero', () => {
+  const seeded = seed('empty-keep')
+  try {
+    // The age window is set to 0 through the CLI so the count window is the only
+    // reason a snapshot survives; an unset KEEP must keep the newest three.
+    const base = ['--root', seeded.root, '--dry-run', '--max-age-days', '0']
+    const absent = run(base)
+    assert.equal(absent.code, 0, absent.stderr)
+    assert.match(absent.stdout, /keep-window=3 max-age-days=0/)
+    assert.match(absent.stdout, /candidates=1 /)
+    assert.match(absent.stdout, /run=r41 .*action=remove/)
+    for (const raw of ['', '   ']) {
+      const result = run(base, { ARTIFACT_RETENTION_KEEP: raw })
+      assert.equal(result.code, 0, result.stderr)
+      assert.match(result.stdout, /keep-window=3 max-age-days=0/, `KEEP=${JSON.stringify(raw)} must take the default 3`)
+      assert.match(result.stdout, /candidates=1 /, `KEEP=${JSON.stringify(raw)} must not widen the candidates`)
+      assert.match(result.stdout, /run=r41 .*action=remove/)
+    }
+  } finally {
+    cleanup(seeded)
+  }
+})
+
+test('an empty or whitespace-only ARTIFACT_RETENTION_MAX_AGE_DAYS is unset, not zero', () => {
+  const seeded = seed('empty-age')
+  try {
+    // The count window is set to 0 through the CLI so age is the only reason a
+    // snapshot survives; an unset MAX_AGE_DAYS must keep everything younger than 14 days.
+    const base = ['--root', seeded.root, '--dry-run', '--keep', '0']
+    const absent = run(base)
+    assert.equal(absent.code, 0, absent.stderr)
+    assert.match(absent.stdout, /keep-window=0 max-age-days=14/)
+    assert.match(absent.stdout, /candidates=1 /)
+    assert.match(absent.stdout, /run=r63 .*action=keep reason=within-window/)
+    for (const raw of ['', '   ']) {
+      const result = run(base, { ARTIFACT_RETENTION_MAX_AGE_DAYS: raw })
+      assert.equal(result.code, 0, result.stderr)
+      assert.match(result.stdout, /keep-window=0 max-age-days=14/, `MAX_AGE_DAYS=${JSON.stringify(raw)} must take the default 14`)
+      assert.match(result.stdout, /candidates=1 /, `MAX_AGE_DAYS=${JSON.stringify(raw)} must not widen the candidates`)
+      assert.match(result.stdout, /run=r63 .*action=keep reason=within-window/)
+    }
+  } finally {
+    cleanup(seeded)
+  }
+})
+
+test('--root with no value is refused instead of falling back to the environment', () => {
+  const seeded = seed('root-no-value')
+  try {
+    for (const args of [['--root'], ['--root', ''], ['--root', '--dry-run']]) {
+      const result = run(args, { FLYBOT_INSTANCE_ROOT: seeded.root })
+      assert.equal(result.code, 2, `${JSON.stringify(args)} must refuse, stdout=${result.stdout} stderr=${result.stderr}`)
+      assert.match(result.stderr, /--root requires a value/)
+    }
+  } finally {
+    cleanup(seeded)
+  }
+})

@@ -626,6 +626,8 @@ npm run artifacts:prune -- --root /var/lib/fledge/flybot-users --apply
 The root comes from `--root`, then `ARTIFACT_RETENTION_ROOT`, then
 `FLYBOT_INSTANCE_ROOT`, then the default data directory; an empty value counts
 as unset, which is why `.env.example` can ship `ARTIFACT_RETENTION_ROOT=`.
+`--root` itself is not optional: a bare `--root`, an empty value or another flag
+after it is a usage error (exit `2`), not a fallback to the environment.
 
 The policy has two settings, and they answer different questions rather than
 naming one threshold twice:
@@ -634,6 +636,12 @@ naming one threshold twice:
   snapshots, by run number, survive whatever their age.
 - `--max-age-days <n>` / `ARTIFACT_RETENTION_MAX_AGE_DAYS` (default `14`): how
   old a snapshot must be before it is a candidate at all.
+
+An empty or whitespace-only `ARTIFACT_RETENTION_KEEP` /
+`ARTIFACT_RETENTION_MAX_AGE_DAYS` counts as unset and takes the default. It is
+never read as `0`: zero is a legal explicit value (`--keep 0` keeps no snapshot
+by count), so treating a blank `.env` line as zero would turn the two retention
+knobs into "remove everything".
 
 A snapshot is removed only when it is outside **both** windows, and never when:
 

@@ -25,9 +25,21 @@ function fail(code, message) {
 }
 
 function parseCount(text, name, min) {
-  const value = Number(text)
+  // `Number('')` and `Number('   ')` are 0, so an empty value must not reach the
+  // conversion: for the two retention knobs zero means "keep nothing".
+  const raw = text === undefined ? '' : String(text)
+  if (raw.trim() === '') fail(2, `${name} must be an integer >= ${String(min)}, got ${String(text)}`)
+  const value = Number(raw)
   if (!Number.isInteger(value) || value < min) fail(2, `${name} must be an integer >= ${String(min)}, got ${String(text)}`)
   return value
+}
+
+// A setting shipped empty in `.env.example` is unset, exactly like the root:
+// the default applies rather than the most destructive possible value.
+function countFromEnv(env, name, fallback) {
+  const raw = env[name]
+  if (raw === undefined || raw.trim() === '') return fallback
+  return parseCount(raw, name, 0)
 }
 
 function parseArgs(argv) {
@@ -37,7 +49,14 @@ function parseArgs(argv) {
     if (arg === '--help' || arg === '-h') parsed.help = true
     else if (arg === '--apply') parsed.apply = true
     else if (arg === '--dry-run') parsed.apply = false
-    else if (arg === '--root') { index += 1; parsed.root = argv[index] }
+    else if (arg === '--root') {
+      index += 1
+      const value = argv[index]
+      // A missing value used to fall through to the environment root, which made
+      // `--root` silently mean "whatever this timer's env says".
+      if (value === undefined || value === '' || value.startsWith('--')) fail(2, `--root requires a value\n${USAGE}`)
+      parsed.root = value
+    }
     else if (arg === '--keep') { index += 1; parsed.keep = parseCount(argv[index], '--keep', 0) }
     else if (arg === '--max-age-days') { index += 1; parsed.maxAgeDays = parseCount(argv[index], '--max-age-days', 0) }
     else fail(2, `unknown argument ${arg}\n${USAGE}`)
@@ -192,8 +211,8 @@ function run(argv, env) {
   if (root === resolve(sep)) fail(1, `refusing to treat the filesystem root as an instance root: ${root}`)
   if (!existsSync(root)) fail(1, `instance root not found: ${root}`)
 
-  const keep = parsed.keep ?? parseCount(env.ARTIFACT_RETENTION_KEEP ?? '3', 'ARTIFACT_RETENTION_KEEP', 0)
-  const maxAgeDays = parsed.maxAgeDays ?? parseCount(env.ARTIFACT_RETENTION_MAX_AGE_DAYS ?? '14', 'ARTIFACT_RETENTION_MAX_AGE_DAYS', 0)
+  const keep = parsed.keep ?? countFromEnv(env, 'ARTIFACT_RETENTION_KEEP', 3)
+  const maxAgeDays = parsed.maxAgeDays ?? countFromEnv(env, 'ARTIFACT_RETENTION_MAX_AGE_DAYS', 14)
   const now = Date.now()
 
   const entries = []
