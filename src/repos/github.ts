@@ -1,0 +1,634 @@
+import { log } from '../lib/log.js'
+import { incCounter, observeHistogram } from '../lib/metrics.js'
+import { endSpan, startSpan } from '../lib/otel.js'
+import { acquireGithubBudget, noteGithubRateLimit } from '../lib/githubBudget.js'
+import type { MergedPullRequest } from '../lib/duplicates.js'
+
+const DEFAULT_API = 'https://api.github.com'
+const SEGMENT = /^[A-Za-z0-9_.-]+$/
+const REVIEW_PERMISSIONS = new Set(['admin', 'maintain', 'write'])
+
+export type RepoPermission = 'admin' | 'maintain' | 'write' | 'triage' | 'read' | 'none'
+
+export interface RepoPermissions {
+  admin: boolean
+  maintain: boolean
+  push: boolean
+  triage: boolean
+  pull: boolean
+}
+
+export interface RepoInfo {
+  owner: string
+  name: string
+  fullName: string
+  defaultBranch: string
+  private: boolean
+  canPush: boolean
+  htmlUrl: string
+  isFork: boolean
+  parent: string | null
+  permissions: RepoPermissions
+}
+
+export interface ViewerInfo {
+  login: string
+  id: number
+}
+
+export interface PreparedRepo {
+  viewer: ViewerInfo
+  upstream: RepoInfo
+  fork: RepoInfo
+  isFork: boolean
+  forkCreated: boolean
+  permission: RepoPermission
+  canReview: boolean
+  canCreateIssue: boolean
+}
+
+export interface PullRequestInfo {
+  number: number
+  url: string
+  title: string
+  state: string
+  head: string
+  base: string
+  headSha: string
+  mergeable: boolean | null
+  mergeableState: string
+  draft: boolean
+  merged: boolean
+  changedFiles: number
+}
+
+export interface CheckRunInfo {
+  name: string
+  status: string
+  conclusion: string | null
+}
+
+export interface ReviewInfo {
+  state: string
+  user: string
+  submittedAt: string
+}
+
+interface GithubRepoPayload {
+  name: string
+  full_name: string
+  default_branch: string
+  private: boolean
+  html_url: string
+  fork?: boolean
+  parent?: { full_name?: string } | null
+  owner: { login: string }
+  permissions?: { push?: boolean; admin?: boolean; maintain?: boolean; triage?: boolean; pull?: boolean }
+}
+
+export class GithubError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'GithubError'
+  }
+}
+
+export function parseRepoInput(input: string): { owner: string; name: string } {
+  const cleaned = input.trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '')
+  const parts = cleaned.split('/').filter((part) => part !== '')
+  if (parts.length !== 2) throw new Error('仓库格式应为 owner/name')
+  const [owner, name] = parts as [string, string]
+  if (!SEGMENT.test(owner) || !SEGMENT.test(name)) throw new Error('仓库名只能包含字母、数字、. _ -')
+  return { owner, name }
+}
+
+function permissionOf(info: RepoInfo): RepoPermission {
+  if (info.permissions.admin) return 'admin'
+  if (info.permissions.maintain) return 'maintain'
+  if (info.permissions.push) return 'write'
+  if (info.permissions.triage) return 'triage'
+  if (info.permissions.pull) return 'read'
+  return 'none'
+}
+
+function canReview(permission: RepoPermission): boolean {
+  return REVIEW_PERMISSIONS.has(permission)
+}
+
+function canCreateIssue(info: RepoInfo, permission: RepoPermission): boolean {
+  return !info.private || permission === 'admin' || permission === 'maintain' || permission === 'write' || permission === 'triage'
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// The duplicate preflight matches a pull request's body for a reference to the
+// job's issue; it never shows or stores the body (the audit line and the event
+// carry the URL), so a body longer than this contributes nothing but work: at
+// the 65,535-character GitHub cap one body measured 4,564 ms to scan. Both ends
+// are kept because a closing `Fixes #N` line sits at the top of a description or
+// at its bottom, and dropping only the tail would silently miss the reference
+// and let the second pull request through. The newline at the seam stops a path
+// from being read across the cut; the only body a seam can affect is one whose
+// reference is split exactly at 4,000 characters.
+const BODY_CAP_HEAD = 4_000
+const BODY_CAP_TAIL = 4_000
+
+function capBody(body: string): string {
+  if (body.length <= BODY_CAP_HEAD + BODY_CAP_TAIL) return body
+  return `${body.slice(0, BODY_CAP_HEAD)}\n${body.slice(-BODY_CAP_TAIL)}`
+}
+
+export class GithubClient {
+  constructor(
+    private readonly token: string,
+    private readonly apiBase = DEFAULT_API,
+  ) {}
+
+  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const span = startSpan('github.request', { method, path: path.split('?')[0] ?? path })
+    const startedAt = Date.now()
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let response: Response
+      await acquireGithubBudget(this.token)
+      try {
+        response = await fetch(`${this.apiBase.replace(/\/$/, '')}${path}`, {
+          method,
+          headers: {
+            authorization: `Bearer ${this.token}`,
+            accept: 'application/vnd.github+json',
+            'x-github-api-version': '2022-11-28',
+            'user-agent': 'fledge/0.1',
+            ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          signal: AbortSignal.timeout(30_000),
+        })
+      } catch (error) {
+        incCounter('fledge_github_requests_total', { method, status: 0 }, 1, 'GitHub API requests')
+        endSpan(span, 'ERROR', error instanceof Error ? error.message : String(error), { status: 0 })
+        throw error
+      }
+      incCounter('fledge_github_requests_total', { method, status: response.status }, 1, 'GitHub API requests')
+      observeHistogram('fledge_github_request_seconds', (Date.now() - startedAt) / 1000, { method }, 'GitHub request duration')
+      const text = await response.text()
+      if (response.ok) {
+        endSpan(span, 'OK', undefined, { status: response.status })
+        return (text === '' ? {} : JSON.parse(text)) as T
+      }
+      let message = text.slice(0, 300)
+      try {
+        const parsed = JSON.parse(text) as { message?: string }
+        if (parsed.message !== undefined) message = parsed.message
+      } catch {}
+      const retryable = response.status === 429 || (method === 'GET' && response.status >= 500) || (response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.get('retry-after') !== null || /rate limit/i.test(message)))
+      if (!retryable || attempt === 2) {
+        endSpan(span, 'ERROR', message, { status: response.status })
+        throw new GithubError(response.status, message)
+      }
+      const retryAfter = Number(response.headers.get('retry-after'))
+      const reset = Number(response.headers.get('x-ratelimit-reset'))
+      const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.min(retryAfter * 1000, 10_000)
+        : Number.isFinite(reset) && reset > 0
+          ? Math.min(Math.max(0, reset * 1000 - Date.now()), 10_000)
+          : Math.min(500 * 2 ** attempt, 5_000)
+      noteGithubRateLimit(this.token, waitMs)
+      await sleep(waitMs)
+    }
+    throw new GithubError(500, 'GitHub request failed')
+  }
+
+  private mapRepo(repo: GithubRepoPayload): RepoInfo {
+    return {
+      owner: repo.owner.login,
+      name: repo.name,
+      fullName: repo.full_name,
+      defaultBranch: repo.default_branch,
+      private: repo.private,
+      canPush: repo.permissions?.push === true || repo.permissions?.admin === true || repo.permissions?.maintain === true,
+      htmlUrl: repo.html_url,
+      isFork: repo.fork === true,
+      parent: repo.parent?.full_name ?? null,
+      permissions: {
+        admin: repo.permissions?.admin === true,
+        maintain: repo.permissions?.maintain === true,
+        push: repo.permissions?.push === true,
+        triage: repo.permissions?.triage === true,
+        pull: repo.permissions?.pull === true,
+      },
+    }
+  }
+
+  async getViewer(): Promise<ViewerInfo> {
+    const user = await this.request<{ login: string; id: number }>('GET', '/user')
+    return { login: user.login, id: user.id }
+  }
+
+  async listUserInstallations(): Promise<Array<{ id: number }>> {
+    const list = await this.request<Array<{ id: number }>>('GET', '/user/installations?per_page=100')
+    return Array.isArray(list) ? list.map((entry) => ({ id: entry.id })) : []
+  }
+
+  async getRepo(owner: string, name: string): Promise<RepoInfo> {
+    const repo = await this.request<GithubRepoPayload>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`)
+    return this.mapRepo(repo)
+  }
+
+  async getRepoOrNull(owner: string, name: string): Promise<RepoInfo | null> {
+    try {
+      return await this.getRepo(owner, name)
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return null
+      throw error
+    }
+  }
+
+  async createFork(owner: string, name: string): Promise<RepoInfo> {
+    const repo = await this.request<GithubRepoPayload>('POST', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/forks`, {})
+    return this.mapRepo(repo)
+  }
+
+  async waitForRepo(owner: string, name: string, timeoutMs = 30_000, intervalMs = 2_000): Promise<RepoInfo> {
+    const deadline = Date.now() + timeoutMs
+    let lastError: unknown
+    while (Date.now() < deadline) {
+      try {
+        return await this.getRepo(owner, name)
+      } catch (error) {
+        lastError = error
+        if (!(error instanceof GithubError) || error.status !== 404) throw error
+        await sleep(intervalMs)
+      }
+    }
+    throw new Error(`等待 fork ${owner}/${name} 创建超时${lastError instanceof Error ? `：${lastError.message}` : ''}`)
+  }
+
+  async getBranch(owner: string, name: string, branch: string): Promise<{ name: string; sha: string } | null> {
+    try {
+      const data = await this.request<{ name: string; commit: { sha: string } }>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branches/${encodeURIComponent(branch)}`,
+      )
+      return { name: data.name, sha: data.commit.sha }
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return null
+      throw error
+    }
+  }
+
+  async canReadContents(owner: string, name: string, ref: string): Promise<boolean> {
+    try {
+      await this.request('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/contents/?ref=${encodeURIComponent(ref)}`)
+      return true
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return true
+      throw error
+    }
+  }
+
+  async createPullRequest(
+    owner: string,
+    name: string,
+    input: { title: string; head: string; base: string; body: string },
+  ): Promise<PullRequestInfo> {
+    const pr = await this.request<{ number: number; html_url: string; title: string; state: string; head: { ref: string; sha: string }; base: { ref: string }; mergeable?: boolean | null; mergeable_state?: string; draft?: boolean; merged?: boolean; changed_files?: number }>(
+      'POST',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls`,
+      input,
+    )
+    return {
+      number: pr.number,
+      url: pr.html_url,
+      title: pr.title,
+      state: pr.state,
+      head: pr.head.ref,
+      base: pr.base.ref,
+      headSha: pr.head.sha,
+      mergeable: pr.mergeable ?? null,
+      mergeableState: pr.mergeable_state ?? 'unknown',
+      draft: pr.draft === true,
+      merged: pr.merged === true,
+      changedFiles: Number(pr.changed_files ?? 0),
+    }
+  }
+
+  async getPullRequest(owner: string, name: string, number: number): Promise<PullRequestInfo> {
+    const pr = await this.request<{
+      number: number
+      html_url: string
+      title: string
+      state: string
+      head: { ref: string; sha: string }
+      base: { ref: string }
+      mergeable: boolean | null
+      mergeable_state: string
+      draft: boolean
+      merged: boolean
+      changed_files?: number
+    }>(
+      'GET',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}`,
+    )
+    return {
+      number: pr.number,
+      url: pr.html_url,
+      title: pr.title,
+      state: pr.state,
+      head: pr.head.ref,
+      base: pr.base.ref,
+      headSha: pr.head.sha,
+      mergeable: pr.mergeable,
+      mergeableState: pr.mergeable_state,
+      draft: pr.draft,
+      merged: pr.merged,
+      changedFiles: Number(pr.changed_files ?? 0),
+    }
+  }
+
+  async listCheckRuns(owner: string, name: string, ref: string): Promise<CheckRunInfo[]> {
+    const result = await this.request<{ check_runs?: Array<{ name?: string; status?: string; conclusion?: string | null }> }>(
+      'GET',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/commits/${encodeURIComponent(ref)}/check-runs?per_page=100`,
+    )
+    return (result.check_runs ?? []).map((run) => ({
+      name: run.name ?? 'check',
+      status: run.status ?? 'unknown',
+      conclusion: run.conclusion ?? null,
+    }))
+  }
+
+  async getCombinedStatus(owner: string, name: string, ref: string): Promise<{ state: string; count: number }> {
+    const result = await this.request<{ state?: string; statuses?: unknown[] }>(
+      'GET',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/commits/${encodeURIComponent(ref)}/status`,
+    )
+    return { state: result.state ?? 'unknown', count: Array.isArray(result.statuses) ? result.statuses.length : 0 }
+  }
+
+  async listReviews(owner: string, name: string, number: number): Promise<ReviewInfo[]> {
+    const result = await this.request<Array<{ state?: string; user?: { login?: string }; submitted_at?: string }>>(
+      'GET',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/reviews?per_page=100`,
+    )
+    return Array.isArray(result)
+      ? result.map((review) => ({
+          state: review.state ?? 'COMMENTED',
+          user: review.user?.login ?? '',
+          submittedAt: review.submitted_at ?? '',
+        }))
+      : []
+  }
+
+  async listOpenPullRequests(owner: string, name: string, maxPages = 3): Promise<Array<{ number: number; url: string; title: string; body: string; head: string; base: string }>> {
+    const pulls: Array<{ number: number; url: string; title: string; body: string; head: string; base: string }> = []
+    for (let page = 1; page <= maxPages; page += 1) {
+      const batch = await this.request<Array<{ number?: number; html_url?: string; title?: string; body?: string | null; head?: { ref?: string }; base?: { ref?: string } }>>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls?state=open&per_page=100&page=${page}`,
+      )
+      if (!Array.isArray(batch) || batch.length === 0) break
+      for (const pull of batch) {
+        if (typeof pull.number !== 'number') continue
+        pulls.push({
+          number: pull.number,
+          url: typeof pull.html_url === 'string' ? pull.html_url : `https://github.com/${owner}/${name}/pull/${pull.number}`,
+          title: typeof pull.title === 'string' ? pull.title : '',
+          body: typeof pull.body === 'string' ? capBody(pull.body) : '',
+          head: typeof pull.head?.ref === 'string' ? pull.head.ref : '',
+          base: typeof pull.base?.ref === 'string' ? pull.base.ref : '',
+        })
+      }
+      if (batch.length < 100) break
+    }
+    return pulls
+  }
+
+  // #174: a merged pull request that mentions the issue proves nothing on its own —
+  // `Follow-up to #42` is a mention, not a fix. The issue's state is the fact that
+  // decides it, so `already-fixed` is only answered for a closed issue. One read,
+  // made only after a merged candidate matched.
+  async issueIsClosed(owner: string, name: string, issueNumber: number): Promise<boolean> {
+    const issue = await this.request<{ state?: string }>(
+      'GET',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${issueNumber}`,
+    )
+    return String(issue?.state ?? '') === 'closed'
+  }
+
+  // #174: `already-fixed` needs the pull requests that already landed. Same read
+  // shape and the same page cap as the open list, but closed and merged only: a
+  // pull request that was closed without merging is not evidence that anything
+  // was fixed, so it is dropped here rather than filtered by every caller.
+  async listMergedPullRequests(owner: string, name: string, maxPages = 3): Promise<MergedPullRequest[]> {
+    const pulls: MergedPullRequest[] = []
+    for (let page = 1; page <= maxPages; page += 1) {
+      const batch = await this.request<Array<{ number?: number; html_url?: string; title?: string; body?: string | null; head?: { ref?: string }; base?: { ref?: string }; merged_at?: string | null; merge_commit_sha?: string | null }>>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`,
+      )
+      if (!Array.isArray(batch) || batch.length === 0) break
+      for (const pull of batch) {
+        if (typeof pull.number !== 'number') continue
+        if (typeof pull.merged_at !== 'string' || pull.merged_at === '') continue
+        pulls.push({
+          number: pull.number,
+          url: typeof pull.html_url === 'string' ? pull.html_url : `https://github.com/${owner}/${name}/pull/${pull.number}`,
+          title: typeof pull.title === 'string' ? pull.title : '',
+          body: typeof pull.body === 'string' ? capBody(pull.body) : '',
+          head: typeof pull.head?.ref === 'string' ? pull.head.ref : '',
+          base: typeof pull.base?.ref === 'string' ? pull.base.ref : '',
+          mergedAt: pull.merged_at,
+          mergeCommitSha: typeof pull.merge_commit_sha === 'string' && pull.merge_commit_sha !== '' ? pull.merge_commit_sha : null,
+        })
+      }
+      if (batch.length < 100) break
+    }
+    return pulls
+  }
+
+  // The changed-file listing is capped at 30 pages (3,000 files) so one huge
+  // pull request cannot cost unbounded requests. `complete` says whether the
+  // collected list reached the count the pull request reports; a caller that
+  // treats an incomplete list as a pass would let a file past the cap through.
+  async listPullRequestFiles(
+    owner: string,
+    name: string,
+    number: number,
+    reportedFiles = 0,
+    maxPages = 30,
+  ): Promise<{ files: Array<{ filename: string; status: string; additions: number; deletions: number }>; complete: boolean }> {
+    const files: Array<{ filename: string; status: string; additions: number; deletions: number }> = []
+    let capped = true
+    for (let page = 1; page <= maxPages; page += 1) {
+      const batch = await this.request<Array<{ filename?: string; status?: string; additions?: number; deletions?: number }>>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/files?per_page=100&page=${page}`,
+      )
+      if (!Array.isArray(batch) || batch.length === 0) {
+        capped = false
+        break
+      }
+      for (const file of batch) {
+        if (typeof file.filename !== 'string' || file.filename === '') continue
+        files.push({ filename: file.filename, status: file.status ?? 'modified', additions: Number(file.additions ?? 0), deletions: Number(file.deletions ?? 0) })
+      }
+      if (batch.length < 100) {
+        capped = false
+        break
+      }
+      if (reportedFiles > 0 && files.length >= reportedFiles) {
+        capped = false
+        break
+      }
+    }
+    const complete = reportedFiles > 0 ? files.length >= reportedFiles : !capped
+    return { files, complete }
+  }
+
+  async getBranchProtection(owner: string, name: string, branch: string): Promise<{ protected: boolean; requiredChecks: string[]; requiredApprovals: number } | null> {
+    try {
+      const result = await this.request<{
+        required_status_checks?: { contexts?: string[] } | null
+        required_pull_request_reviews?: { required_approving_review_count?: number } | null
+      }>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branches/${encodeURIComponent(branch)}/protection`)
+      return {
+        protected: true,
+        requiredChecks: Array.isArray(result.required_status_checks?.contexts) ? result.required_status_checks.contexts : [],
+        requiredApprovals: Number(result.required_pull_request_reviews?.required_approving_review_count ?? 0),
+      }
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return { protected: false, requiredChecks: [], requiredApprovals: 0 }
+      if (error instanceof GithubError && error.status === 403) return null
+      throw error
+    }
+  }
+
+  async mergePullRequest(owner: string, name: string, number: number, input: { sha: string; mergeMethod?: 'merge' | 'squash' | 'rebase' }): Promise<{ merged: boolean; sha?: string; message?: string }> {
+    const result = await this.request<{ merged?: boolean; sha?: string; message?: string }>(
+      'PUT',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/merge`,
+      { sha: input.sha, merge_method: input.mergeMethod ?? 'squash' },
+    )
+    return { merged: result.merged === true, ...(result.sha === undefined ? {} : { sha: result.sha }), ...(result.message === undefined ? {} : { message: result.message }) }
+  }
+
+  async comment(owner: string, name: string, number: number, body: string): Promise<void> {
+    await this.request('POST', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/comments`, { body })
+  }
+}
+
+export async function repoPermissionWithToken(token: string, owner: string, name: string, apiBase?: string): Promise<RepoPermission> {
+  const client = new GithubClient(token, apiBase)
+  return permissionOf(await client.getRepo(owner, name))
+}
+
+export async function prepareRepo(
+  token: string,
+  owner: string,
+  name: string,
+  expectedLogin?: string,
+  apiBase?: string,
+): Promise<PreparedRepo> {
+  const client = new GithubClient(token, apiBase)
+  let viewer: ViewerInfo
+  let upstream: RepoInfo
+  try {
+    viewer = await client.getViewer()
+    if (expectedLogin !== undefined && viewer.login.toLowerCase() !== expectedLogin.toLowerCase()) {
+      throw new Error(`这个 GitHub token 属于 @${viewer.login}，请使用当前登录用户 @${expectedLogin} 的 token`)
+    }
+    upstream = await client.getRepo(owner, name)
+  } catch (error) {
+    if (error instanceof GithubError) {
+      if (error.status === 401) throw new Error('GitHub token 无效或已过期')
+      if (error.status === 404) throw new Error('上游仓库不存在，或 token 没有该仓库的访问权限')
+      if (error.status === 403) throw new Error('GitHub 拒绝了访问，请检查 token 权限或组织 SSO 授权')
+    }
+    log.warn('repo preparation failed', { error: String(error) })
+    throw error
+  }
+
+  const permission = permissionOf(upstream)
+  if (viewer.login.toLowerCase() === upstream.owner.toLowerCase()) {
+    if (!canReview(permission)) throw new Error(`token 对自己的仓库 ${upstream.fullName} 没有写权限（需要 Contents: write + Pull requests: write）`)
+    return {
+      viewer,
+      upstream,
+      fork: upstream,
+      isFork: false,
+      forkCreated: false,
+      permission,
+      canReview: true,
+      canCreateIssue: canCreateIssue(upstream, permission),
+    }
+  }
+
+  let fork = await client.getRepoOrNull(viewer.login, upstream.name)
+  let forkCreated = false
+  if (fork === null) {
+    try {
+      await client.createFork(upstream.owner, upstream.name)
+      fork = await client.waitForRepo(viewer.login, upstream.name)
+      forkCreated = true
+    } catch (error) {
+      if (error instanceof GithubError) {
+        if (error.status === 403) throw new Error('无法创建 fork：token 权限不足，或上游组织禁止 fork')
+        if (error.status === 422) throw new Error('无法创建 fork：你的账号下已有同名仓库或组织策略冲突')
+      }
+      throw error
+    }
+  } else if (!fork.isFork || (fork.parent ?? '').toLowerCase() !== upstream.fullName.toLowerCase()) {
+    throw new Error(`你的账号下已有 ${fork.fullName}，但它不是 ${upstream.fullName} 的 fork；请先处理同名仓库，或直接填写你自己的仓库`)
+  }
+
+  const forkPermission = permissionOf(fork)
+  if (!canReview(forkPermission)) {
+    throw new Error(`token 对 fork ${fork.fullName} 没有写权限（需要 Contents: write + Pull requests: write）`)
+  }
+
+  return {
+    viewer,
+    upstream,
+    fork,
+    isFork: true,
+    forkCreated,
+    permission,
+    canReview: canReview(permission),
+    canCreateIssue: canCreateIssue(upstream, permission),
+  }
+}
+
+export async function validateRepoToken(token: string, owner: string, name: string, apiBase?: string): Promise<RepoInfo> {
+  const prepared = await prepareRepo(token, owner, name, undefined, apiBase)
+  return prepared.upstream
+}
+
+export async function prepareRepoWithInstallation(
+  token: string,
+  owner: string,
+  name: string,
+  installationLogin: string,
+  apiBase?: string,
+): Promise<PreparedRepo> {
+  const client = new GithubClient(token, apiBase)
+  const upstream = await client.getRepo(owner, name)
+  const permission = permissionOf(upstream)
+  if (!canReview(permission)) {
+    throw new Error(`GitHub App 对 ${upstream.fullName} 没有写权限，请重新安装并授予 Contents / Pull requests / Issues 写权限`)
+  }
+  return {
+    viewer: { login: installationLogin, id: 0 },
+    upstream,
+    fork: upstream,
+    isFork: false,
+    forkCreated: false,
+    permission,
+    canReview: canReview(permission),
+    canCreateIssue: canCreateIssue(upstream, permission),
+  }
+}

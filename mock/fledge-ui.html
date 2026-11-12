@@ -1,0 +1,912 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark" />
+<title>Fledge UI prototype</title>
+<style>
+  :root {
+    --bg: #07090d;
+    --panel: #0d1118;
+    --panel-2: #111722;
+    --line: #1c232d;
+    --line-strong: #2a3545;
+    --text: #f2f5f9;
+    --muted: #98a2b3;
+    --muted-2: #6f7a8a;
+    --brand: #b8f34a;
+    --brand-2: #6ee7a8;
+    --accent: #7b95ff;
+    --accent-strong: #4c66f5;
+    --good: #67e8c7;
+    --warn: #f0c674;
+    --danger: #ff8a8a;
+    --radius: 16px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  .skip-link { position: absolute; left: -9999px; top: 0; z-index: 100; padding: 10px 14px; border-radius: 0 0 10px 0; background: var(--accent-strong); color: #fff; font-weight: 700; }
+  .skip-link:focus { left: 0; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background:
+      radial-gradient(900px 560px at 50% -18%, rgba(76, 102, 245, 0.2), transparent 64%),
+      radial-gradient(720px 420px at 88% 2%, rgba(103, 232, 199, 0.07), transparent 68%),
+      radial-gradient(680px 420px at 8% 8%, rgba(184, 243, 74, 0.06), transparent 66%),
+      var(--bg);
+    color: var(--text);
+    font: 15.5px/1.7 var(--sans);
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: rgba(123, 149, 255, 0.34); color: #fff; }
+  a { color: var(--accent); text-decoration: none; cursor: pointer; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); font-size: .88em; background: #080d13; border: 1px solid var(--line); padding: 1px 6px; border-radius: 6px; }
+  h1 { font-size: clamp(28px, 4vw, 46px); line-height: 1.05; margin: 0 0 10px; letter-spacing: -.045em; }
+  h2 { font-size: 19px; margin: 0 0 12px; letter-spacing: -.02em; }
+  h3 { margin: 0 0 8px; font-size: 16px; }
+  p { margin: 0 0 12px; }
+  .muted { color: var(--muted); }
+  .fine { color: var(--muted-2); font-size: 12.5px; line-height: 1.65; }
+  .top {
+    position: sticky; top: 0; z-index: 20;
+    border-bottom: 1px solid var(--line);
+    background: rgba(7, 9, 13, .82);
+    backdrop-filter: blur(18px);
+  }
+  .top-inner { max-width: 1180px; margin: 0 auto; min-height: 66px; padding: 0 24px; display: flex; align-items: center; gap: 16px 22px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 800; letter-spacing: -.03em; white-space: nowrap; }
+  .brand small { color: var(--muted-2); font-weight: 500; margin-left: 5px; font-size: 10px; letter-spacing: .16em; }
+  .mark { width: 30px; height: 30px; display: grid; place-items: center; background: linear-gradient(135deg, var(--brand), var(--brand-2)); color: #07101f; border-radius: 9px; font-weight: 900; transform: skew(-8deg); }
+  .nav { display: flex; gap: 20px; flex-wrap: wrap; }
+  .nav a { color: var(--muted); padding: 22px 0; border-bottom: 2px solid transparent; font-size: 13.5px; font-weight: 650; }
+  .nav a.on, .nav a:hover { color: var(--text); border-color: var(--accent); text-decoration: none; }
+  .spacer { flex: 1; }
+  .account { display: flex; align-items: center; gap: 9px; font-size: 12.5px; padding: 4px 10px 4px 6px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.02); }
+  .avatar { width: 24px; height: 24px; border-radius: 50%; background: var(--panel-2); display: grid; place-items: center; color: var(--accent); font-size: 11px; font-weight: 800; }
+  .lang { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+  .lang button { border: 0; background: transparent; color: var(--muted-2); font: inherit; font-size: 11px; font-weight: 700; padding: 4px 7px; border-radius: 6px; cursor: pointer; }
+  .lang button[aria-pressed="true"] { background: rgba(123,149,255,.16); color: var(--accent); }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 38px 24px 100px; }
+  .eyebrow { color: var(--accent); font: 700 10.5px/1.4 var(--mono); letter-spacing: .16em; text-transform: uppercase; margin-bottom: 12px; }
+  .card { border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(180deg, var(--panel-2), var(--panel)); padding: 22px; margin-bottom: 18px; }
+  .card.flat { background: var(--panel); }
+  .card.tight { padding: 16px; }
+  .grid2 { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr); gap: 18px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .row.between { justify-content: space-between; }
+  .stack { display: grid; gap: 12px; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--accent-strong); background: var(--accent-strong); color: #fff; padding: 9px 14px; border-radius: 10px; font: inherit; font-size: 13.5px; font-weight: 700; cursor: pointer; box-shadow: 0 10px 24px rgba(76,102,245,.22); }
+  .btn:hover { background: #5f78ff; border-color: #5f78ff; text-decoration: none; transform: translateY(-1px); }
+  .btn.ghost { background: transparent; color: var(--text); border-color: var(--line-strong); box-shadow: none; }
+  .btn.ghost:hover { border-color: var(--accent); background: rgba(123,149,255,.08); }
+  .btn.danger { background: transparent; color: var(--danger); border-color: rgba(255,138,138,.4); box-shadow: none; }
+  .btn.small { padding: 6px 10px; font-size: 12px; border-radius: 8px; }
+  .btn:disabled, .btn.disabled { opacity: .45; pointer-events: none; box-shadow: none; transform: none; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 10.5px; font-weight: 750; letter-spacing: .03em; background: #1a222b; color: #aab7c4; white-space: nowrap; }
+  .badge.good { background: rgba(103,232,199,.12); color: var(--good); }
+  .badge.bad { background: rgba(255,138,138,.12); color: var(--danger); }
+  .badge.busy { background: rgba(240,198,116,.12); color: var(--warn); }
+  .badge.kind { background: rgba(123,149,255,.1); color: var(--accent); font-weight: 650; }
+  .badge.role-m { background: rgba(184,243,74,.12); color: var(--brand); }
+  .badge.role-d { background: rgba(123,149,255,.12); color: var(--accent); }
+  .banner { padding: 12px 15px; border-radius: 11px; margin-bottom: 16px; border: 1px solid var(--line); font-size: 13.5px; background: var(--panel); }
+  .banner.ok { background: rgba(103,232,199,.08); border-color: rgba(103,232,199,.35); }
+  .banner.warn { background: rgba(240,198,116,.08); border-color: rgba(240,198,116,.35); }
+  .banner.bad { background: rgba(255,138,138,.08); border-color: rgba(255,138,138,.35); }
+  .quota-card { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 22px; align-items: center; }
+  .quota-big { font-size: clamp(30px, 5vw, 48px); font-weight: 800; letter-spacing: -.05em; line-height: 1.05; }
+  .quota-big small { font-size: 13px; color: var(--muted-2); letter-spacing: 0; font-weight: 500; }
+  .meter { height: 9px; border-radius: 99px; background: #080d13; border: 1px solid var(--line); overflow: hidden; }
+  .meter span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--brand)); border-radius: 99px; }
+  .table-scroll { width: 100%; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th { text-align: left; color: var(--muted-2); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; font-weight: 650; padding: 0 12px 10px; border-bottom: 1px solid var(--line); }
+  td { padding: 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  tr.clickable { cursor: pointer; }
+  tr.clickable:hover td { background: rgba(123,149,255,.05); }
+  .list { display: grid; gap: 10px; }
+  .list-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px; background: #090e14; }
+  .list-main { min-width: 0; }
+  .list-main strong, .list-main small { display: block; }
+  .list-main small { color: var(--muted-2); font-size: 12px; margin-top: 2px; }
+  .field { display: grid; gap: 6px; color: var(--muted); font-size: 12.5px; margin-bottom: 14px; }
+  .field input, .field select, .field textarea { width: 100%; border: 1px solid var(--line); border-radius: 9px; background: #080d13; color: var(--text); font: inherit; font-size: 13.5px; padding: 10px 12px; }
+  .field textarea { min-height: 92px; resize: vertical; }
+  .field input:focus, .field select:focus, .field textarea:focus { outline: 2px solid rgba(123,149,255,.7); outline-offset: 1px; border-color: var(--accent); }
+  .check { display: flex; align-items: flex-start; gap: 9px; color: var(--text); font-size: 13.5px; padding: 8px 0; }
+  .check input { margin-top: 4px; accent-color: var(--accent); }
+  .check.disabled { opacity: .45; }
+  .role-choice { border: 1px solid var(--line); border-radius: 13px; background: #090e14; padding: 16px; cursor: pointer; text-align: left; color: var(--text); font: inherit; display: grid; gap: 8px; }
+  .role-choice:hover { border-color: var(--accent); background: rgba(123,149,255,.06); }
+  .role-choice.selected { border-color: var(--brand); background: rgba(184,243,74,.07); box-shadow: 0 0 0 1px rgba(184,243,74,.2) inset; }
+  .role-choice strong { font-size: 15px; }
+  .role-choice small { color: var(--muted); line-height: 1.55; }
+  .role-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .chief-thread { display: grid; gap: 10px; margin: 14px 0; max-height: 320px; overflow-y: auto; padding-right: 4px; }
+  .chief-msg { max-width: 88%; border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; background: #0b121b; }
+  .chief-msg.user { margin-left: auto; border-color: rgba(123,149,255,.32); background: rgba(123,149,255,.1); border-bottom-right-radius: 4px; }
+  .chief-msg.chief { border-color: rgba(184,243,74,.25); border-bottom-left-radius: 4px; }
+  .chief-role { color: var(--muted-2); font-size: 11px; font-weight: 650; margin-bottom: 3px; }
+  .chief-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; }
+  .quick { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; background: #080d13; color: var(--muted); padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+  .chip:hover { color: var(--text); border-color: var(--accent); }
+  .question { border: 1px solid rgba(240,198,116,.3); background: linear-gradient(120deg, rgba(240,198,116,.08), transparent 60%), var(--panel); border-radius: 12px; padding: 14px; }
+  .options { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-top: 12px; }
+  .option { border: 1px solid var(--line); border-radius: 9px; background: #080d13; color: var(--text); padding: 10px; text-align: left; font: inherit; font-size: 12.5px; cursor: pointer; }
+  .option:hover { border-color: var(--accent); background: rgba(123,149,255,.08); }
+  .evidence { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .fact { border: 1px solid var(--line); border-radius: 10px; background: #090e14; padding: 10px 12px; }
+  .fact span { display: block; color: var(--muted-2); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  .fact b { display: block; margin-top: 3px; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+  .timeline { display: grid; gap: 10px; }
+  .timeline-item { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-top: 7px; flex: none; }
+  .dot.good { background: var(--good); }
+  .dot.warn { background: var(--warn); }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px); background: #0f1620; border: 1px solid var(--line-strong); color: var(--text); padding: 11px 16px; border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,.45); font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 100; max-width: min(92vw, 520px); }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.bad { border-color: rgba(255,138,138,.45); }
+  .toast.good { border-color: rgba(103,232,199,.45); }
+  .back { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; margin-bottom: 14px; }
+  .back:hover { color: var(--text); text-decoration: none; }
+  .pill { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; color: var(--muted); font-size: 11.5px; }
+  .kbd { font-family: var(--mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 1px 5px; font-size: 11px; color: var(--muted); }
+  .foot { max-width: 1180px; margin: 0 auto; padding: 28px 24px 52px; border-top: 1px solid var(--line); color: var(--muted-2); font-size: 11.5px; display: flex; justify-content: space-between; gap: 18px; flex-wrap: wrap; }
+  .foot-links { display: flex; gap: 16px; flex-wrap: wrap; }
+  .foot a { color: var(--muted-2); }
+  .foot a:hover { color: var(--accent); text-decoration: none; }
+  .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .stat { border: 1px solid var(--line); border-radius: 13px; background: var(--panel); padding: 14px 16px; color: var(--text); }
+  .stat span, .stat small { display: block; color: var(--muted-2); font-size: 11px; }
+  .stat strong { display: block; font-size: 26px; letter-spacing: -.04em; margin: 4px 0; }
+  @media (max-width: 860px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .mobile-hide { display: initial; }
+  @media (max-width: 860px) {
+    .grid2, .quota-card, .grid3, .role-grid, .evidence { grid-template-columns: 1fr; }
+    .top-inner { padding: 0 16px; }
+    .wrap { padding: 28px 16px 80px; }
+    .nav { gap: 14px; }
+    .nav a { padding: 8px 0; }
+    .account { display: none; }
+  }
+.provider-card{border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px;background:rgba(255,255,255,.02)}.provider-card ul{margin:8px 0;padding-left:18px}.bot-models{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}#danger{border-color:rgba(240,116,116,.35);background:linear-gradient(180deg,rgba(240,116,116,.06),transparent 70%)}
+</style>
+</head>
+<body>
+<a class="skip-link" href="#app">跳到主要内容</a>
+<header class="top">
+  <div class="top-inner">
+    <a class="brand" data-action="nav" data-screen="dashboard"><span class="mark">F</span><span>Fledge <small>羽巢</small></span></a>
+    <nav class="nav" id="nav"></nav>
+    <div class="spacer"></div>
+    <div class="lang" role="group" aria-label="Language">
+      <button type="button" data-action="lang" data-lang="zh" aria-pressed="true">中</button>
+      <button type="button" data-action="lang" data-lang="en" aria-pressed="false">EN</button>
+    </div>
+    <div class="account"><span class="avatar">H</span><span>@HugoXK</span><span class="pill">¥0.63</span><button class="link" data-action="toast" data-message="已退出登录（mock）。">退出</button></div>
+  </div>
+</header>
+<main class="wrap" id="app"></main>
+<footer class="foot">
+  <div>Fledge · 让托管的仓库自己长大 · 由 FlyBot 驱动</div>
+  <nav class="foot-links" aria-label="页脚导航"><a href="#">文档</a><a href="#">Portal</a><a href="#">平台状态</a><a href="#">GitHub</a></nav>
+</footer>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+const state = {
+  lang: 'zh',
+  screen: 'dashboard',
+  activeRepo: 'digitalmate',
+  activeJob: null,
+  toastTimer: null,
+  repos: {
+    digitalmate: {
+      id: 'digitalmate',
+      owner: 'openJiuwen-ai',
+      name: 'DigitalMate',
+      permission: 'write',
+      role: 'developer',
+      autoMerge: false,
+      review: false,
+      autoIterate: true,
+      interval: 1440,
+      status: 'succeeded',
+      lastRun: '2026-11-03 10:22',
+      goal: '# DigitalMate 迭代目标（v2）\\n\\n1. 发现真实、可复现的 bug，提 issue。\\n2. 对比业界竞品，判断哪些能力或体验我们应该做，提 issue。\\n3. 从已确认的 issue 里挑一个，先写失败测试，再做最小修复，开一个 PR。\\n\\n竞品对比只用于内部判断，不要写进 issue 或 PR。',
+      instance: 'ready',
+      chief: [
+        { role: 'user', text: '先汇报当前进度和下一步。' },
+        { role: 'chief', text: '当前在修 #499 的括号回接回退：失败测试已补，修后 36/36 通过；下一步等 ArkTS Code Check，然后清理 .token 并回调。' }
+      ],
+      questions: [
+        { id: 'q1', title: '这个 issue 的修复范围？', detail: '是只修当前括号回接，还是同时补一组边界测试？', options: ['只修当前 bug', '补边界测试后一起修', '先不改代码，出方案'] }
+      ],
+      jobs: [
+        { id: 'job_o6mO', kind: 'iterate', status: 'succeeded', trigger: 'schedule', summary: '修 #499 上评审 F1：balancedParenTail() 回接括号组后直接 return，带括号段的地址被截断；补 6 行组间扫描 + 回归测试。', pr: '#499', issue: '#498', cost: '$0.42', created: '2026-11-03 10:22', evidence: { tests: '36/36 pass', checks: 'CI 两绿', files: 6, risk: 'low', rollback: 'revert commit' }, attribution: 'Lead · Dev-1 · Test · Reviewer' },
+        { id: 'job_7c2a', kind: 'plan', status: 'succeeded', trigger: 'manual', summary: '计划：把地址解析的括号处理抽成独立函数，补 3 个回归用例，不改变现有输出。', pr: '—', issue: '—', cost: '$0.03', created: '2026-11-02 18:10', evidence: { tests: 'not run', checks: 'not run', files: 0, risk: 'low', rollback: 'no change' }, attribution: 'Product · Test', planApproved: false }
+      ],
+      workItems: [
+        { id: 'work_dm1', title: '修复地址括号回接', state: 'pr_ready', priority: 30, pr: '#499', issue: '#498', job: 'job_o6mO' },
+        { id: 'work_dm2', title: '对比竞品记忆能力并提需求', state: 'proposed', priority: 20, pr: '—', issue: '—', job: '—' }
+      ],
+      planRequired: false,
+      allowPaths: 'src/',
+      denyPaths: '.github/',
+      mergeMethod: 'squash',
+      requireProtection: true,
+      protectionState: 'protected',
+      protectedAt: '2026-11-04 09:10'
+    },
+    fledge: {
+      id: 'fledge',
+      owner: 'HugoXK',
+      name: 'fledge',
+      permission: 'admin',
+      role: 'maintainer',
+      autoMerge: false,
+      review: true,
+      autoIterate: true,
+      interval: 1440,
+      status: 'succeeded',
+      lastRun: '2026-11-03 10:58',
+      goal: 'Review this repository for one high-value defect or improvement. Write a failing test first, implement the smallest correct fix, run the relevant tests, and open a pull request.',
+      instance: 'ready',
+      chief: [
+        { role: 'user', text: '先别改代码，说明当前风险。' },
+        { role: 'chief', text: '当前风险主要在 review gate 与 merge queue 的边界：角色判断、自动合并开关和 CI 结论必须同时满足。建议先只读审计，不改代码。' }
+      ],
+      questions: [],
+      jobs: [
+        { id: 'job_rel10', kind: 'review', status: 'succeeded', trigger: 'schedule', summary: 'Reviewed 6 PRs; average 82. Two Fledge PRs need changes; follow-ups queued on the same branches.', pr: '—', issue: '—', cost: '$0.18', created: '2026-11-03 09:40', evidence: { tests: 'not run', checks: 'CI green', files: 0, risk: 'low', rollback: 'no change' }, attribution: 'Reviewer' },
+        { id: 'job_v022', kind: 'iterate', status: 'succeeded', trigger: 'manual', summary: 'release: v0.2.2 — assembled 16 changelog fragments, bumped package/healthz version and updated release references.', pr: '#11', issue: '—', cost: '$0.09', created: '2026-11-03 10:18', evidence: { tests: '86/86 pass', checks: 'CI green', files: 27, risk: 'low', rollback: 'revert release commit' }, attribution: 'Release' },
+        { id: 'job_plan_p0', kind: 'plan', status: 'succeeded', trigger: 'manual', summary: 'Plan: add work-item state transitions, a plan approval gate and branch-protection verification. Touch src/ and docs/ only.', pr: '—', issue: '—', cost: '$0.02', created: '2026-11-04 09:30', evidence: { tests: 'not run', checks: 'not run', files: 0, risk: 'low', rollback: 'no change' }, attribution: 'Product · Test', planApproved: false }
+      ],
+      workItems: [
+        { id: 'work_fl1', title: 'P0: work items 与状态机', state: 'merged', priority: 50, pr: '#12', issue: '—', job: 'job_v022' },
+        { id: 'work_fl2', title: '补充 branch protection 校验', state: 'in_review', priority: 40, pr: '#13', issue: '—', job: 'job_rel10' }
+      ],
+      planRequired: true,
+      allowPaths: 'src/, docs/',
+      denyPaths: '.github/',
+      mergeMethod: 'squash',
+      requireProtection: true,
+      protectionState: 'protected',
+      protectedAt: '2026-11-04 09:20'
+    },
+    widgets: {
+      id: 'widgets',
+      owner: 'acme',
+      name: 'widgets',
+      permission: 'read',
+      role: null,
+      autoMerge: false,
+      review: false,
+      autoIterate: false,
+      interval: 1440,
+      status: 'idle',
+      lastRun: '—',
+      goal: '',
+      instance: 'starting',
+      chief: [],
+      questions: [],
+      jobs: [],
+      workItems: [],
+      planRequired: false,
+      allowPaths: '',
+      denyPaths: '',
+      mergeMethod: 'squash',
+      requireProtection: true,
+      protectionState: 'unknown',
+      protectedAt: null
+    }
+  },
+};
+
+const t = (zh, en) => state.lang === 'en' ? en : zh;
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const now = () => new Date().toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
+const rid = (prefix) => prefix + '_' + Math.random().toString(36).slice(2, 7);
+const allowedRoles = (permission) => permission === 'admin' || permission === 'maintain' ? ['maintainer', 'developer'] : ['developer'];
+const roleLabel = (role) => role === 'maintainer' ? t('维护者', 'Maintainer') : role === 'developer' ? t('开发者', 'Developer') : t('未选择', 'Not selected');
+const roleClass = (role) => role === 'maintainer' ? 'role-m' : role === 'developer' ? 'role-d' : '';
+const workStateLabel = (state) => ({ proposed: t('待分诊', 'Proposed'), triaged: t('已分诊', 'Triaged'), assigned: t('已分配', 'Assigned'), in_progress: t('进行中', 'In progress'), pr_ready: t('PR 已就绪', 'PR ready'), in_review: t('审核中', 'In review'), changes_requested: t('需要修改', 'Changes requested'), approved: t('已批准', 'Approved'), merged: t('已合并', 'Merged'), closed: t('已关闭', 'Closed') }[state] || state);
+const workStateClass = (state) => state === 'merged' || state === 'approved' ? 'good' : state === 'closed' ? 'bad' : state === 'in_progress' || state === 'in_review' || state === 'pr_ready' || state === 'changes_requested' ? 'busy' : 'kind';
+const workNextStates = (state) => ({ proposed: ['triaged', 'closed'], triaged: ['assigned', 'closed'], assigned: ['in_progress', 'triaged', 'closed'], in_progress: ['pr_ready', 'changes_requested', 'closed'], pr_ready: ['in_review', 'changes_requested', 'merged', 'closed'], in_review: ['changes_requested', 'approved', 'merged', 'closed'], changes_requested: ['in_progress', 'closed'], approved: ['merged', 'closed'], merged: [], closed: ['triaged'] }[state] || []);
+const permLabel = (permission) => ({ admin: 'admin', maintain: 'maintain', write: 'write', triage: 'triage', read: 'read' }[permission] || permission);
+const statusBadge = (status) => {
+  const cls = status === 'succeeded' || status === 'approved' ? 'good' : status === 'failed' || status === 'rejected' || status === 'cancelled' ? 'bad' : status === 'running' || status === 'queued' || status === 'pending' || status === 'paused' ? 'busy' : '';
+  const label = { succeeded: t('成功', 'Succeeded'), failed: t('失败', 'Failed'), running: t('运行中', 'Running'), queued: t('排队中', 'Queued'), paused: t('已暂停', 'Paused'), cancelled: t('已取消', 'Cancelled'), approved: t('已批准', 'Approved'), pending: t('待审批', 'Pending'), idle: t('空闲', 'Idle') }[status] || status;
+  return `<span class="badge ${cls}">${esc(label)}</span>`;
+};
+const kindLabel = (kind) => kind === 'review' ? t('审核', 'Review') : kind === 'plan' ? t('计划', 'Plan') : t('迭代', 'Iterate');
+const triggerLabel = (trigger) => trigger === 'schedule' ? t('定时', 'Scheduled') : trigger === 'followup' ? t('跟进', 'Follow-up') : t('手动', 'Manual');
+const repoById = (id) => state.repos[id];
+const activeRepo = () => repoById(state.activeRepo);
+
+function toast(message, tone = '') {
+  const el = document.getElementById('toast');
+  el.textContent = message;
+  el.className = 'toast show ' + tone;
+  clearTimeout(state.toastTimer);
+  state.toastTimer = setTimeout(() => { el.className = 'toast ' + tone; }, 2600);
+}
+
+function navHtml() {
+  return `<a class="${state.screen === 'workspace' ? 'on' : ''}" data-action="nav" data-screen="workspace">${esc(t('工作区', 'Workspace'))}</a>
+    <a class="${state.screen === 'dashboard' ? 'on' : ''}" data-action="nav" data-screen="dashboard">${esc(t('仓库', 'Repositories'))}</a>
+    <a class="${state.screen === 'settings' ? 'on' : ''}" data-action="nav" data-screen="settings">${esc(t('设置', 'Settings'))}</a>`;
+}
+
+function render() {
+  document.documentElement.lang = state.lang === 'en' ? 'en' : 'zh-CN';
+  document.getElementById('nav').innerHTML = navHtml();
+  document.querySelectorAll('.lang button').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.lang === state.lang)));
+  const screens = {
+    workspace: workspaceScreen,
+    dashboard: dashboardScreen,
+    repo: repoScreen,
+    newrepo: newRepoScreen,
+    job: jobScreen,
+    settings: settingsScreen
+  };
+  document.getElementById('app').innerHTML = (screens[state.screen] || dashboardScreen)();
+}
+
+function workspaceScreen() {
+  const repos = Object.values(state.repos);
+  const recent = repos.flatMap((repo) => repo.jobs.map((job) => ({ ...job, repo }))).sort((a, b) => b.created.localeCompare(a.created)).slice(0, 10);
+  const active = repos.reduce((count, repo) => count + repo.jobs.filter((job) => job.status === 'running' || job.status === 'queued').length, 0);
+  const questions = repos.reduce((count, repo) => count + repo.questions.filter((q) => !q.answered).length, 0);
+  const repoRows = repos.map((repo) => `<a class="list-row" data-action="open-repo" data-repo="${repo.id}">
+    <div class="list-main"><strong>${esc(repo.owner)}/${esc(repo.name)}</strong><small>${repo.autoIterate ? esc(t('自动', 'Auto')) : esc(t('手动', 'Manual'))} · ${esc(t('上次运行', 'Last run'))} ${esc(repo.lastRun)} <span class="badge ${roleClass(repo.role)}">${esc(roleLabel(repo.role))}</span></small></div>
+    <div class="list-meta">${statusBadge(repo.status)}</div>
+  </a>`).join('');
+  const jobRows = recent.length === 0 ? `<tr><td colspan="4" class="muted">${esc(t('还没有任务。', 'No jobs yet.'))}</td></tr>` : recent.map((job) => `<tr class="clickable" data-action="open-job" data-repo="${job.repo.id}" data-job="${job.id}">
+    <td><code>${esc(job.id)}</code><br><small class="muted">${esc(job.repo.owner)}/${esc(job.repo.name)}</small></td>
+    <td>${statusBadge(job.status)} <span class="badge kind">${esc(kindLabel(job.kind))}</span></td>
+    <td>${esc(job.pr)} / ${esc(job.issue)}</td>
+    <td><span class="job-summary">${esc(job.summary)}</span></td>
+  </tr>`).join('');
+  return `<section class="card">
+    <div class="row between">
+      <div class="row"><span class="avatar" style="width:56px;height:56px;font-size:20px">H</span><div><div class="eyebrow">${esc(t('工作区', 'WORKSPACE'))}</div><h1>@HugoXK</h1><p class="workspace-meta">${statusBadge('approved')} <span class="dot-sep">·</span> ${esc(t('加入于', 'Joined'))} 2026-10-30</p></div></div>
+      <div class="row"><button class="btn" data-action="nav" data-screen="dashboard">${esc(t('添加仓库', 'Add repository'))}</button><button class="btn ghost" data-action="nav" data-screen="settings">${esc(t('设置', 'Settings'))}</button><button class="btn ghost" data-action="toast" data-message="${esc(t('文档链接（mock）。', 'Docs link (mock).'))}">${esc(t('文档', 'Docs'))}</button></div>
+    </div>
+    <p class="muted" style="margin-top:12px">${esc(t('管理仓库、任务和模型额度；需要完整列表时进入仓库页。', 'Manage repositories, jobs and model quota; open Repositories for the full list.'))}</p>
+  </section>
+  <div class="stats">
+    <a class="stat" data-action="nav" data-screen="dashboard"><span>${esc(t('仓库', 'Repositories'))}</span><strong>${repos.length}</strong><small>${esc(t('已接入', 'Connected'))}</small></a>
+    <a class="stat" data-action="nav" data-screen="dashboard"><span>${esc(t('进行中', 'In progress'))}</span><strong>${active}</strong><small>${esc(t('排队或运行', 'Queued or running'))}</small></a>
+    <a class="stat" data-action="open-repo" data-repo="digitalmate"><span>${esc(t('需要你处理', 'Needs your input'))}</span><strong>${questions}</strong><small>${questions === 0 ? esc(t('没有待回答问题', 'No open questions')) : esc(t('FlyBot 正在等你', 'FlyBot is waiting'))}</small></a>
+    <a class="stat" data-action="nav" data-screen="settings"><span>${esc(t('平台额度', 'Platform quota'))}</span><strong>¥0.63</strong><small>${esc(t('剩余 / ¥1.00', 'left of ¥1.00'))}</small></a>
+  </div>
+  <section class="card"><div class="row between"><h2>${esc(t('仓库', 'Repositories'))}</h2><a data-action="nav" data-screen="dashboard">${esc(t('管理全部', 'Manage all'))}</a></div>${repos.length === 0 ? `<p class="muted">${esc(t('还没有仓库。', 'No repositories yet.'))}</p>` : `<div class="list">${repoRows}</div>`}</section>
+  <section class="card"><div class="row between"><h2>${esc(t('最近任务', 'Recent jobs'))}</h2><a data-action="nav" data-screen="dashboard">${esc(t('查看全部', 'View all'))}</a></div><div class="table-scroll"><table><thead><tr><th>${esc(t('任务', 'Job'))}</th><th>${esc(t('状态', 'Status'))}</th><th>PR / Issue</th><th>${esc(t('摘要', 'Summary'))}</th></tr></thead><tbody>${jobRows}</tbody></table></div></section>`;
+}
+
+function dashboardScreen() {
+  const repos = Object.values(state.repos);
+  const recent = repos.flatMap((repo) => repo.jobs.map((job) => ({ ...job, repo }))).sort((a, b) => b.created.localeCompare(a.created)).slice(0, 5);
+  const rows = repos.map((repo) => `<tr class="clickable" data-action="open-repo" data-repo="${repo.id}">
+    <td><a data-action="open-repo" data-repo="${repo.id}"><strong>${esc(repo.owner)}/${esc(repo.name)}</strong></a><br><small class="muted">fork HugoXK/${esc(repo.name)}</small><br><span class="badge ${roleClass(repo.role)}">${esc(roleLabel(repo.role))}</span>${repo.role === null ? ` <small class="fine">${esc(t('打开仓库选择角色', 'Open to choose a role'))}</small>` : ''}${repo.review ? ' <span class="badge">reviewer</span>' : ''}</td>
+    <td>${repo.autoIterate ? `<span class="badge good">${esc(t('自动', 'Auto'))}</span><br><small class="muted">${esc(t('每 24 小时', 'Every 24h'))}</small>` : `<span class="badge">${esc(t('手动', 'Manual'))}</span>`}</td>
+    <td>${statusBadge(repo.status)}</td>
+    <td>${esc(repo.lastRun)}</td>
+    <td><a data-action="open-repo" data-repo="${repo.id}">${esc(t('打开', 'Open'))}</a></td>
+  </tr>`).join('');
+  const jobRows = recent.length === 0 ? `<tr><td colspan="4" class="muted">${esc(t('还没有任务。', 'No jobs yet.'))}</td></tr>` : recent.map((job) => `<tr class="clickable" data-action="open-job" data-repo="${job.repo.id}" data-job="${job.id}">
+    <td><code>${esc(job.id)}</code><br><small class="muted">${esc(job.repo.owner)}/${esc(job.repo.name)}</small></td>
+    <td>${statusBadge(job.status)} <span class="badge kind">${esc(kindLabel(job.kind))}</span></td>
+    <td>${esc(job.pr)} / ${esc(job.issue)}</td>
+    <td><span class="job-summary">${esc(job.summary)}</span><br><small class="muted">${esc(job.cost)} · ${esc(job.attribution)}</small></td>
+  </tr>`).join('');
+  return `<div class="row between">
+      <div>
+        <div class="eyebrow">${esc(t('工作区', 'WORKSPACE'))}</div>
+        <h1>${esc(t('仓库', 'Repositories'))}</h1>
+        <p class="muted">${esc(t('接入仓库、选择你的 GitHub 角色，并查看最近任务。', 'Connect repositories, choose your GitHub role and review recent jobs.'))}</p>
+      </div>
+      <button class="btn" data-action="scroll-add">${esc(t('添加仓库', 'Add repository'))}</button>
+    </div>
+    <section class="card quota-card">
+      <div>
+        <div class="eyebrow">${esc(t('平台额度', 'PLATFORM QUOTA'))}</div>
+        <div class="quota-big">¥0.63 <small>/ ¥1.00</small></div>
+        <p class="muted">${esc(t('已用 ¥0.37 · 平台额度用完后可配置自己的模型 API', 'Used ¥0.37 · add your own model API when the platform quota runs out'))}</p>
+      </div>
+      <div>
+        <div class="meter"><span style="width:37%"></span></div>
+        <p class="fine" style="margin:8px 0 0">${esc(t('平台额度只影响 Fledge 自己，不会影响 FlyBot 共享额度。', 'Platform quota only affects Fledge, not the shared FlyBot quota.'))}</p>
+      </div>
+    </section>
+    <div class="banner warn">${esc(t('需要你处理：DigitalMate 有一个等待回答的问题。', 'Needs you: DigitalMate has one open question.'))} <a data-action="open-repo" data-repo="digitalmate">${esc(t('去回答', 'Answer'))}</a></div>
+    <div class="grid2">
+      <section class="card">
+        <div class="row between"><h2>${esc(t('仓库', 'Repositories'))}</h2><span class="fine">${esc(t('角色来自你在这个 GitHub 仓库的权限', 'Roles come from your GitHub permission on that repository'))}</span></div>
+        <div class="table-scroll"><table><thead><tr><th>${esc(t('仓库', 'Repository'))}</th><th>${esc(t('模式', 'Mode'))}</th><th>${esc(t('状态', 'Status'))}</th><th>${esc(t('上次运行', 'Last run'))}</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+      </section>
+      <section class="card" id="add-repo">
+        <h2>${esc(t('添加仓库', 'Add repository'))}</h2>
+        <div class="add-choice">
+          <h3>${esc(t('方式一（推荐）：GitHub App', 'Option 1 (recommended): GitHub App'))}</h3>
+          <p class="muted">${esc(t('安装 App 并选择仓库，不需要创建 PAT；Fledge 使用短时 installation token。', 'Install the App and choose repositories; no PAT is needed. Fledge uses short-lived installation tokens.'))}</p>
+          <p><button class="btn" data-action="toast" data-message="${esc(t('GitHub App 安装流程（mock）。', 'GitHub App install flow (mock).'))}">${esc(t('通过 GitHub App 接入', 'Connect with GitHub App'))}</button> <a data-action="nav" data-screen="newrepo">${esc(t('选择已安装的仓库', 'Choose installed repositories'))}</a></p>
+        </div>
+        <details class="add-manual"><summary>${esc(t('方式二：手动提供 fine-grained token', 'Option 2: provide a fine-grained token manually'))}</summary>
+          <form data-form="add-manual">
+            <div class="field"><label>${esc(t('上游仓库', 'Upstream repository'))}</label><input name="repo" placeholder="owner/name" required></div>
+            <div class="field"><label>${esc(t('GitHub token', 'GitHub token'))}</label><input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required></div>
+            <div class="field"><label>${esc(t('迭代目标（可选）', 'Iteration goal (optional)'))}</label><textarea name="goal" rows="3" placeholder="${esc(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></div>
+            <div class="row"><label class="check"><input type="checkbox" name="auto"> ${esc(t('自动迭代', 'Auto-iterate'))}</label><label>${esc(t('自动迭代间隔', 'Auto-iterate interval'))} <select name="interval">${[15, 60, 360, 1440].map((value) => `<option value="${value}">${value >= 1440 ? '24h' : value + 'm'}</option>`).join('')}</select></label></div>
+            <div class="row"><label class="check"><input type="checkbox" name="review"> ${esc(t('启用 PR 审核角色', 'Enable PR reviewer role'))}</label><label>${esc(t('审核间隔', 'Review interval'))} <select name="reviewInterval">${[360, 1440, 4320, 10080].map((value) => `<option value="${value}">${value >= 1440 ? Math.round(value / 1440) + 'd' : Math.round(value / 60) + 'h'}</option>`).join('')}</select></label></div>
+            <p class="fine">${esc(t('添加后请选择你的角色；未选择前不会启动任务。', 'Choose your role after adding; jobs stay paused until you do.'))}</p>
+            <button class="btn" type="submit">${esc(t('添加仓库', 'Add repository'))}</button>
+          </form>
+        </details>
+        <p class="fine">${esc(t('两种方式选一种即可；GitHub App 不需要 PAT。', 'Choose one of the two options; the GitHub App does not need a PAT.'))}</p>
+      </section>
+      </section>
+    </div>
+    <section class="card">
+      <h2>${esc(t('最近任务', 'Recent jobs'))}</h2>
+      <div class="table-scroll"><table><thead><tr><th>${esc(t('任务', 'Job'))}</th><th>${esc(t('状态', 'Status'))}</th><th>PR / Issue</th><th>${esc(t('摘要', 'Summary'))}</th></tr></thead><tbody>${jobRows}</tbody></table></div>
+    </section>`;
+}
+
+function repoHeader(repo) {
+  const canReview = repo.role === 'maintainer' && (repo.permission === 'admin' || repo.permission === 'maintain');
+  return `<a class="back" data-action="nav" data-screen="dashboard">← ${esc(t('返回仓库', 'Back to repositories'))}</a>
+    <section class="card">
+      <div class="row between">
+        <div>
+          <div class="eyebrow">${esc(t('仓库', 'REPOSITORY'))}</div>
+          <h1>${esc(repo.owner)}/${esc(repo.name)}</h1>
+          <p class="muted">${esc(t('GitHub 权限', 'GitHub permission'))} <code>${esc(permLabel(repo.permission))}</code> · ${esc(t('你的角色', 'Your role'))} <span class="badge ${roleClass(repo.role)}">${esc(roleLabel(repo.role))}</span> · ${repo.role === 'maintainer' ? (repo.review ? esc(t('审核已启用', 'Reviewer on')) : esc(t('审核可用但未启用', 'Reviewer available'))) : esc(t('审核需要 maintainer 角色', 'Reviewer needs maintainer'))}</p>
+          <p class="fine">${esc(t('目标分支', 'Target branch'))} <code>${esc(repo.targetBranch || 'main')}</code> · ${repo.autoIterate ? esc(t('自动迭代已开启', 'Auto-iteration on')) : esc(t('仅手动运行', 'Manual runs only'))} · ${esc(t('自动间隔', 'Auto every'))} <b>${esc(repo.interval || 1440)}m</b> · ${esc(t('上次运行', 'Last run'))} ${esc(repo.lastRun)}</p>
+        </div>
+        <div class="row">
+          ${repo.role === null ? `<span class="badge busy">${esc(t('先选择角色', 'Choose a role first'))}</span>` : `<button class="btn" data-action="run" data-repo="${repo.id}" data-kind="iterate">${esc(t('立即运行', 'Run now'))}</button>
+          <button class="btn ghost" data-action="run" data-repo="${repo.id}" data-kind="plan">${esc(t('只出计划', 'Plan only'))}</button>`}
+          ${canReview && repo.review ? `<button class="btn ghost" data-action="run" data-repo="${repo.id}" data-kind="review">${esc(t('立即审核', 'Review now'))}</button>` : ''}
+        </div>
+      </div>
+    </section>`;
+}
+
+function roleCard(repo) {
+  if (repo.role !== null) return '';
+  const allowed = allowedRoles(repo.permission);
+  return `<section class="card" style="border-color:rgba(240,198,116,.35)">
+    <div class="eyebrow">${esc(t('你的角色', 'YOUR ROLE'))}</div>
+    <h2>${esc(t('选择你在这个仓库的角色', 'Choose your role for this repository'))}</h2>
+    <p class="muted">${esc(t('角色来自你在这个 GitHub 仓库的权限，Fledge 不会自动替你选择。未选择前不会启动定时或手动任务。', 'The role comes from your permission on this GitHub repository; Fledge will not choose it for you. Scheduled and manual jobs stay paused until you choose.'))}</p>
+    <div class="role-grid">${allowed.map((role) => `<button class="role-choice" data-action="set-role" data-repo="${repo.id}" data-role="${role}">
+      <strong>${esc(roleLabel(role))}</strong>
+      <small>${role === 'maintainer' ? esc(t('可以运行 review / 维护类任务；GitHub 权限为 admin/maintain 时可选。Fledge 负责最终合并校验。', 'Can run review/maintenance jobs; available with GitHub admin/maintain. Fledge verifies merges.')) : esc(t('只运行迭代和计划任务；不能 review，也不能开启自动合并。', 'Runs iterate and plan jobs only; no review and no auto-merge.'))}</small>
+      <span class="badge ${roleClass(role)}">${esc(t('选择', 'Choose'))}</span>
+    </button>`).join('')}</div>
+    <p class="fine" style="margin-top:12px">${esc(t('平台管理员不能替你改这个角色。', 'Platform admins cannot change this role for you.'))}</p>
+  </section>`;
+}
+
+function repoScreen() {
+  const repo = activeRepo();
+  const questions = repo.questions.filter((q) => !q.answered);
+  const canMaintain = repo.role === 'maintainer';
+  const canReview = canMaintain && (repo.permission === 'admin' || repo.permission === 'maintain');
+  const jobRows = repo.jobs.length === 0 ? `<tr><td colspan="4" class="muted">${esc(t('还没有任务。选择角色后可以立即运行。', 'No jobs yet. Choose a role and run one.'))}</td></tr>` : repo.jobs.map((job) => `<tr class="clickable" data-action="open-job" data-repo="${repo.id}" data-job="${job.id}">
+    <td><code>${esc(job.id)}</code><br><small class="muted">${esc(triggerLabel(job.trigger))}</small></td>
+    <td>${statusBadge(job.status)} <span class="badge kind">${esc(kindLabel(job.kind))}</span></td>
+    <td>${esc(job.pr)} / ${esc(job.issue)}</td>
+    <td>${esc(job.summary)}<br><small class="muted">${esc(job.cost)} · ${esc(job.attribution)}</small></td>
+  </tr>`).join('');
+  const thread = repo.chief.length === 0 ? `<p class="muted">${esc(t('还没有对话。给 Chief 发第一句。', 'No conversation yet. Send the Chief the first message.'))}</p>` : repo.chief.map((message) => `<div class="chief-msg ${message.role}"><div class="chief-role">${message.role === 'user' ? esc(t('你', 'You')) : 'Chief'}</div><div class="chief-text">${esc(message.text)}</div></div>`).join('');
+  const qHtml = questions.length === 0 ? '' : `<section class="card question"><div class="row between"><h2>${esc(t('需要你处理', 'Needs you'))}</h2><span class="badge busy">${questions.length}</span></div>${questions.map((q) => `<div><strong>${esc(q.title)}</strong><p class="muted" style="margin:6px 0 0">${esc(q.detail)}</p><div class="options">${q.options.map((option) => `<button class="option" data-action="answer" data-repo="${repo.id}" data-question="${q.id}" data-answer="${esc(option)}">${esc(option)}</button>`).join('')}</div></div>`).join('')}</section>`;
+  const chiefCard = `<section class="card">
+    <div class="row between"><h2>${esc(t('和 Chief 沟通', 'Talk to the Chief'))}</h2><span class="fine">${esc(t('对话会写入审计', 'Conversation is audited'))}</span></div>
+    <div class="chief-thread">${thread}</div>
+    <form data-form="chief" data-repo="${repo.id}">
+      <div class="quick">
+        <button type="button" class="chip" data-action="chief-quick" data-text="${esc(t('请汇报当前进度和下一步。', 'Report the current progress and next step.'))}">${esc(t('汇报进度', 'Progress'))}</button>
+        <button type="button" class="chip" data-action="chief-quick" data-text="${esc(t('下一步你准备做什么？', 'What will you do next?'))}">${esc(t('下一步', 'Next step'))}</button>
+        <button type="button" class="chip" data-action="chief-quick" data-text="${esc(t('先不要改代码，说明当前风险。', 'Do not change code yet; explain the current risks.'))}">${esc(t('先别改代码', 'Do not change code'))}</button>
+      </div>
+      <div class="field"><textarea name="text" rows="3" placeholder="${esc(t('例如：先汇报当前进度和风险，不要改代码。', 'For example: report current progress and risks first; do not change code.'))}" required></textarea></div>
+      <button class="btn" type="submit">${esc(t('发送给 Chief', 'Send to Chief'))}</button>
+    </form>
+  </section>`;
+  const instanceCard = `<section class="card">
+    <div class="row between"><div><div class="eyebrow">${esc(t('每仓库 FlyBot', 'PER-REPOSITORY FLYBOT'))}</div><h2>${esc(t('FlyBot 状态', 'FlyBot status'))}</h2><p class="muted">${repo.instance === 'ready' ? statusBadge('ready') : statusBadge('pending')} ${esc(t('实例', 'Instance'))} <span class="fine">repo-${esc(repo.id)}</span></p></div></div>
+    <p class="fine">${esc(t('任务先发给 Chief，再由负责人执行。', 'Jobs go to the Chief, then the Lead.'))}</p>
+  </section>`;
+  const workItems = repo.workItems || [];
+  const workRows = workItems.length === 0
+    ? `<tr><td colspan="5" class="muted">${esc(t('还没有工作项。', 'No work items yet.'))}</td></tr>`
+    : workItems.map((item) => `<tr>
+        <td><strong>${esc(item.title)}</strong></td>
+        <td><span class="badge ${workStateClass(item.state)}">${esc(workStateLabel(item.state))}</span></td>
+        <td>${item.priority}</td>
+        <td>${item.issue === '—' ? '' : `<a data-action="toast" data-message="${esc(t('打开 issue（mock）。', 'Open issue (mock).'))}">${esc(item.issue)}</a>`}${item.pr === '—' ? '' : ` <a data-action="toast" data-message="${esc(t('打开 PR（mock）。', 'Open PR (mock).'))}">${esc(item.pr)}</a>`}</td>
+        <td><div class="row">${item.state === 'merged' || item.state === 'closed' ? '' : `<button class="btn btn-small" data-action="work-run" data-work="${esc(item.id)}">${esc(t('开始工作', 'Start work'))}</button>`}<button class="btn ghost btn-small" data-action="toast" data-message="${esc(t('Product 范围任务已排队（mock）。', 'Product scope queued (mock).'))}">${esc(t('Product 范围', 'Product scope'))}</button><button class="btn ghost btn-small" data-action="toast" data-message="${esc(t('Test 验证任务已排队（mock）。', 'Test verify queued (mock).'))}">${esc(t('Test 验证', 'Test verify'))}</button>${workNextStates(item.state).length === 0 ? '' : `<select data-work-state="${esc(item.id)}">${workNextStates(item.state).map((state) => `<option value="${state}">${esc(workStateLabel(state))}</option>`).join('')}</select><button class="btn ghost btn-small" data-action="work-state" data-work="${esc(item.id)}">${esc(t('更新', 'Update'))}</button>`}</div></td>
+      </tr>`).join('');
+  const workCard = `<section class="card" id="work">
+    <div class="row between"><h2>${esc(t('工作项', 'Work items'))}</h2><span class="fine">${esc(t('Issue / PR / 状态 / 优先级', 'Issue / PR / state / priority'))}</span></div>
+    <form data-form="work-create" data-repo="${repo.id}" class="form">
+      <div class="row"><label style="flex:1">${esc(t('标题', 'Title'))} <input name="title" required maxlength="200" /></label><label>${esc(t('优先级', 'Priority'))} <input name="priority" type="number" min="0" max="100" value="0" style="width:90px" /></label></div>
+      <label>${esc(t('说明', 'Detail'))} <textarea name="detail" rows="3"></textarea></label>
+      <button class="btn" type="submit">${esc(t('创建工作项', 'Create work item'))}</button>
+    </form>
+    <div class="table-scroll" style="margin-top:14px"><table><thead><tr><th>${esc(t('工作项', 'Work item'))}</th><th>${esc(t('状态', 'State'))}</th><th>${esc(t('优先级', 'Priority'))}</th><th>Issue / PR</th><th></th></tr></thead><tbody>${workRows}</tbody></table></div>
+  </section>`;
+  const settingsCard = `<section class="card" id="repo-settings">
+    <div class="row between"><h2>${esc(t('迭代目标', 'Iteration goal'))}</h2><span class="badge ${roleClass(repo.role)}">${esc(roleLabel(repo.role))}</span></div>
+    <form data-form="settings" data-repo="${repo.id}">
+      <div class="field"><label>${esc(t('你的角色', 'Your role'))}</label><select name="role" ${allowedRoles(repo.permission).length === 1 ? 'disabled' : ''}>${allowedRoles(repo.permission).map((role) => `<option value="${role}" ${repo.role === role ? 'selected' : ''}>${esc(roleLabel(role))}</option>`).join('')}</select></div>
+      <div class="field"><label>${esc(t('迭代目标', 'Goal'))}</label><textarea name="goal" rows="4">${esc(repo.goal)}</textarea></div>
+      <div class="field"><label>${esc(t('目标分支', 'Target branch'))}</label><input name="targetBranch" value="${esc(repo.targetBranch || 'main')}" /></div>
+      <div class="row">
+        <label class="check"><input type="checkbox" name="autoIterate" ${repo.autoIterate ? 'checked' : ''}> ${esc(t('自动迭代', 'Auto-iterate'))}</label>
+        <label class="check"><input type="checkbox" name="enabled" ${repo.enabled !== false ? 'checked' : ''}> ${esc(t('启用', 'Enabled'))}</label>
+        <label>${esc(t('自动迭代间隔', 'Auto-iterate interval'))} <select name="interval">${[15, 60, 360, 1440].map((value) => `<option value="${value}" ${Number(repo.interval || 1440) === value ? 'selected' : ''}>${value >= 1440 ? '24h' : value + 'm'}</option>`).join('')}</select></label>
+      </div>
+      <label class="check"><input type="checkbox" name="planRequired" ${repo.planRequired ? 'checked' : ''}> ${esc(t('先出计划，批准后执行', 'Plan first; execute only after approval'))}</label>
+      <div class="row"><label style="flex:1">${esc(t('允许修改路径', 'Allowed paths'))} <input name="allowPaths" value="${esc(repo.allowPaths || '')}" placeholder="src/, docs/" /></label><label style="flex:1">${esc(t('禁止修改路径', 'Forbidden paths'))} <input name="denyPaths" value="${esc(repo.denyPaths || '')}" placeholder=".github/, deploy/" /></label></div>
+      <div class="row"><label>${esc(t('合并方式', 'Merge method'))} <select name="mergeMethod">${['squash', 'merge', 'rebase'].map((method) => `<option value="${method}" ${(repo.mergeMethod || 'squash') === method ? 'selected' : ''}>${method}</option>`).join('')}</select></label><label class="check"><input type="checkbox" name="requireProtection" ${repo.requireProtection !== false ? 'checked' : ''}> ${esc(t('自动合并前要求 branch protection', 'Require branch protection before auto-merge'))}</label></div>
+      <div class="row bot-models">${['Chief', 'Lead', 'Product', 'Test', 'Security', 'Reviewer', 'Dev-1', 'Dev-2'].map((role) => `<label>${esc(role)} <select><option>${esc(t('跟随默认', 'Follow default'))}</option><option>DeepSeek · deepseek-chat</option></select></label>`).join('')}</div>
+      <p class="fine">${esc(t('每个 bot 可以单独选择模型；不选则跟随默认。应用模型后 Fledge 会通过 DSH 分配。', 'Each bot can choose a model; empty follows the default. Applying models assigns them through DSH.'))}</p>
+      <p class="fine">${esc(t('Branch protection', 'Branch protection'))}: <code>${esc(repo.protectionState || 'unknown')}</code>${repo.protectedAt ? ` · ${esc(repo.protectedAt)}` : ''}</p>
+      <label class="check ${canMaintain ? '' : 'disabled'}"><input type="checkbox" name="autoMerge" ${repo.autoMerge ? 'checked' : ''} ${canMaintain ? '' : 'disabled'}> ${esc(t('允许 maintainer 自动合并 PR', 'Allow maintainer auto-merge'))}</label>
+      <label class="check ${canReview ? '' : 'disabled'}"><input type="checkbox" name="review" ${repo.review ? 'checked' : ''} ${canReview ? '' : 'disabled'}> ${esc(t('启用 PR 审核', 'Enable PR reviewer'))}</label>
+      <p class="fine">${repo.role === null ? esc(t('先选择你的角色，审核和自动合并才会生效。', 'Choose your role before review or auto-merge can take effect.')) : !canMaintain ? esc(t('developer 不能启用 PR 审核或自动合并；切换为 maintainer 后才可用。', 'A developer cannot enable PR review or auto-merge; switch to maintainer first.')) : !canReview ? esc(t('你在这个上游没有 admin/maintain 权限，审核角色不可用。', 'You do not have admin/maintain permission on this upstream, so the reviewer role is unavailable.')) : esc(t('自动合并默认关闭；开启后由 Fledge 在 checks 通过且没有 changes requested 时执行 squash merge。', 'Auto-merge is off by default; when on, Fledge squash-merges after checks pass and no changes are requested.'))}</p>
+      <button class="btn" type="submit">${esc(t('保存', 'Save'))}</button>
+    </form>
+  </section>`;
+  const connectionCard = `<section class="card">
+    <h2>${esc(t('连接', 'Connection'))}</h2>
+    <p class="muted">${esc(t('GitHub token 已加密保存；页面不会显示明文。如果仓库或 token 变了，删除后重新添加。', 'The GitHub token is encrypted and never rendered in plain text. If the repository or token changes, delete and add it again.'))}</p>
+    <p class="fine">${esc(t('审核最近运行', 'Last review'))} ${esc(repo.review ? t('已启用', 'Enabled') : t('未启用', 'Disabled'))}</p>
+    <div class="row" style="margin-bottom:12px"><button class="btn ghost small" data-action="toast" data-message="${esc(t('上游 / fork / 权限已重新检测（mock）。', 'Upstream / fork / permissions refreshed (mock).'))}">${esc(t('重新检测上游 / fork', 'Refresh upstream / fork'))}</button></div>
+    <p class="fine">${esc(t('删除仓库连接请见危险操作区。', 'See the danger zone to delete the repository connection.'))}</p>
+    <p class="fine" style="margin-top:12px">${esc(t('平台只通过 GitHub API 读取元数据、创建 fork 和分支/PR；不会 clone 到公共磁盘。', 'The platform only uses the GitHub API to read metadata, create forks and open branches/PRs; it never clones to public disk.'))}</p>
+  </section>`;
+  const lifecycleCard = repo.enabled === false || repo.instance !== 'ready'
+    ? `<section class="card" id="lifecycle"><strong>${esc(t('当前状态', 'Current state'))}</strong><ul>${repo.enabled === false ? `<li>${esc(t('仓库已停用：不会自动或手动运行任务。', 'Repository disabled: no jobs run automatically or manually.'))}</li>` : ''}${repo.instance !== 'ready' ? `<li>${esc(t('FlyBot 未就绪：任务不会运行。', 'FlyBot is not ready: jobs will not run.'))}</li>` : ''}</ul><div class="row"><button class="btn ghost" data-action="toast" data-message="${esc(t('仓库已启用（mock）。', 'Repository enabled (mock).'))}">${esc(t('启用仓库', 'Enable repository'))}</button><button class="btn ghost" data-action="toast" data-message="${esc(t('FlyBot 正在启动（mock）。', 'FlyBot starting (mock).'))}">${esc(t('启动 FlyBot', 'Start FlyBot'))}</button></div></section>`
+    : '';
+  const deliveryCard = `<section class="card" id="delivery"><h2>${esc(t('待处理 PR', 'Pull requests to decide'))}</h2><p class="muted">${esc(t('合并前会重新检查 PR 状态、checks、commit status、reviews 和 branch protection。', 'Merging re-checks the PR state, checks, commit status, reviews and branch protection.'))}</p><div class="table-scroll"><table><thead><tr><th>PR</th><th>${esc(t('状态', 'Status'))}</th><th>${esc(t('审核分', 'Review'))}</th><th>${esc(t('成本', 'Cost'))}</th><th></th></tr></thead><tbody><tr><td><a data-action="toast" data-message="${esc(t('打开 PR（mock）。', 'Open PR (mock).'))}">#21</a></td><td>${statusBadge('ready')}</td><td>93</td><td>¥5.97</td><td><button class="btn ghost small" data-action="toast" data-message="${esc(t('PR 已合并（mock）。', 'PR merged (mock).'))}">${esc(t('合并', 'Merge'))}</button></td></tr><tr><td><a data-action="toast" data-message="${esc(t('打开 PR（mock）。', 'Open PR (mock).'))}">#19</a></td><td>${statusBadge('ready')}</td><td>91</td><td>¥8.79</td><td><button class="btn ghost small" data-action="toast" data-message="${esc(t('PR 已合并（mock）。', 'PR merged (mock).'))}">${esc(t('合并', 'Merge'))}</button></td></tr></tbody></table></div></section>`;
+  const dangerCard = `<section class="card" id="danger"><h2>${esc(t('危险操作', 'Danger zone'))}</h2><p class="muted">${esc(t('这里的操作只影响 Fledge 连接，不会删除 GitHub 仓库。', 'These actions affect the Fledge connection only; GitHub is not deleted.'))}</p><div class="row"><button class="btn ghost" data-action="toast" data-message="${esc(t('调度已停止（mock）。', 'Scheduling stopped (mock).'))}">${esc(t('停止调度', 'Stop scheduling'))}</button><button class="btn ghost" data-action="toast" data-message="${esc(t('FlyBot 已停止（mock）。', 'FlyBot stopped (mock).'))}">${esc(t('停止 FlyBot', 'Stop FlyBot'))}</button></div><div class="field"><label>${esc(t('输入仓库名确认', 'Type the repository name to confirm'))} <code>${esc(repo.name)}</code></label><input placeholder="${esc(repo.name)}" /></div><button class="btn danger" data-action="toast" data-message="${esc(t('仓库连接已删除（mock）。', 'Repository connection deleted (mock).'))}">${esc(t('删除仓库连接', 'Delete repository connection'))}</button></section>`;
+  const jobsCard = `<section class="card">
+    <h2>${esc(t('任务', 'Jobs'))}</h2>
+    <div class="table-scroll"><table><thead><tr><th>${esc(t('任务', 'Job'))}</th><th>${esc(t('状态', 'Status'))}</th><th>PR / Issue</th><th>${esc(t('摘要', 'Summary'))}</th></tr></thead><tbody>${jobRows}</tbody></table></div>
+  </section>`;
+  return `${repoHeader(repo)}${roleCard(repo)}${qHtml}${chiefCard}${instanceCard}${lifecycleCard}${deliveryCard}${workCard}<div class="grid2">${settingsCard}${connectionCard}</div>${dangerCard}${jobsCard}`;
+}
+
+function newRepoScreen() {
+  const repos = [
+    { fullName: 'openJiuwen-ai/DigitalMate', private: false, branch: 'main' },
+    { fullName: 'HugoXK/fledge', private: false, branch: 'main' }
+  ];
+  return `<a class="back" data-action="nav" data-screen="dashboard">← ${esc(t('返回仓库', 'Back to repositories'))}</a>
+    <div class="row between"><div><div class="eyebrow">${esc(t('GITHUB APP', 'GITHUB APP'))}</div><h1>${esc(t('通过 GitHub App 接入', 'Connect with GitHub App'))}</h1><p class="muted">${esc(t('安装 App、选择仓库后，Fledge 使用短时 installation token，不需要你创建 PAT。', 'After installing the App and choosing repositories, Fledge uses short-lived installation tokens instead of a PAT.'))}</p></div><button class="btn ghost" data-action="nav" data-screen="dashboard">${esc(t('返回工作区', 'Back to dashboard'))}</button></div>
+    <section class="card"><h2>${esc(t('已安装', 'Installed'))}</h2><div class="list"><div class="list-row"><div class="list-main"><strong>@HugoXK</strong><small>User · installation 177732813</small></div><span class="fine">${esc(t('已绑定', 'Bound'))}</span></div></div></section>
+    <section class="card">
+      <h2>${esc(t('选择要接入的仓库', 'Choose repositories'))}</h2>
+      <div class="table-scroll"><table><thead><tr><th>${esc(t('仓库', 'Repository'))}</th><th>${esc(t('可见性', 'Visibility'))}</th><th>${esc(t('默认分支', 'Default branch'))}</th></tr></thead><tbody>${repos.map((repo) => `<tr><td><label class="check"><input type="checkbox" data-app-repo value="${esc(repo.fullName)}"> <strong>${esc(repo.fullName)}</strong></label></td><td>${repo.private ? esc(t('私有', 'Private')) : esc(t('公开', 'Public'))}</td><td><code>${esc(repo.branch)}</code></td></tr>`).join('')}</tbody></table></div>
+      <div class="field"><label>${esc(t('迭代目标（可选）', 'Iteration goal (optional)'))}</label><textarea rows="3"></textarea></div>
+      <div class="row"><label class="check"><input type="checkbox"> ${esc(t('自动迭代', 'Auto-iterate'))}</label><label>${esc(t('自动迭代间隔', 'Auto-iterate interval'))} <select>${[15, 60, 360, 1440].map((value) => `<option value="${value}">${value >= 1440 ? '24h' : value + 'm'}</option>`).join('')}</select></label><label class="check"><input type="checkbox"> ${esc(t('启用 PR 审核角色', 'Enable PR reviewer role'))}</label></div>
+      <p class="fine">${esc(t('添加后请为每个仓库选择 maintainer 或 developer；角色来自你的 GitHub 权限，Fledge 不会自动选择。', 'After adding, choose maintainer or developer for each repository. The role comes from your GitHub permission; Fledge will not choose it for you.'))}</p>
+      <button class="btn" data-action="connect-app-repos">${esc(t('接入选中的仓库', 'Connect selected repositories'))}</button>
+    </section>`;
+}
+
+function jobScreen() {
+  const repo = activeRepo();
+  const job = repo.jobs.find((entry) => entry.id === state.activeJob) || repo.jobs[0];
+  if (!job) return `<div class="card"><p class="muted">${esc(t('任务不存在。', 'Job not found.'))}</p></div>`;
+  const retry = job.status === 'failed' ? `<button class="btn" data-action="retry" data-repo="${repo.id}" data-job="${job.id}">${esc(t('重试', 'Retry'))}</button>` : '';
+  const execute = job.kind === 'plan' && job.status === 'succeeded' && job.planApproved ? `<button class="btn" data-action="execute-plan" data-repo="${repo.id}" data-job="${job.id}">${esc(t('执行这个计划', 'Execute this plan'))}</button>` : '';
+  const control = job.status === 'queued' || job.status === 'running'
+    ? `<button class="btn ghost" data-action="job-control" data-repo="${repo.id}" data-job="${job.id}" data-status="paused">${esc(t('暂停', 'Pause'))}</button><button class="btn danger" data-action="job-control" data-repo="${repo.id}" data-job="${job.id}" data-status="cancelled">${esc(t('取消', 'Cancel'))}</button>`
+    : job.status === 'paused'
+      ? `<button class="btn" data-action="job-control" data-repo="${repo.id}" data-job="${job.id}" data-status="running">${esc(t('恢复', 'Resume'))}</button>`
+      : '';
+  const planCard = job.kind === 'plan' && job.status === 'succeeded'
+    ? `<section class="card"><div class="row between"><div><h2>${esc(t('计划审批', 'Plan approval'))}</h2><p class="muted">${job.planApproved ? esc(t('计划已批准，可以执行。', 'Plan approved; ready to execute.')) : job.planRejected ? esc(t('计划已被拒绝。', 'Plan rejected.')) : esc(t('等待 maintainer 批准计划。', 'Waiting for maintainer approval.'))}</p></div><span class="badge ${job.planApproved ? 'good' : job.planRejected ? 'bad' : 'busy'}">${job.planApproved ? esc(t('已批准', 'Approved')) : job.planRejected ? esc(t('已拒绝', 'Rejected')) : esc(t('待批准', 'Pending'))}</span></div>${repo.role === 'maintainer' && !job.planApproved && !job.planRejected ? `<div class="row"><button class="btn" data-action="approve-plan" data-repo="${repo.id}" data-job="${job.id}">${esc(t('批准计划', 'Approve plan'))}</button><button class="btn danger" data-action="reject-plan" data-repo="${repo.id}" data-job="${job.id}">${esc(t('拒绝', 'Reject'))}</button></div>` : ''}</section>`
+    : '';
+  return `<a class="back" data-action="open-repo" data-repo="${repo.id}">← ${esc(t('返回仓库', 'Back to repository'))}</a>
+    <section class="card">
+      <div class="row between"><div><div class="eyebrow">${esc(t('任务', 'JOB'))}</div><h1><code>${esc(job.id)}</code></h1><p class="muted">${esc(repo.owner)}/${esc(repo.name)} · ${statusBadge(job.status)} · ${esc(kindLabel(job.kind))} · ${esc(triggerLabel(job.trigger))} · ${esc(t('创建', 'Created'))} ${esc(job.created)}</p></div><div class="row">${control}${execute}${retry}<button class="btn ghost" data-action="open-repo" data-repo="${repo.id}">${esc(t('返回仓库', 'Back'))}</button></div></div>
+    </section>
+    ${planCard}
+    <div class="grid2">
+      <div class="card"><h2>${esc(t('结果', 'Result'))}</h2><p class="job-report">${esc(job.summary)}</p><p class="fine">${esc(t('成本', 'Cost'))} ${esc(job.cost)} · ${esc(t('归因', 'Attribution'))} ${esc(job.attribution)}</p><p class="fine">PR ${esc(job.pr)} · Issue ${esc(job.issue)}</p></div>
+      <div class="card"><h2>${esc(t('证据', 'Evidence'))}</h2><div class="evidence">
+        <div class="fact"><span>${esc(t('测试', 'Tests'))}</span><b>${esc(job.evidence.tests)}</b></div>
+        <div class="fact"><span>${esc(t('检查', 'Checks'))}</span><b>${esc(job.evidence.checks)}</b></div>
+        <div class="fact"><span>${esc(t('文件', 'Files'))}</span><b>${esc(job.evidence.files)}</b></div>
+        <div class="fact"><span>${esc(t('风险', 'Risk'))}</span><b>${esc(job.evidence.risk)}</b></div>
+      </div><p class="fine" style="margin-top:10px">${esc(t('回滚', 'Rollback'))}: ${esc(job.evidence.rollback)}</p></div>
+    </div>
+    <section class="card"><h2>${esc(t('时间线', 'Timeline'))}</h2><div class="timeline">
+      <div class="timeline-item"><span class="dot good"></span><div><strong>${esc(t('任务创建', 'Job created'))}</strong><br><small class="muted">${esc(job.created)} · ${esc(triggerLabel(job.trigger))}</small></div></div>
+      <div class="timeline-item"><span class="dot"></span><div><strong>${esc(t('任务运行', 'Job running'))}</strong><br><small class="muted">${esc(t('Heartbeat：已拿到分支，正在等检查。', 'Heartbeat: branch is ready, waiting for checks.'))}</small></div></div>
+      <div class="timeline-item"><span class="dot good"></span><div><strong>${esc(t('完成并回调', 'Finished and called back'))}</strong><br><small class="muted">${esc(job.summary)}</small></div></div>
+    </div></section>`;
+}
+
+function settingsScreen() {
+  return `<div class="eyebrow">${esc(t('设置', 'SETTINGS'))}</div><h1>${esc(t('设置', 'Settings'))}</h1><p class="muted">${esc(t('账号、模型、通知和 API token（mock）。', 'Account, model, notifications and API tokens (mock).'))}</p>
+    <div class="grid2">
+      <section class="card"><h2>${esc(t('模型提供方', 'Model providers'))}</h2><p class="muted">${esc(t('添加提供方（Base URL + API Key），再在下面添加多个模型。添加模型时 Fledge 会测试；失败不会保存。', 'Add a provider (Base URL + API key), then add models. Adding a model runs a Fledge test; failure is not saved.'))}</p><div class="provider-card"><div class="row between"><strong>DeepSeek</strong><span class="fine">https://api.deepseek.com/v1</span></div><ul><li>deepseek-chat <button class="btn danger small" data-action="toast" data-message="${esc(t('模型已删除（mock）。', 'Model deleted (mock).'))}">${esc(t('删除', 'Delete'))}</button></li><li>deepseek-reasoner <button class="btn danger small" data-action="toast" data-message="${esc(t('模型已删除（mock）。', 'Model deleted (mock).'))}">${esc(t('删除', 'Delete'))}</button></li></ul><div class="row"><input placeholder="model id" /><button class="btn small" data-action="toast" data-message="${esc(t('模型已通过测试并保存（mock）。', 'Model passed the test and was saved (mock).'))}">${esc(t('添加模型并测试', 'Add model and test'))}</button></div></div><div class="field"><label>${esc(t('名称', 'Label'))}</label><input placeholder="Provider name" /></div><div class="field"><label>Base URL</label><input placeholder="https://api.example.com/v1" /></div><div class="field"><label>API Key</label><input type="password" value="" /></div><label class="check"><input type="checkbox"> ${esc(t('允许 HTTP / 内网地址（Fledge 必须能访问）', 'Allow HTTP / private address (Fledge must reach it)'))}</label><button class="btn" data-action="toast" data-message="${esc(t('提供方已添加（mock）。', 'Provider added (mock).'))}">${esc(t('添加提供方', 'Add provider'))}</button></section>
+      <section class="card"><h2>${esc(t('通知', 'Notifications'))}</h2><div class="field"><label>${esc(t('通知邮箱', 'Notification email'))}</label><input value="h***@gmail.com" /></div><label class="check"><input type="checkbox" checked> ${esc(t('任务需要回答、完成或失败时发邮件', 'Email me when a job needs an answer, finishes or fails'))}</label><label class="check"><input type="checkbox" checked> ${esc(t('每日摘要', 'Daily digest'))}</label><button class="btn" data-action="toast" data-message="${esc(t('通知设置已保存（mock）。', 'Notification settings saved (mock).'))}">${esc(t('保存', 'Save'))}</button></section>
+    </div>
+    <section class="card"><h2>API tokens</h2><div class="list"><div class="list-row"><div class="list-main"><strong><code>flg_7f2a…</code></strong><small>flybot-cli · 最近使用 2026-11-03 10:12</small></div><button class="btn danger small" data-action="toast" data-message="${esc(t('token 已撤销（mock）。', 'Token revoked (mock).'))}">${esc(t('撤销', 'Revoke'))}</button></div></div><button class="btn ghost" style="margin-top:12px" data-action="toast" data-message="${esc(t('已创建新 token（mock）。', 'New token created (mock).'))}">${esc(t('创建 token', 'Create token'))}</button></section>`;
+}
+
+function setRepoRole(repo, role) {
+  if (!allowedRoles(repo.permission).includes(role)) {
+    toast(t('你的 GitHub 权限不允许选择这个角色。', 'Your GitHub permission does not allow this role.'), 'bad');
+    return;
+  }
+  repo.role = role;
+  if (role === 'developer') {
+    repo.autoMerge = false;
+    repo.review = false;
+  }
+  toast(t('角色已切换为 ', 'Role changed to ') + roleLabel(role) + t('（mock）。', ' (mock).'), 'good');
+  render();
+}
+
+function runJob(repo, kind) {
+  if (repo.role === null) {
+    toast(t('请先选择你的角色。', 'Choose your role first.'), 'bad');
+    return;
+  }
+  if (kind === 'review' && repo.role !== 'maintainer') {
+    toast(t('只有 maintainer 可以运行审核任务。', 'Only a maintainer can run review jobs.'), 'bad');
+    return;
+  }
+  if (kind === 'review' && !repo.review) {
+    toast(t('请先在设置里启用 PR 审核。', 'Enable the PR reviewer in settings first.'), 'bad');
+    return;
+  }
+  const job = {
+    id: rid('job'),
+    kind,
+    status: 'queued',
+    trigger: 'manual',
+    summary: kind === 'review' ? t('审核任务已排队。', 'Review job queued.') : kind === 'plan' ? t('计划任务已排队。', 'Plan job queued.') : t('迭代任务已排队。', 'Iterate job queued.'),
+    pr: '—',
+    issue: '—',
+    cost: '$0.00',
+    created: now(),
+    evidence: { tests: t('未运行', 'not run'), checks: t('等待', 'waiting'), files: 0, risk: 'low', rollback: '—' },
+    attribution: '—'
+  };
+  repo.jobs.unshift(job);
+  repo.status = 'queued';
+  render();
+  setTimeout(() => {
+    job.status = 'running';
+    job.summary = kind === 'review' ? t('正在审核上游 open PR…', 'Reviewing open upstream PRs…') : t('正在读取仓库、写失败测试并实现最小修复…', 'Reading the repository, writing the failing test and implementing the smallest fix…');
+    repo.status = 'running';
+    render();
+  }, 900);
+  setTimeout(() => {
+    job.status = 'succeeded';
+    job.cost = kind === 'review' ? '$0.18' : kind === 'plan' ? '$0.03' : '$0.41';
+    job.summary = kind === 'review' ? t('已审核 6 个 PR，平均 82；两个 Fledge PR 需要修改，已在同分支排队修正。', 'Reviewed 6 PRs, average 82; two Fledge PRs need changes and same-branch fixes are queued.') : kind === 'plan' ? t('计划：先补失败测试，再做最小修复，最后更新 changelog。', 'Plan: add the failing test, make the smallest fix, then update the changelog.') : t('已开一个聚焦 PR，测试通过，等待 maintainer review。', 'Opened one focused PR; tests pass and it is waiting for maintainer review.');
+    job.evidence = { tests: t('36/36 通过', '36/36 pass'), checks: t('CI 绿', 'CI green'), files: kind === 'plan' ? 0 : 4, risk: 'low', rollback: t('回滚 commit', 'revert commit') };
+    job.attribution = kind === 'review' ? 'Reviewer' : 'Lead · Dev-1 · Test · Reviewer';
+    if (kind === 'iterate') { job.pr = '#' + (500 + Math.floor(Math.random() * 80)); job.issue = '#' + (480 + Math.floor(Math.random() * 15)); }
+    repo.status = 'succeeded';
+    repo.lastRun = now();
+    if (kind === 'plan' || kind === 'review') repo.lastRun = job.created;
+    render();
+    toast(t('任务完成（mock）。', 'Job completed (mock).'), 'good');
+  }, 2400);
+}
+
+function renderJob(repoId, jobId) {
+  state.activeRepo = repoId;
+  state.activeJob = jobId;
+  state.screen = 'job';
+  render();
+}
+
+document.addEventListener('click', (event) => {
+  const el = event.target.closest('[data-action]');
+  if (!el) return;
+  const action = el.dataset.action;
+  if (action === 'nav') { state.screen = el.dataset.screen; render(); return; }
+  if (action === 'lang') { state.lang = el.dataset.lang; render(); return; }
+  if (action === 'open-repo') { state.activeRepo = el.dataset.repo; state.screen = 'repo'; render(); return; }
+  if (action === 'open-job') { renderJob(el.dataset.repo, el.dataset.job); return; }
+  if (action === 'set-role') { setRepoRole(repoById(el.dataset.repo), el.dataset.role); return; }
+  if (action === 'run') { runJob(repoById(el.dataset.repo), el.dataset.kind); return; }
+  if (action === 'answer') {
+    const repo = repoById(el.dataset.repo);
+    const question = repo.questions.find((q) => q.id === el.dataset.question);
+    if (question) question.answered = true;
+    render();
+    toast(t('已回答，通知已标为已读（mock）。', 'Answered; notification marked read (mock).'), 'good');
+    return;
+  }
+  if (action === 'chief-quick') {
+    const form = document.querySelector('[data-form="chief"]');
+    if (form) form.querySelector('textarea').value = el.dataset.text;
+    return;
+  }
+  if (action === 'scroll-add') {
+    document.getElementById('add-repo')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  if (action === 'connect-app-repos') {
+    const selected = [...document.querySelectorAll('[data-app-repo]:checked')].map((input) => String(input.value));
+    if (selected.length === 0) { toast(t('请选择至少一个仓库。', 'Choose at least one repository.'), 'bad'); return; }
+    let first = '';
+    for (const fullName of selected) {
+      const [owner, name] = fullName.split('/');
+      if (!owner || !name) continue;
+      const id = rid('repo');
+      const permission = /fledge/i.test(fullName) ? 'admin' : 'write';
+      state.repos[id] = { id, owner, name, permission, targetBranch: 'main', enabled: true, role: null, autoMerge: false, review: false, autoIterate: false, interval: 1440, status: 'idle', lastRun: '—', goal: '', instance: 'starting', chief: [], questions: [], jobs: [] };
+      if (first === '') first = id;
+    }
+    state.screen = 'dashboard';
+    render();
+    toast(t(`已接入 ${selected.length} 个仓库；请为每个仓库选择角色。`, `Connected ${selected.length} repositories; choose a role for each.`), 'good');
+    return;
+  }
+  if (action === 'work-run') {
+    const repo = activeRepo();
+    const item = (repo.workItems || []).find((entry) => entry.id === el.dataset.work);
+    if (item) { item.state = 'in_progress'; render(); toast(t('工作项已开始（mock）。', 'Work item started (mock).'), 'good'); }
+    return;
+  }
+  if (action === 'work-state') {
+    const repo = activeRepo();
+    const item = (repo.workItems || []).find((entry) => entry.id === el.dataset.work);
+    const select = document.querySelector(`[data-work-state="${el.dataset.work}"]`);
+    if (item && select) { item.state = select.value; render(); toast(t('工作项状态已更新（mock）。', 'Work item state updated (mock).'), 'good'); }
+    return;
+  }
+  if (action === 'approve-plan') {
+    const repo = repoById(el.dataset.repo);
+    const job = repo.jobs.find((entry) => entry.id === el.dataset.job);
+    if (job) { job.planApproved = true; job.planRejected = false; render(); toast(t('计划已批准（mock）。', 'Plan approved (mock).'), 'good'); }
+    return;
+  }
+  if (action === 'reject-plan') {
+    const repo = repoById(el.dataset.repo);
+    const job = repo.jobs.find((entry) => entry.id === el.dataset.job);
+    if (job) { job.planApproved = false; job.planRejected = true; render(); toast(t('计划已拒绝（mock）。', 'Plan rejected (mock).'), 'good'); }
+    return;
+  }
+  if (action === 'job-control') {
+    const repo = repoById(el.dataset.repo);
+    const job = repo.jobs.find((entry) => entry.id === el.dataset.job);
+    if (job) { job.status = el.dataset.status; render(); toast(t('任务状态已更新（mock）。', 'Job state updated (mock).'), 'good'); }
+    return;
+  }
+  if (action === 'execute-plan') {
+    const repo = repoById(el.dataset.repo);
+    const job = { id: rid('job'), kind: 'iterate', status: 'queued', trigger: 'manual', summary: t('已按计划开始执行。', 'Plan execution queued.'), pr: '—', issue: '—', cost: '$0.00', created: now(), evidence: { tests: t('未运行', 'not run'), checks: t('等待', 'waiting'), files: 0, risk: 'low', rollback: '—' }, attribution: '—' };
+    repo.jobs.unshift(job);
+    state.activeJob = job.id;
+    state.screen = 'job';
+    render();
+    toast(t('已按计划开始执行（mock）。', 'Plan execution started (mock).'), 'good');
+    return;
+  }
+  if (action === 'retry') {
+    const repo = repoById(el.dataset.repo);
+    const job = repo.jobs.find((entry) => entry.id === el.dataset.job);
+    if (job) { job.status = 'queued'; job.summary = t('重试已排队（mock）。', 'Retry queued (mock).'); render(); toast(t('已重新排队（mock）。', 'Requeued (mock).'), 'good'); }
+    return;
+  }
+  if (action === 'toast') { toast(el.dataset.message || t('已执行（mock）。', 'Done (mock).'), 'good'); }
+});
+
+document.addEventListener('change', (event) => {
+  const target = event.target;
+  if (target.matches('[data-form="settings"] select[name="role"]')) {
+    const repo = repoById(target.closest('[data-form="settings"]').dataset.repo);
+    setRepoRole(repo, target.value);
+    return;
+  }
+  if (target.matches('[data-form="settings"] input[name="autoMerge"]')) {
+    const repo = repoById(target.closest('[data-form="settings"]').dataset.repo);
+    if (!target.checked) { repo.autoMerge = false; toast(t('自动合并已关闭（mock）。', 'Auto-merge off (mock).'), 'good'); }
+    else if (repo.role !== 'maintainer') { target.checked = false; toast(t('只有 maintainer 可以开启自动合并。', 'Only a maintainer can enable auto-merge.'), 'bad'); }
+    else { repo.autoMerge = true; toast(t('自动合并已开启；由 Fledge 在 checks 通过且无 changes requested 时执行合并（mock）。', 'Auto-merge on; Fledge merges only after checks pass and no changes are requested (mock).'), 'good'); }
+    return;
+  }
+  if (target.matches('[data-form="settings"] input[name="review"]')) {
+    const repo = repoById(target.closest('[data-form="settings"]').dataset.repo);
+    const allowed = repo.role === 'maintainer' && (repo.permission === 'admin' || repo.permission === 'maintain');
+    if (!allowed) { target.checked = false; toast(t('developer 不能启用审核。', 'A developer cannot enable review.'), 'bad'); return; }
+    repo.review = target.checked;
+    toast(repo.review ? t('审核已启用（mock）。', 'Reviewer enabled (mock).') : t('审核已关闭（mock）。', 'Reviewer disabled (mock).'), 'good');
+  }
+});
+
+document.addEventListener('submit', (event) => {
+  const form = event.target.closest('[data-form]');
+  if (!form) return;
+  event.preventDefault();
+  if (form.dataset.form === 'chief') {
+    const repo = repoById(form.dataset.repo);
+    const text = form.querySelector('textarea').value.trim();
+    if (text === '') return;
+    repo.chief.push({ role: 'user', text });
+    render();
+    setTimeout(() => {
+      repo.chief.push({ role: 'chief', text: t('收到。当前任务还在跑，我会先看最新 CI 和 review 结论；如果需要改代码，会在同一分支继续，不会另开 PR。', 'Got it. The current job is still running; I will check the latest CI and review result first. If code changes are needed, I will continue on the same branch and not open another PR.') });
+      render();
+      const thread = document.querySelector('.chief-thread');
+      if (thread) thread.scrollTop = thread.scrollHeight;
+    }, 900);
+    return;
+  }
+  if (form.dataset.form === 'add-manual') {
+    const data = new FormData(form);
+    const repoName = String(data.get('repo') || '').trim();
+    const [owner, name] = repoName.split('/');
+    if (!owner || !name) { toast(t('仓库格式应为 owner/name', 'Use the owner/name repository format.'), 'bad'); return; }
+    const permission = /fledge/i.test(repoName) ? 'admin' : 'write';
+    const id = rid('repo');
+    state.repos[id] = {
+      id, owner, name, permission, targetBranch: 'main', enabled: true, role: null,
+      autoMerge: false, review: false, autoIterate: data.get('auto') === 'on',
+      interval: Number(data.get('interval') || 1440), status: 'idle', lastRun: '—',
+      goal: String(data.get('goal') || ''), instance: 'starting', chief: [], questions: [], jobs: []
+    };
+    state.activeRepo = id;
+    state.screen = 'repo';
+    render();
+    toast(t('仓库已添加；请选择你的角色。', 'Repository added; choose your role.'), 'good');
+    return;
+  }
+  if (form.dataset.form === 'work-create') {
+    const repo = repoById(form.dataset.repo);
+    const data = new FormData(form);
+    const title = String(data.get('title') || '').trim();
+    if (title === '') return;
+    repo.workItems = repo.workItems || [];
+    repo.workItems.unshift({ id: rid('work'), title, state: 'proposed', priority: Number(data.get('priority') || 0), pr: '—', issue: '—', job: '—' });
+    render();
+    toast(t('工作项已创建（mock）。', 'Work item created (mock).'), 'good');
+    return;
+  }
+  if (form.dataset.form === 'settings') {
+    const repo = repoById(form.dataset.repo);
+    const data = new FormData(form);
+    repo.goal = String(data.get('goal') || '');
+    repo.targetBranch = String(data.get('targetBranch') || 'main');
+    repo.enabled = data.get('enabled') === 'on';
+    repo.autoIterate = data.get('autoIterate') === 'on';
+    repo.interval = Number(data.get('interval') || 1440);
+    repo.planRequired = data.get('planRequired') === 'on';
+    repo.allowPaths = String(data.get('allowPaths') || '');
+    repo.denyPaths = String(data.get('denyPaths') || '');
+    repo.mergeMethod = String(data.get('mergeMethod') || 'squash');
+    repo.requireProtection = data.get('requireProtection') === 'on';
+    repo.autoMerge = data.get('autoMerge') === 'on' && repo.role === 'maintainer';
+    repo.review = data.get('review') === 'on' && repo.role === 'maintainer' && (repo.permission === 'admin' || repo.permission === 'maintain');
+    toast(t('设置已保存（mock）。', 'Settings saved (mock).'), 'good');
+    render();
+  }
+});
+
+render();
+</script>
+</body>
+</html>

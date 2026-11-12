@@ -1,0 +1,140 @@
+import http from 'node:http'
+import { resetGithubBudget } from '../src/lib/githubBudget.js'
+import type { AddressInfo } from 'node:net'
+import { randomBytes } from 'node:crypto'
+import { loadConfig, type Config } from '../src/config.js'
+import type { JobRow, Store, UserRow } from '../src/db.js'
+import type { Mailer, MailMessage } from '../src/email/mailer.js'
+import { randomId, sha256Hex } from '../src/lib/secrets.js'
+import type { BuiltApp } from '../src/app.js'
+
+export class MemoryMailer implements Mailer {
+  messages: MailMessage[] = []
+  async send(message: MailMessage): Promise<void> {
+    this.messages.push(message)
+  }
+}
+
+export function testConfig(overrides: Partial<Config> = {}): Config {
+  resetGithubBudget()
+  const base = loadConfig({
+    env: 'test',
+    baseUrl: 'http://127.0.0.1:9999',
+    sessionSecret: randomBytes(32).toString('base64'),
+    tokenEncryptionKey: randomBytes(32).toString('base64'),
+    dataDir: '/tmp/fledge-test',
+    dbPath: ':memory:',
+    runner: { mode: 'mock', bridgeUrl: '', bridgeToken: '', timeoutMinutes: 45, stallMinutes: 30, maxActiveJobs: 2, queueDispatch: false, maxQueueDepth: 100, maxUserQueue: 20 },
+    allowTokenLoginOnly: true,
+    mail: {
+      transport: 'console',
+      from: 'no-reply@example.com',
+      adminEmail: 'admin@example.com',
+      jobEmailCooldownMinutes: 60,
+      smtp: { host: '', port: 465, secure: true, user: '', pass: '' },
+    },
+    github: {
+      clientId: 'client',
+      clientSecret: 'secret',
+      scopes: 'read:user user:email',
+      adminLogin: 'admin',
+      apiBase: 'https://api.github.com',
+      oauthTokenUrl: 'https://github.com/login/oauth/access_token',
+      requestsPerMinute: 120,
+    },
+    metrics: { token: '' },
+    otel: { endpoint: '', serviceName: 'fledge' },
+    shutdown: { graceSeconds: 0 },
+    autoMerge: { reconcileMinutes: 5 },
+    ops: { alertCooldownMinutes: 360 },
+  })
+  return {
+    ...base,
+    ...overrides,
+    github: { ...base.github, ...overrides.github },
+    mail: { ...base.mail, ...overrides.mail },
+    llm: { ...base.llm, ...overrides.llm },
+    quota: { ...base.quota, ...overrides.quota },
+    runner: { ...base.runner, ...overrides.runner },
+    metrics: { ...base.metrics, ...overrides.metrics },
+    otel: { ...base.otel, ...overrides.otel },
+    shutdown: { ...base.shutdown, ...overrides.shutdown },
+    autoMerge: { ...base.autoMerge, ...overrides.autoMerge },
+    ops: { ...base.ops, ...overrides.ops },
+    plan: { ...base.plan, ...overrides.plan },
+    backup: { ...base.backup, ...overrides.backup },
+  }
+}
+
+// Tests that need many historical jobs for one repository must not leave more
+// than one active row: the jobs_one_active_per_repo index is a real invariant.
+export function makeTerminalJob(store: Store, input: Parameters<Store['createJob']>[0]): JobRow {
+  const job = store.createJob(input)
+  store.updateJob(job.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+  return job
+}
+
+export function makeUser(store: Store, options: { login?: string; admin?: boolean; superadmin?: boolean; status?: 'pending' | 'approved' | 'rejected'; quota?: number } = {}): UserRow {
+  const login = options.login ?? `user${Math.random().toString(36).slice(2, 8)}`
+  const user = store.upsertGithubUser({
+    id: randomId('usr'),
+    githubId: Math.floor(Math.random() * 1_000_000_000),
+    login,
+    name: login,
+    email: `${login}@example.com`,
+    avatarUrl: null,
+    isAdmin: options.admin === true,
+    isSuperAdmin: options.superadmin === true,
+    initialQuotaCny: options.quota ?? 1,
+  })
+  if (options.status !== undefined && options.status !== user.status) store.setUserStatus(user.id, options.status, 'test')
+  return store.userById(user.id)!
+}
+
+export function sessionFor(built: BuiltApp, user: UserRow): { raw: string; csrf: string; cookie: string } {
+  const raw = built.sessions.start(user.id, { ip: '127.0.0.1', headers: { 'user-agent': 'fledge-test' } } as never)
+  const hash = sha256Hex(raw)
+  const csrf = built.sessions.csrfFor(hash)
+  return { raw, csrf, cookie: `fledge_session=${raw}; fledge_csrf=${csrf}` }
+}
+
+export function formBody(values: Record<string, string | number | undefined>): string {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(values)) if (value !== undefined) params.set(key, String(value))
+  return params.toString()
+}
+
+export function startFakeServer(
+  handler: http.RequestListener,
+  options: { abortOnClose?: boolean } = {},
+): Promise<{ url: string; close: () => Promise<void> }> {
+  return new Promise((resolve) => {
+    const server = http.createServer(handler)
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as AddressInfo).port
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () => new Promise((done) => {
+          // A caller that closes while a request is in flight wants the socket
+          // gone, not a graceful drain: that is what a process stopping in the
+          // middle of a call looks like to the client. Opt-in, so a suite that
+          // only closes after its work settles keeps the graceful path.
+          if (options.abortOnClose === true) server.closeAllConnections()
+          server.close(() => done())
+        }),
+      })
+    })
+  })
+}
+
+export async function readBody(request: http.IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  return Buffer.concat(chunks)
+}
+
+export function json(response: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
+  const text = JSON.stringify(body)
+  response.writeHead(status, { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(text)), ...headers })
+  response.end(text)
+}

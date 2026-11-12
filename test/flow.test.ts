@@ -1,0 +1,346 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { buildApp } from '../src/app.js'
+import { Store } from '../src/db.js'
+import { Approvals } from '../src/users/approval.js'
+import { MockRunner } from '../src/jobs/mock.js'
+import { formBody, json, makeUser, sessionFor, startFakeServer, testConfig, MemoryMailer } from './helpers.js'
+
+test('browser flow: session, repo add, manual run, approval link', async () => {
+  const github = await startFakeServer((request, response) => {
+    if (request.url === '/user') {
+      const repoUser = String(request.headers.authorization ?? '').includes('repo-token')
+      const login = repoUser ? 'octo-user' : 'token-user'
+      json(response, 200, { id: repoUser ? 4343 : 4242, login, name: login, email: repoUser ? 'octo-user@example.com' : 'token@example.com', avatar_url: null })
+      return
+    }
+    if (request.url === '/repos/octo/demo') {
+      json(response, 200, {
+        name: 'demo',
+        full_name: 'octo/demo',
+        default_branch: 'main',
+        private: false,
+        html_url: 'https://github.com/octo/demo',
+        owner: { login: 'octo' },
+        permissions: { push: true },
+      })
+      return
+    }
+    if (request.url === '/repos/octo-user/demo') {
+      json(response, 200, {
+        name: 'demo',
+        full_name: 'octo-user/demo',
+        default_branch: 'main',
+        private: false,
+        html_url: 'https://github.com/octo-user/demo',
+        fork: true,
+        parent: { full_name: 'octo/demo' },
+        owner: { login: 'octo-user' },
+        permissions: { admin: true, push: true },
+      })
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url }, devLogin: { login: 'dev', admin: true } })
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  const built = await buildApp({ config, store, mailer, runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'octo-user', status: 'approved' })
+    const { csrf, cookie } = sessionFor(built, user)
+
+    const devLogin = await built.app.inject({ method: 'GET', url: '/auth/dev' })
+    assert.equal(devLogin.statusCode, 302)
+    assert.match(String(devLogin.headers['set-cookie'] ?? ''), /fledge_session=/)
+
+    const expiredOauth = await built.app.inject({ method: 'GET', url: '/auth/github/callback?code=x&state=y' })
+    assert.equal(expiredOauth.statusCode, 400)
+    assert.match(String(expiredOauth.headers['content-type']), /text\/html/)
+    assert.match(expiredOauth.body, /重新登录/)
+    assert.equal(expiredOauth.headers['cache-control'], 'no-store')
+
+    const dashboard = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
+    assert.equal(dashboard.statusCode, 200)
+    assert.match(dashboard.body, /仓库/)
+
+    for (const url of ['/repos', '/repos/']) {
+      const reposIndex = await built.app.inject({ method: 'GET', url, headers: { cookie } })
+      assert.equal(reposIndex.statusCode, 302)
+      assert.equal(reposIndex.headers.location, '/dashboard#add-repo')
+    }
+
+    const added = await built.app.inject({
+      method: 'POST',
+      url: '/repos',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, repo: 'octo/demo', token: 'repo-token', goal: 'fix the bug', auto: '1', interval: '120' }),
+    })
+    assert.equal(added.statusCode, 302)
+    const repo = store.listRepos(user.id)[0]
+    assert.ok(repo)
+    assert.equal(repo.owner, 'octo')
+    assert.equal(repo.name, 'demo')
+    assert.equal(repo.auto_iterate, 1)
+    assert.equal(repo.interval_minutes, 120)
+    assert.equal(repo.is_fork, 1)
+    assert.equal(repo.fork_owner, 'octo-user')
+    assert.equal(repo.fork_name, 'demo')
+    assert.equal(repo.permission, 'write')
+    assert.equal(repo.can_review, 1)
+    assert.equal(repo.reviewer_enabled, 0)
+    assert.equal(repo.repo_role, null)
+
+    const role = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/role`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, role: 'developer' }),
+    })
+    assert.equal(role.statusCode, 302)
+    assert.equal(store.getRepo(repo.id)?.repo_role, 'developer')
+
+    const duplicateRepo = await built.app.inject({
+      method: 'POST',
+      url: '/repos',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, repo: 'octo/demo', token: 'repo-token', goal: 'duplicate', auto: '0', interval: '1440' }),
+    })
+    assert.equal(duplicateRepo.statusCode, 302)
+    assert.match(String(duplicateRepo.headers.location), new RegExp(`^/repos/${repo.id}\\?notice=`))
+
+    const noCsrf = await built.app.inject({
+      method: 'POST',
+      url: '/repos',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ repo: 'octo/demo', token: 'x' }),
+    })
+    assert.equal(noCsrf.statusCode, 403)
+
+    const run = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/run`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf }),
+    })
+    assert.equal(run.statusCode, 302)
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const job = store.listJobsForRepo(repo.id)[0]
+    assert.ok(job)
+    assert.equal(job.status, 'succeeded')
+
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /octo\/demo/)
+
+    const settingsGet = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/settings`, headers: { cookie } })
+    assert.equal(settingsGet.statusCode, 302)
+    assert.equal(settingsGet.headers.location, `/repos/${repo.id}#repo-settings`)
+    const runGet = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/run`, headers: { cookie } })
+    assert.equal(runGet.statusCode, 302)
+    assert.equal(runGet.headers.location, `/repos/${repo.id}`)
+
+    const settingsWithoutCsrf = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/settings`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ goal: 'changed without csrf' }),
+    })
+    assert.equal(settingsWithoutCsrf.statusCode, 403)
+    const settingsWithCsrf = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/settings`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, goal: 'changed with csrf' }),
+    })
+    assert.equal(settingsWithCsrf.statusCode, 302)
+    assert.equal(store.getRepo(repo.id)?.goal, 'changed with csrf')
+
+    const anonymous = await built.app.inject({ method: 'GET', url: '/dashboard' })
+    assert.equal(anonymous.statusCode, 302)
+    assert.equal(String(anonymous.headers.location), '/auth/github?next=%2Fdashboard')
+    assert.equal(anonymous.body.includes('仓库'), false)
+
+    const pending = makeUser(store, { login: 'pending-user', status: 'pending' })
+    const approvals = new Approvals(store, config, mailer)
+    const sent = await approvals.request(pending)
+    assert.equal(sent.sent, true)
+    const approvalMail = mailer.messages.find((message) => message.to === config.mail.adminEmail && /权限申请/.test(message.subject))
+    assert.ok(approvalMail)
+    const token = sent.approveUrl?.split('/approve/')[1]
+    assert.ok(token)
+    const confirm = await built.app.inject({ method: 'GET', url: `/approve/${token}` })
+    assert.equal(confirm.statusCode, 200)
+    assert.match(confirm.body, /批准/)
+    const applied = await built.app.inject({ method: 'POST', url: `/approve/${token}` })
+    assert.equal(applied.statusCode, 200)
+    assert.equal(store.userById(pending.id)?.status, 'approved')
+    const reused = await built.app.inject({ method: 'GET', url: `/approve/${token}` })
+    assert.equal(reused.statusCode, 404)
+
+    const mailsBeforeLogin = mailer.messages.length
+    const tokenLogin = await built.app.inject({
+      method: 'POST',
+      url: '/auth/token',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ token: 'test-token' }),
+    })
+    assert.equal(tokenLogin.statusCode, 302)
+    assert.equal(tokenLogin.headers.location, '/apply')
+    const setCookies = tokenLogin.headers['set-cookie']
+    const tokenCookie = (Array.isArray(setCookies) ? setCookies : [setCookies])
+      .map((line) => String(line).split(';')[0])
+      .join('; ')
+    const tokenCsrf = /(?:^|; )fledge_csrf=([^;]+)/.exec(tokenCookie)?.[1]
+    assert.ok(tokenCsrf)
+    const tokenUser = store.userByLogin('token-user')
+    assert.ok(tokenUser)
+    assert.equal(tokenUser.status, 'onboarding')
+    assert.equal(mailer.messages.length, mailsBeforeLogin)
+
+    const blockedSettings = await built.app.inject({
+      method: 'POST',
+      url: '/settings/providers',
+      headers: { cookie: tokenCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf: tokenCsrf, baseUrl: 'https://example.com/v1', apiKey: 'sk-test', model: 'test' }),
+    })
+    assert.equal(blockedSettings.statusCode, 403)
+    assert.match(blockedSettings.body, /等待审批/)
+
+    const blockedRepo = await built.app.inject({
+      method: 'POST',
+      url: '/repos',
+      headers: { cookie: tokenCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf: tokenCsrf, repo: 'octo/demo', token: 'repo-token' }),
+    })
+    assert.equal(blockedRepo.statusCode, 403)
+
+    const applyPage = await built.app.inject({ method: 'GET', url: '/apply', headers: { cookie: tokenCookie } })
+    assert.equal(applyPage.statusCode, 200)
+    assert.match(applyPage.body, /免责声明/)
+    assert.match(applyPage.body, /信息安全承诺/)
+
+    const mailsBefore = mailer.messages.length
+    const applicationSubmitted = await built.app.inject({
+      method: 'POST',
+      url: '/apply',
+      headers: { cookie: tokenCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf: tokenCsrf, signature: 'token-user', disclaimer: '1', security: '1' }),
+    })
+    assert.equal(applicationSubmitted.statusCode, 302)
+    assert.equal(applicationSubmitted.headers.location, '/apply/status?notice=%E7%94%B3%E8%AF%B7%E5%B7%B2%E6%8F%90%E4%BA%A4%EF%BC%8C%E6%AD%A3%E5%9C%A8%E6%8E%92%E9%98%9F%E3%80%82')
+    const submitted = store.userById(tokenUser.id)
+    assert.ok(submitted)
+    assert.equal(submitted.status, 'pending')
+    assert.equal(submitted.disclaimer_name, 'token-user')
+    assert.notEqual(submitted.application_submitted_at, null)
+    assert.equal(mailer.messages.length, mailsBefore + 2)
+    assert.equal(mailer.messages.some((message) => message.to === 'token@example.com' && /申请已收到/.test(message.subject)), true)
+    assert.equal(mailer.messages.some((message) => message.to === config.mail.adminEmail && /权限申请/.test(message.subject)), true)
+
+    const statusPage = await built.app.inject({ method: 'GET', url: '/apply/status', headers: { cookie: tokenCookie } })
+    assert.equal(statusPage.statusCode, 200)
+    assert.match(statusPage.body, /排队/)
+    assert.match(statusPage.body, /<span data-queue-position>/)
+
+    const application = await built.app.inject({ method: 'GET', url: '/api/application', headers: { cookie: tokenCookie } })
+    assert.equal(application.statusCode, 200)
+    const applicationBody = application.json() as { status: string; position: number; pending: number }
+    assert.equal(applicationBody.status, 'pending')
+    assert.equal(applicationBody.position, 1)
+    assert.equal(applicationBody.pending, 1)
+
+    const duplicate = await built.app.inject({
+      method: 'POST',
+      url: '/apply',
+      headers: { cookie: tokenCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf: tokenCsrf, signature: 'token-user', disclaimer: '1', security: '1' }),
+    })
+    assert.equal(duplicate.statusCode, 302)
+    assert.equal(duplicate.headers.location, '/apply/status')
+    assert.equal(mailer.messages.length, mailsBefore + 2)
+    assert.equal(mailer.messages.some((message) => message.to === 'token@example.com' && /申请已收到/.test(message.subject)), true)
+    assert.equal(mailer.messages.some((message) => message.to === config.mail.adminEmail && /权限申请/.test(message.subject)), true)
+
+    const beforeApprovalConsole = await built.app.inject({ method: 'GET', url: '/console', headers: { cookie: tokenCookie } })
+    assert.equal(beforeApprovalConsole.statusCode, 403)
+    const beforeApprovalAdmin = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: tokenCookie } })
+    assert.equal(beforeApprovalAdmin.statusCode, 403)
+
+    const admin = makeUser(store, { login: 'boss', admin: true })
+    const adminSession = sessionFor(built, admin)
+    const adminPage = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: adminSession.cookie } })
+    assert.equal(adminPage.statusCode, 200)
+    assert.match(adminPage.body, /审批与额度/)
+    assert.match(adminPage.body, /#1/)
+
+    const quotaUpdated = await built.app.inject({
+      method: 'POST',
+      url: `/admin/users/${tokenUser.id}/quota`,
+      headers: { cookie: adminSession.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf: adminSession.csrf, quota: '5' }),
+    })
+    assert.equal(quotaUpdated.statusCode, 302)
+    assert.equal(store.userById(tokenUser.id)?.quota_cny, 5)
+
+    const quotaWithoutCsrf = await built.app.inject({
+      method: 'POST',
+      url: `/admin/users/${tokenUser.id}/quota`,
+      headers: { cookie: adminSession.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ quota: '2' }),
+    })
+    assert.equal(quotaWithoutCsrf.statusCode, 403)
+    assert.equal(store.userById(tokenUser.id)?.quota_cny, 5)
+
+    const approved = await built.app.inject({
+      method: 'POST',
+      url: `/admin/users/${tokenUser.id}/approve`,
+      headers: { cookie: adminSession.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf: adminSession.csrf }),
+    })
+    assert.equal(approved.statusCode, 302)
+    assert.equal(store.userById(tokenUser.id)?.status, 'approved')
+    const statusAfter = await built.app.inject({ method: 'GET', url: '/apply/status', headers: { cookie: tokenCookie } })
+    assert.equal(statusAfter.statusCode, 302)
+    assert.equal(statusAfter.headers.location, '/dashboard')
+    const userDashboard = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: tokenCookie } })
+    assert.equal(userDashboard.statusCode, 200)
+    const consolePage = await built.app.inject({ method: 'GET', url: '/console', headers: { cookie: tokenCookie } })
+    assert.equal(consolePage.statusCode, 200)
+    assert.match(consolePage.body, /工作区/)
+    assert.match(consolePage.body, /最近任务/)
+    assert.doesNotMatch(consolePage.body, /暂未开放|flybot\.hugoxk\.online/)
+  } finally {
+    await built.close()
+    await github.close()
+  }
+})
+
+test('the bulk merge reports a job-state skip as a job state, not as a failed check', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  const built = await buildApp({ config, store, mailer, runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'bulk-message-user', status: 'approved' })
+    const { csrf, cookie } = sessionFor(built, user)
+    const repo = store.createRepo({ id: 'repo_bulk_message', userId: user.id, owner: 'o', name: 'message', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', roleCheckedAt: new Date().toISOString(), upstreamHtmlUrl: 'https://github.com/o/message', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_bulk_message_queued', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(job.id, { branch: 'fledge/fix', pr_url: 'https://github.com/o/message/pull/7', pr_state: 'open' })
+    const response = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/delivery/merge-clean`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf }),
+    })
+    assert.equal(response.statusCode, 302)
+    // Nothing was merged, so the run reports its skip as an error redirect.
+    assert.match(String(response.headers.location), new RegExp(`^/repos/${repo.id}\\?error=`))
+    const message = decodeURIComponent(String(response.headers.location).split('?')[1] ?? '')
+    assert.match(message, /跳过 1 个（最新任务还没有成功）/)
+    assert.doesNotMatch(message, /检查\/保护未通过/)
+  } finally {
+    await built.close()
+  }
+})

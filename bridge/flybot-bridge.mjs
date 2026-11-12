@@ -1,0 +1,424 @@
+#!/usr/bin/env node
+// Fledge → FlyBot bridge.
+//
+// Runs on the FlyBot host, listens on loopback, and forwards a Fledge job to a
+// configured FlyBot chat session through DSH's local /api/bot endpoint. The
+// bridge never sees the user's GitHub token; Fledge gives the agent a scoped
+// credential URL instead.
+//
+// It also exposes:
+//   POST /dsh    authenticated DSH /api/bot proxy (state, create-bot, ...)
+//   POST /run    forward a job to a session
+//   /v1/*        a per-instance model proxy that injects a Fledge gateway token
+//
+// Required env:
+//   BRIDGE_TOKEN             shared secret with Fledge (>= 16 chars)
+//   FLYBOT_CHAT_SESSION_ID   the default Bot chat (iterate)
+// Optional:
+//   FLYBOT_REVIEW_SESSION_ID default reviewer chat (falls back to the iterate chat)
+//   BRIDGE_PORT              default 8787
+//   BRIDGE_HOST              default 127.0.0.1
+//   FLYBOT_WEB               default http://127.0.0.1:3080
+//   FLYBOT_LOG               default /home/xuke/work/dsh-web.log
+//   MAX_PROMPT_BYTES         default 32768
+//   FLEDGE_GATEWAY_ORIGIN    e.g. http://127.0.0.1:8095 (enables /v1 proxy)
+//   FLEDGE_GATEWAY_TOKEN     a user-scoped flg_ token for the proxy
+//   MODEL_PROXY_BIND         default 127.0.0.1
+//   MODEL_PROXY_PORT         unset/0 disables the model proxy
+//   MODEL_PROXY_KEY          shared key the instance model client sends
+
+import http from 'node:http'
+import https from 'node:https'
+import { readFileSync } from 'node:fs'
+
+const PORT = Number(process.env.BRIDGE_PORT ?? 8787)
+const HOST = process.env.BRIDGE_HOST ?? '127.0.0.1'
+const TOKEN = process.env.BRIDGE_TOKEN ?? ''
+const SESSION_ID = process.env.FLYBOT_CHAT_SESSION_ID ?? ''
+const REVIEW_SESSION_ID = process.env.FLYBOT_REVIEW_SESSION_ID ?? SESSION_ID
+const WEB = (process.env.FLYBOT_WEB ?? 'http://127.0.0.1:3080').replace(/\/$/, '')
+const LOG = process.env.FLYBOT_LOG ?? '/home/xuke/work/dsh-web.log'
+const MAX_PROMPT = Number(process.env.MAX_PROMPT_BYTES ?? 32768)
+const MAX_PROXY_BODY = Number(process.env.MAX_PROXY_BODY ?? 64 * 1024 * 1024)
+const GATEWAY_ORIGIN = (process.env.FLEDGE_GATEWAY_ORIGIN ?? '').replace(/\/$/, '')
+const GATEWAY_TOKEN = process.env.FLEDGE_GATEWAY_TOKEN ?? ''
+
+// The model proxy uses the current job token while a job is running, so the
+// gateway can attribute usage to that job. The instance token remains the fallback.
+let activeJobToken = ''
+let activeJobUntil = 0
+let activeJobId = ''
+
+function currentGatewayToken() {
+  return activeJobToken !== '' && Date.now() < activeJobUntil ? activeJobToken : GATEWAY_TOKEN
+}
+const MODEL_PROXY_BIND = process.env.MODEL_PROXY_BIND ?? '127.0.0.1'
+const MODEL_PROXY_PORT = Number(process.env.MODEL_PROXY_PORT ?? 0)
+const MODEL_PROXY_KEY = process.env.MODEL_PROXY_KEY ?? ''
+
+if (TOKEN.length < 16) {
+  console.error('BRIDGE_TOKEN must be set (>= 16 chars)')
+  process.exit(1)
+}
+if (SESSION_ID === '') {
+  console.error('FLYBOT_CHAT_SESSION_ID must be set')
+  process.exit(1)
+}
+if (MODEL_PROXY_PORT > 0 && (GATEWAY_ORIGIN === '' || GATEWAY_TOKEN === '' || MODEL_PROXY_KEY === '')) {
+  console.error('MODEL_PROXY_PORT needs FLEDGE_GATEWAY_ORIGIN, FLEDGE_GATEWAY_TOKEN and MODEL_PROXY_KEY')
+  process.exit(1)
+}
+
+function redact(text) {
+  return String(text ?? '')
+    .replace(/api_key:\s*[A-Fa-f0-9]{16,}/g, 'api_key: [redacted]')
+    .replace(/sk-[A-Za-z0-9_-]{16,}/g, 'sk-[redacted]')
+    .replace(/github_pat_[A-Za-z0-9_]{20,}/g, '[redacted-github-token]')
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{12,}=*/gi, '$1[redacted]')
+}
+
+function logEvent(event, fields = {}) {
+  const line = { ts: new Date().toISOString(), event, ...fields }
+  console.log(JSON.stringify(line))
+}
+
+function lastDshToken() {
+  const text = readFileSync(LOG, { encoding: 'utf8' })
+  const slice = text.slice(Math.max(0, text.length - 4 * 1024 * 1024))
+  const matches = [...slice.matchAll(/token=([A-Za-z0-9_-]+)/g)]
+  return matches.at(-1)?.[1] ?? ''
+}
+
+async function dshCookie() {
+  const token = lastDshToken()
+  if (token === '') throw new Error('no DSH token in the web log yet')
+  const response = await fetch(`${WEB}/?token=${encodeURIComponent(token)}`, { redirect: 'manual' })
+  const cookies = typeof response.headers.getSetCookie === 'function' ? response.headers.getSetCookie() : []
+  const cookie = cookies.map((entry) => entry.split(';')[0]).join('; ')
+  if (cookie === '') throw new Error('DSH did not set a session cookie')
+  return cookie
+}
+
+async function dshApi(endpoint, payload) {
+  const cookie = await dshCookie()
+  const response = await fetch(`${WEB}/api/bot`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ endpoint, payload }),
+    signal: AbortSignal.timeout(120_000),
+  })
+  const body = await response.text()
+  if (!response.ok) throw new Error(`DSH /api/bot ${response.status}: ${body.slice(0, 300)}`)
+  return body === '' ? {} : JSON.parse(body)
+}
+
+// #260: the DSH answer to the send is the only place Fledge can learn that the
+// model provider refused the turn (its budget is used up, or it is rate
+// limiting). It used to be discarded at this boundary - every failure became
+// "could not reach DSH" - so a budget refusal reached Fledge as a bridge outage,
+// was stored as BRIDGE_ERROR, and was retried twice. The answer is relayed as
+// the job-failed detail instead, redacted and bounded.
+function refusalText(body) {
+  if (body === null || typeof body !== 'object') return ''
+  const error = body.error
+  if (typeof error === 'string') return error
+  if (error !== null && typeof error === 'object' && typeof error.message === 'string') return error.message
+  if (body.ok === false) return typeof body.message === 'string' ? body.message : 'the session refused the job'
+  return ''
+}
+
+async function sendToBot(text, sessionId) {
+  const cookie = await dshCookie()
+  const response = await fetch(`${WEB}/api/bot`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ endpoint: 'send', payload: { sessionId, text } }),
+    signal: AbortSignal.timeout(30_000),
+  })
+  const body = await response.text()
+  if (!response.ok) {
+    let detail = body.slice(0, 300)
+    try {
+      const extracted = refusalText(JSON.parse(body))
+      if (extracted !== '') detail = extracted
+    } catch {}
+    throw new Error(`DSH /api/bot ${response.status}: ${detail.slice(0, 300)}`)
+  }
+  let parsed = null
+  try {
+    parsed = body === '' ? null : JSON.parse(body)
+  } catch {}
+  const refusal = refusalText(parsed)
+  if (refusal !== '') throw new Error(`DSH refused the job: ${refusal}`)
+  return body
+}
+
+function buildText(job) {
+  const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : job.kind === 'scope' ? 'scope' : job.kind === 'verify' ? 'verify' : job.kind === 'provision' ? 'provision' : 'iterate'
+  const upstream = job.upstream || job.repo || {}
+  const fork = job.fork || job.repo || upstream
+  const rules = kind === 'review'
+    ? [
+        '- Review every open pull request on the upstream, including PRs not created by Fledge.',
+        '- Score each PR 0-100 with a short rationale and post a COMMENT review. Never REQUEST_CHANGES, approve, merge, push or change settings.',
+        '- Include followUps in the final callback for every Fledge PR that needs changes: [{prUrl, branch, headSha, baseBranch, reason}] so Fledge queues a same-branch fix.',
+        '- Do not modify code in review mode.',
+      ]
+    : kind === 'plan'
+      ? [
+          '- Do not write code, create a branch, push, open a PR/issue or change settings.',
+          '- Inspect the repository, docs, issues/PRs and tests; produce one concrete plan.',
+          '- Include problem/evidence, files, ordered steps, tests, acceptance criteria, risks, rollback and size.',
+          '- Finish with status succeeded and the plan in summary; no branch, prUrl or issueUrl.',
+        ]
+      : kind === 'scope'
+      ? [
+          '- This is a Product scoping job. Do not write code, create a branch, push, open a PR/issue or change settings.',
+          '- Read the issue, repository docs, open issues/PRs and tests. Produce scope, non-goals, acceptance criteria and a test plan.',
+          '- Finish with status succeeded and evidence.scope, evidence.acceptance and evidence.testPlan; no branch, prUrl or issueUrl.',
+        ]
+      : kind === 'verify'
+      ? [
+          '- This is a Test verification job. Do not write code, push, open a PR or merge.',
+          '- Read the existing PR/branch and run the relevant tests; report failing and passing evidence plus CI/check status.',
+          '- Finish with status succeeded and evidence.testRed, evidence.testGreen, evidence.tests and evidence.checks; no branch, prUrl or issueUrl.',
+        ]
+      : kind === 'provision'
+      ? ['- This is a provisioning request. Do not write code, push, or open PRs.']
+      : [
+          ...(job.prUrl
+            ? [`- This is a follow-up on the existing PR ${job.prUrl} and branch ${job.branch}. Push to the same branch and update that PR; do not open a second PR or a new issue.`]
+            : [
+                `- Before starting, read the latest upstream ${upstream.defaultBranch} and open issues/PRs. If the defect is already fixed or an open PR covers it, report the existing link and finish without a duplicate branch/PR.`,
+                `- If the fork ${fork.owner}/${fork.name} is behind upstream, sync the fork target branch first; never open a PR from a stale fork.`,
+                `- Push the branch to ${fork.owner}/${fork.name}; open one pull request against ${upstream.owner}/${upstream.name} (base ${upstream.defaultBranch}).`,
+              ]),
+          job.canCreateIssue === false
+            ? '- The token may not be able to create upstream issues; report a clear error instead of guessing.'
+            : `- Create or reuse one issue on ${upstream.owner}/${upstream.name}; reference it from the PR.`,
+          '- Never push to the upstream base branch. Do not force-push or change repository settings.',
+          '- Never merge. Fledge performs the maintainer-enabled auto-merge only after independently checking the PR checks and reviews.',
+          '- Never create an inventory, backlog, or "存量/盘点/清账/清帐/reconcile" issue. Work on one concrete issue or PR; if there is no concrete defect, report zero output.',
+          '- If the goal contains a "[Carry-over" block, continue the open work item it names; do not create a duplicate issue or PR.',
+          '- Write a failing test first when a test is possible.',
+          '- Team participation is mandatory: Product scopes, Test writes/verifies the failing test, Dev-1/Dev-2 implement, Security reviews material risk, Reviewer reviews the PR. Do not let the Lead implement the whole change alone; if a role is unavailable, say so in the callback.',
+        ]
+  const lines = [
+    'A Fledge job is ready. Work in your own workspace; do not touch the Fledge service.',
+    '',
+    `Job: ${job.jobId}`,
+    `Mode: ${kind}`,
+    `Upstream: ${upstream.owner}/${upstream.name} (base ${upstream.defaultBranch})`,
+    `Fork: ${fork.owner}/${fork.name}${job.isFork ? ' (push here)' : ' (same as upstream)'}`,
+    `Branch: ${job.branch || '(new)'} · PR: ${job.prUrl || '(new)'}`,
+    `Permission: ${job.permission || 'unknown'} · role: ${job.repoRole || 'not selected'}${job.canReview ? ' · review enabled' : ''}`,
+    `Time limit: ${job.timeoutMinutes ?? 90} minutes.`,
+    `Goal: ${job.goal}`,
+    '',
+    'Credentials:',
+    `- GitHub token: GET ${job.credentialUrl} with "Authorization: Bearer ${job.credentialSecret}"`,
+    `- Model: POST ${job.platform?.baseUrl}/chat/completions with "Authorization: Bearer ${job.platform?.token}"`,
+    `- Model id: ${job.platform?.model}`,
+    '',
+    'Rules:',
+    ...rules,
+    '- Do not print the GitHub token or the job token.',
+    '- Do not merge; Fledge handles maintainer-enabled auto-merge. Never force-push.',
+    '- End every GitHub issue, PR and comment with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',
+    '- The final callback must include "attribution": {"writtenBy":"...","claimedBy":"...","implementedBy":"...","testedBy":"...","reviewedBy":"..."} with role names only (Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2). Omit a key for a step that did not happen; never write "not run", "pending" or "(Team)".',
+    '- Also include "evidence": {"scope":"<scope>","acceptance":"<acceptance>","testPlan":"<test plan>","testRed":"<failing test>","testGreen":"<passing test>","tests":"<command and pass/fail>","checks":"<CI/check status>","files":<changed files>,"risk":"low|medium|high","rollback":"<one line>"}; use only what you actually ran.',
+    `- After each major step and at least every 10 minutes, POST ${job.callbackUrl} with JSON {"status":"running","summary":"<one line progress>","checkpoint":"<done + next>"}`,
+    `  and "Authorization: Bearer ${job.callbackSecret}". This is a heartbeat, not a finish.`,
+    `- Finish by POSTing ${job.callbackUrl} with JSON {status, branch, prUrl, issueUrl, reviewScore, summary, error}`,
+    `  and "Authorization: Bearer ${job.callbackSecret}".`,
+    '',
+    job.instructions ?? '',
+  ]
+  const block = lines.join('\n').slice(0, MAX_PROMPT)
+  if (job.dispatchRole === 'chief') {
+    const lead = job.leadName || 'the Lead'
+    return [
+      'A Fledge job is ready. You are the Chief.',
+      `Delegate the JOB BLOCK below verbatim to your direct child "${lead}" and wait for the Lead to finish.`,
+      'Do not rewrite the credentials, do not do the work yourself, and do not post the callback: the Lead owns execution and the final callback.',
+      'If the Lead reports a blocker that needs a human decision, stop and report it.',
+      '',
+      '--- JOB BLOCK (pass verbatim) ---',
+      block,
+    ].join('\n').slice(0, MAX_PROMPT)
+  }
+  return block
+}
+
+function json(response, status, body) {
+  const text = JSON.stringify(body)
+  response.writeHead(status, { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(text)) })
+  response.end(text)
+}
+
+function authorized(request) {
+  return String(request.headers.authorization ?? '') === `Bearer ${TOKEN}`
+}
+
+function readBody(request, limit) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    request.on('data', (chunk) => {
+      size += chunk.length
+      if (size > limit) {
+        reject(new Error('body too large'))
+        request.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    request.on('end', () => resolve(Buffer.concat(chunks)))
+    request.on('error', reject)
+  })
+}
+
+const server = http.createServer(async (request, response) => {
+  if (request.method === 'GET' && request.url === '/healthz') {
+    return json(response, 200, { ok: true, service: 'fledge-flybot-bridge', modelProxy: MODEL_PROXY_PORT > 0 })
+  }
+  if (request.method !== 'POST') return json(response, 404, { error: 'not found' })
+  if (!authorized(request)) return json(response, 401, { error: 'unauthorized' })
+  if (request.url === '/dsh') {
+    let body
+    try {
+      body = JSON.parse((await readBody(request, MAX_PROMPT)).toString('utf8'))
+    } catch {
+      return json(response, 400, { error: 'invalid JSON' })
+    }
+    if (typeof body.endpoint !== 'string') return json(response, 400, { error: 'endpoint required' })
+    try {
+      return json(response, 200, await dshApi(body.endpoint, body.payload ?? {}))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      logEvent('dsh-failed', { endpoint: body.endpoint, error: redact(message) })
+      return json(response, 502, { error: redact(message) })
+    }
+  }
+  if (request.url === '/job-done') {
+    let body
+    try {
+      body = JSON.parse((await readBody(request, MAX_PROMPT)).toString('utf8'))
+    } catch {
+      return json(response, 400, { error: 'invalid JSON' })
+    }
+    if (typeof body.jobId === 'string' && activeJobId !== '' && body.jobId !== activeJobId) {
+      return json(response, 200, { ok: true, ignored: true })
+    }
+    activeJobToken = ''
+    activeJobUntil = 0
+    activeJobId = ''
+    logEvent('model-token-cleared', { jobId: typeof body.jobId === 'string' ? body.jobId : null })
+    return json(response, 200, { ok: true })
+  }
+  if (request.url !== '/run') return json(response, 404, { error: 'not found' })
+  let job
+  try {
+    job = JSON.parse((await readBody(request, MAX_PROMPT)).toString('utf8'))
+  } catch {
+    return json(response, 400, { error: 'invalid JSON' })
+  }
+  if (typeof job.jobId !== 'string' || typeof job.credentialUrl !== 'string' || typeof job.callbackUrl !== 'string') {
+    return json(response, 400, { error: 'jobId, credentialUrl and callbackUrl are required' })
+  }
+  try {
+    if (typeof job.platform?.token === 'string' && job.platform.token !== '') {
+      activeJobToken = job.platform.token
+      activeJobUntil = Date.now() + ((Number(job.timeoutMinutes) || 90) + 60) * 60_000
+      activeJobId = job.jobId
+      logEvent('model-token-bound', { jobId: job.jobId })
+    }
+    const sessionId = typeof job.sessionId === 'string' && job.sessionId !== ''
+      ? job.sessionId
+      : job.kind === 'review' ? REVIEW_SESSION_ID : SESSION_ID
+    await sendToBot(buildText(job), sessionId)
+    logEvent('job-forwarded', { jobId: job.jobId, kind: job.kind ?? 'iterate', repo: `${job.upstream?.owner || job.repo?.owner}/${job.upstream?.name || job.repo?.name}`, session: sessionId.slice(0, 12) })
+    return json(response, 202, { ok: true, accepted: true })
+  } catch (error) {
+    const detail = redact(String(error instanceof Error ? error.message : error)).slice(0, 300)
+    logEvent('job-failed', { jobId: job.jobId, error: detail })
+    return json(response, 502, { error: 'DSH did not accept the job', detail })
+  }
+})
+
+function createModelProxy() {
+  if (MODEL_PROXY_PORT <= 0) return null
+  const origin = new URL(GATEWAY_ORIGIN)
+  const mod = origin.protocol === 'https:' ? https : http
+  const proxy = http.createServer(async (request, response) => {
+    if (request.method === 'GET' && request.url === '/healthz') {
+      return json(response, 200, { ok: true, service: 'fledge-model-proxy' })
+    }
+    if (!request.url?.startsWith('/v1/')) return json(response, 404, { error: 'not found' })
+    const given = String(request.headers.authorization ?? '')
+    if (given !== `Bearer ${MODEL_PROXY_KEY}`) return json(response, 401, { error: 'unauthorized' })
+    let body
+    try {
+      body = await readBody(request, MAX_PROXY_BODY)
+    } catch {
+      return json(response, 413, { error: 'body too large' })
+    }
+    const headers = {
+      'content-type': request.headers['content-type'] ?? 'application/json',
+      accept: request.headers.accept ?? '*/*',
+      authorization: `Bearer ${currentGatewayToken()}`,
+      'content-length': String(body.length),
+      'user-agent': 'fledge-instance-proxy/0.1',
+    }
+    const rawPath = String(request.url ?? '').split('?')[0]
+    const path = rawPath === '/v1/chat/completions' || rawPath === '/v1/models' ? rawPath : ''
+    if (path === '') return json(response, 400, { error: 'invalid proxy path' })
+    const target = new URL(path, origin)
+    const send = (token, retried) => {
+      const upstream = mod.request(target, { method: request.method, headers: { ...headers, authorization: `Bearer ${token}` } }, (upstreamResponse) => {
+        if (!retried && (upstreamResponse.statusCode === 401 || upstreamResponse.statusCode === 403) && token !== GATEWAY_TOKEN) {
+          upstreamResponse.resume()
+          logEvent('model-token-fallback', { status: upstreamResponse.statusCode })
+          send(GATEWAY_TOKEN, true)
+          return
+        }
+        const out = {}
+        for (const [name, value] of Object.entries(upstreamResponse.headers)) {
+          const lower = name.toLowerCase()
+          if (lower === 'connection' || lower === 'transfer-encoding' || lower === 'keep-alive' || lower === 'content-length') continue
+          out[name] = value
+        }
+        response.writeHead(upstreamResponse.statusCode ?? 502, out)
+        upstreamResponse.pipe(response)
+      })
+      upstream.on('error', (error) => {
+        logEvent('model-proxy-failed', { error: redact(error instanceof Error ? error.message : String(error)) })
+        if (!response.headersSent) json(response, 502, { error: 'gateway unavailable' })
+        else response.destroy()
+      })
+      upstream.setTimeout(10 * 60 * 1000, () => upstream.destroy(new Error('gateway timeout')))
+      if (body.length > 0) upstream.write(body)
+      upstream.end()
+      response.on('close', () => { if (!response.writableEnded) upstream.destroy() })
+    }
+    send(currentGatewayToken(), false)
+  })
+  proxy.listen(MODEL_PROXY_PORT, MODEL_PROXY_BIND, () => {
+    logEvent('model-proxy-start', { listen: `${MODEL_PROXY_BIND}:${MODEL_PROXY_PORT}` })
+  })
+  return proxy
+}
+
+server.listen(PORT, HOST, () => {
+  logEvent('bridge-start', { listen: `${HOST}:${PORT}`, web: WEB, modelProxy: MODEL_PROXY_PORT > 0 })
+})
+const modelProxy = createModelProxy()
+
+function shutdown(signal) {
+  logEvent('stop', { signal })
+  server.close()
+  modelProxy?.close()
+  setTimeout(() => process.exit(0), 1000).unref()
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))

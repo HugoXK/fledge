@@ -1,0 +1,534 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  # A manual run for a branch that has no PR, and a nightly run on main so a
+  # dependency, runner image or upstream action change is not discovered by the
+  # next PR. 19:17 UTC is 03:17 Asia/Shanghai.
+  workflow_dispatch:
+  schedule:
+    - cron: '17 19 * * *'
+
+# The workflow default is the narrowest set, and every job repeats it: a
+# job-level `permissions:` replaces this block instead of merging with it, so a
+# job added to this file later cannot inherit a write scope by accident, and a
+# job that needs more has to say so in its own diff.
+permissions:
+  contents: read
+
+concurrency:
+  # A superseded pull request run is waste; a run on main is the record of a
+  # commit, so it is never cancelled by a later one.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
+  test:
+    name: test (${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  # The floor is a number in package.json (`test:coverage`), measured at the
+  # commit that introduced it and then only raised. It runs once, on the Node
+  # version package.json requires, because two versions measuring the same code
+  # would only add noise to the number.
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Measure and enforce the coverage floor
+        # `tee` keeps the report for the summary below; the bash shell CI uses is
+        # `-eo pipefail`, so the threshold's exit code is still the step's.
+        run: npm run test:coverage 2>&1 | tee coverage.txt
+      - name: Publish the coverage report to the run summary
+        if: always()
+        run: |
+          {
+            echo '### Coverage'
+            echo '```'
+            sed -n '/start of coverage report/,/end of coverage report/p' coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fledge-dist
+          path: dist
+          retention-days: 7
+
+  # Build, scan, then run: a build that passes is not an image that starts, and
+  # an image that starts is not one without a known high-severity package.
+  docker:
+    name: docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: docker build -t fledge:ci .
+      # Threshold: HIGH and CRITICAL, exit-code 1, unfixed findings ignored so a
+      # base-image CVE nobody can patch does not brick every pull request. An
+      # exception goes in .trivyignore.yaml, one entry with an expiry, never a
+      # severity downgrade.
+      #
+      # `skip-dirs` narrows the scan to what this repository ships. The npm CLI in
+      # the base image vendors its own dependency tree under
+      # usr/local/lib/node_modules/npm; nothing at runtime executes it (the
+      # container runs `node dist/index.js`) and no change here can patch it —
+      # those versions move only when the node image moves. Scanning it reported
+      # ten HIGH advisories in npm's bundled brace-expansion, pacote and sigstore
+      # that this repository cannot fix, which would keep the gate red forever and
+      # teach everyone to ignore it. Everything else stays in scope: OS packages
+      # and /app/node_modules.
+      - name: Scan the image for known vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: fledge:ci
+          format: table
+          exit-code: '1'
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+          skip-dirs: usr/local/lib/node_modules/npm
+          trivyignores: .trivyignore.yaml
+      - name: Run the image and assert /healthz
+        run: |
+          set -euo pipefail
+          # The image runs with NODE_ENV=production, so src/config.ts refuses to
+          # start without these. Generate every one of them per run: a committed
+          # fixture would be a secret, and a real OAuth pair would be a credential
+          # this job has no business holding. `ALLOW_TOKEN_LOGIN_ONLY` is the
+          # documented way to run without an OAuth app; the runner stays on its
+          # default `mock` mode and mail on its default `console` transport, so no
+          # outbound call or SMTP account is involved.
+          random() { node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('$1'))"; }
+          docker run -d --name fledge-smoke \
+            -e SESSION_SECRET="$(random hex)" \
+            -e TOKEN_ENCRYPTION_KEY="$(random base64)" \
+            -e METRICS_TOKEN="$(random hex)" \
+            -e ALLOW_TOKEN_LOGIN_ONLY=true \
+            -e DATA_DIR=/data \
+            -e PORT=8080 \
+            -p 18080:8080 \
+            fledge:ci
+          cleaned=0
+          cleanup() {
+            if [ "$cleaned" = 0 ]; then docker rm -f fledge-smoke >/dev/null 2>&1 || true; fi
+          }
+          trap cleanup EXIT
+          started=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/healthz -o /tmp/healthz.json; then started=1; break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' fledge-smoke 2>/dev/null)" = "false" ]; then break; fi
+            sleep 1
+          done
+          if [ "$started" = 0 ]; then
+            echo "::error::the image never answered /healthz"
+            docker logs fledge-smoke || true
+            exit 1
+          fi
+          ok="$(jq -r '.ok' /tmp/healthz.json)"
+          version="$(jq -r '.version // empty' /tmp/healthz.json)"
+          if [ "$ok" != "true" ]; then
+            echo "::error::/healthz did not answer ok=true: $(head -c 400 /tmp/healthz.json)"
+            exit 1
+          fi
+          if [ -z "$version" ]; then
+            echo "::error::/healthz carries no version: $(head -c 400 /tmp/healthz.json)"
+            exit 1
+          fi
+          echo "healthz ok, version ${version}"
+          docker rm -f fledge-smoke >/dev/null 2>&1 || true
+          cleaned=1
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # The published set first, so a runtime advisory is reported as one.
+      - run: npm audit --omit=dev --audit-level=high
+      # Then the whole graph: a development dependency runs its install scripts
+      # on this runner with this token, so "it is only a dev dependency" is not a
+      # perimeter.
+      - run: npm audit --audit-level=high
+
+  dependency-review:
+    name: dependency-review
+    # Reads the pull request's dependency diff, so it has nothing to compare on a
+    # push, a nightly or a manual run, and nothing of its own in a merge group.
+    # `ci-ok` allows `skipped` for this job on exactly those events
+    # (scripts/ci-ok.mjs SKIPPABLE_ON).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: high
+
+  changelog:
+    name: changelog
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: node scripts/changelog.mjs check
+
+  version:
+    name: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: node scripts/version.mjs check
+
+  risk:
+    name: risk
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Pick the base
+        id: base
+        # The choice lives in scripts/lib/risk.mjs (chooseBase) so that
+        # merge_group measures against its base sha instead of HEAD~1, and so
+        # test/riskBase.test.ts covers it. The step fetches what it needs.
+        run: echo "ref=$(node scripts/risk-gate.mjs --print-base)" >> "$GITHUB_OUTPUT"
+      # The branch and the title are the mechanical-release key (#80): only a PR
+      # whose head is release/vX.Y.Z and whose title is exactly "release: vX.Y.Z"
+      # is classified as the mechanical class. A PR that merely touches the same
+      # five files keeps its computed T3 and the PASS that comes with it.
+      - name: Compute the tier
+        env:
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_REF: ${{ steps.base.outputs.ref }}
+        run: node scripts/risk-gate.mjs --base "$BASE_REF" --branch "$PR_BRANCH" --title "$PR_TITLE"
+
+  restore-drill:
+    name: restore-drill
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run db:restore-drill:ci
+
+  action-pins:
+    name: action-pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      # No `npm ci`: the checker is plain node and reads only the workflow files,
+      # so a floating tag fails before any dependency install can run.
+      - run: node scripts/action-pins.mjs
+
+  # actionlint reads the YAML, the expressions and the shell syntax. It has no
+  # taint analysis, so `${{ github.event.pull_request.title }}` inside `run:` is
+  # well-formed at every one of those levels and still executes the text whoever
+  # opened the pull request wrote. scripts/workflow-injection.mjs is that check.
+  workflow-lint:
+    name: workflow-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      # Plain node over the workflow files, so it runs in seconds and before any
+      # dependency install could be the thing that fails.
+      - name: Reject a workflow expression inside a shell script
+        run: node scripts/workflow-injection.mjs
+      - name: Lint the workflows
+        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
+        with:
+          # The action's own default is `version: latest`, so a pinned action would
+          # still download whatever actionlint is newest when it runs. Pin it.
+          version: '1.7.12'
+          # Four shellcheck findings predate this job and live in
+          # daily-release.yml, which the release work (#80) owns and this pull
+          # request may not edit: SC2010 and SC2126 at line 61, SC2016 at 84 and
+          # 138. actionlint's -ignore matches the message text, which does not
+          # carry the file name, so this silences exactly those three rule ids and
+          # nothing else — and today they fire nowhere but that file (checked by
+          # running actionlint 1.7.12 without the flag). One token per flag: the
+          # action splits `flags` on whitespace and keeps quotes literally, so a
+          # single quoted pattern with spaces does not reach actionlint. Remove
+          # these together with #80's fix to daily-release.yml.
+          flags: '-ignore SC2010 -ignore SC2126 -ignore SC2016'
+
+  # gitleaks runs as a checksum-pinned binary rather than an action: the action
+  # is licence-gated and chooses its own scan range, and this job has to prove a
+  # range. fetch-depth: 0 is the point — a secret committed on the branch and
+  # deleted before the head is in neither the head tree nor the pull request
+  # diff, and only the commit range still holds it.
+  secret-scan:
+    name: secret-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      GITLEAKS_VERSION: 8.28.0
+      GITLEAKS_SHA256: a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks (pinned version, verified checksum)
+        run: |
+          set -euo pipefail
+          archive="/tmp/gitleaks_${GITLEAKS_VERSION}.tar.gz"
+          curl -sSfL -o "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum -c -
+          tar xzf "$archive" -C /usr/local/bin gitleaks
+      - name: Scan the commit range
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            pull_request) range="${PR_BASE}..${PR_HEAD}" ;;
+            merge_group) range="${GROUP_BASE}..${GROUP_HEAD}" ;;
+            push)
+              # A new branch pushes forty zeroes as `before`; there is no range to
+              # scan, so the whole history is the range.
+              if [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+                range=""
+              else
+                range="${PUSH_BEFORE}..${PUSH_AFTER}"
+              fi
+              ;;
+            *) range="" ;;
+          esac
+          if [ -z "$range" ]; then
+            gitleaks git --config .gitleaks.toml --redact --verbose .
+          else
+            gitleaks git --config .gitleaks.toml --redact --verbose --log-opts="$range" .
+          fi
+
+  # #304: the analysis was not a required check. `analyze` lives in codeql.yml, so
+  # this file's aggregate could not see its conclusion and no required context
+  # named it — a pull request could add a high result and merge with every
+  # required check green. This job turns that conclusion into a required verdict.
+  #
+  # It reads the analysis this event's commit already has rather than starting
+  # one, and the commit is chosen per event in scripts/lib/codeql-required.mjs: a
+  # `merge_group` run reads the queued pull request head, because the synthetic
+  # merge commit is analyzed by nothing and waiting on it would block every queue
+  # entry. The wait for a slow analysis is bounded there too (ten minutes,
+  # twenty-second polls); failing on the first poll would turn a queued runner
+  # into a red required check.
+  codeql-required:
+    name: codeql-required
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # A job-level block replaces the workflow set, so both scopes are named.
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: The analysis for this commit must exist and be green
+        env:
+          # A step inherits no token; the lookup needs one, mapped the way
+          # review-gate.yml maps its own.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        # No `npm ci`: the script is plain node and reads only the API and the
+        # event payload, so a dependency install cannot be the thing that fails.
+        run: node scripts/codeql-required.mjs
+
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [lint, typecheck, test, coverage, build, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      # `skipped` is a failure here unless the job is named in SKIPPABLE_ON for
+      # this event, and a required job missing from `needs` fails too.
+      - name: Every required job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: node scripts/ci-ok.mjs
+
+  # #305: a red `main` used to be invisible. `ci-ok` computed the commit's
+  # health and stopped, no job held a write scope on issues, and the branch was
+  # noticed only by a person who went and looked. This is the one job allowed to write,
+  # and it writes one issue: create it, comment on it, or close it. Every
+  # decision is `scripts/lib/main-health.mjs`; the job only gathers the input.
+  #
+  # It is deliberately not in `ci-ok`'s `needs`: a reporter that fails must not
+  # be able to fail the merge gate as well.
+  #
+  # Its `needs` mirrors `ci-ok`'s so the tracker can name the jobs that actually
+  # failed. With only `ci-ok` in the list the reporter saw the aggregate and
+  # nothing else, and every tracker said "ci-ok did not report success".
+  main-health:
+    name: main-health
+    if: always() && github.ref == 'refs/heads/main'
+    needs: [ci-ok, lint, typecheck, test, coverage, build, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    # One red state, one reporter. `cancel-in-progress: false` is deliberate: a
+    # second push must not cancel the run between its read and its create.
+    concurrency:
+      group: ci-main-red
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Report the default branch's health
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS: ${{ toJSON(needs) }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: node scripts/main-health.mjs

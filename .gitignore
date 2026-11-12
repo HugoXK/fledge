@@ -1,0 +1,18 @@
+node_modules/
+# `node_modules/` matches a directory only; a symlink of that name needs its own
+# rule, or a committed link survives `npm ci` and leaves the tree dirty.
+node_modules
+dist/
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+coverage/
+*.bak
+npm-debug.log*
+SESSION_HANDOFF.md
+SESSION_HANDOFF*.md

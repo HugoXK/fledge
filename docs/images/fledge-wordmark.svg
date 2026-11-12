@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="170" viewBox="0 0 760 170" role="img" aria-label="Fledge 羽巢">
+  <rect width="760" height="170" rx="28" fill="#0a0c0f"/>
+  <rect x="1" y="1" width="758" height="168" rx="27" fill="none" stroke="#222b35"/>
+  <g transform="translate(42 34)">
+    <rect width="102" height="102" rx="24" fill="#b8f34a"/>
+    <path d="M30 24h48v13H45v15h27v12H45v27H30z" fill="#0a0c0f"/>
+    <path d="M62 24h16l20 13-20 13H62z" fill="#0a0c0f" opacity=".55"/>
+  </g>
+  <text x="180" y="88" fill="#e6edf3" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="54" font-weight="800" letter-spacing="2">FLEDGE</text>
+  <text x="184" y="122" fill="#8b98a5" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif" font-size="20" letter-spacing="8">羽 巢</text>
+  <text x="184" y="146" fill="#5d6b78" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" letter-spacing="1.5">HOSTED REPOSITORIES THAT GROW THEMSELVES</text>
+</svg>

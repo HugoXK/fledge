@@ -1,0 +1,47 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 3 * * 1'
+
+# Read-only at workflow scope. The upload needs `security-events: write`, and it
+# lives on the job: a workflow-level grant is inherited by every job added to
+# this file later, including one that only reads source.
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze JavaScript/TypeScript
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # #307: the gate names the accepted-severity results whose review thread is
+      # still open at the tip, and the thread list is only readable through
+      # GraphQL's `pullRequest.reviewThreads`. Read-only, and only this job.
+      pull-requests: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: javascript-typescript
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          # Keep the SARIF the gate below reads; uploads still happen by default.
+          output: codeql-results
+      # analyze exits 0 whether it found a sink or nothing at all, so the
+      # verdict is this step: fail on a high/critical result the recorded
+      # baseline does not already hold. It runs on a push to main too.
+      - name: Fail on a new high or critical CodeQL result
+        env:
+          # #307: the advisory reads this run's review threads, and a step inherits
+          # no token — `pull-requests: read` grants the permission, never the
+          # credential. Scoped to this step, like the other credentials here.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/codeql-gate.mjs --sarif codeql-results --baseline .github/agent/codeql-baseline.json

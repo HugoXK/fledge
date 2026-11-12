@@ -1,0 +1,66 @@
+groups:
+  - name: fledge-slo
+    rules:
+      - alert: FledgeJobSuccessRateLow
+        expr: |
+          (sum(rate(fledge_jobs_total{status=~"succeeded|failed"}[1h])) > 0)
+          and
+          (sum(rate(fledge_jobs_total{status="succeeded"}[1h]))
+           /
+           sum(rate(fledge_jobs_total{status=~"succeeded|failed"}[1h])) < 0.9)
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Fledge job success rate is below 90%
+          runbook_url: https://github.com/HugoXK/fledge/blob/main/docs/observability.md
+
+      - alert: FledgeQueueWaitHigh
+        expr: histogram_quantile(0.95, sum(rate(fledge_job_queue_seconds_bucket[1h])) by (le)) > 600
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Fledge p95 queue wait is above 10 minutes
+          runbook_url: https://github.com/HugoXK/fledge/blob/main/docs/observability.md
+
+      - alert: FledgeJobDurationHigh
+        expr: histogram_quantile(0.95, sum(rate(fledge_job_seconds_bucket[1h])) by (le)) > 1800
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Fledge p95 job duration is above 30 minutes
+          runbook_url: https://github.com/HugoXK/fledge/blob/main/docs/observability.md
+
+      - alert: FledgeBridgeFailureRate
+        expr: |
+          (sum(rate(fledge_bridge_requests_total[5m])) > 0)
+          and
+          (sum(rate(fledge_bridge_requests_total{status!~"2.."}[5m]))
+           /
+           sum(rate(fledge_bridge_requests_total[5m])) > 0.05)
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Fledge bridge failure rate is above 5%
+          runbook_url: https://github.com/HugoXK/fledge/blob/main/docs/observability.md
+
+      - alert: FledgeGitHubRateLimited
+        expr: sum(rate(fledge_github_requests_total{status="429"}[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Fledge is being rate limited by GitHub
+          runbook_url: https://github.com/HugoXK/fledge/blob/main/docs/observability.md
+
+      - alert: FledgeOperationalAlertsOpen
+        expr: fledge_ops_alerts_open > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Fledge has open operational alerts
+          runbook_url: https://github.com/HugoXK/fledge/blob/main/docs/observability.md

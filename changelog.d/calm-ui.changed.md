@@ -1,0 +1,1 @@
+The console reads more calmly and at a larger default size: one neutral page background and flat cards replace the layered gradients, a single accent carries interactive controls, table and meta text are larger, and the page padding scales with the viewport instead of jumping at a breakpoint.

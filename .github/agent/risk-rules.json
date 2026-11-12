@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "note": "The tier is computed from the diff. Labels are advisory mirrors, never a reason to skip a review. Editing this file is T3.",
+  "tiers": {
+    "T3": {
+      "meaning": "security, data, deploy, CI or protocol surface: a PASS at the tip and green ci-ok",
+      "paths": [
+        ".github/workflows/**",
+        ".github/agent/**",
+        ".github/CODEOWNERS",
+        ".github/dependabot.yml",
+        ".github/scripts/**",
+        "scripts/**",
+        "deploy/**",
+        "bridge/**",
+        "AGENTS.md",
+        "LESSONS.md",
+        "SECURITY.md",
+        "LICENSE",
+        "docs/code-standards.md",
+        "docs/autonomous-dev.md",
+        "package.json",
+        "package-lock.json",
+        "tsconfig*.json",
+        "Dockerfile",
+        "docker-compose.yml",
+        "src/config.ts",
+        "src/db.ts",
+        "src/auth/**",
+        "src/gateway/**",
+        "src/jobs/**",
+        "src/repos/**"
+      ],
+      "diffPatterns": [
+        "\\bchild_process\\b",
+        "\\beval\\(",
+        "new Function\\(",
+        "process\\.env\\.[A-Za-z_]*(TOKEN|KEY|SECRET)",
+        "\\.(only|skip)\\("
+      ]
+    },
+    "T2": {
+      "meaning": "app code: a PASS at the tip and green ci-ok",
+      "paths": [
+        "src/**"
+      ]
+    },
+    "T1": {
+      "meaning": "tests, public assets, templates: green ci-ok only",
+      "paths": [
+        "test/**",
+        "public/**",
+        ".github/ISSUE_TEMPLATE/**",
+        ".github/PULL_REQUEST_TEMPLATE.md",
+        "CODE_OF_CONDUCT.md",
+        "CONTRIBUTING.md"
+      ]
+    },
+    "T0": {
+      "meaning": "docs and changelog: green ci-ok only",
+      "paths": [
+        "docs/**",
+        "README.md",
+        "README.zh.md",
+        "CHANGELOG.md",
+        "changelog.d/**"
+      ]
+    }
+  },
+  "unknownPathTier": "T2",
+  "limits": {
+    "T0": {
+      "files": 20,
+      "lines": 400
+    },
+    "T1": {
+      "files": 25,
+      "lines": 500
+    },
+    "T2": {
+      "files": 20,
+      "lines": 400
+    },
+    "T3": {
+      "files": 40,
+      "lines": 1200
+    }
+  }
+}

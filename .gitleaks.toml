@@ -1,0 +1,16 @@
+# gitleaks configuration for this repository.
+#
+# The default rule set applies (`useDefault`): gitleaks adds the provider and
+# entropy rules that scripts/secret-scan.mjs does not model, and the two gates
+# are deliberately redundant — our scanner reads the tracked tree, gitleaks
+# reads the commit range, so one of them has to be wrong before a secret reaches
+# `main`.
+#
+# This file carries no allowlist today, and that is the intended state: the one
+# token-shaped fixture the repository had (test/crypto.test.ts) is assembled
+# from fragments at test time instead of being committed. If an allowlist entry
+# is ever needed, it names the exact literal, never a directory and never a
+# whole file — a `paths` entry in gitleaks suppresses every finding in that
+# file, so it would also suppress the next real token pasted into it.
+[extend]
+useDefault = true

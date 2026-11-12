@@ -1,0 +1,141 @@
+name: Review gate
+
+on:
+  pull_request:
+  pull_request_review:
+    types: [submitted]
+  merge_group:
+  issue_comment:
+    types: [created]
+
+# Default-deny for the whole workflow; each job narrows or widens only what it
+# needs below.
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+# The gate never checks out the pull request head: the policy comes from the base
+# ref, and the tier and the verdicts from the API. A pull request that stubs
+# scripts/review-gate.mjs must not be the thing that judges its own tip.
+#
+# Exactly one job is named `review-gate`, the required context. A skipped job still
+# publishes a check run under its name, so the comment path is a separate job whose
+# checks land on the default branch, and no job is skipped on the events that
+# publish `review-gate` for a pull request.
+
+jobs:
+  review-gate:
+    name: review-gate
+    # An issue_comment run has the default branch as its SHA, so its checks would
+    # land on main; the comment path below repaints the pull request head instead.
+    if: github.event_name != 'issue_comment'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.repository.default_branch }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Read the newest conclusion at the tip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/review-gate.mjs
+
+  # A verdict submitted as a review leaves the pre-PASS failed run sitting at the
+  # head SHA: that failed run stays the newest red at that SHA until it is re-run,
+  # so no T2/T3 pull request can merge without this step. `always()` because the
+  # gate job itself fails exactly when a rejection has just landed, which is a case
+  # that must be repainted too. The script decides what, if anything, to re-run.
+  review-gate-repair:
+    name: review-gate-repair
+    needs: review-gate
+    if: always() && github.event_name == 'pull_request_review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Repaint the head SHA when the verdict changed it
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/gate-repair.mjs --pr "${{ github.event.pull_request.number }}"
+
+  # A verdict posted as a comment starts no pull request workflow run at all, so a
+  # green `review-gate` could survive a later rejection. This job is the only thing
+  # that can repaint the head SHA in that case.
+  review-gate-comment:
+    name: review-gate-comment
+    # A verdict is only read from an owner, member or collaborator (the same
+    # associations `scripts/lib/review-gate.mjs` filters), so a stranger's comment
+    # cannot start this `actions: write` job and paint someone else's tip red.
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      actions: write
+    steps:
+      - name: Only a verdict comment starts the gate
+        id: verdict
+        env:
+          BODY: ${{ github.event.comment.body }}
+        run: |
+          # The same shapes scripts/lib/review-gate.mjs reads: `Verdict: ...` or a
+          # `## Review — PASS` heading, on the first non-empty line, any case.
+          line=$(printf '%s' "$BODY" | awk 'NF { print; exit }')
+          if printf '%s' "$line" | grep -qiE '^(Verdict:[[:space:]]+(PASS|INC|REQUEST_CHANGES)[[:space:]]+at[[:space:]]|##[[:space:]]*Review[[:space:]]*(—|:|-)[[:space:]]*(PASS|FAIL|INC|REQUEST_CHANGES)\b)'; then
+            echo "match=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "match=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: steps.verdict.outputs.match == 'true'
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: steps.verdict.outputs.match == 'true'
+        with:
+          node-version: 22
+      - name: Repaint the head SHA when the verdict changed it
+        if: steps.verdict.outputs.match == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/gate-repair.mjs --pr "${{ github.event.issue.number }}"
+
+  pr-lint:
+    name: pr-lint
+    if: github.event_name != 'issue_comment'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.repository.default_branch }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Validate the pull request body and obligations
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/pr-lint.mjs

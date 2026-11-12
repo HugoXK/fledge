@@ -1,0 +1,214 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { GithubClient, prepareRepo } from '../src/repos/github.js'
+import { json, readBody, startFakeServer } from './helpers.js'
+
+interface FakeState {
+  forkExists: boolean
+  forkCreated: boolean
+  upstreamMaintain: boolean
+}
+
+function repoPayload(owner: string, name: string, options: { fork?: boolean; parent?: string; maintain?: boolean; admin?: boolean } = {}) {
+  return {
+    name,
+    full_name: `${owner}/${name}`,
+    default_branch: 'main',
+    private: false,
+    html_url: `https://github.com/${owner}/${name}`,
+    fork: options.fork === true,
+    parent: options.parent === undefined ? null : { full_name: options.parent },
+    owner: { login: owner },
+    permissions: { admin: options.admin === true, maintain: options.maintain === true, push: options.admin === true || options.maintain === true, pull: true },
+  }
+}
+
+function fakeGithub(state: FakeState) {
+  return startFakeServer(async (request, response) => {
+    const url = request.url ?? ''
+    if (request.method === 'GET' && url === '/user') {
+      json(response, 200, { login: 'HugoXK', id: 1 })
+      return
+    }
+    if (request.method === 'GET' && url === '/repos/openJiuwen-ai/DigitalMate') {
+      json(response, 200, repoPayload('openJiuwen-ai', 'DigitalMate', { maintain: state.upstreamMaintain }))
+      return
+    }
+    if (request.method === 'GET' && url === '/repos/openJiuwen-ai/Conflict') {
+      json(response, 200, repoPayload('openJiuwen-ai', 'Conflict'))
+      return
+    }
+    if (request.method === 'GET' && url === '/repos/HugoXK/DigitalMate') {
+      if (!state.forkExists) {
+        json(response, 404, { message: 'Not Found' })
+        return
+      }
+      json(response, 200, repoPayload('HugoXK', 'DigitalMate', { fork: true, parent: 'openJiuwen-ai/DigitalMate', admin: true }))
+      return
+    }
+    if (request.method === 'GET' && url === '/repos/HugoXK/Conflict') {
+      json(response, 200, repoPayload('HugoXK', 'Conflict', { admin: true }))
+      return
+    }
+    if (request.method === 'GET' && url === '/repos/HugoXK/OwnRepo') {
+      json(response, 200, repoPayload('HugoXK', 'OwnRepo', { admin: true }))
+      return
+    }
+    if (request.method === 'POST' && url === '/repos/openJiuwen-ai/DigitalMate/forks') {
+      await readBody(request)
+      state.forkExists = true
+      state.forkCreated = true
+      json(response, 202, repoPayload('HugoXK', 'DigitalMate', { fork: true, parent: 'openJiuwen-ai/DigitalMate', admin: true }))
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+}
+
+test('prepareRepo uses the upstream directly when the token user owns it', async () => {
+  const state: FakeState = { forkExists: false, forkCreated: false, upstreamMaintain: false }
+  const github = await fakeGithub(state)
+  try {
+    const prepared = await prepareRepo('token', 'HugoXK', 'OwnRepo', 'HugoXK', github.url)
+    assert.equal(prepared.isFork, false)
+    assert.equal(prepared.forkCreated, false)
+    assert.equal(prepared.fork.fullName, 'HugoXK/OwnRepo')
+    assert.equal(prepared.permission, 'admin')
+    assert.equal(prepared.canReview, true)
+  } finally {
+    await github.close()
+  }
+})
+
+test('prepareRepo uses an existing fork and enables review only with upstream permission', async () => {
+  const state: FakeState = { forkExists: true, forkCreated: false, upstreamMaintain: false }
+  const github = await fakeGithub(state)
+  try {
+    const prepared = await prepareRepo('token', 'openJiuwen-ai', 'DigitalMate', 'HugoXK', github.url)
+    assert.equal(prepared.isFork, true)
+    assert.equal(prepared.forkCreated, false)
+    assert.equal(prepared.fork.fullName, 'HugoXK/DigitalMate')
+    assert.equal(prepared.permission, 'read')
+    assert.equal(prepared.canReview, false)
+    assert.equal(prepared.canCreateIssue, true)
+  } finally {
+    await github.close()
+  }
+})
+
+test('prepareRepo creates a missing fork and then uses it', async () => {
+  const state: FakeState = { forkExists: false, forkCreated: false, upstreamMaintain: true }
+  const github = await fakeGithub(state)
+  try {
+    const prepared = await prepareRepo('token', 'openJiuwen-ai', 'DigitalMate', 'HugoXK', github.url)
+    assert.equal(prepared.isFork, true)
+    assert.equal(prepared.forkCreated, true)
+    assert.equal(state.forkCreated, true)
+    assert.equal(prepared.fork.fullName, 'HugoXK/DigitalMate')
+    assert.equal(prepared.canReview, true)
+  } finally {
+    await github.close()
+  }
+})
+
+test('prepareRepo rejects a same-name repository that is not a fork of the upstream', async () => {
+  const state: FakeState = { forkExists: false, forkCreated: false, upstreamMaintain: false }
+  const github = await fakeGithub(state)
+  try {
+    await assert.rejects(
+      prepareRepo('token', 'openJiuwen-ai', 'Conflict', 'HugoXK', github.url),
+      /不是 .* 的 fork/,
+    )
+  } finally {
+    await github.close()
+  }
+})
+
+test('prepareRepo rejects a token that belongs to another GitHub user', async () => {
+  const state: FakeState = { forkExists: false, forkCreated: false, upstreamMaintain: false }
+  const github = await fakeGithub(state)
+  try {
+    await assert.rejects(
+      prepareRepo('token', 'HugoXK', 'OwnRepo', 'SomeoneElse', github.url),
+      /属于 @HugoXK/,
+    )
+  } finally {
+    await github.close()
+  }
+})
+
+test('GithubClient retries a rate-limited read', async () => {
+  let hits = 0
+  const github = await startFakeServer((request, response) => {
+    if (request.url === '/user') {
+      json(response, 200, { login: 'HugoXK', id: 1 })
+      return
+    }
+    if (request.url === '/repos/HugoXK/RetryRepo') {
+      hits += 1
+      if (hits === 1) {
+        json(response, 429, { message: 'rate limit' }, { 'retry-after': '0' })
+        return
+      }
+      json(response, 200, repoPayload('HugoXK', 'RetryRepo', { admin: true }))
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  try {
+    const prepared = await prepareRepo('token', 'HugoXK', 'RetryRepo', 'HugoXK', github.url)
+    assert.equal(prepared.permission, 'admin')
+    assert.equal(hits, 2)
+  } finally {
+    await github.close()
+  }
+})
+
+test('an open pull request body is capped but keeps both of its ends', async () => {
+  // #113 review at 6cd761d: a body at the GitHub cap is scanned once per open
+  // pull request, so only a bounded part of it can be matched. The reference a
+  // duplicate is found by sits at the top or the bottom of a long description,
+  // so the cap keeps both ends instead of truncating the tail away.
+  const body = `${'x'.repeat(20_000)}\nFixes #42`
+  const github = await startFakeServer((request, response) => {
+    if ((request.url ?? '').startsWith('/repos/o/dup/pulls?state=open')) {
+      json(response, 200, [
+        { number: 7, html_url: 'https://github.com/o/dup/pull/7', title: 'Fix it', body, head: { ref: 'fix' }, base: { ref: 'main' } },
+      ])
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  try {
+    const client = new GithubClient('token', github.url)
+    const [pull] = await client.listOpenPullRequests('o', 'dup')
+    assert.equal(pull?.number, 7)
+    assert.ok((pull?.body.length ?? 0) <= 8_001, `body is ${pull?.body.length} chars, over the cap`)
+    assert.match(pull?.body ?? '', /Fixes #42$/, 'the tail of a long body still carries its reference')
+  } finally {
+    await github.close()
+  }
+})
+
+test('an already-fixed read keeps the merged pull requests and drops the closed ones', async () => {
+  // #174: `already-fixed` must mean "this landed", so a pull request that was
+  // closed without merging is not evidence and must not be offered as one.
+  const github = await startFakeServer((request, response) => {
+    if ((request.url ?? '').startsWith('/repos/o/dup/pulls?state=closed')) {
+      json(response, 200, [
+        { number: 7, html_url: 'https://github.com/o/dup/pull/7', title: 'Fix #42', body: 'Fixes #42', head: { ref: 'fix' }, base: { ref: 'main' }, merged_at: '2026-11-09T10:00:00Z', merge_commit_sha: 'merge-sha-7' },
+        { number: 8, html_url: 'https://github.com/o/dup/pull/8', title: 'Abandoned #42', body: 'Fixes #42', head: { ref: 'gone' }, base: { ref: 'main' }, merged_at: null, merge_commit_sha: null },
+      ])
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  try {
+    const client = new GithubClient('token', github.url)
+    const merged = await client.listMergedPullRequests('o', 'dup')
+    assert.deepEqual(merged.map((pull) => pull.number), [7], 'a closed pull request was reported as merged')
+    assert.equal(merged[0]?.mergeCommitSha, 'merge-sha-7', 'the merge commit is the evidence and was dropped')
+  } finally {
+    await github.close()
+  }
+})

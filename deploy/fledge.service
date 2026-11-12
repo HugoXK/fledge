@@ -1,0 +1,24 @@
+[Unit]
+Description=Fledge — hosted repositories that grow themselves
+Documentation=https://github.com/HugoXK/fledge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fledge
+Group=fledge
+WorkingDirectory=/opt/fledge
+EnvironmentFile=/etc/fledge/fledge.env
+ExecStart=/usr/bin/node dist/index.js
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/fledge
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
