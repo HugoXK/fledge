@@ -276,7 +276,11 @@ p { margin: 0 0 12px; }
 }
 .top-inner {
   max-width: var(--content); margin: 0 auto; min-height: 66px;
-  padding: 0 var(--page-pad); display: flex; align-items: center; gap: 16px 22px; flex-wrap: wrap;
+  /* `viewport-fit=cover` moved the notch duty into this sheet (issue 451): every
+     side that can sit under the housing or a rounded corner keeps --page-pad
+     as its floor, and env() resolves to 0 on a device without a safe area. */
+  padding: 0 calc(var(--page-pad) + env(safe-area-inset-right)) 0 calc(var(--page-pad) + env(safe-area-inset-left));
+  display: flex; align-items: center; gap: 16px 22px; flex-wrap: wrap;
 }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 800; letter-spacing: -0.03em; white-space: nowrap; }
 .brand:hover { text-decoration: none; }
@@ -317,15 +321,17 @@ p { margin: 0 0 12px; }
 
 .wrap {
   max-width: var(--content); margin: 0 auto;
-  padding: var(--section-gap) var(--page-pad) 80px;
-  padding-bottom: max(80px, env(safe-area-inset-bottom));
+  /* One shorthand per band with the insets inside it. The old separate
+     `padding-bottom` lost to this breakpoint's shorthand at the same
+     specificity, so below 961px no width ever applied it (issue 451). */
+  padding: var(--section-gap) calc(var(--page-pad) + env(safe-area-inset-right)) calc(80px + env(safe-area-inset-bottom)) calc(var(--page-pad) + env(safe-area-inset-left));
   min-height: calc(100vh - 220px);
   min-height: calc(100dvh - 220px);
 }
 .foot {
   display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap;
   max-width: var(--content); margin: 0 auto; color: var(--muted-2); font-size: 12px;
-  padding: 28px var(--page-pad) 52px; border-top: 1px solid var(--line);
+  padding: 28px calc(var(--page-pad) + env(safe-area-inset-right)) calc(52px + env(safe-area-inset-bottom)) calc(var(--page-pad) + env(safe-area-inset-left)); border-top: 1px solid var(--line);
 }
 .foot-links { display: flex; gap: 16px; flex-wrap: wrap; }
 .foot a { color: var(--muted-2); }
@@ -763,7 +769,7 @@ a.list-row:hover strong { color: var(--accent); }
      re-declares it with the phone's tighter padding, and #133's fixed-row
      reasoning is why both bands promise one height in either locale. */
   :root { --header-h: 90px; }
-  .top-inner { height: 64px; min-height: 0; flex-wrap: nowrap; padding: 0 16px; gap: 10px; }
+  .top-inner { height: 64px; min-height: 0; flex-wrap: nowrap; padding: 0 calc(16px + env(safe-area-inset-right)) 0 calc(16px + env(safe-area-inset-left)); gap: 10px; }
   .brand { margin-right: auto; }
   .brand small { display: none; }
   .spacer { display: none; }
@@ -780,7 +786,7 @@ a.list-row:hover strong { color: var(--accent); }
   .top .nav {
     display: none; position: absolute; top: 100%; left: 0; right: 0;
     order: initial; width: 100%; flex-direction: column; gap: 0;
-    padding: 4px 16px 8px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    padding: 4px calc(16px + env(safe-area-inset-right)) 8px calc(16px + env(safe-area-inset-left)); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
     background: var(--panel); box-shadow: var(--shadow);
   }
   .top[data-nav-open="true"] .nav { display: flex; }
@@ -788,11 +794,11 @@ a.list-row:hover strong { color: var(--accent); }
      tablet reaches every destination with a finger, not only with a cursor. */
   .top .nav a { padding: 0; min-height: var(--touch); border-bottom: 1px solid var(--row-line); }
   .top .nav a:last-child { border-bottom: 0; }
-  .wrap { padding: 28px 16px 72px; }
+  .wrap { padding: 28px calc(16px + env(safe-area-inset-right)) calc(72px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
   .quota-card { flex-direction: column; align-items: flex-start; gap: 14px; }
   .meter { width: 100%; max-width: none; }
   .grid3 { grid-template-columns: 1fr; }
-  .foot { padding: 24px 16px 44px; }
+  .foot { padding: 24px calc(16px + env(safe-area-inset-right)) calc(44px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
 }
 
 @media (max-width: 640px) {
@@ -816,7 +822,7 @@ a.list-row:hover strong { color: var(--accent); }
      header for the tablet band (#233); this block re-declares it with the
      phone's tighter padding and without the account pill. */
   :root { --header-h: 90px; }
-  .top-inner { height: 64px; min-height: 0; flex-wrap: nowrap; padding: 0 12px; gap: 10px; }
+  .top-inner { height: 64px; min-height: 0; flex-wrap: nowrap; padding: 0 calc(12px + env(safe-area-inset-right)) 0 calc(12px + env(safe-area-inset-left)); gap: 10px; }
   .brand small { display: none; }
   .account .pill { display: none; }
   .nav-toggle {
@@ -831,7 +837,7 @@ a.list-row:hover strong { color: var(--accent); }
   .top .nav {
     display: none; position: absolute; top: 100%; left: 0; right: 0;
     order: initial; width: 100%; flex-direction: column; gap: 0;
-    padding: 4px 16px 8px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    padding: 4px calc(16px + env(safe-area-inset-right)) 8px calc(16px + env(safe-area-inset-left)); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
     background: var(--panel); box-shadow: var(--shadow);
   }
   .top[data-nav-open="true"] .nav { display: flex; }
@@ -904,7 +910,7 @@ a.list-row:hover strong { color: var(--accent); }
      the mark keeps the brand, the toggle still names itself, the language
      switch keeps both targets and the account keeps its exit. #133 acceptance
      3's 44px floor is not touched here. */
-  .top-inner { padding: 0 10px; gap: 8px; }
+  .top-inner { padding: 0 calc(10px + env(safe-area-inset-right)) 0 calc(10px + env(safe-area-inset-left)); gap: 8px; }
   .brand > span:not(.mark) { display: none; }
 }
 
