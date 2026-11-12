@@ -1505,12 +1505,15 @@ export class Jobs {
       this.store.setSetting(key, nowIso())
       const item = job.work_item_id === null ? undefined : this.store.getWorkItem(job.work_item_id)
       // `merged` and `closed` are terminal: an item that already ended is not
-      // reopened by an expiry, it is only recorded.
-      if (item !== undefined && item.state !== 'merged' && item.state !== 'closed') {
+      // reopened by an expiry, it is only recorded. Nothing is notified for it
+      // either — the pass did not end that item, so "已过期关闭" would name a close
+      // it never performed (#408).
+      const terminal = item !== undefined && (item.state === 'merged' || item.state === 'closed')
+      if (item !== undefined && !terminal) {
         this.store.updateWorkItem(item.id, { state: 'closed', closed_reason: 'plan_expired' })
       }
       this.store.audit(job.user_id, 'job.plan_expired', `${job.id}: ${label} unapproved for ${this.config.plan.expiryDays} days${item === undefined ? '' : ` item=${item.id}`}`)
-      this.notifyPlan(job, `计划 ${job.id}（${label}）在 ${deadline} 前未获批准，已过期关闭；重新创建计划可以继续。`, 'plan.expired')
+      if (!terminal) this.notifyPlan(job, `计划 ${job.id}（${label}）在 ${deadline} 前未获批准，已过期关闭；重新创建计划可以继续。`, 'plan.expired')
       expired += 1
     }
     return expired

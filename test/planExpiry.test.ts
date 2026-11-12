@@ -248,3 +248,48 @@ test('the repository page names the expired reason and the pending deadline', as
     await built.close()
   }
 })
+
+// #408: `merged` and `closed` are terminal. The pass still records that the plan
+// expired — the settings key and the audit row are the record — but a user whose
+// work item already ended before the pass ran must not be told it was "已过期关闭".
+// The claim in that message is a close that never happened, and on the first tick
+// after a deploy every historical unapproved plan older than the window fires one.
+test('an expired plan whose work item already ended records the expiry and tells nobody', async () => {
+  const config = planConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, silentRunner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'plan-terminal-user', status: 'approved' })
+
+    const mergedRepo = expiryRepo(store, user, 'repo_plan_merged')
+    const merged = planJob(store, { id: 'job_plan_merged', repoId: mergedRepo.id, userId: user.id, finishedAgoMs: 8 * DAY })
+    const mergedItem = store.createWorkItem({ id: 'wi_plan_merged', repoId: mergedRepo.id, userId: user.id, title: 'already merged', state: 'merged', jobId: merged.id })
+    linkPlanItem(store, merged, mergedItem.id)
+
+    const closedRepo = expiryRepo(store, user, 'repo_plan_closed')
+    const closed = planJob(store, { id: 'job_plan_closed', repoId: closedRepo.id, userId: user.id, finishedAgoMs: 8 * DAY })
+    const closedItem = store.createWorkItem({ id: 'wi_plan_closed', repoId: closedRepo.id, userId: user.id, title: 'already closed', state: 'closed', closedReason: 'manual', jobId: closed.id })
+    linkPlanItem(store, closed, closedItem.id)
+
+    assert.equal(await jobs.expirePlans(), 2, 'both plans are past the window and both are recorded')
+
+    // The terminal states are untouched: an expiry does not rewrite an ending.
+    assert.equal(store.getWorkItem(mergedItem.id)!.state, 'merged')
+    assert.equal(store.getWorkItem(mergedItem.id)!.closed_reason, null)
+    assert.equal(store.getWorkItem(closedItem.id)!.state, 'closed')
+    assert.equal(store.getWorkItem(closedItem.id)!.closed_reason, 'manual')
+
+    const claimed = store.listNotifications(user.id, 50).filter((row) => row.message.includes('已过期关闭'))
+    assert.deepEqual(claimed.map((row) => row.message), [], 'the pass told the user about a close it did not perform')
+
+    // The record still exists, so no later tick tries again and nothing is lost.
+    assert.notEqual(store.getSetting(`plan_expired:${merged.id}`), undefined)
+    assert.notEqual(store.getSetting(`plan_expired:${closed.id}`), undefined)
+    assert.equal(store.listAudit(100).filter((row) => row.action === 'job.plan_expired').length, 2)
+
+    await jobs.tick()
+    assert.deepEqual(store.listNotifications(user.id, 50).filter((row) => row.message.includes('已过期关闭')), [])
+  } finally {
+    store.close()
+  }
+})
