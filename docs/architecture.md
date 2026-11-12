@@ -280,6 +280,13 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   link.
 - Streaming is passed through; `stream_options.include_usage` is added so the
   final usage chunk can be metered.
+- A repository that selected several models falls back on a transient refusal:
+  the `is_default` model first, then the rest in the selection query's order
+  (`ORDER BY mp.created_at ASC, pm.created_at ASC`, `src/db.ts`), the same order
+  the per-instance picker walks; there is no order column. The job row records
+  the model that answered and the attempts of the **last chat call** —
+  `recordModel` rewrites `jobs.model_json` on every call — so an earlier
+  fallback is not retained across calls.
 
 The operator chooses the upstream through `PLATFORM_LLM_BASE_URL`; keep the
 real endpoint and key out of git and out of public documentation.

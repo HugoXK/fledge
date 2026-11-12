@@ -147,7 +147,10 @@ When a chat call to the primary is refused **transiently** — `429` rate limit,
 retired — the gateway retries the same request on the next model in that order
 and answers with the first success. The job finishes once, on one model, and its
 row records which model replied plus the models it fell through (`jobs.model_json`).
-The job page and the pull-request automation comment name that model.
+The record is per **chat call**, not per job: every call a job makes rewrites it,
+so a fallback that happened in an earlier call is not retained once a later call
+answers on the primary. The job page and the pull-request automation comment name
+the model of that last call.
 
 It never falls back on:
 

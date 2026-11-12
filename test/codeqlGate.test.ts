@@ -109,15 +109,18 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // #251 moved these five route registrations: one import line at `:40` and
   // five lines inside the webhook path. The pins move with the baseline in the
   // same commit, which is what keeps "refreshed" from becoming "silently
-  // re-labelled".
+  // re-labelled". #358 moved the two gateway registrations the same way: two
+  // import lines and the `readAnswer` helper above them, 19 lines in total, with
+  // no new route and no change to the limiter call that opens each handler. The
+  // alerts (#41, #42, both dismissed false positive) are the same two.
   assert.deepEqual([...keys].sort(), [
     'js/missing-rate-limiting|src/app.ts|2957',
     'js/missing-rate-limiting|src/app.ts|469',
     'js/missing-rate-limiting|src/app.ts|504',
     'js/missing-rate-limiting|src/app.ts|514',
     'js/missing-rate-limiting|src/app.ts|524',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|125',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|150',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|144',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|169',
   ])
   const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
   assert.equal(dismissed.length, 3, 'the three dismissed false-positive results are recorded with their reason')
