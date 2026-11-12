@@ -62,3 +62,15 @@ export interface MainHealthDecision {
 }
 
 export declare function decision(input?: MainHealthInput): MainHealthDecision
+
+// One `gh` call: the caller's argv in, the command's stdout out.
+export type GhRunner = (args: string[]) => string
+
+export declare function labelListArgs(): string[]
+export declare function labelCreateArgs(label?: string): string[]
+export declare function issueListArgs(): string[]
+export declare function issueCreateArgs(issue?: Partial<IssuePayload>): string[]
+export declare function issueCommentArgs(number: string | number, body: string): string[]
+export declare function issueCloseArgs(number: string | number, body: string): string[]
+
+export declare function apply(result: MainHealthDecision, run: GhRunner): Promise<string>

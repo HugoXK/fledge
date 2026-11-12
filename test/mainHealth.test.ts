@@ -1,9 +1,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { decision, MAIN_REF, RED_LABEL, RED_TITLE } from '../scripts/lib/main-health.mjs'
+import {
+  decision,
+  MAIN_REF,
+  RED_LABEL,
+  RED_LABEL_COLOR,
+  RED_LABEL_DESCRIPTION,
+  RED_TITLE,
+} from '../scripts/lib/main-health.mjs'
 import * as health from '../scripts/lib/main-health.mjs'
 
 // #305: a red `main` was invisible. `ci-ok` computed the commit's health and
@@ -243,10 +252,11 @@ test('the reporter serialises per red state and searches by label', () => {
   assert.match(block, /group: ci-main-red/, 'one concurrency group keeps two pushes from both creating')
   assert.match(block, /cancel-in-progress: false/, 'a second push must not cancel the first reporter mid-create')
   assert.match(block, /node scripts\/main-health\.mjs/)
-  const runner = read('scripts/main-health.mjs')
-  assert.match(runner, /'--label'[^\n]*RED_LABEL/, 'the search must pass the label constant: a human can edit a title')
-  assert.match(runner, /'issue', 'list'/, 'the tracker lookup is a label listing, not a text search')
-  assert.doesNotMatch(runner, /'--search'/, 'searching by title would open a duplicate after a rename')
+  // #343 moved every argument list into the lib, so the shape is pinned there now.
+  const lib = read('scripts/lib/main-health.mjs')
+  assert.match(lib, /'--label'[^\n]*RED_LABEL/, 'the search must pass the label constant: a human can edit a title')
+  assert.match(lib, /'issue', 'list'/, 'the tracker lookup is a label listing, not a text search')
+  assert.doesNotMatch(lib, /'--search'/, 'searching by title would open a duplicate after a rename')
 })
 
 test('every action in the reporter is pinned to a full commit sha', () => {
@@ -280,13 +290,157 @@ test('the reporter depends on the jobs it must name, not only the aggregate', ()
   assert.ok(reporter.includes('ci-ok'), 'the aggregate result still decides green or red')
 })
 
-test('the runner bootstraps the label before it lists or creates', () => {
+// --- #343: the label bootstrap belongs to the create path -------------------
+//
+// `main()` bootstrapped `ci:main-red` before it even asked what the run decided,
+// so a green `main` — the common case — spent a `gh label create` on a label it
+// would never use, and a refused create failed a run that had nothing to report.
+// The bootstrap moves onto the create path, and every `gh` argument list moves
+// into the lib so a case here can pin it: while `apply()` built its own arrays,
+// mutating `'comment'` to `'coment'` changed nothing this file could see.
+
+const GH_STUB = `#!/bin/sh
+{
+  for argument in "$@"; do printf '%s|' "$argument"; done
+  printf '\\n'
+} >> "$GH_LOG"
+if [ "$1" = "issue" ] && [ "$2" = "list" ]; then printf '%s\\n' "$GH_LIST_JSON"; fi
+`
+
+function runReporter(env: Record<string, string>) {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-main-health-'))
+  const bin = join(dir, 'gh')
+  const log = join(dir, 'gh.log')
+  writeFileSync(bin, GH_STUB, { mode: 0o755 })
+  writeFileSync(log, '')
+  try {
+    const result = spawnSync(process.execPath, ['scripts/main-health.mjs'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH ?? ''}`,
+        GH_LOG: log,
+        GH_LIST_JSON: '[]',
+        ...env,
+      },
+    })
+    const calls = readFileSync(log, 'utf8')
+      .split('\n')
+      .filter((line) => line !== '')
+      .map((line) => line.split('|').slice(0, -1))
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr, calls }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+const GREEN_RUN = {
+  NEEDS: JSON.stringify({ 'ci-ok': { result: 'success' } }),
+  GITHUB_EVENT_NAME: 'push',
+  GITHUB_REF: MAIN_REF,
+  GITHUB_SHA: CLEARING_SHA,
+  GITHUB_REPOSITORY: 'HugoXK/fledge',
+  GITHUB_SERVER_URL: 'https://github.com',
+  GITHUB_RUN_ID: '1',
+}
+
+test('a green main performs no label write and no label read', () => {
+  const run = runReporter(GREEN_RUN)
+  assert.equal(run.status, 0, run.stderr)
+  assert.deepEqual(
+    run.calls,
+    [['issue', 'list', '--label', RED_LABEL, '--state', 'open', '--json', 'number,title,createdAt', '--limit', '100']],
+    'a green run reads the trackers once; it must not list or create the label',
+  )
+  assert.match(run.stdout, /nothing to report/)
+})
+
+test('neither a green decision nor a close touches the tracker label', async () => {
+  const green: string[][] = []
+  const noneOutput = await health.apply({ action: 'none', reason: 'main is green' }, (args: string[]) => {
+    green.push(args)
+    return ''
+  })
+  assert.deepEqual(green, [], 'a decision with no action has nothing to write')
+  assert.match(noneOutput, /nothing to report/)
+
+  const closing: string[][] = []
+  await health.apply(
+    { action: 'close', reason: 'ci-ok is green again', tracker: { number: 7, title: 'renamed by a human' }, body: 'cleared by cccccccccccc' },
+    (args: string[]) => {
+      closing.push(args)
+      return ''
+    },
+  )
+  assert.deepEqual(closing, [health.issueCloseArgs('7', 'cleared by cccccccccccc')])
+  assert.equal(closing.some((args) => args[0] === 'label'), false, 'closing a tracker is not a label write')
+})
+
+test('the create path bootstraps the label before it opens the issue', async () => {
+  const issue = { title: RED_TITLE, labels: [RED_LABEL], body: 'a red main' }
+  const calls: string[][] = []
+  const output = await health.apply({ action: 'create', reason: 'ci-ok failed', issue }, (args: string[]) => {
+    calls.push(args)
+    return args[0] === 'label' && args[1] === 'list' ? '[]' : 'https://github.com/HugoXK/fledge/issues/9'
+  })
+  assert.deepEqual(
+    calls,
+    [health.labelListArgs(), health.labelCreateArgs(RED_LABEL), health.issueCreateArgs(issue)],
+    'the label has to exist before the create that names it, and only the create path pays for it',
+  )
+  assert.match(output, /created the ci:main-red label/)
+  assert.match(output, /opened https:\/\/github\.com\/HugoXK\/fledge\/issues\/9/)
+})
+
+test('an existing tracker label is not created again on the create path', async () => {
+  const calls: string[][] = []
+  await health.apply({ action: 'create', reason: 'ci-ok failed', issue: { title: RED_TITLE, labels: [RED_LABEL], body: 'b' } }, (args: string[]) => {
+    calls.push(args)
+    return args[0] === 'label' && args[1] === 'list' ? `[{"name":"${RED_LABEL}"}]` : 'https://github.com/HugoXK/fledge/issues/9'
+  })
+  assert.deepEqual(calls, [health.labelListArgs(), health.issueCreateArgs({ title: RED_TITLE, labels: [RED_LABEL], body: 'b' })])
+})
+
+test('every gh argument list is exact', () => {
+  assert.deepEqual(health.labelListArgs(), ['label', 'list', '--json', 'name', '--limit', '100'])
+  assert.deepEqual(health.labelCreateArgs(RED_LABEL), [
+    'label',
+    'create',
+    RED_LABEL,
+    '--color',
+    RED_LABEL_COLOR,
+    '--description',
+    RED_LABEL_DESCRIPTION,
+  ])
+  assert.deepEqual(health.issueListArgs(), [
+    'issue',
+    'list',
+    '--label',
+    RED_LABEL,
+    '--state',
+    'open',
+    '--json',
+    'number,title,createdAt',
+    '--limit',
+    '100',
+  ])
+  const issue = { title: RED_TITLE, labels: [RED_LABEL], body: 'b' }
+  assert.deepEqual(health.issueCreateArgs(issue), ['issue', 'create', '--title', RED_TITLE, '--label', RED_LABEL, '--body', 'b'])
+  // The verb is the assertion: mutating 'comment' to 'coment' inside an inline
+  // apply() body used to pass every case in this file.
+  assert.deepEqual(health.issueCommentArgs('7', 'b'), ['issue', 'comment', '7', '--body', 'b'])
+  assert.deepEqual(health.issueCloseArgs('7', 'b'), ['issue', 'close', '7', '--comment', 'b'])
+})
+
+test('the runner wires the default runner and builds no argument list itself', () => {
   const runner = read('scripts/main-health.mjs')
-  const bootstrap = runner.indexOf('ensureTrackerLabel(')
-  const list = runner.indexOf("'issue', 'list'")
-  const create = runner.indexOf("'issue', 'create'")
-  assert.ok(bootstrap !== -1, 'the runner must ensure the tracker label exists')
-  assert.ok(list !== -1 && create !== -1)
-  assert.ok(bootstrap < list, 'the label must exist before the tracker lookup')
-  assert.ok(bootstrap < create, 'the label must exist before the create that names it')
+  assert.match(runner, /apply\(result, gh\)/, 'the runner passes the real gh as the default runner')
+  for (const verb of ["'issue', 'list'", "'issue', 'create'", "'issue', 'comment'", "'issue', 'close'", "'label', 'list'", "'label', 'create'"]) {
+    assert.equal(runner.includes(verb), false, `${verb} belongs to scripts/lib/main-health.mjs, not the runner`)
+  }
+  const lib = read('scripts/lib/main-health.mjs')
+  for (const verb of ["'issue', 'list'", "'issue', 'create'", "'issue', 'comment'", "'issue', 'close'", "'label', 'list'", "'label', 'create'"]) {
+    assert.ok(lib.includes(verb), `${verb} must be pinned by the builders in the lib`)
+  }
 })

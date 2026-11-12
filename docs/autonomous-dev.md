@@ -224,14 +224,18 @@ and depends on every job `ci-ok` gates on as well as on `ci-ok` itself, so the
 tracker can name the jobs that actually failed rather than only the aggregate. It
 opens a single issue labelled `ci:main-red` naming the head sha, the failing jobs
 and the run, comments on that issue while the branch stays red, and closes it with
-the clearing sha once `ci-ok` is green. Before the first use the reporter creates
-the `ci:main-red` label itself (`gh label create`; present is a no-op), because
-`gh issue create --label <unknown>` is rejected before the issue exists, and a
-label it cannot create is a named failure in the job log. The tracker is found by
+the clearing sha once `ci-ok` is green. When it opens that first issue the
+reporter creates the `ci:main-red` label itself (`gh label create`; present is a
+no-op), because `gh issue create --label <unknown>` is rejected before the issue
+exists, and a label it cannot create is a named failure in the job log. The
+bootstrap sits on the create path only: a run that decides nothing writes
+nothing, so a green `main` never touches the label. The tracker is found by
 the label, never by its title, and `concurrency: ci-main-red` with
 `cancel-in-progress: false` stops two pushes in one red state from opening two
-issues. The decision is `scripts/lib/main-health.mjs` (pure, fixture-tested);
-`scripts/main-health.mjs` only applies it. A pull request or merge-queue ref can
+issues. The decision is `scripts/lib/main-health.mjs` (pure, fixture-tested), and
+so is the write half: `apply(result, runner)` and the `gh` argument builders live
+there, so a suite pins the exact calls; `scripts/main-health.mjs` only gathers the
+run's input and passes `gh` in as the runner. A pull request or merge-queue ref can
 never reach the write: the job's condition and the module both refuse anything
 but `refs/heads/main`.
 
