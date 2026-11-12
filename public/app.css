@@ -1020,3 +1020,21 @@ html:not([data-js]) .info-tip:hover::after, html:not([data-js]) .info-tip:focus:
 .confirm-dialog h2 { margin-bottom: 10px; }
 .confirm-dialog p { color: var(--muted); }
 .confirm-dialog .row { justify-content: flex-end; margin-top: 18px; }
+
+/* Chinese typography (#474). Latin tracking tightens a Latin heading. A Chinese
+   heading is square and already carries its own side bearing, so the same
+   negative tracking sets it as a solid block, and the Latin-first stack sets one
+   bilingual line in two faces. Both are locale defects, so both live inside
+   `:lang(zh)`: the Latin rules above are untouched, and no heading size moves. */
+html:lang(zh) body {
+  /* `font-family` only. The base rule at `:215` is the `font` shorthand, so
+     re-declaring `font` here would reset `font-size` and `line-height` and undo
+     the scale rule this section exists to keep. */
+  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+html:lang(zh) h1 { letter-spacing: 0; line-height: 1.18; }
+html:lang(zh) h2 { letter-spacing: 0; }
+html:lang(zh) .brand { letter-spacing: 0; }
+html:lang(zh) .hero-copy h1 { letter-spacing: 0; line-height: 1.14; }
+html:lang(zh) .workspace-user h1 { letter-spacing: 0; }
+html:lang(zh) .stat strong { letter-spacing: 0; line-height: 1.15; }
