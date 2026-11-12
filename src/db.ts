@@ -5,6 +5,13 @@ import { mkdirSync } from 'node:fs'
 import { log } from './lib/log.js'
 import { nowIso } from './lib/time.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
+import { parseModelRun } from './lib/modelRun.js'
+import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
+
+// #355: one settings row marks the PAT expiry backfill as done, so a later
+// operator token (explicitly minted without an expiry) is never given one by a
+// restart.
+const PAT_EXPIRY_BACKFILL_KEY = 'pat_expiry_backfilled'
 
 const require = createRequire(import.meta.url)
 
@@ -25,6 +32,26 @@ const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: st
 export type UserStatus = 'onboarding' | 'pending' | 'approved' | 'rejected'
 export type UserRole = 'user' | 'admin' | 'superadmin'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'paused' | 'quota_exhausted'
+
+// #361: a repository's review history, read from rows that already exist.
+// A window is one `since`; the page asks for two. The outcome of a review is
+// not the work item's current state (a later fix moves it on), so the count
+// comes from the audit row the job service writes when the review finishes.
+export interface ReviewTrendWindow {
+  reviews: number
+  averageScore: number | null
+  outcomes: number
+  changesRequested: number
+  changesRequestedRate: number | null
+  medianPrOpenToReviewMs: number | null
+  medianPrOpenToMergeMs: number | null
+  models: Array<{ label: string; reviews: number }>
+  smallSample: boolean
+}
+
+// Below this many completed reviews the page says "small sample" instead of
+// letting one score read as a trend.
+export const REVIEW_TREND_SMALL_SAMPLE = 5
 
 export interface UserRow {
   id: string
@@ -279,6 +306,9 @@ export interface ApiTokenRow {
   token_hash: string
   prefix: string
   repo_id: string | null
+  // #355: what the token may do. `gateway` is the only scope enforced today and
+  // is the default for every existing row.
+  scope: string
   expires_at: string | null
   revoked_at: string | null
   last_used_at: string | null
@@ -659,6 +689,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   token_hash TEXT NOT NULL UNIQUE,
   prefix TEXT NOT NULL,
   repo_id TEXT,
+  scope TEXT NOT NULL DEFAULT 'gateway',
   expires_at TEXT,
   revoked_at TEXT,
   last_used_at TEXT,
@@ -1156,6 +1187,22 @@ export class Store {
     if (!notificationColumns.has('code')) this.run('ALTER TABLE notifications ADD COLUMN code TEXT')
     const tokenColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(api_tokens)').map((row) => row.name))
     if (!tokenColumns.has('repo_id')) this.run('ALTER TABLE api_tokens ADD COLUMN repo_id TEXT')
+    // #355: the column is additive with a default, so existing rows are
+    // `gateway` without a second pass; the UPDATE also repairs a row that a
+    // partial upgrade left empty.
+    if (!tokenColumns.has('scope')) this.run("ALTER TABLE api_tokens ADD COLUMN scope TEXT NOT NULL DEFAULT 'gateway'")
+    this.run("UPDATE api_tokens SET scope = 'gateway' WHERE scope IS NULL OR scope = ''")
+    // A personal token minted before this change has no expiry and would live
+    // forever. Give each one a fresh finite window from the upgrade, once, so no
+    // token in use dies at the moment of the upgrade. Job and instance tokens
+    // keep the expiry their own lifecycle sets.
+    if (this.getSetting(PAT_EXPIRY_BACKFILL_KEY) === undefined) {
+      this.run(
+        "UPDATE api_tokens SET expires_at = ? WHERE kind = 'pat' AND expires_at IS NULL AND revoked_at IS NULL",
+        new Date(Date.now() + DEFAULT_PAT_EXPIRY_DAYS * 86_400_000).toISOString(),
+      )
+      this.setSetting(PAT_EXPIRY_BACKFILL_KEY, nowIso())
+    }
     const ledgerColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(quota_ledger)').map((row) => row.name))
     if (!ledgerColumns.has('repo_id')) this.run('ALTER TABLE quota_ledger ADD COLUMN repo_id TEXT')
     if (!jobColumns.has('base_branch')) this.run('ALTER TABLE jobs ADD COLUMN base_branch TEXT')
@@ -1686,6 +1733,63 @@ export class Store {
       medianJobMs: median(jobDurations),
       medianMergeMs: median(mergeDurations),
       medianReviewMs: median(reviewDurations),
+    }
+  }
+
+  reviewTrend(repoId: string, sinceIso: string): ReviewTrendWindow {
+    const reviewJobs = this.all<JobRow>(
+      `SELECT * FROM jobs
+        WHERE repo_id = ? AND kind = 'review' AND status = 'succeeded'
+          AND review_score IS NOT NULL AND finished_at IS NOT NULL AND finished_at >= ?`,
+      repoId,
+      sinceIso,
+    )
+    const scores = reviewJobs.flatMap((job) => (job.review_score === null ? [] : [job.review_score]))
+    const averageScore = scores.length === 0 ? null : Math.round((scores.reduce((sum, score) => sum + score, 0) / scores.length) * 10) / 10
+    const outcomes = this.all<{ outcome: string }>(
+      `SELECT CASE WHEN a.detail LIKE '%: changes_requested score=%' THEN 'changes_requested' ELSE 'approved' END AS outcome
+         FROM audit_log a
+         JOIN work_items w ON w.id = substr(a.detail, 1, instr(a.detail, ':') - 1)
+        WHERE a.action = 'work_item.review_outcome' AND a.at >= ? AND w.repo_id = ?
+          AND (a.detail LIKE '%: changes_requested score=%' OR a.detail LIKE '%: approved score=%')`,
+      sinceIso,
+      repoId,
+    )
+    const changesRequested = outcomes.filter((row) => row.outcome === 'changes_requested').length
+    const reviewDelays = this.all<{ opened: string; reviewed: string }>(
+      `SELECT w.created_at AS opened, j.finished_at AS reviewed
+         FROM jobs j
+         JOIN work_items w ON w.id = j.work_item_id
+        WHERE j.repo_id = ? AND j.kind = 'review' AND j.status = 'succeeded'
+          AND j.finished_at IS NOT NULL AND j.finished_at >= ? AND w.pr_url IS NOT NULL`,
+      repoId,
+      sinceIso,
+    ).flatMap((row) => {
+      const value = durationMs(row.opened, row.reviewed)
+      return value === null ? [] : [value]
+    })
+    const mergeDelays = this.all<WorkItemRow>('SELECT * FROM work_items WHERE repo_id = ? AND merged_at IS NOT NULL AND merged_at >= ?', repoId, sinceIso).flatMap((item) => {
+      const value = durationMs(item.created_at, item.merged_at)
+      return value === null ? [] : [value]
+    })
+    const byModel = new Map<string, number>()
+    for (const job of reviewJobs) {
+      const label = parseModelRun(job.model_json)?.model?.label
+      if (label === undefined) continue
+      byModel.set(label, (byModel.get(label) ?? 0) + 1)
+    }
+    return {
+      reviews: reviewJobs.length,
+      averageScore,
+      outcomes: outcomes.length,
+      changesRequested,
+      changesRequestedRate: outcomes.length === 0 ? null : Math.round((changesRequested / outcomes.length) * 1000) / 10,
+      medianPrOpenToReviewMs: median(reviewDelays),
+      medianPrOpenToMergeMs: median(mergeDelays),
+      models: [...byModel.entries()]
+        .map(([label, reviews]) => ({ label, reviews }))
+        .sort((a, b) => b.reviews - a.reviews || a.label.localeCompare(b.label)),
+      smallSample: reviewJobs.length < REVIEW_TREND_SMALL_SAMPLE,
     }
   }
 
@@ -2580,9 +2684,9 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' AND created_at < ?", beforeIso)
   }
 
-  createApiToken(input: { id: string; userId: string; kind: string; name: string; tokenHash: string; prefix: string; repoId?: string | null; expiresAt: string | null }): ApiTokenRow {
+  createApiToken(input: { id: string; userId: string; kind: string; name: string; tokenHash: string; prefix: string; repoId?: string | null; scope?: string; expiresAt: string | null }): ApiTokenRow {
     this.run(
-      'INSERT INTO api_tokens (id, user_id, kind, name, token_hash, prefix, repo_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO api_tokens (id, user_id, kind, name, token_hash, prefix, repo_id, scope, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       input.id,
       input.userId,
       input.kind,
@@ -2590,6 +2694,7 @@ export class Store {
       input.tokenHash,
       input.prefix,
       input.repoId ?? null,
+      input.scope ?? 'gateway',
       input.expiresAt,
       nowIso(),
     )

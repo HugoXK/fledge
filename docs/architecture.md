@@ -255,7 +255,11 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   the tick closes the work item into the existing `closed` state with
   `closed_reason = 'plan_expired'` and an audit row. No state or transition was
   added for this: expiry reuses `closed`, the reason column carries the meaning,
-  and `closed -> triaged` is the reopening path. Iterate jobs preflight the target branch, record the base SHA
+  and `closed -> triaged` is the reopening path. A work item already in a
+  terminal state (`merged` or `closed`) is left exactly as it is: the expiry is
+  still recorded in the audit row and in the `plan_expired:<job>` settings key,
+  but no "已过期关闭" notice is sent for an item the pass did not end (#408).
+  Iterate jobs preflight the target branch, record the base SHA
   and warn when the fork is behind. An open work item changes what the next
   scheduled run continues; it never blocks a due repository (#219). Work-item
   states do not gate the scheduler; see "Scheduled work, continuity and work
@@ -276,7 +280,15 @@ state contract and its evidence are in [docs/ui.md](ui.md).
 
 ### Model gateway
 
-`/v1/*` is OpenAI-compatible and authenticated with `flg_` tokens.
+`/v1/*` is OpenAI-compatible and authenticated with `flg_` tokens. A token
+carries a `scope` and an `expires_at`: `gateway` is the only enforced scope, a
+personal token always gets a finite lifetime (30/90/365 days, default
+`PAT_EXPIRY_DAYS` 90) and only an admin may create an operator token without one.
+The gateway answers `401 invalid_api_key` for an unknown, revoked, expired or
+non-approved token and `403 insufficient_scope` for a live token outside the
+gateway scope, decided before `last_used_at` is written; neither refusal echoes
+the token. The settings page lists each token's scope, expiry and last use, and
+revoke stays one click.
 
 - If the user has an own model configured, Fledge proxies to it and does **not**
   meter platform quota.
@@ -453,6 +465,22 @@ work items and the last job. `/admin/metrics` shows the global window with the
 product funnel, delivery efficiency (success and merge rate, median job and
 merge duration, review duration and score), cost by repository and by model,
 daily trend buckets, and current alerts. Alerts are localized, sorted by severity, and link to the affected repository or job; the dashboard shows the same alerts scoped to the signed-in user. Missing values render as `—`, never as a confident zero.
+
+The repository page's Delivery section also carries `#review-trend`, one row per
+fixed window (7 and 30 days). `Store.reviewTrend(repoId, sinceIso)` is a read
+model over rows the platform already stores — completed review jobs for the
+score, the recorded model and the PR link, `work_items` for when the pull request
+was opened and merged, and the `work_item.review_outcome` audit row for the
+outcome. The audit row, not the work item's state, is the outcome: a review that
+asks for changes moves the item to `changes_requested` and the next fix moves it
+on, so the current state would lose exactly the rework the trend is meant to
+show. There is no new table and no new job; the route computes the two cut-offs
+and the store returns one window each. A window with no review renders `—` in
+every cell with an empty-window sentence, the changes-requested rate prints its
+own denominator (`50% (1/2)`) or `—` when no review recorded an outcome, and
+fewer than `REVIEW_TREND_SMALL_SAMPLE` (5) reviews are shown with a
+`Small sample n=<n>` badge rather than smoothed into a trend. What each cell
+means is fixed in [ui.md](ui.md).
 
 `GET /api/read/metrics` exposes the same read model as JSON for an external
 control room: a normal user gets `personal`, a super admin gets the global sections.
@@ -1047,6 +1075,27 @@ states whether the maintainer enabled auto-merge. A missing step is omitted rath
 Both endpoints require `Authorization: Bearer <callbackSecret>`. The secret is
 generated per job, stored as a hash, and never appears in the UI.
 
+## Owner search
+
+`/search` answers "where is my X" without a query that can leave the signed-in
+owner's rows. The route in `src/app.ts` parses `q` plus optional `kind` and `repo`
+filters, then calls one store method per section — `Store.searchOwned` in
+`src/db.ts` — for repositories, jobs, work items and audit rows, and
+`searchPage` in `src/views/pages.ts` renders them, 20 rows per section with the
+cap stated on the page.
+
+The scoping is the point of the read model, so it lives in the SQL and not in the
+view: every section's clause carries `user_id = ?`, and the `repo` filter is
+resolved against that owner's own repository ids, which means a repository id
+belonging to someone else is dropped rather than answered — the page cannot be
+used to probe another account's ids. `LIKE` patterns are built by `likePattern`,
+which escapes `%`, `_` and `\` and appends `ESCAPE '\'`, so a user's `%` matches
+a literal `%`. Row types are `Pick<>`s of the full row types, so no section can
+render a token, a key or an email column: those are not selected at all. Audit
+rows carry no repository, so the audit section is labelled as unscoped rather
+than filtered by `repo`. An empty `q` renders the empty state instead of a
+listing, and every row links to the page that already owns it.
+
 ## Data model
 
 | Table | Purpose |
@@ -1057,7 +1106,7 @@ generated per job, stored as a hash, and never appears in the UI.
 | `approval_tokens` | single-use approve/reject links |
 | `repos` | upstream/fork identity, encrypted token, permission, reviewer config, goal, cadence, state |
 | `jobs` | lifecycle, kind (iterate/review), branch, issue/PR URL, review score, summary, cost, job-scoped token hash |
-| `api_tokens` | `flg_` tokens (PAT or job), hashed |
+| `api_tokens` | `flg_` tokens (PAT, job or instance), hashed, with `scope` (only `gateway` today) and `expires_at`; a PAT always carries an expiry |
 | `quota_ledger` | per-request cost records |
 | `notifications` | in-app messages (quota, job failure), stored as written and localized at render |
 | `audit_log` | who changed what |

@@ -44,6 +44,7 @@ Key settings:
 | `FLYBOT_BRIDGE_URL` / `FLYBOT_BRIDGE_TOKEN` | Bridge endpoint and shared secret |
 | `DATA_DIR` / `DB_PATH` | Defaults `./data`, `./data/fledge.db` |
 | `ALLOW_PRIVATE_MODEL_URLS` | Keep `false` for untrusted users |
+| `PAT_EXPIRY_DAYS` | Default lifetime of a new personal `flg_` gateway token, in days (default 90); only an admin may create one without an expiry |
 | `METRICS_TOKEN` | Required in production: `/metrics`, and the `commit`/`builtAt` fields of `/healthz`, answer only `Authorization: Bearer <token>` |
 | `PLAN_EXPIRY_DAYS` / `PLAN_REMINDER_DAYS` | How long an unapproved plan may wait before the work item closes with `closed_reason = plan_expired` (default 7), and how many days before that deadline the single reminder is sent (default 2) |
 | `NOTIFY_WEBHOOK_URL` / `NOTIFY_WEBHOOK_SECRET` | Optional outbound notifications (Slack-compatible `text`); the secret is sent as a bearer token. When set, the URL must be an absolute `https:` URL |
@@ -602,6 +603,71 @@ Development mail (`MAIL_TRANSPORT=console`) is written to
 `$DATA_DIR/mail-outbox/*.eml` and is never pruned: it is a dev aid
 (`npm run mail:outbox`), an instance with SMTP does not write it, and the
 directory may be deleted at any time.
+
+### Workspace snapshot retention
+
+Each agent run leaves a snapshot under
+`$FLYBOT_INSTANCE_ROOT/users/<user>/repos/<repo>/data/bot/workspace/r<number>`,
+and nothing in Fledge reclaims them. They are the runtime's working copies
+rather than Fledge rows, so the retention of user data (`#281`) does not reach
+them, and on the production host this tree is the largest thing under `data/`.
+The host-side alert script that watches it lives outside this repository and is
+not changed by the tool below.
+
+`scripts/artifact-retention.mjs` is the operator tool. It is a dry run unless
+`--apply` is given, and the only thing it can remove is an `r<number>` snapshot:
+
+```sh
+# candidates, their bytes and the total; nothing is touched
+npm run artifacts:prune -- --root /var/lib/fledge/flybot-users
+
+# remove exactly those candidates, print the audit line and the freed bytes
+npm run artifacts:prune -- --root /var/lib/fledge/flybot-users --apply
+```
+
+The root comes from `--root`, then `ARTIFACT_RETENTION_ROOT`, then
+`FLYBOT_INSTANCE_ROOT`, then the default data directory; an empty value counts
+as unset, which is why `.env.example` can ship `ARTIFACT_RETENTION_ROOT=`.
+`--root` itself is not optional: a bare `--root`, an empty value or another flag
+after it is a usage error (exit `2`), not a fallback to the environment.
+
+The policy has two settings, and they answer different questions rather than
+naming one threshold twice:
+
+- `--keep <n>` / `ARTIFACT_RETENTION_KEEP` (default `3`): how many of the newest
+  snapshots, by run number, survive whatever their age.
+- `--max-age-days <n>` / `ARTIFACT_RETENTION_MAX_AGE_DAYS` (default `14`): how
+  old a snapshot must be before it is a candidate at all.
+
+An empty or whitespace-only `ARTIFACT_RETENTION_KEEP` /
+`ARTIFACT_RETENTION_MAX_AGE_DAYS` counts as unset and takes the default. It is
+never read as `0`: zero is a legal explicit value (`--keep 0` keeps no snapshot
+by count), so treating a blank `.env` line as zero would turn the two retention
+knobs into "remove everything".
+
+A snapshot is removed only when it is outside **both** windows, and never when:
+
+- `state.json` or `inflight.json` in the repository's `data/bot/` names it, as a
+  bare `r<number>` or as a path — a name is matched by its basename, a path is
+  resolved against that repository's `data/bot/` rather than against the
+  directory the timer happens to run from, and any `r<number>` segment on it
+  protects that snapshot, so a reference to `r11/checkout` protects `r11`; a
+  state file that cannot be parsed protects every snapshot in that repository;
+- the entry is not a run snapshot (`scratch/`, `logs/`) or is a symlink, which is
+  reported as `action=skip reason=symlink` and whose target is never walked or
+  removed.
+
+`--apply` prints one line per removal plus an
+`audit action=artifact-retention …` line naming the root, both windows, the
+counts and the freed bytes; that line is the record, and journald keeps it when
+the tool runs from a timer. The exit status is `0` for a clean run, `1` when a
+removal failed and `2` on a usage error, so a timer can alert on a non-zero one.
+Run it from a timer only after a dry run has shown the candidates:
+
+```sh
+# 04:10 daily, as the service user, after the dry run above has been reviewed
+10 4 * * *  cd /opt/fledge && node scripts/artifact-retention.mjs --root /var/lib/fledge/flybot-users --apply
+```
 
 ## 10. Go-live checklist
 

@@ -1,5 +1,5 @@
 import type { Config } from '../config.js'
-import type { AlertView, AuditRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, ProviderModelRow, RepoInstanceRow, RepoRow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
+import type { AlertView, AuditRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, ProviderModelRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
@@ -11,6 +11,7 @@ import { firstRunOutcome, setupChecklist, type SetupState, type SetupStepKey } f
 import { oauthConfigured, tokenLoginEnabled } from '../auth/login.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
+import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
 import { parseModelRun } from '../lib/modelRun.js'
@@ -951,7 +952,7 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const workItems = input.workItems ?? []
   const workState = input.workState
@@ -966,6 +967,35 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const jobsPage = input.jobsPage ?? 1
   const jobsTotal = input.jobsTotal ?? jobs.length
   const t = translator(locale)
+  // #361: a review trend is only honest if "no sample" is visible. Every number
+  // below is `—` when the window has nothing behind it, a rate is `—` when no
+  // review in the window recorded an outcome, and fewer than
+  // REVIEW_TREND_SMALL_SAMPLE reviews is labelled rather than smoothed.
+  const reviewTrend = input.reviewTrend
+  const trendWindows: Array<{ key: string; zh: string; en: string; window: ReviewTrendWindow }> = reviewTrend === undefined
+    ? []
+    : [
+        { key: 'week', zh: '7 天', en: '7 days', window: reviewTrend.week },
+        { key: 'month', zh: '30 天', en: '30 days', window: reviewTrend.month },
+      ]
+  const trendRate = (window: ReviewTrendWindow): string =>
+    window.changesRequestedRate === null ? '—' : `${window.changesRequestedRate}% (${window.changesRequested}/${window.outcomes})`
+  const trendModels = (window: ReviewTrendWindow): string =>
+    window.models.length === 0 ? '—' : window.models.map((model) => `${model.label} ×${model.reviews}`).join(', ')
+  const trendSample = (window: ReviewTrendWindow): string =>
+    window.smallSample ? ` <span class="badge" data-trend-small-sample="1">${escapeHtml(t(`小样本 n=${window.reviews}`, `Small sample n=${window.reviews}`))}</span>` : ''
+  const reviewTrendRows = trendWindows
+    .map(({ key, zh, en, window }) => `<tr data-trend-window="${key}"><th scope="row">${escapeHtml(t(zh, en))}</th><td>${window.reviews === 0 ? '—' : `${window.reviews}${trendSample(window)}`}</td><td>${window.averageScore === null ? '—' : window.averageScore}</td><td>${escapeHtml(trendRate(window))}</td><td>${escapeHtml(durationText(window.medianPrOpenToReviewMs))}</td><td>${escapeHtml(durationText(window.medianPrOpenToMergeMs))}</td><td>${escapeHtml(trendModels(window))}</td></tr>`)
+    .join('')
+  const reviewTrendEmpty = trendWindows
+    .filter(({ window }) => window.reviews === 0)
+    .map(({ key, zh, en }) => `<small class="muted" data-trend-empty="${key}">${escapeHtml(t(`最近 ${zh}没有审核，所以显示 —，不是 0。`, `No review in the last ${en}, so the window shows — rather than 0.`))}</small>`)
+    .join(' ')
+  const reviewTrendCard = reviewTrend === undefined ? '' : `<section class="card" id="review-trend">
+    <div class="row between"><div><div class="eyebrow">${escapeHtml(t('审核质量', 'REVIEW QUALITY'))}</div><h2>${escapeHtml(t('审核趋势', 'Review trend'))}</h2><p class="muted">${escapeHtml(t('只统计这个仓库已完成的审核。空窗口显示 —；少于 5 个审核标注为小样本；要求修改率的分母是记录了结果的审核，不是全部审核。', 'Completed reviews for this repository only. An empty window shows —; fewer than 5 reviews is labelled a small sample; the changes-requested rate is over reviews that recorded an outcome, not all reviews.'))}</p></div></div>
+    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('窗口', 'Window'))}</th><th>${escapeHtml(t('审核数', 'Reviews'))}</th><th>${escapeHtml(t('平均分', 'Average score'))}</th><th>${escapeHtml(t('要求修改率', 'Changes requested'))}</th><th>${escapeHtml(t('PR→审核', 'PR→review'))}</th><th>${escapeHtml(t('PR→合并', 'PR→merge'))}</th><th>${escapeHtml(t('模型', 'Model'))}</th></tr></thead><tbody>${reviewTrendRows}</tbody></table></div>
+    ${reviewTrendEmpty === '' ? '' : `<p class="fine">${reviewTrendEmpty}</p>`}
+  </section>`
   const advanced = advancedViewer(viewer)
   const upstreamOwner = repo.upstream_owner || repo.owner
   const upstreamName = repo.upstream_name || repo.name
@@ -1296,7 +1326,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <p class="fine">${escapeHtml(t('平台只通过 GitHub API 读取元数据、创建 fork 和分支/PR；不会 clone 到公共磁盘。', 'The platform only uses the GitHub API to read metadata, create forks and open branches/PRs; it never clones to public disk.'))}</p>
     </div>
   </section>`
-  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${planBanner}${lifecycleBanner}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}`)}${repoSection('delivery', `${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceNotice}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
+  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${planBanner}${lifecycleBanner}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}`)}${repoSection('delivery', `${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceNotice}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : '<script src="/assets/chief.js" defer></script>'}<script src="/assets/repoTabs.js" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
 }
 
@@ -1497,11 +1527,18 @@ export function settingsPage(input: {
   const maskedEmail = resolvedEmail === '' ? '' : maskEmail(resolvedEmail)
   const hasEmail = resolvedEmail !== ''
   const tokenRows = tokens.length === 0
-    ? stateCell(4, { kind: 'empty', title: t('还没有 API token。', 'No API tokens yet.'), body: t('外部控制室读取指标需要一枚 token；在同一页下面创建一个。', 'An external control room needs one token to read metrics; create one lower on this page.'), action: { href: '#tokens', label: t('创建 token', 'Create a token') } })
+    ? stateCell(6, { kind: 'empty', title: t('还没有 API token。', 'No API tokens yet.'), body: t('外部控制室读取指标需要一枚 token；在同一页下面创建一个。', 'An external control room needs one token to read metrics; create one lower on this page.'), action: { href: '#tokens', label: t('创建 token', 'Create a token') } })
     : tokens
-        .map(
-          (token) => `<tr><td><code>${escapeHtml(token.prefix)}…</code></td><td>${escapeHtml(token.name)}</td><td>${escapeHtml(humanTimeShort(token.last_used_at))}</td><td><form method="post" action="/settings/tokens/${escapeHtml(token.id)}/revoke">${csrf(viewer)}<button class="link" type="submit">${escapeHtml(t('撤销', 'Revoke'))}</button></form></td></tr>`,
-        )
+        .map((token) => {
+          // #355: the expiry is visible as a date, and an expired row says so
+          // instead of looking live; the scope is shown because it decides what
+          // the token may reach.
+          const expired = token.expires_at !== null && Date.parse(token.expires_at) <= Date.now()
+          const expires = token.expires_at === null
+            ? t('永不过期', 'Never')
+            : `${token.expires_at.slice(0, 10)}${expired ? ` · ${t('已过期', 'expired')}` : ''}`
+          return `<tr><td><code>${escapeHtml(token.prefix)}…</code></td><td>${escapeHtml(token.name)}</td><td><code>${escapeHtml(token.scope)}</code></td><td>${escapeHtml(expires)}</td><td>${escapeHtml(humanTimeShort(token.last_used_at))}</td><td><form method="post" action="/settings/tokens/${escapeHtml(token.id)}/revoke">${csrf(viewer)}<button class="link" type="submit">${escapeHtml(t('撤销', 'Revoke'))}</button></form></td></tr>`
+        })
         .join('')
   const body = `<section class="card">
     <div class="eyebrow">${escapeHtml(t('账户', 'ACCOUNT'))}</div>
@@ -1589,8 +1626,17 @@ export function settingsPage(input: {
     <h2>${escapeHtml(t('API token', 'API tokens'))}</h2>
     <p class="muted">${escapeHtml(t('给脚本或 FlyBot 调用的网关 token（flg_…）。它不是你的 GitHub token，也不是模型 key。', 'Gateway tokens (flg_…) for scripts or FlyBot. They are neither your GitHub token nor a model key.'))}</p>
     ${newToken === undefined ? '' : `<div class="banner ok">${escapeHtml(t('新 token（只显示一次）：', 'New token (shown once):'))}<code class="token" id="new-token">${escapeHtml(newToken)}</code> <button class="link" type="button" data-copy="#new-token">${escapeHtml(t('复制', 'Copy'))}</button></div>`}
-    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('前缀', 'Prefix'))}</th><th>${escapeHtml(t('名称', 'Name'))}</th><th>${escapeHtml(t('最近使用', 'Last used'))}</th><th></th></tr></thead><tbody>${tokenRows}</tbody></table></div>
-    <form method="post" action="/settings/tokens" class="row">${csrf(viewer)}<input name="name" placeholder="${escapeHtml(t('用途，例如 laptop-cli', 'Purpose, e.g. laptop-cli'))}" required /><button class="btn" type="submit">${escapeHtml(t('创建 token', 'Create token'))}</button></form>
+    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('前缀', 'Prefix'))}</th><th>${escapeHtml(t('名称', 'Name'))}</th><th>${escapeHtml(t('范围', 'Scope'))}</th><th>${escapeHtml(t('有效期', 'Expires'))}</th><th>${escapeHtml(t('最近使用', 'Last used'))}</th><th></th></tr></thead><tbody>${tokenRows}</tbody></table></div>
+    <form method="post" action="/settings/tokens" class="row">${csrf(viewer)}<input name="name" placeholder="${escapeHtml(t('用途，例如 laptop-cli', 'Purpose, e.g. laptop-cli'))}" required />
+      <input type="hidden" name="scope" value="gateway" />
+      <label>${escapeHtml(t('有效期', 'Expires'))}{infoTip(t('个人 token 必须有期限；到期后网关直接拒绝。永不过期只对管理员创建的运维 token 开放。', 'A personal token must expire; the gateway refuses it afterwards. A token without an expiry is only for an operator token created by an admin.'))}
+        <select name="expiryDays">
+          ${PAT_EXPIRY_CHOICES.map((days) => `<option value="${days}"${days === config.tokens.patExpiryDays ? ' selected' : ''}>${escapeHtml(t(`${days} 天`, `${days} days`))}</option>`).join('')}
+          ${viewer.user.role === 'admin' || viewer.user.role === 'superadmin' ? `<option value="never">${escapeHtml(t('永不过期（运维）', 'Never (operator)'))}</option>` : ''}
+        </select>
+      </label>
+      <button class="btn" type="submit">${escapeHtml(t('创建 token', 'Create token'))}</button></form>
+    <p class="fine">${escapeHtml(t('范围固定为 gateway：这是目前唯一会校验 token 的能力边界，暂时不提供单选项以外的选择。', 'The scope is fixed to gateway: it is the only capability boundary that checks a token today, so there is no choice to make yet.'))}</p>
   </section>`
   return layout({ title: t('设置', 'Settings'), viewer, body, config, locale, path: '/settings', active: 'settings', notice, error })
 }

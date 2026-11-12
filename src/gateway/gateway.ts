@@ -10,6 +10,7 @@ import { costUsdFromUsage, headerCost, quotaView } from './quota.js'
 import { modelOrder, retryableModelFailure } from './modelFallback.js'
 import type { ModelAttempt } from '../lib/modelRun.js'
 import { rateLimitKey, RateLimiter } from '../lib/rateLimit.js'
+import { GATEWAY_SCOPE } from '../lib/tokens.js'
 
 interface GatewayDeps {
   config: Config
@@ -130,21 +131,30 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
   const { config, store } = deps
   const limiter = new RateLimiter(240, 60_000)
 
-  const authenticate = (request: FastifyRequest): { token: ApiTokenRow; user: UserRow } | null => {
+  // #355: three answers, not two. A wrong scope is a 403 with a stable type and
+  // is decided before `last_used_at` is written, so a refused token leaves no
+  // trace that it was tried; an expired or revoked token is simply unknown here
+  // (findApiToken filters both), which keeps that answer a plain 401.
+  const authenticate = (request: FastifyRequest): { kind: 'ok'; token: ApiTokenRow; user: UserRow } | { kind: 'unauthorized' } | { kind: 'forbidden' } => {
     const raw = bearer(request)
-    if (!raw.startsWith('flg_')) return null
+    if (!raw.startsWith('flg_')) return { kind: 'unauthorized' }
     const token = store.findApiToken(sha256Hex(raw))
-    if (token === undefined) return null
+    if (token === undefined) return { kind: 'unauthorized' }
     const user = store.userById(token.user_id)
-    if (user === undefined || user.status !== 'approved') return null
+    if (user === undefined || user.status !== 'approved') return { kind: 'unauthorized' }
+    if (token.scope !== GATEWAY_SCOPE) return { kind: 'forbidden' }
     store.touchApiToken(token.id)
-    return { token, user }
+    return { kind: 'ok', token, user }
   }
+
+  const refuse = (reply: FastifyReply, auth: { kind: 'unauthorized' } | { kind: 'forbidden' }): FastifyReply => auth.kind === 'forbidden'
+    ? reply.code(403).send({ error: { type: 'insufficient_scope', message: 'This Fledge API token is not allowed to use the model gateway' } })
+    : reply.code(401).send({ error: { type: 'invalid_api_key', message: 'Missing or invalid Fledge API token' } })
 
   app.get('/v1/models', async (request, reply) => {
     if (!limiter.take(`gateway-ip:${rateLimitKey(request)}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many gateway requests' } })
     const auth = authenticate(request)
-    if (auth === null) return reply.code(401).send({ error: { type: 'invalid_api_key', message: 'Missing or invalid Fledge API token' } })
+    if (auth.kind !== 'ok') return refuse(reply, auth)
     const repoModels = auth.token.repo_id === null ? [] : store.listRepoModelSelection(auth.token.repo_id)
     if (repoModels.length > 0) {
       return {
@@ -169,7 +179,9 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
   app.post('/v1/chat/completions', { bodyLimit: MAX_BODY }, async (request, reply) => {
     if (!limiter.take(`gateway-chat:${rateLimitKey(request)}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many gateway requests' } })
     const auth = authenticate(request)
-    if (auth === null) return reply.code(401).send({ error: { type: 'invalid_api_key', message: 'Missing or invalid Fledge API token' } })
+    if (auth.kind !== 'ok') return refuse(reply, auth)
+    // Captured once: a closure below must not lose the narrowing of the union.
+    const authed = auth
     const body = (request.body ?? {}) as ChatBody
     const repoModel = auth.token.repo_id === null || typeof body.model !== 'string' ? undefined : store.providerModelForRun(auth.token.repo_id, body.model)
     const stream = body.stream === true
@@ -318,13 +330,13 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
 
     function finishCost(costUsd: number, usageValue: unknown): void {
       if (!funded || costUsd <= 0) return
-      store.recordUsage(auth!.user.id, jobId, costUsd, JSON.stringify({ model: targetModel, usage: usageValue, ms: Date.now() - started }), auth!.token.repo_id ?? null)
+      store.recordUsage(authed.user.id, jobId, costUsd, JSON.stringify({ model: targetModel, usage: usageValue, ms: Date.now() - started }), authed.token.repo_id ?? null)
       if (jobId !== null) store.addJobCost(jobId, costUsd)
       // #100: a call made with a job token is that job's spend; name the job
       // under the same key every other job line uses. A call without a job in
       // scope (a user's own PAT) carries no trace at all rather than a null one.
-      log.info('gateway usage', { user: auth!.user.login, costUsd, model: targetModel, ...(jobId === null ? {} : { trace: jobId }) })
-      const updated = store.userById(auth!.user.id)
+      log.info('gateway usage', { user: authed.user.login, costUsd, model: targetModel, ...(jobId === null ? {} : { trace: jobId }) })
+      const updated = store.userById(authed.user.id)
       if (updated !== undefined && quotaView(updated, config).exhausted) {
         store.notify(updated.id, 'quota', '平台额度已用完，请到 Settings → Model 配置你自己的模型 API。')
         void deps.onQuotaExhausted?.(updated)

@@ -108,27 +108,38 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // stay exact so a silent re-label is still a failing test.
   // #251 moved these five route registrations: one import line at `:40` and
   // five lines inside the webhook path. #357 adds one line above the webhook
-  // route registration (once from #357, and #353 adds four more: two in the
-  // failure path, two in the retry route), so the pin and its baseline entry
-  // move to `:2962`. #359 inserts the pending-plan spread and the late-approval
-  // guard in the repository and plan routes, all above the webhook registration,
-  // which moved the same pair to `:2979` on its own tree. In a tree carrying
-  // both, the anchor is measured once rather than added: `#403`'s 21 lines and
-  // this PR's four compose to `:2983`, and the baseline entry and this pin move
-  // there together in the merge commit, which keeps "refreshed" from becoming
-  // "silently re-labelled". #358 moved the two gateway registrations the same
-  // way: two import lines and the `readAnswer` helper above them, 19 lines in
-  // total, with no new route and no change to the limiter call that opens each
-  // handler. The alerts (#41, #42, both dismissed false positive) are the same
+  // route registration, so the `:2957` pin and its baseline entry moved to
+  // `:2958` together in that commit. #358 moved the two gateway registrations
+  // the same way: two import lines and the `readAnswer` helper above them, 19
+  // lines in total, with no new route and no change to the limiter call that
+  // opens each handler; alerts #41 and #42 stay the same two dismissed results.
+  // #359 then moved the webhook registration to `:2979` on its own tree, and
+  // #353 (four inserts: two in the failure path, two in the retry route) plus
+  // #341 (two comment lines in the retry route) took it to `:2983` on main.
+  // #355 moved anchors for two reasons and its merge re-measured all of them:
+  // one import line at `:27` sits above the four top-of-file route
+  // registrations, so those read `:470`/`:505`/`:515`/`:525` rather than main's
+  // `:469`/`:504`/`:514`/`:524`, its scope and expiry checks sit in the token
+  // create route above the webhook registration, so that tree read `:2996`, and
+  // its gateway rewrite adds 10 lines above both gateway registrations, which
+  // read `:154`/`:179`. This branch's review-trend read model sits six lines
+  // above the webhook registration, so the merged tree reads `:3002` there while
+  // the four top routes stay at `:470`/`:505`/`:515`/`:525`. #362 then adds one
+  // import line above those four, which read `:471`/`:506`/`:516`/`:526` here,
+  // and its `/search` route sits above the webhook registration, which measures
+  // `:3036` on the merged tree; the two gateway registrations do not move and
+  // stay `:154`/`:179`. Every number above was read from the tree that ships
+  // this file, never added to a base: no result was added or dismissed, and the
+  // two gateway alerts (#41, #42, both dismissed false positive) are the same
   // two.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|2983',
-    'js/missing-rate-limiting|src/app.ts|469',
-    'js/missing-rate-limiting|src/app.ts|504',
-    'js/missing-rate-limiting|src/app.ts|514',
-    'js/missing-rate-limiting|src/app.ts|524',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|144',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|169',
+    'js/missing-rate-limiting|src/app.ts|3036',
+    'js/missing-rate-limiting|src/app.ts|471',
+    'js/missing-rate-limiting|src/app.ts|506',
+    'js/missing-rate-limiting|src/app.ts|516',
+    'js/missing-rate-limiting|src/app.ts|526',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|154',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|179',
   ])
   const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
   assert.equal(dismissed.length, 3, 'the three dismissed false-positive results are recorded with their reason')
