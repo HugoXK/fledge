@@ -3,7 +3,8 @@
 // planner and the drive decision read.
 //
 //   node scripts/release-state.mjs --prs /tmp/prs.json --open /tmp/open.json \
-//     --checks /tmp/checks.json --tag v0.2.4 --tag-time 2026-11-01T00:00:00Z \
+//     --checks /tmp/checks.json --branches /tmp/branches.json \
+//     --tag v0.2.4 --tag-time 2026-11-01T00:00:00Z \
 //     --version 0.2.4 --fragments 12 --tags-json '["v0.2.4"]' --dry-run false
 //
 // Writes the state to stdout so the workflow can keep it in a file, and the suite
@@ -34,6 +35,7 @@ const state = buildState({
   closedPages: readJson(arg('--prs', '')),
   openPages: readJson(arg('--open', '')),
   checks: readJson(arg('--checks', '')),
+  branches: readJson(arg('--branches', '')),
 })
 
 process.stdout.write(`${JSON.stringify(state)}\n`)

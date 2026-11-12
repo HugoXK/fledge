@@ -8,7 +8,9 @@
 //   open-pr        the plan says release and nothing is in flight
 //   enqueue        a mechanical release PR is already open: enqueue it, never a second one
 //   report-blocked a release PR is open but blocked, red, unreadable or not the
-//                  mechanical shape: report and stop
+//                  mechanical shape: report and stop. An orphan `release/v<next>`
+//                  branch is the same action with a different reason: it names
+//                  the branch and its sha, and the workflow turns it red (#333).
 //   tag            a merged release PR has no tag yet: tag its squash commit
 //   none           no release tonight; the counts go to the summary
 //
@@ -127,6 +129,26 @@ function decide(state) {
       tag: candidate.tag,
       version: candidate.version,
       sha: candidate.sha,
+    }
+  }
+
+  // A branch the routine itself pushed and then could not open a pull request for
+  // is not a "different content" conflict to retry: nothing in the run can clear
+  // it, and every later night would die in the push step with a message that does
+  // not say what the state is. Naming it here makes the run red for the right
+  // reason and stops it before the push (#333).
+  const orphans = Array.isArray(state?.orphanBranches) ? state.orphanBranches : []
+  if (orphans.length > 0) {
+    const nextVersion = String(plan?.nextVersion ?? '')
+    const chosen = orphans.find((entry) => String(entry?.version ?? '') === nextVersion) ?? orphans[0]
+    const branch = String(chosen?.branch ?? '')
+    const sha = String(chosen?.sha ?? '')
+    const tag = String(chosen?.tag ?? '')
+    return {
+      action: 'report-blocked',
+      reason: `orphan-branch: ${branch === '' ? 'a release branch' : branch}${sha === '' ? ' (sha unreadable)' : ` at ${sha}`} has no pull request in any state and no ${tag === '' ? 'tag for its version' : tag} tag; the slot is wedged until the owner deletes or adopts it, and nothing in this run may repair it`,
+      branch,
+      sha,
     }
   }
 

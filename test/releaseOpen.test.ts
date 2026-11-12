@@ -332,16 +332,20 @@ test('the surface the tool materialises is exactly the mechanical release set', 
   assert.deepEqual([...SURFACE_PATHS].sort(), ['CHANGELOG.md', 'changelog.d', 'docker-compose.yml', 'package-lock.json', 'package.json'])
 })
 
-test('a run without the team token is blocked before any request is made', async () => {
+test('a run without the team token is refused before any request is made', async () => {
+  // #333 removed the reported `blocked` night: the workflow checks the secret
+  // before it pushes anything, so this branch is unreachable in Actions and is
+  // the tool's own defensive refusal, not a state worth reporting green.
   const { result, calls } = await run({ token: '' })
-  assert.equal(result.status, 'blocked')
+  assert.equal(result.status, 'refused')
   assert.match(result.reason, /RELEASE_OPEN_TOKEN/)
-  assert.equal(calls.length, 0, 'a blocked run calls no endpoint, least of all POST /pulls')
+  assert.equal(calls.length, 0, 'a refused run calls no endpoint, least of all POST /pulls')
 })
 
-test('a blocked run exits zero, so the night reports it instead of dying', () => {
-  assert.equal(exitCodeFor({ status: 'blocked' }), 0)
+test('the missing-token refusal is red, and the two write outcomes stay green', () => {
   assert.equal(exitCodeFor({ status: 'refused' }), 1)
+  assert.equal(exitCodeFor({ status: 'opened' }), 0)
+  assert.equal(exitCodeFor({ status: 'reused' }), 0)
 })
 
 test('the reviewer account may not open the release pull request', async () => {

@@ -138,7 +138,7 @@ test('the publish run is dispatched at the tag, and the comment goes to issue 80
 
 test('a dry run writes the summary and the artifact, and pushes and comments nothing', () => {
   const pushStep = between('      - name: Push the release branch', '      - name: Write the plan artifact')
-  assert.match(pushStep, /if: \$\{\{ inputs\.dry_run != true \}\}/)
+  assert.match(pushStep, /if: \$\{\{ inputs\.dry_run != true && steps\.opener\.outputs\.ready == 'true' \}\}/)
   const openStep = between('      - name: Open the release pull request', '      - name: Comment on #80')
   assert.match(openStep, /if: \$\{\{ inputs\.dry_run != true && steps\.push\.outputs\.pushed != '' \}\}/)
   const commentStep = between('      - name: Comment on #80', '      - name: Keep the plan artifact')
@@ -155,12 +155,36 @@ test('the nightly run opens the release pull request with the team token', () =>
   assert.equal(/release-open\.mjs[^\n]*GITHUB_TOKEN/.test(step), false, 'the token is read from the environment, never passed in an argument')
 })
 
-test('a missing token reports blocked, opens nothing, and the plan artifact is still written first', () => {
-  const step = between('      - name: Open the release pull request', '      - name: Comment on #80')
-  assert.match(step, /if \[ -n "\$GITHUB_TOKEN" \]/)
-  assert.match(step, /STATE=blocked/)
+// #333: a missing opener credential used to be `STATE=blocked` and exit 0, after
+// the branch had already been pushed. That green night is what orphaned
+// `release/v0.3.2`, so the credential is now a precondition that fails before
+// anything is pushed and the author's runtime check can never be reached.
+test('a missing opener token is a red precondition before the push, not a green blocked night', () => {
+  const precondition = daily.indexOf('- name: Check the opener precondition')
+  assert.notEqual(precondition, -1, 'a step checks the opener precondition')
+  assert.ok(precondition < daily.indexOf('- name: Push the release branch'), 'the precondition is a step ordered before the push, so nothing is pushed when it fails')
+  const step = between('      - name: Check the opener precondition', '      - name: Push the release branch')
+  assert.match(step, /secrets\.RELEASE_OPEN_TOKEN/, 'it reads the same secret the opener uses')
+  assert.match(step, /::error::/, 'a refused precondition is red')
+  assert.match(step, /exit 1/)
   assert.ok(daily.indexOf('- name: Write the plan artifact') < daily.indexOf('- name: Open the release pull request'), 'the opener reads the artifact, so it is written first')
   assert.match(between('      - name: Write the plan artifact', '      - name: Open the release pull request'), /if: \$\{\{ always\(\) \}\}/)
+  const openStep = between('      - name: Open the release pull request', '      - name: Comment on #80')
+  assert.equal(openStep.includes('STATE=blocked'), false, 'the blocked-green state is gone, not merely unused')
+})
+
+test('the Decide snippet itself turns the orphan reason into a red run', () => {
+  // The drive returns `report-blocked`; nothing asserted that the snippet in the
+  // workflow reads it as a red state rather than leaving a green night with the
+  // reason in a log line (#333 review). The reason carries branch and sha, so
+  // writing it into the summary is what names them.
+  const step = between('      - name: Decide', '      - name: Check the opener precondition')
+  assert.match(step, /decision\.action === "report-blocked"/)
+  assert.match(step, /startsWith\("orphan-branch"\)/)
+  assert.match(step, /STATE=orphan-branch/, 'the summary names the state')
+  assert.match(step, /\$\{decision\.reason\}/, 'the summary carries the reason, so branch and sha are named')
+  assert.match(step, /::error::/, 'the annotation makes the failure visible in the run UI')
+  assert.match(step, /process\.exitCode = 1/, 'the step exits red, not green')
 })
 
 test('the #80 comment carries the open state, and still posts after a refusal', () => {

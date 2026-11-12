@@ -267,12 +267,13 @@ reviewer account cannot open the release pull request even if it were installed
 by mistake. The token reaches the step through the environment only; it is never
 an argument, an output or a log line.
 
-A missing secret is the `blocked` state, not a failed night: the step reports it
-in the job summary and on #80, records it in the `release-plan` artifact, and
-opens nothing. A refused precondition — the branch at another commit, `main`
-moved since the plan, a path outside the mechanical set, the version or changelog
-check failing in the fetched tree — is a red run with the reason in the same
-three places. Dry runs and nights that pushed nothing never reach the write path.
+A missing secret is a red precondition, not a reported night: the run fails
+before the branch is pushed and names `RELEASE_OPEN_TOKEN`, and because nothing
+was pushed it says nothing on #80. A refused opener — the branch at another
+commit, `main` moved since the plan, a path outside the mechanical set, the
+version or changelog check failing in the fetched tree — is a red run with the
+reason in the job summary and on #80. Dry runs and nights that pushed nothing
+never reach the write path.
 
 A manual run is still possible and uses the same tool:
 

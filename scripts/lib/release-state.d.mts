@@ -14,6 +14,18 @@ export interface CheckRunEntry {
   conclusion?: string | null
 }
 
+export interface ReleaseBranchEntry {
+  name?: string
+  commit?: { sha?: string }
+}
+
+export interface OrphanBranch {
+  branch: string
+  version: string
+  tag: string
+  sha: string
+}
+
 export interface ReleaseState {
   lastTag: string
   lastTagCommittedAt: string
@@ -26,6 +38,8 @@ export interface ReleaseState {
   openPrRejected: { number: number; title: string; branch: string; repo: string } | null
   lastMerged: PullRequestPageEntry | null
   mergedPrs: PullRequestPageEntry[]
+  /** `release/v<version>` branches with no pull request in any state and no tag. */
+  orphanBranches: OrphanBranch[]
 }
 
 export declare function flattenPages(value: unknown): PullRequestPageEntry[]
@@ -41,6 +55,7 @@ export declare function buildState(input: {
   closedPages?: unknown
   openPages?: unknown
   checks?: unknown
+  branches?: Array<ReleaseBranchEntry | string>
 }): ReleaseState
 
 export declare function plannerInput(state: ReleaseState): {

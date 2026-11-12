@@ -40,6 +40,7 @@ export interface DriveState {
   tags?: string[]
   ciOk?: string
   dryRun?: boolean
+  orphanBranches?: Array<{ branch?: string; version?: string; tag?: string; sha?: string }>
 }
 
 export interface DriveDecision {
@@ -51,6 +52,7 @@ export interface DriveDecision {
   sha?: string
   version?: string
   failing?: string[]
+  branch?: string
   dryRun?: boolean
   wouldHave?: string
 }
