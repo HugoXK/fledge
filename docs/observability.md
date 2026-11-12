@@ -21,10 +21,12 @@ Core series:
 
 - `fledge_http_requests_total{method,route,status}` and
   `fledge_http_request_seconds`
-- `fledge_jobs_total{status,kind}`, `fledge_job_seconds`, `fledge_jobs_active`,
+- `fledge_jobs_total{status,kind}`, `fledge_job_seconds`,
+  `fledge_job_queue_seconds`, `fledge_job_output_total`, `fledge_jobs_active`,
   `fledge_jobs_queued`
 - `fledge_queue_depth`, `fledge_lease_expired_total`,
-  `fledge_admission_rejected_total{reason}`
+  `fledge_admission_rejected_total{reason}`, `fledge_meta_issue_total`,
+  `fledge_auto_merge_candidates`, `fledge_ops_alerts_open`
 - `fledge_retries_total{kind}`, `fledge_merges_total{result}`,
   `fledge_path_guard_blocked_total`, `fledge_verification_failed_total`
 - `fledge_github_requests_total{method,status}`,
@@ -35,12 +37,21 @@ Suggested SLOs:
 
 | SLO | Target |
 |---|---|
-| job success rate (7d) | ≥ 90% |
+| job success rate (succeeded+failed, 7d) | ≥ 90% |
 | p95 queue wait | < 10 min |
 | p95 job duration | < 30 min |
-| merge success after green checks | ≥ 98% |
-| bridge availability | ≥ 99% |
-| GitHub 429/5xx rate | < 2% |
+| merge success after green checks | ≥ 98% <!-- slo:reported-only --> |
+| bridge availability | ≥ 95% (failure rate ≤ 5% of non-2xx bridge requests) |
+| GitHub 429 rate | ≤ 0.1 req/s (status=429 only) |
+
+`test/sloDefinitions.test.ts` reads this table and the rules file together, so a
+row and its rule cannot disagree about the unit (a share versus an absolute
+rate), the selector (which responses are counted) or the target by more than one
+percentage point. A target with no rule carries the `<!-- slo:reported-only -->`
+marker instead: it is reported, not paged on, and pretending otherwise reads as
+coverage that does not exist. The bridge and GitHub rows state the shipped rule
+exactly; raising either target means changing `deploy/prometheus/fledge-alerts.yml`
+in the same PR, which is an alerting change and not a documentation edit.
 
 ## Alert rules and SLO report
 
