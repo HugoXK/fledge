@@ -232,6 +232,56 @@ test('a SARIF whose runs is missing or not a list names that shape', (t) => {
   assert.match(notList.stderr, /has no analysis run \(runs: missing or not a list\)/)
 })
 
+// #342: the same blindness one level down. `runs` is a list with a slot in it and
+// nothing in the slot, so it is not the "no analysis run" shape the refusal above
+// names, and the reader — which reaches for `run?.tool` — reads it as zero
+// results. A gate that maps "a run slot with no run in it" to "found nothing"
+// hands a green verdict to a document no analysis produces, which is the failure
+// mode the three refusals exist to prevent.
+//
+// The plain-object predicate is the whole acceptance here: JavaScript calls an
+// array an object, so a guard written as `entry !== null && typeof entry ===
+// 'object'` satisfies the null fixture and still passes `[]`. The two fixtures
+// below are therefore a pair — null alone does not separate a correct guard from
+// a passing one, and the array is what does. A string, a number and a boolean are
+// the rest of the family and are refused for the same reason, with no "an empty
+// array is fine" carve-out.
+test('a run slot that is not a plain JSON object is refused by name', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+
+  for (const run of ['null', '[]', '"x"', '42', 'true']) {
+    writeFileSync(join(sarifDir, 'head.sarif'), `{"version":"2.1.0","runs":[${run}]}`)
+    const refused = runGate(sarifDir, baselinePath)
+    const output = `${refused.stdout}${refused.stderr}`
+    assert.equal(refused.code, 1, `a run slot holding ${run} must fail closed`)
+    assert.match(
+      refused.stderr,
+      /is not readable SARIF: run 0 is not an object/,
+      `a run slot holding ${run} is refused by name, with the file and the index`,
+    )
+    assert.doesNotMatch(output, /parsed 0 result\(s\)/, `a run slot holding ${run} must not read as a clean analysis`)
+    assert.doesNotMatch(output, /TypeError/, `a run slot holding ${run} must be a refusal, not a crash`)
+  }
+
+  // The index is the slot's own, not always 0: a real run in front of the bad
+  // slot must not shift the message onto the run that was fine.
+  writeFileSync(join(sarifDir, 'head.sarif'), '{"version":"2.1.0","runs":[{"results":[]},null]}')
+  const shifted = runGate(sarifDir, baselinePath)
+  assert.equal(shifted.code, 1, 'a bad slot after a good one still fails closed')
+  assert.match(shifted.stderr, /is not readable SARIF: run 1 is not an object/)
+
+  // And the guard must not widen past its purpose: a real analysis that
+  // legitimately found nothing keeps its pass.
+  writeFileSync(join(sarifDir, 'head.sarif'), JSON.stringify({ version: '2.1.0', runs: [{ results: [] }] }))
+  const empty = runGate(sarifDir, baselinePath)
+  assert.equal(empty.code, 0, `an analysis that found nothing is still the pass state: ${empty.stderr}`)
+  assert.match(empty.stdout, /codeql-gate: ok \(parsed 0 result\(s\), 0 high\/critical, 0 added/)
+})
+
 // #297: the three shapes that are not a SARIF document at all. A top-level
 // array, a string and a number are not plain objects either, yet each already
 // fails closed with the missing-or-not-a-list form rather than a crash, so the
