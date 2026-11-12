@@ -61,6 +61,17 @@ for (const file of files) {
     console.error(`codeql-gate: ${file} is not readable SARIF: ${error.message}`)
     process.exit(1)
   }
+  // #297: `JSON.parse('null')` returns `null`, and reading `runs` off it throws a
+  // TypeError, so the gate died with a stack trace instead of naming a refusal.
+  // A document with no shape says nothing about analysis runs, so it is refused
+  // exactly as an unparseable body is. The predicate stays this narrow on
+  // purpose: `[]`, `"x"` and `42` are not plain objects either, yet they already
+  // fail closed below with their own named shape, and re-wording a working
+  // refusal is not this fix.
+  if (document === null) {
+    console.error(`codeql-gate: ${file} is not readable SARIF: the document is JSON null`)
+    process.exit(1)
+  }
   // "Read and found nothing" and "never analysed anything" are different
   // verdicts: only the second is a blind gate.
   const runs = Array.isArray(document.runs) ? document.runs.length : 0
