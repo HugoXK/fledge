@@ -148,6 +148,30 @@
     }
   }, true)
 
+  document.querySelectorAll('table.table-priority').forEach((table) => {
+    if (table.querySelector('[data-priority="low"]') === null) return
+    const scroll = table.closest('.table-scroll')
+    if (!scroll) return
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'table-more btn btn-ghost btn-small'
+    button.setAttribute('aria-expanded', 'false')
+    const label = () => {
+      const showing = table.getAttribute('data-show-low') === 'true'
+      if (current === 'en') return showing ? 'Fewer columns' : 'Show all columns'
+      return showing ? '收起全部列' : '显示全部列'
+    }
+    button.textContent = label()
+    table.setAttribute('data-table-ready', 'true')
+    button.addEventListener('click', () => {
+      const show = table.getAttribute('data-show-low') !== 'true'
+      table.setAttribute('data-show-low', show ? 'true' : 'false')
+      button.setAttribute('aria-expanded', show ? 'true' : 'false')
+      button.textContent = label()
+    })
+    scroll.before(button)
+  })
+
   document.querySelectorAll('[data-goal-template]').forEach((select) => {
     select.addEventListener('change', () => {
       const target = document.getElementById(select.getAttribute('data-goal-target') || '')

@@ -885,3 +885,12 @@ a.list-row:hover strong { color: var(--accent); }
   .table-scroll thead th:first-child { z-index: 2; }
   .table-scroll tbody tr:hover td:first-child { background: var(--panel-2); }
 }
+
+.table-more { display: none; margin: 0 0 var(--space-2); }
+@media (min-width: 641px) and (max-width: 960px) {
+  .table-more { display: inline-flex; }
+  table.table-priority[data-table-ready="true"] th[data-priority="low"],
+  table.table-priority[data-table-ready="true"] td[data-priority="low"] { display: none; }
+  table.table-priority[data-table-ready="true"][data-show-low="true"] th[data-priority="low"],
+  table.table-priority[data-table-ready="true"][data-show-low="true"] td[data-priority="low"] { display: table-cell; }
+}
