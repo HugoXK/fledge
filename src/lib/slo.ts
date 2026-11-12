@@ -29,6 +29,28 @@ export const SLO_JOB_STATUSES = [SLO_SUCCESS_STATUS, 'failed'] as const satisfie
 // and `running` are absent from both lists because they are not terminal.
 export const EXCLUDED_JOB_STATUSES = ['cancelled', 'paused', 'quota_exhausted'] as const satisfies readonly JobStatus[]
 
+// The six queries the report runs, each paired with the field it fills. The
+// pairing lives here, once, so the CLI cannot label one series with another: it
+// sends `pair[1]` and fills `pair[0]`, and no second list of names exists to
+// drift out of order. Before this list the CLI built the six expressions and then
+// read the answers back by position at a destructure that named the fields
+// separately, so swapping two names there printed a plausible, wrong report and
+// left every test green.
+export const SLO_QUERY_PAIRS = [
+  [
+    'successRate',
+    `sum(rate(fledge_jobs_total{status="${SLO_SUCCESS_STATUS}"}[7d])) / sum(rate(fledge_jobs_total{status=~"${SLO_JOB_STATUSES.join('|')}"}[7d]))`,
+  ],
+  ['queueP95Seconds', 'histogram_quantile(0.95, sum(rate(fledge_job_queue_seconds_bucket[7d])) by (le))'],
+  ['jobP95Seconds', 'histogram_quantile(0.95, sum(rate(fledge_job_seconds_bucket[7d])) by (le))'],
+  [
+    'bridgeSuccessRate',
+    'sum(rate(fledge_bridge_requests_total{status=~"2.."}[7d])) / sum(rate(fledge_bridge_requests_total[7d]))',
+  ],
+  ['github429PerSecond', 'sum(rate(fledge_github_requests_total{status="429"}[7d]))'],
+  ['openAlerts', 'fledge_ops_alerts_open'],
+] as const satisfies readonly (readonly [keyof SloInput, string])[]
+
 export function errorBudget(actual: number | null, target: number): number | null {
   if (actual === null || !Number.isFinite(actual) || target >= 1) return null
   return Math.max(0, Math.min(1, (actual - target) / (1 - target)))

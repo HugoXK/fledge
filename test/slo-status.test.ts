@@ -13,20 +13,24 @@ test('the alert rules and the report both select the denominator from the one ex
   const selectors = [...rules.matchAll(/status=~"([^"]+)"/g)].map((match) => (match[1] ?? '').split('|').sort())
   assert.equal(selectors.length, 2, 'the job success rule carries two regex selectors')
   for (const selector of selectors) assert.deepEqual(selector, expected)
+  const report = read('src/lib/slo.ts')
+  assert.equal(report.includes('succeeded|failed'), false, 'the report does not carry a second copy of the status set')
+  assert.match(report, /SLO_JOB_STATUSES\.join\('\|'\)/, 'the report builds its selector from the exported set')
   const script = read('scripts/slo-report.mjs')
-  assert.equal(script.includes('succeeded|failed'), false, 'the report does not carry a second copy of the status set')
-  assert.match(script, /SLO_JOB_STATUSES/, 'the report builds its selector from the exported set')
+  assert.equal(script.includes('status=~'), false, 'the CLI carries no selector of its own')
 })
 
 test('the numerator is one exported status, and neither file carries it as a second literal', () => {
   // The set is built from the status, not the other way round, so nothing here
   // depends on array order; the membership check is what pins the relationship.
   assert.ok([...SLO_JOB_STATUSES].includes(SLO_SUCCESS_STATUS), 'the success status is one of the counted statuses')
-  const script = read('scripts/slo-report.mjs')
-  // A mutated numerator (`status="failed"`) has to red: the only shape the script
+  const report = read('src/lib/slo.ts')
+  // A mutated numerator (`status="failed"`) has to red: the only shape the report
   // may carry is the interpolation of the constant itself.
-  assert.equal(script.includes('status="succeeded"'), false, 'the report does not inline the success status')
-  assert.equal(script.includes('status="${SLO_SUCCESS_STATUS}"'), true, 'the report builds its numerator from the exported status')
+  assert.equal(report.includes('status="succeeded"'), false, 'the report does not inline the success status')
+  assert.equal(report.includes('status="${SLO_SUCCESS_STATUS}"'), true, 'the report builds its numerator from the exported status')
+  const script = read('scripts/slo-report.mjs')
+  assert.equal(script.includes('fledge_jobs_total'), false, 'the CLI carries no PromQL of its own')
   const rules = read('deploy/prometheus/fledge-alerts.yml')
   // The exact-match form on the job counter is the numerator: `status=~"..."` is
   // the denominator and is pinned by the test above, and the GitHub 429 selector

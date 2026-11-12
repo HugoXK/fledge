@@ -129,10 +129,17 @@ test('the default base stays the loopback the report used before', async () => {
 })
 
 // The CLI must not build its own request any more: two places that decide what
-// goes on the wire are two places that can disagree about credentials.
+// goes on the wire are two places that can disagree about credentials. The seam
+// moved one module further out when the report tail became importable, so the
+// pin follows it: the CLI imports the tail, the tail imports the seam, and
+// neither of them reads the base URL or calls `fetch` itself.
 test('the CLI takes its base and header from the seam, not from its own environment read', () => {
-  const source = readFileSync('scripts/slo-report.mjs', 'utf8')
-  assert.match(source, /from '\.\/lib\/prometheus-url\.mjs'/, 'the CLI imports the seam')
-  assert.doesNotMatch(source, /PROMETHEUS_URL/, 'the CLI does not read the base URL itself')
-  assert.doesNotMatch(source, /fetch\(/, 'the CLI does not call fetch itself')
+  const cli = readFileSync('scripts/slo-report.mjs', 'utf8')
+  assert.match(cli, /from '\.\/lib\/slo-report\.mjs'/, 'the CLI imports the report tail')
+  assert.doesNotMatch(cli, /PROMETHEUS_URL/, 'the CLI does not read the base URL itself')
+  assert.doesNotMatch(cli, /fetch\s*\(/, 'the CLI does not call fetch itself')
+  const tail = readFileSync('scripts/lib/slo-report.mjs', 'utf8')
+  assert.match(tail, /from '\.\/prometheus-url\.mjs'/, 'the tail imports the seam')
+  assert.doesNotMatch(tail, /PROMETHEUS_URL/, 'the tail does not read the base URL itself')
+  assert.doesNotMatch(tail, /fetch\s*\(/, 'the tail does not call fetch itself')
 })
