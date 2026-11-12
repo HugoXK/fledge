@@ -1,0 +1,1 @@
+The work-item board now offers the `assigned → pr_ready` move, so a work item that still reads `assigned` when its job reports a pull request can be moved to the state the job service already writes. The state control had refused that step even though nothing else about the item changed.

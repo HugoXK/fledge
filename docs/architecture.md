@@ -240,7 +240,9 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   code. A developer cannot run review jobs even when GitHub grants write access.
 - **Work items and gates**: each repository has work items with a
   triage-to-merge state machine (`proposed → triaged → assigned → in_progress →
-  pr_ready → in_review → changes_requested → approved → merged/closed`). Jobs
+  pr_ready → in_review → changes_requested → approved → merged/closed`, plus the
+  direct `assigned → pr_ready` edge a job takes when it reports its pull request
+  while the row still reads `assigned`). Jobs
   link to a work item, and issue/PR/review webhooks keep state and PR outcome in
   sync. Issue labels map `priority:high|medium|low` (or `p0`–`p3`) to work-item
   priority, and an `agent-ready` label moves a proposed item to triaged. A

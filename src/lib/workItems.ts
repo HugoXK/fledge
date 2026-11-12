@@ -28,7 +28,7 @@ export const WORK_ITEM_STATES: readonly WorkItemState[] = [
 export const WORK_ITEM_TRANSITIONS: Record<WorkItemState, readonly WorkItemState[]> = {
   proposed: ['triaged', 'closed'],
   triaged: ['assigned', 'closed'],
-  assigned: ['in_progress', 'triaged', 'closed'],
+  assigned: ['in_progress', 'pr_ready', 'triaged', 'closed'],
   in_progress: ['pr_ready', 'triaged', 'changes_requested', 'closed'],
   pr_ready: ['in_review', 'changes_requested', 'merged', 'closed'],
   in_review: ['changes_requested', 'approved', 'merged', 'closed'],
