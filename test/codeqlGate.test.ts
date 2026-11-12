@@ -132,13 +132,22 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // CSRF guards insert 44 lines above the webhook registration, so the merged
   // tree measures `:3046`. #362 and #416 landed on main before this merge: the search import, the search route and the export-cap refusal all sit above the webhook registration, which read `:3062` on main before this branch's 44 lines. On the merged tree those read `:471`/`:506`/`:516`/`:526` and `:3106`, and the two gateway registrations `:155`/`:180`. Every number above was read from this tree, never
   // added to a base: no result was added or dismissed, and the two gateway
-  // alerts (#41, #42, both dismissed false positive) are the same two.
+  // alerts (#41, #42, both dismissed false positive) are the same two. #457
+  // then adds its limit guard, its two refusal helpers and its two add-path
+  // call sites: the four top-of-file registrations read `:516`/`:551`/`:561`/`:571`
+  // on the merged tree and the webhook registration reads `:3197`, while the
+  // gateway pair stays `:155`/`:180`. #488 (the settings-anchor call site) and
+  // #489 (`public/app.css` plus two layout tests) then merged without touching
+  // `src/app.ts`, so the refresh onto `main@fd76f696` re-read all seven route
+  // lines on the merged tree and moved none of them. The rework after review
+  // `901ad95` adds eight lines to the bulk add path below the four top-of-file
+  // registrations, so the webhook anchor reads `:3197` and the rest stay.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3106',
-    'js/missing-rate-limiting|src/app.ts|471',
-    'js/missing-rate-limiting|src/app.ts|506',
+    'js/missing-rate-limiting|src/app.ts|3197',
     'js/missing-rate-limiting|src/app.ts|516',
-    'js/missing-rate-limiting|src/app.ts|526',
+    'js/missing-rate-limiting|src/app.ts|551',
+    'js/missing-rate-limiting|src/app.ts|561',
+    'js/missing-rate-limiting|src/app.ts|571',
     'js/missing-rate-limiting|src/gateway/gateway.ts|155',
     'js/missing-rate-limiting|src/gateway/gateway.ts|180',  ])
   const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
