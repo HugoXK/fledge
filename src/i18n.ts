@@ -209,6 +209,7 @@ const MESSAGES: Record<string, string> = {
   '计划尚未批准。': 'The plan has not been approved yet.',
   '不支持这个 token 范围。': 'That token scope is not supported.',
   '只有管理员可以创建永不过期的 token。': 'Only an admin can create a token without an expiry.',
+  '计划已过期关闭，不能再批准；重新创建工作项即可生成新计划。': 'This plan expired and is closed, so it cannot be approved; create a new work item to plan again.',
   '计划已批准，可以执行。': 'The plan was approved and can be executed.',
   '计划已拒绝。': 'The plan was rejected.',
   '请填写工作项标题。': 'Enter a work item title.',

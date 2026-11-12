@@ -95,6 +95,12 @@ export interface Config {
     /** Default lifetime of a new personal `flg_` token, in days. */
     patExpiryDays: number
   }
+  plan: {
+    /** Days a plan may wait for a maintainer before it expires into `closed`. */
+    expiryDays: number
+    /** Days before the deadline when the single reminder is sent. */
+    reminderDays: number
+  }
   digest: {
     hour: number
     timeZone: string
@@ -294,6 +300,10 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     tokens: {
       patExpiryDays: Math.max(1, number('PAT_EXPIRY_DAYS', DEFAULT_PAT_EXPIRY_DAYS)),
+    },
+    plan: {
+      expiryDays: Math.max(1, number('PLAN_EXPIRY_DAYS', 7)),
+      reminderDays: Math.max(0, number('PLAN_REMINDER_DAYS', 2)),
     },
     digest: {
       hour: Math.min(23, Math.max(0, number('DIGEST_HOUR', 9))),

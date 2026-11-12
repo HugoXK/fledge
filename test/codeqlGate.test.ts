@@ -109,24 +109,24 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // #251 moved these five route registrations: one import line at `:40` and
   // five lines inside the webhook path. #357 adds one line above the webhook
   // route registration, so the `:2957` pin and its baseline entry moved to
-  // `:2958` together in that commit, which is what keeps "refreshed" from
-  // becoming "silently re-labelled". #358 moved the two gateway registrations
+  // `:2958` together in that commit. #358 moved the two gateway registrations
   // the same way: two import lines and the `readAnswer` helper above them, 19
   // lines in total, with no new route and no change to the limiter call that
   // opens each handler; alerts #41 and #42 stay the same two dismissed results.
-  // #355 moves anchors in two places for two reasons. Its one import line at
-  // `:27` sits above the four route registrations near the top of the file, so
-  // those four move by one and read `:470`/`:505`/`:515`/`:525` here, not main's
-  // `:469`/`:504`/`:514`/`:524`; the scope and expiry checks it adds in the token
-  // create route sit above the webhook registration, which moves to `:2971`;
-  // and its gateway rewrite adds 10 lines above both gateway registrations,
-  // which is why they read `:154`/`:179` and not main's `:144`/`:169`. No result
-  // was added or dismissed by this PR: every moved line is the same code the
-  // baseline already recorded, re-measured on this tree, and the first attempt
-  // at this refresh re-keyed only the webhook and the gateway pair, which the
-  // analysis refused with four added results at `:470`/`:505`/`:515`/`:525`.
+  // #355 moves anchors for two reasons and this merge re-measures all of them.
+  // Its one import line at `:27` sits above the four route registrations near
+  // the top of the file, so those four read `:470`/`:505`/`:515`/`:525` here and
+  // not main's `:469`/`:504`/`:514`/`:524`; its scope and expiry checks sit in the
+  // token create route, above the webhook registration; and its gateway rewrite
+  // adds 10 lines above both gateway registrations. `#359` raised that webhook
+  // registration to `:2974` and then `:2979` on main, so the merged tree measures
+  // `:2992`, and the gateway pair reads `:154`/`:179` rather than main's
+  // `:144`/`:169`. Every number above was read from this tree, never added to a
+  // base: no result was added or dismissed, and the first attempt at the refresh
+  // re-keyed only the webhook and the gateway pair, which the analysis refused
+  // with four added results at `:470`/`:505`/`:515`/`:525`.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|2971',
+    'js/missing-rate-limiting|src/app.ts|2992',
     'js/missing-rate-limiting|src/app.ts|470',
     'js/missing-rate-limiting|src/app.ts|505',
     'js/missing-rate-limiting|src/app.ts|515',
