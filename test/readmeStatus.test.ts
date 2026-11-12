@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { isMechanicalPath } from '../scripts/lib/mechanical-release.mjs'
+import { isMechanicalPath, mechanicalDiffShape } from '../scripts/lib/mechanical-release.mjs'
 
 // #263: the READMEs are the source of the published guide, and both carry the
 // released version in a status line. A release that bumps package.json without
@@ -78,15 +78,35 @@ test('the deploy doc still says the docs site builds from this repository', () =
   )
 })
 
-// T1 keeps the READMEs out of the mechanical release surface on purpose: adding
-// them there changes the release routine from "a person updates the status line"
-// to "the routine writes user-facing prose", which is a separate T3 decision.
-test('the READMEs are not part of the mechanical release surface', () => {
-  for (const file of Object.keys(STATUS_MARKERS)) {
+// #348 supersedes the T1 boundary this assertion used to draw. The routine now
+// writes the status line, because a mechanical release could not pass this suite
+// without it (#347). What stays true is the narrowness: the status line is the
+// only mechanical part of these files, so a README hunk that is anything else
+// keeps its review rather than riding the release's T0 exemption.
+test('the READMEs are mechanical on their status line only', () => {
+  for (const [file, marker] of Object.entries(STATUS_MARKERS)) {
     assert.equal(
       isMechanicalPath(file),
+      true,
+      `${file} must be in the mechanical release set: the release routine writes its status line (#348)`,
+    )
+    const line = (old: string, next: string): string => `@@ -1 +1 @@\n-${old}\n+${next}`
+    // Both bracket styles exist in the two files, and the writer keeps whichever
+    // one the line already uses.
+    const zh = marker.includes('状态')
+    const status = (version: string, date: string): string =>
+      zh
+        ? `${marker} 最新发布是 \`v${version}\`（${date}）：<https://example.test/>。`
+        : `${marker} \`v${version}\` is the latest release (${date}) at <https://example.test/>.`
+    assert.equal(
+      mechanicalDiffShape([{ filename: file, patch: line(status('0.3.1', '2026-11-11'), status('0.3.2', '2026-11-12')) }], '0.3.2').shaped,
+      true,
+      `${file}: the status line the release writes must be the mechanical shape`,
+    )
+    assert.equal(
+      mechanicalDiffShape([{ filename: file, patch: line('Some prose a release must not touch.', 'Other prose.') }], '0.3.2').shaped,
       false,
-      `${file} is now in the mechanical release set; that is the separate release-policy decision #263 reserves, not a test change`,
+      `${file}: prose is not the release's to write, so a hunk that is not the status line stays outside the surface`,
     )
   }
 })
