@@ -1,1 +1,0 @@
-Every line a job writes now carries that job's id under one key, `trace`, instead of the three shapes (`job`, `jobId` and nothing) it used before; the bridge handoff, the mock runner and the gateway usage line carry it too. The job page prints the same value next to the timeline as the token to search, so one search returns the whole job and no other.

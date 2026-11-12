@@ -1,1 +1,0 @@
-The work-item board no longer strands a row when a job ends without a pull request: a job refused for exhausted quota now returns its assigned or in-progress item to triaged, the same way a failed job does, and the recorded transitions offer that move back to triaged so the manual status endpoint and the board show it.

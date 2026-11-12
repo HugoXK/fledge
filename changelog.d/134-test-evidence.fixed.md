@@ -1,1 +1,0 @@
-Test evidence is verified only when a test check actually ran and passed. A skipped or neutral test job, or a job whose name merely contains "test" (such as `latest-deps`), no longer reports the change as "Verified": the job page shows 未核实 / Unverified and the merge gate refuses a claimed green test that no test check supports.
