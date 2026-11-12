@@ -136,13 +136,16 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // moved. Every number above was read from the tree that ships
   // this file, never added to a base: no result was added or dismissed, and the
   // two gateway alerts (#41, #42, both dismissed false positive) are the same
-  // two.
+  // two. #457 inserts its limit guard and two refusal helpers 32 lines above
+  // the four top-of-file registrations, which read `:503`/`:538`/`:548`/`:558`
+  // on its tree, and the webhook registration reads `:3120`; the gateway pair
+  // does not move and stays `:155`/`:180`.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3062',
-    'js/missing-rate-limiting|src/app.ts|471',
-    'js/missing-rate-limiting|src/app.ts|506',
-    'js/missing-rate-limiting|src/app.ts|516',
-    'js/missing-rate-limiting|src/app.ts|526',
+    'js/missing-rate-limiting|src/app.ts|3120',
+    'js/missing-rate-limiting|src/app.ts|503',
+    'js/missing-rate-limiting|src/app.ts|538',
+    'js/missing-rate-limiting|src/app.ts|548',
+    'js/missing-rate-limiting|src/app.ts|558',
     'js/missing-rate-limiting|src/gateway/gateway.ts|155',
     'js/missing-rate-limiting|src/gateway/gateway.ts|180',
   ])
