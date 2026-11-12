@@ -1015,6 +1015,11 @@ export class Jobs {
         priority: input.priority,
         retryAttempt: input.attempt,
         retryOf: original.id,
+        // #353: the retry is released as a scheduled run, so it has to carry
+        // the original row's mark. Without it a person's run that failed
+        // transiently mails nothing: the failure waits for the retry, and the
+        // retry's success would take the scheduled side.
+        ownerStarted: original.owner_started === 1,
       })
       if (result.ok) {
         this.store.deleteSetting(row.key)

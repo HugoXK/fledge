@@ -282,3 +282,64 @@ test('ownership is recorded at enqueue instead of inferred from the trigger', as
     store.close()
   }
 })
+
+// #353 rework, second round: ownership has to survive the automatic retry.
+// `releaseDueRetries()` re-enqueues the retry as `trigger: 'schedule'`, so it
+// used to drop the mark: a run a person started failed transiently (suppressed
+// as retry-pending), the retry succeeded as a scheduled run, and the person got
+// no mail at all — worse than before this card, where the failure mailed. The
+// retry has to carry the original row's `owner_started`, and a scheduled
+// original must stay on the scheduled side.
+test('a person-started retry keeps its ownership, so the retry result is the one that mails', async () => {
+  const { store, mailer, jobs, contexts } = build()
+  try {
+    const user = makeUser(store, { login: 'retry-owner', status: 'approved' })
+    const repo = repoFor(store, user.id, 'repo_retry_owner')
+    const successes = (): number => mailer.messages.filter((message) => SUCCESS_SUBJECT.test(message.subject)).length
+    const failures = (): number => mailer.messages.filter((message) => FAILURE_SUBJECT.test(message.subject)).length
+    const bridgeError = 'FlyBot bridge unreachable (http://127.0.0.1:9): fetch failed'
+
+    // A console run is recorded with `owner_started: 1` by `ownerStartedFor()`;
+    // this row is shaped the way that path writes it.
+    await run(jobs, store, { repoId: repo.id, userId: user.id, trigger: 'manual', status: 'failed', error: bridgeError, retryAttempt: 0, ownerStarted: true })
+    assert.equal(failures(), 0, 'the failure waits for the retry instead of mailing')
+    const pending = store.listSettings('retry_pending:')
+    assert.equal(pending.length, 1, 'the transient failure queued one retry')
+    const key = pending[0]!.key
+    const originalId = key.slice('retry_pending:'.length)
+    const row = JSON.parse(store.getSetting(key) ?? '{}') as Record<string, unknown>
+    store.setSetting(key, JSON.stringify({ ...row, dueAt: new Date(Date.now() - 1_000).toISOString() }))
+
+    await jobs.tick()
+    const retry = store.listJobsForRepo(repo.id, 10).find((job) => job.retry_of === originalId)
+    if (retry === undefined) assert.fail('the due retry became a job')
+    assert.equal(retry.trigger, 'schedule', 'the scheduler still releases it')
+    assert.equal(retry.owner_started, 1, 'the retry carries the mark from the row it retries')
+
+    const secret = contexts.at(-1)?.callback.secret
+    if (secret === undefined) assert.fail('the retry dispatch handed the run a callback secret')
+    await jobs.handleCallback(retry.id, secret, { status: 'succeeded', summary: 'retried fine' })
+    assert.equal(successes(), 1, 'exactly one mail: the retry result is the one that speaks')
+    assert.equal(failures(), 0, 'and the suppressed failure never came back as a second mail')
+
+    // Control: the same shape on the scheduled side stays silent, so the mark
+    // is the thing that decides and not the retry itself.
+    await run(jobs, store, { repoId: repo.id, userId: user.id, trigger: 'schedule', status: 'failed', error: bridgeError, retryAttempt: 0 })
+    const scheduledPending = store.listSettings('retry_pending:')
+    assert.equal(scheduledPending.length, 1)
+    const scheduledKey = scheduledPending[0]!.key
+    const scheduledId = scheduledKey.slice('retry_pending:'.length)
+    const scheduledRow = JSON.parse(store.getSetting(scheduledKey) ?? '{}') as Record<string, unknown>
+    store.setSetting(scheduledKey, JSON.stringify({ ...scheduledRow, dueAt: new Date(Date.now() - 1_000).toISOString() }))
+    await jobs.tick()
+    const scheduledRetry = store.listJobsForRepo(repo.id, 10).find((job) => job.retry_of === scheduledId)
+    if (scheduledRetry === undefined) assert.fail('the due scheduled retry became a job')
+    assert.equal(scheduledRetry.owner_started, 0, 'no person acted, so the retry is not marked')
+    const scheduledSecret = contexts.at(-1)?.callback.secret
+    if (scheduledSecret === undefined) assert.fail('the scheduled retry dispatch handed the run a callback secret')
+    await jobs.handleCallback(scheduledRetry.id, scheduledSecret, { status: 'succeeded', summary: 'scheduled retry' })
+    assert.equal(successes(), 1, 'a scheduled retry success still belongs to the digest')
+  } finally {
+    store.close()
+  }
+})
