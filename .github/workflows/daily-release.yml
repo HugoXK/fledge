@@ -282,7 +282,7 @@ jobs:
           git config user.name 'HugoXK'
           git config user.email 'ke.xu@zju.edu.cn'
           git checkout -b "$BRANCH"
-          git add CHANGELOG.md changelog.d package.json package-lock.json docker-compose.yml
+          git add CHANGELOG.md README.md README.zh.md changelog.d package.json package-lock.json docker-compose.yml
           git commit -m "release: v${VERSION}"
           # Idempotent: an unchanged branch is left alone and the night succeeds,
           # a branch with other content is a conflict and the night fails. It is

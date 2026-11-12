@@ -12,6 +12,7 @@
 
 import { readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { STATUS_FILES, STATUS_MARKERS, rewriteStatusLine } from './lib/mechanical-release.mjs'
 
 const DIR = 'changelog.d'
 const CHANGELOG = 'CHANGELOG.md'
@@ -73,10 +74,22 @@ function arg(name, fallback) {
   return process.argv[index + 1] ?? fallback
 }
 
-function bumpVersions(version) {
+function bumpVersions(version, date) {
   const pkgRaw = readFileSync('package.json', 'utf8')
   const previous = String(JSON.parse(pkgRaw).version ?? '')
   if (previous === version) return
+  // #348: both README status lines belong to the release tree, because the suite
+  // the release pull request lands with requires them to name the version in
+  // package.json. Check them before the first write, so a README this routine
+  // cannot rewrite fails the run with the file named instead of leaving a
+  // half-bumped tree that no green check can describe.
+  const readmes = STATUS_FILES.map((file) => ({ file, marker: STATUS_MARKERS[file], text: readFileSync(file, 'utf8') }))
+  for (const entry of readmes) {
+    if (rewriteStatusLine(entry.text, entry.marker, version, date) === null) {
+      console.error(`changelog: ${entry.file} has no status line starting with ${JSON.stringify(entry.marker)}; nothing was written`)
+      process.exit(1)
+    }
+  }
   const escaped = previous.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   writeFileSync('package.json', pkgRaw.replace(new RegExp(`"version":\\s*"${escaped}"`), `"version": "${version}"`))
   const lockRaw = readFileSync('package-lock.json', 'utf8')
@@ -88,6 +101,14 @@ function bumpVersions(version) {
   writeFileSync('package-lock.json', next)
   const compose = readFileSync('docker-compose.yml', 'utf8').replace(/(image:\s*fledge:)[^\s]+/, `$1${version}`)
   writeFileSync('docker-compose.yml', compose)
+  // The status lines take the version this function just wrote into package.json,
+  // not the argument: one source, so a replacement that did not land cannot leave
+  // the READMEs a release ahead of the file the suite compares them against.
+  const written = String(JSON.parse(readFileSync('package.json', 'utf8')).version ?? '')
+  for (const entry of readmes) {
+    const line = rewriteStatusLine(entry.text, entry.marker, written, date)
+    if (line !== null) writeFileSync(entry.file, line)
+  }
 }
 
 function release() {
@@ -124,7 +145,7 @@ function release() {
   }
   writeFileSync(CHANGELOG, next)
   for (const fragment of list) unlinkSync(join(DIR, fragment.name))
-  bumpVersions(version)
+  bumpVersions(version, date)
   console.log(`changelog: released ${version} (${list.length} fragments); versions bumped to ${version}`)
 }
 

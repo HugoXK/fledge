@@ -472,7 +472,7 @@ admin merge.
 node scripts/changelog.mjs check
 node scripts/changelog.mjs preview
 node scripts/changelog.mjs release 0.1.1 --date 2026-10-31
-git add CHANGELOG.md changelog.d package.json package-lock.json
+git add CHANGELOG.md README.md README.zh.md changelog.d package.json package-lock.json
 git commit -m "release: v0.1.1"
 git tag v0.1.1
 ```
@@ -496,9 +496,13 @@ The release workflow runs `npm run check`, builds the image, publishes it to
 GHCR and creates the GitHub release from the changelog. The tag must point at a
 commit whose `CHANGELOG.md` has the matching section.
 
-The release PR touches only `CHANGELOG.md`, `changelog.d/`, `package.json`,
-`package-lock.json` and `docker-compose.yml`; anything else is a normal PR and
-needs a review. No release with no fragments.
+The release PR touches only `CHANGELOG.md`, `README.md`, `README.zh.md`,
+`changelog.d/`, `package.json`, `package-lock.json` and `docker-compose.yml`;
+anything else is a normal PR and needs a review. The two READMEs are on that list
+because the routine writes their status line (`#348`) — one line each, version and
+date, read back from the `package.json` it just wrote, and nothing else in either
+file: a README hunk that is not the status line is outside the surface. No release
+with no fragments.
 
 ### The daily drive
 
@@ -575,19 +579,20 @@ present only as the two API calls.
 The mechanical class is keyed on identity, never on the file set alone:
 `scripts/lib/mechanical-release.mjs` requires the head branch `release/v<next>`,
 the title `release: v<next>` for the same `<next>`, and every changed path inside
-the five allowed paths. `pr-lint` uses it to skip the size rule (a release PR is
+the seven allowed paths. `pr-lint` uses it to skip the size rule (a release PR is
 ~33 files) and the `docs/deploy.md` obligation; `risk-gate` reports
 `risk-tier: T0; basis: mechanical release v<next>` when `ci.yml` passes
-`--branch` and `--title`. The same five-file diff without that key stays T3, which
-is what keeps the `package.json` review gate in place.
+`--branch` and `--title`. The same seven-file diff without that key stays T3,
+which is what keeps the `package.json` review gate in place.
 
 A branch name and a title are written by whoever opens the PR, so the identity is
 not enough on its own: `review-gate` asks `mechanicalDiffShape()` as well, and the
 exemption holds only when the diff is what the release routine writes — the
-version fields in `package.json` and `package-lock.json` and the image tag in
-`docker-compose.yml`, with any content allowed in `CHANGELOG.md` and
-`changelog.d/`. A dependency line, an environment change or a file the API
-returned without a patch keeps the PR at T3, where it needs a PASS like any other.
+version fields in `package.json` and `package-lock.json`, the image tag in
+`docker-compose.yml`, and in each README exactly one status line replaced with the
+same line at the identity's version and the release date, with any content allowed
+in `CHANGELOG.md` and `changelog.d/`. A dependency line, an environment change or a file the API returned
+without a patch keeps the PR at T3, where it needs a PASS like any other.
 Otherwise a release-named branch could carry a dependency change into `main` on a
 green `ci-ok` alone.
 
