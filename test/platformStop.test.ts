@@ -42,6 +42,8 @@ async function platformFixture(): Promise<PlatformFixture> {
   const base = { userId: owner.id, owner: 'acme', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', intervalMinutes: 1440 }
   const busy = store.createRepo({ ...base, id: 'repo_platform_busy', name: 'busy', autoIterate: false })
   const due = store.createRepo({ ...base, id: 'repo_platform_due', name: 'due', autoIterate: true })
+  // #478: a due repo needs an open work item, otherwise the scheduler idles.
+  store.createWorkItem({ id: 'work_platform_due', repoId: due.id, userId: owner.id, title: 'fix due', issueUrl: 'https://github.com/acme/due/issues/1', state: 'triaged' })
   store.createApiToken({ id: 'tok_platform_busy', userId: owner.id, kind: 'job', name: 'job:job_platform_busy', tokenHash: 'platform-busy-hash', prefix: 'flg_plat', expiresAt: null })
   store.createJob({ id: 'job_platform_busy', repoId: busy.id, userId: owner.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-platform-busy', platformTokenHash: 'platform-busy-hash' })
   store.updateJob('job_platform_busy', { status: 'running' })

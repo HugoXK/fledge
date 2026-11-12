@@ -1,0 +1,1 @@
+Scheduled auto work is now backlog-driven: a repo with no open work item stays idle instead of starting a generic iterate job and producing an issue or PR on a timer. When work is open, the next session starts after the short work cooldown rather than the repository's legacy interval, and the scheduler records an idle status instead of inventing work.
