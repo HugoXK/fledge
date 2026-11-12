@@ -128,7 +128,9 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // import line above those four, which read `:471`/`:506`/`:516`/`:526` here,
   // and its `/search` route sits above the webhook registration, which measures
   // `:3036` on the merged tree; the two gateway registrations do not move and
-  // stay `:154`/`:179`. Every number above was read from the tree that ships
+  // stay `:154`/`:179`. #407 adds one import line above both gateway
+  // registrations, so this tree reads `:155`/`:180` there; neither route nor its
+  // limiter call moved. Every number above was read from the tree that ships
   // this file, never added to a base: no result was added or dismissed, and the
   // two gateway alerts (#41, #42, both dismissed false positive) are the same
   // two.
@@ -138,8 +140,8 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
     'js/missing-rate-limiting|src/app.ts|506',
     'js/missing-rate-limiting|src/app.ts|516',
     'js/missing-rate-limiting|src/app.ts|526',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|154',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|179',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|155',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|180',
   ])
   const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
   assert.equal(dismissed.length, 3, 'the three dismissed false-positive results are recorded with their reason')
