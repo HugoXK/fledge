@@ -328,6 +328,41 @@ export interface AuditRow {
   detail: string | null
 }
 
+// #362: only the columns the owner search renders, so a row it returns can carry
+// no `token_enc`, `platform_token_hash` or email.
+export type SearchRepoRow = Pick<RepoRow, 'id' | 'owner' | 'name' | 'enabled'>
+export type SearchJobRow = Pick<JobRow, 'id' | 'repo_id' | 'status' | 'kind' | 'goal' | 'summary' | 'error' | 'pr_url' | 'issue_url' | 'created_at'>
+export type SearchWorkItemRow = Pick<WorkItemRow, 'id' | 'repo_id' | 'title' | 'state' | 'issue_url' | 'pr_url' | 'updated_at'>
+export type SearchAuditRow = Pick<AuditRow, 'id' | 'at' | 'action' | 'detail'>
+
+export interface OwnedSearchFilters {
+  q: string
+  repo: string
+  kind: string
+  status: string
+  from: string
+  to: string
+}
+
+export interface OwnedSearchSection<T> {
+  rows: T[]
+  capped: boolean
+}
+
+export interface OwnedSearch {
+  repos: OwnedSearchSection<SearchRepoRow>
+  jobs: OwnedSearchSection<SearchJobRow>
+  workItems: OwnedSearchSection<SearchWorkItemRow>
+  audit: OwnedSearchSection<SearchAuditRow>
+}
+
+// A LIKE pattern built from a person's text has to match that text: `%`, `_` and
+// the escape character itself are escaped, and every clause that uses this also
+// carries `ESCAPE '\'`.
+function likePattern(q: string): string {
+  return `%${q.replace(/[\\%_]/g, (char) => `\\${char}`)}%`
+}
+
 export interface JobEventRow {
   id: number
   at: string
@@ -2876,6 +2911,36 @@ export class Store {
   countSearchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string }): number {
     const query = this.jobFilter(userIds, filters, 0, 0, true)
     return Number(this.get<{ n: number }>(query.sql, ...query.params)?.n ?? 0)
+  }
+
+  // #362: the owner-facing search. It takes no user list — every clause is anchored
+  // on the signed-in `user_id`, so `adminVisibleUserIds` cannot widen it — and
+  // `filters.q` is text, so LIKE wildcards are escaped. `cap + 1` rows per section
+  // let the page state the cap without a second count query.
+  searchOwned(userId: string, filters: OwnedSearchFilters, cap: number): OwnedSearch {
+    const like = likePattern(filters.q)
+    // The shared tail: the date range on the section's own timestamp, plus the
+    // repository clause for the three tables that own one. Audit rows carry no
+    // repository, so that filter does not narrow them and the page says so.
+    const tail = (column: string, repoColumn: string | null): { sql: string; params: string[] } => {
+      const parts: Array<[string, string]> = []
+      if (repoColumn !== null && filters.repo !== '') parts.push([`${repoColumn} = ?`, filters.repo])
+      if (filters.from !== '') parts.push([`${column} >= ?`, filters.from])
+      if (filters.to !== '') parts.push([`${column} <= ?`, filters.to])
+      return { sql: parts.map(([clause]) => ` AND ${clause}`).join(''), params: parts.map(([, value]) => value) }
+    }
+    const section = <T>(rows: T[]): OwnedSearchSection<T> => ({ rows: rows.slice(0, cap), capped: rows.length > cap })
+    const read = <T>(sql: string, params: Array<string | number>): OwnedSearchSection<T> => section(this.all<T>(`${sql} LIMIT ?`, ...params, cap + 1))
+    const repo = tail('created_at', 'id')
+    const job = tail('created_at', 'repo_id')
+    const item = tail('updated_at', 'repo_id')
+    const audit = tail('at', null)
+    return {
+      repos: read<SearchRepoRow>(`SELECT id, owner, name, enabled FROM repos WHERE user_id = ? AND (name LIKE ? ESCAPE '\\' OR owner || '/' || name LIKE ? ESCAPE '\\' OR goal LIKE ? ESCAPE '\\')${repo.sql} ORDER BY name, id`, [userId, like, like, like, ...repo.params]),
+      jobs: read<SearchJobRow>(`SELECT id, repo_id, status, kind, goal, summary, error, pr_url, issue_url, created_at FROM jobs WHERE user_id = ? AND (id LIKE ? ESCAPE '\\' OR goal LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' OR error LIKE ? ESCAPE '\\' OR pr_url LIKE ? ESCAPE '\\' OR issue_url LIKE ? ESCAPE '\\')${filters.status === '' ? '' : ' AND status = ?'}${filters.kind === '' ? '' : ' AND kind = ?'}${job.sql} ORDER BY created_at DESC, rowid DESC`, [userId, like, like, like, like, like, like, ...(filters.status === '' ? [] : [filters.status]), ...(filters.kind === '' ? [] : [filters.kind]), ...job.params]),
+      workItems: read<SearchWorkItemRow>(`SELECT id, repo_id, title, state, issue_url, pr_url, updated_at FROM work_items WHERE user_id = ? AND (title LIKE ? ESCAPE '\\' OR detail LIKE ? ESCAPE '\\' OR issue_url LIKE ? ESCAPE '\\' OR pr_url LIKE ? ESCAPE '\\')${item.sql} ORDER BY updated_at DESC`, [userId, like, like, like, like, ...item.params]),
+      audit: read<SearchAuditRow>(`SELECT id, at, action, detail FROM audit_log WHERE user_id = ? AND (action LIKE ? ESCAPE '\\' OR detail LIKE ? ESCAPE '\\')${audit.sql} ORDER BY id DESC`, [userId, like, like, ...audit.params]),
+    }
   }
 
   listJobsPage(limit: number, offset: number): JobRow[] {

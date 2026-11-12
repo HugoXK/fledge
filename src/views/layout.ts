@@ -60,6 +60,9 @@ export function quotaPill(user: UserRow, config: Config, locale: Locale = 'zh'):
 export function sectionForPath(path: string): string {
   const clean = path.split('?')[0] ?? '/'
   if (clean === '/console' || clean.startsWith('/console/')) return 'console'
+  // #362: search is the owner's view of their own console data, so the nav keeps
+  // Workspace lit there instead of showing no current section.
+  if (clean === '/search' || clean.startsWith('/search/')) return 'console'
   if (clean === '/dashboard' || clean.startsWith('/dashboard/') || clean === '/repos' || clean.startsWith('/repos/')) return 'dashboard'
   if (clean === '/settings' || clean.startsWith('/settings/')) return 'settings'
   if (clean === '/admin' || clean.startsWith('/admin/')) return 'admin'
