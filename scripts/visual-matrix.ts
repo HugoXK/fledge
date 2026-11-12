@@ -14,6 +14,8 @@ const base = `http://127.0.0.1:${port}`
 const outDir = process.env.VISUAL_OUT ?? join(root, 'visual-matrix')
 const dataDir = mkdtempSync(join(tmpdir(), 'fledge-visual-'))
 const failures: string[] = []
+// `/` is captured signed out above; every other path needs the development login.
+const SIGNED_IN_PATHS = VISUAL_PATHS.filter((path) => path !== '/')
 
 function startServer(): ReturnType<typeof spawn> {
   const child = spawn(process.execPath, [join(root, 'dist/index.js')], {
@@ -110,7 +112,12 @@ async function checkPage(page: import('playwright').Page, locale: string, width:
         header: header === null ? 0 : header.getBoundingClientRect().height,
       }
     })
-    if (positions.target !== null && positions.target < positions.header - 1) {
+    // A missing target used to skip this assertion, so the guard passed on a page
+    // that had no anchor at all. The zero-token empty state links to `#tokens`, so
+    // a settings page without it is a broken link, not a page to measure (#453).
+    if (positions.target === null) {
+      failures.push(`${locale} ${width}px /settings#tokens: the page has no #tokens anchor to scroll to`)
+    } else if (positions.target < positions.header - 1) {
       failures.push(`${locale} ${width}px /settings#tokens: section starts under the sticky header`)
     }
   }
@@ -125,6 +132,25 @@ async function main(): Promise<void> {
     browser = await chromium.launch()
     for (const locale of ['zh', 'en'] as const) {
       mkdirSync(join(outDir, locale), { recursive: true })
+      // The landing page only exists for a signed-out visitor: src/app.ts answers
+      // `/` with a 302 to /dashboard once a session exists, so signing in first
+      // photographed the dashboard twice and called one copy "landing" (#453).
+      const guest = await browser.newContext({
+        viewport: { width: 1280, height: 900 },
+        locale: locale === 'en' ? 'en-US' : 'zh-CN',
+      })
+      const guestPage = await guest.newPage()
+      await guestPage.goto(`${base}/lang/${locale}?next=/`, { waitUntil: 'domcontentloaded' })
+      for (const width of VISUAL_WIDTHS) {
+        await guestPage.setViewportSize({ width, height: viewportHeight(width) })
+        try {
+          await checkPage(guestPage, locale, width, '/')
+        } catch (error) {
+          failures.push(`${locale} ${width}px /: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      await guest.close()
+
       const context = await browser.newContext({
         viewport: { width: 1280, height: 900 },
         locale: locale === 'en' ? 'en-US' : 'zh-CN',
@@ -134,7 +160,7 @@ async function main(): Promise<void> {
       await page.goto(`${base}/lang/${locale}?next=/dashboard`, { waitUntil: 'domcontentloaded' })
       for (const width of VISUAL_WIDTHS) {
         await page.setViewportSize({ width, height: viewportHeight(width) })
-        for (const path of VISUAL_PATHS) {
+        for (const path of SIGNED_IN_PATHS) {
           try {
             await checkPage(page, locale, width, path)
           } catch (error) {

@@ -251,13 +251,22 @@ unknown one:
 ## Visual matrix (多设备视觉矩阵)
 
 `npm run visual:matrix` boots a throwaway app on `127.0.0.1:18180` with the
-development login, a temporary SQLite database and the mock runner. It renders
-the landing, dashboard, settings, admin, add-repository and workspace surfaces
-at 360/390/430/640/768/1024/1280/1440/1920 in both languages, fails when the
-document or an element leaves the viewport, checks that `#tokens` clears the
-sticky header, and writes full-page screenshots under `visual-matrix/` (ignored
-by git). CI uploads that directory as the `visual-matrix` artifact. The matrix
-does not contact GitHub, SMTP or a FlyBot instance.
+development login, a temporary SQLite database and the mock runner. It captures
+the landing page first, in a signed-out context, because `/` answers 302 to
+`/dashboard` for a visitor with a session: capturing it after the development
+login photographed the dashboard twice. It then signs in and renders the
+dashboard, settings, admin, add-repository and workspace surfaces at
+360/390/430/640/768/1024/1280/1440/1920 in both languages, fails when the
+document or an element leaves the viewport, and writes full-page screenshots
+under `visual-matrix/` (ignored by git). CI uploads that directory as the
+`visual-matrix` artifact. The matrix does not contact GitHub, SMTP or a FlyBot
+instance.
+
+On `/settings` it also checks the `#tokens` anchor — the target the zero-token
+empty state links to. A page without that element is a failure
+(`the page has no #tokens anchor to scroll to`), not a skipped measurement, and
+a section that starts under the sticky header fails separately. `test/pages.test.ts`
+pins the same rule for every in-page link the page renders.
 
 ## Owner search (#362)
 `/search` searches only the signed-in owner's rows — repositories, jobs, work items
