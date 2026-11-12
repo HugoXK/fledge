@@ -49,6 +49,10 @@ only that container.
 - Tokens minted before this existed are given one finite window from the upgrade
   (`pat_expiry_backfilled` in `settings`, a one-time backfill), so no live token
   dies at the moment of the upgrade and none stays permanent by accident.
+- The upgrade window is fixed at `DEFAULT_PAT_EXPIRY_DAYS` (90), not at
+  `PAT_EXPIRY_DAYS`: the backfill runs inside the store migration, which has no
+  configuration, so an operator who wants a shorter window for legacy tokens
+  revokes and re-mints them.
 - Job-issued tokens (`kind = 'job'`, `kind = 'instance'`) keep the lifetime their
   own lifecycle sets; the backfill only touches `kind = 'pat'`.
 - The gateway refuses an expired or revoked token with `401 invalid_api_key` and

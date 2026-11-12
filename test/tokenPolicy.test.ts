@@ -58,6 +58,16 @@ test('a token whose scope is not gateway is refused with 403 and does not touch 
     const response = await built.app.inject({ method: 'GET', url: '/v1/models', headers: { authorization: `Bearer ${raw}` } })
     assert.equal(response.statusCode, 403)
     assert.equal((response.json() as { error: { type: string } }).error.type, 'insufficient_scope')
+    // The chat route spends money and reaches the same refusal through the same
+    // helper, so it gets its own case rather than riding on the models route.
+    const chat = await built.app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: { authorization: `Bearer ${raw}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ model: 'any', messages: [{ role: 'user', content: 'hi' }] }),
+    })
+    assert.equal(chat.statusCode, 403)
+    assert.equal((chat.json() as { error: { type: string } }).error.type, 'insufficient_scope')
     assert.equal(store.listApiTokens(user.id).find((row) => row.id === 'tok_read_scope')?.last_used_at, null)
   } finally {
     await built.close()
@@ -174,6 +184,22 @@ test('the settings page shows the scope and the expiry of each token', async () 
     assert.equal(page.statusCode, 200)
     assert.match(page.body, /gateway/)
     assert.match(page.body, new RegExp(expiresAt.slice(0, 10)))
+    // The row carries prefix, name, scope, expiry, last used and revoke, so the
+    // header must name six columns in that order. Counting cells is the half the
+    // earlier assertions could not see: a four-cell header still contains the
+    // word `gateway` and the date, only under the wrong column.
+    const table = page.body.slice(page.body.indexOf('<table'), page.body.indexOf('</table>'))
+    const head = table.slice(0, table.indexOf('</thead>'))
+    const firstRow = table.slice(table.indexOf('<tbody>'), table.indexOf('</tr>', table.indexOf('<tbody>')))
+    // `<thead>` starts with the same three characters, so count opening tags
+    // only where the name ends.
+    assert.equal((head.match(/<th[\s>]/g) ?? []).length, 6, 'the header must name the six columns the row emits')
+    assert.equal((firstRow.match(/<td/g) ?? []).length, 6, 'the row must carry the same six cells')
+    const headCells = [...head.matchAll(/<th>(.*?)<\/th>/g)].map((match) => match[1] ?? '')
+    assert.match(headCells[2] ?? '', /^(范围|Scope)$/, 'the third column names the scope')
+    assert.match(headCells[3] ?? '', /^(有效期|Expires)$/, 'the fourth column names the expiry')
+    const rowCells = [...firstRow.matchAll(/<td>(.*?)<\/td>/g)].map((match) => match[1] ?? '')
+    assert.match(rowCells[2] ?? '', /gateway/, 'the scope sits under its own header, not under Last used')
   } finally {
     await built.close()
   }
