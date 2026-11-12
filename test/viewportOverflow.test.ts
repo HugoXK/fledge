@@ -172,6 +172,19 @@ test('the tooltip explanation stays reachable at every width', () => {
       `at ${String(width)}px hovering must still reveal the tooltip; deleting it to pass the width check is not a fix`,
     )
     assert.equal(lastValue('.info-tip:focus::after', 'opacity', width), '1')
+    // `opacity: 1` on a box that is still `display: none` renders nothing: the
+    // rest state hides the tooltip to keep it out of the scrollable overflow, so
+    // the reveal rule has to restore the box, not only its opacity.
+    assert.equal(
+      lastValue('.info-tip:hover::after', 'display', width),
+      'block',
+      `at ${String(width)}px the hover reveal sets opacity but not display, so every tooltip stays invisible`,
+    )
+    assert.equal(
+      lastValue('.info-tip:focus::after', 'display', width),
+      'block',
+      `at ${String(width)}px the keyboard-focus reveal sets opacity but not display, so the hint is never readable without a mouse`,
+    )
   }
 })
 
