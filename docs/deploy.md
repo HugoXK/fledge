@@ -45,6 +45,7 @@ Key settings:
 | `DATA_DIR` / `DB_PATH` | Defaults `./data`, `./data/fledge.db` |
 | `ALLOW_PRIVATE_MODEL_URLS` | Keep `false` for untrusted users |
 | `METRICS_TOKEN` | Required in production: `/metrics`, and the `commit`/`builtAt` fields of `/healthz`, answer only `Authorization: Bearer <token>` |
+| `PLAN_EXPIRY_DAYS` / `PLAN_REMINDER_DAYS` | How long an unapproved plan may wait before the work item closes with `closed_reason = plan_expired` (default 7), and how many days before that deadline the single reminder is sent (default 2) |
 | `NOTIFY_WEBHOOK_URL` / `NOTIFY_WEBHOOK_SECRET` | Optional outbound notifications (Slack-compatible `text`); the secret is sent as a bearer token. When set, the URL must be an absolute `https:` URL |
 
 Production startup fails closed if the session/encryption keys, OAuth app,

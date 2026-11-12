@@ -2040,7 +2040,7 @@ function workItem(overrides: Partial<WorkItemRow> = {}): WorkItemRow {
   return {
     id: 'work_1', repo_id: 'repo_1', user_id: 'usr_1', title: 'fix the thing',
     detail: '', issue_url: 'https://github.com/octo/demo/issues/1', pr_url: null,
-    state: 'triaged', priority: 0, assignee_user_id: null, job_id: null,
+    state: 'triaged', closed_reason: null, priority: 0, assignee_user_id: null, job_id: null,
     pr_state: null, merged_at: null, merge_commit: null,
     created_at: iso(-3_600_000), updated_at: iso(-3_600_000), ...overrides,
   }
