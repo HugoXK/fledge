@@ -102,14 +102,24 @@ export function formBody(values: Record<string, string | number | undefined>): s
   return params.toString()
 }
 
-export function startFakeServer(handler: http.RequestListener): Promise<{ url: string; close: () => Promise<void> }> {
+export function startFakeServer(
+  handler: http.RequestListener,
+  options: { abortOnClose?: boolean } = {},
+): Promise<{ url: string; close: () => Promise<void> }> {
   return new Promise((resolve) => {
     const server = http.createServer(handler)
     server.listen(0, '127.0.0.1', () => {
       const port = (server.address() as AddressInfo).port
       resolve({
         url: `http://127.0.0.1:${port}`,
-        close: () => new Promise((done) => server.close(() => done())),
+        close: () => new Promise((done) => {
+          // A caller that closes while a request is in flight wants the socket
+          // gone, not a graceful drain: that is what a process stopping in the
+          // middle of a call looks like to the client. Opt-in, so a suite that
+          // only closes after its work settles keeps the graceful path.
+          if (options.abortOnClose === true) server.closeAllConnections()
+          server.close(() => done())
+        }),
       })
     })
   })
