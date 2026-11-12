@@ -108,31 +108,39 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // stay exact so a silent re-label is still a failing test.
   // #251 moved these five route registrations: one import line at `:40` and
   // five lines inside the webhook path. #357 adds one line above the webhook
-  // route registration (once from #357, and #353 adds four more: two in the
-  // failure path, two in the retry route), so the pin and its baseline entry
-  // move to `:2962`. #359 inserts the pending-plan spread and the late-approval
-  // guard in the repository and plan routes, all above the webhook registration,
-  // which moved the same pair to `:2979` on its own tree. In a tree carrying
-  // both, the anchor is measured once rather than added: `#403`'s 21 lines and
-  // this PR's four compose to `:2983`, and the baseline entry and this pin move
-  // there together in the merge commit, which keeps "refreshed" from becoming
-  // "silently re-labelled". #358 moved the two gateway registrations the same
-  // way: two import lines and the `readAnswer` helper above them, 19 lines in
-  // total, with no new route and no change to the limiter call that opens each
-  // handler. The alerts (#41, #42, both dismissed false positive) are the same
-  // two. #356 moves the webhook registration once more: its three settings
-  // session routes, their rate-limit calls and their CSRF guards insert 44 lines
-  // above it, so the pair moves to `:3027` on this tree — below the four
-  // top-of-file registrations and below the gateway registrations, which
-  // therefore do not move at all.
+  // route registration, so the `:2957` pin and its baseline entry moved to
+  // `:2958` together in that commit. #358 moved the two gateway registrations
+  // the same way: two import lines and the `readAnswer` helper above them, 19
+  // lines in total, with no new route and no change to the limiter call that
+  // opens each handler; alerts #41 and #42 stay the same two dismissed results.
+  // #359 then moved the webhook registration to `:2979` on its own tree, and
+  // #353 (four inserts: two in the failure path, two in the retry route) plus
+  // #341 (two comment lines in the retry route) took it to `:2983` on main. In
+  // a tree carrying both, the anchor is measured once rather than added, and
+  // the baseline entry and this pin move there together in the merge commit,
+  // which keeps "refreshed" from becoming "silently re-labelled".
+  // #355 is merged into the main this branch now carries, and it moved anchors
+  // on its own: its one import line at `:27` sits above the four route
+  // registrations near the top of the file, so those read `:470`/`:505`/`:515`/
+  // `:525` here and not main's pre-#355 values; its scope and expiry checks sit
+  // in the token create route above the webhook registration, which reads
+  // `:2996` on `e268836` alone; and its gateway rewrite adds 10 lines above both
+  // gateway registrations, which read `:154`/`:179`. #441 (also in that main)
+  // changed the console surfaces and the type scale, not these routes. This
+  // branch's three settings session routes, their rate-limit calls and their
+  // CSRF guards insert 44 lines above the webhook registration, so the merged
+  // tree measures `:3040`, not `:3027` and not `:2996`. Every number above was
+  // read from this tree, never added to a base: no result was added or
+  // dismissed, and the two gateway alerts (#41, #42, both dismissed false
+  // positive) are the same two.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3027',
-    'js/missing-rate-limiting|src/app.ts|469',
-    'js/missing-rate-limiting|src/app.ts|504',
-    'js/missing-rate-limiting|src/app.ts|514',
-    'js/missing-rate-limiting|src/app.ts|524',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|144',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|169',
+    'js/missing-rate-limiting|src/app.ts|3040',
+    'js/missing-rate-limiting|src/app.ts|470',
+    'js/missing-rate-limiting|src/app.ts|505',
+    'js/missing-rate-limiting|src/app.ts|515',
+    'js/missing-rate-limiting|src/app.ts|525',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|154',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|179',
   ])
   const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
   assert.equal(dismissed.length, 3, 'the three dismissed false-positive results are recorded with their reason')

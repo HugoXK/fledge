@@ -4,6 +4,7 @@ import { isIP } from 'node:net'
 import { resolve } from 'node:path'
 import { buildIdentity } from './lib/buildIdentity.js'
 import { DEFAULT_EXPECTED_HOURS } from './lib/backupStatus.js'
+import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 
 export type RunnerMode = 'mock' | 'flybot'
 export type MailTransport = 'console' | 'smtp'
@@ -91,6 +92,10 @@ export interface Config {
   }
   ops: {
     alertCooldownMinutes: number
+  }
+  tokens: {
+    /** Default lifetime of a new personal `flg_` token, in days. */
+    patExpiryDays: number
   }
   plan: {
     /** Days a plan may wait for a maintainer before it expires into `closed`. */
@@ -296,6 +301,9 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     ops: {
       alertCooldownMinutes: Math.max(0, number('OPS_ALERT_COOLDOWN_MINUTES', 360)),
+    },
+    tokens: {
+      patExpiryDays: Math.max(1, number('PAT_EXPIRY_DAYS', DEFAULT_PAT_EXPIRY_DAYS)),
     },
     plan: {
       expiryDays: Math.max(1, number('PLAN_EXPIRY_DAYS', 7)),

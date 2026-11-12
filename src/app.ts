@@ -24,6 +24,7 @@ import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
 import { rateLimitKey, RateLimiter } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
+import { expiryFromDays, GATEWAY_SCOPE, isTokenScope, patExpiryDays } from './lib/tokens.js'
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
 import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale } from './i18n.js'
@@ -2263,7 +2264,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/settings/tokens', async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
-    const name = (form(request).name ?? '').trim().slice(0, 80) || 'default'
+    const body = form(request)
+    const name = (body.name ?? '').trim().slice(0, 80) || 'default'
+    // #355: a posted `scope` may only name a scope the code enforces, so an
+    // unknown value is refused instead of being written as-is.
+    const scope = (body.scope ?? '').trim() === '' ? GATEWAY_SCOPE : body.scope!.trim()
+    if (!isTokenScope(scope)) return reply.redirect(`/settings?error=${encodeURIComponent('不支持这个 token 范围。')}`)
+    // A token without a deadline is an operator decision, not a user choice.
+    const operator = viewer.user.role === 'admin' || viewer.user.role === 'superadmin'
+    const never = body.expiryDays === 'never'
+    if (never && !operator) return reply.redirect(`/settings?error=${encodeURIComponent('只有管理员可以创建永不过期的 token。')}`)
+    const days = patExpiryDays(body.expiryDays, config.tokens.patExpiryDays)
+    const expiresAt = days === null ? null : expiryFromDays(days)
     const raw = `flg_${randomToken(32)}`
     store.createApiToken({
       id: randomId('tok'),
@@ -2273,9 +2285,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       tokenHash: sha256Hex(raw),
       prefix: raw.slice(0, 8),
       repoId: null,
-      expiresAt: null,
+      scope,
+      expiresAt,
     })
-    store.audit(viewer.user.id, 'token.created', name)
+    store.audit(viewer.user.id, 'token.created', `${name} scope=${scope} expires=${expiresAt ?? 'never'}`)
     return reply.type('text/html').send(
       settingsPage({
         config,

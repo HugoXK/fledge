@@ -402,6 +402,18 @@ the hard timeout (`JOB_TIMEOUT_MINUTES`, default 90), and they never rewrite
 
 OpenAI-compatible; base path `/v1`.
 
+Every gateway route answers three stable failure shapes before it does any work:
+
+| Status | `error.type` | When |
+|---|---|---|
+| `401` | `invalid_api_key` | no `flg_` token, an unknown hash, a revoked token, an expired `expires_at`, or a token whose user is not approved |
+| `403` | `insufficient_scope` | a live token whose `scope` is not `gateway`; `last_used_at` is not written, so a refused token leaves no trace |
+| `429` | `rate_limited` | the per-token or per-IP limiter refused the request |
+
+Neither refusal echoes the token. A personal token always carries an `expires_at`
+(#355); only an operator token created by an admin may be minted without one, and
+`PAT_EXPIRY_DAYS` (default 90) sets the default lifetime.
+
 ### `GET /v1/models`
 
 ```bash
