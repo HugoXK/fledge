@@ -520,7 +520,7 @@ the state, asks the planner and the pure `decideDrive()` in
 | a `release/v<next>` branch has no pull request in any state and no tag | `STATE=orphan-branch` in the summary, naming the branch and its sha, and the run is red: this is a slot wedged by an earlier run, and only the owner deletes or adopts that branch |
 | a release PR is already open | no push; the drive decision goes to the artifact and the summary, and whoever calls `#187` owns the PR |
 | the rule is not met | write the counts and the reason to the job summary and exit 0 |
-| the trigger refuses: tag newer than the `14:30Z` boundary, release branch present, or a release pull request open | no push; the summary names the blocker and the run is green |
+| the trigger refuses: tag newer than the `14:30Z` boundary, a release branch present, or a release pull request open | no push; the summary names the blocker. Exit 0 only when the Decide step above already cleared the branch: a `release/v<next>` branch with no pull request and no tag is the orphan row, red and named, and no run repairs it |
 | a push before today's boundary with the previous boundary unreleased | plan; the summary says `catch-up` |
 | a dry run | the same summary and artifact, and no push and no comment |
 
