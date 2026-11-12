@@ -43,7 +43,7 @@ function csrf(viewer: Viewer): string {
 }
 
 function infoTip(text: string): string {
-  return `<span class="info-tip" tabindex="0" role="img" aria-label="${escapeHtml(text)}" data-tip="${escapeHtml(text)}">!</span>`
+  return `<button type="button" class="info-tip" aria-label="${escapeHtml(text)}" aria-expanded="false" data-tip="${escapeHtml(text)}">!</button>`
 }
 
 // Counts on the path-guard line are read as plain numbers in both languages.
@@ -837,7 +837,7 @@ export function dashboardPage(input: {
         .map(
           (repo) => `<tr data-repo-id="${escapeHtml(repo.id)}">
             <td data-label="${escapeHtml(t('仓库', 'Repository'))}"><a href="/repos/${escapeHtml(repo.id)}"><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></a>${repo.is_fork === 1 ? `<br /><small class="muted">${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}</small>` : ''} <span class="badge kind">${escapeHtml(repoRoleLabel(t, repo.repo_role))}</span>${repo.reviewer_enabled === 1 ? ' <span class="badge">reviewer</span>' : ''}${repo.repo_role === null ? `<br /><small class="muted">${escapeHtml(t('打开仓库选择角色', 'Open the repository to choose a role'))}</small>` : ''}</td>
-            <td data-label="${escapeHtml(t('模式', 'Mode'))}">${repo.auto_iterate === 1 ? `<span class="badge good">${escapeHtml(t('自动', 'Auto'))}</span><br /><small class="muted">${escapeHtml(intervalLabel(repo.interval_minutes, t))}</small>` : `<span class="badge">${escapeHtml(t('手动', 'Manual'))}</span>`}</td>
+            <td data-label="${escapeHtml(t('模式', 'Mode'))}">${repo.auto_iterate === 1 ? `<span class="badge good">${escapeHtml(t('自动工作', 'Auto work'))}</span>` : `<span class="badge">${escapeHtml(t('手动', 'Manual'))}</span>`}</td>
             <td data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, repo.last_status ?? 'idle')}</td>
             <td data-label="${escapeHtml(t('上次运行', 'Last run'))}">${escapeHtml(humanTimeShort(repo.last_run_at))}</td>
             <td data-label="${escapeHtml(t('操作', 'Actions'))}"><a class="link" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('打开', 'Open'))}</a></td>
@@ -852,7 +852,7 @@ export function dashboardPage(input: {
         <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定。模板会填入一个可执行的目标。', 'The more concrete the goal, the more stable the output. A template fills in a ready prompt.'))} <textarea id="goal-new" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
-          <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))}${infoTip(t('最小间隔，不是 PR/issue 总数上限；同一仓库同时最多一个任务，平台全局最多 2 个任务。手动运行会重置倒计时，审核任务不会。', 'Minimum gap, not a cap on PRs/issues; one job per repository and at most two platform-wide. A manual run resets the countdown; a review does not.'))} <select name="interval">${intervalOptions(t)}</select></label>
+          <label>${escapeHtml(t('最长空闲检查间隔', 'Max idle check interval'))}${infoTip(t('有开放工作项时按全局最短工作间隔推进；没有工作项时保持空闲，不会为了产出而开 PR/issue。这个值只是空闲检查的上限。', 'With open work items the global short work cooldown applies; with no work the repository stays idle and does not open a PR/issue to look busy. This value is only the idle-check upper bound.'))} <select name="interval">${intervalOptions(t)}</select></label>
         </div>
         <div class="row" data-review-group>
           <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时才可启用；审核任务独立于迭代任务。', 'Available only with the maintainer role and GitHub admin/maintain permission; review jobs run separately from iterate jobs.'))}</label>
@@ -1023,13 +1023,17 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const reviewStatus = repo.last_review_status === null ? '' : ` · ${badge(t, repo.last_review_status)}`
   const activeJob = input.activeJob ?? jobs.some((job) => job.status === 'queued' || job.status === 'running')
   const lastRun = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
-  const nextRun = repo.auto_iterate === 1 && Number.isFinite(lastRun) ? new Date(lastRun + repo.interval_minutes * 60_000) : null
+  const workCooldown = Math.min(repo.interval_minutes, config.runner.workCooldownMinutes)
+  const openWork = workItems.some((item) => item.state !== 'merged' && item.state !== 'closed')
+  const nextRun = repo.auto_iterate === 1 && openWork && Number.isFinite(lastRun) ? new Date(lastRun + workCooldown * 60_000) : null
   const nextRunText = repo.auto_iterate !== 1
-    ? t('自动迭代已关闭', 'Auto-iterate off')
-    : activeJob
-      ? t('当前任务结束后再排', 'After the active job finishes')
-      : nextRun === null
-        ? t('等待首次运行', 'Waiting for first run')
+    ? t('自动工作已关闭', 'Auto work off')
+    : !openWork
+      ? t('空闲：没有开放工作项', 'Idle: no open work item')
+      : activeJob
+        ? t('当前任务结束后再排', 'After the active job finishes')
+        : nextRun === null
+          ? t('等待首次运行', 'Waiting for first run')
         : nextRun.getTime() <= Date.now()
           ? t('等待调度', 'Waiting for the scheduler')
           : humanTimeShort(nextRun.toISOString())
@@ -1215,7 +1219,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   if (!repoEnabled) lifecycleItems.push(t('仓库已停用：不会自动或手动运行任务。', 'Repository disabled: no jobs run automatically or manually.'))
   if (flybotAvailable && instance?.status !== 'ready') lifecycleItems.push(t(`FlyBot ${instance === undefined ? '未创建' : statusLabel(t, instance.status)}：任务不会运行。`, `FlyBot is ${instance === undefined ? 'not created' : statusLabel(t, instance.status)}: jobs will not run.`))
   if (!credentialOk) lifecycleItems.push(t('GitHub 凭据失效：调度已暂停。', 'GitHub credentials are invalid: scheduling is paused.'))
-  if (repo.auto_iterate === 1 && (!repoEnabled || !flybotReady)) lifecycleItems.push(t('自动迭代已开启，但当前不会运行。', 'Auto-iteration is on but cannot run right now.'))
+  if (repo.auto_iterate === 1 && (!repoEnabled || !flybotReady)) lifecycleItems.push(t('自动工作已开启，但当前不会运行。', 'Auto work is on but cannot run right now.'))
   const lifecycleActions = [
     !repoEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/enable">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('启用仓库', 'Enable repository'))}</button></form>` : '',
     flybotAvailable && instance?.status !== 'ready' ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/instance">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('启动 FlyBot', 'Start FlyBot'))}</button></form>` : '',
@@ -1262,7 +1266,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" ${repo.auto_iterate === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
           <label class="check"><input type="checkbox" name="enabled" value="1" ${repo.enabled === 1 ? 'checked' : ''} /> ${escapeHtml(t('启用', 'Enabled'))}</label>
-          <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))} <select name="interval">${intervalOptions(t, repo.interval_minutes)}</select></label>
+          <label>${escapeHtml(t('最长空闲检查间隔', 'Max idle check interval'))}${infoTip(t('有工作项时按全局最短工作间隔推进；没有工作项时保持空闲。这个值只是空闲检查的上限。', 'Open work uses the global short cooldown; no work stays idle. This is only the idle-check upper bound.'))} <select name="interval">${intervalOptions(t, repo.interval_minutes)}</select></label>
         </div>
         <div class="row" data-review-group>
           <label class="check"><input type="checkbox" name="review" value="1" ${reviewerEnabled ? 'checked' : ''} ${canReview ? '' : 'disabled'} data-role-can-review="${githubCanReview ? '1' : '0'}" /> ${escapeHtml(t('启用 PR 审核', 'Enable PR reviewer'))}</label>
@@ -2153,7 +2157,7 @@ export function workspacePage(input: {
           (repo) => `<a class="list-row" href="/repos/${escapeHtml(repo.id)}">
             <div class="list-main">
               <strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong>
-              <small>${repo.auto_iterate === 1 ? `${escapeHtml(t('自动', 'Auto'))} · ${escapeHtml(intervalLabel(repo.interval_minutes, t))}` : escapeHtml(t('手动', 'Manual'))} · ${escapeHtml(t('上次运行', 'Last run'))} ${escapeHtml(humanTimeShort(repo.last_run_at))}${repo.is_fork === 1 ? ` · ${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}` : ''}</small>
+              <small>${repo.auto_iterate === 1 ? `${escapeHtml(t('自动工作', 'Auto work'))}` : escapeHtml(t('手动', 'Manual'))} · ${escapeHtml(t('上次运行', 'Last run'))} ${escapeHtml(humanTimeShort(repo.last_run_at))}${repo.is_fork === 1 ? ` · ${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}` : ''}</small>
             </div>
             <div class="list-meta">${badge(t, repo.last_status ?? 'idle')}${repo.reviewer_enabled === 1 ? ' <span class="badge">reviewer</span>' : ''}</div>
           </a>`,
@@ -2576,7 +2580,7 @@ export function appReposPage(input: {
       <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定。模板会填入一个可执行的目标。', 'The more concrete the goal, the more stable the output. A template fills in a ready prompt.'))} <textarea id="goal-app" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
       <div class="row">
         <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
-        <label>${escapeHtml(t('自动迭代间隔', 'Auto-iterate interval'))}${infoTip(t('最小间隔，不是 PR/issue 总数上限；同一仓库同时最多一个任务，平台全局最多 2 个任务。', 'Minimum gap, not a cap on PRs/issues; one job per repository and at most two platform-wide.'))} <select name="interval">${intervalOptions(t)}</select></label>
+        <label>${escapeHtml(t('最长空闲检查间隔', 'Max idle check interval'))}${infoTip(t('有工作项时按全局最短工作间隔推进；没有工作项时保持空闲，不会为了产出而开 PR/issue。这个值只是空闲检查的上限。', 'Open work uses the global short cooldown; no work stays idle and does not open a PR/issue to look busy. This is only the idle-check upper bound.'))} <select name="interval">${intervalOptions(t)}</select></label>
       </div>
       <div class="row">
         <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时才可启用。', 'Available only with the maintainer role and GitHub admin/maintain permission.'))}</label>

@@ -46,7 +46,7 @@ Key settings:
 | `ALLOW_PRIVATE_MODEL_URLS` | Keep `false` for untrusted users |
 | `PAT_EXPIRY_DAYS` | Default lifetime of a new personal `flg_` gateway token, in days (default 90); only an admin may create one without an expiry |
 | `METRICS_TOKEN` | Required in production: `/metrics`, and the `commit`/`builtAt` fields of `/healthz`, answer only `Authorization: Bearer <token>` |
-| `PLAN_EXPIRY_DAYS` / `PLAN_REMINDER_DAYS` | How long an unapproved plan may wait before the work item closes with `closed_reason = plan_expired` (default 7), and how many days before that deadline the single reminder is sent (default 2) |
+| `PLAN_EXPIRY_DAYS` / `PLAN_REMINDER_DAYS` | How long an unapproved plan may wait before the work item closes with `closed_reason = plan_expired` (default 7), and how many days before that deadline the single reminder is sent (default 2). They are one deadline pair: `PLAN_REMINDER_DAYS` must be smaller than `PLAN_EXPIRY_DAYS`, and Fledge refuses to start with both names in the message otherwise, because a reminder at or after the deadline is sent immediately |
 | `NOTIFY_WEBHOOK_URL` / `NOTIFY_WEBHOOK_SECRET` | Optional outbound notifications (Slack-compatible `text`); the secret is sent as a bearer token. When set, the URL must be an absolute `https:` URL |
 
 Production startup fails closed if the session/encryption keys, OAuth app,

@@ -1,0 +1,1 @@
+Info tips are now real buttons that open on tap and keyboard focus, destructive actions use the shared confirmation dialog instead of the browser prompt, and the compact navigation keeps focus inside the open menu and restores it when the menu closes.

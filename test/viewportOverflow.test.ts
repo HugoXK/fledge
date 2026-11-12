@@ -166,24 +166,37 @@ test('the info tooltip cannot put a fixed-width box past the right edge below 96
 
 test('the tooltip explanation stays reachable at every width', () => {
   for (const width of [360, 768, DESKTOP_WIDTH]) {
+    // Hover and focus reveal the hint only as the no-JavaScript fallback now; the
+    // script hands the reveal to `aria-expanded` (test/layout.test.ts pins that
+    // split). Deleting the fallback to pass the width check is still not a fix:
+    // with no script the hint would be unreachable.
     assert.equal(
-      lastValue('.info-tip:hover::after', 'opacity', width),
+      lastValue('html:not([data-js]) .info-tip:hover::after', 'opacity', width),
       '1',
       `at ${String(width)}px hovering must still reveal the tooltip; deleting it to pass the width check is not a fix`,
     )
-    assert.equal(lastValue('.info-tip:focus::after', 'opacity', width), '1')
+    assert.equal(lastValue('html:not([data-js]) .info-tip:focus::after', 'opacity', width), '1')
+    assert.equal(lastValue('.info-tip[aria-expanded="true"]::after', 'opacity', width), '1', 'the explicit state must reveal the hint whatever the width')
     // `opacity: 1` on a box that is still `display: none` renders nothing: the
     // rest state hides the tooltip to keep it out of the scrollable overflow, so
-    // the reveal rule has to restore the box, not only its opacity.
+    // every reveal rule has to restore the box, not only its opacity. #443 split
+    // the reveal into a no-JavaScript fallback and the explicit `aria-expanded`
+    // state; each arm must restore `display`, or a hint the test calls revealed
+    // is a hint nobody can read.
     assert.equal(
-      lastValue('.info-tip:hover::after', 'display', width),
+      lastValue('html:not([data-js]) .info-tip:hover::after', 'display', width),
       'block',
-      `at ${String(width)}px the hover reveal sets opacity but not display, so every tooltip stays invisible`,
+      `at ${String(width)}px the no-script hover reveal sets opacity but not display, so the tooltip stays invisible`,
     )
     assert.equal(
-      lastValue('.info-tip:focus::after', 'display', width),
+      lastValue('html:not([data-js]) .info-tip:focus::after', 'display', width),
       'block',
-      `at ${String(width)}px the keyboard-focus reveal sets opacity but not display, so the hint is never readable without a mouse`,
+      `at ${String(width)}px the no-script keyboard-focus reveal sets opacity but not display, so the hint is never readable without a mouse`,
+    )
+    assert.equal(
+      lastValue('.info-tip[aria-expanded="true"]::after', 'display', width),
+      'block',
+      `at ${String(width)}px the explicit aria-expanded reveal sets opacity but not display, so a hint opened by tap or keyboard renders nothing`,
     )
   }
 })

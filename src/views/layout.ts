@@ -179,6 +179,16 @@ export function layout(options: LayoutOptions): string {
     ${body}
   </main>
   ${footer}
+  <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title">
+    <form method="dialog">
+      <h2 id="confirm-dialog-title">${escapeHtml(t('请确认', 'Please confirm'))}</h2>
+      <p data-confirm-message></p>
+      <div class="row">
+        <button class="btn btn-ghost" value="cancel">${escapeHtml(t('取消', 'Cancel'))}</button>
+        <button class="btn btn-danger" value="confirm">${escapeHtml(t('确认', 'Confirm'))}</button>
+      </div>
+    </form>
+  </dialog>
   <script src="/assets/app.js" defer></script>
   <script src="/assets/questions.js" defer></script>
 </body>

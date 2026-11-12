@@ -399,7 +399,9 @@ export class Jobs {
       if (!this.userReadyForScheduling(repo.user_id)) continue
       if (!this.instanceReady(repo.id)) continue
       if (this.store.activeJobForRepo(repo.id) !== undefined) continue
-      if (this.due(repo)) due.add(`${repo.owner}/${repo.name}`)
+      // #478: a due timer alone is not work. Only a repo with an open work item
+      // can be a scheduled work session; review due is still its own lane.
+      if (this.store.listOpenWorkItems(repo.id).length > 0 && this.workDue(repo)) due.add(`${repo.owner}/${repo.name}`)
     }
     return [...due].sort()
   }
@@ -1891,7 +1893,7 @@ export class Jobs {
       teamLinks.push({ repo: label, url: `${this.config.baseUrl}/repos/${repo.id}#inbox` })
       if (repo.auto_iterate === 1) {
         const last = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
-        const next = Number.isFinite(last) ? new Date(last + repo.interval_minutes * 60_000) : new Date()
+        const next = Number.isFinite(last) ? new Date(last + Math.min(repo.interval_minutes, this.config.runner.workCooldownMinutes) * 60_000) : new Date()
         nextRuns.push({ repo: label, when: next.getTime() <= Date.now() ? '等待调度' : this.digestTime(next) })
       }
       if (this.instances === undefined || this.config.flybot.instanceImage === '') continue
@@ -2590,23 +2592,32 @@ export class Jobs {
         repo,
         now: Date.now(),
         lastRunAt: repo.last_run_at,
-        intervalMinutes: repo.interval_minutes,
+        // #478: a work item may start after the short cooldown, not after the
+        // repository's legacy interval. The interval is only an upper bound.
+        intervalMinutes: Math.min(repo.interval_minutes, this.config.runner.workCooldownMinutes),
         lastDurationMs: lastDurationMs(recent),
         failureStreak: failureStreak(recent),
         openWork: this.store.listOpenWorkItems(repo.id),
         reviewerEnabled: repo.reviewer_enabled === 1,
         reviewDue: this.dueReview(repo),
       })
-      if (next.kind === 'none') continue
+      if (next.kind === 'none') {
+        // #478: an empty backlog is not a reason to create a job. Keep the
+        // repository idle and do not advance last_run_at, so a newly created
+        // work item is picked up after the short cooldown.
+        if (next.reason === 'idle' && repo.last_status !== 'idle') {
+          this.store.updateRepo(repo.id, { last_status: 'idle' })
+          log.info('scheduled idle', { repo: `${repo.owner}/${repo.name}` })
+        }
+        continue
+      }
       const result = next.kind === 'review'
         ? await this.enqueue(repo, 'schedule', undefined, 'review', { workItemId: next.workItemId, prUrl: next.prUrl })
-        : next.kind === 'followup'
-          ? await this.enqueue(repo, 'followup', undefined, 'iterate', {
-              workItemId: next.workItemId,
-              ...(next.prUrl === undefined ? {} : { prUrl: next.prUrl }),
-              ...(next.branch === undefined ? {} : { branch: next.branch }),
-            })
-          : await this.enqueue(repo, 'schedule', undefined, 'iterate')
+        : await this.enqueue(repo, 'followup', undefined, 'iterate', {
+            workItemId: next.workItemId,
+            ...(next.prUrl === undefined ? {} : { prUrl: next.prUrl }),
+            ...(next.branch === undefined ? {} : { branch: next.branch }),
+          })
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
       log.info('scheduled job', {
         repo: `${repo.owner}/${repo.name}`,
@@ -2627,11 +2638,12 @@ export class Jobs {
     return this.store.getRepoInstance(repoId)?.status === 'ready'
   }
 
-  private due(repo: RepoRow): boolean {
+  private workDue(repo: RepoRow): boolean {
     if (repo.last_run_at === null) return true
     const last = Date.parse(repo.last_run_at)
     if (!Number.isFinite(last)) return true
-    return Date.now() - last >= Math.max(15, repo.interval_minutes) * 60_000
+    const cooldown = Math.min(repo.interval_minutes, this.config.runner.workCooldownMinutes)
+    return Date.now() - last >= Math.max(15, cooldown) * 60_000
   }
 
   private dueReview(repo: RepoRow): boolean {

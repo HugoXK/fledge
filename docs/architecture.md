@@ -206,15 +206,15 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   lease and queue columns are schema version 33.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
-  a maintainer reviewer is due); with no open work it starts an `iterate` from
-  the goal. The latest three run digests and open work items are carried into
-  the goal as bounded data. The interval is the minimum gap between runs, not a
-  cap on PRs or issues; it stretches to the last run's duration plus a cooldown
-  and backs off after two unproductive (failed, zero-output or meta) runs. A run
+  a maintainer reviewer is due); with no open work it **stays idle** and creates
+  no issue or PR. The latest three run digests and open work items are carried
+  into the goal as bounded data. Work sessions use a short global cooldown
+  (`WORK_SESSION_COOLDOWN_MINUTES`, default 15 minutes); the per-repository
+  interval is only an upper bound on the idle check, not a reason to produce.
+  A run backs off after two unproductive (failed, zero-output or meta) runs and
   is skipped while another job for that repository is active. The global
-  concurrency cap is 2. Iteration cadence ranges from every 15 minutes to every
-  30 days; review cadence from every 6 hours to every 30 days. Jobs that exceed
-  the timeout are failed.
+  concurrency cap is 2. Review cadence is from every 6 hours to every 30 days.
+  Jobs that exceed the timeout are failed.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
@@ -662,17 +662,19 @@ a later schedule can pick it up, and both edges are in `WORK_ITEM_TRANSITIONS`,
 so the manual status endpoint and the work-item board offer the moves the
 service itself writes.
 
-A due repository is never skipped because work is open. `decideNextJob()` carries
-the highest-priority open item into a `followup` job, or a `review` when the item
-has a PR and a maintainer reviewer is due. With no open work it starts a fresh
-`iterate`. The job goal gets a bounded `Carry-over` block with the last three run
-digests and up to four open items; the block is data, not an instruction, and is
-capped well below the 4000-character goal limit. Each finished run is classified
-as `pr`, `issue`, `review`, `zero`, `meta` or `failed`. A meta issue
+A due repository with open work is never skipped because the item exists.
+`decideNextJob()` carries the highest-priority open item into a `followup` job,
+or a `review` when the item has a PR and a maintainer reviewer is due. With no
+open work it returns `none` with reason `idle`: the scheduler writes
+`last_status='idle'` and creates no job, issue or PR. The job goal gets a bounded
+`Carry-over` block with the last three run digests and up to four open items; the
+block is data, not an instruction, and is capped well below the 4000-character
+goal limit. Each finished run is classified as `pr`, `issue`, `review`, `zero`,
+`meta` or `failed`. A meta issue
 (`存量/盘点/清账/reconcile/inventory/backlog audit`) is closed on the tracking
 board and notifies the owner instead of counting as a productive run. Two
 consecutive failed, zero-output or meta iterate runs double the effective
-interval up to a 4x cap; the manual run path and reviews bypass the backoff.
+cooldown up to a 4x cap; the manual run path and reviews bypass the backoff.
 
 ### Platform emergency stop
 
@@ -880,7 +882,7 @@ users, approved, repos, users with jobs/PRs, success rate, job cost, attributed
 vs unattributed cost, scope/verify/iterate/review counts, Lead-only and grounded
 attribution events, and recent events. `/admin/search` filters jobs and audit entries by the same user
 visibility as the admin page, pages each section twenty rows at a time with a pager that carries the
-active filters and the other section's page number, and can export the current result as CSV.
+active filters and the other section's page number, and can export the current result as CSV. An export whose filter matches more than 5000 rows is refused with the matched count and the cap instead of being truncated, and the refusal is audited; a filter at the cap still gets the whole file.
 
 `/admin/trials` shows every account, with the state derived at read time instead
 of stored: `running` and `expiring` inside the 7-day preview, `eligible` once it

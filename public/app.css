@@ -827,9 +827,15 @@ a.list-row:hover strong { color: var(--accent); }
 .add-manual { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 10px; }
 .add-manual summary { cursor: pointer; color: var(--muted-2); font-size: 13px; }
 
-.info-tip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin-left: 4px; border: 1px solid var(--line); border-radius: 50%; color: var(--muted-2); font-size: 10px; line-height: 1; cursor: help; position: relative; vertical-align: middle; }
+.info-tip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin-left: 4px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: transparent; color: var(--muted-2); font: inherit; font-size: 10px; line-height: 1; cursor: help; position: relative; vertical-align: middle; }
 .info-tip::after { content: attr(data-tip); position: absolute; left: 0; top: 130%; z-index: 60; width: 270px; max-width: min(270px, calc(100vw - 48px)); padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--tip-ink); font-size: 11.5px; font-weight: 400; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; display: none; opacity: 0; pointer-events: none; transform: translateY(-3px); transition: opacity .12s ease; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
-.info-tip:hover::after, .info-tip:focus::after { display: block; opacity: 1; }
+/* Hover and focus are the no-JavaScript fallback only: with no script there is no
+   state to toggle, so CSS must still reveal the hint. Once app.js runs it sets
+   `data-js` and the explicit `aria-expanded` state is the single reveal, or a
+   `:hover` that sticks to a tapped control and a button that keeps `:focus`
+   outrank the script and a dismissed tooltip stays on screen (WCAG 1.4.13 d). */
+html:not([data-js]) .info-tip:hover::after, html:not([data-js]) .info-tip:focus::after { display: block; opacity: 1; }
+.info-tip[aria-expanded="true"]::after { display: block; opacity: 1; }
 
 /* Below the desktop layout neither box may widen the document. A grid item takes
    its content's min-content width as an automatic minimum unless the track or
@@ -894,3 +900,9 @@ a.list-row:hover strong { color: var(--accent); }
   table.table-priority[data-table-ready="true"][data-show-low="true"] th[data-priority="low"],
   table.table-priority[data-table-ready="true"][data-show-low="true"] td[data-priority="low"] { display: table-cell; }
 }
+
+.confirm-dialog { width: min(440px, calc(100vw - 32px)); border: 1px solid var(--line-strong); border-radius: var(--radius-md); padding: 22px; background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+.confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
+.confirm-dialog h2 { margin-bottom: 10px; }
+.confirm-dialog p { color: var(--muted); }
+.confirm-dialog .row { justify-content: flex-end; margin-top: 18px; }
