@@ -2271,9 +2271,23 @@ export function jobPage(input: {
   // one that replied instead of the one the instance was configured with.
   const modelRun = parseModelRun(job.model_json)
   const triedText = (run: typeof modelRun): string => (run === null ? '' : run.attempts.map((entry) => `${entry.label} (${entry.status})`).join(', '))
+  // #407: a fallback an earlier call made is its own clause. The rule: it is stated
+  // unless the `tried` clause of this same line already names the model it ended
+  // on — only then would two clauses repeat one model. So the skip needs the tried
+  // clause to exist (`attempts` non-empty) and a model to compare against; a last
+  // call with no attempt or no winner keeps the pair visible. A row whose status is
+  // not a real HTTP code states the pair without inventing a number for it.
+  const fellBackText = (run: typeof modelRun): string => {
+    if (run === null || run.fallback === null) return ''
+    if (run.attempts.length > 0 && run.model !== null && run.fallback.to.label === run.model.label) return ''
+    const status = Number.isInteger(run.fallback.status) && run.fallback.status > 0 ? run.fallback.status : null
+    return ` · ${status === null
+      ? t(`此前调用回退至 ${run.fallback.to.label}`, `earlier call fell back to ${run.fallback.to.label}`)
+      : t(`此前调用回退（${status}）至 ${run.fallback.to.label}`, `earlier call fell back (${status}) to ${run.fallback.to.label}`)}`
+  }
   const modelLine = modelRun === null
     ? ''
-    : `<p class="fine" data-model><strong>${escapeHtml(t('模型', 'Model'))}:</strong> ${escapeHtml(modelRun.model === null ? t('没有完成的调用', 'no completed call') : modelRun.model.label)}${modelRun.attempts.length === 0 ? '' : escapeHtml(` · ${t(`此前尝试 ${triedText(modelRun)}`, `tried ${triedText(modelRun)}`)}`)}</p>`
+    : `<p class="fine" data-model><strong>${escapeHtml(t('模型', 'Model'))}:</strong> ${escapeHtml(modelRun.model === null ? t('没有完成的调用', 'no completed call') : modelRun.model.label)}${modelRun.attempts.length === 0 ? '' : escapeHtml(` · ${t(`此前尝试 ${triedText(modelRun)}`, `tried ${triedText(modelRun)}`)}`)}${escapeHtml(fellBackText(modelRun))}</p>`
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
   const teamStats = jobTeamStats(job)
