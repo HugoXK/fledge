@@ -1575,6 +1575,36 @@ export class Jobs {
     }
   }
 
+  // #357: the per-job budget used to be an after-the-spend alert. With `pause`
+  // or `cancel` it stops the job here, at the checkpoint that first sees a
+  // recorded cost, and the terminal callback that follows cannot revive it
+  // because a paused or cancelled job answers terminal reports with a 409.
+  private async enforceJobBudget(job: JobRow, repo: RepoRow | undefined): Promise<void> {
+    if (repo === undefined || repo.job_budget_cny <= 0) return
+    const action = repo.job_budget_action
+    if (action !== 'pause' && action !== 'cancel') return
+    // No ledger row is an unknown cost, not a zero one: a provider error
+    // deducts nothing, and reading that as "fits the budget" would be a lie.
+    if (this.store.usageCountForJob(job.id) === 0) {
+      const key = `job_budget_unknown:${job.id}`
+      if (this.store.getSetting(key) === undefined) {
+        this.store.setSetting(key, nowIso())
+        this.store.audit(job.user_id, 'job.budget_unknown', `${job.id}: no recorded cost at this checkpoint`)
+        this.store.recordJobEvent({ jobId: job.id, repoId: job.repo_id, userId: job.user_id, kind: 'job.budget_unknown', step: job.kind, meta: 'no cost row yet' })
+      }
+      return
+    }
+    const costCny = this.store.usageForJob(job.id) * this.config.quota.usdCny
+    if (!(costCny > repo.job_budget_cny)) return
+    const cancel = action === 'cancel'
+    const code = cancel ? 'JOB_BUDGET_CANCELLED' : 'JOB_BUDGET_PAUSED'
+    const reason = `${code}: 单任务成本 ${costCny.toFixed(2)} 元已超过预算 ${repo.job_budget_cny.toFixed(2)} 元。${cancel ? '提高单任务预算后重新开始任务。' : '提高单任务预算后从断点恢复，或重新开始任务。'}`
+    this.store.audit(job.user_id, cancel ? 'job.budget_cancelled' : 'job.budget_paused', `${job.id}: ${costCny.toFixed(4)} > ${repo.job_budget_cny}`)
+    this.store.notify(job.user_id, 'quota', `任务 ${job.id} 因单任务预算${cancel ? '取消' : '暂停'}：已用 ${costCny.toFixed(2)} 元，预算 ${repo.job_budget_cny.toFixed(2)} 元。提高预算或重新开始任务。`, code)
+    if (cancel) await this.cancelJob(job.id, reason)
+    else await this.pauseJob(job.id, reason)
+  }
+
   private async sendJobEmail(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; prUrl?: string | null; issueUrl?: string | null; reviewScore?: number; summary?: string; error?: string }): Promise<void> {
     if (result.status === 'quota_exhausted') return
     const user = this.store.userById(job.user_id)
@@ -1966,6 +1996,9 @@ export class Jobs {
         step: job.kind,
         ...(summary === undefined ? {} : { meta: summary }),
       })
+      // #357: a checkpoint is the earliest place a recorded cost exists without
+      // a second model call, so it is where a pause/cancel budget acts.
+      await this.enforceJobBudget(job, repoRow)
       return { ok: true }
     }
     const revoke = (): void => {

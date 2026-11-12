@@ -1,1 +1,0 @@
-A job superseded as a duplicate is failed when the one-active-job invariant is restored on an older database, but the work item it was running used to stay `in_progress` forever, so the board showed work that could never move. The sweep now resets that item to `triaged` in the same transaction, and its audit row names the item id as well as the job id.

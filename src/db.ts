@@ -89,6 +89,8 @@ export interface RepoRow {
   consecutive_failures: number
   monthly_budget_cny: number
   job_budget_cny: number
+  /** #357: `alert` (default), `pause` or `cancel` when a job crosses its budget. */
+  job_budget_action: string
   protection_state: string | null
   protection_checked_at: string | null
   auto_iterate: number
@@ -497,6 +499,7 @@ CREATE TABLE IF NOT EXISTS repos (
   consecutive_failures INTEGER NOT NULL DEFAULT 0,
   monthly_budget_cny REAL NOT NULL DEFAULT 0,
   job_budget_cny REAL NOT NULL DEFAULT 0,
+  job_budget_action TEXT NOT NULL DEFAULT 'alert',
   protection_state TEXT,
   protection_checked_at TEXT,
   auto_iterate INTEGER NOT NULL DEFAULT 0,
@@ -1034,6 +1037,7 @@ export class Store {
       ['consecutive_failures', 'INTEGER NOT NULL DEFAULT 0'],
       ['monthly_budget_cny', 'REAL NOT NULL DEFAULT 0'],
       ['job_budget_cny', 'REAL NOT NULL DEFAULT 0'],
+      ['job_budget_action', "TEXT NOT NULL DEFAULT 'alert'"],
       ['protection_state', 'TEXT'],
       ['protection_checked_at', 'TEXT'],
       ['upstream_owner', "TEXT NOT NULL DEFAULT ''"],
@@ -1997,6 +2001,7 @@ export class Store {
     stageMode?: string
     monthlyBudgetCny?: number
     jobBudgetCny?: number
+    jobBudgetAction?: string
     protectionState?: string | null
     protectionCheckedAt?: string | null
     upstreamOwner?: string
@@ -2019,9 +2024,9 @@ export class Store {
     this.run(
       `INSERT INTO repos (id, user_id, owner, name, default_branch, token_enc, installation_id, goal, enabled, auto_iterate, interval_minutes, created_at,
          upstream_owner, upstream_name, fork_owner, fork_name, upstream_default_branch, fork_default_branch, target_branch, job_mode,
-         repo_role, auto_merge, role_checked_at, plan_required, allow_paths, deny_paths, merge_method, require_protection, stage_mode, monthly_budget_cny, job_budget_cny, protection_state, protection_checked_at,
+         repo_role, auto_merge, role_checked_at, plan_required, allow_paths, deny_paths, merge_method, require_protection, stage_mode, monthly_budget_cny, job_budget_cny, job_budget_action, protection_state, protection_checked_at,
          is_fork, fork_created, permission, can_review, can_create_issue, reviewer_enabled, review_interval_minutes, upstream_html_url, fork_html_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.userId,
       input.owner,
@@ -2052,6 +2057,7 @@ export class Store {
       input.stageMode ?? 'off',
       input.monthlyBudgetCny ?? 0,
       input.jobBudgetCny ?? 0,
+      input.jobBudgetAction === 'pause' || input.jobBudgetAction === 'cancel' ? input.jobBudgetAction : 'alert',
       input.protectionState ?? null,
       input.protectionCheckedAt ?? null,
       input.isFork === true ? 1 : 0,
@@ -2094,7 +2100,7 @@ export class Store {
     return this.get<RepoRow>('SELECT * FROM repos WHERE user_id = ? AND lower(owner) = lower(?) AND lower(name) = lower(?)', userId, owner, name)
   }
 
-  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'plan_required' | 'allow_paths' | 'deny_paths' | 'merge_method' | 'require_protection' | 'stage_mode' | 'models_dirty' | 'credential_state' | 'consecutive_failures' | 'monthly_budget_cny' | 'job_budget_cny' | 'protection_state' | 'protection_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
+  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'plan_required' | 'allow_paths' | 'deny_paths' | 'merge_method' | 'require_protection' | 'stage_mode' | 'models_dirty' | 'credential_state' | 'consecutive_failures' | 'monthly_budget_cny' | 'job_budget_cny' | 'job_budget_action' | 'protection_state' | 'protection_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -2697,6 +2703,10 @@ export class Store {
   usageSince(userId: string, sinceIso: string): number {
     const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ? AND at >= ?', userId, sinceIso)
     return Number(row?.total ?? 0)
+  }
+
+  usageCountForJob(jobId: string): number {
+    return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM quota_ledger WHERE job_id = ?', jobId)?.n ?? 0)
   }
 
   usageForJob(jobId: string): number {

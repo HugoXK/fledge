@@ -1958,6 +1958,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       stage_mode: parseStageMode(body.stageMode) ?? 'off',
       monthly_budget_cny: Math.max(0, Math.min(10000, Number(body.monthlyBudget) || 0)),
       job_budget_cny: Math.max(0, Math.min(10000, Number(body.jobBudget) || 0)),
+      job_budget_action: body.jobBudgetAction === 'pause' || body.jobBudgetAction === 'cancel' ? body.jobBudgetAction : 'alert',
       auto_iterate: body.auto === '1' ? 1 : 0,
       enabled: body.enabled === '1' ? 1 : 0,
       interval_minutes: interval,
@@ -1987,7 +1988,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         log.warn('team playbook not updated after goal change', { repo: repo.id, error: String(error) })
       })
     }
-    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} role=${repoRole}${roleChanged ? ' role=changed' : ''} autoMerge=${canMaintain && body.autoMerge === '1' ? 'on' : 'off'} planRequired=${body.planRequired === '1' ? 'on' : 'off'} merge=${body.mergeMethod ?? 'squash'} protection=${body.requireProtection === '1' ? 'required' : 'optional'} stage=${parseStageMode(body.stageMode) ?? 'off'} reviewer=${canMaintain && repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
+    store.audit(viewer.user.id, 'repo.settings', `${repo.owner}/${repo.name} role=${repoRole}${roleChanged ? ' role=changed' : ''} autoMerge=${canMaintain && body.autoMerge === '1' ? 'on' : 'off'} planRequired=${body.planRequired === '1' ? 'on' : 'off'} merge=${body.mergeMethod ?? 'squash'} protection=${body.requireProtection === '1' ? 'required' : 'optional'} budget=${body.jobBudgetAction === 'pause' || body.jobBudgetAction === 'cancel' ? body.jobBudgetAction : 'alert'} stage=${parseStageMode(body.stageMode) ?? 'off'} reviewer=${canMaintain && repo.can_review === 1 && body.review === '1' ? 'on' : 'off'}${goalChanged ? ' goal=changed' : ''} base=${targetBranch}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(goalChanged ? '设置已保存；团队规则已按新目标更新。' : '设置已保存。')}#repo-settings`)
   })
 
