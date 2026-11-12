@@ -179,3 +179,38 @@ test('the list masks the address and marks the current session', async () => {
     assert.match(page.body, /\/settings\/sessions\/revoke-others/, 'the page offers "sign out other sessions"')
   })
 })
+
+// A stolen cookie is what this card is about, so the three mutations that end a
+// session have to be bounded: CSRF proves the request came from our page, it does
+// not say how many a stolen cookie may send. Same window as the other form posts
+// (30/60s), and the limiter has to run before the action, otherwise the refused
+// call is a free mutation.
+test('each session mutation is rate limited, and a refused call deletes nothing', async () => {
+  await withApp(async (built, store) => {
+    const user = makeUser(store, { login: 'burst', status: 'approved' })
+    const current = sessionFor(built, user)
+
+    const allowed: number[] = []
+    for (let i = 0; i < 30; i += 1) {
+      const response = await post(built, current.cookie, '/settings/sessions/revoke-others', current.csrf)
+      allowed.push(response.statusCode)
+    }
+    assert.deepEqual([...new Set(allowed)], [302], 'the route closed the window before the burst did')
+
+    // A row that exists only for the refused call, so "nothing changed" is visible.
+    const survivor = extraSession(built, user.id, '127.0.0.1', 'fledge-test survivor')
+    const auditsBefore = auditActions(store, 'session.revoked').length
+
+    const blocked = await post(built, current.cookie, '/settings/sessions/revoke-others', current.csrf)
+    assert.equal(blocked.statusCode, 429, 'a burst past the form threshold was accepted')
+    assert.match(String(blocked.headers['content-type']), /text\/html/, 'a form route answered a browser with a machine body')
+    assert.equal(auditActions(store, 'session.revoked').length, auditsBefore, 'the refused call still wrote an audit row')
+    assert.equal((await settingsPage(built, survivor.cookie)).statusCode, 200, 'the refused call deleted a session')
+
+    // Each route has its own window: one refused bucket must not close another.
+    const other = extraSession(built, user.id, '127.0.0.1', 'fledge-test other')
+    const single = await post(built, current.cookie, `/settings/sessions/${other.hash}/revoke`, current.csrf)
+    assert.equal(single.statusCode, 302, 'one route drew down another route window')
+    assert.equal(await refused(built, other.cookie), true)
+  })
+})

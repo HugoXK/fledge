@@ -2302,7 +2302,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // no way to see or end it. Every route here is scoped to the viewer's own rows:
   // a hash that is not theirs deletes nothing and answers the same way a
   // non-existent one does, so the page cannot be used to probe another account.
+  // Each mutation takes the same limiter window as the other mutating form posts
+  // and answers the same 429 page: CSRF proves the request came from our page, it
+  // does not bound how many a stolen cookie may send.
   app.post('/settings/sessions/:hash/revoke', async (request, reply) => {
+    if (!loginLimiter.take(`session-revoke:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     const hash = String((request.params as Record<string, string>).hash)
     if (hash === viewer.sessionHash) {
@@ -2316,6 +2320,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/settings/sessions/revoke-others', async (request, reply) => {
+    if (!loginLimiter.take(`session-revoke-others:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     const removed = store.deleteOtherSessions(viewer.user.id, viewer.sessionHash)
     store.audit(viewer.user.id, 'session.revoked', `others=${removed}`)
@@ -2323,6 +2328,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/settings/sessions/rotate', async (request, reply) => {
+    if (!loginLimiter.take(`session-rotate:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     const raw = sessions.start(viewer.user.id, request)
     const hash = sha256Hex(raw)

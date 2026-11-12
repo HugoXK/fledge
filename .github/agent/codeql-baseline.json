@@ -1,6 +1,6 @@
 {
   "recordedAtSha": "b85777cc68a5b4ca4bced910baf2414c5a9b2ea9",
-  "note": "Every high/critical CodeQL result the analysis at the recorded sha emits, by rule id, path and line. Nothing is dismissed by this file: the four open alerts (issues #62-#65) stay open, and the three below them are results GitHub already carries as dismissed false positive, recorded so the line-keyed gate does not re-fail a decision that was reviewed in the alert UI. Changing this file is a reviewed commit; an entry added here says in the PR why the result is accepted. The five src/app.ts positions follow the tree that ships this file: a reviewed PR that inserts above those route registrations refreshes the lines it moves (#279, #231 and #280 all do), because the gate compares against the pull request's own tree. The two src/gateway/gateway.ts positions (alerts #41 and #42, both dismissed false positive) move the same way when a PR inserts above the two gateway route registrations; #358 moved both by 19 lines with two imports and a helper, and neither route registration nor the limiter call at the top of each handler changed. The alerts and their reasons are unchanged.",
+  "note": "Every high/critical CodeQL result the analysis at the recorded sha emits, by rule id, path and line. Nothing is dismissed by this file: the four open alerts (issues #62-#65) stay open, and the three below them are results GitHub already carries as dismissed false positive, recorded so the line-keyed gate does not re-fail a decision that was reviewed in the alert UI. Changing this file is a reviewed commit; an entry added here says in the PR why the result is accepted. The five src/app.ts positions follow the tree that ships this file: a reviewed PR that inserts above those route registrations refreshes the lines it moves (#279, #231 and #280 all do), because the gate compares against the pull request's own tree. The two src/gateway/gateway.ts positions (alerts #41 and #42, both dismissed false positive) move the same way when a PR inserts above the two gateway route registrations; #358 moved both by 19 lines with two imports and a helper, and neither route registration nor the limiter call at the top of each handler changed. The alerts and their reasons are unchanged. #356 moves the webhook registration once more: its three settings session routes, their rate-limit calls and their guards insert 44 lines above it, so the pair moves to `:3027` on that PR's tree with no new result, and the four top-of-file registrations and the two gateway registrations do not move because the insert sits below them.",
   "alerts": [
     {
       "ruleId": "js/missing-rate-limiting",
@@ -33,7 +33,7 @@
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 2983,
+      "line": 3027,
       "severity": "high",
       "reason": "alert #65, open"
     },

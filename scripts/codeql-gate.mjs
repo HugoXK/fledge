@@ -99,7 +99,18 @@ for (const file of files) {
     console.error(`codeql-gate: ${file} is not readable SARIF: run ${index} is not an object`)
     process.exit(1)
   }
-  alerts.push(...parseSarif(document))
+  // #385: the reader refuses a `results` value that is present and is not a
+  // list, one level below the slot above. That refusal is named here the way
+  // every other unreadable-SARIF verdict is; anything else the reader throws is
+  // a bug in this gate, and a bug keeps its stack instead of borrowing an
+  // error message that claims the file was unreadable.
+  try {
+    alerts.push(...parseSarif(document))
+  } catch (error) {
+    if (error?.sarifRefusal !== true) throw error
+    console.error(`codeql-gate: ${file} is not readable SARIF: ${error.message}`)
+    process.exit(1)
+  }
 }
 
 const baselineKeys = (baseline.alerts ?? []).map((alert) => alertKey(alert))

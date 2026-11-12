@@ -40,15 +40,40 @@ export function severityOf(result, rule) {
   return 'low'
 }
 
+// The name a JSON value goes by in a refusal: a refusal that says only "bad
+// value" leaves the reader guessing which shape the producer wrote.
+function shapeOf(value) {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'a list'
+  return typeof value
+}
+
 export function parseSarif(document) {
   const alerts = []
-  for (const run of document?.runs ?? []) {
+  for (const [index, run] of (document?.runs ?? []).entries()) {
+    // #385: one level below the slot guard #342 added. `results` is the list this
+    // reader iterates, and `run?.results ?? []` turned three shapes into three
+    // wrong verdicts: null read as a clean analysis (exit 0), a number threw a raw
+    // TypeError, and a string was iterated per character into a high finding with
+    // an empty rule id. A `results` value that is present and is not a list is
+    // therefore refused by name, on the same terms as the slot: "no list" is not
+    // "no findings". A missing key stays a pass, because some producers omit
+    // `results` for a genuinely zero-result analysis, and that verdict is the one
+    // this reader exists to keep separate from a blind one.
+    const results = run?.results
+    if (results !== undefined && !Array.isArray(results)) {
+      const error = new Error(`run ${index} results is not a list (found ${shapeOf(results)})`)
+      // Marked so the gate prints this one as a named refusal and still lets an
+      // unexpected reader bug keep its stack.
+      error.sarifRefusal = true
+      throw error
+    }
     // Query-pack rules do not live under the driver: they arrive as a tool
     // component in `tool.extensions`, and a result's `rule.toolComponent.index`
     // says which component its `ruleIndex` counts in (0 is the driver).
     const components = [run?.tool?.driver ?? {}, ...(Array.isArray(run?.tool?.extensions) ? run.tool.extensions : [])]
     const allRules = components.flatMap((component) => (Array.isArray(component?.rules) ? component.rules : []))
-    for (const result of run?.results ?? []) {
+    for (const result of results ?? []) {
       // A result points at its rule by index; the id is a convenience. Prefer the
       // index inside the component the result names, because one id can appear
       // under more than one rule entry and the index is what carries that
