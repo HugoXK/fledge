@@ -192,14 +192,23 @@
     const setActive = (id) => {
       for (const entry of sections) entry.link.setAttribute('aria-current', entry.target.id === id ? 'true' : 'false')
     }
-    if (sections.length > 0 && typeof IntersectionObserver === 'function') {
-      const observer = new IntersectionObserver((entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0]
-        if (visible !== undefined) setActive(visible.target.id)
-      }, { rootMargin: '-20% 0px -60% 0px', threshold: [0, 1] })
-      for (const entry of sections) observer.observe(entry.target)
+    if (sections.length > 0 && typeof currentSection === 'function') {
+      // One rule for the scroll position and for the tap, so the marker cannot
+      // disagree with the chip the user just pressed; at the document end the
+      // last section is current even though it never crosses the band.
+      const pick = () => {
+        const id = currentSection({
+          tops: sections.map((entry) => ({ id: entry.target.id, top: entry.target.getBoundingClientRect().top })),
+          bandTop: window.innerHeight * 0.2,
+          scrollY: window.scrollY,
+          scrollHeight: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
+          viewportHeight: window.innerHeight,
+        })
+        if (id !== null) setActive(id)
+      }
+      for (const entry of sections) entry.link.addEventListener('click', () => setActive(entry.target.id))
+      window.addEventListener('scroll', pick, { passive: true })
+      pick()
     }
   }
 

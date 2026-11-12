@@ -176,6 +176,7 @@ export function layout(options: LayoutOptions): string {
     ${body}
   </main>
   ${footer}
+  <script src="/assets/section-nav.js" defer></script>
   <script src="/assets/app.js" defer></script>
   <script src="/assets/questions.js" defer></script>
 </body>
