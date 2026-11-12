@@ -489,3 +489,46 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: node scripts/ci-ok.mjs
+
+  # #305: a red `main` used to be invisible. `ci-ok` computed the commit's
+  # health and stopped, no job held a write scope on issues, and the branch was
+  # noticed only by a person who went and looked. This is the one job allowed to write,
+  # and it writes one issue: create it, comment on it, or close it. Every
+  # decision is `scripts/lib/main-health.mjs`; the job only gathers the input.
+  #
+  # It is deliberately not in `ci-ok`'s `needs`: a reporter that fails must not
+  # be able to fail the merge gate as well.
+  #
+  # Its `needs` mirrors `ci-ok`'s so the tracker can name the jobs that actually
+  # failed. With only `ci-ok` in the list the reporter saw the aggregate and
+  # nothing else, and every tracker said "ci-ok did not report success".
+  main-health:
+    name: main-health
+    if: always() && github.ref == 'refs/heads/main'
+    needs: [ci-ok, lint, typecheck, test, coverage, build, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    # One red state, one reporter. `cancel-in-progress: false` is deliberate: a
+    # second push must not cancel the run between its read and its create.
+    concurrency:
+      group: ci-main-red
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Report the default branch's health
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS: ${{ toJSON(needs) }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: node scripts/main-health.mjs
