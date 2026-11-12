@@ -1,1 +1,0 @@
-The daily digest now puts the failed-task count in the email subject (`[失败 N]`) and a red banner at the top of the HTML, and marks failed or quota-exhausted job rows in red. A quiet day keeps the old subject.

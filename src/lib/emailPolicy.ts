@@ -39,6 +39,8 @@ export type JobEmailSkipReason =
 
 export interface JobEmailInput {
   status: JobEmailStatus
+  /** `jobs.trigger`: `manual`, `schedule` or `followup`. */
+  trigger: string
   /**
    * `jobs.owner_started === 1`: a person enqueued this run from the console
    * (a manual run, or the retry/resume button). A `followup` a schedule started
@@ -59,9 +61,20 @@ export type JobEmailDecision =
   | { send: true; template: 'success' | 'failure'; clearWindow: boolean }
   | { send: false; reason: JobEmailSkipReason; clearWindow: boolean }
 
+/**
+ * `manual` is a person by construction: every enqueue of it is a console route.
+ * `followup` is not — `tick()` reaches it through `decideNextJob()` — so it is
+ * only a person's run when the caller marked it (`jobs.owner_started`), which is
+ * what the retry/resume button does. Keeping `manual` here also keeps rows
+ * written before the mark existed on the owner's side of the policy.
+ */
+export function isOwnerStartedRun(input: { trigger: string; ownerStarted: boolean }): boolean {
+  return input.ownerStarted || input.trigger === 'manual'
+}
+
 export function jobEmailDecision(input: JobEmailInput): JobEmailDecision {
   if (input.status === 'succeeded') {
-    if (input.ownerStarted) return { send: true, template: 'success', clearWindow: true }
+    if (isOwnerStartedRun(input)) return { send: true, template: 'success', clearWindow: true }
     if (input.successEmailEnabled) return { send: true, template: 'success', clearWindow: true }
     return { send: false, reason: 'scheduled-success', clearWindow: true }
   }
@@ -69,7 +82,7 @@ export function jobEmailDecision(input: JobEmailInput): JobEmailDecision {
   if (input.retryPending) return { send: false, reason: 'retry-pending', clearWindow: false }
   // The owner acted himself and wants to know the result; a coalescing window
   // must never swallow a run he started by hand.
-  if (input.ownerStarted) return { send: true, template: 'failure', clearWindow: false }
+  if (isOwnerStartedRun(input)) return { send: true, template: 'failure', clearWindow: false }
   const since = input.lastFailureMailAtMs
   // A non-positive or absent window is "coalescing off", not "suppress
   // everything": a bad setting must never silence a failure.

@@ -1642,3 +1642,67 @@ test('every redirect banner value has an English form', () => {
     assert.doesNotMatch(text, /\?(?:error|notice)=/, `${file} builds a redirect banner outside src/app.ts`)
   }
 })
+
+test('the repository settings can turn the per-job budget into a stop, in both languages', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'budget-settings', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_budget_settings', userId: user.id, owner: 'o', name: 'bs', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const { cookie, csrf } = sessionFor(built, user)
+
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /name="jobBudgetAction"/, 'the action is a form field')
+    assert.match(page.body, /只提醒（默认）/, 'alert is described as the default')
+    assert.match(page.body, /取消任务/, 'the Chinese action names are on the page')
+
+    const english = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie, 'accept-language': 'en' } })
+    assert.match(english.body, /Alert only \(default\)/)
+    assert.match(english.body, /Cancel the job/)
+
+    const save = (action: string): Promise<{ statusCode: number }> => built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/settings`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, goal: '', enabled: '1', interval: '1440', reviewInterval: '1440', jobBudget: '1.00', jobBudgetAction: action }),
+    })
+
+    assert.equal((await save('cancel')).statusCode, 302)
+    assert.equal(store.getRepo(repo.id)?.job_budget_action, 'cancel')
+    assert.equal(store.getRepo(repo.id)?.job_budget_cny, 1)
+
+    // Anything that is not one of the three known actions falls back to alert:
+    // a typo must never silently stop a job.
+    assert.equal((await save('explode')).statusCode, 302)
+    assert.equal(store.getRepo(repo.id)?.job_budget_action, 'alert')
+  } finally {
+    await built.close()
+  }
+})
+
+test('a job stopped by its budget names the action and the next step, in both languages', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'budget-page', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_budget_page', userId: user.id, owner: 'o', name: 'bp', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_budget_page', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob('job_budget_page', { status: 'paused', error: 'JOB_BUDGET_PAUSED: 单任务成本 0.72 元已超过预算 0.10 元。提高单任务预算后从断点恢复，或重新开始任务。', finished_at: null })
+    const { cookie } = sessionFor(built, user)
+
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/job_budget_page`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /已达单任务预算/)
+    assert.match(page.body, /提高单任务预算/, 'the page names the next step')
+    assert.match(page.body, /0\.72/, 'and the observed cost')
+
+    const english = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/job_budget_page`, headers: { cookie, 'accept-language': 'en' } })
+    assert.match(english.body, /Per-job budget reached/)
+    assert.match(english.body, /Raise the per-job budget/)
+  } finally {
+    await built.close()
+  }
+})

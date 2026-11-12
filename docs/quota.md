@@ -68,14 +68,34 @@ settings:
 - **Monthly repository budget (CNY)** — a rolling 30-day cap on the repository's
   attributed platform spend. A new job is refused with
   `REPO_BUDGET_EXHAUSTED` when the cap is reached.
-- **Per-job budget (CNY)** — an alerting threshold, not a hard stop. When a
-  finished job's attributed cost exceeds it, Fledge writes a
-  `job.budget_exceeded` audit entry and an in-app quota notification.
+- **Per-job budget (CNY)** — how far a single job may spend. `job_budget_action`
+  decides what happens when the job crosses it:
+
+  - `alert` (the default) — the old behaviour. When a **finished** job's
+    attributed cost exceeds the cap, Fledge writes a `job.budget_exceeded` audit
+    entry and an in-app quota notification, after the spend.
+  - `pause` — the job is paused at its **next checkpoint**, which is the
+    earliest point where the spend is already in the ledger and no second model
+    call is needed to learn it. The job records `JOB_BUDGET_PAUSED` with the
+    observed cost, the owner gets a notification, and the job page names the
+    action and the next step (raise the budget, then resume from the checkpoint
+    or start a new job).
+  - `cancel` — the same check, but the job ends `cancelled` with
+    `JOB_BUDGET_CANCELLED`, the job token is revoked and only a new job continues
+    the work.
+
+  A terminal callback that arrives after a `pause` or `cancel` is refused, so a
+  late result cannot revive a job the budget stopped. The threshold is never
+  compared against an unknown cost: a job with no `quota_ledger` row yet (a
+  provider error deducts nothing, so there may be none) is left running and the
+  checkpoint writes one `job.budget_unknown` audit entry instead of treating the
+  unknown as zero.
 
 Cost is attributed through `quota_ledger.repo_id`; rows written before that
 column existed fall back to the job's `repo_id` when they can be joined. Both
 caps default to `0` (disabled) and are recorded in the repository audit entry
-when changed.
+when changed; `job_budget_action` defaults to `alert`, so no existing repository
+changes behaviour until its maintainer picks a stop.
 
 ## Model providers and repository selection
 

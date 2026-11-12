@@ -1,1 +1,0 @@
-The required `review-gate` check now fails on a tip with an unresolved review thread, naming each `path:line` (an outdated thread reports its original line rather than `null`). It fails closed when the thread state cannot be read, so a green check now means the tip can actually enter the merge queue instead of only that the code compiles.

@@ -61,9 +61,9 @@ async function run(
     callbackHash: sha256Hex(secret),
     platformTokenHash: '',
     retryAttempt: input.retryAttempt ?? 0,
-    // The same rule `enqueue` applies: a manual run is a person's by
-    // construction, a follow-up only when the caller says so.
-    ownerStarted: input.ownerStarted ?? input.trigger === 'manual',
+    // `manual` is a person by construction, so only the marked follow-up case
+    // needs the flag.
+    ownerStarted: input.ownerStarted ?? false,
   })
   store.updateJob(id, { status: 'running' })
   const payload = input.status === 'succeeded'
@@ -187,6 +187,7 @@ test('a transient failure that queued a retry mails nothing until the attempt is
 test('the pure policy keeps an unmarked run on the scheduled side and honours the boundary exactly', () => {
   const base = {
     status: 'failed' as const,
+    trigger: 'schedule',
     ownerStarted: false,
     retryPending: false,
     successEmailEnabled: false,
@@ -206,7 +207,9 @@ test('the pure policy keeps an unmarked run on the scheduled side and honours th
   const negative = jobEmailDecision({ ...base, cooldownMinutes: -5, nowMs: base.nowMs - 1 })
   assert.equal(negative.send, true, 'a negative window is not a mute either')
 
-  assert.equal(jobEmailDecision({ ...base, ownerStarted: true, nowMs: base.nowMs - 1 }).send, true, 'a run a person started is never swallowed by the window')
+  assert.equal(jobEmailDecision({ ...base, trigger: 'manual', nowMs: base.nowMs - 1 }).send, true, 'a manual run is a person by construction')
+  assert.equal(jobEmailDecision({ ...base, trigger: 'followup', nowMs: base.nowMs - 1 }).send, false, 'a scheduler follow-up is not')
+  assert.equal(jobEmailDecision({ ...base, trigger: 'followup', ownerStarted: true, nowMs: base.nowMs - 1 }).send, true, 'a marked follow-up is, and the window never swallows it')
 
   const retry = jobEmailDecision({ ...base, retryPending: true })
   assert.equal(retry.send, false)
@@ -257,19 +260,23 @@ test('ownership is recorded at enqueue instead of inferred from the trigger', as
 
     const item = store.createWorkItem({ id: 'work_owner_mark', repoId: repo.id, userId: user.id, title: 'Continue the open work', state: 'triaged' })
     const scheduled = await jobs.enqueue(repo, 'followup', undefined, 'iterate', { workItemId: item.id })
-    assert.equal(scheduled.ok, true, scheduled.ok ? '' : scheduled.error)
+    assert.equal(scheduled.ok, true, scheduled.ok ? '' : (scheduled.error ?? ''))
     const scheduledRow = store.getJob(scheduled.job!.id)!
     assert.equal(scheduledRow.trigger, 'followup', 'the scheduler still takes the follow-up branch')
     assert.equal(scheduledRow.owner_started, 0, 'tick() enqueues it without a person acting')
-    await jobs.handleCallback(scheduledRow.id, contexts.at(-1)!.callback.secret, { status: 'succeeded', summary: 'continued' })
+    const scheduledSecret = contexts.at(-1)?.callback.secret
+    if (scheduledSecret === undefined) assert.fail('the dispatch handed the run a callback secret')
+    await jobs.handleCallback(scheduledRow.id, scheduledSecret, { status: 'succeeded', summary: 'continued' })
     assert.equal(successes(), 0, 'so its success belongs to the digest, not to the inbox')
 
     const second = store.createWorkItem({ id: 'work_owner_mark_2', repoId: repo.id, userId: user.id, title: 'Run it by hand', state: 'triaged' })
     const manual = await jobs.enqueue(repo, 'manual', undefined, 'iterate', { workItemId: second.id })
-    assert.equal(manual.ok, true, manual.ok ? '' : manual.error)
+    assert.equal(manual.ok, true, manual.ok ? '' : (manual.error ?? ''))
     const manualRow = store.getJob(manual.job!.id)!
     assert.equal(manualRow.owner_started, 1, 'a console route is a person by construction')
-    await jobs.handleCallback(manualRow.id, contexts.at(-1)!.callback.secret, { status: 'succeeded', summary: 'ran it' })
+    const manualSecret = contexts.at(-1)?.callback.secret
+    if (manualSecret === undefined) assert.fail('the dispatch handed the run a callback secret')
+    await jobs.handleCallback(manualRow.id, manualSecret, { status: 'succeeded', summary: 'ran it' })
     assert.equal(successes(), 1, 'the run a person started still mails its result')
   } finally {
     store.close()

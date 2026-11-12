@@ -1254,6 +1254,13 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <div class="row">
           <label>${escapeHtml(t('仓库月度预算（元）', 'Monthly repository budget (CNY)'))} <input name="monthlyBudget" type="number" min="0" max="10000" step="0.01" value="${repo.monthly_budget_cny.toFixed(2)}" /></label>
           <label>${escapeHtml(t('单任务预算（元）', 'Per-job budget (CNY)'))} <input name="jobBudget" type="number" min="0" max="10000" step="0.01" value="${repo.job_budget_cny.toFixed(2)}" /></label>
+          <label>${escapeHtml(t('超出单任务预算时', 'When the per-job budget is exceeded'))}${infoTip(t('在任务的下一个检查点生效：此时已经记录了花费，不需要再调用一次模型。', 'Takes effect at the job\'s next checkpoint, where the spend is already recorded and no extra model call is needed.'))}
+            <select name="jobBudgetAction">
+              <option value="alert" ${repo.job_budget_action === 'alert' ? 'selected' : ''}>${escapeHtml(t('只提醒（默认）', 'Alert only (default)'))}</option>
+              <option value="pause" ${repo.job_budget_action === 'pause' ? 'selected' : ''}>${escapeHtml(t('暂停任务，可从断点恢复', 'Pause the job; it can resume from its checkpoint'))}</option>
+              <option value="cancel" ${repo.job_budget_action === 'cancel' ? 'selected' : ''}>${escapeHtml(t('取消任务', 'Cancel the job'))}</option>
+            </select>
+          </label>
         </div>
         <p class="fine">${escapeHtml(t('本月已用', 'Spent this month'))} ${escapeHtml(quotaMoney(repoSpendCny))}${repo.monthly_budget_cny > 0 ? ` / ${escapeHtml(quotaMoney(repo.monthly_budget_cny))}` : ''}</p>
         <div class="row">
@@ -2199,6 +2206,10 @@ export function jobPage(input: {
   // maintainer cannot tell what the agent was told, which was the second half of
   // the defect: the fixed reason was not visible as a reason either.
   const reviewerInstruction = job.trigger === 'followup' ? reviewInstructionFromGoal(job.goal) : ''
+  // #357: a budget stop is not a failure category — the job stopped on purpose
+  // and the only useful next step is the budget. The reason string carries the
+  // observed cost, so the page says both without a second lookup.
+  const budgetStop = (job.error ?? '').startsWith('JOB_BUDGET_') ? (job.error ?? '').replace(/^JOB_BUDGET_(PAUSED|CANCELLED):\s*/, '') : ''
   const attribution = jobAttribution(t, job)
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
@@ -2270,6 +2281,7 @@ export function jobPage(input: {
       <p class="${job.kind === 'research' ? 'job-report' : ''}">${escapeHtml(jobSummary(locale, t, job))}</p>
       ${reviewerInstruction === '' ? '' : `<p class="fine" data-reviewer-instruction><strong>${escapeHtml(t('审核者要求', REVIEW_INSTRUCTION_LABEL))}:</strong> ${escapeHtml(reviewerInstruction)}</p>`}
       ${failure === null ? '' : renderState({ kind: 'error', title: failureLabel(t, failure.kind), body: t(failure.hint[0], failure.hint[1]), action: failureLink === '' ? { label: t('按上面的动作处理后再重试。', 'Fix the cause above, then retry.') } : { href: failureLink, label: failureActionLabel(t, failure.action) } })}
+      ${budgetStop === '' ? '' : renderState({ kind: 'error', title: t('已达单任务预算', 'Per-job budget reached'), body: budgetStop, action: { href: `/repos/${repo.id}#repo-settings`, label: t('提高单任务预算', 'Raise the per-job budget') } })}
       ${job.error === null || job.error === '' ? '' : `<details class="fine"><summary>${escapeHtml(t('技术详情', 'Technical detail'))}</summary><p>${escapeHtml(job.error)}</p></details>`}
       <p class="fine">${escapeHtml(t('成本', 'Cost'))} ${escapeHtml(cost)} · ${escapeHtml(t('创建', 'Created'))} ${escapeHtml(humanTimeShort(job.created_at))} · ${escapeHtml(t('结束', 'Finished'))} ${escapeHtml(humanTimeShort(job.finished_at))}</p>
       ${attribution === '' ? '' : `<p class="fine">${escapeHtml(attribution)}</p>`}

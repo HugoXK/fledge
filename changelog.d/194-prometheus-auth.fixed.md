@@ -1,1 +1,0 @@
-`npm run slo:report` refuses a `PROMETHEUS_URL` that carries a username or password, instead of letting Node print the credential in an error, takes credentials from the new `PROMETHEUS_AUTH_HEADER` variable, and only sends that header to a non-loopback host over `https:`.

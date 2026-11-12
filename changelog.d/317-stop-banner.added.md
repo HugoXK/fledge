@@ -1,1 +1,0 @@
-The admin panel now shows a banner while the platform is stopped: who stopped it, when and why, with the resume action, in Chinese and English. It is read from the stop record on every request, so a reload no longer hides a stopped platform, and a stop whose record cannot be read is shown as stopped with the record named unreadable instead of a blank operator.
