@@ -12,6 +12,7 @@ import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
 import { classifyFailure, providerRefusalCode, type FailureCode } from '../lib/failure.js'
+import { parseModelRun } from '../lib/modelRun.js'
 import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
 import { duplicateOutcome, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
@@ -1873,6 +1874,13 @@ export class Jobs {
     const teamLabel = team ?? `${owner}/${name}`
     const journey = attributionSentence(attribution)
     const autoMergeEnabled = repo.repo_role === 'maintainer' && repo.auto_merge === 1 && job.kind === 'iterate'
+    // #358: a fallback means the repository's primary did not answer, so the pull
+    // request names the model that produced the work instead of implying the
+    // configured default did.
+    const modelRun = parseModelRun(job.model_json)
+    const modelLine = modelRun === null || modelRun.model === null
+      ? []
+      : [`- Model: ${modelRun.model.label}${modelRun.attempts.length === 0 ? '' : ` (tried ${modelRun.attempts.map((entry) => `${entry.label} ${entry.status}`).join(', ')})`}`]
     const body = [
       '<details>',
       `<summary>Fledge automation · ${teamLabel} · job <code>${job.id}</code> (${job.trigger}, ${job.kind})</summary>`,
@@ -1882,6 +1890,7 @@ export class Jobs {
       autoMergeEnabled ? 'The maintainer enabled auto-merge for this repository; Fledge may merge only after checks pass and no changes are requested.' : 'Fledge does not merge by default; a human must review and merge.',
       '',
       `- Issue: ${result.issueUrl ?? 'none'}`,
+      ...modelLine,
       `- Fledge job: ${this.config.baseUrl}/repos/${job.repo_id}/jobs/${job.id}`,
       '</details>',
     ]
