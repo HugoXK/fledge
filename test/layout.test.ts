@@ -162,3 +162,16 @@ test('the viewport opts into the notch and the CSS uses dvh and a safe-area inse
   assert.match(css, /env\(safe-area-inset-bottom\)/, 'the page must respect the bottom safe area')
   assert.match(css, /min-height:\s*min\(620px, 80dvh\)/, 'the workspace floor must not exceed the viewport')
 })
+
+test('info tips are buttons and destructive forms use the shared dialog', () => {
+  const pages = readFileSync(new URL('../src/views/pages.ts', import.meta.url), 'utf8')
+  assert.match(pages, /class="info-tip"[^>]*aria-expanded="false"/, 'an info tip must be a real button with an expanded state')
+  assert.doesNotMatch(pages, /<span class="info-tip"/, 'the old focus-only span must be gone')
+  const html = render('/dashboard')
+  assert.match(html, /<dialog id="confirm-dialog" class="confirm-dialog"/, 'the layout must render the shared confirmation dialog')
+  assert.match(html, /data-confirm-message/, 'the dialog must have a message slot')
+  const script = jsText()
+  assert.match(script, /querySelectorAll\(['"]\.info-tip['"]\)/, 'the script must wire the info tips')
+  assert.match(script, /showModal/, 'the script must open the native dialog')
+  assert.match(script, /data-confirm-message/, 'the script must fill the dialog message')
+})

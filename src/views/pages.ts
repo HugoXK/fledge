@@ -43,7 +43,7 @@ function csrf(viewer: Viewer): string {
 }
 
 function infoTip(text: string): string {
-  return `<span class="info-tip" tabindex="0" role="img" aria-label="${escapeHtml(text)}" data-tip="${escapeHtml(text)}">!</span>`
+  return `<button type="button" class="info-tip" aria-label="${escapeHtml(text)}" aria-expanded="false" data-tip="${escapeHtml(text)}">!</button>`
 }
 
 // Counts on the path-guard line are read as plain numbers in both languages.
