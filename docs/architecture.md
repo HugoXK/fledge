@@ -880,7 +880,7 @@ users, approved, repos, users with jobs/PRs, success rate, job cost, attributed
 vs unattributed cost, scope/verify/iterate/review counts, Lead-only and grounded
 attribution events, and recent events. `/admin/search` filters jobs and audit entries by the same user
 visibility as the admin page, pages each section twenty rows at a time with a pager that carries the
-active filters and the other section's page number, and can export the current result as CSV.
+active filters and the other section's page number, and can export the current result as CSV. An export whose filter matches more than 5000 rows is refused with the matched count and the cap instead of being truncated, and the refusal is audited; a filter at the cap still gets the whole file.
 
 `/admin/trials` shows every account, with the state derived at read time instead
 of stored: `running` and `expiring` inside the 7-day preview, `eligible` once it
