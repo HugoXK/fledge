@@ -1537,11 +1537,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const active = store.activeJobForRepo(repo.id)
     if (active !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}`)
-    const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : 'iterate'
-    const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
-    const resumePr = kind === 'iterate' && job.pr_url !== null
-    const result = await jobs.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {})
-    store.audit(viewer.user.id, 'job.retried', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
+    const result = await jobs.retryJob(job.id, viewer.user.id)
     if (!result.ok || result.job === undefined) {
       return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(refusalValue(result, '重试失败。'))}`)
     }
@@ -2805,16 +2801,70 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const key = `issue_command:${parsed.commentId}`
     if (store.getSetting(key) !== undefined) return
     store.setSetting(key, nowIso())
-    let item = store.findWorkItemByIssueUrl(repo.id, issueUrl)
-    if (item === undefined) {
-      item = store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, detail, issueUrl, state: 'proposed' })
-    }
     const token = await repoGithubToken(repo, config, githubApp, store)
     const client = new GithubClient(token, config.github.apiBase)
     const owner = repo.upstream_owner || repo.owner
     const name = repo.upstream_name || repo.name
     const reply = async (message: string): Promise<void> => {
       await client.comment(owner, name, number, `${message}\n\n<sub>Fledge · issue command</sub>`)
+    }
+    // The four job verbs act on the job attached to the issue's work item. They
+    // never create that item: with no item — or no job on it — the answer is a
+    // refusal, because a control command that starts work is a surprise, not a
+    // retry. Each verb reuses the service action the console already calls, so the
+    // audit rows and the timeline events are the same ones.
+    if (command === 'retry' || command === 'pause' || command === 'resume' || command === 'cancel') {
+      const linked = store.findWorkItemByIssueUrl(repo.id, issueUrl)
+      if (linked === undefined) {
+        await reply(`No work item is linked to this issue; nothing to ${command}.`)
+        return
+      }
+      const job = store.listJobsForRepo(repo.id, 20).find((entry) => entry.work_item_id === linked.id)
+      if (job === undefined) {
+        await reply(`No job is attached to work item ${linked.id}; nothing to ${command}.`)
+        return
+      }
+      const active = job.status === 'queued' || job.status === 'running'
+      if (command === 'pause' || command === 'cancel') {
+        if (!active) {
+          await reply(`Job ${job.id} is ${job.status}; there is no queued or running job to ${command}.`)
+          return
+        }
+        const result = command === 'pause' ? await jobs.pauseJob(job.id, 'issue command') : await jobs.cancelJob(job.id, 'issue command')
+        if (!result.ok) {
+          await reply(`Could not ${command} job ${job.id}: ${result.error ?? 'unknown error'}`)
+          return
+        }
+        // The service sends a live session a stop: a hard stop where the instance
+        // exposes one, otherwise a request. The reply says exactly that and never
+        // claims a process was killed.
+        const verb = command === 'pause' ? 'Paused' : 'Cancelled'
+        const state = command === 'pause' ? 'paused' : 'cancelled'
+        await reply(job.status === 'running'
+          ? `${verb} job ${job.id}: the row is ${state}, and the session that was running was sent a stop request (a hard stop where the instance exposes one, otherwise a request).`
+          : `${verb} job ${job.id}: the row is ${state}.`)
+        return
+      }
+      if (command === 'resume') {
+        if (job.status !== 'paused') {
+          await reply(`Job ${job.id} is ${job.status}; only a paused job can be resumed.`)
+          return
+        }
+        const result = await jobs.resumeJob(job.id)
+        await reply(result.ok && result.job !== undefined ? `Resumed job ${job.id} as job ${result.job.id}.` : `Could not resume job ${job.id}: ${result.error ?? 'unknown error'}`)
+        return
+      }
+      if (active) {
+        await reply(`Job ${job.id} is still ${job.status}; pause or cancel it before retrying.`)
+        return
+      }
+      const result = await jobs.retryJob(job.id, repo.user_id, { workItemId: linked.id })
+      await reply(result.ok && result.job !== undefined ? `Queued job ${result.job.id} to retry job ${job.id}.` : `Could not retry job ${job.id}: ${result.error ?? 'unknown error'}`)
+      return
+    }
+    let item = store.findWorkItemByIssueUrl(repo.id, issueUrl)
+    if (item === undefined) {
+      item = store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, detail, issueUrl, state: 'proposed' })
     }
     if (command === 'status') {
       const latest = store.listJobsForRepo(repo.id, 20).find((job) => job.work_item_id === item.id)

@@ -283,6 +283,32 @@ export class Jobs {
     return { ok: true, job: result.job }
   }
 
+  // One retry path for the console route and the issue command: the checkpoint,
+  // the kind and the "resume the same pull request" rule were copied in the route
+  // until #360, which is exactly the second-place-to-disagree shape this codebase
+  // keeps paying for. The caller names the actor so the audit row is the same
+  // `job.retried` action either way.
+  async retryJob(jobId: string, actorUserId: string, options: { workItemId?: string } = {}): Promise<{ ok: boolean; job?: JobRow; error?: string; code?: string }> {
+    const job = this.store.getJob(jobId)
+    if (job === undefined) return { ok: false, error: '任务不存在。' }
+    if (job.status === 'queued' || job.status === 'running') return { ok: false, error: '这个任务还在运行；请先暂停或取消。' }
+    const repo = this.store.getRepo(job.repo_id)
+    if (repo === undefined) return { ok: false, error: '仓库不存在。' }
+    const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : 'iterate'
+    const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
+    const resumePr = kind === 'iterate' && job.pr_url !== null
+    const result = await this.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, {
+      ...(resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {}),
+      ...(options.workItemId === undefined ? {} : { workItemId: options.workItemId }),
+    })
+    this.store.audit(actorUserId, 'job.retried', `${jobId} -> ${result.job?.id ?? result.error ?? 'failed'}`)
+    // The console banner builds its sentence from the enqueue code, so the
+    // refusal has to travel with it rather than being flattened to one string.
+    if (!result.ok || result.job === undefined) return { ok: false, error: result.error ?? '重试失败。', code: result.code }
+    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: actorUserId, kind: 'job.retry_started', step: kind, meta: result.job.id })
+    return { ok: true, job: result.job }
+  }
+
   async cancelRepoJobs(repoId: string, reason: string, errorCode?: FailureCode): Promise<void> {
     for (const job of this.store.listActiveJobs().filter((entry) => entry.repo_id === repoId)) {
       const revoke = (): void => {
