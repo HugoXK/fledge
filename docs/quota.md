@@ -105,6 +105,15 @@ can have multiple models (`provider_models`). Repository settings select which
 provider models the repository may use and which is default
 (`repo_model_selection`).
 
+A request that is refused before a model is called is not metered: an unknown,
+revoked or expired token gets `401 invalid_api_key`, and a live token whose
+`scope` is not `gateway` gets `403 insufficient_scope` before `last_used_at` is
+written. Only an authenticated call reaches the quota check and the ledger, so a
+refused token cannot spend and cannot leave a usage row. A personal token's
+finite expiry (default `PAT_EXPIRY_DAYS` 90) is what ends a leaked token's reach
+without a manual revoke; job and instance tokens keep the lifetime their own
+lifecycle sets.
+
 The gateway aliases each provider model by its id. An instance or job token that
 carries `repo_id` resolves `body.model` to the selected provider model and calls
 that provider; an unselected model falls back to the user's legacy own model,

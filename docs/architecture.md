@@ -276,7 +276,15 @@ state contract and its evidence are in [docs/ui.md](ui.md).
 
 ### Model gateway
 
-`/v1/*` is OpenAI-compatible and authenticated with `flg_` tokens.
+`/v1/*` is OpenAI-compatible and authenticated with `flg_` tokens. A token
+carries a `scope` and an `expires_at`: `gateway` is the only enforced scope, a
+personal token always gets a finite lifetime (30/90/365 days, default
+`PAT_EXPIRY_DAYS` 90) and only an admin may create an operator token without one.
+The gateway answers `401 invalid_api_key` for an unknown, revoked, expired or
+non-approved token and `403 insufficient_scope` for a live token outside the
+gateway scope, decided before `last_used_at` is written; neither refusal echoes
+the token. The settings page lists each token's scope, expiry and last use, and
+revoke stays one click.
 
 - If the user has an own model configured, Fledge proxies to it and does **not**
   meter platform quota.
@@ -1057,7 +1065,7 @@ generated per job, stored as a hash, and never appears in the UI.
 | `approval_tokens` | single-use approve/reject links |
 | `repos` | upstream/fork identity, encrypted token, permission, reviewer config, goal, cadence, state |
 | `jobs` | lifecycle, kind (iterate/review), branch, issue/PR URL, review score, summary, cost, job-scoped token hash |
-| `api_tokens` | `flg_` tokens (PAT or job), hashed |
+| `api_tokens` | `flg_` tokens (PAT, job or instance), hashed, with `scope` (only `gateway` today) and `expires_at`; a PAT always carries an expiry |
 | `quota_ledger` | per-request cost records |
 | `notifications` | in-app messages (quota, job failure), stored as written and localized at render |
 | `audit_log` | who changed what |
