@@ -1,0 +1,1 @@
+The console now fills the real visible viewport: the page and workspace use `dvh` with the previous `vh` fallback, the page respects the bottom safe-area inset, and the meta viewport opts into the notch area, so mobile browser chrome no longer hides the bottom of a page or the workspace frame.
