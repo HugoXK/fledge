@@ -34,6 +34,12 @@ success and disabled — so the aria contract (`status`, `alert`, `aria-busy`,
 a dropped stream reports `lost` and `recovered` instead of going quiet. The
 state contract and its evidence are in [docs/ui.md](ui.md).
 
+The console renders UTC and says so: every timestamp goes through
+`humanTimeShort` in `src/lib/time.ts`, which prints the UTC wall clock with an
+explicit `UTC` suffix. The digest is scheduled in `DIGEST_TIMEZONE` and
+`/settings` names that zone, so an unlabelled timestamp beside it would read as
+a second clock that disagrees.
+
 ## Components
 
 ```
