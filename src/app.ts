@@ -9,7 +9,8 @@ import { assertProductionConfig } from './config.js'
 import { openStore, type JobRow, type RepoRow, type Store, type UserRow } from './db.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
-import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions } from './auth/session.js'
+import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions, type Viewer } from './auth/session.js'
+import { instanceLimitRefusal, repoLimitRefusal, type LimitRefusal } from './lib/limits.js'
 import { isTrialFilter } from './lib/trials.js'
 import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
@@ -288,6 +289,37 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (viewer.user.status !== 'approved') throw httpError(403, '账号正在等待审批。', 'NOT_APPROVED')
     return viewer
   }
+
+  // #457: a user may not create repositories or FlyBot instances without a
+  // ceiling; the refusal carries a stable code and is audited, and it happens
+  // before anything is created so no half-built repo or container is left.
+  const refuseLimit = (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    viewer: Viewer,
+    refusal: LimitRefusal,
+    back: string,
+  ): FastifyReply => {
+    const t = translator(request.locale ?? 'zh')
+    store.audit(viewer.user.id, 'limit.refused', `${refusal.code} used=${refusal.used} cap=${refusal.cap}`)
+    const message = refusal.code === 'REPO_LIMIT'
+      ? t(
+        `仓库数量已达上限（${refusal.used}/${refusal.cap}）。请先移除一个仓库，或请管理员调整上限。`,
+        `Repository limit reached (${refusal.used}/${refusal.cap}). Remove a repository or ask an admin to raise the limit.`,
+      )
+      : t(
+        `FlyBot 实例数量已达上限（${refusal.used}/${refusal.cap}）。请先停止或移除一个实例，或请管理员调整上限。`,
+        `FlyBot instance limit reached (${refusal.used}/${refusal.cap}). Stop or remove an instance, or ask an admin to raise the limit.`,
+      )
+    const joiner = back.includes('?') ? '&' : '?'
+    return reply.redirect(`${back}${joiner}error=${encodeURIComponent(message)}&code=${refusal.code}`)
+  }
+
+  const repoCapRefusal = (viewer: Viewer): LimitRefusal | null => repoLimitRefusal({
+    used: store.countReposForUser(viewer.user.id),
+    cap: config.limits.reposPerUser,
+    admin: isAdminRole(viewer.user.role),
+  })
 
   const ownedRepo = (request: FastifyRequest, id: string, mutating = false) => {
     const viewer = mutating ? approvedCsrfGuard(request) : requireApproved(request)
@@ -968,6 +1000,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`)
     }
     const byName = new Map(available.map((repo) => [repo.fullName.toLowerCase(), repo]))
+    const fresh = selected.filter((fullName) => {
+      const info = byName.get(fullName.toLowerCase())
+      return info !== undefined && store.getRepoByOwnerName(viewer.user.id, info.owner, info.name) === undefined
+    })
+    const refusal = repoLimitRefusal({
+      used: store.countReposForUser(viewer.user.id) + fresh.length,
+      cap: config.limits.reposPerUser,
+      admin: isAdminRole(viewer.user.role),
+    })
+    if (refusal !== null) return refuseLimit(request, reply, viewer, refusal, `/repos/new?installation=${installationId}`)
     const added: string[] = []
     for (const fullName of selected) {
       const repoInfo = byName.get(fullName.toLowerCase())
@@ -1037,6 +1079,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (existing !== undefined) {
         return reply.redirect(`/repos/${existing.id}?notice=${encodeURIComponent('这个仓库已经添加过了。')}`)
       }
+      const refusal = repoCapRefusal(viewer)
+      if (refusal !== null) return refuseLimit(request, reply, viewer, refusal, '/repos/new')
       store.event('repo_connect_start', { userId: viewer.user.id, meta: `${owner}/${name}` })
       const token = (body.token ?? '').trim()
       if (token === '') throw new Error('请填写 GitHub token')
@@ -1121,6 +1165,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         viewer: viewOf(viewer),
         repo,
         instance,
+        usage: {
+          repos: store.countReposForUser(viewer.user.id),
+          reposCap: config.limits.reposPerUser,
+          instances: store.countRepoInstancesForUser(viewer.user.id),
+          instancesCap: config.limits.instancesPerUser,
+        },
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
         prJobs: store.listPrJobsForRepo(repo.id, 10),
         workItems: store.listWorkItems(repo.id),
@@ -1933,6 +1983,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/instance', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     if (config.flybot.instanceImage === '') throw httpError(400, 'FlyBot 实例未配置', 'INSTANCE_DISABLED')
+    const refusal = instanceLimitRefusal({
+      usedForUser: store.countRepoInstancesForUser(viewer.user.id),
+      capForUser: config.limits.instancesPerUser,
+      usedGlobal: store.countRepoInstances(),
+      capGlobal: config.limits.instancesGlobal,
+      admin: isAdminRole(viewer.user.role),
+    })
+    if (refusal !== null) return refuseLimit(request, reply, viewer, refusal, `/repos/${repo.id}`)
     instances.ensureUserDir(viewer.user.id)
     const existing = store.getRepoInstance(repo.id)
     if (existing !== undefined && existing.status !== 'ready' && !instances.isProvisioning(repo.id)) await instances.stop(repo.id)

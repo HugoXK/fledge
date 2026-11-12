@@ -2290,6 +2290,14 @@ export class Store {
     return this.all<RepoInstanceRow>('SELECT * FROM repo_instances ORDER BY created_at DESC')
   }
 
+  countRepoInstancesForUser(userId: string): number {
+    return this.get<{ total: number }>('SELECT COUNT(*) AS total FROM repo_instances WHERE user_id = ?', userId)?.total ?? 0
+  }
+
+  countRepoInstances(): number {
+    return this.get<{ total: number }>('SELECT COUNT(*) AS total FROM repo_instances')?.total ?? 0
+  }
+
   saveRepoInstance(input: RepoInstanceRow): RepoInstanceRow {
     this.run(
       `INSERT OR REPLACE INTO repo_instances
