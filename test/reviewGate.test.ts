@@ -1302,3 +1302,75 @@ test('the gate still requires a Not run: line from a PASS that ran real commands
   })
 })
 
+
+// --- #341: a PASS above the attempt cap still repaints a red that predates it
+//
+// The cap is right and stays: a planner that ignored `run_attempt` would re-run
+// the same failing run on every trigger. What the count cannot tell is "this red
+// is older than the standing PASS" from "this run failed after the PASS". The
+// blocking red check's own `completed_at` can, and it is the field that only
+// moves when the gate job itself re-runs.
+const REPAIR_VERDICT_AT = '2026-11-12T02:42:39Z'
+
+function blockingFixture(options: { redAt?: string; runStatus?: string; verdictAt?: string | undefined } = {}) {
+  const redAt = options.redAt ?? '2026-11-12T01:28:08Z'
+  const red = { id: 11, check_suite: { id: 501 }, name: 'review-gate', status: 'completed', conclusion: 'failure', started_at: redAt, completed_at: redAt }
+  const green = { id: 12, check_suite: { id: 502 }, name: 'review-gate', status: 'completed', conclusion: 'success', started_at: '2026-11-12T02:43:11Z', completed_at: '2026-11-12T02:43:11Z' }
+  const run = {
+    name: 'Review gate',
+    path: '.github/workflows/review-gate.yml',
+    id: 43127471719,
+    status: options.runStatus ?? 'completed',
+    run_attempt: 3,
+    conclusion: (options.runStatus ?? 'completed') === 'completed' ? 'failure' : null,
+    check_suite_id: 501,
+    created_at: '2026-11-12T01:20:00Z',
+  }
+  return {
+    expected: 'success' as const,
+    checkRuns: [red, green],
+    runs: [run],
+    jobsFor: () => failedGateJob,
+    currentRunId: '900',
+    ...(options.verdictAt === undefined && 'verdictAt' in options ? {} : { verdictAt: options.verdictAt ?? REPAIR_VERDICT_AT }),
+  }
+}
+
+test('#341: an above-cap run whose red predates the verdict is repainted exactly once', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const plan = repairPlan(blockingFixture())
+  assert.equal(plan.action, 'repaint')
+  assert.deepEqual(plan.ids, [43127471719], 'exactly one run id, the one whose suite owns the red')
+})
+
+test('#341: a red that postdates the verdict blocks and names the run and its attempt', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const plan = repairPlan(blockingFixture({ redAt: '2026-11-12T03:00:00Z' }))
+  assert.equal(plan.action, 'blocked')
+  assert.deepEqual(plan.ids, [])
+  assert.match(plan.reason, /43127471719/, 'the reason names the run')
+  assert.match(plan.reason, /attempt 3/, 'and the attempt count')
+  assert.match(plan.reason, /a new commit/)
+})
+
+test('#341: a red completed at the verdict instant is repaint, so the boundary never drifts into blocked', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const plan = repairPlan(blockingFixture({ redAt: REPAIR_VERDICT_AT }))
+  assert.equal(plan.action, 'repaint')
+})
+
+test('#341: an attempt still in flight is wait, with no ids and no blocked', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const plan = repairPlan(blockingFixture({ runStatus: 'in_progress' }))
+  assert.equal(plan.action, 'wait')
+  assert.deepEqual(plan.ids, [])
+  assert.match(plan.reason, /43127471719/, 'the reason names the live run')
+  assert.doesNotMatch(JSON.stringify(plan), /blocked/)
+})
+
+test('#341: a plan without a verdict timestamp fails closed instead of comparing against undefined', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const plan = repairPlan(blockingFixture({ verdictAt: undefined }))
+  assert.equal(plan.action, 'blocked')
+  assert.deepEqual(plan.ids, [], 'no repaint may be posted on a comparison it cannot make')
+})

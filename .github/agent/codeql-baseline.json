@@ -33,7 +33,7 @@
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 2985,
+      "line": 2989,
       "severity": "high",
       "reason": "alert #65, open"
     },

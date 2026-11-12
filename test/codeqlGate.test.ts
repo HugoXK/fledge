@@ -108,21 +108,21 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // stay exact so a silent re-label is still a failing test.
   // #251 moved these five route registrations: one import line at `:40` and
   // five lines inside the webhook path. #357 adds one line above the webhook
-  // route registration, so the `:2957` pin and its baseline entry moved to
-  // `:2958` together in that commit. #358 moved the two gateway registrations
-  // the same way: two import lines and the `readAnswer` helper above them, 19
-  // lines in total, with no new route and no change to the limiter call that
-  // opens each handler; alerts #41 and #42 stay the same two dismissed results.
-  // #359 inserts the pending-plan spread and the late-approval guard in the
-  // repository and plan routes, all above the webhook registration, so the
-  // `:2958` pin and its baseline entry moved to `:2974` in that commit, then to
-  // `:2979` with the review rework (deadline cutoff and the cleared reason) in
-  // the same kind of commit. #418 inserts the review-trend read model six lines
-  // above the webhook registration, so the `:2979` pin and its baseline entry
-  // moved to `:2985` together in that commit. Re-keying and the pin travel every
-  // time, which is what keeps "refreshed" from becoming "silently re-labelled".
+  // route registration; #353 adds four more (two in the failure path, two in the
+  // retry route), so the pin and its baseline entry moved with it. #359 inserted
+  // the pending-plan spread and the late-approval guard above the webhook
+  // registration, moving the same pair again on its own tree. #403's 21 lines
+  // and #353's four compose to `:2983` on main; this branch adds the review-trend
+  // read model six lines above the same registration, so the anchor read off the
+  // merged tree is `:2989`, and the baseline entry and this pin move there
+  // together in the merge commit. Anchors are measured on the tree, never summed,
+  // which keeps "refreshed" from becoming "silently re-labelled". #358 moved the
+  // two gateway registrations the same way: two import lines and the `readAnswer`
+  // helper above them, 19 lines in total, with no new route and no change to the
+  // limiter call that opens each handler. The alerts (#41, #42, both dismissed
+  // false positive) are the same two.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|2985',
+    'js/missing-rate-limiting|src/app.ts|2989',
     'js/missing-rate-limiting|src/app.ts|469',
     'js/missing-rate-limiting|src/app.ts|504',
     'js/missing-rate-limiting|src/app.ts|514',

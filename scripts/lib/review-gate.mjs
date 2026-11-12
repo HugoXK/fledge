@@ -349,5 +349,8 @@ export async function evaluateGate({ api, threads, repo, policy, prNumber, tier:
   if (!hasRan(newest.body)) return failed('the PASS has no real Ran: command; it is not a conclusion')
   if (!hasNotRun(newest.body)) return failed('the PASS has no Not run: line; it is not a conclusion')
   const where = newest.source === 'review' ? `a review by ${newest.author}` : `a comment by ${newest.author}`
-  return { ok: true, kind: 'pass', message: `${tier} PASS at ${headSha.slice(0, 12)} by ${writer} from ${where}` }
+  // #341: the repair planner compares a standing red's `completed_at` against
+  // the newest verdict's own timestamp, and this is where that value already
+  // lives. Returning it adds no request and keeps one resolution of "newest".
+  return { ok: true, kind: 'pass', message: `${tier} PASS at ${headSha.slice(0, 12)} by ${writer} from ${where}`, verdictAt: newest.at }
 }
