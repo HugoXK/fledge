@@ -126,7 +126,8 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // in the token create route above the webhook registration, which reads
   // `:2996` on `e268836` alone; and its gateway rewrite adds 10 lines above both
   // gateway registrations, which read `:154`/`:179`. #441 (also in that main)
-  // changed the console surfaces and the type scale, not these routes. This
+  // changed the console surfaces and the type scale, and #442 (merged after it)
+  // changed the phone viewport rules; neither touched these routes. This
   // branch's three settings session routes, their rate-limit calls and their
   // CSRF guards insert 44 lines above the webhook registration, so the merged
   // tree measures `:3040`, not `:3027` and not `:2996`. Every number above was

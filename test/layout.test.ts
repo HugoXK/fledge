@@ -148,3 +148,17 @@ test('touch targets in the shell follow the --touch token', () => {
     assert.match(rule(css, selector), /min-width:\s*var\(--touch\)/, `${selector} must be at least --touch wide, not only tall`)
   }
 })
+
+test('the viewport opts into the notch and the CSS uses dvh and a safe-area inset', () => {
+  const html = render('/dashboard')
+  assert.match(
+    html,
+    /<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" \/>/,
+    'the viewport meta must opt into the notch',
+  )
+  const css = cssText()
+  assert.match(css, /min-height:\s*100dvh/, 'the page must use dvh with the 100vh fallback before it')
+  assert.match(css, /height:\s*calc\(100dvh - var\(--header-h\)\)/, 'the workspace frame must follow the dynamic viewport')
+  assert.match(css, /env\(safe-area-inset-bottom\)/, 'the page must respect the bottom safe area')
+  assert.match(css, /min-height:\s*min\(620px, 80dvh\)/, 'the workspace floor must not exceed the viewport')
+})
