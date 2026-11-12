@@ -233,6 +233,7 @@ export interface JobRow {
   path_guard_json: string | null
   verification_json: string | null
   continuity_json: string | null
+  model_json: string | null
   output_kind: string | null
   continuity_used: number
   owner_started: number
@@ -593,6 +594,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   path_guard_json TEXT,
   verification_json TEXT,
   continuity_json TEXT,
+  model_json TEXT,
   output_kind TEXT,
   continuity_used INTEGER NOT NULL DEFAULT 0,
   owner_started INTEGER NOT NULL DEFAULT 0,
@@ -1096,6 +1098,7 @@ export class Store {
     if (!jobColumns.has('output_kind')) this.run('ALTER TABLE jobs ADD COLUMN output_kind TEXT')
     if (!jobColumns.has('continuity_used')) this.run('ALTER TABLE jobs ADD COLUMN continuity_used INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('owner_started')) this.run('ALTER TABLE jobs ADD COLUMN owner_started INTEGER NOT NULL DEFAULT 0')
+    if (!jobColumns.has('model_json')) this.run('ALTER TABLE jobs ADD COLUMN model_json TEXT')
     if (!jobColumns.has('retry_attempt')) this.run('ALTER TABLE jobs ADD COLUMN retry_attempt INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('retry_of')) this.run('ALTER TABLE jobs ADD COLUMN retry_of TEXT')
     if (!jobColumns.has('last_callback_at')) this.run('ALTER TABLE jobs ADD COLUMN last_callback_at TEXT')
@@ -2449,7 +2452,7 @@ export class Store {
   }
 
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'output_kind' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'model_json' | 'output_kind' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')

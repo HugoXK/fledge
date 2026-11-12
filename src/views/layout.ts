@@ -99,11 +99,17 @@ export function layout(options: LayoutOptions): string {
   const errorLink = refusal === null ? null : refusal.link
   const preview = viewer !== undefined && viewer !== null && viewer.preview === true
   const release = options.release ?? releaseSurface()
-  const section = active ?? sectionForPath(path)
-  const navItem = (key: string, href: string, label: string): string =>
-    section === key
-      ? `<a class="on" href="${href}" aria-current="page">${escapeHtml(label)}</a>`
-      : `<a href="${href}">${escapeHtml(label)}</a>`
+  // #93: "current page" is a claim about the document, so it belongs to the link
+  // whose own target is this route and to no ancestor; a section match still gets
+  // the highlight, announced as the generic `true`. The route's query string is
+  // not part of the comparison.
+  const cleanPath = path.split('?')[0] ?? '/'
+  const section = active ?? sectionForPath(cleanPath)
+  const navItem = (key: string, href: string, label: string): string => {
+    const onPage = withSlash(cleanPath) === withSlash(href)
+    if (!onPage && section !== key) return `<a href="${href}">${escapeHtml(label)}</a>`
+    return `<a class="on" href="${href}" aria-current="${onPage ? 'page' : 'true'}">${escapeHtml(label)}</a>`
+  }
   const nav = viewer === undefined || viewer === null
     ? ''
     : `<nav class="nav" id="main-nav" aria-label="${escapeHtml(t('主导航', 'Main navigation'))}">

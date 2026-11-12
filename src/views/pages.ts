@@ -13,6 +13,7 @@ import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRo
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
+import { parseModelRun } from '../lib/modelRun.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
@@ -2211,6 +2212,14 @@ export function jobPage(input: {
   // observed cost, so the page says both without a second lookup.
   const budgetStop = (job.error ?? '').startsWith('JOB_BUDGET_') ? (job.error ?? '').replace(/^JOB_BUDGET_(PAUSED|CANCELLED):\s*/, '') : ''
   const attribution = jobAttribution(t, job)
+  // #358: which model actually answered, and what it fell through. A job whose
+  // primary was rate-limited finished on another model, so the page must name the
+  // one that replied instead of the one the instance was configured with.
+  const modelRun = parseModelRun(job.model_json)
+  const triedText = (run: typeof modelRun): string => (run === null ? '' : run.attempts.map((entry) => `${entry.label} (${entry.status})`).join(', '))
+  const modelLine = modelRun === null
+    ? ''
+    : `<p class="fine" data-model><strong>${escapeHtml(t('模型', 'Model'))}:</strong> ${escapeHtml(modelRun.model === null ? t('没有完成的调用', 'no completed call') : modelRun.model.label)}${modelRun.attempts.length === 0 ? '' : escapeHtml(` · ${t(`此前尝试 ${triedText(modelRun)}`, `tried ${triedText(modelRun)}`)}`)}</p>`
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
   const teamStats = jobTeamStats(job)
@@ -2285,6 +2294,7 @@ export function jobPage(input: {
       ${job.error === null || job.error === '' ? '' : `<details class="fine"><summary>${escapeHtml(t('技术详情', 'Technical detail'))}</summary><p>${escapeHtml(job.error)}</p></details>`}
       <p class="fine">${escapeHtml(t('成本', 'Cost'))} ${escapeHtml(cost)} · ${escapeHtml(t('创建', 'Created'))} ${escapeHtml(humanTimeShort(job.created_at))} · ${escapeHtml(t('结束', 'Finished'))} ${escapeHtml(humanTimeShort(job.finished_at))}</p>
       ${attribution === '' ? '' : `<p class="fine">${escapeHtml(attribution)}</p>`}
+      ${modelLine}
       ${job.checkpoint === null || job.checkpoint === '' ? '' : `<p class="fine"><strong>${escapeHtml(t('断点', 'Checkpoint'))}:</strong> ${escapeHtml(job.checkpoint)}</p>`}
       <p class="fine">${jobLinks(job)}</p>
     </div>

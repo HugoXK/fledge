@@ -17,7 +17,76 @@
 // identity plus the diff shape below are this module's whole claim; a caller
 // that skips those jobs must not treat the identity alone as a pass.
 
-export const MECHANICAL_PATHS = ['CHANGELOG.md', 'changelog.d/', 'package.json', 'package-lock.json', 'docker-compose.yml']
+export const MECHANICAL_PATHS = ['CHANGELOG.md', 'changelog.d/', 'package.json', 'package-lock.json', 'docker-compose.yml', 'README.md', 'README.zh.md']
+
+// Both READMEs state the release on exactly one status line, and the release
+// routine writes it (#348, superseding the T1 boundary #263 drew). The routine is
+// the only writer: it puts the version it just wrote into package.json and the
+// release date into that line, and changes nothing else in the file, so the shape
+// check below accepts that one replacement and nothing more. A README edit that
+// is not the status line stays outside the surface and keeps its review.
+export const STATUS_MARKERS = { 'README.md': '> **Status:**', 'README.zh.md': '> **状态：**' }
+export const STATUS_FILES = Object.keys(STATUS_MARKERS)
+
+const STATUS_VERSION = /`v(\d+\.\d+\.\d+)`/
+const STATUS_DATE = /([（(])\d{4}-\d{2}-\d{2}([)）])/
+
+// The line with its version and date blanked out. Two status lines with the same
+// skeleton differ only in those two tokens, which is the whole of what a release
+// is allowed to write.
+export function statusLineSkeleton(line) {
+  const value = String(line ?? '')
+  if (!STATUS_VERSION.test(value) || !STATUS_DATE.test(value)) return null
+  return value.replace(STATUS_VERSION, '`v#`').replace(STATUS_DATE, '$1#$2')
+}
+
+// Rewrites the first status line of `text` to `version` and `date`, keeping every
+// other line - and every other character of that line - byte-identical. Returns
+// null when the file has no status line the release can write, so the caller can
+// fail with the file named instead of shipping a stale line.
+export function rewriteStatusLine(text, marker, version, date) {
+  const lines = String(text).split('\n')
+  const index = lines.findIndex((line) => line.startsWith(marker))
+  if (index === -1) return null
+  const line = lines[index]
+  if (!STATUS_VERSION.test(line) || !STATUS_DATE.test(line)) return null
+  lines[index] = line.replace(STATUS_VERSION, `\`v${version}\``).replace(STATUS_DATE, `$1${date}$2`)
+  return lines.join('\n')
+}
+
+function statusShape(patch, name, marker, wanted) {
+  const removed = []
+  const added = []
+  for (const line of String(patch).split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue
+    if (!line.startsWith('+') && !line.startsWith('-')) continue
+    const body = line.slice(1)
+    if (!body.startsWith(marker)) {
+      return { shaped: false, reason: `${name} changes a line that is not its status line: ${body.trim().slice(0, 80)}` }
+    }
+    const skeleton = statusLineSkeleton(body)
+    if (skeleton === null) {
+      return { shaped: false, reason: `${name} changes its status line into a shape the release does not write: ${body.trim().slice(0, 80)}` }
+    }
+    const version = STATUS_VERSION.exec(body)?.[1] ?? ''
+    const entry = { skeleton, version }
+    if (line.startsWith('+')) added.push(entry)
+    else removed.push(entry)
+  }
+  if (removed.length !== 1 || added.length !== 1) {
+    return { shaped: false, reason: `${name} replaces ${removed.length} status line(s) with ${added.length}; the release writes exactly one` }
+  }
+  if (added[0].skeleton !== removed[0].skeleton) {
+    return { shaped: false, reason: `${name} changes more than the version and the date of its status line` }
+  }
+  if (added[0].version !== wanted) {
+    return { shaped: false, reason: `${name} adds status version ${added[0].version === '' ? '(none)' : added[0].version}, not ${wanted}` }
+  }
+  if (removed[0].version === wanted) {
+    return { shaped: false, reason: `${name} already named ${wanted}; a release writes a new version, not a new date` }
+  }
+  return { shaped: true, reason: '' }
+}
 
 const RELEASE_TITLE = /^release: v(\d+\.\d+\.\d+)$/
 const RELEASE_BRANCH = /^release\/v(\d+\.\d+\.\d+)$/
@@ -61,10 +130,11 @@ export function mechanicalRelease({ branch, title, files } = {}) {
 // change in package.json or an image/env change in docker-compose.yml with no
 // PASS. It only counts when the diff has the shape the release routine writes:
 // the version fields in package.json / package-lock.json bumped to exactly the
-// version the identity names, and the image tag in docker-compose.yml set to
-// exactly `fledge:<version>`, with any content allowed in CHANGELOG.md and
-// changelog.d/. A file whose patch the API did not return cannot be judged, so
-// it fails closed.
+// version the identity names, the image tag in docker-compose.yml set to exactly
+// `fledge:<version>`, and in each README exactly one status line replaced - same
+// line, same words, the version and the date at the identity's version - with any
+// content allowed in CHANGELOG.md and changelog.d/. A file whose patch the API
+// did not return cannot be judged, so it fails closed.
 //
 // Every pattern below is anchored to the whole line. Unanchored, a line that
 // merely *contains* a version literal passes, and `bumpVersions` only rewrites
@@ -88,6 +158,12 @@ export function mechanicalDiffShape(files, version) {
     if (name === 'CHANGELOG.md' || name.startsWith('changelog.d/')) continue
     const patch = String(file?.patch ?? '')
     if (patch === '') return { shaped: false, reason: `${name} has no patch to judge` }
+    const marker = STATUS_MARKERS[name]
+    if (marker !== undefined) {
+      const status = statusShape(patch, name, marker, wanted)
+      if (!status.shaped) return status
+      continue
+    }
     for (const line of patch.split('\n')) {
       if (!line.startsWith('+') && !line.startsWith('-')) continue
       if (line.startsWith('+++') || line.startsWith('---')) continue
@@ -110,5 +186,5 @@ export function mechanicalDiffShape(files, version) {
       }
     }
   }
-  return { shaped: true, reason: `the version fields at ${wanted} and the fledge:${wanted} image tag only` }
+  return { shaped: true, reason: `the version fields at ${wanted}, the fledge:${wanted} image tag and the two status lines only` }
 }

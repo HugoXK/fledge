@@ -153,3 +153,34 @@ It is enough to demonstrate real iteration on a small repository (roughly
 hundreds of thousands of flash-model tokens at the reference price) and small
 enough that an operator can gift it without a billing system. The number is a
 configuration value, not a business rule.
+
+## Model fallback
+
+A repository selects an ordered set of models (`repo_model_selection`). The
+`is_default` row is the primary; the remaining rows keep the order they are
+listed in, which is the order the selection query returns (provider first, then
+model). There is no separate order column, so the console's picker and the
+gateway read the same order.
+
+When a chat call to the primary is refused **transiently** — `429` rate limit,
+`408`, a `5xx`, an unreachable provider, or a `404` that says the model was
+retired — the gateway retries the same request on the next model in that order
+and answers with the first success. The job finishes once, on one model, and its
+row records which model replied plus the models it fell through (`jobs.model_json`).
+The record is per **chat call**, not per job: every call a job makes rewrites it,
+so a fallback that happened in an earlier call is not retained once a later call
+answers on the primary. The job page and the pull-request automation comment name
+the model of that last call.
+
+It never falls back on:
+
+| Refusal | Why not |
+|---|---|
+| `401` / `403` | The credential is the repository's, not the model's: another model behind the same key is no more likely to be accepted |
+| `402` | Payment or plan; changing model does not fix it |
+| `429` carrying `insufficient_quota` / billing / budget | An exhausted provider quota is not a rate limit; retrying it on another model spends the same account again |
+| A policy or content refusal | That is a decision about the request, not the model's health |
+
+One charge per answered call: a refused attempt returns no usage, so only the
+model that answered is billed, and the attempt list on the job shows the refused
+models without a cost.
