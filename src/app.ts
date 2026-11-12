@@ -61,6 +61,7 @@ import {
   metricsPage,
   appReposPage,
   workspacePage,
+  searchPage,
   agentWorkspacePage,
   settingsPage,
   inboxSection,
@@ -785,6 +786,39 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         error: queryText(request, 'error'),
       }),
     )
+  })
+
+  // #362: every filter is validated here and the query is anchored on
+  // `viewer.user.id`, so an unknown `repo` value is dropped, not answered.
+  app.get('/search', async (request, reply) => {
+    const viewer = requireApproved(request)
+    const repos = store.listRepos(viewer.user.id)
+    const clip = (name: string, max: number): string => (queryText(request, name) ?? '').trim().slice(0, max)
+    const day = (name: string): string => {
+      const value = clip(name, 10)
+      return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ''
+    }
+    const [status, kind, repo] = [clip('status', 30), clip('kind', 30), clip('repo', 64)]
+    const [from, to] = [day('from'), day('to')]
+    const filters = {
+      q: clip('q', 200),
+      repo: repos.some((row) => row.id === repo) ? repo : '',
+      status: ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted'].includes(status) ? status : '',
+      kind: ['iterate', 'review', 'plan'].includes(kind) ? kind : '',
+      from: from === '' ? '' : `${from}T00:00:00.000Z`, to: to === '' ? '' : `${to}T23:59:59.999Z`,
+    }
+    return reply.type('text/html').send(searchPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      repos,
+      filters: { q: filters.q, repo: filters.repo, status: filters.status, kind: filters.kind, from, to },
+      // An empty query is not a listing: it is the same empty state with a next step.
+      results: filters.q === '' ? null : store.searchOwned(viewer.user.id, filters, 20),
+      cap: 20,
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
   })
 
   app.get('/repos', async (_request, reply) => {
@@ -2445,8 +2479,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       filters: { q, status, kind, action, from, to },
       jobsPage,
       jobsTotal,
-      auditPage,
-      auditTotal,
+      auditPage, auditTotal,
+      perPage,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))

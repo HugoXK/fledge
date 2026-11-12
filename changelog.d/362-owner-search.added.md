@@ -1,0 +1,1 @@
+Owner search at /search: one page over your own repositories, jobs, work items and audit entries, with repository, status, kind and date filters, 20 results per section and an empty state that says how to narrow.

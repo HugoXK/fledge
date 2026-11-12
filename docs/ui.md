@@ -207,3 +207,11 @@ document or an element leaves the viewport, checks that `#tokens` clears the
 sticky header, and writes full-page screenshots under `visual-matrix/` (ignored
 by git). CI uploads that directory as the `visual-matrix` artifact. The matrix
 does not contact GitHub, SMTP or a FlyBot instance.
+
+## Owner search (#362)
+`/search` searches only the signed-in owner's rows — repositories, jobs, work items
+and audit — 20 per section with the cap stated. The route validates every filter and
+the query is anchored on the user id, so it cannot return another user's row, an
+email or a token column, and `%`/`_` match as text. A repository filter narrows the
+three sections that own one; audit rows carry none, so that section says so. Rows
+link to the existing pages; an empty result uses the shared empty state.

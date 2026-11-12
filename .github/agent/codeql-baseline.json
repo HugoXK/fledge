@@ -1,39 +1,39 @@
 {
   "recordedAtSha": "b85777cc68a5b4ca4bced910baf2414c5a9b2ea9",
-  "note": "Every high/critical CodeQL result the analysis at the recorded sha emits, by rule id, path and line. Nothing is dismissed by this file: the four open alerts (issues #62-#65) stay open, and the three below them are results GitHub already carries as dismissed false positive, recorded so the line-keyed gate does not re-fail a decision that was reviewed in the alert UI. Changing this file is a reviewed commit; an entry added here says in the PR why the result is accepted. The five src/app.ts positions follow the tree that ships this file: a reviewed PR that inserts above those route registrations refreshes the lines it moves (#279, #231 and #280 all do), because the gate compares against the pull request's own tree. #359 raised the webhook registration to 2979 on main, #353 and #341 moved it again to 2983, and #355's token route sits above it once more, so the merged tree reads 2996; #355's first import line also sits above the four top-of-file route registrations, which read 470/505/515/525 on that tree rather than main's 469/504/514/524. This branch's review-trend read model sits six lines above the webhook registration, so the merged tree reads 3002 there; the four top-of-file registrations read 470/505/515/525 on the same tree, main's values, because nothing this branch adds sits above them. The two src/gateway/gateway.ts positions (alerts #41 and #42, both dismissed false positive) move the same way when a PR inserts above the two gateway route registrations; #358 moved both by 19 lines with two imports and a helper, and neither route registration nor the limiter call at the top of each handler changed. The alerts and their reasons are unchanged.",
+  "note": "Every high/critical CodeQL result the analysis at the recorded sha emits, by rule id, path and line. Nothing is dismissed by this file: the four open alerts (issues #62-#65) stay open, and the three below them are results GitHub already carries as dismissed false positive, recorded so the line-keyed gate does not re-fail a decision that was reviewed in the alert UI. Changing this file is a reviewed commit; an entry added here says in the PR why the result is accepted. The five src/app.ts positions follow the tree that ships this file: a reviewed PR that inserts above those route registrations refreshes the lines it moves (#279, #231 and #280 all do), because the gate compares against the pull request's own tree. #359 raised the webhook registration to 2979 on main, #353 and #341 moved it again to 2983, and #355's token route sits above it once more, so the merged tree reads 2996; #355's first import line also sits above the four top-of-file route registrations, which read 470/505/515/525 on that tree rather than main's 469/504/514/524. This branch's review-trend read model sits six lines above the webhook registration, so the merged tree reads 3002 there; the four top-of-file registrations read 470/505/515/525 on the same tree, main's values, because nothing this branch adds sits above them. The two src/gateway/gateway.ts positions (alerts #41 and #42, both dismissed false positive) move the same way when a PR inserts above the two gateway route registrations; #358 moved both by 19 lines with two imports and a helper, and neither route registration nor the limiter call at the top of each handler changed. The alerts and their reasons are unchanged. #362 moves them once more from one side: its single import line sits above the four top-of-file route registrations, so those read 471/506/516/526 on the merged tree, and its `/search` route - one import plus 33 route lines, all above the webhook registration - takes that entry to 3036. The two gateway registrations are untouched by #362 and stay at 154/179.",
   "alerts": [
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 470,
+      "line": 471,
       "severity": "high",
       "reason": "alert #62, open"
     },
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 505,
+      "line": 506,
       "severity": "high",
       "reason": "alert #63, open"
     },
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 515,
+      "line": 516,
       "severity": "high",
       "reason": "alert #36, dismissed false positive"
     },
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 525,
+      "line": 526,
       "severity": "high",
       "reason": "alert #64, open"
     },
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 3002,
+      "line": 3036,
       "severity": "high",
       "reason": "alert #65, open"
     },
