@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -230,13 +230,17 @@ test('every documented SLO has a rule or a reported-only marker, and the pair ag
 function codeSeries(): string[] {
   const names = new Set<string>()
   const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir)) {
-      const path = join(dir, entry)
-      if (statSync(path).isDirectory()) {
+    // `withFileTypes` answers "file or directory" from the directory listing
+    // itself, so this never stats a path and then reads it: a check-then-use on
+    // the filesystem is a race CodeQL flags as `js/file-system-race`, and a test
+    // has no reason to create one.
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) {
         walk(path)
         continue
       }
-      if (!path.endsWith('.ts')) continue
+      if (!entry.isFile() || !entry.name.endsWith('.ts')) continue
       const text = readFileSync(path, 'utf8')
       for (const match of text.matchAll(/(?:incCounter|setGauge|observeHistogram)\('([a-z0-9_]+)'/g)) names.add(match[1]!)
     }
