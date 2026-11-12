@@ -36,6 +36,31 @@ operator FlyBot is not used for user jobs. A container is limited by CPU,
 memory, PID and filesystem mounts; stopping or deleting a repository affects
 only that container.
 
+### API tokens
+
+- A personal `flg_` token is a gateway capability with two properties: a `scope`
+  and an `expires_at`. `gateway` is the only scope the code enforces today and is
+  the default for every row, including tokens created before the column existed.
+- A new personal token always gets a finite lifetime: the create form offers the
+  choices in `PAT_EXPIRY_CHOICES` and `PAT_EXPIRY_DAYS` (default 90) is the
+  fallback. A token without an expiry is an operator decision: only an
+  `admin`/`superadmin` may mint one, and the route refuses `never` for anyone
+  else by name.
+- Tokens minted before this existed are given one finite window from the upgrade
+  (`pat_expiry_backfilled` in `settings`, a one-time backfill), so no live token
+  dies at the moment of the upgrade and none stays permanent by accident.
+- The upgrade window is fixed at `DEFAULT_PAT_EXPIRY_DAYS` (90), not at
+  `PAT_EXPIRY_DAYS`: the backfill runs inside the store migration, which has no
+  configuration, so an operator who wants a shorter window for legacy tokens
+  revokes and re-mints them.
+- Job-issued tokens (`kind = 'job'`, `kind = 'instance'`) keep the lifetime their
+  own lifecycle sets; the backfill only touches `kind = 'pat'`.
+- The gateway refuses an expired or revoked token with `401 invalid_api_key` and
+  a token whose scope is not `gateway` with `403 insufficient_scope`. A refused
+  scope does not write `last_used_at` and no refusal echoes the secret.
+- Revoke stays one click in Settings and writes `token.revoked` to the audit log;
+  the list shows the scope, the expiry date and the last-used time.
+
 ### Sessions
 
 - 32-byte random session id; only its SHA-256 hash is stored.

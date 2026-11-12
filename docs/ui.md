@@ -74,6 +74,9 @@ them; this page only fixes the names and the values.
 | Layout | `--touch` | `44px` | minimum height for a tappable control |
 | Layout | `--content` | `1180px` | content max width |
 | Layout | `--mono` | `ui-monospace, …` | code and numeric columns |
+| Layout | `--page-pad` | `clamp(16px, 4vw, 32px)` | page and header horizontal padding |
+| Layout | `--section-gap` | `clamp(24px, 4vw, 48px)` | page and section rhythm |
+| Layout | `--card-pad` | `clamp(18px, 2.4vw, 28px)` | card padding |
 
 ## Naming rules (命名规则)
 
@@ -106,9 +109,11 @@ rules replace them:
 - **One interactive accent.** `--accent`, `--accent-strong`, `--accent-hover` and
   `--accent-ink` are the only colours an interactive control may use — buttons,
   links, the current nav item, focus rings, selected chips, pills and badges.
-  `--brand`, `--brand-2` and `--mint` are decoration only: the wordmark gradient,
-  the feature and stat accents and the meter's fill. A coloured panel never
-  stands for something clickable.
+  `--brand`, `--brand-2` and `--mint` are decoration only: the wordmark gradient
+  and the meter's fill. A coloured panel never stands for something clickable.
+- **One calm surface.** Cards use `--panel` and a 1px border; the page uses one
+  background. Gradients are reserved for the wordmark and the meter, not for
+  every card, so the content, not the chrome, carries the hierarchy.
 
 `test/uiSurfaces.test.ts` pins all three, including the count (`pages.ts` may
 carry exactly one `style="`).
