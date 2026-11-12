@@ -293,6 +293,95 @@ test('a run slot that is not a plain JSON object is refused by name', (t) => {
   assert.match(empty.stdout, /codeql-gate: ok \(parsed 0 result\(s\), 0 high\/critical, 0 added/)
 })
 
+// #385: one level below the slot. `results` is the list the reader iterates, and
+// `run?.results ?? []` turned three shapes into three wrong verdicts: `null` read
+// as a clean analysis, a number crashed the gate with a raw TypeError, and a
+// string was iterated per character into a high finding with an empty rule id.
+// A `results` value that is present and is not a list is refused by name at the
+// level that reads it, so the verdict is a refusal even when a caller reaches
+// `parseSarif` without the CLI's per-file loop.
+test('a run whose results is null is refused, not read as a clean analysis', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+
+  writeFileSync(join(sarifDir, 'head.sarif'), '{"version":"2.1.0","runs":[{"results":null}]}')
+  const run = runGate(sarifDir, baselinePath)
+  const output = `${run.stdout}${run.stderr}`
+  assert.equal(run.code, 1, 'a run with a null results list carries no verdict, so it must fail closed')
+  assert.match(run.stderr, /is not readable SARIF: run 0 results is not a list \(found null\)/)
+  assert.doesNotMatch(output, /parsed 0 result\(s\)/, 'a null results list must not be reported as a clean analysis')
+  assert.doesNotMatch(output, /TypeError/)
+  // The refusal belongs to the reader, so a caller that skips the gate's loop
+  // gets the same named error instead of an empty alert list.
+  assert.throws(() => parseSarif({ runs: [{ results: null }] }), /run 0 results is not a list \(found null\)/)
+
+  // The run index is the offending run's own: a good run in front of the bad
+  // one must not shift the message onto the run that was fine.
+  writeFileSync(join(sarifDir, 'head.sarif'), '{"version":"2.1.0","runs":[{"results":[]},{"results":null}]}')
+  const shifted = runGate(sarifDir, baselinePath)
+  assert.equal(shifted.code, 1, 'a bad results list after a good run still fails closed')
+  assert.match(shifted.stderr, /is not readable SARIF: run 1 results is not a list \(found null\)/)
+})
+
+test('a run whose results is a number is refused by name instead of crashing', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+
+  writeFileSync(join(sarifDir, 'head.sarif'), '{"version":"2.1.0","runs":[{"results":42}]}')
+  const run = runGate(sarifDir, baselinePath)
+  const output = `${run.stdout}${run.stderr}`
+  assert.equal(run.code, 1, 'a number is not a result list, so it must fail closed')
+  assert.match(run.stderr, /is not readable SARIF: run 0 results is not a list \(found number\)/)
+  assert.doesNotMatch(output, /TypeError/, 'a refusal, not a crash: the same standard as the slot guard')
+  assert.doesNotMatch(output, /parsed 0 result\(s\)/)
+})
+
+test('a run whose results is a string is refused instead of inventing a finding', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+
+  writeFileSync(join(sarifDir, 'head.sarif'), '{"version":"2.1.0","runs":[{"results":"x"}]}')
+  const run = runGate(sarifDir, baselinePath)
+  const output = `${run.stdout}${run.stderr}`
+  assert.equal(run.code, 1, 'a string is not a result list, so it must fail closed')
+  assert.match(run.stderr, /is not readable SARIF: run 0 results is not a list \(found string\)/)
+  // Iterating the string per character is how the gate invented `new high result
+  // at :0`; a gate that invents a finding is one refactor away from inventing an
+  // approval, so that line must not exist.
+  assert.doesNotMatch(output, /new high result/, 'a string must not be flattened into a fabricated finding')
+})
+
+test('a run with an empty results list or no results key still passes', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [] }))
+
+  // Both shapes are a real analysis that legitimately found nothing: the empty
+  // list says so explicitly, and some producers omit `results` when there are
+  // none. Refusing either would turn a quiet night into a red one, which is the
+  // blindness this gate exists to avoid in the other direction.
+  for (const document of [
+    '{"version":"2.1.0","runs":[{"results":[]}]}',
+    '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"CodeQL","rules":[]}}}]}',
+  ]) {
+    writeFileSync(join(sarifDir, 'head.sarif'), document)
+    const run = runGate(sarifDir, baselinePath)
+    assert.equal(run.code, 0, `a zero-result analysis is the pass state: ${run.stderr}`)
+    assert.match(run.stdout, /codeql-gate: ok \(parsed 0 result\(s\), 0 high\/critical, 0 added/)
+  }
+})
+
 // #297: the three shapes that are not a SARIF document at all. A top-level
 // array, a string and a number are not plain objects either, yet each already
 // fails closed with the missing-or-not-a-list form rather than a crash, so the
