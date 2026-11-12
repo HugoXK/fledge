@@ -2267,9 +2267,17 @@ export function jobPage(input: {
   // one that replied instead of the one the instance was configured with.
   const modelRun = parseModelRun(job.model_json)
   const triedText = (run: typeof modelRun): string => (run === null ? '' : run.attempts.map((entry) => `${entry.label} (${entry.status})`).join(', '))
+  // #407: a fallback an earlier call made is its own clause. It is skipped when
+  // the fallback ended on the model that answered last, because the `tried`
+  // clause above already names that model and two clauses would repeat it.
+  const fellBackText = (run: typeof modelRun): string => {
+    if (run === null || run.model === null || run.fallback === null) return ''
+    if (run.fallback.to.label === run.model.label) return ''
+    return ` · ${t(`此前调用回退（${run.fallback.status}）至 ${run.fallback.to.label}`, `earlier call fell back (${run.fallback.status}) to ${run.fallback.to.label}`)}`
+  }
   const modelLine = modelRun === null
     ? ''
-    : `<p class="fine" data-model><strong>${escapeHtml(t('模型', 'Model'))}:</strong> ${escapeHtml(modelRun.model === null ? t('没有完成的调用', 'no completed call') : modelRun.model.label)}${modelRun.attempts.length === 0 ? '' : escapeHtml(` · ${t(`此前尝试 ${triedText(modelRun)}`, `tried ${triedText(modelRun)}`)}`)}</p>`
+    : `<p class="fine" data-model><strong>${escapeHtml(t('模型', 'Model'))}:</strong> ${escapeHtml(modelRun.model === null ? t('没有完成的调用', 'no completed call') : modelRun.model.label)}${modelRun.attempts.length === 0 ? '' : escapeHtml(` · ${t(`此前尝试 ${triedText(modelRun)}`, `tried ${triedText(modelRun)}`)}`)}${escapeHtml(fellBackText(modelRun))}</p>`
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
   const teamStats = jobTeamStats(job)

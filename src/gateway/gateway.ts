@@ -8,7 +8,8 @@ import { log } from '../lib/log.js'
 import { decryptSecret, sha256Hex } from '../lib/secrets.js'
 import { costUsdFromUsage, headerCost, quotaView } from './quota.js'
 import { modelOrder, retryableModelFailure } from './modelFallback.js'
-import type { ModelAttempt } from '../lib/modelRun.js'
+import { parseModelRun } from '../lib/modelRun.js'
+import type { ModelAttempt, ModelFallback } from '../lib/modelRun.js'
 import { rateLimitKey, RateLimiter } from '../lib/rateLimit.js'
 import { GATEWAY_SCOPE } from '../lib/tokens.js'
 
@@ -205,17 +206,21 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
 
     // The job names the model that actually ran and the models it fell through.
     // The row is the record; a call whose job was deleted under it must not fail.
-    const recordModel = (winner: { id: string; label: string } | null): void => {
+    // #407: `attempts` is this call's list, so the fallback is kept beside it —
+    // the first one the job ever made survives a later call that answered on the
+    // primary, which is exactly the case this record exists to show.
+    const recordModel = (winner: { id: string; label: string } | null, fallback: ModelFallback | null): void => {
       if (jobId === null) return
       try {
-        store.updateJob(jobId, { model_json: JSON.stringify({ model: winner, attempts }) })
+        const stored = parseModelRun(store.getJob(jobId)?.model_json ?? null)?.fallback ?? null
+        store.updateJob(jobId, { model_json: JSON.stringify({ model: winner, attempts, fallback: fallback ?? stored }) })
       } catch (error) {
         log.warn('gateway model record failed', { trace: jobId, error: String(error) })
       }
     }
 
     let target: { baseUrl: string; key: string; model: string; platformFunded: boolean } | null = null
-    let targetLabel = ''
+    let targetName: { modelId: string; label: string } | null = null
     let upstream: Awaited<ReturnType<typeof upstreamRequest>> | null = null
     let lastFailure: { status: number; text: string; headers: Record<string, string> } | null = null
 
@@ -254,7 +259,7 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
       }
       if (answer.status >= 200 && answer.status < 300) {
         target = attemptTarget
-        targetLabel = attemptName.label
+        targetName = attemptName
         upstream = answer
         break
       }
@@ -267,13 +272,23 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
       if (!retryable) break
     }
 
-    if (upstream === null || target === null) {
-      recordModel(null)
+    if (upstream === null || target === null || targetName === null) {
+      // No winner means no fallback pair to record; a fallback from an earlier
+      // call is left as it is rather than cleared by a failed call.
+      recordModel(null, null)
       if (lastFailure !== null) return reply.code(lastFailure.status).headers(lastFailure.headers).send(lastFailure.text)
       return reply.code(502).send({ error: { type: 'provider_error', message: 'The model provider could not be reached.' } })
     }
 
-    recordModel({ id: target.model, label: targetLabel })
+    const firstAttempt = attempts[0]
+    const fellBack: ModelFallback | null = firstAttempt === undefined
+      ? null
+      : {
+          from: { modelId: firstAttempt.modelId, label: firstAttempt.label },
+          to: { modelId: targetName.modelId, label: targetName.label },
+          status: firstAttempt.status,
+        }
+    recordModel({ id: target.model, label: targetName.label }, fellBack)
     const funded = target.platformFunded
     const targetModel = target.model
     const costFromHeader = headerCost(upstream.headers)
