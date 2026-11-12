@@ -1626,7 +1626,7 @@ export function settingsPage(input: {
     <p class="fine">${escapeHtml(t(`审批和额度邮件不受这个开关影响。每日摘要默认在 ${config.digest.hour}:00（${config.digest.timeZone}）发送。`, `Approval and quota mail are not affected by these switches. The daily summary is sent at ${config.digest.hour}:00 (${config.digest.timeZone}).`))}</p>
   </section>
 
-  <section class="card">
+  <section class="card" id="tokens">
     <h2>${escapeHtml(t('API token', 'API tokens'))}</h2>
     <p class="muted">${escapeHtml(t('给脚本或 FlyBot 调用的网关 token（flg_…）。它不是你的 GitHub token，也不是模型 key。', 'Gateway tokens (flg_…) for scripts or FlyBot. They are neither your GitHub token nor a model key.'))}</p>
     ${newToken === undefined ? '' : `<div class="banner ok">${escapeHtml(t('新 token（只显示一次）：', 'New token (shown once):'))}<code class="token" id="new-token">${escapeHtml(newToken)}</code> <button class="link" type="button" data-copy="#new-token">${escapeHtml(t('复制', 'Copy'))}</button></div>`}
