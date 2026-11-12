@@ -110,9 +110,11 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // five lines inside the webhook path. #357 adds one line above the webhook
   // route registration, so the `:2957` pin and its baseline entry move to
   // `:2958` together in this commit, which is what keeps "refreshed" from
-  // becoming "silently re-labelled".
+  // becoming "silently re-labelled". #355 inserts the scope/expiry checks in the
+  // token create route, above the same registration, so the `:2958` pin and its
+  // baseline entry move to `:2971` together in that commit.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|2958',
+    'js/missing-rate-limiting|src/app.ts|2971',
     'js/missing-rate-limiting|src/app.ts|469',
     'js/missing-rate-limiting|src/app.ts|504',
     'js/missing-rate-limiting|src/app.ts|514',
