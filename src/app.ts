@@ -61,6 +61,7 @@ import {
   metricsPage,
   appReposPage,
   workspacePage,
+  searchPage,
   agentWorkspacePage,
   settingsPage,
   inboxSection,
@@ -785,6 +786,39 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         error: queryText(request, 'error'),
       }),
     )
+  })
+
+  // #362: every filter is validated here and the query is anchored on
+  // `viewer.user.id`, so an unknown `repo` value is dropped, not answered.
+  app.get('/search', async (request, reply) => {
+    const viewer = requireApproved(request)
+    const repos = store.listRepos(viewer.user.id)
+    const clip = (name: string, max: number): string => (queryText(request, name) ?? '').trim().slice(0, max)
+    const day = (name: string): string => {
+      const value = clip(name, 10)
+      return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ''
+    }
+    const [status, kind, repo] = [clip('status', 30), clip('kind', 30), clip('repo', 64)]
+    const [from, to] = [day('from'), day('to')]
+    const filters = {
+      q: clip('q', 200),
+      repo: repos.some((row) => row.id === repo) ? repo : '',
+      status: ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted'].includes(status) ? status : '',
+      kind: ['iterate', 'review', 'plan'].includes(kind) ? kind : '',
+      from: from === '' ? '' : `${from}T00:00:00.000Z`, to: to === '' ? '' : `${to}T23:59:59.999Z`,
+    }
+    return reply.type('text/html').send(searchPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      repos,
+      filters: { q: filters.q, repo: filters.repo, status: filters.status, kind: filters.kind, from, to },
+      // An empty query is not a listing: it is the same empty state with a next step.
+      results: filters.q === '' ? null : store.searchOwned(viewer.user.id, filters, 20),
+      cap: 20,
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
   })
 
   app.get('/repos', async (_request, reply) => {
@@ -2489,8 +2523,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       filters: { q, status, kind, action, from, to },
       jobsPage,
       jobsTotal,
-      auditPage,
-      auditTotal,
+      auditPage, auditTotal,
+      perPage,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
@@ -2501,13 +2535,37 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
   }
 
+  // #416: a CSV that silently stopped at the row cap read as a complete document.
+  // Both counts already exist (the search page uses them), so the export refuses
+  // before reading rows and names the real count and the cap. The refusal keeps
+  // its audit row, with the matched count instead of a row count.
+  const EXPORT_ROW_CAP = 5000
+  const refuseLargeExport = (request: FastifyRequest, reply: FastifyReply, viewer: ReturnType<typeof requireAdmin>, kind: 'audit' | 'jobs', matched: number): FastifyReply => {
+    const locale = request.locale ?? 'zh'
+    const t = translator(locale)
+    store.audit(viewer.user.id, kind === 'audit' ? 'admin.audit_export' : 'admin.jobs_export', `refused=too_large matched=${matched} cap=${EXPORT_ROW_CAP}`)
+    return htmlPage(reply, 400, errorPage(
+      config,
+      viewOf(viewer),
+      t('导出范围过大', 'Export too large'),
+      t(
+        `这个筛选匹配 ${matched} 行，而单次导出最多 ${EXPORT_ROW_CAP} 行；请缩小日期范围或加一个关键词，再导出一次。`,
+        `This filter matches ${matched} rows, and one export is capped at ${EXPORT_ROW_CAP}; narrow the date range or add a keyword, then export again.`,
+      ),
+      locale,
+      { href: '/admin/search', label: t('返回搜索', 'Back to search') },
+    ))
+  }
+
   app.get('/admin/export/audit.csv', async (request, reply) => {
     const viewer = requireAdmin(request)
     if (viewer.preview === true) return reply.code(403).send({ error: 'preview' })
     const userIds = adminVisibleUserIds(viewer)
     const to = (queryText(request, 'to') ?? '').slice(0, 20)
     const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), action: (queryText(request, 'action') ?? '').slice(0, 80), from: (queryText(request, 'from') ?? '').slice(0, 20), to: to === '' ? '' : (to.length === 10 ? `${to}T23:59:59.999Z` : to) }
-    const rows = store.searchAudit(userIds, filters, 5000, 0)
+    const matched = store.countSearchAudit(userIds, filters)
+    if (matched > EXPORT_ROW_CAP) return refuseLargeExport(request, reply, viewer, 'audit', matched)
+    const rows = store.searchAudit(userIds, filters, EXPORT_ROW_CAP, 0)
     const csv = ['at,user_id,action,detail', ...rows.map((row) => [row.at, row.user_id ?? '', row.action, row.detail ?? ''].map(csvCell).join(','))].join('\n')
     store.audit(viewer.user.id, 'admin.audit_export', `rows=${rows.length}`)
     return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-audit.csv"').send(csv)
@@ -2518,7 +2576,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (viewer.preview === true) return reply.code(403).send({ error: 'preview' })
     const userIds = adminVisibleUserIds(viewer)
     const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), status: (queryText(request, 'status') ?? '').slice(0, 30), kind: (queryText(request, 'kind') ?? '').slice(0, 30) }
-    const rows = store.searchJobs(userIds, filters, 5000, 0)
+    const matched = store.countSearchJobs(userIds, filters)
+    if (matched > EXPORT_ROW_CAP) return refuseLargeExport(request, reply, viewer, 'jobs', matched)
+    const rows = store.searchJobs(userIds, filters, EXPORT_ROW_CAP, 0)
     const csv = ['id,repo_id,user_id,status,kind,trigger,created_at,finished_at,pr_url,issue_url,cost_usd', ...rows.map((row) => [row.id, row.repo_id, row.user_id, row.status, row.kind, row.trigger, row.created_at, row.finished_at ?? '', row.pr_url ?? '', row.issue_url ?? '', row.cost_usd].map(csvCell).join(','))].join('\n')
     store.audit(viewer.user.id, 'admin.jobs_export', `rows=${rows.length}`)
     return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-jobs.csv"').send(csv)

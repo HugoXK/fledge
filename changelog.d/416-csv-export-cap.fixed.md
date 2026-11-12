@@ -1,0 +1,1 @@
+The admin audit and job CSV exports stopped at 5000 rows without saying so, so a filtered export could read as complete while rows were missing. An export whose filter matches more than 5000 rows is now refused with the matched count and the cap, and the refusal is audited; a filter at exactly the cap still gets the whole file.

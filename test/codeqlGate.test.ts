@@ -121,27 +121,26 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // which keeps "refreshed" from becoming "silently re-labelled".
   // #355 then moved anchors on its own: its one import line at `:27` sits above
   // the four route registrations near the top of the file, so those read
-  // `:470`/`:505`/`:515`/`:525` rather than main's `:469`/`:504`/`:514`/`:524`;
+  // `:471`/`:506`/`:516`/`:526` rather than main's `:469`/`:504`/`:514`/`:524`;
   // its scope and expiry checks sit in the token create route above the webhook
   // registration, which read `:2996` on `e268836` alone; and its gateway rewrite
-  // adds 10 lines above both gateway registrations, which read `:154`/`:179`.
+  // adds 10 lines above both gateway registrations, which read `:155`/`:180`.
   // #418's review-trend read model then inserts six lines above the webhook
   // registration, and #441, #442, #444 and #447 changed console strings, type
   // scale, viewport rules and table layout without touching a route. This
   // branch's three settings session routes, their rate-limit calls and their
   // CSRF guards insert 44 lines above the webhook registration, so the merged
-  // tree measures `:3046`. Every number above was read from this tree, never
+  // tree measures `:3046`. #362 and #416 landed on main before this merge: the search import, the search route and the export-cap refusal all sit above the webhook registration, which read `:3062` on main before this branch's 44 lines. On the merged tree those read `:471`/`:506`/`:516`/`:526` and `:3106`, and the two gateway registrations `:155`/`:180`. Every number above was read from this tree, never
   // added to a base: no result was added or dismissed, and the two gateway
   // alerts (#41, #42, both dismissed false positive) are the same two.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3046',
-    'js/missing-rate-limiting|src/app.ts|470',
-    'js/missing-rate-limiting|src/app.ts|505',
-    'js/missing-rate-limiting|src/app.ts|515',
-    'js/missing-rate-limiting|src/app.ts|525',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|154',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|179',
-  ])
+    'js/missing-rate-limiting|src/app.ts|3106',
+    'js/missing-rate-limiting|src/app.ts|471',
+    'js/missing-rate-limiting|src/app.ts|506',
+    'js/missing-rate-limiting|src/app.ts|516',
+    'js/missing-rate-limiting|src/app.ts|526',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|155',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|180',  ])
   const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
   assert.equal(dismissed.length, 3, 'the three dismissed false-positive results are recorded with their reason')
   assert.deepEqual(addedAlerts(keys, baseline.alerts).map((alert) => alertKey(alert)), [], 'the baseline must not fail its own alerts')

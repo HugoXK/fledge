@@ -196,3 +196,11 @@ unknown one:
   smooths a single review into a trend, and never hides it either.
 - Every cell is scoped to one repository and its owner: another user's
   repository, or another repository of the same owner, is not counted.
+
+## Owner search (#362)
+`/search` searches only the signed-in owner's rows — repositories, jobs, work items
+and audit — 20 per section with the cap stated. The route validates every filter and
+the query is anchored on the user id, so it cannot return another user's row, an
+email or a token column, and `%`/`_` match as text. A repository filter narrows the
+three sections that own one; audit rows carry none, so that section says so. Rows
+link to the existing pages; an empty result uses the shared empty state.
