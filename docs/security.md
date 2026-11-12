@@ -70,6 +70,15 @@ only that container.
   in step with the platform-wide `hugoxk-lang` localStorage preference.
 - Logout deletes the session row and clears the session and CSRF cookies; the
   language preference remains.
+- Settings lists the signed-in user's live sessions (masked IP, client string,
+  sign-in time, and which row is the current one). Revoking a row, or "sign out
+  other sessions", deletes rows scoped to `user_id` and writes `session.revoked`
+  to the audit log; a foreign or unknown hash deletes nothing and answers the
+  same way, so the page cannot probe another account. Revoking the current row
+  is refused by name - that is what "rotate this session" is for (new cookie,
+  old hash deleted) - and every mutation is CSRF-guarded.
+- The list never prints a full address (the last IPv4 octet, or everything past
+  the second IPv6 group, is dropped) and never prints another user's rows.
 - Expired sessions are swept every minute.
 
 ### CSRF

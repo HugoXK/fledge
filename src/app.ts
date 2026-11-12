@@ -2190,6 +2190,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'),
+        sessions: store.listSessions(viewer.user.id),
+        currentSessionHash: viewer.sessionHash,
         providers: store.listModelProviders(viewer.user.id).map((provider) => ({ ...provider, models: store.listProviderModels(provider.id) })),
         discoveredProvider: queryText(request, 'discoveredProvider'),
         discovered: (queryText(request, 'discovered') ?? '').split(',').filter((value) => value !== ''),
@@ -2416,6 +2418,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'),
+        sessions: store.listSessions(viewer.user.id),
+        currentSessionHash: viewer.sessionHash,
         providers: store.listModelProviders(viewer.user.id).map((provider) => ({ ...provider, models: store.listProviderModels(provider.id) })),
         newToken: raw,
         notice: '新 token 只显示这一次，请现在复制保存。',
@@ -2428,6 +2432,46 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.revokeApiToken(String((request.params as Record<string, string>).id), viewer.user.id)
     store.audit(viewer.user.id, 'token.revoked')
     return reply.redirect(`/settings?notice=${encodeURIComponent('Token 已撤销。')}`)
+  })
+
+  // #356: a stolen cookie otherwise stays valid for the rest of its 30 days with
+  // no way to see or end it. Every route here is scoped to the viewer's own rows:
+  // a hash that is not theirs deletes nothing and answers the same way a
+  // non-existent one does, so the page cannot be used to probe another account.
+  // Each mutation takes the same limiter window as the other mutating form posts
+  // and answers the same 429 page: CSRF proves the request came from our page, it
+  // does not bound how many a stolen cookie may send.
+  app.post('/settings/sessions/:hash/revoke', async (request, reply) => {
+    if (!loginLimiter.take(`session-revoke:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    const viewer = approvedCsrfGuard(request)
+    const hash = String((request.params as Record<string, string>).hash)
+    if (hash === viewer.sessionHash) {
+      return reply.redirect(`/settings?error=${encodeURIComponent('这是当前会话。请用“轮换当前会话”换一个新 cookie，或用退出登录结束它。')}#sessions`)
+    }
+    if (!store.deleteSessionOfUser(viewer.user.id, hash)) {
+      return reply.redirect(`/settings?error=${encodeURIComponent('这个会话不存在，或不属于你。')}#sessions`)
+    }
+    store.audit(viewer.user.id, 'session.revoked', `one ${hash.slice(0, 8)}…`)
+    return reply.redirect(`/settings?notice=${encodeURIComponent('会话已撤销，那个 cookie 现在就会被拒绝。')}#sessions`)
+  })
+
+  app.post('/settings/sessions/revoke-others', async (request, reply) => {
+    if (!loginLimiter.take(`session-revoke-others:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    const viewer = approvedCsrfGuard(request)
+    const removed = store.deleteOtherSessions(viewer.user.id, viewer.sessionHash)
+    store.audit(viewer.user.id, 'session.revoked', `others=${removed}`)
+    return reply.redirect(`/settings?notice=${encodeURIComponent(removed === 0 ? '没有其他会话需要退出。' : `已退出 ${removed} 个其他会话。`)}#sessions`)
+  })
+
+  app.post('/settings/sessions/rotate', async (request, reply) => {
+    if (!loginLimiter.take(`session-rotate:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    const viewer = approvedCsrfGuard(request)
+    const raw = sessions.start(viewer.user.id, request)
+    const hash = sha256Hex(raw)
+    store.deleteSession(viewer.sessionHash)
+    sessions.setCookies(reply, raw, { sessionHash: hash, user: viewer.user, csrfToken: sessions.csrfFor(hash), preview: viewer.preview })
+    store.audit(viewer.user.id, 'session.rotated')
+    return reply.redirect(`/settings?notice=${encodeURIComponent('已换成新的会话 cookie，旧 cookie 已作废。')}#sessions`)
   })
 
   app.post('/notifications/read', async (request, reply) => {

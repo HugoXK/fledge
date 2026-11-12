@@ -1108,7 +1108,7 @@ listing, and every row links to the page that already owns it.
 | Table | Purpose |
 |---|---|
 | `users` | GitHub identity, application status, signed agreement fields (name/version/time/IP/UA), role, quota, own model (encrypted key) |
-| `sessions` | hashed session id, expiry, IP/UA |
+| `sessions` | hashed session id, expiry, IP/UA; the settings page lists and revokes the viewer's rows by `user_id` |
 | `oauth_states` | short-lived OAuth `state` values |
 | `approval_tokens` | single-use approve/reject links |
 | `repos` | upstream/fork identity, encrypted token, permission, reviewer config, goal, cadence, state |

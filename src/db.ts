@@ -2112,6 +2112,26 @@ export class Store {
     this.run('DELETE FROM sessions WHERE id_hash = ?', idHash)
   }
 
+  // #356: the settings page lists a user's live sessions and revokes them. Every
+  // read and every delete is scoped to `user_id`, so one user's handle can never
+  // address another user's row: a wrong or foreign hash deletes nothing and the
+  // caller cannot tell the two apart.
+  listSessions(userId: string): SessionRow[] {
+    return this.all<SessionRow>(
+      'SELECT * FROM sessions WHERE user_id = ? AND expires_at > ? ORDER BY created_at DESC',
+      userId,
+      nowIso(),
+    )
+  }
+
+  deleteSessionOfUser(userId: string, idHash: string): boolean {
+    return this.runChanges('DELETE FROM sessions WHERE id_hash = ? AND user_id = ?', idHash, userId) > 0
+  }
+
+  deleteOtherSessions(userId: string, keepIdHash: string): number {
+    return this.runChanges('DELETE FROM sessions WHERE user_id = ? AND id_hash <> ?', userId, keepIdHash)
+  }
+
   deleteExpiredSessions(): void {
     this.run('DELETE FROM sessions WHERE expires_at <= ?', nowIso())
   }
