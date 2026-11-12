@@ -179,9 +179,11 @@ row records which model replied plus the models it fell through (`jobs.model_jso
 The record is per **chat call**, not per job: every call a job makes rewrites which
 model answered and which models **that call** tried, and the job page and the
 pull-request automation comment name the model of the last call. The fallback a job
-made is kept separately, as `fallback: { from, to, status }`, so a job that fell
-back once and later answered on the primary still says so; the first fallback is
-the one kept and a later call that does not fall back cannot clear it.
+made is kept separately, as `fallback: { from, to, status }`, so the job page still
+states it after a later call answered on the primary; the first fallback is the one
+kept, and neither a later call that does not fall back nor one that falls back to a
+different pair can clear or replace it. The pull-request automation comment names
+only the last call's model and its attempts — it does not state an earlier fallback.
 
 It never falls back on:
 

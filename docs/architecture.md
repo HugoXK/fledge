@@ -306,8 +306,10 @@ revoke stays one click.
   the model that answered and the attempts of the **last chat call** —
   `recordModel` rewrites `jobs.model_json` on every call. The fallback a job made
   is recorded beside that, as `fallback: { from, to, status }`, and the first one
-  is kept, so a later call that answers on the primary cannot erase the fallback
-  an earlier call made.
+  is kept: a later call cannot erase it or replace it, whether that call answers on
+  the primary or falls back again to a different pair. The job page states that
+  pair on the `data-model` line unless the line's own `tried` clause already names
+  the same model; the pull-request automation comment states only the last call.
 
 The operator chooses the upstream through `PLATFORM_LLM_BASE_URL`; keep the
 real endpoint and key out of git and out of public documentation.

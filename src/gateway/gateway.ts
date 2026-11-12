@@ -207,13 +207,13 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
     // The job names the model that actually ran and the models it fell through.
     // The row is the record; a call whose job was deleted under it must not fail.
     // #407: `attempts` is this call's list, so the fallback is kept beside it —
-    // the first one the job ever made survives a later call that answered on the
-    // primary, which is exactly the case this record exists to show.
+    // the first one the job ever made survives every later call, whether that call
+    // answered on the primary or fell back again to a different pair.
     const recordModel = (winner: { id: string; label: string } | null, fallback: ModelFallback | null): void => {
       if (jobId === null) return
       try {
         const stored = parseModelRun(store.getJob(jobId)?.model_json ?? null)?.fallback ?? null
-        store.updateJob(jobId, { model_json: JSON.stringify({ model: winner, attempts, fallback: fallback ?? stored }) })
+        store.updateJob(jobId, { model_json: JSON.stringify({ model: winner, attempts, fallback: stored ?? fallback }) })
       } catch (error) {
         log.warn('gateway model record failed', { trace: jobId, error: String(error) })
       }

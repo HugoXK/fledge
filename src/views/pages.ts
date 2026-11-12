@@ -2267,13 +2267,19 @@ export function jobPage(input: {
   // one that replied instead of the one the instance was configured with.
   const modelRun = parseModelRun(job.model_json)
   const triedText = (run: typeof modelRun): string => (run === null ? '' : run.attempts.map((entry) => `${entry.label} (${entry.status})`).join(', '))
-  // #407: a fallback an earlier call made is its own clause. It is skipped when
-  // the fallback ended on the model that answered last, because the `tried`
-  // clause above already names that model and two clauses would repeat it.
+  // #407: a fallback an earlier call made is its own clause. The rule: it is stated
+  // unless the `tried` clause of this same line already names the model it ended
+  // on — only then would two clauses repeat one model. So the skip needs the tried
+  // clause to exist (`attempts` non-empty) and a model to compare against; a last
+  // call with no attempt or no winner keeps the pair visible. A row whose status is
+  // not a real HTTP code states the pair without inventing a number for it.
   const fellBackText = (run: typeof modelRun): string => {
-    if (run === null || run.model === null || run.fallback === null) return ''
-    if (run.fallback.to.label === run.model.label) return ''
-    return ` · ${t(`此前调用回退（${run.fallback.status}）至 ${run.fallback.to.label}`, `earlier call fell back (${run.fallback.status}) to ${run.fallback.to.label}`)}`
+    if (run === null || run.fallback === null) return ''
+    if (run.attempts.length > 0 && run.model !== null && run.fallback.to.label === run.model.label) return ''
+    const status = Number.isInteger(run.fallback.status) && run.fallback.status > 0 ? run.fallback.status : null
+    return ` · ${status === null
+      ? t(`此前调用回退至 ${run.fallback.to.label}`, `earlier call fell back to ${run.fallback.to.label}`)
+      : t(`此前调用回退（${status}）至 ${run.fallback.to.label}`, `earlier call fell back (${status}) to ${run.fallback.to.label}`)}`
   }
   const modelLine = modelRun === null
     ? ''
