@@ -40,6 +40,8 @@ export interface UserRow {
   quota_used_usd: number
   email_job_updates: number
   email_daily_digest: number
+  /** #353: also mail a success the schedule produced. Off by default. */
+  email_job_success: number
   notify_email: string | null
   github_token_enc: string | null
   github_token_scopes: string | null
@@ -418,6 +420,7 @@ CREATE TABLE IF NOT EXISTS users (
   quota_used_usd REAL NOT NULL DEFAULT 0,
   email_job_updates INTEGER NOT NULL DEFAULT 1,
   email_daily_digest INTEGER NOT NULL DEFAULT 1,
+  email_job_success INTEGER NOT NULL DEFAULT 0,
   notify_email TEXT,
   github_token_enc TEXT,
   github_token_scopes TEXT,
@@ -1004,6 +1007,7 @@ export class Store {
       ['quota_unlimited', 'INTEGER NOT NULL DEFAULT 0'],
       ['email_job_updates', 'INTEGER NOT NULL DEFAULT 1'],
       ['email_daily_digest', 'INTEGER NOT NULL DEFAULT 1'],
+      ['email_job_success', 'INTEGER NOT NULL DEFAULT 0'],
       ['notify_email', 'TEXT'],
       ['allow_private_models', 'INTEGER NOT NULL DEFAULT 0'],
       ['github_token_scopes', 'TEXT'],
@@ -1342,6 +1346,10 @@ export class Store {
 
   setEmailDailyDigest(id: string, enabled: boolean): void {
     this.run('UPDATE users SET email_daily_digest = ? WHERE id = ?', enabled ? 1 : 0, id)
+  }
+
+  setEmailJobSuccess(id: string, enabled: boolean): void {
+    this.run('UPDATE users SET email_job_success = ? WHERE id = ?', enabled ? 1 : 0, id)
   }
 
   setNotifyEmail(id: string, email: string | null): void {

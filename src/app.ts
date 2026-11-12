@@ -2205,12 +2205,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     const jobUpdates = body.jobUpdates === '1'
     const dailyDigest = body.dailyDigest === '1'
+    const jobSuccess = body.jobSuccess === '1'
     if (clear) store.setNotifyEmail(viewer.user.id, null)
     else if (rawEmail !== '') store.setNotifyEmail(viewer.user.id, rawEmail)
     store.setEmailJobUpdates(viewer.user.id, jobUpdates)
     store.setEmailDailyDigest(viewer.user.id, dailyDigest)
+    store.setEmailJobSuccess(viewer.user.id, jobSuccess)
     const saved = store.userById(viewer.user.id)
-    store.audit(viewer.user.id, 'settings.email', `email=${saved?.notify_email === null || saved?.notify_email === undefined ? 'github' : 'custom'} jobs=${jobUpdates ? 'on' : 'off'} digest=${dailyDigest ? 'on' : 'off'}`)
+    store.audit(viewer.user.id, 'settings.email', `email=${saved?.notify_email === null || saved?.notify_email === undefined ? 'github' : 'custom'} jobs=${jobUpdates ? 'on' : 'off'} digest=${dailyDigest ? 'on' : 'off'} success=${jobSuccess ? 'on' : 'off'}`)
     if (body.action === 'test') {
       const updated = saved
       const to = updated === undefined ? '' : notifyEmail(updated)

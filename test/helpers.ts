@@ -30,6 +30,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
       transport: 'console',
       from: 'no-reply@example.com',
       adminEmail: 'admin@example.com',
+      jobEmailCooldownMinutes: 60,
       smtp: { host: '', port: 465, secure: true, user: '', pass: '' },
     },
     github: {
