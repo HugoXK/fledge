@@ -73,6 +73,73 @@ function shortSha(sha) {
   return value === '' ? '(unknown sha)' : value.slice(0, 12)
 }
 
+// Every `gh` argument list lives here rather than in the runner so a suite can
+// pin it. While `apply()` built its own arrays, mutating a verb — `'comment'` to
+// `'coment'` — changed nothing any test could see: the decision was covered, the
+// call it produced was not.
+export function labelListArgs() {
+  return ['label', 'list', '--json', 'name', '--limit', '100']
+}
+
+export function labelCreateArgs(label = RED_LABEL) {
+  return ['label', 'create', text(label), '--color', RED_LABEL_COLOR, '--description', RED_LABEL_DESCRIPTION]
+}
+
+export function issueListArgs() {
+  return ['issue', 'list', '--label', RED_LABEL, '--state', 'open', '--json', 'number,title,createdAt', '--limit', '100']
+}
+
+export function issueCreateArgs(issue) {
+  return ['issue', 'create', '--title', text(issue?.title), '--label', RED_LABEL, '--body', text(issue?.body)]
+}
+
+export function issueCommentArgs(number, body) {
+  return ['issue', 'comment', text(number), '--body', text(body)]
+}
+
+export function issueCloseArgs(number, body) {
+  return ['issue', 'close', text(number), '--comment', text(body)]
+}
+
+function labelsIn(raw) {
+  const value = text(raw).trim()
+  const parsed = value === '' ? [] : JSON.parse(value)
+  return (Array.isArray(parsed) ? parsed : []).map((entry) => text(entry?.name))
+}
+
+// Applies one decision through a caller-supplied command runner, so a test drives
+// every call with no `gh` binary. The label bootstrap sits on the create path
+// only: a green `main` — with or without a tracker — issues no label write, and a
+// listing against a label that does not exist yet answers `200` with `[]`, not a
+// failure, so the lookup before the decision is safe without it.
+export async function apply(result, run) {
+  if (typeof run !== 'function') throw new Error('main-health: apply() needs a command runner')
+  if (result?.action === 'create') {
+    const issue = result.issue
+    if (issue === undefined) throw new Error('create decision without an issue payload')
+    const outcome = await ensureTrackerLabel({
+      label: RED_LABEL,
+      listLabels: async () => labelsIn(run(labelListArgs())),
+      createLabel: async (name) => {
+        run(labelCreateArgs(name))
+      },
+    })
+    const prefix = outcome.created ? `main-health: created the ${RED_LABEL} label\n` : ''
+    return `${prefix}main-health: opened ${text(run(issueCreateArgs(issue)))}`
+  }
+  if (result?.action === 'comment' || result?.action === 'close') {
+    const number = text(result.tracker?.number ?? '')
+    if (number === '') throw new Error(`${result.action} decision without a tracker number`)
+    if (result.action === 'comment') {
+      run(issueCommentArgs(number, result.body ?? ''))
+      return `main-health: commented on #${number}`
+    }
+    run(issueCloseArgs(number, result.body ?? ''))
+    return `main-health: closed #${number}`
+  }
+  return 'main-health: nothing to report'
+}
+
 function normaliseTrackers(trackers) {
   const list = (Array.isArray(trackers) ? trackers : [])
     .map((tracker) => ({
