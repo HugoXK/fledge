@@ -255,7 +255,11 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   the tick closes the work item into the existing `closed` state with
   `closed_reason = 'plan_expired'` and an audit row. No state or transition was
   added for this: expiry reuses `closed`, the reason column carries the meaning,
-  and `closed -> triaged` is the reopening path. Iterate jobs preflight the target branch, record the base SHA
+  and `closed -> triaged` is the reopening path. A work item already in a
+  terminal state (`merged` or `closed`) is left exactly as it is: the expiry is
+  still recorded in the audit row and in the `plan_expired:<job>` settings key,
+  but no "已过期关闭" notice is sent for an item the pass did not end (#408).
+  Iterate jobs preflight the target branch, record the base SHA
   and warn when the fork is behind. An open work item changes what the next
   scheduled run continues; it never blocks a due repository (#219). Work-item
   states do not gate the scheduler; see "Scheduled work, continuity and work
