@@ -25,6 +25,7 @@ const MESSAGES: Record<string, string> = {
   '表单已过期，请刷新页面后重试。': 'This form has expired. Refresh the page and try again.',
   '仓库不存在。': 'Repository not found.',
   '页面不存在': 'Page not found',
+  '你访问的页面不存在。': 'This page does not exist.',
   'Dev 登录没有开启。': 'Developer sign-in is disabled.',
   '请求过多': 'Too many requests',
   '请稍后再试。': 'Please try again later.',
