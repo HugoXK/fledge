@@ -1,7 +1,8 @@
 # 0003 — Evidence-first evolution with AgentDescent
 
-Status: proposed
+Status: accepted
 Date: 2026-11-06
+Accepted: 2026-11-12, when the ledger slice of phase 4 started early (`#424`)
 Owners: platform owner, maintainer
 
 ## Context
@@ -81,15 +82,41 @@ Insufficient data is a valid answer: the decision is `defer`.
    and rollback metrics. Auto-merge is still controlled by the existing Fledge
    gates, never by an evolution result.
 
+The phase order was a plan, not a dependency: the ledger is the storage the
+later phases write into, and building it here removes the risk that phase 2 and
+3 accumulate candidates in a shape the ledger cannot represent. `#424` therefore
+lands the ledger now, ahead of the phase order, and flips this record to
+`accepted`. It changes no gate: the ledger stores candidates and pointers, and
+nothing in it promotes, merges or deploys on its own.
+
 ## Storage
 
-Fledge adds three tables, independent of AgentDescent's runtime:
+Fledge adds three tables, independent of AgentDescent's runtime, and the ledger
+extends the first rather than adding a fourth:
 
 - `artifact_versions` — artifact name, version, content hash, candidate text and
-  status;
+  status, **extended** with `kind` (the evolvable kind), `scope`
+  (`global`/`repository`), `repo_id`, `parent_id` (the lineage edge to the
+  version the candidate was built on), `base_version` (the declared base the
+  compare-and-swap reads), `frozen` and `paths_json` (the paths the candidate
+  names, which is what the frozen check reads). A row is immutable once written.
+- `artifact_pointers` — `(artifact, channel, version_id, updated_at)` with
+  `channel` in `dev`/`stable`. A pointer is not a version: it is the one row that
+  says what each channel currently resolves to, and a rollback is a move of that
+  row. Versions written before this table existed are not rewritten; a promoted
+  row becomes the `stable` pointer during the same migration.
 - `evaluations` — artifact, dataset, metric, value, confidence interval and
   sample count;
 - `promotions` — decision, reason, evidence hash and approver.
+
+The eligible artifact kinds, in risk order, and the frozen paths are data in
+`src/lib/evolution/artifacts.ts`: `repo-goal`, `repo-model`, `task-template`,
+`default-goal`, `playbook`, `review-rubric`, `policy` are evolvable; the
+evaluator (`src/lib/evolution/`), authentication (`src/auth/`), the gateway
+(`src/gateway/`), the merge gate (`src/jobs/service.ts`) and the CI and gate
+policy (`.github/workflows/`, `.github/agent/`) are frozen. A candidate naming a
+frozen path is refused before evaluation, with `evolution.candidate.refused` in
+the audit log.
 
 `job_events` stores the durable timeline that makes a job replayable. The
 `scripts/evolution-shadow.mjs` export is read-only and excludes tokens,

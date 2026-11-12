@@ -499,6 +499,18 @@ GitHub token and cannot change the evaluator, CI or merge gate. See
 `scripts/evolution-shadow.mjs` exporter turns recent jobs into a redacted
 dataset, and `--report` prints the baseline plus a time-ordered train/holdout
 split; it does not write to the database.
+
+The ledger's shape is the table that already existed, extended rather than
+replaced: `artifact_versions` gains `kind`, `scope`, `repo_id`, `parent_id` (the
+lineage edge), `base_version`, `frozen` and `paths_json`, and one new table
+`artifact_pointers` holds what `dev` and `stable` point at, because a pointer is
+not a version. A candidate write is a compare-and-swap against the head of its
+own lineage, so a candidate built on a stale version is refused rather than
+re-based; a candidate naming a frozen path is refused before it is stored and
+the refusal is audited (`evolution.candidate.refused`); and a rollback moves the
+pointer, which keeps both versions readable. The eligible artifacts, in risk
+order, and the frozen paths are data in `src/lib/evolution/artifacts.ts`, so the
+set is reviewed as a list rather than inferred from branches.
 ### Failure categories and recovery guidance
 
 A failed job carries a stable category derived from its error (`quota`,
