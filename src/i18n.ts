@@ -108,6 +108,11 @@ const MESSAGES: Record<string, string> = {
   '请填写 API Key': 'Enter an API key',
   '模型服务已保存并通过测试。': 'Model service saved and tested.',
   'Token 已撤销。': 'Token revoked.',
+  '会话已撤销，那个 cookie 现在就会被拒绝。': 'Session revoked; that cookie is refused from its next request.',
+  '已换成新的会话 cookie，旧 cookie 已作废。': 'This session now uses a new cookie; the old one is no longer valid.',
+  '没有其他会话需要退出。': 'No other session needed to be signed out.',
+  '这个会话不存在，或不属于你。': 'That session does not exist, or it is not yours.',
+  '这是当前会话。请用“轮换当前会话”换一个新 cookie，或用退出登录结束它。': 'That is the current session. Use "Rotate this session" for a new cookie, or sign out to end it.',
   '已批准。': 'Approved.',
   '已拒绝。': 'Rejected.',
   '额度必须是 0–10000 之间的数字。': 'Quota must be a number between 0 and 10000.',
@@ -262,6 +267,11 @@ export function localizeMessage(locale: Locale, message: string | undefined): st
   if (modelsFound !== null) {
     const count = modelsFound[1] ?? '0'
     return `Found ${count} ${count === '1' ? 'model' : 'models'}.`
+  }
+  const othersRevoked = /^已退出 (\d+) 个其他会话。$/.exec(message)
+  if (othersRevoked !== null) {
+    const count = othersRevoked[1] ?? '0'
+    return `Signed out ${count} other ${count === '1' ? 'session' : 'sessions'}.`
   }
   const modelsReadFailed = /^读取模型失败：([\s\S]+)$/.exec(message)
   if (modelsReadFailed !== null) return `Could not read the models: ${modelsReadFailed[1]}`
