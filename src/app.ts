@@ -40,6 +40,7 @@ import { incCounter, observeHistogram, renderMetrics } from './lib/metrics.js'
 import { readReleaseStatus } from './lib/releaseStatus.js'
 import { configureOtel, endSpan, shutdownOtel, startSpan, type SpanHandle } from './lib/otel.js'
 import { configureGithubBudget } from './lib/githubBudget.js'
+import { normalizeReviewInstruction } from './lib/followUpInstruction.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -2739,6 +2740,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (repo === undefined) return
     const pulls: Array<{ number?: number; html_url?: string; head?: { ref?: string; sha?: string }; base?: { ref?: string } }> = []
     let reason = ''
+    // #251: a changes_requested review carries the maintainer's words in
+    // `review.body`. The follow-up used to be built from a fixed template, so
+    // the agent was told "review requested changes" and nothing else.
+    let instruction = ''
     let reconcile = false
     if (event === 'check_run') {
       const check = typeof body.check_run === 'object' && body.check_run !== null ? (body.check_run as Record<string, unknown>) : {}
@@ -2759,6 +2764,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (review.state !== 'changes_requested' && review.state !== 'approved') return
       reconcile = review.state === 'approved'
       reason = review.state === 'approved' ? 'review approved' : 'review requested changes'
+      instruction = review.state === 'changes_requested' ? normalizeReviewInstruction(review.body) : ''
       const pull = typeof body.pull_request === 'object' && body.pull_request !== null ? (body.pull_request as typeof pulls[number]) : undefined
       if (pull !== undefined) pulls.push(pull)
     } else {
@@ -2778,7 +2784,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         log.info('github merge reconcile', { repo: `${repo.owner}/${repo.name}`, pr: number, reason })
         continue
       }
-      const result = await jobs.followUp(repo, { prUrl, branch, baseBranch, reason, headSha })
+      const result = await jobs.followUp(repo, { prUrl, branch, baseBranch, reason, headSha, ...(instruction === '' ? {} : { instruction }) })
       log.info('github follow-up', { repo: `${repo.owner}/${repo.name}`, pr: number, ok: result.ok, code: result.code, job: result.job?.id })
     }
   }

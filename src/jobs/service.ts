@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { Config } from '../config.js'
 import type { JobRow, RepoRow, Store, UserRow } from '../db.js'
 import type { Mailer } from '../email/mailer.js'
@@ -18,6 +19,7 @@ import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
 import { evaluateTestEvidence, type VerificationResult } from '../lib/verification.js'
 import { observedAttribution } from '../lib/teamStats.js'
+import { reviewInstructionLine } from '../lib/followUpInstruction.js'
 import { sweepExpiredTrials, type TrialSweepResult } from '../users/trial.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
@@ -101,12 +103,22 @@ function progressSummary(value: unknown): string | undefined {
   return value.slice(0, 4000)
 }
 
+// #251: the follow-up's duplicate key and parked key are both built from this,
+// never from `reason` alone. `reason` is the constant `review requested changes`
+// for a review, so keying on it collapsed two different requests on one commit
+// into a duplicate, and overwrote the first parked request with the second.
+function followUpFingerprint(reason: string, instruction: string | undefined): string {
+  return createHash('sha256').update(`${reason}\n${instruction ?? ''}`).digest('hex').slice(0, 16)
+}
+
 export interface ReviewFollowUp {
   prUrl: string
   branch: string
   baseBranch?: string
   headSha?: string
   reason?: string
+  /** #251: the reviewer's own words, carried into the goal the agent is given. */
+  instruction?: string
 }
 
 export interface CallbackPayload {
@@ -1451,7 +1463,7 @@ export class Jobs {
     const prefix = `pending_followup:${repoId}:`
     for (const row of this.store.listSettings(prefix)) {
       this.store.deleteSetting(row.key)
-      let input: { prUrl: string; branch: string; baseBranch?: string; reason: string; headSha: string }
+      let input: { prUrl: string; branch: string; baseBranch?: string; reason: string; headSha: string; instruction?: string }
       try {
         input = JSON.parse(row.value) as typeof input
       } catch {
@@ -1584,26 +1596,33 @@ export class Jobs {
     }
   }
 
-  async followUp(repo: RepoRow, input: { prUrl: string; branch: string; baseBranch?: string; reason: string; headSha: string }): Promise<EnqueueResult> {
+  async followUp(repo: RepoRow, input: { prUrl: string; branch: string; baseBranch?: string; reason: string; headSha: string; instruction?: string }): Promise<EnqueueResult> {
     const baseBranch = input.baseBranch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch))
     if (!isValidBranchName(input.branch) || input.branch === baseBranch || input.branch === repo.upstream_default_branch || input.branch === repo.default_branch) {
       return { ok: false, error: 'follow-up 分支不能是目标分支。', code: 'BRANCH_INVALID' }
     }
-    const key = `followup:${repo.id}:${input.prUrl}:${input.headSha}:${input.reason}`.slice(0, 300)
+    // The fingerprint sits near the prefix so the 300-char bound can never
+    // truncate it away: a truncated key would merge two requests again.
+    const fingerprint = followUpFingerprint(input.reason, input.instruction)
+    const key = `followup:${repo.id}:${fingerprint}:${input.prUrl}:${input.headSha}`.slice(0, 300)
     if (this.store.getSetting(key) !== undefined) return { ok: false, error: '这个失败已经跟进过', code: 'DUPLICATE_FOLLOWUP' }
     const activeJob = this.store.activeJobForRepo(repo.id)
     if (activeJob !== undefined) {
       if (activeJob.kind === 'review') {
-        const pendingKey = `pending_followup:${repo.id}:${input.prUrl}:${input.headSha}:${input.reason}`.slice(0, 300)
+        const pendingKey = `pending_followup:${repo.id}:${fingerprint}:${input.prUrl}:${input.headSha}`.slice(0, 300)
         this.store.setSetting(pendingKey, JSON.stringify(input))
         return { ok: false, error: '审核结束后会自动跟进', code: 'JOB_ACTIVE' }
       }
       return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
     }
     this.store.setSetting(key, nowIso())
+    // #251: one block, and none at all when the review carried no body, so a
+    // review without a comment produces exactly the goal it produced before.
+    const instruction = reviewInstructionLine(input.instruction)
     const goal = [
       `Follow-up on the existing pull request ${input.prUrl} (branch ${input.branch}).`,
       `Reason: ${input.reason}.`,
+      ...(instruction === '' ? [] : [instruction]),
       'Continue on the same branch and update the existing PR. Do not open a second PR or create a new issue.',
       'Make the smallest correct fix, add or adjust tests, run the relevant checks, and callback with the branch and PR URL.',
     ].join('\n')
@@ -2017,6 +2036,10 @@ export class Jobs {
         ...(follow.baseBranch === undefined ? {} : { baseBranch: follow.baseBranch }),
         reason: follow.reason ?? 'review requested changes',
         headSha,
+        // #251: carried explicitly. An optional field left out of this object is
+        // not a type error, it is a silent loss for every follow-up parked behind
+        // a review job.
+        ...(follow.instruction === undefined ? {} : { instruction: follow.instruction }),
       }
       const key = `pending_followup:${repo.id}:${job.id}:${index}`.slice(0, 300)
       this.store.setSetting(key, JSON.stringify(input))
