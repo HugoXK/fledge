@@ -382,3 +382,19 @@ test('the workflow plans from the tested projection, not an inline jq expression
   assert.match(workflow, /state\.openPrRejected/)
   assert.match(workflow, /Notice: ignored pull request/)
 })
+
+test('the planner input carries the real fragment count, not a present/absent sentinel', () => {
+  const state = buildState({
+    lastTag: 'v0.3.1',
+    lastTagCommittedAt: '',
+    packageVersion: '0.3.1',
+    fragments: 42,
+    tags: ['v0.3.1'],
+    closedPages: [],
+    openPages: [],
+    checks: [],
+    branches: [],
+  })
+  const input = plannerInput(state)
+  assert.equal(input.fragments, 42, 'a 42-entry release must not be projected down to one sentinel')
+})
