@@ -56,6 +56,47 @@ Three consequences follow from it:
    repaints a green run, and a repeated rejection finds the red it just painted and
    writes nothing.
 
+## Amendment 2026-11-12 (#341): above the cap, the red's own `completed_at` decides
+
+Decision 3's cap is correct for the tool's own suite and stays: every re-run raises
+`run_attempt`, so a planner that ignored the count would re-run the same failing
+run on every trigger forever. What the count cannot do is tell *why* the run is
+spent. `#336` at `e753ce6bd081095e0fb1911a1b19faa7ad4e0b0e` was green on all five
+required contexts with a PASS at the tip and zero threads, could not merge, and the
+repair step refused with "already at attempt 3; a new commit is needed" — the one
+remedy that destroys the PASS. The only thing that worked was re-running the
+*stale* run by hand: attempt 4 re-executed `review-gate` inside the same check
+suite and the merge was accepted at the same tip, same PASS, no new commit.
+
+So a spent run is repainted when the blocking red it owns completed **at or before
+the newest verdict**. The comparison uses the red check's own `completed_at`, not
+the run's `updated_at`: `updated_at` moves when any job in the run finishes, so a
+red the gate job produced before the verdict would read as postdating it as soon as
+an unrelated sibling job landed. `standingChecks()` already keeps the newest check
+per suite from the `filter=all` read, and the verdict timestamp is the value
+`evaluateGate` already resolves (`submitted_at` for a review, `created_at` for the
+legacy comment shape), returned as `verdictAt` — no second fetch, no new storage,
+no PR comment, no new permission.
+
+Three rules bound the fallback:
+
+- **`completed_at` earlier than, or equal to, the verdict is `repaint`.** Equality
+  resolves to repaint on purpose: repaint is the harmless branch and `blocked` is
+  the costly one, so the boundary must never drift into `blocked`.
+- **A red whose `completed_at` postdates the newest verdict is `blocked`**, and
+  only that branch may say a new commit is needed.
+- **An attempt still `queued` or `in_progress` is `wait`**: `POST
+  /actions/runs/<id>/rerun` is refused while the run is live and "a new commit" is
+  not true, so the plan carries the run id in `reason`, returns `ids: []`, and the
+  caller prints it and exits 0 before the rerun loop.
+
+One fallback per (sha, run id) follows: after a repaint the red's `completed_at` is
+newer than the verdict, so the next invocation is `blocked` unless a new verdict
+arrives. Measured on the case the amendment exists for — reds at `00:28:08Z`,
+`00:30:48Z`, `00:31:54Z` in suite `116791416250`, PASS at `00:42:39Z`, repaint green
+at `00:56:26Z` in the same suite — every red predates the verdict and the repaint
+postdates it.
+
 ## Rejected
 
 - **Keep name-collapse and `filter=latest`.** This is the model that failed: it
@@ -71,7 +112,10 @@ Three consequences follow from it:
   repairing it.
 - **Re-run without an attempt cap.** Every trigger would re-run the same failing
   run forever; the cap is what makes the repair terminate, after at most two
-  automatic re-runs of one run (1 → 2 → 3).
+  automatic re-runs of one run (1 → 2 → 3). The 2026-11-12 amendment does not
+  reopen this: it permits one repaint of a spent run only while that run's red
+  predates the newest verdict, which the red's own `completed_at` makes a measured
+  fact, and the repaint itself moves that timestamp past the verdict.
 - **Act only on attempt-1 runs (the status quo).** It makes a run unreachable at
   exactly the moment a verdict needs it, and the hand re-run becomes permanent
   procedure.

@@ -28,7 +28,7 @@ import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import { evaluateGate } from './lib/review-gate.mjs'
 import { apiClient, arg, loadPolicy, pullRequestNumber, readEvent } from './lib/gate-env.mjs'
 import { reviewThreadsClient } from './lib/review-threads.mjs'
-import { REQUIRED_CONTEXT, isRepairCandidate, repairPlan } from './lib/gate-repair.mjs'
+import { REQUIRED_CONTEXT, isBlockingCandidate, isRepairCandidate, repairPlan } from './lib/gate-repair.mjs'
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
 const REPO = process.env.GITHUB_REPOSITORY ?? ''
@@ -92,17 +92,29 @@ const runs = (await api(`/repos/${REPO}/actions/runs?head_sha=${headSha}&per_pag
 
 // A PASS has to know whether each failed run's own gate job failed, so the jobs
 // of every candidate run are read before the plan is made. There are only a few
-// gate runs per SHA; the list is bounded by that.
+// gate runs per SHA; the list is bounded by that. #341 widened the set: an
+// above-cap red is repainted from the run behind it, and a live attempt has to be
+// read to answer `wait`, so those runs' jobs are read too — otherwise the plan
+// sees no failed gate job and reports nothing to do over a tip that cannot merge.
 const jobs = new Map()
-for (const run of runs.filter((candidate) => isRepairCandidate(candidate, CURRENT_RUN))) {
+for (const run of runs.filter((candidate) => isRepairCandidate(candidate, CURRENT_RUN) || isBlockingCandidate(candidate, CURRENT_RUN))) {
   const listed = await api(`/repos/${REPO}/actions/runs/${run.id}/jobs?per_page=100`)
     .catch((error) => stop(1, `cannot read the jobs of run ${run.id}: ${error.message}`))
   jobs.set(run.id, listed?.jobs ?? [])
 }
 
-const plan = repairPlan({ expected, checkRuns, runs, jobsFor: (id) => jobs.get(id) ?? [], currentRunId: CURRENT_RUN })
+const plan = repairPlan({ expected, checkRuns, runs, jobsFor: (id) => jobs.get(id) ?? [], currentRunId: CURRENT_RUN, verdictAt: outcome.verdictAt })
 if (plan.action === 'none') stop(0, `nothing to do — ${plan.reason} (${expected} expected at ${headSha})`)
 if (plan.action === 'blocked') stop(1, `${headSha} cannot be repainted — ${plan.reason}`)
+// #341: a live attempt is not a failure and must not be re-run. Exit 0 before the
+// loop so no shape of this plan can POST a rerun against a running workflow.
+if (plan.action === 'wait') stop(0, `STATE=wait — ${plan.reason} (${expected} expected at ${headSha})`)
+if (plan.action === 'repaint') {
+  const id = plan.ids[0]
+  await api(`/repos/${REPO}/actions/runs/${id}/rerun`, { method: 'POST' })
+    .catch((error) => stop(1, `cannot re-run ${id}: ${error.message}`))
+  stop(0, `STATE=repainted run=${id} attempt=${plan.attempt} — the blocking red predates the newest verdict (${expected} expected at ${headSha})`)
+}
 
 for (const id of plan.ids) {
   await api(`/repos/${REPO}/actions/runs/${id}/rerun`, { method: 'POST' })
