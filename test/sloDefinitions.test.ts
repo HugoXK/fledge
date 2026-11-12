@@ -78,7 +78,6 @@ function alertRules(text: string): AlertRule[] {
   for (let index = 0; index < lines.length; index += 1) {
     const header = /^(\s*)- alert:\s*(\S+)\s*$/.exec(lines[index]!)
     if (header === null) continue
-    const indent = header[1]!.length
     const parts: string[] = []
     for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
       const line = lines[cursor]!
