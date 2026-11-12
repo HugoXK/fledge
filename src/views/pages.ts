@@ -1540,7 +1540,13 @@ export function settingsPage(input: {
           return `<tr><td><code>${escapeHtml(token.prefix)}…</code></td><td>${escapeHtml(token.name)}</td><td><code>${escapeHtml(token.scope)}</code></td><td>${escapeHtml(expires)}</td><td>${escapeHtml(humanTimeShort(token.last_used_at))}</td><td><form method="post" action="/settings/tokens/${escapeHtml(token.id)}/revoke">${csrf(viewer)}<button class="link" type="submit">${escapeHtml(t('撤销', 'Revoke'))}</button></form></td></tr>`
         })
         .join('')
-  const body = `<section class="card">
+  const body = `<nav class="section-nav" aria-label="${escapeHtml(t('页面导航', 'Section navigation'))}">
+    <a href="#account">${escapeHtml(t('账户', 'Account'))}</a>
+    <a href="#model-providers">${escapeHtml(t('模型', 'Models'))}</a>
+    <a href="#notifications">${escapeHtml(t('通知', 'Notifications'))}</a>
+    <a href="#tokens">${escapeHtml(t('API token', 'API tokens'))}</a>
+  </nav>
+  <section class="card" id="account">
     <div class="eyebrow">${escapeHtml(t('账户', 'ACCOUNT'))}</div>
     <h1>@${escapeHtml(user.login)}</h1>
     <p class="muted">${escapeHtml(user.email === null || user.email === '' ? t('未公开邮箱', 'No public email') : maskEmail(user.email))} · ${escapeHtml(t('加入于', 'Joined'))} ${escapeHtml(humanTimeShort(user.created_at))} · ${escapeHtml(t('平台额度', 'Platform quota'))} ${quota.unlimited ? escapeHtml(t('不限额', 'Unlimited')) : `${quotaMoney(quota.remainingCny)} / ${money(quota.initialCny)}`}</p>
@@ -1622,7 +1628,7 @@ export function settingsPage(input: {
     <p class="fine">${escapeHtml(t(`审批和额度邮件不受这个开关影响。每日摘要默认在 ${config.digest.hour}:00（${config.digest.timeZone}）发送。`, `Approval and quota mail are not affected by these switches. The daily summary is sent at ${config.digest.hour}:00 (${config.digest.timeZone}).`))}</p>
   </section>
 
-  <section class="card">
+  <section class="card" id="tokens">
     <h2>${escapeHtml(t('API token', 'API tokens'))}</h2>
     <p class="muted">${escapeHtml(t('给脚本或 FlyBot 调用的网关 token（flg_…）。它不是你的 GitHub token，也不是模型 key。', 'Gateway tokens (flg_…) for scripts or FlyBot. They are neither your GitHub token nor a model key.'))}</p>
     ${newToken === undefined ? '' : `<div class="banner ok">${escapeHtml(t('新 token（只显示一次）：', 'New token (shown once):'))}<code class="token" id="new-token">${escapeHtml(newToken)}</code> <button class="link" type="button" data-copy="#new-token">${escapeHtml(t('复制', 'Copy'))}</button></div>`}
@@ -1838,7 +1844,7 @@ export function adminPage(input: {
   // the card names it as the running version and never claims a commit. A file
   // that is not in this build says so; a zero fragment count is a real fact.
   const absent = t('此构建中不可用', 'not available in this build')
-  const releaseCard = `<section class="card">
+  const releaseCard = `<section class="card" id="release">
     <h2>${escapeHtml(t('发布', 'Release'))}</h2>
     <div class="list">
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('运行版本', 'Running'))}</strong><small>${release.version === null ? escapeHtml(absent) : `v${escapeHtml(release.version)} · ${escapeHtml(t('来自 package.json', 'from package.json'))}`}</small></div></div>
@@ -1883,7 +1889,7 @@ export function adminPage(input: {
         const running = compareRunning(releaseStatus, { version: release.version ?? '', commit: config.build.commit })
         return `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('这个进程', 'This process'))}</strong><small>${escapeHtml(running.detail)}</small></div><div class="row">${stateBadge(running.state)}</div></div>`
       })()}`
-  const chainCard = `<section class="card">
+  const chainCard = `<section class="card" id="release-chain">
     <h2>${escapeHtml(t('发布链', 'Release chain'))}${releaseStatus === null ? '' : ` <small class="count">v${escapeHtml(releaseStatus.version)} · ${escapeHtml(releaseStatus.ok ? t('已发布', 'released') : t('未完成', 'not released'))}${releaseStatus.checkedAt === '' ? '' : ` · ${escapeHtml(t(`检查于 ${releaseStatus.checkedAt}`, `checked ${releaseStatus.checkedAt}`))}`}${releaseStatus.releaseUrl === '' ? '' : ` · <a class="link" href="${escapeHtml(releaseStatus.releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(t('GitHub Release', 'GitHub Release'))}</a>`}</small>`}</h2>
     <div class="list">${chainRows}</div>
   </section>`
@@ -1983,23 +1989,32 @@ export function adminPage(input: {
     <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}${superadmin ? ` · <a class="link" href="/admin/metrics">${escapeHtml(t('产品指标', 'Product metrics'))}</a> · <a class="link" href="/admin/webhooks">${escapeHtml(t('Webhook deliveries', 'Webhook deliveries'))}</a>` : ''} · <a class="link" href="/admin/search">${escapeHtml(t('审计与任务', 'Audit and jobs'))}</a> · <a class="link" href="/admin/trials">${escapeHtml(t('试用预览', 'Preview trials'))}</a></p>
     ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出用户视图预览', 'Exit user preview') : t('预览用户视图', 'Preview the user view'))}</button></form>` : ''}
   </section>
+  <nav class="section-nav" aria-label="${escapeHtml(t('页面导航', 'Section navigation'))}">
+    <a href="#release">${escapeHtml(t('发布', 'Release'))}</a>
+    <a href="#release-chain">${escapeHtml(t('发布链', 'Release chain'))}</a>
+    <a href="#backups">${escapeHtml(t('备份', 'Backups'))}</a>
+    <a href="#pending">${escapeHtml(t('待审批', 'Pending'))}</a>
+    <a href="#users">${escapeHtml(t('用户', 'Users'))}</a>
+    <a href="#jobs">${escapeHtml(t('任务', 'Jobs'))}</a>
+    ${showAudit ? `<a href="#audit">${escapeHtml(t('审计', 'Audit'))}</a>` : ''}
+  </nav>
   ${releaseCard}
   ${chainCard}
   ${backupCard}
-  <section class="card">
+  <section class="card" id="pending">
     <h2>${escapeHtml(t('待审批', 'Pending'))} <small class="count">${pending.length}</small></h2>
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('用户', 'User'))}</th><th>${escapeHtml(t('申请时间', 'Applied'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th></th></tr></thead><tbody>${pendingRows}</tbody></table></div>
   </section>
-  <section class="card">
+  <section class="card" id="users">
     <h2>${escapeHtml(t('用户', 'Users'))} <small class="count">${users.length}</small></h2>
     <div class="table-scroll"><table class="admin-users-table table-cards table-priority"><thead><tr><th>${escapeHtml(t('登录名', 'Login'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('角色', 'Role'))}</th><th>${escapeHtml(t('额度', 'Quota'))}</th><th data-priority="low">${escapeHtml(t('已用', 'Used'))}</th><th data-priority="low">${escapeHtml(t('活动', 'Activity'))}</th><th>${escapeHtml(t('调整', 'Adjust'))}</th></tr></thead><tbody>${userRows}</tbody></table></div>
   </section>
-  <section class="card">
+  <section class="card" id="jobs">
     <div class="row between"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))} <small class="count">${jobsTotal}</small></h2><span class="fine">${escapeHtml(t('每页 10 条', '10 per page'))}</span></div>
     ${jobTable(locale, jobs, { body: t('这里汇总所有用户的任务；还没有任何一条。', 'Jobs from every user are collected here; there are none yet.'), action: { href: '/admin/users', label: t('查看用户', 'View users') } })}
     ${pager('/admin', 'jobsPage', jobsPage, jobsTotal, perPage, t, showAudit ? { auditPage } : {})}
   </section>
-  ${showAudit ? `<section class="card">
+  ${showAudit ? `<section class="card" id="audit">
     <div class="row between"><h2>${escapeHtml(t('审计', 'Audit'))} <small class="count">${auditTotal}</small></h2><span class="fine">${escapeHtml(t('每页 10 条', '10 per page'))}</span></div>
     <div class="table-scroll"><table class="table-cards table-priority"><thead><tr><th>${escapeHtml(t('时间', 'Time'))}</th><th>${escapeHtml(t('动作', 'Action'))}</th><th>${escapeHtml(t('操作者', 'Actor'))}</th><th data-priority="low">${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${auditRows(locale, audit, usersById, hideActor)}</tbody></table></div>
     ${pager('/admin', 'auditPage', auditPage, auditTotal, perPage, t, { jobsPage })}

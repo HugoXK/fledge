@@ -180,6 +180,29 @@
     })
   })
 
+  const sectionNav = document.querySelector('.section-nav')
+  if (sectionNav) {
+    const links = Array.from(sectionNav.querySelectorAll('a'))
+    const sections = links
+      .map((link) => {
+        const id = (link.getAttribute('href') || '').replace(/^#/, '')
+        return { link, target: id === '' ? null : document.getElementById(id) }
+      })
+      .filter((entry) => entry.target !== null)
+    const setActive = (id) => {
+      for (const entry of sections) entry.link.setAttribute('aria-current', entry.target.id === id ? 'true' : 'false')
+    }
+    if (sections.length > 0 && typeof IntersectionObserver === 'function') {
+      const observer = new IntersectionObserver((entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0]
+        if (visible !== undefined) setActive(visible.target.id)
+      }, { rootMargin: '-20% 0px -60% 0px', threshold: [0, 1] })
+      for (const entry of sections) observer.observe(entry.target)
+    }
+  }
+
   document.querySelectorAll('[data-copy]').forEach((el) => {
     el.addEventListener('click', async () => {
       const target = document.querySelector(el.getAttribute('data-copy'))

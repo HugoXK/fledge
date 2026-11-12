@@ -894,3 +894,21 @@ a.list-row:hover strong { color: var(--accent); }
   table.table-priority[data-table-ready="true"][data-show-low="true"] th[data-priority="low"],
   table.table-priority[data-table-ready="true"][data-show-low="true"] td[data-priority="low"] { display: table-cell; }
 }
+
+.section-nav {
+  position: sticky; top: var(--header-h); z-index: 15;
+  display: flex; gap: var(--space-2); margin: 0 0 var(--space-4);
+  padding: var(--space-2) 0; overflow-x: auto; scrollbar-width: none;
+  border-bottom: 1px solid var(--line); background: var(--bg);
+}
+.section-nav::-webkit-scrollbar { display: none; }
+.section-nav a {
+  flex: 0 0 auto; display: inline-flex; align-items: center;
+  min-height: var(--touch); padding: 0 var(--space-4);
+  border: 1px solid var(--line); border-radius: var(--radius-pill);
+  color: var(--muted); font-size: 13px; font-weight: 600;
+  text-decoration: none; white-space: nowrap;
+}
+.section-nav a:hover { color: var(--text); border-color: var(--accent); }
+.section-nav a[aria-current="true"] { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--accent-ink); }
+.section-nav ~ .card[id] { scroll-margin-top: calc(var(--header-h) + 56px); }
