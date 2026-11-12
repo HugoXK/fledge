@@ -114,18 +114,23 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // the same way: two import lines and the `readAnswer` helper above them, 19
   // lines in total, with no new route and no change to the limiter call that
   // opens each handler; alerts #41 and #42 stay the same two dismissed results.
-  // #355 inserts the scope and expiry checks in the token create route, above
-  // the same webhook registration, so it moved to `:2971` in that commit, and
-  // its gateway rewrite adds 10 lines above both gateway registrations, which
-  // is why they read `:154`/`:179` here and not main's `:144`/`:169`. No result
+  // #355 moves anchors in two places for two reasons. Its one import line at
+  // `:27` sits above the four route registrations near the top of the file, so
+  // those four move by one and read `:470`/`:505`/`:515`/`:525` here, not main's
+  // `:469`/`:504`/`:514`/`:524`; the scope and expiry checks it adds in the token
+  // create route sit above the webhook registration, which moves to `:2971`;
+  // and its gateway rewrite adds 10 lines above both gateway registrations,
+  // which is why they read `:154`/`:179` and not main's `:144`/`:169`. No result
   // was added or dismissed by this PR: every moved line is the same code the
-  // baseline already recorded, re-measured on this tree.
+  // baseline already recorded, re-measured on this tree, and the first attempt
+  // at this refresh re-keyed only the webhook and the gateway pair, which the
+  // analysis refused with four added results at `:470`/`:505`/`:515`/`:525`.
   assert.deepEqual([...keys].sort(), [
     'js/missing-rate-limiting|src/app.ts|2971',
-    'js/missing-rate-limiting|src/app.ts|469',
-    'js/missing-rate-limiting|src/app.ts|504',
-    'js/missing-rate-limiting|src/app.ts|514',
-    'js/missing-rate-limiting|src/app.ts|524',
+    'js/missing-rate-limiting|src/app.ts|470',
+    'js/missing-rate-limiting|src/app.ts|505',
+    'js/missing-rate-limiting|src/app.ts|515',
+    'js/missing-rate-limiting|src/app.ts|525',
     'js/missing-rate-limiting|src/gateway/gateway.ts|154',
     'js/missing-rate-limiting|src/gateway/gateway.ts|179',
   ])

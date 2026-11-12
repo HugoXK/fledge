@@ -5,28 +5,28 @@
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 469,
+      "line": 470,
       "severity": "high",
       "reason": "alert #62, open"
     },
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 504,
+      "line": 505,
       "severity": "high",
       "reason": "alert #63, open"
     },
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 514,
+      "line": 515,
       "severity": "high",
       "reason": "alert #36, dismissed false positive"
     },
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 524,
+      "line": 525,
       "severity": "high",
       "reason": "alert #64, open"
     },
