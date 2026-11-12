@@ -139,13 +139,15 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // two. #457 inserts its limit guard and two refusal helpers 32 lines above
   // the four top-of-file registrations, which read `:503`/`:538`/`:548`/`:558`
   // on its tree, and the webhook registration reads `:3120`; the gateway pair
-  // does not move and stays `:155`/`:180`.
+  // does not move and stays `:155`/`:180`. The review fix adds one 13-line
+  // refusal helper above those four, which then read `:516`/`:551`/`:561`/`:571`,
+  // and its two add-path call sites below them take the webhook to `:3145`.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3120',
-    'js/missing-rate-limiting|src/app.ts|503',
-    'js/missing-rate-limiting|src/app.ts|538',
-    'js/missing-rate-limiting|src/app.ts|548',
-    'js/missing-rate-limiting|src/app.ts|558',
+    'js/missing-rate-limiting|src/app.ts|3145',
+    'js/missing-rate-limiting|src/app.ts|516',
+    'js/missing-rate-limiting|src/app.ts|551',
+    'js/missing-rate-limiting|src/app.ts|561',
+    'js/missing-rate-limiting|src/app.ts|571',
     'js/missing-rate-limiting|src/gateway/gateway.ts|155',
     'js/missing-rate-limiting|src/gateway/gateway.ts|180',
   ])

@@ -2290,12 +2290,26 @@ export class Store {
     return this.all<RepoInstanceRow>('SELECT * FROM repo_instances ORDER BY created_at DESC')
   }
 
-  countRepoInstancesForUser(userId: string): number {
-    return this.get<{ total: number }>('SELECT COUNT(*) AS total FROM repo_instances WHERE user_id = ?', userId)?.total ?? 0
+  // #457 review: the ceiling counts instances that occupy a slot, not rows.
+  // `stop()` keeps the row with `status = 'stopped'` and a failed provision
+  // leaves one behind, so counting every row would refuse a user at the cap the
+  // restart of their own stopped instance. `excludeRepoId` is the repository
+  // being provisioned: its own row must not count against its restart either.
+  countRepoInstancesForUser(userId: string, excludeRepoId = ''): number {
+    return this.get<{ total: number }>(
+      `SELECT COUNT(*) AS total FROM repo_instances
+       WHERE user_id = ? AND status IN ('starting', 'provisioning', 'ready') AND repo_id <> ?`,
+      userId,
+      excludeRepoId,
+    )?.total ?? 0
   }
 
-  countRepoInstances(): number {
-    return this.get<{ total: number }>('SELECT COUNT(*) AS total FROM repo_instances')?.total ?? 0
+  countRepoInstances(excludeRepoId = ''): number {
+    return this.get<{ total: number }>(
+      `SELECT COUNT(*) AS total FROM repo_instances
+       WHERE status IN ('starting', 'provisioning', 'ready') AND repo_id <> ?`,
+      excludeRepoId,
+    )?.total ?? 0
   }
 
   saveRepoInstance(input: RepoInstanceRow): RepoInstanceRow {

@@ -321,6 +321,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     admin: isAdminRole(viewer.user.role),
   })
 
+  // #457 review: the instance ceiling has to see an add that will provision, not
+  // only the explicit provision route. `extra` is how many instances the caller
+  // is about to create; `excludeRepoId` is the repository whose own row (stopped
+  // or not) must not count against its restart.
+  const instanceCapRefusal = (viewer: Viewer, extra = 1, excludeRepoId = ''): LimitRefusal | null => instanceLimitRefusal({
+    usedForUser: store.countRepoInstancesForUser(viewer.user.id, excludeRepoId),
+    capForUser: config.limits.instancesPerUser,
+    usedGlobal: store.countRepoInstances(excludeRepoId),
+    capGlobal: config.limits.instancesGlobal,
+    admin: isAdminRole(viewer.user.role),
+    extra,
+  })
+
   const ownedRepo = (request: FastifyRequest, id: string, mutating = false) => {
     const viewer = mutating ? approvedCsrfGuard(request) : requireApproved(request)
     const repo = store.getRepo(id)
@@ -1010,6 +1023,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       admin: isAdminRole(viewer.user.role),
     })
     if (refusal !== null) return refuseLimit(request, reply, viewer, refusal, `/repos/new?installation=${installationId}`)
+    // Every fresh repository is provisioned below, so the instance ceiling has
+    // to be consulted for all of them before the first create: refusing later
+    // would leave repositories added with no instance, or a running instance
+    // past the ceiling.
+    if (config.flybot.instanceImage !== '') {
+      const instanceRefusal = instanceCapRefusal(viewer, fresh.length)
+      if (instanceRefusal !== null) return refuseLimit(request, reply, viewer, instanceRefusal, `/repos/new?installation=${installationId}`)
+    }
     const added: string[] = []
     for (const fullName of selected) {
       const repoInfo = byName.get(fullName.toLowerCase())
@@ -1081,6 +1102,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       }
       const refusal = repoCapRefusal(viewer)
       if (refusal !== null) return refuseLimit(request, reply, viewer, refusal, '/repos/new')
+      // This add provisions an instance below when FlyBot is configured, so it
+      // has to answer to the instance ceiling too — before anything is created.
+      if (config.flybot.instanceImage !== '') {
+        const instanceRefusal = instanceCapRefusal(viewer)
+        if (instanceRefusal !== null) return refuseLimit(request, reply, viewer, instanceRefusal, '/repos/new')
+      }
       store.event('repo_connect_start', { userId: viewer.user.id, meta: `${owner}/${name}` })
       const token = (body.token ?? '').trim()
       if (token === '') throw new Error('请填写 GitHub token')
@@ -1983,16 +2010,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/instance', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     if (config.flybot.instanceImage === '') throw httpError(400, 'FlyBot 实例未配置', 'INSTANCE_DISABLED')
-    const refusal = instanceLimitRefusal({
-      usedForUser: store.countRepoInstancesForUser(viewer.user.id),
-      capForUser: config.limits.instancesPerUser,
-      usedGlobal: store.countRepoInstances(),
-      capGlobal: config.limits.instancesGlobal,
-      admin: isAdminRole(viewer.user.role),
-    })
+    // #457 review: the guard used to run before this route knew the repository
+    // already had a row, so a stopped instance counted against its own restart
+    // and the only way out was deleting it. Exclude the row being provisioned
+    // and count only the statuses that hold a slot.
+    const existing = store.getRepoInstance(repo.id)
+    const refusal = instanceCapRefusal(viewer, 1, repo.id)
     if (refusal !== null) return refuseLimit(request, reply, viewer, refusal, `/repos/${repo.id}`)
     instances.ensureUserDir(viewer.user.id)
-    const existing = store.getRepoInstance(repo.id)
     if (existing !== undefined && existing.status !== 'ready' && !instances.isProvisioning(repo.id)) await instances.stop(repo.id)
     void instances.provision(repo).catch((error) => log.error('flybot provisioning failed', { repo: repo.id, error: String(error) }))
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例初始化中。')}`)

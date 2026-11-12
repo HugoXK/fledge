@@ -22,8 +22,15 @@ test('the instance ceiling honours the per-user cap and the optional global cap'
   const base = { usedForUser: 0, capForUser: 2, usedGlobal: 0, capGlobal: 0, admin: false }
   assert.deepEqual(instanceLimitRefusal(base), null)
   assert.deepEqual(instanceLimitRefusal({ ...base, usedForUser: 2 }), { code: 'INSTANCE_LIMIT', used: 2, cap: 2 })
-  assert.deepEqual(instanceLimitRefusal({ ...base, usedGlobal: 5, capGlobal: 5 }), { code: 'INSTANCE_LIMIT', used: 0, cap: 2 })
+  assert.deepEqual(instanceLimitRefusal({ ...base, usedGlobal: 5, capGlobal: 5 }), { code: 'INSTANCE_LIMIT', used: 5, cap: 5 }, 'a global refusal names the global ceiling, not 0/3')
   assert.deepEqual(instanceLimitRefusal({ ...base, usedForUser: 5, admin: true }), null)
+})
+
+test('a bulk add is refused when the instances it would provision do not fit', () => {
+  const base = { usedForUser: 0, capForUser: 3, usedGlobal: 0, capGlobal: 0, admin: false }
+  assert.deepEqual(instanceLimitRefusal({ ...base, usedForUser: 2, extra: 1 }), null, 'the add that fills the last slot is allowed')
+  assert.deepEqual(instanceLimitRefusal({ ...base, usedForUser: 2, extra: 2 }), { code: 'INSTANCE_LIMIT', used: 2, cap: 3 })
+  assert.deepEqual(instanceLimitRefusal({ ...base, usedGlobal: 4, capGlobal: 5, extra: 2 }), { code: 'INSTANCE_LIMIT', used: 4, cap: 5 })
 })
 
 function repoRow(store: Store, userId: string, id: string, name: string): { id: string } {
@@ -84,6 +91,15 @@ test('removing a repository releases its slot', async () => {
   }
 })
 
+function instanceRow(userId: string, repoId: string, status: string): Parameters<Store['saveRepoInstance']>[0] {
+  return {
+    repo_id: repoId, user_id: userId, container: `c-${repoId}`, network: `n-${repoId}`, data_dir: `/tmp/${repoId}`, bridge_script: '',
+    dsh_port: 0, bridge_port: 0, model_port: 0, model_bind: '', image: 'img', status, chief_session: null,
+    team_json: null, bridge_token_enc: null, bridge_pid: null, log_pid: null, last_error: null,
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_health_at: null,
+  } as Parameters<Store['saveRepoInstance']>[0]
+}
+
 test('an instance beyond the per-user cap is refused with INSTANCE_LIMIT before provisioning', async () => {
   const config = testConfig({ limits: { reposPerUser: 10, instancesPerUser: 1, instancesGlobal: 0 } })
   config.flybot.instanceImage = 'fledge-flybot:test'
@@ -93,12 +109,7 @@ test('an instance beyond the per-user cap is refused with INSTANCE_LIMIT before 
     const user = makeUser(store, { login: 'instance-cap', status: 'approved' })
     repoRow(store, user.id, 'repo_inst_one', 'one')
     const second = repoRow(store, user.id, 'repo_inst_two', 'two')
-    store.saveRepoInstance({
-      repo_id: 'repo_inst_one', user_id: user.id, container: 'c1', network: 'n1', data_dir: '/tmp/d1', bridge_script: '',
-      dsh_port: 0, bridge_port: 0, model_port: 0, model_bind: '', image: 'img', status: 'ready', chief_session: null,
-      team_json: null, bridge_token_enc: null, bridge_pid: null, log_pid: null, last_error: null,
-      created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_health_at: null,
-    } as Parameters<Store['saveRepoInstance']>[0])
+    store.saveRepoInstance(instanceRow(user.id, 'repo_inst_one', 'ready'))
     const { cookie, csrf } = sessionFor(built, user)
     const refused = await built.app.inject({
       method: 'POST', url: `/repos/${second.id}/instance`,
@@ -108,6 +119,58 @@ test('an instance beyond the per-user cap is refused with INSTANCE_LIMIT before 
     assert.equal(refused.statusCode, 302)
     assert.match(decodeURIComponent(String(refused.headers.location)), /code=INSTANCE_LIMIT/)
     assert.equal(store.getRepoInstance(second.id), undefined, 'a refused provision must leave no instance row')
+  } finally {
+    await built.close()
+  }
+})
+
+test('a stopped instance holds no slot, so a user at the cap can restart it', async () => {
+  const config = testConfig({ limits: { reposPerUser: 10, instancesPerUser: 1, instancesGlobal: 0 } })
+  config.flybot.instanceImage = 'fledge-flybot:test'
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'restart-at-cap', status: 'approved' })
+    const repo = repoRow(store, user.id, 'repo_restart', 'restart')
+    store.saveRepoInstance(instanceRow(user.id, repo.id, 'stopped'))
+    assert.equal(store.countRepoInstancesForUser(user.id), 0, 'a stopped row does not count toward the per-user ceiling')
+    assert.equal(store.countRepoInstances(), 0, 'nor toward the global ceiling')
+    let provisions = 0
+    built.instances.provision = async () => { provisions += 1 }
+    built.instances.stop = async () => undefined
+    const { cookie, csrf } = sessionFor(built, user)
+    const response = await built.app.inject({
+      method: 'POST', url: `/repos/${repo.id}/instance`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf }),
+    })
+    assert.equal(response.statusCode, 302)
+    const location = decodeURIComponent(String(response.headers.location))
+    assert.equal(location.includes('code=INSTANCE_LIMIT'), false, 'the restart of the repository own stopped instance must be allowed')
+    assert.equal(provisions, 1, 'the restart must reach provisioning')
+  } finally {
+    await built.close()
+  }
+})
+
+test('adding a repository is refused when the instance it would provision does not fit', async () => {
+  const config = testConfig({ limits: { reposPerUser: 10, instancesPerUser: 1, instancesGlobal: 0 } })
+  config.flybot.instanceImage = 'fledge-flybot:test'
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'add-at-instance-cap', status: 'approved' })
+    const first = repoRow(store, user.id, 'repo_add_cap', 'one')
+    store.saveRepoInstance(instanceRow(user.id, first.id, 'ready'))
+    const { cookie, csrf } = sessionFor(built, user)
+    const refused = await built.app.inject({
+      method: 'POST', url: '/repos',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, repo: 'o/two', token: 't' }),
+    })
+    assert.equal(refused.statusCode, 302)
+    assert.match(decodeURIComponent(String(refused.headers.location)), /code=INSTANCE_LIMIT/, 'the add path must not bypass the instance ceiling')
+    assert.equal(store.countReposForUser(user.id), 1, 'a refused add must not create a repository that cannot get an instance')
   } finally {
     await built.close()
   }
