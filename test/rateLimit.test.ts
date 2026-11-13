@@ -148,6 +148,29 @@ test('every throttle in src/app.ts takes its key from the normalized client addr
 })
 
 
+test('the destructive routes ask the route-level limiter for their bucket, on the same normalized key', () => {
+  const source = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8')
+  // @fastify/rate-limit models a limit only as a three-argument route with
+  // `config.rateLimit`, which is also the shape CodeQL's Fastify model reads; a
+  // helper that calls a hand-rolled limiter is invisible to both.
+  const limited = source.split('\n').filter((line) => line.includes('config: { rateLimit: destructiveLimit }'))
+  assert.deepEqual(limited.map((line) => /app\.post\('([^']+)'/.exec(line)?.[1]), [
+    '/repos/:id/instance/stop',
+    '/repos/:id/settings',
+    '/repos/:id/delete',
+    '/settings/tokens',
+    '/settings/tokens/:id/revoke',
+    '/admin/users/:id/approve',
+    '/admin/users/:id/reject',
+    '/admin/users/:id/quota',
+  ], 'the eight destructive registrations must carry the route-level limit')
+  const block = /const destructiveLimit = \{([\s\S]*?)\n  \}/.exec(source)?.[1] ?? ''
+  assert.match(block, /max: 60,/, 'the ceiling has to stay stated in code')
+  assert.match(block, /timeWindow: 60_000,/, 'the window has to stay stated in code')
+  assert.match(block, /keyGenerator: \(request: FastifyRequest\): string => rateLimitKey\(request\)/, 'the key generator must go through rateLimitKey, not the plugin default')
+  assert.match(source, /await app\.register\(fastifyRateLimit, \{ global: false \}\)/, 'the plugin must stay scoped to the routes that name it')
+})
+
 test('the gateway throttles join the normalized key instead of raw request.ip', () => {
   const source = readFileSync(new URL('../src/gateway/gateway.ts', import.meta.url), 'utf8')
   const takes = source.split('\n').map((line) => line.trim()).filter((line) => line.includes('.take('))

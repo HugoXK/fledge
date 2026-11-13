@@ -13,6 +13,9 @@ export interface Viewer {
   sessionHash: string
   user: UserRow
   csrfToken: string
+  // When this session last proved the person is still the GitHub account behind
+  // it. Destructive actions require a recent value; see docs/security.md.
+  recentAuthAt: string | null
   preview?: boolean
 }
 
@@ -32,6 +35,7 @@ export class Sessions {
       idHash: sha256Hex(raw),
       userId,
       expiresAt: addDays(SESSION_DAYS),
+      recentAuthAt: new Date().toISOString(),
       ip: request.ip,
       userAgent: String(request.headers['user-agent'] ?? '').slice(0, 300),
     })
@@ -47,7 +51,14 @@ export class Sessions {
     const user = this.store.userById(session.user_id)
     if (user === undefined) return null
     const preview = user.role === 'superadmin' && request.cookies[PREVIEW_COOKIE] === 'user'
-    return { sessionHash: hash, user, csrfToken: this.csrfFor(hash), preview }
+    return { sessionHash: hash, user, csrfToken: this.csrfFor(hash), recentAuthAt: session.recent_auth_at, preview }
+  }
+
+  /** A successful GitHub re-authentication refreshes the session it belongs to. */
+  markRecentAuth(request: FastifyRequest): void {
+    const raw = request.cookies[SESSION_COOKIE]
+    if (raw === undefined || raw === '') return
+    this.store.markRecentAuth(sha256Hex(raw))
   }
 
   destroy(request: FastifyRequest): void {
