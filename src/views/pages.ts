@@ -1,5 +1,6 @@
 import type { Config } from '../config.js'
-import type { AlertView, AuditRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, ProviderModelRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
+import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, ProviderModelRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
+import { redactCommand, type DriftAssessment, type ReleaseSnapshot } from '../lib/deployments.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
@@ -2034,7 +2035,7 @@ export function adminPage(input: {
   const body = `${stopBanner}<section class="card">
     <div class="eyebrow">${escapeHtml(t('管理', 'ADMIN'))}</div>
     <h1>${escapeHtml(t('审批与额度', 'Approvals & quota'))}</h1>
-    <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}${superadmin ? ` · <a class="link" href="/admin/metrics">${escapeHtml(t('产品指标', 'Product metrics'))}</a> · <a class="link" href="/admin/webhooks">${escapeHtml(t('Webhook deliveries', 'Webhook deliveries'))}</a>` : ''} · <a class="link" href="/admin/search">${escapeHtml(t('审计与任务', 'Audit and jobs'))}</a> · <a class="link" href="/admin/trials">${escapeHtml(t('试用预览', 'Preview trials'))}</a></p>
+    <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}${superadmin ? ` · <a class="link" href="/admin/metrics">${escapeHtml(t('产品指标', 'Product metrics'))}</a> · <a class="link" href="/admin/webhooks">${escapeHtml(t('Webhook deliveries', 'Webhook deliveries'))}</a>` : ''} · <a class="link" href="/admin/deployments">${escapeHtml(t('部署', 'Deployments'))}</a> · <a class="link" href="/admin/search">${escapeHtml(t('审计与任务', 'Audit and jobs'))}</a> · <a class="link" href="/admin/trials">${escapeHtml(t('试用预览', 'Preview trials'))}</a></p>
     ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出用户视图预览', 'Exit user preview') : t('预览用户视图', 'Preview the user view'))}</button></form>` : ''}
   </section>
   ${releaseCard}
@@ -2804,6 +2805,155 @@ export function adminTrialsPage(input: {
     <p class="fine">${escapeHtml(t('用户列只显示登录名；账号操作在支持视图里。', 'The user column shows the login only; account actions live in the support view.'))}</p>
   </section>`
   return layout({ title: t('预览试用', 'Preview trials'), viewer, body, config, locale, path: '/admin/trials', active: 'admin', notice, error })
+}
+
+export function adminDeploymentsPage(input: {
+  config: Config
+  locale: Locale
+  viewer: Viewer
+  release: ReleaseSnapshot | null
+  environments: Array<{ environment: string; latest: DeploymentRow | null; drift: DriftAssessment }>
+  deployments: DeploymentRow[]
+  rollbacks: DeploymentRollbackRow[]
+  notice?: string
+  error?: string
+}): string {
+  const { config, locale, viewer, release, environments, deployments, rollbacks, notice, error } = input
+  const t = translator(locale)
+  const stateBadge = (state: string): string => {
+    if (state === 'ok') return `<span class="badge good">${escapeHtml(t('正常', 'ok'))}</span>`
+    if (state === 'behind') return `<span class="badge bad">${escapeHtml(t('落后', 'behind'))}</span>`
+    if (state === 'mismatch') return `<span class="badge bad">${escapeHtml(t('不一致', 'mismatch'))}</span>`
+    return `<span class="badge busy">${escapeHtml(t('未知', 'unknown'))}</span>`
+  }
+  const external = (url: string | null | undefined, label: string): string => {
+    const value = String(url ?? '')
+    if (!/^https?:\/\//.test(value)) return escapeHtml('—')
+    return `<a class="link" href="${escapeHtml(value)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`
+  }
+  const commit = (sha: string): string => escapeHtml(sha.slice(0, 12))
+  const alerts = environments.filter((entry) => entry.drift.alert)
+  const alertBanner = alerts.length === 0
+    ? ''
+    : `<div class="banner bad" role="alert"><strong>${escapeHtml(t('部署漂移', 'Deployment drift'))}</strong><ul>${alerts.map((entry) => `<li><b>${escapeHtml(entry.environment)}</b> · ${escapeHtml(entry.drift.summary)}</li>`).join('')}</ul></div>`
+  const releaseLine = release === null
+    ? `<p class="muted">${escapeHtml(t('这台实例还没有发布链快照，因此漂移只能按已记录的部署判断。', 'No release snapshot is recorded on this instance, so drift cannot name a released version.'))}</p>`
+    : `<p class="muted">${escapeHtml(t('最新发布', 'Latest release'))}: <b>v${escapeHtml(String(release.version ?? ''))}</b>${String(release.commit ?? '') === '' ? '' : ` · ${escapeHtml(t('标签提交', 'tag commit'))} <code>${commit(String(release.commit ?? ''))}</code>`}${String(release.url ?? '') === '' ? '' : ` · ${external(release.url, t('GitHub Release', 'GitHub Release'))}`}</p>`
+  const environmentRows = environments.length === 0
+    ? stateCell(4, { kind: 'empty', title: t('还没有部署记录。', 'No deployment is recorded.'), body: t('在下方记录一次通过 canary 的部署后，漂移视图会开始比较。', 'Record a deployment after its canary gate passes; drift compares from then on.'), action: { href: '/admin', label: t('返回管理', 'Back to admin') } })
+    : environments.map((entry) => {
+        const row = entry.latest
+        const health = row === null ? null : row.healthz_ok === 1
+        const ready = row === null ? null : row.readyz_ok === 1
+        return `<tr>
+          <td data-label="${escapeHtml(t('环境', 'Environment'))}"><strong>${escapeHtml(entry.environment)}</strong><br /><small class="muted">${escapeHtml(entry.drift.summary)}</small></td>
+          <td data-label="${escapeHtml(t('版本', 'Version'))}">${row === null ? escapeHtml('—') : `v${escapeHtml(row.version)}<br /><code>${commit(row.commit_sha)}</code>`}</td>
+          <td data-label="${escapeHtml(t('镜像', 'Image'))}">${row === null ? escapeHtml('—') : `<code>${escapeHtml(row.image_digest)}</code>`}</td>
+          <td data-label="${escapeHtml(t('记录', 'Recorded'))}">${row === null ? escapeHtml('—') : `${escapeHtml(humanTimeShort(row.deployed_at))}<br /><small class="muted">@${escapeHtml(row.operator)}</small>`}</td>
+          <td data-label="${escapeHtml(t('健康', 'Health'))}">${health === null ? escapeHtml('—') : `<span class="badge ${health ? 'good' : 'bad'}">/healthz ${health ? 'ok' : 'fail'}</span>`}<br /><span class="badge ${ready ? 'good' : 'bad'}">/readyz ${ready ? 'ok' : 'fail'}</span></td>
+          <td data-label="${escapeHtml(t('漂移', 'Drift'))}">${stateBadge(entry.drift.state)}</td>
+          <td data-label="${escapeHtml(t('发布', 'Release'))}">${row === null ? escapeHtml('—') : external(row.release_url, t('发布链接', 'release'))}</td>
+        </tr>`
+      }).join('')
+  const deploymentRows = deployments.length === 0
+    ? stateCell(7, { kind: 'empty', title: t('没有部署记录。', 'No deployment records.'), body: t('一条记录包含版本、提交、镜像摘要、时间和操作者。', 'A record carries the version, commit, image digest, time and operator.'), action: { href: '/admin', label: t('返回管理', 'Back to admin') } })
+    : deployments.map((row) => `<tr>
+        <td>${escapeHtml(humanTimeShort(row.created_at))}</td>
+        <td>${escapeHtml(row.environment)}</td>
+        <td>v${escapeHtml(row.version)}<br /><code>${commit(row.commit_sha)}</code></td>
+        <td><code>${escapeHtml(row.image_digest)}</code></td>
+        <td>@${escapeHtml(row.operator)}</td>
+        <td><span class="badge ${row.healthz_ok === 1 ? 'good' : 'bad'}">/healthz</span> <span class="badge ${row.readyz_ok === 1 ? 'good' : 'bad'}">/readyz</span></td>
+        <td>${external(row.release_url, t('链接', 'link'))}</td>
+      </tr>`).join('')
+  const rollbackRows = rollbacks.length === 0
+    ? stateCell(6, { kind: 'empty', title: t('没有回滚记录。', 'No rollback records.'), body: t('回滚计划记录之前的摘要、提交、负责人和命令；Fledge 不会执行它。', 'A rollback plan records the previous digest, commit, owner and command; Fledge never runs it.'), action: { href: '/admin', label: t('返回管理', 'Back to admin') } })
+    : rollbacks.map((row) => `<tr>
+        <td>${escapeHtml(humanTimeShort(row.created_at))}</td>
+        <td>${escapeHtml(row.environment)}<br /><small class="muted">${escapeHtml(row.decision)}</small></td>
+        <td><code>${escapeHtml(row.previous_digest)}</code><br /><code>${commit(row.previous_commit)}</code></td>
+        <td>@${escapeHtml(row.owner)}</td>
+        <td><code>${escapeHtml(redactCommand(row.command))}</code></td>
+        <td><span class="badge ${row.verified === 1 ? 'good' : 'busy'}">${escapeHtml(row.verified === 1 ? t('/healthz 已验证', '/healthz verified') : t('待验证', 'unverified'))}</span></td>
+      </tr>`).join('')
+  const body = `<a class="back" href="/admin">← ${escapeHtml(t('返回管理', 'Back to admin'))}</a>
+    ${alertBanner}
+    <section class="card">
+      <div class="eyebrow">${escapeHtml(t('部署', 'DEPLOYMENTS'))}</div>
+      <h1>${escapeHtml(t('部署与漂移', 'Deployments and drift'))}</h1>
+      <p class="muted">${escapeHtml(t('只读记录：Fledge 比较已记录的部署与发布标签，记录 canary 结果和回滚决定，但从不执行主机部署、回滚或 SSH。', 'Records only: Fledge compares recorded deployments with the released tag and records canary results and rollback decisions, but never runs a host deploy, rollback or SSH.'))}</p>
+      ${releaseLine}
+    </section>
+    <section class="card">
+      <h2>${escapeHtml(t('环境', 'Environments'))}</h2>
+      <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('环境', 'Environment'))}</th><th>${escapeHtml(t('版本', 'Version'))}</th><th>${escapeHtml(t('镜像', 'Image'))}</th><th>${escapeHtml(t('记录', 'Recorded'))}</th><th>${escapeHtml(t('健康', 'Health'))}</th><th>${escapeHtml(t('漂移', 'Drift'))}</th><th>${escapeHtml(t('发布', 'Release'))}</th></tr></thead><tbody>${environmentRows}</tbody></table></div>
+    </section>
+    <section class="card">
+      <h2>${escapeHtml(t('记录一次通过 canary 的部署', 'Record a deployment after the canary gate'))}</h2>
+      <p class="muted">${escapeHtml(t('所有项都必须通过；缺一项就阻止写入部署记录。', 'Every canary item must pass; a missing item blocks the deployment record.'))}</p>
+      <form method="post" action="/admin/deployments/promote" class="form">
+        ${csrf(viewer)}
+        <div class="row">
+          <label>${escapeHtml(t('环境', 'Environment'))} <input name="environment" value="production" required pattern="[a-z0-9][a-z0-9-]{0,31}" /></label>
+          <label>${escapeHtml(t('版本', 'Version'))} <input name="version" placeholder="0.3.2" required /></label>
+          <label>${escapeHtml(t('提交', 'Commit'))} <input name="commit" placeholder="40-hex sha" required /></label>
+          <label>${escapeHtml(t('镜像摘要', 'Image digest'))} <input name="image_digest" placeholder="sha256:..." required /></label>
+        </div>
+        <div class="row">
+          <label>${escapeHtml(t('部署时间', 'Deployed at'))} <input name="deployed_at" placeholder="2026-11-13T10:00:00Z" required /></label>
+          <label>${escapeHtml(t('操作者', 'Operator'))} <input name="operator" value="${escapeHtml(viewer.user.login)}" required /></label>
+          <label>${escapeHtml(t('发布链接', 'Release URL'))} <input name="release_url" placeholder="https://github.com/.../releases/tag/v0.3.2" /></label>
+        </div>
+        <div class="row">
+          <label class="check"><input type="checkbox" name="healthz_ok" value="1" /> /healthz</label>
+          <label>${escapeHtml(t('状态码', 'Status'))} <input name="healthz_status" value="200" /></label>
+          <label>${escapeHtml(t('健康版本', 'Health version'))} <input name="healthz_version" placeholder="0.3.2" /></label>
+          <label>${escapeHtml(t('健康提交', 'Health commit'))} <input name="healthz_commit" placeholder="sha" /></label>
+          <label class="check"><input type="checkbox" name="readyz_ok" value="1" /> /readyz</label>
+          <label>${escapeHtml(t('状态码', 'Status'))} <input name="readyz_status" value="200" /></label>
+        </div>
+        <div class="row">
+          <label class="check"><input type="checkbox" name="smoke_ok" value="1" /> ${escapeHtml(t('冒烟任务', 'Smoke job'))}</label>
+          <label>${escapeHtml(t('任务 ID', 'Job ID'))} <input name="smoke_job" placeholder="job_..." /></label>
+          <label class="check"><input type="checkbox" name="error_ok" value="1" /> ${escapeHtml(t('错误窗口', 'Error window'))}</label>
+          <label>${escapeHtml(t('分钟', 'Minutes'))} <input name="error_window_minutes" placeholder="30" /></label>
+          <label>${escapeHtml(t('错误数', 'Errors'))} <input name="error_count" placeholder="0" /></label>
+        </div>
+        <div class="row">
+          <label class="check"><input type="checkbox" name="latency_ok" value="1" /> ${escapeHtml(t('延迟窗口', 'Latency window'))}</label>
+          <label>${escapeHtml(t('分钟', 'Minutes'))} <input name="latency_window_minutes" placeholder="30" /></label>
+          <label>${escapeHtml(t('p95 毫秒', 'p95 ms'))} <input name="latency_p95_ms" placeholder="120" /></label>
+          <button class="btn" type="submit">${escapeHtml(t('记录部署', 'Record deployment'))}</button>
+        </div>
+      </form>
+    </section>
+    <section class="card">
+      <h2>${escapeHtml(t('最近部署', 'Recent deployments'))}</h2>
+      <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('记录时间', 'Recorded'))}</th><th>${escapeHtml(t('环境', 'Environment'))}</th><th>${escapeHtml(t('版本 / 提交', 'Version / commit'))}</th><th>${escapeHtml(t('镜像', 'Image'))}</th><th>${escapeHtml(t('操作者', 'Operator'))}</th><th>${escapeHtml(t('健康', 'Health'))}</th><th>${escapeHtml(t('发布', 'Release'))}</th></tr></thead><tbody>${deploymentRows}</tbody></table></div>
+    </section>
+    <section class="card">
+      <h2>${escapeHtml(t('记录回滚计划', 'Record a rollback plan'))}</h2>
+      <p class="muted">${escapeHtml(t('计划必须命名已记录的上一份摘要和提交、负责人和命令。Fledge 只记录决定并核对 /healthz；命令由主机负责人执行，页面不运行它，也不暴露主机路径或令牌。', 'The plan must name a recorded previous digest and commit, an owner and a command. Fledge records the decision and checks /healthz; the host owner runs the command, and this page never runs it or exposes host paths or tokens.'))}</p>
+      <form method="post" action="/admin/deployments/rollback" class="form">
+        ${csrf(viewer)}
+        <div class="row">
+          <label>${escapeHtml(t('环境', 'Environment'))} <input name="environment" value="production" required pattern="[a-z0-9][a-z0-9-]{0,31}" /></label>
+          <label>${escapeHtml(t('上一份摘要', 'Previous digest'))} <input name="previous_digest" placeholder="sha256:..." required /></label>
+          <label>${escapeHtml(t('上一份提交', 'Previous commit'))} <input name="previous_commit" placeholder="sha" required /></label>
+          <label>${escapeHtml(t('负责人', 'Owner'))} <input name="owner" value="${escapeHtml(viewer.user.login)}" required /></label>
+        </div>
+        <div class="row">
+          <label>${escapeHtml(t('决定', 'Decision'))} <input name="decision" value="rollback" /></label>
+          <label>${escapeHtml(t('命令', 'Command'))} <input name="command" placeholder="docker pull ghcr.io/...@sha256:..." required /></label>
+          <label class="check"><input type="checkbox" name="healthz_ok" value="1" /> ${escapeHtml(t('/healthz 已验证', '/healthz verified'))}</label>
+          <label>${escapeHtml(t('状态码', 'Status'))} <input name="healthz_status" value="200" /></label>
+          <label>${escapeHtml(t('健康提交', 'Health commit'))} <input name="healthz_commit" placeholder="sha" /></label>
+          <button class="btn" type="submit">${escapeHtml(t('记录决定', 'Record decision'))}</button>
+        </div>
+      </form>
+      <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('记录时间', 'Recorded'))}</th><th>${escapeHtml(t('环境 / 决定', 'Environment / decision'))}</th><th>${escapeHtml(t('上一份摘要 / 提交', 'Previous digest / commit'))}</th><th>${escapeHtml(t('负责人', 'Owner'))}</th><th>${escapeHtml(t('命令', 'Command'))}</th><th>${escapeHtml(t('核对', 'Check'))}</th></tr></thead><tbody>${rollbackRows}</tbody></table></div>
+    </section>`
+  return layout({ title: t('部署与漂移', 'Deployments and drift'), viewer, body, config, locale, path: '/admin/deployments', active: 'admin', notice, error })
 }
 
 export function adminWebhooksPage(input: {

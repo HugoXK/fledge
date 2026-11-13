@@ -41,6 +41,17 @@ import { parseIssueCommand } from './lib/issueCommands.js'
 import { VERSION } from './version.js'
 import { incCounter, observeHistogram, renderMetrics } from './lib/metrics.js'
 import { readReleaseStatus } from './lib/releaseStatus.js'
+import {
+  deploymentDrift,
+  deploymentFromRow,
+  deploymentHealth,
+  deploymentReadiness,
+  latestReleaseFromStatus,
+  parsePromotionForm,
+  parseRollbackForm,
+  redactCommand,
+  type DeploymentRow,
+} from './lib/deployments.js'
 import { configureOtel, endSpan, shutdownOtel, startSpan, type SpanHandle } from './lib/otel.js'
 import { configureGithubBudget } from './lib/githubBudget.js'
 import { normalizeReviewInstruction } from './lib/followUpInstruction.js'
@@ -51,6 +62,7 @@ import {
   adminTrialsPage,
   adminSearchPage,
   adminWebhooksPage,
+  adminDeploymentsPage,
   approvalPage,
   dashboardPage,
   landingPage,
@@ -2838,6 +2850,128 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         releaseStatus: readReleaseStatus(config.dataDir),
       }),
     )
+  })
+
+  // #395: the deployment read model. The latest release comes from the
+  // `verify-release.mjs` snapshot this instance already reads on /admin, and the
+  // running side is the recorded deployment row. Fledge never probes a host or
+  // runs a deploy here; an operator records what happened and this page judges
+  // the recorded facts.
+  const deploymentReadModel = (): {
+    release: ReturnType<typeof latestReleaseFromStatus>
+    environments: Array<{ environment: string; latest: DeploymentRow | null; drift: ReturnType<typeof deploymentDrift> }>
+    deployments: DeploymentRow[]
+    rollbacks: ReturnType<Store['listDeploymentRollbacks']>
+  } => {
+    const release = latestReleaseFromStatus(readReleaseStatus(config.dataDir))
+    const deployments = store.listDeployments(null, 200)
+    const environments = store.listDeploymentEnvironments().map((environment) => {
+      const latest = store.latestDeployment(environment) ?? null
+      return { environment, latest, drift: deploymentDrift(latest, release) }
+    })
+    return { release, environments, deployments, rollbacks: store.listDeploymentRollbacks(null, 100) }
+  }
+
+  app.get('/admin/deployments', async (request, reply) => {
+    const viewer = requireAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    const model = deploymentReadModel()
+    return reply.type('text/html').send(adminDeploymentsPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      release: model.release,
+      environments: model.environments,
+      deployments: model.deployments,
+      rollbacks: model.rollbacks,
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
+  })
+
+  app.get('/api/admin/deployments', async (request, reply) => {
+    const viewer = requireAdmin(request)
+    if (viewer.preview === true) throw httpError(403, '预览模式不可读取部署记录。', 'PREVIEW_READ_ONLY')
+    const model = deploymentReadModel()
+    return reply.send({
+      release: model.release,
+      environments: model.environments.map((entry) => ({
+        environment: entry.environment,
+        drift: { state: entry.drift.state, alert: entry.drift.alert, summary: entry.drift.summary },
+        latest: entry.latest === null ? null : {
+          ...deploymentFromRow(entry.latest),
+          healthz: deploymentHealth(entry.latest),
+          readyz: deploymentReadiness(entry.latest),
+        },
+      })),
+      deployments: model.deployments.map((row) => ({
+        ...deploymentFromRow(row),
+        healthz: deploymentHealth(row),
+        readyz: deploymentReadiness(row),
+      })),
+      rollbacks: model.rollbacks.map((row) => ({
+        id: row.id,
+        environment: row.environment,
+        previousDigest: row.previous_digest,
+        previousCommit: row.previous_commit,
+        owner: row.owner,
+        command: redactCommand(row.command),
+        decision: row.decision,
+        verified: row.verified === 1,
+        createdAt: row.created_at,
+      })),
+    })
+  })
+
+  app.post('/admin/deployments/promote', async (request, reply) => {
+    if (!loginLimiter.take(`deployment-promote:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    const viewer = approvedCsrfGuard(request)
+    if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以记录部署。', 'ADMIN_ONLY')
+    const parsed = parsePromotionForm(form(request), viewer.user.login)
+    if (!parsed.ok) return reply.redirect(`/admin/deployments?error=${encodeURIComponent(parsed.error)}`)
+    const input = parsed.value
+    if (!input.gateResult.ok) {
+      store.audit(viewer.user.id, 'deployment.promotion_blocked', `${input.environment} v${input.version}: ${input.gateResult.blocked.join('; ')}`)
+      return reply.redirect(`/admin/deployments?error=${encodeURIComponent(`Canary gate blocked the promotion: ${input.gateResult.blocked.join('; ')}`)}`)
+    }
+    const row = store.recordDeployment({
+      environment: input.environment,
+      version: input.version,
+      commit: input.commit,
+      imageDigest: input.imageDigest,
+      deployedAt: input.deployedAt,
+      operator: input.operator,
+      healthz: input.healthz,
+      readyz: input.readyz,
+      releaseUrl: input.releaseUrl === '' ? null : input.releaseUrl,
+      gate: input.gateResult,
+    })
+    store.audit(viewer.user.id, 'deployment.promoted', `${row.environment} v${row.version} ${row.commit_sha} ${row.image_digest}`)
+    return reply.redirect(`/admin/deployments?notice=${encodeURIComponent(`Recorded ${row.environment} v${row.version} at ${row.commit_sha} after the canary gate passed.`)}`)
+  })
+
+  app.post('/admin/deployments/rollback', async (request, reply) => {
+    if (!loginLimiter.take(`deployment-rollback:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    const viewer = approvedCsrfGuard(request)
+    if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以记录回滚。', 'ADMIN_ONLY')
+    const parsed = parseRollbackForm(form(request), store.listDeployments(null, 500), viewer.user.login)
+    if (!parsed.ok) return reply.redirect(`/admin/deployments?error=${encodeURIComponent(parsed.error)}`)
+    const input = parsed.value
+    const row = store.recordDeploymentRollback({
+      environment: input.environment,
+      fromDeploymentId: input.fromDeploymentId,
+      previousDeploymentId: input.previousDeploymentId,
+      previousDigest: input.previousDigest,
+      previousCommit: input.previousCommit,
+      owner: input.owner,
+      command: input.command,
+      decision: input.decision,
+      healthz: input.healthz,
+      verified: input.verified,
+    })
+    store.audit(viewer.user.id, 'deployment.rollback_recorded', `${row.environment} to ${row.previous_digest} verified=${row.verified}`)
+    const verification = row.verified === 1 ? 'the resulting /healthz matches the previous commit' : 'the resulting /healthz does not yet match the previous commit'
+    return reply.redirect(`/admin/deployments?notice=${encodeURIComponent(`Recorded the ${row.decision} decision to ${row.previous_digest}; ${verification}.`)}`)
   })
 
   // #283: the platform emergency stop. `isAdminRole` on purpose, not

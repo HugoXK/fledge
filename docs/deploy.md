@@ -331,6 +331,57 @@ request head is then the record of the tip.
 `--fixtures <file>` replays a recorded chain instead of reading the API, which is
 how the test suite exercises the same code path.
 
+### Deployment records, drift and rollback
+
+A release tag is not a deploy. Fledge keeps a **record** of what an operator
+deployed to an environment, and compares it with the latest release snapshot the
+verify command writes. It never reads the host, SSHes, calls Docker or runs the
+rollback command.
+
+The read model is admin-only:
+
+- `GET /admin/deployments` renders it (the admin page links to it as
+  **Deployments**);
+- `GET /api/admin/deployments` returns the same facts as JSON.
+
+Every record carries the environment, version, commit, image digest,
+`deployedAt`, operator, the `/healthz` and `/readyz` results measured at deploy
+time, and the GitHub Release link. A non-admin receives `403`; no token, provider
+key or host path is stored or rendered.
+
+The drift view compares the newest deployment in an environment with the latest
+release in `${DATA_DIR}/release-status.json` (written by
+`node scripts/verify-release.mjs --write …`). It reports:
+
+- **behind** when the deployed version is older than the released version;
+- **mismatch** when the deployed version is ahead, the tag commit differs, or a
+  `/healthz` probe names a different commit or version;
+- **unknown** when no deployment or no release snapshot is recorded;
+- **ok** only when the version, commit and recorded health agree.
+
+Only **behind** and **mismatch** alert. `verify-release.mjs --deployment FILE`
+performs the same comparison in the CLI, adds a `deployment` link and exits `1`
+when the recorded deployment is behind or mismatched.
+
+A promotion is written only after its canary checklist passes:
+
+1. `/healthz` returns `2xx` with the promoted commit and version;
+2. `/readyz` returns `2xx`;
+3. a named smoke job passed;
+4. the error window has a measured duration and error count (and threshold, when
+   one is given);
+5. the latency window has a measured duration and p95.
+
+Missing evidence fails the gate; a failed gate writes an audit line and **does
+not** create a deployment record. The admin page states which item blocked the
+promotion.
+
+A rollback plan must name a previously recorded digest and commit, the owner and
+the command the host owner will run. Fledge records that decision and checks the
+resulting `/healthz` against the previous commit, but it never executes the
+command. The command is recorded with token/secret assignments redacted, and a
+value containing a host path is refused.
+
 ## 6. Reverse proxy
 
 Ready-to-copy samples live in [`deploy/`](../deploy/): a systemd unit and an nginx
