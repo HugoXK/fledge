@@ -10,8 +10,9 @@
 //   changelog.d/<issue-or-slug>.<kind>.md
 // The file contains one paragraph, no heading and no leading "- ".
 
-import { readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
+import { fragmentNames } from './lib/changelog-fragments.mjs'
 import { STATUS_FILES, STATUS_MARKERS, rewriteStatusLine } from './lib/mechanical-release.mjs'
 
 const DIR = 'changelog.d'
@@ -21,14 +22,15 @@ const TITLES = { added: 'Added', changed: 'Changed', deprecated: 'Deprecated', r
 const NAME = /^([a-z0-9][a-z0-9._-]*)\.(added|changed|deprecated|removed|fixed|security)\.md$/
 
 function fragments() {
+  // Which files count as fragments is one rule, shared with the release count
+  // (#548) so a release can never fold a set the nightly job measured differently.
+  // This tool still treats a missing directory as nothing to fold; the release
+  // count does not, because a count it could not measure must not read as zero.
   if (!existsSync(DIR)) return []
-  return readdirSync(DIR)
-    .filter((name) => name.endsWith('.md') && name !== 'README.md')
-    .sort()
-    .map((name) => {
-      const match = NAME.exec(name)
-      return { name, kind: match?.[2], slug: match?.[1], body: readFileSync(join(DIR, name), 'utf8').trim() }
-    })
+  return fragmentNames(DIR).map((name) => {
+    const match = NAME.exec(name)
+    return { name, kind: match?.[2], slug: match?.[1], body: readFileSync(join(DIR, name), 'utf8').trim() }
+  })
 }
 
 function check() {
