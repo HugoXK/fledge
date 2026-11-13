@@ -95,6 +95,20 @@ export function visibleMemories(entries: ProjectMemoryRow[], role: RepoRole | nu
   return entries.filter((entry) => audienceVisible(entry.audience, role))
 }
 
+// #539 review: a source list is stored as a JSON array string. A row written by
+// another build, or edited by hand, must not break the page, so the parse is
+// tolerant: anything unreadable is an empty list rather than an exception.
+export function sourcesOf(json: string | null | undefined): string[] {
+  if (typeof json !== 'string' || json === '') return []
+  try {
+    const parsed: unknown = JSON.parse(json)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((item): item is string => typeof item === 'string' && item.length > 0)
+  } catch {
+    return []
+  }
+}
+
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
@@ -132,8 +146,9 @@ export function parseMemoryInput(
   if (!Number.isInteger(expectedRevision) || expectedRevision < 0) return { ok: false, refused: 'revision_invalid' }
 
   // Sources are references, kept as given, but a write that carries them must
-  // send a JSON array of short strings — the store keeps them and the reader
-  // shows them, so they are never a place for a body of text to hide.
+  // send a JSON array of short strings — the store keeps them, the entry page
+  // lists them next to the revision they belong to, and `sourcesOf` reads them
+  // back, so they are never a place for a body of text to hide.
   const rawSources = text(form.sources)
   let sources: string[] = []
   if (rawSources !== '') {

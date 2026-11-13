@@ -226,3 +226,55 @@ test('search is a bounded keyword lookup over the visible entries only', async (
     await h.close()
   }
 })
+
+// #539 review: the page existed but nothing in the product linked to it, so a
+// person could only reach it by typing the URL. The entry point is the
+// repository page, and this pins it.
+test('the repository page links to project memory', async () => {
+  const h = await harness()
+  try {
+    const repoPage = await h.built.app.inject({
+      method: 'GET',
+      url: `/repos/${h.repo.id}`,
+      headers: { cookie: `${h.cookie}; fledge_lang=en` },
+    })
+    assert.equal(repoPage.statusCode, 200)
+    assert.match(repoPage.body, new RegExp(`href="/repos/${h.repo.id}/memory"`), 'the repository page must link to its memory page')
+    assert.match(repoPage.body, /Open project memory/)
+  } finally {
+    await h.close()
+  }
+})
+
+// #539 review: `sources` was parsed and stored while the entry page rendered
+// none of it, so the field was half-wired. This pins the render, including the
+// difference between a reference Fledge can resolve and one it cannot.
+test('an entry renders the sources it was written with', async () => {
+  const h = await harness()
+  try {
+    const sources = JSON.stringify(['pr#591', 'file:src/db.ts', 'commit:50d7beef', 'not-a-reference'])
+    const created = await write(h, entry({ sources }))
+    assert.equal(created.statusCode, 302)
+    assert.match(location(created), /saved=1/)
+
+    const shown = await page(h, '?key=migrations')
+    assert.match(shown.body, /data-memory-sources="4"/, 'every recorded source is listed')
+    assert.match(shown.body, /data-memory-source="pr#591"/)
+    assert.match(shown.body, /href="https:\/\/github\.com\/owner\/repo\/pull\/591"/)
+    assert.match(shown.body, /data-memory-source="file:src\/db\.ts"/)
+    assert.match(shown.body, /href="https:\/\/github\.com\/owner\/repo\/blob\/main\/src\/db\.ts"/)
+    assert.match(shown.body, /data-memory-source="commit:50d7beef"/)
+    assert.match(shown.body, /href="https:\/\/github\.com\/owner\/repo\/commit\/50d7beef"/)
+    assert.match(shown.body, /data-memory-source="not-a-reference"/)
+    assert.match(shown.body, /unrecognised/, 'a reference Fledge cannot resolve says so instead of looking linked')
+
+    // An exact-revision read returns that revision's sources, not the current ones.
+    const second = await write(h, entry({ expected_revision: '1', body: 'Second body.', sources: JSON.stringify(['pr#600']) }))
+    assert.equal(second.statusCode, 302)
+    const old = await page(h, '?key=migrations&rev=1')
+    assert.match(old.body, /data-memory-source="pr#591"/)
+    assert.doesNotMatch(old.body, /data-memory-source="pr#600"/)
+  } finally {
+    await h.close()
+  }
+})

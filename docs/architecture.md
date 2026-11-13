@@ -1502,6 +1502,12 @@ never updated in place). `src/lib/memory.ts` holds the rules that are not SQL.
   role, so an administrator acting as a developer reads the developer view, and
   an entry outside the audience is reported as absent (404) rather than listed.
   A writer may not author an entry for a role it cannot act as.
+- **The page is reachable.** The repository page's memory card links to
+  `/repos/:id/memory`; the page is not an orphan that only a typed URL opens.
+- **Sources are shown.** An exact-revision read lists that revision's `sources`
+  next to the body, links the ones Fledge can turn into a GitHub URL (`pr#N`,
+  `file:<path>`, `commit:<sha>`, an `http(s)` URL) and marks the rest
+  unrecognised. It does not claim the reference still resolves upstream.
 - **Lookups are bounded.** Search is a case-insensitive substring match over the
   key, body and scope of the visible entries: the query is capped at 120
   characters (a longer one is refused by name) and results are capped at 50. The

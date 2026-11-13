@@ -12,6 +12,7 @@ import {
   memoryKindLabel,
   memoryStatusLabel,
   memoryVerificationLabel,
+  sourcesOf,
   type MemorySearch,
 } from '../lib/memory.js'
 import { allowedRepoRoles, type RepoRole } from '../lib/repoRole.js'
@@ -121,6 +122,35 @@ export function memoryPage(input: MemoryPageInput): string {
       </table></div>
       ${search.truncated ? `<p class="muted">${escapeHtml(t(`只显示前 ${MEMORY_SEARCH_LIMIT} 条（共 ${search.total} 条）。缩小搜索词可以看到更多。`, `Showing the first ${MEMORY_SEARCH_LIMIT} of ${search.total} entries; narrow the search to see the rest.`))}</p>` : ''}`
 
+  // #539 review: the sources were stored and never shown, so the entry page now
+  // lists them beside the revision they belong to. A reference Fledge can turn
+  // into a GitHub URL is a link; anything else is shown as recorded and marked
+  // unrecognised rather than looking resolved when it is not.
+  const repoBase = `https://github.com/${repo.owner}/${repo.name}`
+  const sourceHref = (source: string): string | null => {
+    const pullRequest = /^pr#(\d{1,6})$/.exec(source)
+    if (pullRequest !== null) return `${repoBase}/pull/${pullRequest[1]}`
+    const commitRef = /^commit:([0-9a-f]{7,40})$/i.exec(source)
+    if (commitRef !== null) return `${repoBase}/commit/${commitRef[1]}`
+    const fileRef = /^file:(.+)$/.exec(source)
+    if (fileRef !== null) {
+      const branch = repo.default_branch === '' ? 'main' : repo.default_branch
+      return `${repoBase}/blob/${encodeURIComponent(branch)}/${String(fileRef[1]).split('/').map(encodeURIComponent).join('/')}`
+    }
+    if (/^https?:\/\/[^\s<>"']+$/.test(source)) return source
+    return null
+  }
+  const sourceItems = (sources: string[]): string => sources
+    .map((source) => {
+      const href = sourceHref(source)
+      const li = `data-memory-source="${escapeHtml(source)}"`
+      return href === null
+        ? `<li ${li}><code>${escapeHtml(source)}</code> <span class="badge busy">${escapeHtml(t('未识别', 'unrecognised'))}</span></li>`
+        : `<li ${li}><a class="link" href="${escapeHtml(href)}" target="_blank" rel="noreferrer"><code>${escapeHtml(source)}</code></a></li>`
+    })
+    .join('')
+  const entrySources = detail === undefined ? [] : sourcesOf(detail.version.sources_json)
+
   const detailHtml = detail === undefined || entry === undefined
     ? ''
     : `<section class="card" id="memory-entry" data-memory-key="${escapeHtml(entry.key)}">
@@ -131,6 +161,11 @@ export function memoryPage(input: MemoryPageInput): string {
         </p>
         <p class="muted">${escapeHtml(t('正文摘要', 'Body digest'))}: <code>${escapeHtml(detail.version.digest)}</code> · ${escapeHtml(t('写入', 'Written'))} ${escapeHtml(humanTimeShort(detail.version.created_at))}${detail.version.reason === '' ? '' : ` · ${escapeHtml(t('原因', 'Reason'))}: ${escapeHtml(detail.version.reason)}`}</p>
         <pre class="memory-body">${escapeHtml(detail.version.body)}</pre>
+        ${entrySources.length === 0 ? '' : `<div class="memory-sources" data-memory-sources="${entrySources.length}">
+          <h3>${escapeHtml(t('来源', 'Sources'))}</h3>
+          <ul>${sourceItems(entrySources)}</ul>
+          <p class="fine">${escapeHtml(t('来源按写入时记录的内容显示；Fledge 不会重新确认它们今天是否仍然存在。', 'Sources are shown as they were recorded; Fledge does not re-check that they still resolve today.'))}</p>
+        </div>`}
         ${versions.length <= 1 ? '' : `<h3>${escapeHtml(t('版本历史', 'Revision history'))}</h3>
         <ul class="memory-versions">${versions
           .map((version) => `<li data-memory-version="${version.revision}">${version.revision === detail.version.revision ? `<b>${version.revision}</b>` : `<a href="/repos/${escapeHtml(repo.id)}/memory?key=${encodeURIComponent(entry.key)}&amp;rev=${version.revision}">${version.revision}</a>`} · ${escapeHtml(humanTimeShort(version.created_at))} · <code>${escapeHtml(version.digest.slice(0, 12))}…</code></li>`)
