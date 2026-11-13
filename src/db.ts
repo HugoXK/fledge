@@ -520,6 +520,71 @@ export interface PromotionRow {
   created_at: string
 }
 
+// #395: what an operator recorded about one environment. Fledge never runs the
+// host deploy, so every field is a fact supplied by a person and kept as it was
+// supplied; `gate_json` is the canary checklist that had to pass first.
+export interface DeploymentRow {
+  id: string
+  environment: string
+  version: string
+  commit_sha: string
+  image_digest: string
+  deployed_at: string
+  operator: string
+  healthz_ok: number
+  healthz_status: number | null
+  healthz_version: string | null
+  healthz_commit: string | null
+  readyz_ok: number
+  readyz_status: number | null
+  release_url: string | null
+  gate_json: string
+  created_at: string
+}
+
+export interface DeploymentRollbackRow {
+  id: string
+  environment: string
+  from_deployment_id: string | null
+  previous_deployment_id: string
+  previous_digest: string
+  previous_commit: string
+  owner: string
+  command: string
+  decision: string
+  healthz_ok: number
+  healthz_status: number | null
+  healthz_commit: string | null
+  verified: number
+  created_at: string
+}
+
+export interface DeploymentInput {
+  environment: string
+  version: string
+  commit: string
+  imageDigest: string
+  deployedAt: string
+  operator: string
+  healthz: { ok: boolean; status: number | null; version?: string | null; commit?: string | null }
+  readyz: { ok: boolean; status: number | null }
+  releaseUrl: string | null
+  gate: unknown
+}
+
+export interface DeploymentRollbackInput {
+  environment: string
+  fromDeploymentId: string | null
+  previousDeploymentId: string
+  previousDigest: string
+  previousCommit: string
+  owner: string
+  command: string
+  decision: string
+  healthz: { ok: boolean; status: number | null; commit?: string | null }
+  verified: boolean
+}
+
 // #265: what the sweep may end. No address and no display name — the operator
 // output is built from this, and it stays safe to paste into a terminal.
 export interface TrialExpiryCandidate {
@@ -1115,6 +1180,44 @@ CREATE TABLE IF NOT EXISTS promotions (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS promotions_artifact_idx ON promotions(artifact_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS deployments (
+  id TEXT PRIMARY KEY,
+  environment TEXT NOT NULL,
+  version TEXT NOT NULL,
+  commit_sha TEXT NOT NULL,
+  image_digest TEXT NOT NULL,
+  deployed_at TEXT NOT NULL,
+  operator TEXT NOT NULL,
+  healthz_ok INTEGER NOT NULL,
+  healthz_status INTEGER,
+  healthz_version TEXT,
+  healthz_commit TEXT,
+  readyz_ok INTEGER NOT NULL,
+  readyz_status INTEGER,
+  release_url TEXT,
+  gate_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS deployments_env_idx ON deployments(environment, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS deployment_rollbacks (
+  id TEXT PRIMARY KEY,
+  environment TEXT NOT NULL,
+  from_deployment_id TEXT REFERENCES deployments(id) ON DELETE SET NULL,
+  previous_deployment_id TEXT NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,
+  previous_digest TEXT NOT NULL,
+  previous_commit TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  command TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  healthz_ok INTEGER NOT NULL,
+  healthz_status INTEGER,
+  healthz_commit TEXT,
+  verified INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS deployment_rollbacks_env_idx ON deployment_rollbacks(environment, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS audit_log_user_idx ON audit_log(user_id, id DESC);
@@ -2402,6 +2505,72 @@ export class Store {
     return artifactId === undefined
       ? this.all<PromotionRow>('SELECT * FROM promotions ORDER BY created_at DESC')
       : this.all<PromotionRow>('SELECT * FROM promotions WHERE artifact_id = ? ORDER BY created_at DESC', artifactId)
+  }
+
+  recordDeployment(input: DeploymentInput): DeploymentRow {
+    const id = `dep_${randomBytes(6).toString('hex')}`
+    this.run(
+      'INSERT INTO deployments (id, environment, version, commit_sha, image_digest, deployed_at, operator, healthz_ok, healthz_status, healthz_version, healthz_commit, readyz_ok, readyz_status, release_url, gate_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      id,
+      input.environment,
+      input.version,
+      input.commit,
+      input.imageDigest,
+      input.deployedAt,
+      input.operator,
+      input.healthz.ok ? 1 : 0,
+      input.healthz.status,
+      input.healthz.version ?? null,
+      input.healthz.commit ?? null,
+      input.readyz.ok ? 1 : 0,
+      input.readyz.status,
+      input.releaseUrl,
+      JSON.stringify(input.gate ?? null),
+      nowIso(),
+    )
+    return this.get<DeploymentRow>('SELECT * FROM deployments WHERE id = ?', id)!
+  }
+
+  listDeployments(environment: string | null = null, limit = 100): DeploymentRow[] {
+    return environment === null
+      ? this.all<DeploymentRow>('SELECT * FROM deployments ORDER BY created_at DESC, rowid DESC LIMIT ?', limit)
+      : this.all<DeploymentRow>('SELECT * FROM deployments WHERE environment = ? ORDER BY created_at DESC, rowid DESC LIMIT ?', environment, limit)
+  }
+
+  latestDeployment(environment: string): DeploymentRow | undefined {
+    return this.get<DeploymentRow>('SELECT * FROM deployments WHERE environment = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', environment)
+  }
+
+  listDeploymentEnvironments(): string[] {
+    return this.all<{ environment: string }>('SELECT DISTINCT environment FROM deployments ORDER BY environment').map((row) => row.environment)
+  }
+
+  recordDeploymentRollback(input: DeploymentRollbackInput): DeploymentRollbackRow {
+    const id = `rbk_${randomBytes(6).toString('hex')}`
+    this.run(
+      'INSERT INTO deployment_rollbacks (id, environment, from_deployment_id, previous_deployment_id, previous_digest, previous_commit, owner, command, decision, healthz_ok, healthz_status, healthz_commit, verified, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      id,
+      input.environment,
+      input.fromDeploymentId,
+      input.previousDeploymentId,
+      input.previousDigest,
+      input.previousCommit,
+      input.owner,
+      input.command,
+      input.decision,
+      input.healthz.ok ? 1 : 0,
+      input.healthz.status,
+      input.healthz.commit ?? null,
+      input.verified ? 1 : 0,
+      nowIso(),
+    )
+    return this.get<DeploymentRollbackRow>('SELECT * FROM deployment_rollbacks WHERE id = ?', id)!
+  }
+
+  listDeploymentRollbacks(environment: string | null = null, limit = 50): DeploymentRollbackRow[] {
+    return environment === null
+      ? this.all<DeploymentRollbackRow>('SELECT * FROM deployment_rollbacks ORDER BY created_at DESC, rowid DESC LIMIT ?', limit)
+      : this.all<DeploymentRollbackRow>('SELECT * FROM deployment_rollbacks WHERE environment = ? ORDER BY created_at DESC, rowid DESC LIMIT ?', environment, limit)
   }
 
   teamMetrics(sinceIso: string): {
