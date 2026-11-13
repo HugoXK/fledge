@@ -307,6 +307,7 @@ export class Jobs {
     this.store.audit(job.user_id, 'job.cancelled', `${jobId}: ${reason.slice(0, 300)}`)
     this.store.event('job_cancelled', { userId: job.user_id, repoId: job.repo_id, jobId })
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.cancelled', meta: reason })
+    this.notePostmortem(jobId)
     return { ok: true, ...stop }
   }
 
@@ -1022,6 +1023,7 @@ export class Jobs {
     this.store.audit(job.user_id, `job.${result.status}`, jobId)
     this.store.event(`job_${result.status}`, { userId: job.user_id, repoId: job.repo_id, jobId })
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: `job.${result.status}`, step: job.kind, meta: result.error ?? result.summary ?? null })
+    if (result.status === 'failed') this.notePostmortem(jobId)
     if (result.status === 'succeeded' && prUrl !== null) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
     if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? job.error ?? '未知原因'}`, this.store.getJob(jobId)?.error_code ?? null)
     if (result.status === 'succeeded' || result.status === 'failed') {
@@ -1069,6 +1071,23 @@ export class Jobs {
       void this.captureTeamStats(jobId, attribution).catch((error) => log.warn('team stats capture failed', { trace: jobId, error: String(error) }))
     }
     return true
+  }
+
+  private notePostmortem(jobId: string): void {
+    try {
+      const record = this.store.createPostmortemForJob(jobId)
+      if (record?.escalated !== true) return
+      this.store.audit(record.postmortem.user_id, 'postmortem.recurrence_escalated', `${record.recurrence.recurrence_key}: ${record.recurrence.count}`)
+      void sendNotificationWebhook(this.config, 'postmortem.recurring', {
+        text: `recurring ${record.postmortem.category} failure ${record.recurrence.recurrence_key} seen ${record.recurrence.count} times`,
+        repoId: record.postmortem.repo_id,
+        jobId,
+        recurrenceKey: record.recurrence.recurrence_key,
+        count: record.recurrence.count,
+      })
+    } catch (error) {
+      log.warn('postmortem write failed', { trace: jobId, error: String(error) })
+    }
   }
 
   private scheduleRetry(job: JobRow): boolean {
