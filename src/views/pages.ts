@@ -1,5 +1,5 @@
 import type { Config } from '../config.js'
-import type { AlertView, AuditRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, ProviderModelRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
+import type { AlertView, AuditRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
@@ -49,6 +49,22 @@ function csrf(viewer: Viewer): string {
 
 function infoTip(text: string): string {
   return `<button type="button" class="info-tip" aria-label="${escapeHtml(text)}" aria-expanded="false" data-tip="${escapeHtml(text)}">!</button>`
+}
+
+function recurrenceRepositories(json: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(json)
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function preventiveActionHtml(value: string | null): string {
+  if (value === null || value === '') return '—'
+  return /^https?:\/\//.test(value)
+    ? `<a href="${escapeHtml(value)}" target="_blank" rel="noreferrer">${escapeHtml(value)}</a>`
+    : `<code>${escapeHtml(value)}</code>`
 }
 
 // Counts on the path-guard line are read as plain numbers in both languages.
@@ -1043,7 +1059,7 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number } }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number } }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const workItems = input.workItems ?? []
@@ -1083,6 +1099,28 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     .filter(({ window }) => window.reviews === 0)
     .map(({ key, zh, en }) => `<small class="muted" data-trend-empty="${key}">${escapeHtml(t(`最近 ${zh}没有审核，所以显示 —，不是 0。`, `No review in the last ${en}, so the window shows — rather than 0.`))}</small>`)
     .join(' ')
+  const openPostmortems = input.postmortems ?? []
+  const recurrenceRows = input.recurrences ?? []
+  const recurrenceByKey = new Map(recurrenceRows.map((row) => [row.recurrence_key, row]))
+  const postmortemRows = openPostmortems.map((row) => {
+    const recurrence = recurrenceByKey.get(row.recurrence_key)
+    const count = recurrence?.count ?? 1
+    const affected = recurrence === undefined ? [repo.id] : recurrenceRepositories(recurrence.repositories_json)
+    return `<tr>
+      <td data-label="${escapeHtml(t('任务', 'Job'))}"><a href="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(row.job_id)}"><code>${escapeHtml(row.job_id)}</code></a><br /><small class="muted">${escapeHtml(humanTimeShort(row.last_seen_at))}</small></td>
+      <td data-label="${escapeHtml(t('分类', 'Category'))}"><span class="badge">${escapeHtml(row.category)}</span><br /><small class="muted">${escapeHtml(row.evidence_state === 'verified' ? t('证据已记录', 'Evidence recorded') : t('未核实：没有证据，不猜原因', 'Unverified: no evidence, no guessed cause'))}</small></td>
+      <td data-label="${escapeHtml(t('疑似原因', 'Suspected cause'))}">${escapeHtml(row.suspected_cause ?? t('未核实', 'Unverified'))}</td>
+      <td data-label="${escapeHtml(t('复发', 'Recurrence'))}"><code>${escapeHtml(row.recurrence_key.slice(0, 12))}</code><br /><small class="muted">${escapeHtml(t(`已见 ${count}×`, `Seen ${count}×`))} · ${escapeHtml(t(`${affected.length} 个仓库`, `${affected.length} repository(ies)`))}</small></td>
+      <td data-label="${escapeHtml(t('首次 / 最近', 'First / last'))}"><small class="muted">${escapeHtml(humanTimeShort(recurrence?.first_seen_at ?? row.first_seen_at))}<br />${escapeHtml(humanTimeShort(recurrence?.last_seen_at ?? row.last_seen_at))}</small></td>
+      <td data-label="${escapeHtml(t('预防措施', 'Preventive action'))}">${preventiveActionHtml(row.preventive_action)}<br /><small class="muted">${escapeHtml(row.preventive_verified === 1 ? t('已核实', 'Verified') : t('待核实', 'Awaiting verification'))}</small></td>
+    </tr>`
+  }).join('')
+  const postmortemCard = `<section class="card" id="postmortems">
+    <div class="row between"><div><div class="eyebrow">${escapeHtml(t('故障复盘', 'INCIDENTS'))}</div><h2>${escapeHtml(t('未关闭的复盘', 'Open postmortems'))}</h2><p class="muted">${escapeHtml(t('每个失败、停滞或取消的任务有一条复盘；同一复发键只保留一个计数，并在第二次出现时升级一次。缺少证据时标记为未核实，不猜原因。', 'One postmortem per failed, stalled or cancelled job; one recurrence key counts the same cause and escalates once on its second sighting. Missing evidence is unverified, never a guessed cause.'))}</p></div><span class="fine">${escapeHtml(t(`${openPostmortems.length} 个未关闭`, `${openPostmortems.length} open`))}</span></div>
+    ${openPostmortems.length === 0
+      ? `<p class="muted">${escapeHtml(t('没有未关闭的复盘。', 'No open postmortems.'))}</p>`
+      : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('分类', 'Category'))}</th><th>${escapeHtml(t('疑似原因', 'Suspected cause'))}</th><th>${escapeHtml(t('复发', 'Recurrence'))}</th><th>${escapeHtml(t('首次 / 最近', 'First / last'))}</th><th>${escapeHtml(t('预防措施', 'Preventive action'))}</th></tr></thead><tbody>${postmortemRows}</tbody></table></div>`}
+  </section>`
   const reviewTrendCard = reviewTrend === undefined ? '' : `<section class="card" id="review-trend">
     <div class="row between"><div><div class="eyebrow">${escapeHtml(t('审核质量', 'REVIEW QUALITY'))}</div><h2>${escapeHtml(t('审核趋势', 'Review trend'))}</h2><p class="muted">${escapeHtml(t('只统计这个仓库已完成的审核。空窗口显示 —；少于 5 个审核标注为小样本；要求修改率的分母是记录了结果的审核，不是全部审核。', 'Completed reviews for this repository only. An empty window shows —; fewer than 5 reviews is labelled a small sample; the changes-requested rate is over reviews that recorded an outcome, not all reviews.'))}</p></div></div>
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('窗口', 'Window'))}</th><th>${escapeHtml(t('审核数', 'Reviews'))}</th><th>${escapeHtml(t('平均分', 'Average score'))}</th><th>${escapeHtml(t('要求修改率', 'Changes requested'))}</th><th>${escapeHtml(t('PR→审核', 'PR→review'))}</th><th>${escapeHtml(t('PR→合并', 'PR→merge'))}</th><th>${escapeHtml(t('模型', 'Model'))}</th></tr></thead><tbody>${reviewTrendRows}</tbody></table></div>
@@ -1427,7 +1465,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <p class="fine">${escapeHtml(t('平台只通过 GitHub API 读取元数据、创建 fork 和分支/PR；不会 clone 到公共磁盘。', 'The platform only uses the GitHub API to read metadata, create forks and open branches/PRs; it never clones to public disk.'))}</p>
     </div>
   </section>`
-  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${planBanner}${lifecycleBanner}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}`)}${repoSection('delivery', `${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceNotice}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
+  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${planBanner}${lifecycleBanner}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}`)}${repoSection('delivery', `${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceNotice}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : '<script src="/assets/chief.js" defer></script>'}<script src="/assets/repoTabs.js" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
 }
 
@@ -2381,12 +2419,14 @@ export function jobPage(input: {
   viewerActive?: JobRow[]
   repoLabels?: Map<string, string>
   events?: JobEventRow[]
+  postmortem?: PostmortemRow | null
   supportMode?: boolean
   notice?: string
   error?: string
 }): string {
   const { config, locale, viewer, repo, job, notice, error } = input
   const events = input.events ?? []
+  const postmortem = input.postmortem ?? null
   const supportMode = input.supportMode === true
   const t = translator(locale)
   const advanced = advancedViewer(viewer)
@@ -2529,6 +2569,21 @@ export function jobPage(input: {
   const jobLoading = job.status === 'queued' || job.status === 'running'
     ? renderState({ kind: 'loading', title: job.status === 'queued' ? t('任务已排队。', 'This job is queued.') : t('任务正在运行。', 'This job is running.'), body: job.status === 'queued' ? t('前面的任务结束后自动开始；这个页面会自己更新。', 'It starts as soon as the jobs ahead finish; this page updates by itself.') : t('团队进度会写进下面的时间线，不需要手动刷新。', 'Team progress lands in the timeline below; no manual refresh needed.'), skeletonLines: 2 })
     : ''
+  const postmortemCard = postmortem === null ? '' : `<section class="card" id="postmortem">
+    <div class="row between">
+      <div><div class="eyebrow">${escapeHtml(t('故障复盘', 'INCIDENT'))}</div><h2>${escapeHtml(t('复盘', 'Postmortem'))}</h2><p class="muted">${escapeHtml(postmortem.evidence_state === 'verified' ? t('证据来自这个任务的错误、心跳、阶段和实例状态。', 'Evidence comes from this job’s error, heartbeat, stage and instance state.') : t('没有可用的证据：原因保持未核实，不做猜测。', 'No usable evidence: the cause stays unverified and is not guessed.'))}</p></div>
+      <span class="badge ${postmortem.status === 'closed' ? 'good' : 'busy'}">${escapeHtml(postmortem.status === 'closed' ? t('已关闭', 'Closed') : t('未关闭', 'Open'))}</span>
+    </div>
+    <div class="list">
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('分类', 'Category'))}</strong><small>${escapeHtml(postmortem.category)} · ${escapeHtml(postmortem.evidence_state)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('疑似原因', 'Suspected cause'))}</strong><small>${escapeHtml(postmortem.suspected_cause ?? t('未核实', 'Unverified'))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('复发键', 'Recurrence key'))}</strong><small><code>${escapeHtml(postmortem.recurrence_key)}</code></small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('负责人', 'Owner'))}</strong><small>${escapeHtml(postmortem.owner)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('预防措施', 'Preventive action'))}</strong><small>${preventiveActionHtml(postmortem.preventive_action)}${postmortem.preventive_action === null ? '' : ` · ${escapeHtml(postmortem.preventive_verified === 1 ? t('已核实', 'Verified') : t('待核实', 'Awaiting verification'))}`}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('首次 / 最近', 'First / last'))}</strong><small>${escapeHtml(humanTimeShort(postmortem.first_seen_at))} / ${escapeHtml(humanTimeShort(postmortem.last_seen_at))}</small></div></div>
+    </div>
+    <p class="fine"><a class="link" href="/repos/${escapeHtml(repo.id)}#postmortems">${escapeHtml(postmortem.status === 'closed' ? t('查看已关闭的复盘', 'View the closed postmortem') : t('打开复盘记录', 'Open postmortem'))}</a></p>
+  </section>`
   // #565: a queued job shows its place in the real (instance-wide) line as a
   // count, the priority it competes on, the viewer's own jobs ahead of it, and —
   // when other accounts are ahead — only how many. No identifier of another
@@ -2574,6 +2629,7 @@ export function jobPage(input: {
   </section>
   ${jobLoading}
   ${supportMode ? '' : planCard}
+  ${postmortemCard}
   ${supportMode ? '' : workTypeCard}
   ${supportMode ? '' : triageCard}
   <section class="cols">
