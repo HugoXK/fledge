@@ -1,1 +1,0 @@
-The nightly mechanical release pull request now updates both README status lines itself, so it no longer lands red against its own `readmeStatus` check. The version written there is read back from the `package.json` the release just bumped, and only the version token and the date change; any other README edit still needs its own review.

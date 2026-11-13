@@ -27,7 +27,7 @@ Fledge 是一个自托管的小平台，做的是**可审查的仓库成长**。
 bridge 把任务交给 FlyBot 代理；代理先写失败测试，做最小修复，开一个 PR，再回调
 平台。Fledge 不会推默认分支、不会自动合并、也不会在本地执行用户仓库。
 
-> **状态：** 最新发布是 `v0.3.2`（2026-11-12）：<https://fledge.hugoxk.online/>。
+> **状态：** 最新发布是 `v0.3.3`（2026-11-13）：<https://fledge.hugoxk.online/>。
 > 周一晚发 minor，周内后续发布都是 patch。登录走 GitHub OAuth：生产 OAuth App 已配置，token 登录兜底已关闭。文档在
 > <https://fledge-docs.hugoxk.online/docs/>；项目主页和 Guide 在
 > <https://hugoxk.online/fledge/>。

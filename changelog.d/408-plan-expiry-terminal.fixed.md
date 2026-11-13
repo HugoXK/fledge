@@ -1,1 +1,0 @@
-The plan-expiry pass no longer tells a user that a plan was "已过期关闭" when the plan's work item had already reached `merged` or `closed` before the pass ran; the expiry is still recorded in the audit row and the `plan_expired:<job>` settings key, a terminal item is left untouched, and a plan whose item is still live still closes once with its one notification.

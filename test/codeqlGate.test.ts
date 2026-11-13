@@ -159,20 +159,24 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // #42) stay the two dismissed false positives.
   // The tip then merges `main@f20c8de`: #517 floors discovery at 60 minutes in
   // `src/jobs/service.ts` and #514 rewrites the daily-release header, and neither
-  // touches `src/app.ts`, so re-reading all seven anchors on the merged tree moved
-  // none and the pins below stay `:590`/`:625`/`:635`/`:645`/`:3333` and
-  // `:155`/`:180`.
+  // touches `src/app.ts`, so that merge re-read all seven anchors and moved none
+  // (`:590`/`:625`/`:635`/`:645`/`:3333` and `:155`/`:180` then).
+  // #473 then lands on main (the `densityMode` import, the response-hook branch
+  // and the `/density/:mode` route, 25 lines) above the four top-of-file
+  // registrations, so the refresh onto `main@5d848df` re-reads all seven anchors
+  // on the merged tree: those read `:615`/`:650`/`:660`/`:670` and the webhook
+  // registration `:3358`, while the gateway pair stays `:155`/`:180` because the
+  // insert lands below both. No result is added or dismissed.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3333',
-    'js/missing-rate-limiting|src/app.ts|590',
-    'js/missing-rate-limiting|src/app.ts|625',
-    'js/missing-rate-limiting|src/app.ts|635',
-    'js/missing-rate-limiting|src/app.ts|645',
+    'js/missing-rate-limiting|src/app.ts|3358',
+    'js/missing-rate-limiting|src/app.ts|615',
+    'js/missing-rate-limiting|src/app.ts|650',
+    'js/missing-rate-limiting|src/app.ts|660',
+    'js/missing-rate-limiting|src/app.ts|670',
 
     'js/missing-rate-limiting|src/gateway/gateway.ts|155',
     'js/missing-rate-limiting|src/gateway/gateway.ts|180',
   ])
-
   const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
   assert.equal(dismissed.length, 3, 'the three dismissed false-positive results are recorded with their reason')
   assert.deepEqual(addedAlerts(keys, baseline.alerts).map((alert) => alertKey(alert)), [], 'the baseline must not fail its own alerts')
