@@ -280,7 +280,7 @@ test('the provider form stores region, data-policy URL and the allowed flag', as
 test('a gateway refusal writes no provider key or credential-bearing URL to the log or audit', async () => {
   const hits: string[] = []
   const primary = await providerServer('ok', hits)
-  const secret = 'sk-policy-test-do-not-log'
+  const secret = 'policy-test-key-not-logged'
   const config = testConfig({})
   const store = new Store(':memory:')
   const app = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
@@ -305,10 +305,10 @@ test('a gateway refusal writes no provider key or credential-bearing URL to the 
     assert.equal(response.statusCode, 200)
     const logs = capture.text()
     assert.doesNotMatch(logs, new RegExp(secret))
-    assert.doesNotMatch(logs, /sk-policy-test-do-not-log/)
+    assert.doesNotMatch(logs, /policy-test-key-not-logged/)
     const audit = store.listAudit().map((entry) => `${entry.action} ${entry.detail ?? ''}`).join('\n')
     assert.doesNotMatch(audit, new RegExp(secret))
-    assert.doesNotMatch(audit, /sk-policy-test-do-not-log/)
+    assert.doesNotMatch(audit, /policy-test-key-not-logged/)
   } finally {
     capture.restore()
     await app.close()
