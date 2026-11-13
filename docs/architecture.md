@@ -31,8 +31,11 @@ Every list, panel and live stream renders its non-data states through
 success and disabled — so the aria contract (`status`, `alert`, `aria-busy`,
 `aria-disabled`) is decided once instead of per page. The stream status lines
 (`[data-inbox-status]`, `[data-chief-status]`) are `aria-live="polite"` regions:
-a dropped stream reports `lost` and `recovered` instead of going quiet. The
-state contract and its evidence are in [docs/ui.md](ui.md).
+a dropped stream reports `lost` and `recovered` instead of going quiet. Each
+state's icon is an inline `<svg>` from a literal map in the same file, on one
+`viewBox`, `aria-hidden` and inheriting `currentColor`, so the five states share
+a geometry instead of five font glyphs. The state contract and its evidence are
+in [docs/ui.md](ui.md).
 
 The console renders UTC and says so: every timestamp goes through
 `humanTimeShort` in `src/lib/time.ts`, which prints the UTC wall clock with an
