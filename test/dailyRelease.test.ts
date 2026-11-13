@@ -236,6 +236,18 @@ test('the planner and the state projection are still the tested modules', () => 
   assert.match(readFileSync('scripts/lib/release-state.mjs', 'utf8'), /labels: \(Array\.isArray\(pr\?\.labels\) \? pr\.labels : \[\]\)\.map\(\(label\) => String\(label\?\.name/)
 })
 
+test('the state job names the ci-ok check in the request, so a busy tip cannot page it away', () => {
+  // #567: `GET /commits/{sha}/check-runs?per_page=100` returns the newest 100
+  // runs and `ci-ok` sits behind four comment-triggered runs per comment, so a
+  // tip with more than ~25 comments reports `missing` for a green run. Asking
+  // for the name is the fix; `checkRunsOf` already accepts the single-object
+  // answer. The query literal keeps `per_page=100`, so the assertion is on the
+  // parameter, not on `check-runs?check_name=`.
+  const fetchLine = daily.split('\n').find((line) => line.includes('/commits/main/check-runs'))
+  assert.ok(fetchLine, 'the workflow fetches check runs for the main tip')
+  assert.match(fetchLine, /check_name=ci-ok/, 'the check-runs request names ci-ok instead of trusting the first page')
+})
+
 test('the run writes the counts and the decision to the job summary', () => {
   assert.match(daily, /GITHUB_STEP_SUMMARY/)
   assert.match(daily, /merged PRs since/)
