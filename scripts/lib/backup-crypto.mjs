@@ -54,7 +54,7 @@ function warnKeyFileMode(path, mode) {
   process.stderr.write(`warning: BACKUP_ENCRYPTION_KEY_FILE ${path} is mode 0${mode.toString(8)}; the runbook expects 0600 so only the operator can read it. The backup continues, but fix the mode with: chmod 600 ${path}\n`)
 }
 
-export function loadBackupKey(env = process.env) {
+export function loadBackupKey(env = process.env, { rejectTruncatedBase64Key = true } = {}) {
   // Presence decides whether a source is configured, not non-emptiness: a
   // variable that exists but is empty is a broken expansion (a secret that
   // resolved to ""), and treating it as "unset" would silently write a
@@ -95,7 +95,13 @@ export function loadBackupKey(env = process.env) {
   const raw = base64Key(secret)
   if (raw !== null) return { kind: 'raw', key: raw, id: keyId(raw), source }
   const decoded = decodeBase64(secret)
-  if (decoded !== null && decoded.length >= TRUNCATED_KEY_MIN_BYTES && decoded.length <= TRUNCATED_KEY_MAX_BYTES) {
+  // The window is a *write*-side guard. On restore the value only has to reproduce
+  // the derivation the envelope names, and GCM authentication proves whether it
+  // did, so refusing there would strand a copy written under a base64-shaped
+  // passphrase with a message telling the operator to supply a key that cannot
+  // exist for a copy that already does. `restore-drill.mjs` therefore loads the
+  // key with `rejectTruncatedBase64Key: false`.
+  if (rejectTruncatedBase64Key && decoded !== null && decoded.length >= TRUNCATED_KEY_MIN_BYTES && decoded.length <= TRUNCATED_KEY_MAX_BYTES) {
     throw new BackupKeyError(`the backup encryption key from ${source} looks like base64 but decodes to ${decoded.length} bytes, not ${KEY_BYTES}: a truncated key would silently become a passphrase and encrypt the copy under a key you did not set. Use a full ${KEY_BYTES}-byte base64 key, or a passphrase that is not base64-shaped`)
   }
   // No id yet: the fingerprint is over the stretched key, and the salt that

@@ -434,13 +434,21 @@ one still looks like base64: a value that is base64-shaped but decodes to 16–3
 bytes is therefore refused with a non-zero exit naming the source and the byte
 count, instead of silently becoming a passphrase and encrypting the copy under a
 key you did not set. **To declare a passphrase, pick a value that is not
-base64-shaped** — one space or one character outside the base64 alphabet is
-enough; `correct horse battery staple` works, `correcthorsebatterystaple` does
-not. The window is exactly those 16–31 decoded bytes: a base64-shaped value of
-32 bytes is the key itself, and one of 33 bytes or more (or 15 or fewer) is not a
-truncated 32-byte key, so it stays a passphrase — the boundary is
-`TRUNCATED_KEY_MIN_BYTES`/`TRUNCATED_KEY_MAX_BYTES` in
-`scripts/lib/backup-crypto.mjs`. The encrypted file is a JSON envelope header
+base64-shaped, or whose base64 shape decodes to no whole number of bytes** — one
+space or one character outside the base64 alphabet is enough, so
+`correct horse battery staple` works, and a 25-character all-alphanumeric value
+such as `correcthorsebatterystaple` works too because `decodeBase64` returns
+`null` when `length % 4 === 1`. What is refused is a base64-shaped value that
+decodes into the window, such as `abcdefghijklmnopqrstuvwx` (24 characters,
+18 bytes, exit 2). The window is exactly those 16–31 decoded bytes: a
+base64-shaped value of 32 bytes is the key itself, and one of 33 bytes or more
+(or 15 or fewer) is not a truncated 32-byte key, so it stays a passphrase — the
+boundary is `TRUNCATED_KEY_MIN_BYTES`/`TRUNCATED_KEY_MAX_BYTES` in
+`scripts/lib/backup-crypto.mjs`. The refusal is a **write-side** guard: the
+restore drill still derives a copy written under a base64-shaped passphrase,
+because the only way to read an existing copy is the derivation it actually used,
+and GCM authentication decides whether the value reproduces it. The encrypted file
+is a JSON envelope header
 (format version, the key
 derivation `raw` or `scrypt`, key id and key version, scrypt salt when used, IV,
 GCM authentication tag) followed by the ciphertext. The key itself is never in

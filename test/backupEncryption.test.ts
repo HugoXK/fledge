@@ -2,12 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash, scryptSync } from 'node:crypto'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Store } from '../src/db.js'
+import { encryptBackupFile, loadBackupKey } from '../scripts/lib/backup-crypto.mjs'
 import { readManifest as readManifestFile } from '../scripts/lib/backup-manifest.mjs'
 import { makeTerminalJob, makeUser } from './helpers.js'
 
@@ -398,6 +399,23 @@ test('the deploy runbook documents encryption, key custody, decryption and the l
   assert.match(doc, /base64-shaped|not base64/i, 'the runbook must say how to declare a passphrase now that a truncated base64 key is refused')
 })
 
+test('the runbook passphrase example is one the code refuses, and the accepted example really is accepted', () => {
+  // Review finding on #591: the first version of this sentence said
+  // `correcthorsebatterystaple` does not work. It does — 25 characters, and
+  // `decodeBase64` returns null when `length % 4 === 1` — so the one sentence an
+  // operator acts on contradicted the code. The document is pinned to the
+  // implementation here: the refused example must throw, the near-miss must pass.
+  const doc = readFileSync(deployDoc, 'utf8')
+  const refused = 'abcdefghijklmnopqrstuvwx'
+  assert.ok(doc.includes(refused), `docs/deploy.md must show a value the code refuses, e.g. ${refused}`)
+  assert.equal(Buffer.from(refused, 'base64').length, 18, 'the refused example must decode into the 16–31 byte window')
+  assert.throws(() => loadBackupKey({ BACKUP_ENCRYPTION_KEY: refused }), /18 bytes/)
+
+  const accepted = 'correcthorsebatterystaple'
+  assert.ok(doc.includes(accepted), 'the runbook must name the near-miss it used to claim was refused')
+  assert.equal(loadBackupKey({ BACKUP_ENCRYPTION_KEY: accepted })?.kind, 'passphrase')
+})
+
 test('a copy says which key derivation produced it, in the manifest and on the printed line', () => {
   // #588: the envelope records `kdf` (`backup-crypto.mjs:104`) but everything an
   // operator reads drops it, so a copy written under a passphrase and one written
@@ -571,4 +589,59 @@ test('a manifest written before kdf was recorded still validates', () => {
   const read = readManifestFile(copy)
   assert.ok(read !== null)
   assert.equal(read.encryption?.kdf, undefined)
+})
+
+test('a copy written under a base64-shaped passphrase still restores, while the write path keeps refusing it', async () => {
+  // Review finding on #591: the 16–31 byte window lived in `loadBackupKey`, which
+  // the restore drill shares through `encryptionKeyForDrill`. A copy written at
+  // 3d4b1a6b under a value like this — `backup: OK`, restorable there — became
+  // unrestorable at the tip, refused before decryption with a message telling the
+  // operator to supply a key that cannot exist for a copy that already does.
+  // The guard is a write-side one: on restore the value only has to reproduce the
+  // derivation the envelope names, and GCM authentication proves whether it did.
+  const root = mkdtempSync(join(tmpdir(), 'fledge-encrypted-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+  seed(dbPath)
+  const value = 'abcdefghijklmnopqrstuvwx'
+  assert.equal(Buffer.from(value, 'base64').length, 18, 'the fixture must be the refused 18-byte shape')
+
+  mkdirSync(backupDir, { mode: 0o700 })
+  const copy = join(backupDir, 'fledge-2026-01-01T00-00-00-000Z.db.enc')
+  // Exactly what the previous tip wrote for this value: the passphrase path, so the
+  // envelope says `scrypt` and the drill must derive the same key to authenticate.
+  await encryptBackupFile(dbPath, copy, { kind: 'passphrase', secret: value })
+
+  const drill = run(drillScript, ['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir], { BACKUP_ENCRYPTION_KEY: value })
+  assert.equal(drill.code, 0, `an existing copy must stay restorable, got exit ${drill.code}: ${drill.stderr}`)
+  assert.match(drill.stdout, /^restore-drill: OK$/m)
+  assert.match(drill.stdout, /^encryption=aes-256-gcm kdf=scrypt key_id=[0-9a-f]{16} key_version=1$/m)
+  assertNoKeyMaterial(drill.stdout + drill.stderr, value)
+
+  // Writing a new copy is where a truncated key would be misread, so it still refuses.
+  const freshDir = join(root, 'fresh')
+  const write = run(backupScript, ['--db', dbPath, '--backup-dir', freshDir], { BACKUP_ENCRYPTION_KEY: value })
+  assert.equal(write.code, 2, `writing a new copy under this value must still refuse, got exit ${write.code}: ${write.stdout}${write.stderr}`)
+  assert.equal(existsSync(freshDir), false, 'a refused run must not create the backup directory')
+})
+
+test('a manifest naming a key derivation the code does not implement is refused', () => {
+  // Review finding on #591: the validator accepted any string for `kdf` while the
+  // type says 'raw' | 'scrypt'. The envelope stays authoritative at decrypt time,
+  // so nothing breaks, but a manifest should not vouch for a derivation the code
+  // cannot produce.
+  const root = mkdtempSync(join(tmpdir(), 'fledge-encrypted-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+
+  const backup = run(backupScript, ['--db', dbPath, '--backup-dir', backupDir], { BACKUP_ENCRYPTION_KEY: TEST_KEY })
+  assert.equal(backup.code, 0, backup.stderr)
+  const copy = onlyBackup(backupDir)
+  const manifestPath = `${copy}.json`
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { encryption: Record<string, unknown> }
+  manifest.encryption.kdf = 'bogus'
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })
+  assert.throws(() => readManifestFile(copy), /not a backup manifest/)
 })
