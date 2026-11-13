@@ -253,6 +253,7 @@ export interface JobRow {
   team_stats_json: string | null
   work_item_id: string | null
   priority: number
+  queue_seq: number
   plan_approved_at: string | null
   plan_approved_by: string | null
   plan_rejected_at: string | null
@@ -680,6 +681,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   team_stats_json TEXT,
   work_item_id TEXT,
   priority INTEGER NOT NULL DEFAULT 0,
+  -- The position this job holds in its priority level (#545). Allocated once,
+  -- monotonically, and never reused; 0 means a row that predates the column and
+  -- has not been backfilled yet.
+  queue_seq INTEGER NOT NULL DEFAULT 0,
   plan_approved_at TEXT,
   plan_approved_by TEXT,
   plan_rejected_at TEXT,
@@ -996,9 +1001,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 33) {
+    if (previousVersion > 34) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (33)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (34)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -1015,7 +1020,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 33)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 34)};`)
   }
 
   migrateIndexes(): void {
@@ -1261,6 +1266,18 @@ export class Store {
     if (!jobColumns.has('team_stats_json')) this.run('ALTER TABLE jobs ADD COLUMN team_stats_json TEXT')
     if (!jobColumns.has('work_item_id')) this.run('ALTER TABLE jobs ADD COLUMN work_item_id TEXT')
     if (!jobColumns.has('priority')) this.run('ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0')
+    if (!jobColumns.has('queue_seq')) this.run('ALTER TABLE jobs ADD COLUMN queue_seq INTEGER NOT NULL DEFAULT 0')
+    // Backfill the ticket in arrival order, which is the order those rows were
+    // ranked by before the column existed, so an upgrade does not reshuffle a
+    // queue that is already waiting.
+    const unticketed = this.all<{ id: string }>('SELECT id FROM jobs WHERE queue_seq = 0 ORDER BY created_at ASC, id ASC')
+    if (unticketed.length > 0) {
+      let seq = Number(this.get<{ seq: number }>('SELECT COALESCE(MAX(queue_seq), 0) AS seq FROM jobs')?.seq ?? 0)
+      for (const row of unticketed) {
+        seq += 1
+        this.run('UPDATE jobs SET queue_seq = ? WHERE id = ?', seq, row.id)
+      }
+    }
     if (!jobColumns.has('plan_approved_at')) this.run('ALTER TABLE jobs ADD COLUMN plan_approved_at TEXT')
     if (!jobColumns.has('plan_approved_by')) this.run('ALTER TABLE jobs ADD COLUMN plan_approved_by TEXT')
     if (!jobColumns.has('plan_rejected_at')) this.run('ALTER TABLE jobs ADD COLUMN plan_rejected_at TEXT')
@@ -2639,9 +2656,11 @@ export class Store {
   }
 
   createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; workType?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string }): JobRow {
+    // The ticket is taken inside the insert, so two jobs created at the same
+    // instant cannot be handed the same one (#545).
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, work_type, base_branch, work_item_id, priority, base_sha, retry_attempt, retry_of, owner_started, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, work_type, base_branch, work_item_id, priority, queue_seq, base_sha, retry_attempt, retry_of, owner_started, created_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs), ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -2859,12 +2878,15 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE user_id = ? AND status IN ('queued','running') ORDER BY created_at DESC", userId)
   }
 
+  // Priority, then ticket, then id: the ticket is the arrival order inside a
+  // level, so two jobs created at the same instant still have a stable order and
+  // a priority change is visible as a move to the tail (#545).
   listActiveJobs(): JobRow[] {
-    return this.all<JobRow>("SELECT * FROM jobs WHERE status IN ('queued','running') ORDER BY priority DESC, created_at ASC")
+    return this.all<JobRow>("SELECT * FROM jobs WHERE status IN ('queued','running') ORDER BY priority DESC, queue_seq ASC, id ASC")
   }
 
   listQueuedJobs(): JobRow[] {
-    return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority DESC, created_at ASC")
+    return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority DESC, queue_seq ASC, id ASC")
   }
 
   // Durable dispatch foundation: one worker claims one queued job. The guarded
@@ -2884,13 +2906,13 @@ export class Store {
                OR (x.status = 'queued' AND (
                  x.priority > j.priority
                  OR (x.priority = j.priority AND (
-                   x.created_at < j.created_at
-                   OR (x.created_at = j.created_at AND x.id < j.id)
+                   x.queue_seq < j.queue_seq
+                   OR (x.queue_seq = j.queue_seq AND x.id < j.id)
                  ))
                ))
              )
            )
-         ORDER BY j.priority DESC, j.created_at ASC LIMIT 1`,
+         ORDER BY j.priority DESC, j.queue_seq ASC, j.id ASC LIMIT 1`,
         now,
       )
       if (row === undefined) return undefined
@@ -2942,8 +2964,23 @@ export class Store {
   updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'model_json' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
-    const sets = entries.map(([key]) => `${key} = ?`).join(', ')
-    this.run(`UPDATE jobs SET ${sets} WHERE id = ?`, ...entries.map(([, value]) => value), id)
+    const sets: string[] = []
+    const values: unknown[] = []
+    for (const [key, value] of entries) {
+      // A real priority change is an arrival at the new level, so it takes a
+      // ticket at that level's tail; saving the same value again is not a move
+      // and keeps the ticket the row already holds (#545).
+      if (key === 'priority') {
+        const current = this.get<{ priority: number }>('SELECT priority FROM jobs WHERE id = ?', id)?.priority
+        sets.push('priority = ?')
+        values.push(value)
+        if (current !== undefined && current !== value) sets.push('queue_seq = (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs)')
+        continue
+      }
+      sets.push(`${key} = ?`)
+      values.push(value)
+    }
+    this.run(`UPDATE jobs SET ${sets.join(', ')} WHERE id = ?`, ...values, id)
   }
 
   // Returns the number of rows the statement changed, which is how a guarded
