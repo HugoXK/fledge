@@ -2101,12 +2101,22 @@ test('carry-over is bounded, names the open work and is explicitly data', () => 
   assert.match(text, /https:\/\/x\/pr\/3/)
 })
 
-test('a due repo with no open work stays idle instead of inventing a job', () => {
+test('a due repo with no open work stays idle until discovery is due', () => {
   const next = decideNextJob({
     repo: repo(), now, lastRunAt: iso(-2 * 3_600_000), intervalMinutes: 60,
     lastDurationMs: 1_000, failureStreak: 0, openWork: [], reviewerEnabled: false, reviewDue: true,
+    lastDiscoverAt: iso(-60 * 60_000), discoverIntervalMinutes: 720,
   })
   assert.deepEqual(next, { kind: 'none', reason: 'idle' })
+})
+
+test('an idle repo runs one discovery session when the discovery interval is due', () => {
+  const next = decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-2 * 3_600_000), intervalMinutes: 60,
+    lastDurationMs: 1_000, failureStreak: 0, openWork: [], reviewerEnabled: false, reviewDue: true,
+    lastDiscoverAt: iso(-13 * 60 * 60_000), discoverIntervalMinutes: 720,
+  })
+  assert.deepEqual(next, { kind: 'discover' })
 })
 
 test('open work continues instead of starting another isolated iterate', () => {
@@ -2152,16 +2162,43 @@ test('the interval respects the last duration and backs off after failures', () 
   )
   const notDue = decideNextJob({
     repo: repo(), now, lastRunAt: iso(-30 * 60_000), intervalMinutes: 60,
-    lastDurationMs: 60 * 60_000, failureStreak: 1, openWork: [], reviewerEnabled: false, reviewDue: true,
+    lastDurationMs: 60 * 60_000, failureStreak: 1, openWork: [workItem()], reviewerEnabled: false, reviewDue: true,
   })
   assert.equal(notDue.kind, 'none')
   const backedOff = decideNextJob({
     repo: repo(), now, lastRunAt: iso(-90 * 60_000), intervalMinutes: 60,
-    lastDurationMs: 0, failureStreak: 3, openWork: [], reviewerEnabled: false, reviewDue: true,
+    lastDurationMs: 0, failureStreak: 3, openWork: [workItem()], reviewerEnabled: false, reviewDue: true,
   })
   assert.equal(backedOff.kind, 'none')
 })
 
+
+test('the scheduler runs one discovery session when idle, then idles', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'capture', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'scheduler-discover', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_scheduler_discover', userId: user.id, owner: 'o', name: 'discover',
+      defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
+      repoRole: 'developer', goal: 'fix bugs', autoIterate: true, intervalMinutes: 60,
+    })
+    await jobs.tick()
+    const created = store.listJobsForRepo(repo.id)
+    assert.equal(created.length, 1)
+    assert.equal(created[0]?.kind, 'discover')
+    assert.ok(store.getSetting(`discover:${repo.id}`) !== undefined)
+
+    store.updateJob(created[0]!.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    await jobs.tick()
+    assert.equal(store.listJobsForRepo(repo.id).length, 1, 'discovery must not repeat before its interval')
+    assert.equal(store.getRepo(repo.id)?.last_status, 'idle')
+  } finally {
+    store.close()
+  }
+})
 
 test('the scheduler idles with no work and starts once a work item appears', async () => {
   const config = testConfig()
@@ -2182,8 +2219,9 @@ test('the scheduler idles with no work and starts once a work item appears', asy
       defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
       repoRole: 'developer', goal: 'fix bugs', autoIterate: true, intervalMinutes: 60,
     })
+    store.setSetting(`discover:${repo.id}`, new Date().toISOString())
     await jobs.tick()
-    assert.equal(store.listJobsForRepo(repo.id).length, 0, 'no work means no job')
+    assert.equal(store.listJobsForRepo(repo.id).length, 0, 'no work means no work job')
     assert.equal(store.getRepo(repo.id)?.last_status, 'idle')
 
     store.createWorkItem({

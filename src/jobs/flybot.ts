@@ -5,7 +5,7 @@ import type { Runner, RunnerContext, RunnerResult } from './runner.js'
 
 interface BridgePayload {
   jobId: string
-  kind: 'iterate' | 'review' | 'plan' | 'scope' | 'verify'
+  kind: 'iterate' | 'review' | 'plan' | 'scope' | 'verify' | 'discover'
   branch?: string
   prUrl?: string
   sessionId?: string
@@ -54,6 +54,19 @@ function iterateInstructions(context: RunnerContext): string[] {
     'Team participation is mandatory: Product scopes the issue, Test writes/verifies the failing test, Dev-1 or Dev-2 implements, Security reviews material risk, and Reviewer reviews the PR. Do not let the Lead implement the whole change alone; if a role is unavailable, say so in the callback.',
     'Write a failing test first when a test is possible. Never force-push or change repository settings.',
     'Never merge. Fledge performs the maintainer-enabled auto-merge only after independently checking the PR checks and reviews.',
+  ]
+}
+
+function discoverInstructions(context: RunnerContext): string[] {
+  const upstream = context.upstream
+  return [
+    `Mode: discover. Repository: ${upstream.owner}/${upstream.name}. Do not write code, create a branch, push, open a PR or change settings.`,
+    `Read the latest upstream branch ${upstream.defaultBranch}, open issues/PRs, README/docs, tests and recent CI. Look for one concrete, reproducible defect or high-value improvement that is not already covered.`,
+    context.canCreateIssue
+      ? `If you find one concrete issue, create exactly one focused issue on the upstream with evidence and a failing-test idea, and finish with status succeeded and issueUrl. If nothing concrete is found, finish succeeded with zero output and no issueUrl.`
+      : `The token cannot create issues; if you find a concrete issue, report it in summary and finish succeeded with no issueUrl. Do not open a PR.`,
+    'Never create an inventory, backlog, 盘点, 清账, reconcile or "audit the backlog" issue. Do not duplicate an open issue or PR.',
+    'Finish with the callback; do not send branch or prUrl.',
   ]
 }
 
@@ -165,7 +178,7 @@ export class FlyBotRunner implements Runner {
         'You are the Fledge repository worker.',
         `Get the GitHub token with GET ${context.credential.url} and header "Authorization: Bearer ${context.credential.secret}".`,
         `Use the platform model at ${context.platform.baseUrl} with the job token as the API key; the model is ${context.platform.model}.`,
-        ...(context.kind === 'review' ? reviewInstructions(context) : context.kind === 'plan' ? planInstructions(context) : context.kind === 'scope' ? scopeInstructions(context) : context.kind === 'verify' ? verifyInstructions(context) : iterateInstructions(context)),
+        ...(context.kind === 'review' ? reviewInstructions(context) : context.kind === 'discover' ? discoverInstructions(context) : context.kind === 'plan' ? planInstructions(context) : context.kind === 'scope' ? scopeInstructions(context) : context.kind === 'verify' ? verifyInstructions(context) : iterateInstructions(context)),
         `Send a progress heartbeat after each major step and at least every 10 minutes: POST ${context.callback.url} with JSON {"status":"running","summary":"<one line progress>","checkpoint":"<done + next>"} and "Authorization: Bearer ${context.callback.secret}".`,
         'GitHub attribution: end every issue, PR and comment you create with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',
         'Final callback: include "attribution": {"writtenBy":"...","claimedBy":"...","implementedBy":"...","testedBy":"...","reviewedBy":"..."} with role names only (Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2). Omit a key for a step that did not happen; never write "not run", "pending" or "(Team)".',
