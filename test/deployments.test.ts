@@ -41,8 +41,8 @@ function canary(overrides: Record<string, unknown> = {}): Record<string, unknown
     healthz: { ok: true, status: 200, version: '0.3.2', commit: C },
     readyz: { ok: true, status: 200 },
     smoke: { ok: true, jobId: 'job_smoke_1' },
-    errorWindow: { ok: true, windowMinutes: 30, errors: 0 },
-    latencyWindow: { ok: true, windowMinutes: 30, p95Ms: 120 },
+    errorWindow: { ok: true, windowMinutes: 30, errors: 0, threshold: 5 },
+    latencyWindow: { ok: true, windowMinutes: 30, p95Ms: 120, thresholdMs: 300 },
     ...overrides,
   }
 }
@@ -67,9 +67,11 @@ function promotionBody(overrides: Record<string, string | number | undefined> = 
     error_ok: '1',
     error_window_minutes: 30,
     error_count: 0,
+    error_threshold: 5,
     latency_ok: '1',
     latency_window_minutes: 30,
     latency_p95_ms: 120,
+    latency_threshold_ms: 300,
     ...overrides,
   }
 }
@@ -151,6 +153,66 @@ test('the canary gate fails closed when evidence is missing and blocks a failed 
 
   const noCommit = evaluateCanaryGate(canary({ healthz: { ok: true, status: 200 } }), { commit: C })
   assert.equal(noCommit.ok, false)
+})
+
+// #395 review round 1: the suite only covered a window that is missing
+// entirely. A window that exists, claims `ok` and carries no limit is the shape
+// that let the product's own form pass any error count and any p95.
+test('a window that claims ok without a threshold is blocked, not passed', () => {
+  const noErrorLimit = evaluateCanaryGate(canary({ errorWindow: { ok: true, windowMinutes: 30, errors: 100000 } }), { commit: C, version: '0.3.2' })
+  assert.equal(noErrorLimit.ok, false)
+  assert.ok(noErrorLimit.blocked.some((entry) => entry.includes('error window') && /threshold/i.test(entry)), noErrorLimit.blocked.join('; '))
+
+  const noLatencyLimit = evaluateCanaryGate(canary({ latencyWindow: { ok: true, windowMinutes: 30, p95Ms: 900000 } }), { commit: C, version: '0.3.2' })
+  assert.equal(noLatencyLimit.ok, false)
+  assert.ok(noLatencyLimit.blocked.some((entry) => entry.includes('latency window') && /threshold/i.test(entry)), noLatencyLimit.blocked.join('; '))
+
+  const over = evaluateCanaryGate(canary({ errorWindow: { ok: true, windowMinutes: 30, errors: 6, threshold: 5 } }), { commit: C })
+  assert.equal(over.ok, false)
+  assert.ok(over.blocked.some((entry) => entry.includes('6 errors exceed 5')))
+
+  const atLimit = evaluateCanaryGate(canary({ errorWindow: { ok: true, windowMinutes: 30, errors: 5, threshold: 5 } }), { commit: C })
+  assert.equal(atLimit.ok, true)
+
+  const slow = evaluateCanaryGate(canary({ latencyWindow: { ok: true, windowMinutes: 30, p95Ms: 301, thresholdMs: 300 } }), { commit: C })
+  assert.equal(slow.ok, false)
+  assert.ok(slow.blocked.some((entry) => entry.includes('p95 301ms exceeds 300ms')))
+})
+
+test('the promotion form carries both thresholds, so a typed number cannot pass unjudged', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'fledge-deployments-'))
+  const config = testConfig({ dataDir })
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'gate-admin', admin: true, status: 'approved' })
+    const session = sessionFor(built, admin)
+
+    const page = await built.app.inject({ method: 'GET', url: '/admin/deployments', headers: { cookie: session.cookie, 'accept-language': 'en' } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /name="error_threshold"/, 'the form must submit the error threshold the gate compares against')
+    assert.match(page.body, /name="latency_threshold_ms"/, 'the form must submit the latency threshold the gate compares against')
+
+    // Exactly what that form submitted before the fix: the four window fields,
+    // no limit, and numbers far past any legitimate canary.
+    const before = promotionBody({ error_count: 100000, latency_p95_ms: 900000 })
+    delete before.error_threshold
+    delete before.latency_threshold_ms
+    const probe = await built.app.inject({
+      method: 'POST',
+      url: '/admin/deployments/promote',
+      headers: { cookie: session.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf: session.csrf, ...before }),
+    })
+    assert.equal(probe.statusCode, 302)
+    const location = decodeURIComponent(String(probe.headers.location))
+    assert.match(location, /error=/)
+    assert.match(location, /threshold/i)
+    assert.equal(store.listDeployments('production').length, 0, 'a window with no threshold must not create a deployment record')
+  } finally {
+    await built.close()
+    rmSync(dataDir, { recursive: true, force: true })
+  }
 })
 
 test('a failed canary smoke job blocks the promotion record', async () => {
