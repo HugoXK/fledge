@@ -236,6 +236,14 @@ together with `changedFiles` from the pull request itself
 (`changed_files`), so the guard can compare what it saw with what GitHub
 reports.
 
+Each entry in that listing carries the `patch` GitHub returns for the file when it
+returns one, truncated by GitHub at its own limit and absent for a binary file.
+The path guard never reads it; it matches filenames only, so an entry with a
+`patch` and one without are judged the same. The field exists because the last
+gate before an automatic merge (the adversarial pass in
+`src/lib/adversarialReview.ts`) reviews the diff itself rather than the author's
+summary, and it takes the text from this listing.
+
 A list that stops short is never an all-clear: `checkPathGuard` returns
 `ok: false` with `checkedFiles`, `reportedFiles` and `truncated`, the merge path
 refuses with that reason, and the job page prints `Checked X / Y reported files`

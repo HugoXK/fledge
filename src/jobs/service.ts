@@ -20,6 +20,15 @@ import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
 import { reviewMergeBlock } from '../lib/mergeReview.js'
+import {
+  adversarialMergeBlock,
+  assembleAdversarialPacket,
+  openAiAdversarialModel,
+  runAdversarialReview,
+  type AdversarialModel,
+  type AdversarialReview,
+  type AdversarialVerdict,
+} from '../lib/adversarialReview.js'
 import { evaluateTestEvidence, type VerificationResult } from '../lib/verification.js'
 import { observedAttribution } from '../lib/teamStats.js'
 import { reviewInstructionLine } from '../lib/followUpInstruction.js'
@@ -207,6 +216,10 @@ export class Jobs {
   private readonly credentialCache = new Map<string, { at: number }>()
   private readonly leaseTimers = new Map<string, NodeJS.Timeout>()
   private readonly quotaNotifier: QuotaNotifier
+  // Tests inject a fake; production binds the platform model inside
+  // `adversarialPass`. Null means "use the configured platform model, or skip
+  // the pass when there is none".
+  adversarialModel: AdversarialModel | null = null
 
   constructor(
     private readonly store: Store,
@@ -1339,6 +1352,114 @@ export class Jobs {
     return this.verifyPullRequest(job, job.pr_url)
   }
 
+  // The adversarial pass runs only on the automatic path: a maintainer merging by
+  // hand has read the change and owns that decision. It is a fresh model context
+  // over the packet, so its verdict can block the merge without ever seeing the
+  // author's summary or claimed test output. A missing pass never blocks: Fledge
+  // does not invent a risk, and only a concrete one stops the call below.
+  private async adversarialPass(
+    job: JobRow,
+    client: GithubClient,
+    owner: string,
+    name: string,
+    pr: { number: number; headSha: string; base: string; changedFiles: number },
+    checks: Array<{ name: string; status: string; conclusion: string | null }>,
+  ): Promise<{ block: { file: string; line: number } | null; reused: boolean }> {
+    const record = (status: string, detail: Record<string, unknown>): void => {
+      this.store.recordJobEvent({
+        jobId: job.id,
+        repoId: job.repo_id,
+        userId: job.user_id,
+        kind: 'job.adversarial',
+        step: status,
+        meta: JSON.stringify(detail).slice(0, 4000),
+      })
+    }
+    // One pass per tip. Auto-merge reconciliation re-reads a blocked PR every
+    // few minutes, so a stored verdict for this same head sha is reused instead
+    // of paying for the same review again; a new commit is what asks for a new
+    // one, and that is exactly the "until resolved" the gate means. `reused` is
+    // returned so the caller records the refusal once per tip: the audit row and
+    // the notification belong to the first sighting, not to every pass.
+    // `Store.listJobEvents` answers newest-first (`ORDER BY id DESC`), so the
+    // first match is the verdict for the newest tip; reversing it would read the
+    // first tip's verdict forever and never reuse a later one.
+    const previous = this.store.listJobEvents(job.id).find((event) => event.kind === 'job.adversarial' && event.step !== 'skipped' && event.step !== 'unavailable')
+    if (previous !== undefined) {
+      try {
+        const stored = JSON.parse(previous.meta ?? '') as { tipSha?: unknown; verdict?: unknown }
+        if (stored.tipSha === pr.headSha && stored.verdict !== null && typeof stored.verdict === 'object') {
+          return { block: adversarialMergeBlock({ verdict: stored.verdict as AdversarialVerdict }), reused: true }
+        }
+      } catch {}
+    }
+    const model = this.adversarialModel
+    if (model === null && this.config.llm.key === '') {
+      record('skipped', { status: 'skipped', reason: 'platform model is not configured' })
+      return { block: null, reused: false }
+    }
+    const branch = await client.getBranch(owner, name, pr.base).catch(() => null)
+    const baseSha = job.base_sha ?? branch?.sha ?? ''
+    if (baseSha === '') {
+      record('skipped', { status: 'skipped', reason: 'base sha is unknown' })
+      return { block: null, reused: false }
+    }
+    const listed = await client.listPullRequestFiles(owner, name, pr.number, pr.changedFiles).catch((error) => {
+      record('unavailable', { status: 'unavailable', reason: String(error).slice(0, 300) })
+      return null
+    })
+    if (listed === null) return { block: null, reused: false }
+    if (!listed.complete) {
+      record('skipped', { status: 'skipped', reason: 'the changed-file list is truncated' })
+      return { block: null, reused: false }
+    }
+    const diff = listed.files
+      .filter((file) => typeof file.patch === 'string' && file.patch !== '')
+      .map((file) => `diff --git a/${file.filename} b/${file.filename}\n${file.patch}`)
+      .join('\n')
+    if (diff === '') {
+      record('skipped', { status: 'skipped', reason: 'no patch in the changed-file list' })
+      return { block: null, reused: false }
+    }
+    const packet = assembleAdversarialPacket({
+      baseSha,
+      tipSha: pr.headSha,
+      diff,
+      verifier: `checks at ${pr.headSha}: ${checks.map((run) => `${run.name}=${run.conclusion ?? run.status}`).join(', ')}`,
+      policy: [
+        'every check must be green at the tip',
+        `minimum review score ${this.config.autoMerge.minReviewScore}`,
+        'a T2 or T3 change needs a PASS at the same tip',
+      ],
+    })
+    let review: AdversarialReview
+    try {
+      review = await runAdversarialReview({
+        packet,
+        model: model ?? openAiAdversarialModel({
+          baseUrl: this.config.llm.baseUrl,
+          key: this.config.llm.key,
+          model: this.config.llm.model,
+        }),
+        modelId: this.config.llm.model,
+      })
+    } catch (error) {
+      record('unavailable', { status: 'unavailable', reason: String(error).slice(0, 300) })
+      return { block: null, reused: false }
+    }
+    const block = adversarialMergeBlock(review)
+    record(review.verdict.kind, {
+      ...review,
+      target: block === null ? null : `${block.file}:${block.line}`,
+    })
+    if (block !== null) {
+      this.store.audit(job.user_id, 'job.adversarial_risk', `${job.id}: ${block.file}:${block.line}`)
+    } else if (review.verdict.kind === 'invalid') {
+      this.store.audit(job.user_id, 'job.adversarial_rejected', `${job.id}: ${review.verdict.reason}`)
+    }
+    return { block, reused: false }
+  }
+
   private async tryMerge(job: JobRow, prUrl: string, manual: boolean): Promise<{ ok: boolean; message?: string }> {
     if (job.kind !== 'iterate') return { ok: false, message: '只有 iterate 任务可以合并。' }
     let repo = this.store.getRepo(job.repo_id)
@@ -1488,6 +1609,27 @@ export class Jobs {
           if (approvals < protection.requiredApprovals) {
             this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: required approvals missing`)
             return { ok: false, message: '缺少 required approvals。' }
+          }
+        }
+      }
+      // #382: the last gate before the merge call is an independent read of the
+      // same diff. It sees the packet and the verifier, never the author's
+      // summary, and a concrete risk stops an automatic merge until a later run
+      // clears it. A maintainer merging by hand keeps that decision.
+      if (!manual) {
+        const adversarial = await this.adversarialPass(job, client, owner, name, pr, checks)
+        if (adversarial.block !== null) {
+          // One tip, one refusal. A reused verdict means this refusal was recorded
+          // and announced when the pass first ran; recording it again on every
+          // reconcile pass would grow the audit trail 1,2,3,4 and notify the same
+          // maintainer about the same commit every few minutes.
+          if (!adversarial.reused) {
+            this.store.audit(job.user_id, 'job.merge_adversarial_blocked', `${job.id}: ${adversarial.block.file}:${adversarial.block.line}`)
+            this.store.notify(job.user_id, 'job', `任务 ${job.id} 的独立对抗式审核指出了具体风险 ${adversarial.block.file}:${adversarial.block.line}，自动合并已阻止。`)
+          }
+          return {
+            ok: false,
+            message: `独立对抗式审核指出具体风险：${adversarial.block.file}:${adversarial.block.line}，自动合并已阻止。`,
           }
         }
       }

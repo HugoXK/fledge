@@ -1912,3 +1912,101 @@ test('every in-page anchor on the settings page has a matching target', () => {
     store.close()
   }
 })
+
+test('the job page shows the adversarial verdict and says when the answer was rejected', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'job-adversarial-page', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_job_adversarial', userId: user.id, owner: 'o', name: 'ja', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_page_adversarial', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const eventOf = (meta: string) => [{ id: 1, at: new Date().toISOString(), job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.adversarial', role: null, step: 'risk', meta }]
+
+    const risk = jobPage({
+      config,
+      locale: 'en',
+      viewer,
+      repo,
+      job,
+      events: eventOf(JSON.stringify({
+        status: 'risk',
+        verdict: { kind: 'risk', file: 'src/x.ts', line: 9, failureMode: 'stale read', repro: 'open twice', checks: ['read the diff'] },
+        target: 'src/x.ts:9',
+        model: 'fake/model',
+        promptHash: 'abcdef0123456789',
+      })),
+    })
+    assert.match(risk, /Independent adversarial review/)
+    assert.match(risk, /concrete risk src\/x\.ts:9/)
+    assert.match(risk, /automatic merge was blocked/)
+    assert.match(risk, /fake\/model/)
+    assert.match(risk, /abcdef012345/)
+
+    const rejected = jobPage({
+      config,
+      locale: 'zh',
+      viewer,
+      repo,
+      job,
+      events: eventOf(JSON.stringify({ status: 'invalid', verdict: { kind: 'invalid', reason: 'a score is not an adversarial review' }, model: 'fake/model' })),
+    })
+    assert.match(rejected, /独立对抗式审核/)
+    assert.match(rejected, /回答被拒绝/)
+    assert.match(rejected, /a score is not an adversarial review/)
+
+    const clean = jobPage({
+      config,
+      locale: 'en',
+      viewer,
+      repo,
+      job,
+      events: eventOf(JSON.stringify({ status: 'none', verdict: { kind: 'none', checks: ['read the diff', 'ran npm run check'] }, model: 'fake/model' })),
+    })
+    assert.match(clean, /no concrete risk \(checks: read the diff, ran npm run check\)/)
+
+    // The events arrive newest-first, as `Store.listJobEvents` returns them. The
+    // row must describe the newest verdict: an older risk beside a newer clean
+    // answer is a job whose later tip cleared it, and an older clean answer
+    // beside a newer risk is a job that regressed. Reading the other end of the
+    // list turns both into the first tip's answer.
+    const twoEvents = (newerStep: string, newerMeta: string, olderStep: string, olderMeta: string) => [
+      { id: 2, at: new Date().toISOString(), job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.adversarial', role: null, step: newerStep, meta: newerMeta },
+      { id: 1, at: new Date().toISOString(), job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.adversarial', role: null, step: olderStep, meta: olderMeta },
+    ]
+    const olderRisk = JSON.stringify({
+      status: 'risk',
+      verdict: { kind: 'risk', file: 'src/x.ts', line: 9, failureMode: 'stale read', repro: 'open twice', checks: ['read the diff'] },
+      target: 'src/x.ts:9',
+      model: 'fake/model',
+    })
+    const cleared = jobPage({
+      config,
+      locale: 'en',
+      viewer,
+      repo,
+      job,
+      events: twoEvents('none', JSON.stringify({ status: 'none', verdict: { kind: 'none', checks: ['read the diff'] }, model: 'fake/model' }), 'risk', olderRisk),
+    })
+    assert.match(cleared, /no concrete risk \(checks: read the diff\)/)
+    assert.doesNotMatch(cleared, /concrete risk src\/x\.ts:9/)
+
+    const regressed = jobPage({
+      config,
+      locale: 'en',
+      viewer,
+      repo,
+      job,
+      events: twoEvents(
+        'risk',
+        JSON.stringify({ status: 'risk', verdict: { kind: 'risk', file: 'src/y.ts', line: 3, failureMode: 'stale read', repro: 'open twice', checks: ['read the diff'] }, target: 'src/y.ts:3', model: 'fake/model' }),
+        'none',
+        JSON.stringify({ status: 'none', verdict: { kind: 'none', checks: ['read the diff'] }, model: 'fake/model' }),
+      ),
+    })
+    assert.match(regressed, /concrete risk src\/y\.ts:3/)
+    assert.doesNotMatch(regressed, /no concrete risk \(checks: read the diff\)/)
+  } finally {
+    store.close()
+  }
+})
