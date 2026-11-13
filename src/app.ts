@@ -179,6 +179,17 @@ export function safeLocalPath(value: string | undefined, fallback: string): stri
   return `${url.pathname}${url.search}${url.hash}`
 }
 
+// #555: a page that just came out of a save already carries `notice=`, and a
+// Referer keeps it (only the fragment is dropped). Appending a second key makes
+// the query parse as an array, `queryText()` refuses a non-string, and the
+// console then shows nothing at all. Setting the key replaces the stale message
+// instead of stacking a second one next to it.
+function withMessageParam(page: string, key: 'notice' | 'error', message: string): string {
+  const url = new URL(page, LOCAL_ORIGIN)
+  url.searchParams.set(key, message)
+  return `${url.pathname}${url.search}${url.hash}`
+}
+
 function bearerSecret(request: FastifyRequest): string {
   const header = String(request.headers.authorization ?? '')
   if (header.slice(0, 7).toLowerCase() !== 'bearer ') return ''
@@ -410,8 +421,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       `这个操作需要重新用 GitHub 确认身份（${config.recentAuthMinutes} 分钟内有效），确认后请再次提交。`,
       `This action needs a fresh GitHub confirmation (valid for ${config.recentAuthMinutes} minutes). Submit it again after confirming.`,
     )
-    const page = safeLocalPath(back, '/dashboard')
-    const target = `${page}${page.includes('?') ? '&' : '?'}notice=${encodeURIComponent(notice)}`
+    const target = withMessageParam(safeLocalPath(back, '/dashboard'), 'notice', notice)
     reply.redirect(`/auth/github/reauthorize?next=${encodeURIComponent(target)}`)
     return true
   }
