@@ -17,6 +17,7 @@ import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
 import { notifyEmail } from './email/recipient.js'
 import { registerGateway } from './gateway/gateway.js'
 import { assertSafeModelUrl } from './gateway/modelUrl.js'
+import { assertSafeNotificationWebhook } from './lib/webhook.js'
 import { quotaView } from './gateway/quota.js'
 import { parseAttributionJson } from './lib/attribution.js'
 import { failureBreakdown } from './lib/failure.js'
@@ -223,6 +224,7 @@ function approvalMailFailed(user: UserRow, failures: Map<string, string>): boole
 export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const { config } = options
   assertProductionConfig(config)
+  await assertSafeNotificationWebhook(config)
   const store = options.store ?? openStore(config.dbPath)
   store.ensureSuperadmin(config.github.adminLogin)
   const orphans = store.cleanupOrphans()
