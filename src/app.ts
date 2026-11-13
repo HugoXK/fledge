@@ -23,6 +23,7 @@ import { failureBreakdown } from './lib/failure.js'
 import { Jobs } from './jobs/service.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
+import fastifyRateLimit from '@fastify/rate-limit'
 import { rateLimitKey, RateLimiter } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
 import { expiryFromDays, GATEWAY_SCOPE, isTokenScope, patExpiryDays } from './lib/tokens.js'
@@ -222,13 +223,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const loginLimiter = new RateLimiter(30, 60_000)
   const apiLimiter = new RateLimiter(120, 60_000)
   // #460 review: the destructive actions below are rate-limited as well as
-  // re-authenticated. The bucket key is the client address through
-  // rateLimitKey, never a value the caller can mint; 60 a minute leaves room for
-  // an admin working through a batch of approvals while still stopping a loop, a
-  // resubmitting page or a stolen cookie.
-  const destructiveLimiter = new RateLimiter(60, 60_000)
-  const tooMany = (request: FastifyRequest, reply: FastifyReply): FastifyReply =>
-    htmlPage(reply, 429, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '请求过多', '这个操作尝试过于频繁，请稍后再试。', request.locale))
+  // re-authenticated, through `@fastify/rate-limit` (registered `global: false`
+  // below) so the limit is visible to callers and to CodeQL's Fastify model
+  // rather than hidden in a helper no analyzer follows. The key stays the client
+  // address through rateLimitKey, never a value the caller can mint; 60 a minute
+  // leaves room for an admin working through a batch of approvals while still
+  // stopping a loop, a resubmitting page or a stolen cookie.
+  const destructiveLimit = {
+    max: 60,
+    timeWindow: 60_000,
+    keyGenerator: (request: FastifyRequest): string => rateLimitKey(request),
+  }
 
   const app = Fastify({
     logger: false,
@@ -254,6 +259,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   await app.register(fastifyCookie)
   await app.register(fastifyFormbody)
   await app.register(fastifyStatic, { root: join(process.cwd(), 'public'), prefix: '/assets/', decorateReply: false })
+  // `global: false`: only the routes that name `config.rateLimit` are limited.
+  await app.register(fastifyRateLimit, { global: false })
 
   app.addHook('onRequest', async (request) => {
     request.viewer = sessions.read(request) ?? undefined
@@ -2084,8 +2091,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例初始化中。')}`)
   })
 
-  app.post('/repos/:id/instance/stop', async (request, reply) => {
-    if (!destructiveLimiter.take(`flybot.instance.stop:${rateLimitKey(request)}`)) return tooMany(request, reply)
+  app.post('/repos/:id/instance/stop', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     if (requireRecentAuth(request, reply, viewer, 'flybot.instance.stop')) return reply
     await instances.stop(repo.id)
@@ -2119,8 +2125,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(role === 'maintainer' ? t('已选择角色：Maintainer。', 'Role selected: Maintainer.') : t('已选择角色：Developer。', 'Role selected: Developer.'))}`)
   })
 
-  app.post('/repos/:id/settings', async (request, reply) => {
-    if (!destructiveLimiter.take(`repo.settings:${rateLimitKey(request)}`)) return tooMany(request, reply)
+  app.post('/repos/:id/settings', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const body = form(request)
     const interval = normalizeInterval(body.interval, repo.interval_minutes)
@@ -2232,8 +2237,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('仓库已停用，任务不会再运行。')}`)
   })
 
-  app.post('/repos/:id/delete', async (request, reply) => {
-    if (!destructiveLimiter.take(`repo.delete:${rateLimitKey(request)}`)) return tooMany(request, reply)
+  app.post('/repos/:id/delete', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     if (requireRecentAuth(request, reply, viewer, 'repo.delete')) return reply
     const confirmName = (form(request).confirmName ?? '').trim()
@@ -2453,8 +2457,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/settings?notice=${encodeURIComponent('通知设置已保存。')}`)
   })
 
-  app.post('/settings/tokens', async (request, reply) => {
-    if (!destructiveLimiter.take(`token.create:${rateLimitKey(request)}`)) return tooMany(request, reply)
+  app.post('/settings/tokens', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
     if (requireRecentAuth(request, reply, viewer, 'token.create')) return reply
     const body = form(request)
@@ -2497,8 +2500,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     )
   })
 
-  app.post('/settings/tokens/:id/revoke', async (request, reply) => {
-    if (!destructiveLimiter.take(`token.revoke:${rateLimitKey(request)}`)) return tooMany(request, reply)
+  app.post('/settings/tokens/:id/revoke', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
     if (requireRecentAuth(request, reply, viewer, 'token.revoke')) return reply
     store.revokeApiToken(String((request.params as Record<string, string>).id), viewer.user.id)
@@ -2925,20 +2927,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
   })
 
-  app.post('/admin/users/:id/approve', async (request, reply) => {
-    if (!destructiveLimiter.take(`admin.user.approve:${rateLimitKey(request)}`)) return tooMany(request, reply)
+  app.post('/admin/users/:id/approve', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     if ((await adminStatus(request, reply, 'approved')) === 'blocked') return reply
     return reply.redirect(`/admin?notice=${encodeURIComponent('已批准。')}`)
   })
 
-  app.post('/admin/users/:id/reject', async (request, reply) => {
-    if (!destructiveLimiter.take(`admin.user.reject:${rateLimitKey(request)}`)) return tooMany(request, reply)
+  app.post('/admin/users/:id/reject', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     if ((await adminStatus(request, reply, 'rejected')) === 'blocked') return reply
     return reply.redirect(`/admin?notice=${encodeURIComponent('已拒绝。')}`)
   })
 
-  app.post('/admin/users/:id/quota', async (request, reply) => {
-    if (!destructiveLimiter.take(`admin.quota:${rateLimitKey(request)}`)) return tooMany(request, reply)
+  app.post('/admin/users/:id/quota', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
     if (requireRecentAuth(request, reply, viewer, 'admin.quota')) return reply
@@ -3363,7 +3362,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const sweeper = setInterval(() => {
     loginLimiter.sweep()
     apiLimiter.sweep()
-    destructiveLimiter.sweep()
     store.deleteExpiredSessions()
   }, 60_000)
   sweeper.unref()

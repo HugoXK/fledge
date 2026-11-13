@@ -106,10 +106,13 @@ tracked as `sessions.recent_auth_at`:
   came back and the action is submitted again.
 - Role checks still run first: a non-admin is refused with 403 before the
   recency check, and a fresh re-authentication does not grant a role.
-- The same handlers are rate-limited (60 a minute per action and client
-  address). The bucket key is the address `TRUST_PROXY` resolves, so a caller
-  cannot mint a new bucket with a header, and a refused attempt answers 429
-  before anything is written or audited.
+- The same handlers are rate-limited (60 attempts a minute per route and client
+  address) through `@fastify/rate-limit`, registered with `global: false` so the
+  ceiling is a property of the eight routes that name `config.rateLimit` and
+  nothing else. The key generator is `rateLimitKey` over the address
+  `TRUST_PROXY` resolves, so a caller cannot mint a new bucket with a header or a
+  form field, and a refused attempt answers the plugin's 429 before the handler —
+  and therefore before anything is written or audited.
 
 ### CSRF
 
