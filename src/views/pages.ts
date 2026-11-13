@@ -1230,6 +1230,31 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       </div>
     </div>
   </section>`
+  // #523: triage is repository-scoped and read-only, so the start control sits
+  // beside the run and review starts on the page the owner already controls. The
+  // one input it accepts is an optional issue URL; the route refuses a link that
+  // is not this repository's, so the field says so instead of letting the
+  // callback discover it later.
+  const triageFieldId = `triage-issue-${repo.id}`
+  const triageForm = roleMissing
+    ? `<p class="muted">${escapeHtml(t('先选择你的角色，然后才能开始分诊。', 'Choose your role first; triage opens after that.'))}</p>`
+    : `<form method="post" action="/repos/${escapeHtml(repo.id)}/triage" class="form">
+      ${csrf(viewer)}
+      <label for="${escapeHtml(triageFieldId)}">${escapeHtml(t('Issue URL（可选）', 'Issue URL (optional)'))}
+        <input id="${escapeHtml(triageFieldId)}" name="issueUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://github.com/${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}/issues/1" aria-describedby="${escapeHtml(triageFieldId)}-hint"${activeJob ? ' disabled' : ''} />
+      </label>
+      <p class="fine" id="${escapeHtml(triageFieldId)}-hint">${escapeHtml(t('填一个这个仓库的 issue，看板就从它开始；留空则通读全部开着的 issue 和 PR。别的仓库或别的站点的链接会被拒绝，任务不会开始。', 'A link from this repository starts the board with that issue; leaving it empty reads every open issue and pull request. A link from another repository or host is refused and no job starts.'))}</p>
+      <div class="row">
+        <button class="btn" type="submit"${activeJob ? ' disabled' : ''}>${escapeHtml(t('开始分诊', 'Triage now'))}</button>
+        ${activeJob ? `<span class="fine">${escapeHtml(t('已有任务在运行，结束后才能开始分诊。', 'A job is already running; triage starts once it finishes.'))}</span>` : ''}
+      </div>
+    </form>`
+  const triageCard = `<section class="card" id="triage">
+    <div class="eyebrow">${escapeHtml(t('分诊', 'TRIAGE'))}</div>
+    <h2>${escapeHtml(t('分诊这个仓库', 'Triage this repository'))}</h2>
+    <p class="muted">${escapeHtml(t('读出开着的 issue 和 PR，按优先级排序、标出重复项，并点名下一项。只读：不开分支，也不开 PR。', 'Reads the open issues and pull requests, ranks them by priority, links duplicates and names the next item. Read-only: no branch and no pull request.'))}</p>
+    ${triageForm}
+  </section>`
   const instanceCard = `<section class="card">
     <div class="row between">
       <div>
@@ -1465,7 +1490,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <p class="fine">${escapeHtml(t('平台只通过 GitHub API 读取元数据、创建 fork 和分支/PR；不会 clone 到公共磁盘。', 'The platform only uses the GitHub API to read metadata, create forks and open branches/PRs; it never clones to public disk.'))}</p>
     </div>
   </section>`
-  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${planBanner}${lifecycleBanner}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}`)}${repoSection('delivery', `${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceNotice}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
+  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${planBanner}${lifecycleBanner}${triageCard}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}`)}${repoSection('delivery', `${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceNotice}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : '<script src="/assets/chief.js" defer></script>'}<script src="/assets/repoTabs.js" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
 }
 
