@@ -128,6 +128,23 @@ defect.
   and Apply would land on a hidden table. A failed job whose message the
   platform only writes in Chinese is named by its failure class on a page in the
   other language, and the raw sentence stays on the job page.
+- **Queue position** (`src/lib/queueRank.ts`, `rankQueued`): a queued job shows
+  its place in the queue with the length (`#3/7`) and the priority it competes
+  on, computed with the claimer's two keys only — `priority DESC, created_at ASC`
+  (`src/db.ts`, `claimQueuedJob`); the id comparison inside its per-repo
+  `NOT EXISTS` is not an instance key, so rows equal on both keys share a
+  position instead of inventing a third one. Position and total are
+  instance-wide counts, because they describe the real line. The job page's
+  ahead-list names only the viewer's own queued jobs (the per-user read is
+  filtered to `queued` and re-sorted, so a running job is not a neighbour), and
+  jobs owned by anyone else are one sentence with a number and no identifier:
+  no repository, account, priority class or arrival time. The number is the
+  ordering, not a promise — the claimer also refuses a job while its repository
+  has a running or earlier queued job. The rank renders inside the existing job
+  cell on the dashboard, repository and team console tables; the admin
+  recent-jobs table deliberately keeps its four columns and shows no position,
+  because a queue place read from an operator slice would read as the admin's
+  own.
 - **Shell** (`src/views/layout.ts`, `public/app.css`): the main nav marks the
   current page with `aria-current="page"` on the one link whose own target is the
   route, derived from the route and overridable with `active`; a nested route
