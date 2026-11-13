@@ -2273,7 +2273,7 @@ export class Jobs {
         })
         continue
       }
-      const state = existing.state === 'proposed' && isNext ? 'triaged' : existing.state
+      const state = isNext && (existing.state === 'proposed' || existing.state === 'closed') ? 'triaged' : existing.state
       this.store.updateWorkItem(existing.id, {
         priority: Math.max(existing.priority, item.priority),
         ...(state === existing.state ? {} : { state }),

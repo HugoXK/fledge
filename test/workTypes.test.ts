@@ -219,12 +219,21 @@ test('the next scheduled job consumes the proposed item', async () => {
   const { store, jobs, repo } = setup('triage-next')
   const secret = 'triage-next-secret'
   try {
+    store.createWorkItem({
+      id: 'work_triage_closed',
+      repoId: repo.id,
+      userId: repo.user_id,
+      title: 'Crash when saving an empty form',
+      issueUrl: 'https://github.com/o/r/issues/1',
+      state: 'closed',
+    })
     startTriageJob(store, repo, 'job_triage_next', secret)
     const result = await jobs.handleCallback('job_triage_next', secret, { status: 'succeeded', triage: TRIAGE })
     assert.equal(result.ok, true)
     const open = store.listOpenWorkItems(repo.id)
     const proposed = open.find((item) => item.issue_url === 'https://github.com/o/r/issues/1')
     assert.ok(proposed !== undefined)
+    assert.equal(proposed.state, 'triaged', 'a closed item with an open issue is reopened by the proposal')
     const next = decideNextJob({
       repo,
       now: Date.now(),
