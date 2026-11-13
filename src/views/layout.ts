@@ -190,6 +190,7 @@ export function layout(options: LayoutOptions): string {
     ${body}
   </main>
   ${footer}
+  <script src="/assets/section-nav.js" defer></script>
   <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title">
     <form method="dialog">
       <h2 id="confirm-dialog-title">${escapeHtml(t('请确认', 'Please confirm'))}</h2>

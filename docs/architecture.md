@@ -43,6 +43,14 @@ explicit `UTC` suffix. The digest is scheduled in `DIGEST_TIMEZONE` and
 `/settings` names that zone, so an unlabelled timestamp beside it would read as
 a second clock that disagrees.
 
+`/settings` and `/admin` carry a sticky section nav: one chip per `.card[id]`, in
+the order the page draws the cards, so the marker can always name the section on
+screen. `test/sectionNav.test.ts` asserts that mapping in both directions, which
+is how a card added without a chip fails the suite instead of quietly leaving
+the previous chip marked. `/admin`'s top card has no `id` on purpose — it is the
+page header, not a section — so nothing is marked at the very top of that page;
+that is the accepted state, not a defect.
+
 ## Components
 
 ```
