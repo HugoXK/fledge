@@ -354,15 +354,20 @@ Every record carries the environment, version, commit, image digest,
 time, and the GitHub Release link. A non-admin receives `403`; no token, provider
 key or host path is stored or rendered.
 
-The drift view compares the newest deployment in an environment with the latest
+The drift view compares what an environment actually runs with the latest
 release in `${DATA_DIR}/release-status.json` (written by
-`node scripts/verify-release.mjs --write …`). It reports:
+`node scripts/verify-release.mjs --write …`). What it runs is the newest
+deployment, unless a rollback was recorded after that deployment and names a
+different commit or digest: then the environment is the rollback's previous
+commit and digest, it carries no version, and it never reads `ok`. It reports:
 
 - **behind** when the deployed version is older than the released version;
 - **mismatch** when the deployed version is ahead, the tag commit differs, or a
   `/healthz` probe names a different commit or version;
-- **unknown** when no deployment or no release snapshot is recorded;
-- **ok** only when the version, commit and recorded health agree.
+- **unknown** when no deployment or no release snapshot is recorded, and for a
+  rollback record that names no readable commit or digest;
+- **ok** only when the version, commit and recorded health agree, and no newer
+  rollback moved the environment.
 
 Only **behind** and **mismatch** alert. `verify-release.mjs --deployment FILE`
 performs the same comparison in the CLI, adds a `deployment` link and exits `1`
@@ -372,6 +377,10 @@ A promotion is written only after its canary checklist passes:
 
 1. `/healthz` returns `2xx` with the promoted commit and version;
 2. `/readyz` returns `2xx`;
+   A status field that is present and non-empty must be an integer from 100 to
+   599; anything else (a typo such as `2OO`, a word, a number out of range)
+   blocks the write instead of being recorded as `200`. Only an absent field
+   defaults to `200`. The same rule applies to the rollback form.
 3. a named smoke job passed;
 4. the error window has a measured duration, error count and the error threshold
    it is judged against;

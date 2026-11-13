@@ -461,3 +461,137 @@ test('verify-release alerts when a supplied deployment is behind the released ta
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// #395 review round 2: the drift view was built from `latestDeployment` alone.
+// After a verified rollback the page kept the superseded deployment and the
+// green `ok` badge at exactly the moment an operator needs to see that
+// production is not on the release any more.
+test('a verified rollback is the environment state, so the drift view never reads ok', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'fledge-deployments-'))
+  writeFileSync(
+    join(dataDir, 'release-status.json'),
+    JSON.stringify({
+      schema: 1,
+      version: '0.3.2',
+      checkedAt: '2026-11-13T11:00:00.000Z',
+      baseUrl: 'https://fledge.example',
+      ok: true,
+      links: [{ id: 'release', state: 'ok', detail: 'released' }],
+      problems: [],
+      targetSha: C,
+      releaseUrl: 'https://github.com/HugoXK/fledge/releases/tag/v0.3.2',
+    }),
+  )
+  const config = testConfig({ dataDir })
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'rollback-drift-admin', admin: true, status: 'approved' })
+    const session = sessionFor(built, admin)
+    store.recordDeployment({
+      environment: 'production',
+      version: '0.3.0',
+      commit: A,
+      imageDigest: DIGEST_OLD,
+      deployedAt: '2026-11-10T10:00:00.000Z',
+      operator: 'release-bot',
+      healthz: { ok: true, status: 200, version: '0.3.0', commit: A },
+      readyz: { ok: true, status: 200 },
+      releaseUrl: 'https://github.com/HugoXK/fledge/releases/tag/v0.3.0',
+      gate: { ok: true, checks: [], blocked: [] },
+    })
+    store.recordDeployment({
+      environment: 'production',
+      version: '0.3.2',
+      commit: C,
+      imageDigest: DIGEST_NEW,
+      deployedAt: '2026-11-13T10:00:00.000Z',
+      operator: 'release-bot',
+      healthz: { ok: true, status: 200, version: '0.3.2', commit: C },
+      readyz: { ok: true, status: 200 },
+      releaseUrl: 'https://github.com/HugoXK/fledge/releases/tag/v0.3.2',
+      gate: { ok: true, checks: [], blocked: [] },
+    })
+    store.recordDeploymentRollback({
+      environment: 'production',
+      fromDeploymentId: null,
+      previousDeploymentId: store.listDeployments('production')[1]!.id,
+      previousDigest: DIGEST_OLD,
+      previousCommit: A,
+      owner: 'on-call',
+      command: `docker pull ghcr.io/hugoxk/fledge@${DIGEST_OLD}`,
+      decision: 'rollback',
+      healthz: { ok: true, status: 200, commit: A },
+      verified: true,
+    })
+
+    const json = await built.app.inject({ method: 'GET', url: '/api/admin/deployments', headers: { cookie: session.cookie } })
+    assert.equal(json.statusCode, 200)
+    const environment = JSON.parse(json.body).environments[0]
+    assert.equal(environment.drift.state, 'mismatch', 'production runs the rollback target, not the released commit')
+    assert.equal(environment.drift.alert, true)
+    assert.equal(environment.current.source, 'rollback', 'the environment names the rollback, not the superseded deployment')
+    assert.equal(environment.current.commit, A)
+    assert.match(environment.drift.summary, /rolled back/i)
+    assert.match(environment.drift.summary, new RegExp(A))
+
+    const page = await built.app.inject({ method: 'GET', url: '/admin/deployments', headers: { cookie: session.cookie, 'accept-language': 'en' } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /Deployment drift/, 'the alert banner names the environment')
+    assert.match(page.body, /after a rollback/)
+    assert.doesNotMatch(page.body, /is the released version/, 'the superseded deployment is not reported as the releases state')
+  } finally {
+    await built.close()
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+// #395 review round 2: `httpStatus(NaN)` returned 200, so a typo in the status
+// field was stored as a measured 2xx and the canary gate passed on evidence
+// nobody took. Only an absent field may default.
+test('a status field with no readable HTTP code is refused instead of recorded as 200', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'fledge-deployments-'))
+  const config = testConfig({ dataDir })
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'status-admin', admin: true, status: 'approved' })
+    const session = sessionFor(built, admin)
+    const post = (url: string, body: Record<string, string | number | undefined>) => built.app.inject({
+      method: 'POST',
+      url,
+      headers: { cookie: session.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf: session.csrf, ...body }),
+    })
+
+    const healthzTypo = await post('/admin/deployments/promote', promotionBody({ healthz_status: 'not-a-number' }))
+    assert.equal(healthzTypo.statusCode, 302)
+    assert.match(String(healthzTypo.headers.location), /error=/, 'the typo is refused by name')
+    assert.equal(store.listDeployments(null).length, 0, 'no deployment is recorded from an unmeasured /healthz status')
+
+    const readyzTypo = await post('/admin/deployments/promote', promotionBody({ readyz_status: 'nope' }))
+    assert.match(String(readyzTypo.headers.location), /error=/)
+    assert.equal(store.listDeployments(null).length, 0)
+
+    const outOfRange = await post('/admin/deployments/promote', promotionBody({ healthz_status: '9999' }))
+    assert.match(String(outOfRange.headers.location), /error=/, 'a number outside 100-599 is not an HTTP status either')
+    assert.equal(store.listDeployments(null).length, 0)
+
+    const measured = await post('/admin/deployments/promote', promotionBody({ healthz_status: '201' }))
+    assert.equal(measured.statusCode, 302)
+    assert.match(String(measured.headers.location), /notice=/, 'a real status is still accepted')
+    assert.equal(store.listDeployments('production')[0]?.healthz_status, 201, 'a measured status is kept exactly')
+
+    const rollbackTypo = await post('/admin/deployments/rollback', rollbackBody({
+      previous_commit: C,
+      previous_digest: DIGEST_NEW,
+      healthz_commit: C,
+      healthz_status: 'nope',
+    }))
+    assert.match(String(rollbackTypo.headers.location), /error=/)
+    assert.equal(store.listDeploymentRollbacks(null).length, 0, 'the rollback form refuses it too')
+  } finally {
+    await built.close()
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})

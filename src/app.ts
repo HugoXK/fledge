@@ -49,11 +49,14 @@ import {
   deploymentFromRow,
   deploymentHealth,
   deploymentReadiness,
+  environmentState,
   latestReleaseFromStatus,
   parsePromotionForm,
   parseRollbackForm,
   redactCommand,
   type DeploymentRow,
+  type DriftAssessment,
+  type EnvironmentCurrent,
 } from './lib/deployments.js'
 import { configureOtel, endSpan, shutdownOtel, startSpan, type SpanHandle } from './lib/otel.js'
 import { configureGithubBudget } from './lib/githubBudget.js'
@@ -3035,15 +3038,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // the recorded facts.
   const deploymentReadModel = (): {
     release: ReturnType<typeof latestReleaseFromStatus>
-    environments: Array<{ environment: string; latest: DeploymentRow | null; drift: ReturnType<typeof deploymentDrift> }>
+    environments: Array<{ environment: string; latest: DeploymentRow | null; current: EnvironmentCurrent; drift: DriftAssessment }>
     deployments: DeploymentRow[]
     rollbacks: ReturnType<Store['listDeploymentRollbacks']>
   } => {
     const release = latestReleaseFromStatus(readReleaseStatus(config.dataDir))
     const deployments = store.listDeployments(null, 200)
+    // #395 review round 2: the environment row is the newest deployment *or* a
+    // rollback recorded after it, whichever actually says what production runs.
     const environments = store.listDeploymentEnvironments().map((environment) => {
       const latest = store.latestDeployment(environment) ?? null
-      return { environment, latest, drift: deploymentDrift(latest, release) }
+      const rollback = store.listDeploymentRollbacks(environment, 1)[0] ?? null
+      const state = environmentState(latest, rollback, release)
+      return { environment, latest, current: state.current, drift: state.drift }
     })
     return { release, environments, deployments, rollbacks: store.listDeploymentRollbacks(null, 100) }
   }
@@ -3073,6 +3080,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       release: model.release,
       environments: model.environments.map((entry) => ({
         environment: entry.environment,
+        current: entry.current,
         drift: { state: entry.drift.state, alert: entry.drift.alert, summary: entry.drift.summary },
         latest: entry.latest === null ? null : {
           ...deploymentFromRow(entry.latest),

@@ -1,4 +1,4 @@
-import type { DeploymentRow } from '../db.js'
+import type { DeploymentRollbackRow, DeploymentRow } from '../db.js'
 import type { ReleaseStatusSnapshot } from './releaseStatus.js'
 import {
   assessDeploymentDrift,
@@ -113,8 +113,17 @@ function integer(body: Record<string, string>, key: string, fallback: number): n
   return Number.isInteger(parsed) ? parsed : Number.NaN
 }
 
-function httpStatus(value: number): number {
-  return Number.isInteger(value) && value >= 100 && value <= 599 ? value : 200
+// #395 review round 2: a present status field is evidence or it is nothing.
+// Coercing an unparseable value to 200 recorded a probe nobody measured and let
+// the canary gate pass on it; only an absent field may default to 200.
+function httpStatus(body: Record<string, string>, key: string, label: string): ParseResult<number> {
+  const value = text(body, key)
+  if (value === '') return { ok: true, value: 200 }
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 100 || parsed > 599) {
+    return { ok: false, error: `${label} status must be an HTTP status code` }
+  }
+  return { ok: true, value: parsed }
 }
 
 function validUrl(value: string): boolean {
@@ -152,20 +161,22 @@ export function parsePromotionForm(body: Record<string, string>, fallbackOperato
   const releaseUrl = text(body, 'release_url')
   if (!validUrl(releaseUrl)) return { ok: false, error: 'release_url must be an http(s) URL' }
 
-  const healthzStatus = httpStatus(integer(body, 'healthz_status', 200))
+  const healthzStatus = httpStatus(body, 'healthz_status', 'healthz')
+  if (!healthzStatus.ok) return healthzStatus
   const healthzVersion = text(body, 'healthz_version')
   if (healthzVersion !== '' && !VERSION.test(healthzVersion)) return { ok: false, error: 'healthz version must be X.Y.Z' }
   const healthzCommit = text(body, 'healthz_commit').toLowerCase()
   if (healthzCommit !== '' && !COMMIT.test(healthzCommit)) return { ok: false, error: 'healthz commit must be a sha' }
-  const readyzStatus = httpStatus(integer(body, 'readyz_status', 200))
+  const readyzStatus = httpStatus(body, 'readyz_status', 'readyz')
+  if (!readyzStatus.ok) return readyzStatus
 
   const healthz = {
     ok: flag(body, 'healthz_ok'),
-    status: healthzStatus,
+    status: healthzStatus.value,
     version: healthzVersion,
     commit: healthzCommit,
   }
-  const readyz = { ok: flag(body, 'readyz_ok'), status: readyzStatus }
+  const readyz = { ok: flag(body, 'readyz_ok'), status: readyzStatus.value }
   const gate: CanaryGateEvidence = {
     healthz,
     readyz,
@@ -218,11 +229,12 @@ export function parseRollbackForm(body: Record<string, string>, deployments: Dep
   const decision = text(body, 'decision') || 'rollback'
   if (!DECISION.test(decision)) return { ok: false, error: 'decision must be a short lowercase word' }
 
-  const healthzStatus = httpStatus(integer(body, 'healthz_status', 200))
+  const healthzStatus = httpStatus(body, 'healthz_status', 'healthz')
+  if (!healthzStatus.ok) return healthzStatus
   const healthzCommit = text(body, 'healthz_commit').toLowerCase()
   if (healthzCommit !== '' && !COMMIT.test(healthzCommit)) return { ok: false, error: 'healthz commit must be a sha' }
   const healthzOk = flag(body, 'healthz_ok')
-  const healthz = { ok: healthzOk, status: healthzStatus, commit: healthzCommit }
+  const healthz = { ok: healthzOk, status: healthzStatus.value, commit: healthzCommit }
   const fromId = text(body, 'from_deployment_id')
   const from = deployments.find((row) => row.environment === environment && row.id === fromId)
   return {
@@ -256,3 +268,117 @@ export function deploymentDrift(row: DeploymentRow | null, release: ReleaseSnaps
 }
 
 export type { DeploymentRow }
+
+// #395 review round 2: an environment is not only its newest deployment. A
+// rollback recorded after that deployment says production runs the previous
+// commit, and judging the deployment alone kept the drift view green at exactly
+// the moment it exists for. The rollback wins only when it actually moves the
+// environment: a rollback that names the same commit and digest as the newest
+// deployment changed nothing, so the deployment stays the environment's state.
+export interface EnvironmentCurrent {
+  source: 'deployment' | 'rollback' | 'none'
+  version: string | null
+  commit: string
+  digest: string
+  recordedAt: string
+  operator: string
+  healthz: boolean | null
+  readyz: boolean | null
+}
+
+export interface EnvironmentState {
+  current: EnvironmentCurrent
+  drift: DriftAssessment
+}
+
+const NO_ENVIRONMENT: EnvironmentCurrent = {
+  source: 'none',
+  version: null,
+  commit: '',
+  digest: '',
+  recordedAt: '',
+  operator: '',
+  healthz: null,
+  readyz: null,
+}
+
+function sameInstallation(commit: string, digest: string, row: DeploymentRow): boolean {
+  return sameCommit(commit, row.commit_sha) && digest === row.image_digest
+}
+
+export function environmentState(latest: DeploymentRow | null, rollback: DeploymentRollbackRow | null, release: ReleaseSnapshot | null): EnvironmentState {
+  // Equal timestamps count as a rollback: when the two records cannot be
+  // ordered, the safe direction is to alert rather than to report ok.
+  const rolledBack = rollback !== null && (latest === null || (rollback.created_at >= latest.created_at && !sameInstallation(rollback.previous_commit, rollback.previous_digest, latest)))
+  if (!rolledBack) {
+    const current: EnvironmentCurrent = latest === null
+      ? NO_ENVIRONMENT
+      : {
+          source: 'deployment',
+          version: latest.version,
+          commit: latest.commit_sha,
+          digest: latest.image_digest,
+          recordedAt: latest.deployed_at,
+          operator: latest.operator,
+          healthz: latest.healthz_ok === 1,
+          readyz: latest.readyz_ok === 1,
+        }
+    return { current, drift: deploymentDrift(latest, release) }
+  }
+  const record = rollback as DeploymentRollbackRow
+  const current: EnvironmentCurrent = {
+    source: 'rollback',
+    version: null,
+    commit: record.previous_commit,
+    digest: record.previous_digest,
+    recordedAt: record.created_at,
+    operator: record.owner,
+    healthz: record.healthz_ok === 1,
+    readyz: null,
+  }
+  const snapshot = {
+    environment: record.environment,
+    version: null,
+    commit: current.commit,
+    imageDigest: current.digest,
+    deployedAt: current.recordedAt,
+    operator: current.operator,
+    healthz: { ok: current.healthz === true, status: record.healthz_status, commit: record.healthz_commit },
+    readyz: null,
+  }
+  if (!COMMIT.test(current.commit) || !DIGEST.test(current.digest)) {
+    return {
+      current,
+      drift: {
+        state: 'unknown',
+        alert: true,
+        summary: `a rollback recorded at ${current.recordedAt} names no readable commit or digest, so the current state cannot be judged`,
+        deployment: snapshot,
+        release,
+      },
+    }
+  }
+  if (release === null) {
+    return {
+      current,
+      drift: {
+        state: 'unknown',
+        alert: true,
+        summary: `production was rolled back to ${current.commit} and no release snapshot is recorded, so drift cannot be judged`,
+        deployment: snapshot,
+        release,
+      },
+    }
+  }
+  const superseded = latest === null ? 'no deployment is recorded' : `the newest deployment is v${latest.version} at ${latest.commit_sha}`
+  return {
+    current,
+    drift: {
+      state: 'mismatch',
+      alert: true,
+      summary: `production was rolled back to ${current.commit}, not v${String(release.version ?? '')} at ${String(release.commit ?? '')}; ${superseded}, and the rollback names no version`,
+      deployment: snapshot,
+      release,
+    },
+  }
+}

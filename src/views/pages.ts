@@ -1,6 +1,6 @@
 import type { Config } from '../config.js'
 import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
-import { redactCommand, type DriftAssessment, type ReleaseSnapshot } from '../lib/deployments.js'
+import { redactCommand, type DriftAssessment, type EnvironmentCurrent, type ReleaseSnapshot } from '../lib/deployments.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
@@ -3073,7 +3073,7 @@ export function adminDeploymentsPage(input: {
   locale: Locale
   viewer: Viewer
   release: ReleaseSnapshot | null
-  environments: Array<{ environment: string; latest: DeploymentRow | null; drift: DriftAssessment }>
+  environments: Array<{ environment: string; latest: DeploymentRow | null; current: EnvironmentCurrent; drift: DriftAssessment }>
   deployments: DeploymentRow[]
   rollbacks: DeploymentRollbackRow[]
   notice?: string
@@ -3104,14 +3104,19 @@ export function adminDeploymentsPage(input: {
     ? stateCell(4, { kind: 'empty', title: t('还没有部署记录。', 'No deployment is recorded.'), body: t('在下方记录一次通过 canary 的部署后，漂移视图会开始比较。', 'Record a deployment after its canary gate passes; drift compares from then on.'), action: { href: '/admin', label: t('返回管理', 'Back to admin') } })
     : environments.map((entry) => {
         const row = entry.latest
-        const health = row === null ? null : row.healthz_ok === 1
-        const ready = row === null ? null : row.readyz_ok === 1
-        return `<tr>
+        const current = entry.current
+        const healthzBadge = current.healthz === null
+          ? escapeHtml('—')
+          : `<span class="badge ${current.healthz ? 'good' : 'bad'}">/healthz ${current.healthz ? 'ok' : 'fail'}</span>`
+        const readyzBadge = current.readyz === null
+          ? ''
+          : `<br /><span class="badge ${current.readyz ? 'good' : 'bad'}">/readyz ${current.readyz ? 'ok' : 'fail'}</span>`
+        return `<tr data-deployment-source="${escapeHtml(current.source)}">
           <td data-label="${escapeHtml(t('环境', 'Environment'))}"><strong>${escapeHtml(entry.environment)}</strong><br /><small class="muted">${escapeHtml(entry.drift.summary)}</small></td>
-          <td data-label="${escapeHtml(t('版本', 'Version'))}">${row === null ? escapeHtml('—') : `v${escapeHtml(row.version)}<br /><code>${commit(row.commit_sha)}</code>`}</td>
-          <td data-label="${escapeHtml(t('镜像', 'Image'))}">${row === null ? escapeHtml('—') : `<code>${escapeHtml(row.image_digest)}</code>`}</td>
-          <td data-label="${escapeHtml(t('记录', 'Recorded'))}">${row === null ? escapeHtml('—') : `${escapeHtml(humanTimeShort(row.deployed_at))}<br /><small class="muted">@${escapeHtml(row.operator)}</small>`}</td>
-          <td data-label="${escapeHtml(t('健康', 'Health'))}">${health === null ? escapeHtml('—') : `<span class="badge ${health ? 'good' : 'bad'}">/healthz ${health ? 'ok' : 'fail'}</span>`}<br /><span class="badge ${ready ? 'good' : 'bad'}">/readyz ${ready ? 'ok' : 'fail'}</span></td>
+          <td data-label="${escapeHtml(t('版本', 'Version'))}">${current.source === 'none' ? escapeHtml('—') : `${current.version === null ? escapeHtml(t('未知版本', 'version unknown')) : `v${escapeHtml(current.version)}`}<br /><code>${commit(current.commit)}</code>${current.source === 'rollback' ? `<br /><small class="muted">${escapeHtml(t('回滚后', 'after a rollback'))}</small>` : ''}`}</td>
+          <td data-label="${escapeHtml(t('镜像', 'Image'))}">${current.source === 'none' ? escapeHtml('—') : `<code>${escapeHtml(current.digest)}</code>`}</td>
+          <td data-label="${escapeHtml(t('记录', 'Recorded'))}">${current.source === 'none' ? escapeHtml('—') : `${escapeHtml(humanTimeShort(current.recordedAt))}<br /><small class="muted">@${escapeHtml(current.operator)}</small>`}</td>
+          <td data-label="${escapeHtml(t('健康', 'Health'))}">${healthzBadge}${readyzBadge}</td>
           <td data-label="${escapeHtml(t('漂移', 'Drift'))}">${stateBadge(entry.drift.state)}</td>
           <td data-label="${escapeHtml(t('发布', 'Release'))}">${row === null ? escapeHtml('—') : external(row.release_url, t('发布链接', 'release'))}</td>
         </tr>`
