@@ -292,6 +292,17 @@ defect.
   is skipped while another job for that repository is active. The global
   concurrency cap is 2. Review cadence is from every 6 hours to every 30 days.
   Jobs that exceed the timeout are failed.
+- **Schedule expressions** (#544, first slice): `src/schedules/next.ts` is the
+  one planner a preview and the worker will share. A schedule is either a
+  five-field cron expression (numeric values, `*`, ranges and steps; no seconds
+  field, names or extensions) or a fixed interval between one minute and 30 days,
+  bound to an IANA timezone and an optional `[start_at, end_at)` window.
+  `nextTime` is where DST is decided once: a local time that does not exist in
+  the spring-forward gap is skipped rather than shifted, and a local time that
+  occurs twice in the fall-back hour fires once, at the earlier instant, so a
+  poll inside the repeated hour does not run it a second time. Occurrence rows,
+  leases, misfire policies, layered budgets and the notification outbox are not
+  built yet; the tick still runs on `repos.interval_minutes`.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
