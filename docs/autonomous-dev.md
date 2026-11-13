@@ -472,6 +472,12 @@ land on the default branch, and a skipped job would still publish a check run
 under the required name. Its `if:` tests the event first and reaches the
 association test only for `issue_comment`, so a stranger cannot start the
 `actions: write` job and the other three events never evaluate the association.
+The association gate is per job, not per workflow: any job holding `actions:
+write` must test `author_association` on every event a stranger can trigger, and
+`review-gate-repair` does the same for `pull_request_review` (reading
+`github.event.review.author_association`). `scripts/action-pins.mjs` enforces the
+rule for the whole tree — a job with `actions: write` on a stranger-reachable
+event without the matching association test reds the required `action-pins` job.
 A PASS that arrives after a rejection at the same SHA keeps the
 check red until the repair step re-runs the failed run at that SHA; that now
 happens without a hand step. A run above the attempt cap (attempt 3, after
