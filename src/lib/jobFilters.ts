@@ -12,7 +12,10 @@ export const JOB_FILTER_STATUSES: JobStatus[] = ['queued', 'running', 'succeeded
 // second copy here is how `scope` and `verify` went missing from the form while
 // `research` — a kind no job can have — was offered. `KIND_LABELS` is typed by
 // that union, so adding a kind there breaks this file's build until it is listed.
-export const JOB_FILTER_KINDS: JobKind[] = ['iterate', 'review', 'plan', 'scope', 'verify']
+// `triage` is a kind a person's request can produce (a triage row is a real row
+// on the board), so it is filterable; `discover` is left out on purpose, since a
+// discovery run is scheduled by the platform rather than started by the account.
+export const JOB_FILTER_KINDS: JobKind[] = ['iterate', 'review', 'plan', 'scope', 'verify', 'triage']
 
 export interface JobFilter {
   repo: string
@@ -65,6 +68,7 @@ const KIND_LABELS: Record<JobKind, [string, string]> = {
   scope: ['范围', 'Scope'],
   verify: ['验证', 'Verify'],
   discover: ['发现', 'Discovery'],
+  triage: ['分诊', 'Triage'],
 }
 
 export function statusFilterLabel(t: Translate, status: string): string {

@@ -39,7 +39,7 @@ export class GithubApp {
   private key: string | null = null
   private skewMs = 0
   private skewAt = 0
-  private readonly tokens = new Map<number, { token: string; expiresAt: number }>()
+  private readonly tokens = new Map<string, { token: string; expiresAt: number }>()
 
   constructor(private readonly config: Config) {}
 
@@ -133,12 +133,17 @@ export class GithubApp {
     }
   }
 
-  async installationToken(id: number): Promise<string> {
-    const cached = this.tokens.get(id)
+  // #390 review: a downscoped token is not the installation's full token, so the
+  // cache is keyed by the permissions too. One key per installation would hand a
+  // read-only token to a write path, or a write token to a read-only run, and a
+  // cache key is exactly the kind of detail that makes a downscope untrue later.
+  async installationToken(id: number, permissions?: Record<string, 'read'>): Promise<string> {
+    const key = permissions === undefined ? String(id) : `${id}:${JSON.stringify(permissions)}`
+    const cached = this.tokens.get(key)
     if (cached !== undefined && cached.expiresAt - Date.now() > 2 * 60_000) return cached.token
-    const result = await this.appRequest<{ token: string; expires_at: string }>('POST', `/app/installations/${id}/access_tokens`, {})
+    const result = await this.appRequest<{ token: string; expires_at: string }>('POST', `/app/installations/${id}/access_tokens`, permissions === undefined ? {} : { permissions })
     if (result === null) throw new Error('无法创建 GitHub App installation token')
-    this.tokens.set(id, { token: result.token, expiresAt: Date.parse(result.expires_at) })
+    this.tokens.set(key, { token: result.token, expiresAt: Date.parse(result.expires_at) })
     return result.token
   }
 
