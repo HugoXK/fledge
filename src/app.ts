@@ -3363,6 +3363,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const sweeper = setInterval(() => {
     loginLimiter.sweep()
     apiLimiter.sweep()
+    destructiveLimiter.sweep()
     store.deleteExpiredSessions()
   }, 60_000)
   sweeper.unref()
