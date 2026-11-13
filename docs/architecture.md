@@ -1278,6 +1278,17 @@ queued ──► running ──► succeeded
 The claim/worker dispatch model, the `queued` meaning and the idempotent
 callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
 
+## Notification webhook egress
+
+`buildApp()` checks `NOTIFY_WEBHOOK_URL` before it opens the store. In production
+an unsafe target stops the process instead of starting with an alert path that
+would POST into the internal network. The same guard runs on every send and on
+every redirect hop, so a runtime change or a redirect fails closed. The guard
+resolves the host and refuses loopback, RFC1918, carrier-grade NAT, link-local,
+multicast, ULA, IPv6 loopback and IPv4-mapped private addresses; an exact
+`NOTIFY_WEBHOOK_ALLOWED_HOSTS` entry is the only way an operator may name a
+private self-hosted target. Errors name the host but never the secret or payload.
+
 ## Trust boundaries
 
 | Boundary | Control |
