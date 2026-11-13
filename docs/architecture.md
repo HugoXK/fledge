@@ -661,6 +661,29 @@ card carries that combined verdict rather than the PR evidence alone, so a pull
 request the path guard blocks never renders as evidence passed; the row names the
 guard as the reason its claim was lowered.
 
+### The independent adversarial review
+
+The last gate before an automatic merge is a second read of the same change by a
+model call that shares no context with the agent that wrote it
+(`src/lib/adversarialReview.ts`). Fledge assembles an `AdversarialPacket` from
+named fields only — base sha, tip sha, the pull-request patches, the verifier
+result at the tip and the repository policy — so the author's summary and its
+claimed test output are not in the request at all; a caller that still holds them
+cannot pass them through. Each automatic merge attempt records one
+`job.adversarial` event with the model, the prompt hash and the evidence the
+reviewer saw.
+
+The answer must be one of two shapes: `Concrete risk: <path>:<line>` with a
+failure mode and a repro, or `No concrete risk` with the checks it ran. A bare
+score is rejected as not a review. A concrete risk blocks the automatic merge
+with the page naming the file and line; the next run that clears it merges
+normally, and a maintainer merging by hand keeps that decision. A missing pass, a
+truncated diff, an unconfigured platform model or a malformed answer never blocks
+— Fledge does not invent a risk, and it does not treat a number as proof either;
+the job page says which of the four happened, with the model and the prompt hash.
+A review job still runs in its own Reviewer session for the normal score; this
+pass is deliberately a separate context, not a second report from the same one.
+
 ### Retry policy and capacity
 
 `src/lib/retry.ts` classifies transient failures (bridge, model, GitHub,

@@ -2753,3 +2753,93 @@ test('a failed review schedules one retry and keeps its pull request and work it
     store.close()
   }
 })
+
+test('a concrete adversarial risk blocks auto-merge, while a bare score is not evidence', async () => {
+  const merges: string[] = []
+  const github = await startFakeServer((request, response) => {
+    const method = request.method ?? 'GET'
+    const url = request.url ?? ''
+    if (method === 'GET' && url === '/repos/o/r/pulls/1') {
+      json(response, 200, { number: 1, html_url: 'https://github.com/o/r/pull/1', title: 'fix', state: 'open', head: { ref: 'fledge/fix', sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false, changed_files: 1 })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/check-runs?per_page=100') {
+      json(response, 200, { check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/status') {
+      json(response, 200, { state: 'success', statuses: [] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/pulls/1/reviews?per_page=100') {
+      json(response, 200, [])
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/branches/main') {
+      json(response, 200, { name: 'main', commit: { sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' } })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/pulls/1/files?per_page=100&page=1') {
+      json(response, 200, [{ filename: 'src/x.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-const a = 0\n+const a = 1' }])
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/branches/main/protection') {
+      json(response, 200, { required_status_checks: { contexts: ['ci'] }, required_pull_request_reviews: { required_approving_review_count: 0 } })
+      return
+    }
+    if (method === 'PUT' && url === '/repos/o/r/pulls/1/merge') {
+      merges.push('merge')
+      json(response, 200, { merged: true, sha: 'def' })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url }, autoMerge: { ...base.autoMerge, reconcileMinutes: 0 } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'adversarial-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_adversarial', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, upstreamHtmlUrl: 'https://github.com/o/r', forkHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const secret = 'adversarial-secret'
+    store.createJob({ id: 'job_adversarial_risk', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob('job_adversarial_risk', { status: 'running', branch: 'fledge/fix', started_at: new Date().toISOString() })
+    let calls = 0
+    jobs.adversarialModel = async () => {
+      calls += 1
+      return [
+        'Concrete risk: src/x.ts:1',
+        'Failure mode: the constant flips every read, so the page renders a stale value',
+        'Repro: open the page twice with the patch applied',
+        'Checks: read the diff',
+      ].join('\n')
+    }
+    const blocked = await jobs.handleCallback('job_adversarial_risk', secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/1', summary: 'done' })
+    assert.equal(blocked.ok, true)
+    assert.equal(merges.length, 0, 'a concrete risk must block the automatic merge')
+    const riskEvent = store.listJobEvents('job_adversarial_risk').find((event) => event.kind === 'job.adversarial')
+    assert.ok(riskEvent !== undefined, 'the adversarial verdict is recorded on the job')
+    assert.match(String(riskEvent?.meta ?? ''), /src\/x\.ts:1/)
+    // Auto-merge reconciliation retries a blocked PR every few minutes; the same
+    // tip must not buy a second review, or a blocked PR would cost a call per pass.
+    assert.equal(calls, 1)
+    await jobs.reconcileAutoMerge()
+    assert.equal(calls, 1, 'a stored verdict for this tip is reused instead of re-reviewed')
+    assert.equal(merges.length, 0)
+
+    // The next run clears nothing by itself: a second job that answers with a
+    // score has not run an adversarial review, so the merge is not blocked by it
+    // either — and the page can say the answer was rejected.
+    store.createJob({ id: 'job_adversarial_vague', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob('job_adversarial_vague', { status: 'running', branch: 'fledge/fix', started_at: new Date().toISOString() })
+    jobs.adversarialModel = async () => 'Score: 95/100\n\nLooks good.'
+    const passed = await jobs.handleCallback('job_adversarial_vague', secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/1', summary: 'done' })
+    assert.equal(passed.ok, true)
+    assert.equal(merges.length, 1, 'a bare score is rejected, not treated as a pass of the adversarial contract')
+    const vagueEvent = store.listJobEvents('job_adversarial_vague').find((event) => event.kind === 'job.adversarial')
+    assert.match(String(vagueEvent?.meta ?? ''), /score/i)
+  } finally {
+    store.close()
+    await github.close()
+  }
+})

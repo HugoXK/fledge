@@ -16,6 +16,7 @@ import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '..
 import { parseEvidenceJson } from '../lib/evidence.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
+import { parseAdversarialRecord, type AdversarialRecord } from '../lib/adversarialReview.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
 import { readBackupStatus, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus } from '../lib/backupStatus.js'
@@ -2293,6 +2294,16 @@ export function jobPage(input: {
   const failureLink = failure === null ? '' : failureHref(failure.action, repo.id)
   const verification = parseVerification(job.verification_json)
   const pathGuard = parsePathGuard(job.path_guard_json)
+  // #382: the independent pass records one event per attempt. The page shows what
+  // it decided, including the case where its answer was not a review at all.
+  const adversarial = parseAdversarialRecord([...events].reverse().find((event) => event.kind === 'job.adversarial')?.meta)
+  const adversarialText = (record: AdversarialRecord): string => record.status === 'risk'
+    ? t(`具体风险 ${record.target ?? ''} — 自动合并已阻止`, `concrete risk ${record.target ?? ''} — the automatic merge was blocked`)
+    : record.status === 'none'
+      ? t(`未发现具体风险${record.checks.length === 0 ? '' : `（检查：${record.checks.join('、')}）`}`, `no concrete risk${record.checks.length === 0 ? '' : ` (checks: ${record.checks.join(', ')})`}`)
+      : record.status === 'invalid'
+        ? t(`回答被拒绝，不算一次审核：${record.reason ?? ''}`, `answer rejected as not a review: ${record.reason ?? ''}`)
+        : t(`未运行：${record.reason ?? ''}`, `not run: ${record.reason ?? ''}`)
   const readiness = mergeReadiness(job)
   // The badge above combines the path guard with the PR evidence; the evidence
   // row used to read verification.ok alone, so a PR the guard blocked still
@@ -2445,6 +2456,8 @@ export function jobPage(input: {
             ? escapeHtml(t(`已检查 ${formatCount(pathGuard.checkedFiles)} / 报告 ${formatCount(pathGuard.reportedFiles)} 个文件`, `Checked ${formatCount(pathGuard.checkedFiles)} / ${formatCount(pathGuard.reportedFiles)} reported files`))
             : escapeHtml(t(`${pathGuard.violations.length} 个文件违反路径约束。`, `${pathGuard.violations.length} file(s) violate the path constraints.`))}${pathGuard.allow.length === 0 && pathGuard.deny.length === 0 ? ` · ${escapeHtml(t('未设置约束', 'no constraints set'))}` : ''}</p>
         ${pathGuard.violations.length === 0 ? '' : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('文件', 'File'))}</th><th>${escapeHtml(t('原因', 'Reason'))}</th></tr></thead><tbody>${pathGuard.violations.map((violation) => `<tr><td><code>${escapeHtml(violation.file)}</code></td><td>${escapeHtml(violation.reason === 'denied' ? t('命中禁止路径', 'Denied path') : t('不在允许路径', 'Not allowed'))}</td></tr>`).join('')}</tbody></table></div>`}`}
+    ${adversarial === null ? '' : `<h3 class="mt-16">${escapeHtml(t('独立对抗式审核', 'Independent adversarial review'))}</h3>
+      <p class="fine" data-adversarial>${escapeHtml(adversarialText(adversarial))}${adversarial.model === null ? '' : ` · ${escapeHtml(t('模型', 'Model'))} ${escapeHtml(adversarial.model)}`}${adversarial.promptHash === null ? '' : ` · ${escapeHtml(t('提示哈希', 'Prompt hash'))} <code>${escapeHtml(adversarial.promptHash.slice(0, 12))}</code>`}</p>`}
   </section>`}
   <section class="card">
     <h2>${escapeHtml(t('时间线', 'Timeline'))}</h2>
