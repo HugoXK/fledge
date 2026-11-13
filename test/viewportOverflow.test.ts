@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { lastValue as lastValueIn, parseRules } from './cssRules.js'
 
 // On a phone, /console and /repos/:id scroll sideways while the page shows
 // nothing at the right edge. Two independent selectors widen the document:
@@ -23,100 +24,13 @@ const cssSource = readFileSync(new URL('../public/app.css', import.meta.url), 'u
 const NARROW_WIDTHS = [360, 390, 421, 430, 480, 640, 641, 768, 800, 960]
 const DESKTOP_WIDTH = 1280
 
-type Declaration = { property: string; value: string }
-type StyleRule = { selectors: string[]; declarations: Declaration[]; media: string | null }
-
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '')
-}
-
-function declarationsOf(body: string): Declaration[] {
-  const declarations: Declaration[] = []
-  for (const part of body.split(';')) {
-    const separator = part.indexOf(':')
-    if (separator === -1) continue
-    const property = part.slice(0, separator).trim().toLowerCase()
-    const value = part.slice(separator + 1).trim()
-    if (property === '') continue
-    declarations.push({ property, value })
-  }
-  return declarations
-}
-
-function parseRules(source: string, media: string | null = null): StyleRule[] {
-  const css = stripComments(source)
-  const rules: StyleRule[] = []
-  let index = 0
-  let prelude = ''
-  while (index < css.length) {
-    const character = css[index] ?? ''
-    if (character === '{') {
-      let depth = 1
-      let end = index + 1
-      while (end < css.length && depth > 0) {
-        if (css[end] === '{') depth += 1
-        else if (css[end] === '}') depth -= 1
-        end += 1
-      }
-      const body = css.slice(index + 1, end - 1)
-      const head = prelude.trim()
-      if (head.startsWith('@')) {
-        const atRule = head.slice(1).trim()
-        if (atRule.startsWith('media')) rules.push(...parseRules(body, atRule.slice('media'.length).trim()))
-      } else {
-        const selectors = head.split(',').map((selector) => selector.trim()).filter((selector) => selector !== '')
-        rules.push({ selectors, declarations: declarationsOf(body), media })
-      }
-      prelude = ''
-      index = end
-      continue
-    }
-    if (character === ';') {
-      prelude = ''
-      index += 1
-      continue
-    }
-    prelude += character
-    index += 1
-  }
-  return rules
-}
-
-const rules = parseRules(cssSource)
-
-function conditionHolds(condition: string, width: number): boolean {
-  const parts = condition.split(/\s+and\s+/).map((part) => part.trim()).filter((part) => part !== '')
-  for (const part of parts) {
-    const max = /^\(\s*max-width\s*:\s*(\d+(?:\.\d+)?)px\s*\)$/.exec(part)
-    if (max !== null) {
-      if (!(width <= Number(max[1]))) return false
-      continue
-    }
-    const min = /^\(\s*min-width\s*:\s*(\d+(?:\.\d+)?)px\s*\)$/.exec(part)
-    if (min !== null) {
-      if (!(width >= Number(min[1]))) return false
-      continue
-    }
-    const other = /^\(\s*(min|max)-width\s*:/.test(part)
-    if (other) return false
-  }
-  return true
-}
-
-function appliesAt(rule: StyleRule, width: number): boolean {
-  return rule.media === null || conditionHolds(rule.media, width)
-}
+// Both frames read the stylesheet through the modern view: these pins describe
+// the browser that parses `@supports (padding: env(…))`, and they keep the
+// values they pinned before #492 moved the additive declarations into it.
+const rules = parseRules(cssSource, 'modern')
 
 function lastValue(selector: string, property: string, width: number): string | null {
-  let value: string | null = null
-  for (const rule of rules) {
-    if (!appliesAt(rule, width)) continue
-    if (!rule.selectors.includes(selector)) continue
-    for (const declaration of rule.declarations) {
-      if (declaration.property === property) value = declaration.value
-    }
-  }
-  return value
+  return lastValueIn(rules, selector, property, width)
 }
 
 // `minmax(0, 1fr)` and `minmax(0,1fr)` are the same declaration; compare shape,

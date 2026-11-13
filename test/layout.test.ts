@@ -221,7 +221,7 @@ const DYNAMIC_VIEWPORT = /(?:dvh|svh|lvh)\b/
 const FRAME_RULES = ['.wrap', '.top-inner', '.foot', '.top .nav']
 
 test('the page frame keeps the bottom safe area at every width, not only in one band', () => {
-  const rules = parseRules(cssText())
+  const rules = parseRules(cssText(), 'modern')
   // Both sides of every boundary in the sheet, plus the card's own widths.
   for (const width of [1400, 1200, 961, 960, 900, 768, 641, 640, 390, 360]) {
     const bottom = paddingAt(rules, '.wrap', width).bottom
@@ -251,7 +251,7 @@ test('the page frame keeps the bottom safe area at every width, not only in one 
 })
 
 test('every dynamic-viewport declaration keeps a static fallback before it', () => {
-  const rules = parseRules(cssText())
+  const rules = parseRules(cssText(), 'modern')
   let checked = 0
   for (const rule of rules) {
     rule.declarations.forEach((declaration, index) => {
@@ -274,7 +274,7 @@ test('every dynamic-viewport declaration keeps a static fallback before it', () 
 test('viewport-fit=cover carries the notch side insets on every full-bleed frame rule', () => {
   const html = render('/dashboard')
   assert.match(html, /<meta name="viewport" content="[^"]*viewport-fit=cover[^"]*"/, 'this guard assumes the layout still opts into the notch')
-  const rules = parseRules(cssText())
+  const rules = parseRules(cssText(), 'modern')
   for (const selector of FRAME_RULES) {
     const blocks = rules.filter((rule) => rule.selectors.includes(selector))
     assert.ok(blocks.length > 0, `${selector} must have a rule to check`)
