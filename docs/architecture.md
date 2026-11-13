@@ -697,10 +697,23 @@ The answer must be one of two shapes: `Concrete risk: <path>:<line>` with a
 failure mode and a repro, or `No concrete risk` with the checks it ran. A bare
 score is rejected as not a review. A concrete risk blocks the automatic merge
 with the page naming the file and line; the next run that clears it merges
-normally, and a maintainer merging by hand keeps that decision. A missing pass, a
-truncated diff, an unconfigured platform model or a malformed answer never blocks
-— Fledge does not invent a risk, and it does not treat a number as proof either;
-the job page says which of the four happened, with the model and the prompt hash.
+normally, and a maintainer merging by hand keeps that decision.
+
+The pass is granted only when it read the whole change. A diff cut at
+`MAX_DIFF_CHARS`, a changed-file listing the client reports incomplete, or a
+changed file that arrives without a patch is a refusal that names the omission
+and is recorded as `incomplete` — never a `skipped` pass with no block, and never
+a `partial` outcome that still merges (#556). A patch-less file inside the
+binary-asset allowlist (`png`, `jpg`, `jpeg`, `gif`, `webp`, `ico`, `woff`,
+`woff2`, `ttf`, `eot` under `public/` or `docs/`) is recorded as unread and may
+merge, because a screenshot cannot be read by a text model and refusing it would
+block a class of change this gate never judged. An unconfigured platform model or
+a model error stays fail-open with a recorded reason, because a change cannot
+cause it, unless the pass already knows it could not read the change: a cut diff
+is refused whether or not the model answered. Fledge does not invent a risk, and
+it does not treat a number as proof: the job page says which of the outcomes
+happened — a refusal is reported as `incomplete` with the omission it found, not
+as a risk at a file and line — with the model and the prompt hash.
 A review job still runs in its own Reviewer session for the normal score; this
 pass is deliberately a separate context, not a second report from the same one.
 
