@@ -41,6 +41,7 @@ interface Fixture {
   pullStatus?: number
   omitNumber?: boolean
   maintainerCanModify?: boolean
+  omitMaintainerCanModify?: boolean
   login?: string
   userStatus?: number
 }
@@ -98,7 +99,13 @@ function makeServer(fixture: Fixture = {}) {
       if (fixture.pullStatus !== undefined) return json({ message: 'Server Error' }, fixture.pullStatus)
       return json(fixture.omitNumber === true ? { html_url: `https://github.com/${REPO}/pull/${pullNumber}` } : { number: pullNumber, html_url: `https://github.com/${REPO}/pull/${pullNumber}` }, 201)
     }
-    if (method === 'GET' && route === `/pulls/${pullNumber}`) return json({ number: pullNumber, maintainer_can_modify: fixture.maintainerCanModify ?? false })
+    // `omitMaintainerCanModify` exists so one case can drop the key outright: the
+    // `?? false` default would otherwise fill it back in and the missing-field
+    // shape could never be exercised.
+    if (method === 'GET' && route === `/pulls/${pullNumber}`) {
+      if (fixture.omitMaintainerCanModify === true) return json({ number: pullNumber })
+      return json({ number: pullNumber, maintainer_can_modify: fixture.maintainerCanModify ?? false })
+    }
     return json({ message: `unexpected ${method} ${route}` }, 500)
   }
   return { fetch: fetchImpl as typeof fetch, calls }
@@ -321,6 +328,18 @@ test('refuses a pull request whose readback says its head is a fork', async () =
   assert.match(result.reason, /maintainer_can_modify/)
   assert.match(result.reason, /fork/)
   assert.equal(posts(calls).length, 1)
+})
+
+test('opens when the readback omits maintainer_can_modify entirely', async () => {
+  // #575, the second half of the pair: only `true` is a fork head, so a response
+  // shape that drops the key must not turn a same-repo head into a refused run.
+  // This row and the fork row above are independent, so a change in the readback
+  // shape cannot flip the behaviour without one of them going red.
+  const { result, calls } = await run({}, { omitMaintainerCanModify: true })
+  assert.equal(result.status, 'opened')
+  assert.equal(result.pr, 210)
+  assert.equal(exitCodeFor(result), 0)
+  assert.equal(posts(calls).filter((call) => call.route === '/pulls').length, 1)
 })
 
 test('refuses when POST /pulls does not answer 201', async () => {
