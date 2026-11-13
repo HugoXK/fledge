@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { Store } from '../src/db.js'
 import { dashboardPage } from '../src/views/pages.js'
-import { renderState } from '../src/views/states.js'
+import { renderState, type StateKind } from '../src/views/states.js'
 import { makeUser, testConfig } from './helpers.js'
 
 const css = readFileSync(new URL('../public/app.css', import.meta.url), 'utf8')
@@ -89,5 +89,61 @@ test('an empty dashboard renders an empty state rather than a blank region', () 
     assert.match(html, /no job starts|before any job/i, 'the empty state needs the next step')
   } finally {
     store.close()
+  }
+})
+
+// 8. The state icon is one inline SVG per state from a literal map, so the five
+// states share a geometry instead of borrowing five glyphs from whatever font the
+// platform picked for U+0030, U+0021, U+2713 and U+2013.
+function iconOf(kind: StateKind): string {
+  const html = renderState({ kind, title: 'T', body: 'B' })
+  const span = /<span class="state-icon"[^>]*>([\s\S]*?)<\/span>/.exec(html)
+  assert.ok(span !== null, `${kind} has no state-icon span`)
+  return span[1] ?? ''
+}
+
+test('every state renders exactly one inline SVG icon, hidden from the accessibility tree', () => {
+  for (const kind of ['loading', 'empty', 'error', 'success', 'disabled'] as StateKind[]) {
+    const icon = iconOf(kind)
+    assert.equal(icon.match(/<svg\b/g)?.length ?? 0, 1, `${kind} needs exactly one <svg>, not ${icon.match(/<svg\b/g)?.length ?? 0}`)
+    assert.match(icon, /^<svg\b/, `${kind}'s span content must start with the icon, so no glyph can survive beside it`)
+    assert.match(icon, /aria-hidden="true"/, `${kind}'s icon must be aria-hidden; the <strong> title carries the meaning`)
+    assert.match(icon, /focusable="false"/, `${kind}'s icon must not enter the tab order in IE-era engines`)
+  }
+})
+
+test('the five icons share one viewBox and each carries a geometry element', () => {
+  const boxes = new Set<string>()
+  for (const kind of ['loading', 'empty', 'error', 'success', 'disabled'] as StateKind[]) {
+    const icon = iconOf(kind)
+    const box = /viewBox="([^"]+)"/.exec(icon)?.[1]
+    assert.ok(box !== undefined && box !== '', `${kind}'s icon needs a viewBox`)
+    boxes.add(box)
+    assert.match(icon, /<(path|circle|rect|line)\b/, `${kind}'s icon needs at least one geometry element`)
+    assert.doesNotMatch(icon, /\swidth="\d/, `${kind}'s icon must be sized by the stylesheet, not a width attribute`)
+  }
+  assert.equal(boxes.size, 1, `the five icons must share one viewBox, found ${[...boxes].join(' / ')}`)
+})
+
+test('the icon follows the state colour and hard-codes none', () => {
+  for (const kind of ['loading', 'empty', 'error', 'success', 'disabled'] as StateKind[]) {
+    const icon = iconOf(kind)
+    assert.match(icon, /(stroke|fill)="currentColor"/, `${kind}'s icon must inherit the state colour`)
+    assert.doesNotMatch(icon, /#[0-9a-f]{3,8}\b/i, `${kind}'s icon must not hard-code a hex colour`)
+    assert.doesNotMatch(icon, /rgba?\(/, `${kind}'s icon must not hard-code an rgb colour`)
+  }
+  const sizing = rule('.state-icon svg')
+  assert.ok(sizing !== null, 'public/app.css needs a .state-icon svg rule so the size lives in the sheet')
+  assert.match(sizing ?? '', /width:\s*22px/)
+  assert.match(sizing ?? '', /height:\s*22px/)
+})
+
+test('the icon adds no second announcement beside the visible title', () => {
+  for (const kind of ['loading', 'empty', 'error', 'success', 'disabled'] as StateKind[]) {
+    const html = renderState({ kind, title: 'Visible title', body: 'B' })
+    const icon = iconOf(kind)
+    assert.doesNotMatch(icon, /<title\b/, `${kind}'s icon must not add a <title>; that would double the announcement`)
+    assert.doesNotMatch(icon, /aria-label/, `${kind}'s icon must not carry an aria-label`)
+    assert.match(html, /<strong>Visible title<\/strong>/, `${kind} must keep the visible title as the meaning`)
   }
 })

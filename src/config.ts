@@ -100,6 +100,8 @@ export interface Config {
   }
   autoMerge: {
     reconcileMinutes: number
+    /** A linked work item below this review score cannot auto-merge. */
+    minReviewScore: number
   }
   ops: {
     alertCooldownMinutes: number
@@ -319,6 +321,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     autoMerge: {
       reconcileMinutes: Math.max(1, number('AUTO_MERGE_RECONCILE_MINUTES', 5)),
+      minReviewScore: Math.min(100, Math.max(0, number('AUTO_MERGE_MIN_REVIEW_SCORE', 80))),
     },
     ops: {
       alertCooldownMinutes: Math.max(0, number('OPS_ALERT_COOLDOWN_MINUTES', 360)),
