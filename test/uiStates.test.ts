@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { Store } from '../src/db.js'
-import { dashboardPage } from '../src/views/pages.js'
+import { dashboardPage, searchPage } from '../src/views/pages.js'
 import { renderState, type StateKind } from '../src/views/states.js'
 import { makeUser, testConfig } from './helpers.js'
 
@@ -146,4 +146,58 @@ test('the icon adds no second announcement beside the visible title', () => {
     assert.doesNotMatch(icon, /aria-label/, `${kind}'s icon must not carry an aria-label`)
     assert.match(html, /<strong>Visible title<\/strong>/, `${kind} must keep the visible title as the meaning`)
   }
+})
+
+// 9. /search built its own empty state by hand and pasted a literal '0' into
+// `.state-icon`, so on the one page that composes its own state the "five states
+// are one SVG set" claim was false. The fix routes it through renderState; this
+// pins the rendered output, not the source text, so a second hand-built icon
+// fails here whichever page it appears on.
+function stateIcon(html: string): string {
+  return /<span class="state-icon"[^>]*>([\s\S]*?)<\/span>/.exec(html)?.[1] ?? ''
+}
+
+test('/search renders both empty branches through the shared icon, with no bare glyph', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'search-ui', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const input = {
+      config,
+      locale: 'en' as const,
+      viewer,
+      repos: [],
+      filters: { q: 'nothing', repo: '', status: '', kind: '', from: '', to: '' },
+      cap: 20,
+    }
+    const empty = { rows: [], capped: false }
+    const branches: [string, string][] = [
+      ['blank', searchPage({ ...input, results: null })],
+      ['no-match', searchPage({ ...input, results: { repos: empty, jobs: empty, workItems: empty, audit: empty } })],
+    ]
+    for (const [label, html] of branches) {
+      assert.match(html, /data-state="empty"/, `${label}: /search must render the shared empty state`)
+      assert.match(html, /role="status"/, `${label}: the empty state keeps its live-region role`)
+      const icon = stateIcon(html)
+      assert.match(icon, /^<svg\b/, `${label}: .state-icon must hold the shared SVG, not a glyph`)
+      assert.equal(icon.replace(/<svg[\s\S]*?<\/svg>/g, '').trim(), '', `${label}: no bare glyph may survive beside the icon`)
+    }
+  } finally {
+    store.close()
+  }
+})
+
+// 10. The icon span belongs to the renderer: a page that writes it by hand can
+// drift back to a glyph without any of the state tests above noticing.
+test('no page builds a .state-icon span by hand', () => {
+  assert.doesNotMatch(pages, /<span class="state-icon"/, 'the icon span belongs to src/views/states.ts alone')
+})
+
+// 11. The slot holds an <svg>; a font declaration on the slot itself is styling
+// that cannot reach the child and reads as live.
+test('the .state-icon rule carries no dead glyph styling', () => {
+  const icon = rule('.state-icon')
+  assert.ok(icon !== null, 'public/app.css needs a .state-icon rule')
+  assert.doesNotMatch(icon ?? '', /font-size|font-weight/, 'the icon slot holds an <svg>, so font declarations there are dead')
 })

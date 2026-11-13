@@ -736,7 +736,7 @@ textarea { resize: vertical; min-height: 70px; }
 .state .actions { margin-top: var(--space-3); }
 .state-icon {
   flex: none; width: 22px; height: 22px; border-radius: 50%;
-  display: grid; place-items: center; font-size: var(--text-xs); font-weight: 800;
+  display: grid; place-items: center;
   background: var(--surface-raised); color: var(--muted-2);
 }
 /* The icon inherits `color` from the rule above, so the size is the only thing

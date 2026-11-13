@@ -251,12 +251,12 @@ and the accessibility contract are fixed:
 - The three live streams (notifications, questions, chief) announce
   `connecting`, `lost` and `recovered` in an `aria-live="polite"` status node
   (`[data-inbox-status]`, `[data-chief-status]`), instead of stopping silently.
-- Evidence for the change: `test/uiStates.test.ts` (11 assertions; 6 of them red
-  on the base commit with only the renderer added, and 3 of the 4 icon assertions
-  red until the SVG map replaced the glyphs), plus before/after captures under
-  `docs/images/ui-v2/69-*.jpg` at 1280 and 360 in both languages. The state icons
-  have their own captures: `docs/images/ui-v2/476-before-*.jpg` and
-  `476-after-*.jpg` at 1280, 768 and 360, Chinese and English on one page.
+- Evidence for this change: at its base `eef9cfa7`, `test/uiStates.test.ts` fails
+  the icon group as `not ok 8/9/10` (8 pass / 3 fail) until the SVG map replaces
+  the glyphs, and every assertion passes at the tip. The icons have their own
+  captures, `docs/images/ui-v2/476-before-*.jpg` and `476-after-*.jpg` at 1280,
+  768 and 360, Chinese and English on one page. The older `#453` table-overflow
+  counts belong to the table work above and are not repeated here.
 
 ## Review trend numbers (审核趋势)
 

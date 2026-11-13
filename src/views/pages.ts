@@ -2905,7 +2905,10 @@ export function searchPage(input: {
   const labels = new Map(repos.map((repo) => [repo.id, `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`]))
   const table = (title: string, heads: string[], rows: string[], note: boolean, badgeText = ''): string => rows.length === 0 ? '' : `<section class="card"><h2>${escapeHtml(title)}${badgeText === '' ? '' : ` <span class="badge">${escapeHtml(badgeText)}</span>`}</h2><div class="table-scroll"><table><thead><tr>${heads.map((head) => `<th>${escapeHtml(head)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>${note ? `<p class="fine">${escapeHtml(t('还有更多结果，缩小关键词或加筛选。', 'More results — narrow the keyword or add a filter.'))}</p>` : ''}</section>`
   const open = (url: string | null): string => url === null ? '—' : `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(t('打开', 'Open'))}</a>`
-  const empty = (title: string, body: string): string => `<div class="state state-empty" data-state="empty" role="status"><span class="state-icon" aria-hidden="true">0</span><div class="state-body"><strong>${escapeHtml(title)}</strong><p>${escapeHtml(body)}</p><div class="actions"><a class="btn btn-small" href="/console">${escapeHtml(t('回到工作区', 'Back to workspace'))}</a></div></div></div>`
+  // The empty state goes through the shared renderer like the other four kinds:
+  // a hand-built copy carried a literal '0' where the SVG set belongs, so this
+  // page was the one place the icon contract did not hold.
+  const empty = (title: string, body: string): string => renderState({ kind: 'empty', title, body, action: { href: '/console', label: t('回到工作区', 'Back to workspace') } })
   const [reposOut, jobsOut, itemsOut, auditOut] = [results?.repos.rows ?? [], results?.jobs.rows ?? [], results?.workItems.rows ?? [], results?.audit.rows ?? []]
   const sections = [
     table(t('仓库', 'Repositories'), [t('仓库', 'Repository'), t('状态', 'Status')], reposOut.map((row) => `<tr><td><a href="/repos/${escapeHtml(row.id)}">${text(`${row.owner}/${row.name}`)}</a></td><td>${escapeHtml(row.enabled === 1 ? t('已启用', 'enabled') : t('已暂停', 'paused'))}</td></tr>`), results?.repos.capped === true),
