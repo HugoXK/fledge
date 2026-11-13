@@ -183,7 +183,10 @@ test('a query string on an issue URL never reaches the goal as text', async () =
     const rows = jobs(h)
     assert.equal(rows.length, 1)
     assert.match(rows[0]!.goal, /issues\/1/, 'the goal still names the issue')
-    assert.match(rows[0]!.goal, /https:\/\/github\.com\/owner\/repo\/issues\/1\./, 'the goal carries the canonical issue URL')
+    // A literal, not a regex: CodeQL's `js/regex/missing-regexp-anchor` counts a
+    // new unanchored pattern in a test as a new high result, and the assertion
+    // only needs the canonical URL to be present verbatim.
+    assert.ok(rows[0]!.goal.includes('https://github.com/owner/repo/issues/1.'), 'the goal carries the canonical issue URL')
     assert.doesNotMatch(rows[0]!.goal, /IGNORE|focus/, 'no caller-supplied text reaches the prompt')
     assert.doesNotMatch(rows[0]!.goal, /\?/, 'the query is dropped, not carried')
     assert.ok(rows[0]!.goal.startsWith(DEFAULT_TRIAGE_GOAL), 'the triage contract is still the goal it starts from')
@@ -199,7 +202,7 @@ test('a fragment on an issue URL is dropped the same way', async () => {
     assert.equal(response.statusCode, 302)
     const rows = jobs(h)
     assert.equal(rows.length, 1)
-    assert.match(rows[0]!.goal, /https:\/\/github\.com\/owner\/repo\/issues\/2\./, 'the goal carries the canonical issue URL')
+    assert.ok(rows[0]!.goal.includes('https://github.com/owner/repo/issues/2.'), 'the goal carries the canonical issue URL')
     assert.doesNotMatch(rows[0]!.goal, /IGNORE/, 'the fragment text does not reach the prompt')
     assert.doesNotMatch(rows[0]!.goal, /#/, 'the fragment is dropped, not carried')
   } finally {
