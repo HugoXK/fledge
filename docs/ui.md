@@ -316,3 +316,21 @@ the query is anchored on the user id, so it cannot return another user's row, an
 email or a token column, and `%`/`_` match as text. A repository filter narrows the
 three sections that own one; audit rows carry none, so that section says so. Rows
 link to the existing pages; an empty result uses the shared empty state.
+
+## Table header and density (#473)
+A table taller than the window keeps its column names. Above 641px `.table-scroll`
+is a bounded scrollport — `overflow-y: auto` with
+`max-height: calc(100dvh - var(--header-h) - var(--space-7))`, and the same bound
+minus `var(--subnav-h)` on a repository page — and every `thead th` inside it is
+`position: sticky; top: 0` on `--panel`, so rows scroll under an opaque header
+instead of replacing it. The pair is one contract: a sticky header in an
+unbounded scroller does nothing, and a bound that ignores the subnav parks the
+header under it; `test/density.test.ts` asserts both.
+
+Density is a saved preference, not a client-side class flip: `/density/compact`
+and `/density/comfortable` set the `fledge_density` cookie and redirect through
+`safeLocalPath`, an unknown mode is a 404, and `<html data-density>` carries the
+value (comfortable when nothing is saved). Compact trims only the cell padding —
+a control inside a cell keeps its box. Below 641px the tables are the card stack
+(#130), the `thead` is hidden and the 44px touch floor is untouched, so neither
+the bound nor the density rules apply in that band.
