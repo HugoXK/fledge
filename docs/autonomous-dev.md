@@ -541,6 +541,14 @@ the state, asks the planner and the pure `decideDrive()` in
 | a push before today's boundary with the previous boundary unreleased | plan; the summary says `catch-up` |
 | a dry run | the same summary and artifact, and no push and no comment |
 
+The state collection measures the changelog fragments with
+`scripts/fragment-count.mjs`, the same rule `scripts/changelog.mjs` folds with. A
+directory holding only `README.md`, or no markdown at all, is zero fragments — a
+legitimate answer the planner turns into its own first reason, not a failed step —
+while a directory the process cannot read fails the job (#548). The `Trigger` step
+reads the collected state only when the collect step succeeded, so a missing state
+file is never dereferenced.
+
 A push is a planning trigger, not a tolerated one, and the event name no longer
 decides: the quantity the rule counts — merged pull requests since the tag —
 changes only on a push, so a push is sufficient, and a night with no merge has

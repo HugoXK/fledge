@@ -110,7 +110,10 @@ test('the release job runs on a push too, and the trigger predicate decides whet
   assert.match(job('tag'), /if: github\.event_name == 'push'/)
   const step = between('      - name: Trigger', '      - name: Check the opener precondition')
   assert.match(step, /id: trigger/)
-  assert.match(step, /if: \$\{\{ always\(\) \}\}/)
+  // #548: this was `always()`. The step reads the state the collect step wrote,
+  // and a collect step that failed must be the single report rather than an
+  // ENOENT here, so the condition names that step's outcome instead.
+  assert.match(step, /if: \$\{\{ steps\.state\.outcome == 'success' \}\}/)
   assert.match(step, /import \{ decideTrigger \} from "\.\/scripts\/lib\/release-trigger\.mjs"/)
   assert.match(step, /trigger=\$\{event\} plan=\$\{decision\.plan\}/)
   assert.equal(step.includes('gh api'), false, 'the trigger step reads the state the run already collected')
