@@ -261,6 +261,50 @@
     })
   })
 
+  const sectionNav = document.querySelector('.section-nav')
+  if (sectionNav) {
+    // The rule that decides the marker lives in section-nav.js, which the page
+    // loads before this script; it publishes itself as window.SectionNav so the
+    // dependency is named in both files rather than implied by load order.
+    const sectionNavRule = window.SectionNav
+    const links = Array.from(sectionNav.querySelectorAll('a'))
+    const sections = links
+      .map((link) => {
+        const id = (link.getAttribute('href') || '').replace(/^#/, '')
+        return { link, target: id === '' ? null : document.getElementById(id) }
+      })
+      .filter((entry) => entry.target !== null)
+    const setActive = (id) => {
+      for (const entry of sections) entry.link.setAttribute('aria-current', entry.target.id === id ? 'true' : 'false')
+    }
+    if (sections.length > 0 && sectionNavRule !== undefined) {
+      // One rule for the scroll position and for the tap, so the marker cannot
+      // disagree with the chip the user just pressed. The band is the bottom of
+      // the sticky bar, which is where scroll-margin-top parks an anchored
+      // section, so the tapped chip keeps the marker; the last section stays
+      // current at the document end even though it never crosses that line.
+      // During the smooth scroll the marker follows the viewport through the
+      // sections in between, which is this rule working, not a second state.
+      const pick = () => {
+        // scroll-margin-top is what parks a tapped section and the only place
+        // the bar's height is written; read it back so the band cannot disagree
+        // with the jump. Every nav target shares the rule.
+        const anchorOffset = parseFloat(getComputedStyle(sections[0].target).scrollMarginTop) || 0
+        const id = sectionNavRule.currentSection({
+          tops: sections.map((entry) => ({ id: entry.target.id, top: entry.target.getBoundingClientRect().top })),
+          bandTop: sectionNavRule.scrollBandTop(window.innerHeight, anchorOffset),
+          scrollY: window.scrollY,
+          scrollHeight: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
+          viewportHeight: window.innerHeight,
+        })
+        if (id !== null) setActive(id)
+      }
+      for (const entry of sections) entry.link.addEventListener('click', () => setActive(entry.target.id))
+      window.addEventListener('scroll', pick, { passive: true })
+      pick()
+    }
+  }
+
   document.querySelectorAll('[data-copy]').forEach((el) => {
     el.addEventListener('click', async () => {
       const target = document.querySelector(el.getAttribute('data-copy'))

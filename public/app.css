@@ -94,6 +94,12 @@
      text) over the measured height, so an anchor target still clears the
      header with the script off. */
   --header-h: 90px;
+  /* The section nav's height: 8px + 8px padding, the 44px touch target and the
+     1px bottom rule, which .section-nav below consumes unchanged at every
+     breakpoint. scroll-margin-top reads this token instead of a second number,
+     so an anchored section clears the bar instead of landing a few pixels under
+     it. */
+  --nav-h: 61px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --touch: 44px;
   --content: 1180px;
@@ -1081,6 +1087,23 @@ html:not([data-js]) .info-tip:hover::after, html:not([data-js]) .info-tip:focus:
   table.table-priority[data-table-ready="true"][data-show-low="true"] td[data-priority="low"] { display: table-cell; }
 }
 
+.section-nav {
+  position: sticky; top: var(--header-h); z-index: 15;
+  display: flex; gap: var(--space-2); margin: 0 0 var(--space-4);
+  padding: var(--space-2) 0; overflow-x: auto; scrollbar-width: none;
+  border-bottom: 1px solid var(--line); background: var(--bg);
+}
+.section-nav::-webkit-scrollbar { display: none; }
+.section-nav a {
+  flex: 0 0 auto; display: inline-flex; align-items: center;
+  min-height: var(--touch); padding: 0 var(--space-4);
+  border: 1px solid var(--line); border-radius: var(--radius-pill);
+  color: var(--muted); font-size: 13px; font-weight: 600;
+  text-decoration: none; white-space: nowrap;
+}
+.section-nav a:hover { color: var(--text); border-color: var(--accent); }
+.section-nav a[aria-current="true"] { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--accent-ink); }
+.section-nav ~ .card[id] { scroll-margin-top: calc(var(--header-h) + var(--nav-h)); }
 .confirm-dialog { width: min(440px, calc(100vw - 32px)); border: 1px solid var(--line-strong); border-radius: var(--radius-md); padding: 22px; background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
 .confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
 .confirm-dialog h2 { margin-bottom: 10px; }
