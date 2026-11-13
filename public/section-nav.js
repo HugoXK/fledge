@@ -35,3 +35,15 @@ function currentSection(state) {
 function scrollBandTop(viewportHeight, scrollMarginTop) {
   return Math.max(viewportHeight * 0.2, scrollMarginTop + 1)
 }
+
+// The page loads this file as a classic script before app.js, so the two share
+// one global -- but nothing said so, and app.js read two names that existed only
+// because of it. Publish the rule under one name instead: app.js calls
+// window.SectionNav, and the rule now has a caller written in the file that
+// defines it. That caller matters: package.json declares "type": "module", so a
+// static reader treats public/*.js as modules, where a top-level function nothing
+// names is dead code (CodeQL reported exactly that at :17 and :35, and a
+// suppression would have kept the finding). The browser contract and the
+// analyzer's view are the same statement now, and behaviour is unchanged -- a
+// classic script's top-level functions were already properties of window.
+window.SectionNav = { currentSection, scrollBandTop }

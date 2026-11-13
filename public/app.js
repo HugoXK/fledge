@@ -255,6 +255,10 @@
 
   const sectionNav = document.querySelector('.section-nav')
   if (sectionNav) {
+    // The rule that decides the marker lives in section-nav.js, which the page
+    // loads before this script; it publishes itself as window.SectionNav so the
+    // dependency is named in both files rather than implied by load order.
+    const sectionNavRule = window.SectionNav
     const links = Array.from(sectionNav.querySelectorAll('a'))
     const sections = links
       .map((link) => {
@@ -265,7 +269,7 @@
     const setActive = (id) => {
       for (const entry of sections) entry.link.setAttribute('aria-current', entry.target.id === id ? 'true' : 'false')
     }
-    if (sections.length > 0 && typeof currentSection === 'function') {
+    if (sections.length > 0 && sectionNavRule !== undefined) {
       // One rule for the scroll position and for the tap, so the marker cannot
       // disagree with the chip the user just pressed. The band is the bottom of
       // the sticky bar, which is where scroll-margin-top parks an anchored
@@ -278,9 +282,9 @@
         // the bar's height is written; read it back so the band cannot disagree
         // with the jump. Every nav target shares the rule.
         const anchorOffset = parseFloat(getComputedStyle(sections[0].target).scrollMarginTop) || 0
-        const id = currentSection({
+        const id = sectionNavRule.currentSection({
           tops: sections.map((entry) => ({ id: entry.target.id, top: entry.target.getBoundingClientRect().top })),
-          bandTop: scrollBandTop(window.innerHeight, anchorOffset),
+          bandTop: sectionNavRule.scrollBandTop(window.innerHeight, anchorOffset),
           scrollY: window.scrollY,
           scrollHeight: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
           viewportHeight: window.innerHeight,

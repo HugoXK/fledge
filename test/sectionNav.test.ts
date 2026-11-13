@@ -18,16 +18,27 @@ interface SectionState {
   viewportHeight: number
 }
 
-// public/ is served as a classic script -- it declares the rule as a global and
-// the page calls it -- so the shipped file is run in a bare context rather than
-// imported, which executes exactly what the browser executes. The rule is where
-// the marker's decision lives, so this is the behavioural half of the suite.
-const sandbox: Record<string, unknown> = {}
-vm.runInNewContext(sectionNavScript, sandbox)
-const currentSection = sandbox.currentSection as (state: SectionState) => string | null
-const scrollBandTop = sandbox.scrollBandTop as (viewportHeight: number, scrollMarginTop: number) => number
-assert.equal(typeof currentSection, 'function', 'public/section-nav.js must declare currentSection')
-assert.equal(typeof scrollBandTop, 'function', 'public/section-nav.js must declare scrollBandTop')
+// public/ is served as a classic script, so the shipped file is executed in a
+// bare context rather than imported, which runs exactly what the browser runs.
+// The page loads section-nav.js before app.js and the two share one global, so
+// the context models that shape: `window` is the global object itself, and the
+// rule publishes itself on it. The rule is where the marker's decision lives, so
+// this is the behavioural half of the suite.
+//
+// The publication is also the answer to the CodeQL finding at :17 and :35:
+// package.json says "type": "module", so a static reader sees this file as a
+// module, where a top-level function that no module-local code names is dead
+// code. Naming the rule on `window` is the caller, and it is the same statement
+// the browser relies on -- behaviour is unchanged, because a classic script's
+// top-level functions were already properties of window.
+const sandbox = vm.createContext({}) as Record<string, unknown>
+vm.runInContext('window = globalThis', sandbox)
+vm.runInContext(sectionNavScript, sandbox)
+const page = sandbox.window as { SectionNav?: { currentSection?: unknown; scrollBandTop?: unknown } }
+const currentSection = page.SectionNav?.currentSection as (state: SectionState) => string | null
+const scrollBandTop = page.SectionNav?.scrollBandTop as (viewportHeight: number, scrollMarginTop: number) => number
+assert.equal(typeof currentSection, 'function', 'public/section-nav.js must publish currentSection on window.SectionNav')
+assert.equal(typeof scrollBandTop, 'function', 'public/section-nav.js must publish scrollBandTop on window.SectionNav')
 
 // The anchor offset as the browser computes it: the sticky header plus the nav
 // (65/69 header + 61px nav at 390/844-wide and desktop). scroll-margin-top is
@@ -206,9 +217,21 @@ test('the page loads the rule before the script that uses it, and a tap marks it
   const ruleAt = html.indexOf('src="/assets/section-nav.js"')
   const appAt = html.indexOf('src="/assets/app.js"')
   assert.ok(ruleAt !== -1 && appAt !== -1 && ruleAt < appAt, 'section-nav.js must load before app.js')
-  assert.match(script, /currentSection\(/)
-  assert.match(script, /bandTop:\s*scrollBandTop\(window\.innerHeight, anchorOffset\)/)
+  assert.match(script, /sectionNavRule\.currentSection\(/)
+  assert.match(script, /bandTop:\s*sectionNavRule\.scrollBandTop\(window\.innerHeight, anchorOffset\)/)
   assert.doesNotMatch(script, /bandTop:\s*window\.innerHeight \* 0\.2/, 'the raw 20% band is the defect the anchor case names')
   assert.match(script, /addEventListener\('click',\s*\(\)\s*=>\s*setActive\(entry\.target\.id\)\)/)
   assert.match(script, /setAttribute\('aria-current'/)
+})
+
+test('app.js reaches the rule through the name the rule publishes, not a bare global', () => {
+  // The two files share one global because the page loads them as classic
+  // scripts, but nothing in either file said so: app.js read two names that only
+  // exist because of how its sibling happens to be served. Naming the contract
+  // on `window.SectionNav` is also what gives the rule a caller that survives
+  // package.json's "type": "module" -- the CodeQL finding at public/section-nav.js
+  // :17 and :35 is exactly "no caller is visible".
+  assert.match(script, /window\.SectionNav/, 'public/app.js must take the rule from window.SectionNav')
+  assert.doesNotMatch(script, /[^.\w]currentSection\(\{/, 'a bare currentSection( call is the implicit global the finding names')
+  assert.doesNotMatch(script, /[^.\w]scrollBandTop\(window\.innerHeight/, 'a bare scrollBandTop( call is the implicit global the finding names')
 })
