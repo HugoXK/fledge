@@ -56,7 +56,11 @@ jobs:
   review-gate-repair:
     name: review-gate-repair
     needs: review-gate
-    if: always() && github.event_name == 'pull_request_review'
+    # A review is stranger-reachable on a public repository: any signed-in account
+    # may submit one. The same associations `scripts/lib/review-gate.mjs` filters
+    # decide, so a stranger's review cannot start this `actions: write` job and
+    # spawn re-runs on someone else's pull request.
+    if: always() && github.event_name == 'pull_request_review' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
