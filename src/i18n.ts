@@ -306,6 +306,10 @@ export const ZH_TO_EN: ReadonlyArray<readonly [RegExp, Localizer]> = [
   [/^任务 (\S+) 改动的文件列表不完整，无法确认路径约束：([\s\S]+)$/, (m) => `Job ${m[1]} has an incomplete changed-file list, so the path constraint could not be confirmed: ${m[2]}`],
   [/^任务 (\S+) 的 PR 改动了受保护路径，已阻止合并：([\s\S]+)$/, (m) => `The PR for job ${m[1]} changed protected paths, so the merge was blocked: ${m[2]}`],
   [/^任务 (\S+) 改动了受保护路径：([\s\S]+)$/, (m) => `Job ${m[1]} changed protected paths: ${m[2]}`],
+  // #417: the inventory/cleanup verdict is written once by `src/jobs/service.ts`
+  // and carries no code, so it travels only this table; the English form has to
+  // tell the reader what to do, because the Chinese sentence is an instruction.
+  [/^任务 (\S+) 产出的是盘点\/清账类 issue，不计为产品产出；请改为具体问题。$/, (m) => `Job ${m[1]} produced an inventory/cleanup issue, which does not count as product output. Replace it with a concrete problem.`],
   [/^(.+) 连续 3 个任务失败，自动迭代已暂停；请检查 bridge、GitHub 凭据和模型额度后手动重新开启。$/, (m) => `${m[1]} failed 3 jobs in a row, so auto-iteration is paused. Check the bridge, the GitHub credential and the model quota, then start it again manually.`],
   [/^(.+) 的本次任务只有 Lead 参与，其他团队角色没有实际介入。$/, (m) => `Only the Lead took part in this job for ${m[1]}; no other team role was involved.`],
   [/^(.+) 团队提问：([\s\S]+)$/, (m) => `${m[1]} team question: ${m[2]}`],

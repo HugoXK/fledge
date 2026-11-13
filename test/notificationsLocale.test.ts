@@ -105,6 +105,28 @@ test('a stage-evidence notice renders in English for every job kind', () => {
   }
 })
 
+test('an inventory-issue notice renders in English on an English dashboard', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'notice-inventory', status: 'approved' })
+    // #417: `src/jobs/service.ts` writes this sentence when a job's issue is
+    // classified as inventory/cleanup work. No template knew it, so an English
+    // console showed the raw Chinese line and could not act on it.
+    store.notify(user.id, 'job', '任务 job_1 产出的是盘点/清账类 issue，不计为产品产出；请改为具体问题。')
+
+    const en = render(store, user.id, 'en')
+    assert.equal(CJK.test(noticeRow(en)), false, `the English notice row must not contain CJK: ${noticeRow(en)}`)
+    assert.match(noticeRow(en), /inventory|cleanup/i)
+    assert.match(noticeRow(en), /job_1/)
+    assert.match(noticeRow(en), /concrete problem/i)
+
+    const zh = render(store, user.id, 'zh')
+    assert.match(noticeRow(zh), /盘点\/清账类 issue/)
+  } finally {
+    store.close()
+  }
+})
+
 test('every localisation row is pinned by a sample in both directions', () => {
   const samples: ReadonlyArray<readonly [Locale, string, string]> = [
     ['en', '@alice 的 GitHub token 权限不足，自动迭代已暂停；请重新授权后手动开启。', "@alice: the GitHub token is missing permissions, so auto-iteration is paused. Re-authorize GitHub and start it again manually."],
@@ -117,6 +139,7 @@ test('every localisation row is pinned by a sample in both directions', () => {
     ['en', '任务 job_16 的 PR 改动的文件列表不完整，无法确认路径约束，已阻止合并：incomplete changed-file list: checked 3000 of 3100', 'The PR for job job_16 has an incomplete changed-file list, so the path constraint could not be confirmed and the merge was blocked: incomplete changed-file list: checked 3000 of 3100'],
     ['en', '任务 job_17 改动的文件列表不完整，无法确认路径约束：incomplete changed-file list: checked 3000', 'Job job_17 has an incomplete changed-file list, so the path constraint could not be confirmed: incomplete changed-file list: checked 3000'],
     ['en', '任务 job_7 改动了受保护路径：src/auth/x.ts', 'Job job_7 changed protected paths: src/auth/x.ts'],
+    ['en', '任务 job_18 产出的是盘点/清账类 issue，不计为产品产出；请改为具体问题。', 'Job job_18 produced an inventory/cleanup issue, which does not count as product output. Replace it with a concrete problem.'],
     ['en', 'alice 连续 3 个任务失败，自动迭代已暂停；请检查 bridge、GitHub 凭据和模型额度后手动重新开启。', 'alice failed 3 jobs in a row, so auto-iteration is paused. Check the bridge, the GitHub credential and the model quota, then start it again manually.'],
     ['en', 'alice 的本次任务只有 Lead 参与，其他团队角色没有实际介入。', 'Only the Lead took part in this job for alice; no other team role was involved.'],
     ['en', 'alice 团队提问：继续吗', 'alice team question: 继续吗'],
