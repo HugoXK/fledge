@@ -310,9 +310,9 @@ test('applying a filter keeps the 30-day window it was set in', async () => {
 test('the kind filter offers every job kind a user can start, and nothing else', async () => {
   // A filter list that is a second, stale copy of the kinds silently hides the
   // jobs a user wants to find — `scope` and `verify` are started by the
-  // work-item buttons, `triage` by the repository page — and offers a kind no
-  // job can have. `discover` is the one kind left out on purpose: an account
-  // never starts one by hand.
+  // work-item buttons, `triage` by the console control tracked in #523 — and
+  // offers a kind no job can have. `discover` is the one kind left out on
+  // purpose: an account never starts one by hand.
   assert.deepEqual([...JOB_FILTER_KINDS].sort(), ['iterate', 'plan', 'review', 'scope', 'triage', 'verify'], 'the filter list is the startable job kinds')
 
   const config = testConfig()
@@ -345,12 +345,21 @@ test('the kind filter offers every job kind a user can start, and nothing else',
     assert.equal((triage.body.match(/data-job-id="job_triage_a"/g) ?? []).length, 1, 'a triage job is filterable')
     assert.doesNotMatch(triage.body, /data-job-id="job_iter0"/, 'and no other kind leaks into the triage page')
 
+    // #529 item 4: the dashboard's drop rule had no end-to-end test; only
+    // `parseJobFilters` was pinned. An unknown kind is dropped, and the page then
+    // answers with every job — the reverse of `/search`, which keeps the value.
+    const unknownOnDashboard = await built.app.inject({ method: 'GET', url: '/dashboard?kind=research', headers: { cookie } })
+    assert.equal((unknownOnDashboard.body.match(/data-job-id="/g) ?? []).length, 7, 'an unknown kind leaves the dashboard filter unset and answers with every job')
+
     const search = await built.app.inject({ method: 'GET', url: '/search?q=k', headers: { cookie } })
     assert.match(search.body, /<option value="triage"/, 'the search form offers triage too')
 
-    // The search page obeys the same rule as the dashboard: a kind is a filter,
-    // so a kind that matches nothing is an empty answer. Dropping the value and
-    // answering with every job is a different question, answered silently.
+    // The two pages answer an unknown kind differently, on purpose, and neither
+    // rule is an accident: `/search` keeps the value, so a kind that matches no
+    // job is an empty answer; the dashboard drops a value no job can carry, so an
+    // unknown kind answers with every job. The assertions below pin both halves.
+    // (A page that silently swapped rules would still pass a test that only
+    // checked one of them.)
     const triaged = await built.app.inject({ method: 'GET', url: '/search?q=e&kind=triage', headers: { cookie } })
     assert.match(triaged.body, /job_triage_a/, 'the search filter applies triage')
     assert.doesNotMatch(triaged.body, /job_iter0/, 'and no iterate job leaks into a triage search')

@@ -400,3 +400,22 @@ test('a stop drains past the inline bound on the following ticks and records the
     await f.built.close()
   }
 })
+
+test('the platform stop outranks the work-type refusal at enqueue', async () => {
+  // #529 item 2: the `#283` comment above `enqueue` promises the stop "outranks
+  // every other refusal", and the `#390` work-type branch was inserted above the
+  // check. A stopped platform asked to run an unimplemented work type therefore
+  // answered `WORK_TYPE_UNSUPPORTED`, which is true but is not the reason the
+  // operator set. The stop is the platform-wide fact; it answers first.
+  const f = await platformFixture()
+  try {
+    const outcome = await f.built.jobs.stopPlatform({ id: f.admin.id, login: 'platform-admin' }, 'provider outage')
+    assert.equal(outcome.already, false)
+
+    const refused = await f.built.jobs.enqueue(f.due, 'manual', 'bump a dependency', 'iterate', { workType: 'dependency' })
+    assert.equal(refused.ok, false, 'a stopped platform accepted a job')
+    assert.equal(refused.code, 'PLATFORM_PAUSED', 'a stopped platform answered with the work-type refusal instead of the stop')
+  } finally {
+    await f.built.close()
+  }
+})

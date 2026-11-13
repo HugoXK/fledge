@@ -1,0 +1,1 @@
+The job page no longer shows a per-job budget on the work-type card. That number was never enforced, while the repository's real per-job cap (`job_budget_cny`, with its pause or cancel action) keeps its settings fields, its stop banner and its checkpoint enforcement unchanged.

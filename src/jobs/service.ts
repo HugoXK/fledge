@@ -615,11 +615,13 @@ export class Jobs {
   }
 
   async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean; workType?: string } = {}): Promise<EnqueueResult> {
-    // #283: the platform stop outranks every other refusal. It is checked before
-    // the per-repository and per-role gates so the answer says the platform is
-    // stopped, not that this one repository is disabled, and it is checked in the
-    // admission path itself: a due repository reaches `enqueue` without a route.
-    // #390: the work type is resolved before anything else, and an unknown one is
+    // #283: the platform stop outranks every other refusal. It is checked first,
+    // above the work-type resolution and the per-repository and per-role gates, so
+    // the answer says the platform is stopped rather than naming a work type or
+    // implying this one repository is disabled, and it is checked in the admission
+    // path itself: a due repository reaches `enqueue` without a route.
+    if (this.platformStop() !== null) return { ok: false, error: '平台已紧急停止，暂不接受新任务。', code: 'PLATFORM_PAUSED' }
+    // #390: the work type is resolved before the gates, and an unknown one is
     // refused. A default here would run work under a contract nobody declared.
     const workType = resolveWorkType(options.workType ?? workTypeForKind(kind))
     if (workType === null) {
@@ -638,7 +640,6 @@ export class Jobs {
     if (kind !== 'triage' && workType.branch === false) {
       return { ok: false, error: `${workType.type} 工作类型不能创建分支或 PR。`, code: 'UNKNOWN_WORK_TYPE', detail: workType.type }
     }
-    if (this.platformStop() !== null) return { ok: false, error: '平台已紧急停止，暂不接受新任务。', code: 'PLATFORM_PAUSED' }
     if (repo.enabled !== 1) return { ok: false, error: '这个仓库已停用', code: 'REPO_DISABLED' }
     if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
       return { ok: false, error: '请先选择你在这个仓库的角色。', code: 'ROLE_REQUIRED' }

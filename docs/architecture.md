@@ -754,16 +754,19 @@ cooldown up to a 4x cap; the manual run path and reviews bypass the backoff.
 ### Work types and triage
 
 A job carries two independent values. `kind` is the pipeline that runs it
-(`iterate`, `review`, `plan`, `scope`, `verify`, `discover`, `triage`); `work_type`
-is the contract the work is held to and is stored on the row. The registry in
-`src/lib/workTypes.ts` is the only list of work types — `iterate`, `triage`,
-`dependency`, `security`, `docs`, `performance`, `accessibility`, `migration` —
-and each entry declares its allowed stages, the evidence keys it requires, a
-declared risk tier, a per-job budget ceiling, whether it may open a branch and
-whether its pull request may auto-merge. Only `iterate` and `triage` have a
-handler in this slice; a declared type with no handler is refused at enqueue
-exactly like an unknown one (`UNKNOWN_WORK_TYPE` / `WORK_TYPE_UNSUPPORTED`),
-because nothing may run under a contract that is not enforced.
+(`iterate`, `review`, `plan`, `scope`, `verify`, `discover`, `triage`);
+`work_type` is the contract the work is held to and is stored on the row. The
+registry in `src/lib/workTypes.ts` is the only list of work types — `iterate`,
+`triage`, `dependency`, `security`, `docs`, `performance`, `accessibility`,
+`migration` — and each entry declares its allowed stages, the evidence keys it
+requires, a declared risk tier, whether it may open a branch and whether its
+pull request may auto-merge. A work type declares no budget of its own: the
+per-job cap is the repository's `repos.job_budget_cny`, enforced once at the
+checkpoint described in `docs/quota.md`, and a second number shown on the
+work-type card could not bind. Only `iterate` and `triage` have a handler in
+this slice; a declared type with no handler is refused at enqueue exactly like
+an unknown one (`UNKNOWN_WORK_TYPE` / `WORK_TYPE_UNSUPPORTED`), because nothing
+may run under a contract that is not enforced.
 
 Auto-merge reads the registry. The gate is still the repository's `repo_role`,
 `auto_merge` setting and a green tip, plus `workTypeMayAutoMerge(job.work_type)`,
@@ -785,34 +788,40 @@ which is the same path the next scheduled work session already consumes, so a
 triage run proposes work without opening a branch and without a second scheduler.
 The decision record is `docs/decisions/0014-work-types.md`.
 
-The kind and the work type are checked as a pair in both directions: a
-`triage` run cannot be declared as another work type, and no other kind can
-borrow the triage contract, so the page can never show the iterate contract for a
-run that is forbidden to write. Resume and retry read one shared rule instead of
-a ternary: a row keeps its own kind when that kind's contract does not depend on
-the row being re-enqueued (review, plan, triage), everything else runs as iterate
-work, and a declared work type that is not what the new kind implies travels with
-the re-enqueue so a contract with no handler is refused rather than re-labelled.
-A failed triage row therefore comes back as `kind='triage'`. What a triage row can
-never do is start itself: this slice has no route, form or scheduler branch that
-enqueues `kind='triage'`, so `triage` rows come from the service and from retry
-only; the console control that starts one is tracked in #523. The report itself is
-strict: an issue URL must carry a host (`https://` alone is refused) and a title
-over `TRIAGE_TITLE_MAX` is refused rather than shortened, because a cut title
-reads like the issue's real one. `triage` is also a filterable kind: it is in the
-dashboard's `JOB_FILTER_KINDS`, offered by the dashboard, the search and the admin
-search forms, and applied by `/search` as a value the user chose — a kind that
-matches no job returns nothing rather than dropping the filter and answering with
-every job. `discover` stays out of it because an account never starts a discovery
-run by hand.
+The kind and the work type are checked as a pair in both directions: a `triage`
+run cannot be declared as another work type, and no other kind can borrow the
+triage contract, so the page can never show the iterate contract for a run that
+is forbidden to write. Resume and retry read one shared rule instead of a
+ternary: a row keeps its own kind when that kind's contract does not depend on
+the row being re-enqueued (review, plan, triage), everything else runs as
+iterate work, and a declared work type that is not what the new kind implies
+travels with the re-enqueue so a contract with no handler is refused rather
+than re-labelled. A failed triage row therefore comes back as `kind='triage'`.
+What a triage row can never do is start itself: this slice has no route, form
+or scheduler branch that enqueues `kind='triage'`, so `triage` rows come from
+the service and from retry only; the console control that starts one is tracked
+in #523. The report itself is strict: an issue URL must carry a host
+(`https://` alone is refused) and a title over `TRIAGE_TITLE_MAX` is refused
+rather than shortened, because a cut title reads like the issue's real one.
+`triage` is also a filterable kind: it is in the dashboard's
+`JOB_FILTER_KINDS`, offered by the dashboard, the search and the admin search
+forms, and applied by `/search` as a value the user chose — a kind that matches
+no job returns nothing rather than dropping the filter and answering with every
+job. The dashboard applies the opposite rule to a kind no job can carry:
+`parseJobFilters` drops the value, so `/dashboard?kind=<unknown>` answers with
+every job. Both are intended, both are pinned end to end, and the difference is
+the page's job: a search asks a question and may answer "nothing", while a
+dashboard filter narrows a list that exists without the filter. `discover`
+stays out of it because an account never starts a discovery run by hand.
 
 ### Platform emergency stop
 
 The stop is one `settings` row (`platform.stop`: when, who, why), not a field on
 the `Jobs` object, so a restart cannot resume scheduling from a stale in-memory
 "open" and a second process reads the same answer. `enqueue()` reads the row on
-every call and refuses `PLATFORM_PAUSED` before the per-repository and per-role
-gates; `tickOnce()` reads it once per tick, after its cleanup (stale jobs,
+every call and refuses `PLATFORM_PAUSED` before the work-type resolution and the
+per-repository and per-role gates, so a stopped platform never answers with a
+work-type refusal; `tickOnce()` reads it once per tick, after its cleanup (stale jobs,
 expired leases, token pruning, instance health) and before anything that creates,
 dispatches or merges work — the follow-up release, the due retries, the auto-merge
 reconcile, the queue dispatch and both scheduling loops. The admission check is
