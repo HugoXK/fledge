@@ -2317,7 +2317,11 @@ export function jobPage(input: {
   const pathGuard = parsePathGuard(job.path_guard_json)
   // #382: the independent pass records one event per attempt. The page shows what
   // it decided, including the case where its answer was not a review at all.
-  const adversarial = parseAdversarialRecord([...events].reverse().find((event) => event.kind === 'job.adversarial')?.meta)
+  // Callers hand over `Store.listJobEvents`, which is newest-first (`ORDER BY id
+  // DESC`), so the first adversarial event is the newest verdict. Reversing the
+  // list would show the first tip's answer forever: a job whose later tip cleared
+  // the risk would keep claiming its merge was blocked.
+  const adversarial = parseAdversarialRecord(events.find((event) => event.kind === 'job.adversarial')?.meta)
   const adversarialText = (record: AdversarialRecord): string => record.status === 'risk'
     ? t(`具体风险 ${record.target ?? ''} — 自动合并已阻止`, `concrete risk ${record.target ?? ''} — the automatic merge was blocked`)
     : record.status === 'none'

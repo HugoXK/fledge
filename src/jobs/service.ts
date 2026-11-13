@@ -1323,7 +1323,10 @@ export class Jobs {
     // one, and that is exactly the "until resolved" the gate means. `reused` is
     // returned so the caller records the refusal once per tip: the audit row and
     // the notification belong to the first sighting, not to every pass.
-    const previous = [...this.store.listJobEvents(job.id)].reverse().find((event) => event.kind === 'job.adversarial' && event.step !== 'skipped' && event.step !== 'unavailable')
+    // `Store.listJobEvents` answers newest-first (`ORDER BY id DESC`), so the
+    // first match is the verdict for the newest tip; reversing it would read the
+    // first tip's verdict forever and never reuse a later one.
+    const previous = this.store.listJobEvents(job.id).find((event) => event.kind === 'job.adversarial' && event.step !== 'skipped' && event.step !== 'unavailable')
     if (previous !== undefined) {
       try {
         const stored = JSON.parse(previous.meta ?? '') as { tipSha?: unknown; verdict?: unknown }

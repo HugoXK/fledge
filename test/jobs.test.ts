@@ -2844,20 +2844,23 @@ test('a concrete adversarial risk blocks auto-merge, while a bare score is not e
   }
 })
 
-test('one blocked tip keeps one audit row and one notification, however often reconciliation runs', async () => {
+test('one blocked tip keeps one audit row and one notification, and a moved head starts a new count', async () => {
   const merges: string[] = []
+  // The head sha the fake repository reports. Moving it mid-test is the second
+  // half: a new commit asks for a new review, and for nothing else.
+  let headSha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
   const github = await startFakeServer((request, response) => {
     const method = request.method ?? 'GET'
     const url = request.url ?? ''
     if (method === 'GET' && url === '/repos/o/r/pulls/1') {
-      json(response, 200, { number: 1, html_url: 'https://github.com/o/r/pull/1', title: 'fix', state: 'open', head: { ref: 'fledge/fix', sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false, changed_files: 1 })
+      json(response, 200, { number: 1, html_url: 'https://github.com/o/r/pull/1', title: 'fix', state: 'open', head: { ref: 'fledge/fix', sha: headSha }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false, changed_files: 1 })
       return
     }
-    if (method === 'GET' && url === '/repos/o/r/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/check-runs?per_page=100') {
+    if (method === 'GET' && url === `/repos/o/r/commits/${headSha}/check-runs?per_page=100`) {
       json(response, 200, { check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] })
       return
     }
-    if (method === 'GET' && url === '/repos/o/r/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/status') {
+    if (method === 'GET' && url === `/repos/o/r/commits/${headSha}/status`) {
       json(response, 200, { state: 'success', statuses: [] })
       return
     }
@@ -2896,14 +2899,18 @@ test('one blocked tip keeps one audit row and one notification, however often re
     store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
     store.updateJob(jobId, { status: 'running', branch: 'fledge/fix', started_at: new Date().toISOString() })
     let calls = 0
+    const riskAnswer = [
+      'Concrete risk: src/x.ts:1',
+      'Failure mode: the constant flips every read, so the page renders a stale value',
+      'Repro: open the page twice with the patch applied',
+      'Checks: read the diff',
+    ].join('\n')
+    // The answer the fake model gives for the tip under test; the last tip in this
+    // test is the one that clears the risk.
+    let answer = riskAnswer
     jobs.adversarialModel = async () => {
       calls += 1
-      return [
-        'Concrete risk: src/x.ts:1',
-        'Failure mode: the constant flips every read, so the page renders a stale value',
-        'Repro: open the page twice with the patch applied',
-        'Checks: read the diff',
-      ].join('\n')
+      return answer
     }
     const blocked = await jobs.handleCallback(jobId, secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/1', summary: 'done' })
     assert.equal(blocked.ok, true)
@@ -2926,6 +2933,48 @@ test('one blocked tip keeps one audit row and one notification, however often re
       assert.equal(merges.length, 0, 'the reused verdict still blocks')
     }
     assert.equal(calls, 1, 'a stored verdict for this tip is reused instead of re-reviewed')
+
+    // A new commit is a new review — exactly one. The reuse is keyed on the head
+    // sha, and the events it compares against come back newest-first from
+    // `Store.listJobEvents` (`ORDER BY id DESC`), so reading them in the other
+    // direction compares every later tip against the first one, the reuse never
+    // fires again and the counts grow once per pass for every tip after the
+    // first. Same defect as above, one commit later.
+    headSha = 'cccccccccccccccccccccccccccccccccccccccc'
+    await jobs.reconcileAutoMerge()
+    const moved = counts()
+    assert.deepEqual(moved, { risk: 2, blocked: 2, notified: 2, verdicts: 2 }, 'a moved head buys exactly one more review and one more record')
+    assert.equal(calls, 2, 'the new tip is reviewed exactly once')
+    for (let pass = 1; pass <= 2; pass += 1) {
+      await jobs.reconcileAutoMerge()
+      assert.deepEqual(counts(), moved, `reconcile pass ${String(pass)} on the new tip changed its record`)
+      assert.equal(merges.length, 0, 'the reused verdict on the new tip still blocks')
+    }
+    assert.equal(calls, 2, 'the new tip is reviewed once, not once per pass')
+
+    // A third tip follows the same rule: one new review, then reuse for as long
+    // as it is the head — the count is per tip, not per job and not per pass.
+    headSha = 'dddddddddddddddddddddddddddddddddddddddd'
+    await jobs.reconcileAutoMerge()
+    const third = counts()
+    assert.deepEqual(third, { risk: 3, blocked: 3, notified: 3, verdicts: 3 }, 'a third tip buys exactly one more review and one more record')
+    assert.equal(calls, 3, 'the third tip is reviewed exactly once')
+    for (let pass = 1; pass <= 3; pass += 1) {
+      await jobs.reconcileAutoMerge()
+      assert.deepEqual(counts(), third, `reconcile pass ${String(pass)} on the third tip changed its record`)
+      assert.equal(merges.length, 0, 'the reused verdict on the third tip still blocks')
+    }
+    assert.equal(calls, 3, 'the third tip is reviewed once, not once per pass')
+
+    // The tip that clears the risk. A fresh answer of "No concrete risk" lets the
+    // merge through on that same pass, and nothing about the earlier refusals is
+    // recorded again: the refusal count belongs to the tips that were refused.
+    headSha = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+    answer = ['No concrete risk', 'Checks: read the diff, ran npm run check'].join('\n')
+    await jobs.reconcileAutoMerge()
+    assert.equal(merges.length, 1, 'a tip that clears the risk merges')
+    assert.equal(calls, 4, 'the clearing tip is reviewed exactly once')
+    assert.deepEqual(counts(), { risk: 3, blocked: 3, notified: 3, verdicts: 4 }, 'a cleared tip adds no refusal row and no notification')
   } finally {
     store.close()
     await github.close()

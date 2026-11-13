@@ -1813,6 +1813,48 @@ test('the job page shows the adversarial verdict and says when the answer was re
       events: eventOf(JSON.stringify({ status: 'none', verdict: { kind: 'none', checks: ['read the diff', 'ran npm run check'] }, model: 'fake/model' })),
     })
     assert.match(clean, /no concrete risk \(checks: read the diff, ran npm run check\)/)
+
+    // The events arrive newest-first, as `Store.listJobEvents` returns them. The
+    // row must describe the newest verdict: an older risk beside a newer clean
+    // answer is a job whose later tip cleared it, and an older clean answer
+    // beside a newer risk is a job that regressed. Reading the other end of the
+    // list turns both into the first tip's answer.
+    const twoEvents = (newerStep: string, newerMeta: string, olderStep: string, olderMeta: string) => [
+      { id: 2, at: new Date().toISOString(), job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.adversarial', role: null, step: newerStep, meta: newerMeta },
+      { id: 1, at: new Date().toISOString(), job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.adversarial', role: null, step: olderStep, meta: olderMeta },
+    ]
+    const olderRisk = JSON.stringify({
+      status: 'risk',
+      verdict: { kind: 'risk', file: 'src/x.ts', line: 9, failureMode: 'stale read', repro: 'open twice', checks: ['read the diff'] },
+      target: 'src/x.ts:9',
+      model: 'fake/model',
+    })
+    const cleared = jobPage({
+      config,
+      locale: 'en',
+      viewer,
+      repo,
+      job,
+      events: twoEvents('none', JSON.stringify({ status: 'none', verdict: { kind: 'none', checks: ['read the diff'] }, model: 'fake/model' }), 'risk', olderRisk),
+    })
+    assert.match(cleared, /no concrete risk \(checks: read the diff\)/)
+    assert.doesNotMatch(cleared, /concrete risk src\/x\.ts:9/)
+
+    const regressed = jobPage({
+      config,
+      locale: 'en',
+      viewer,
+      repo,
+      job,
+      events: twoEvents(
+        'risk',
+        JSON.stringify({ status: 'risk', verdict: { kind: 'risk', file: 'src/y.ts', line: 3, failureMode: 'stale read', repro: 'open twice', checks: ['read the diff'] }, target: 'src/y.ts:3', model: 'fake/model' }),
+        'none',
+        JSON.stringify({ status: 'none', verdict: { kind: 'none', checks: ['read the diff'] }, model: 'fake/model' }),
+      ),
+    })
+    assert.match(regressed, /concrete risk src\/y\.ts:3/)
+    assert.doesNotMatch(regressed, /no concrete risk \(checks: read the diff\)/)
   } finally {
     store.close()
   }
