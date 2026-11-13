@@ -233,6 +233,12 @@ and the accessibility contract are fixed:
 | success | `data-state="success"` | `status` | the result and where to go next |
 | disabled | `aria-disabled="true"` | `data-state="disabled"` | the reason, and no working control |
 
+- The icon is one inline `<svg>` per state from a literal map in
+  `src/views/states.ts`: all five share one `viewBox`, `stroke="currentColor"`
+  follows the state's own colour rule, and `aria-hidden="true"` plus
+  `focusable="false"` keep the `<strong>` title the only announcement. The size
+  comes from `.state-icon svg` in the stylesheet, never from an attribute, and no
+  icon package, remote asset or CSP entry is involved.
 - `stateCell(colspan, …)` is the table form; a table that still renders a bare
   `<td colspan class="muted">` is a leftover, not a style choice.
 - The empty state's action comes from the page that renders it: a repository
