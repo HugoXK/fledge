@@ -893,7 +893,12 @@ job. The dashboard applies the opposite rule to a kind no job can carry:
 every job. Both are intended, both are pinned end to end, and the difference is
 the page's job: a search asks a question and may answer "nothing", while a
 dashboard filter narrows a list that exists without the filter. `discover`
-stays out of it because an account never starts a discovery run by hand.
+stays out of it because an account never starts a discovery run by hand. The
+search form also renders a kind that is applied but not offered — `discover`, or
+a token no job can have — as the selected option, so the page never claims
+全部类型 / All kinds while the query narrows by something else. That option is
+render-only: the list the form offers does not change, the applied value is
+escaped like any other query text, and `JOB_FILTER_KINDS` keeps `discover` out.
 
 ### Platform emergency stop
 
