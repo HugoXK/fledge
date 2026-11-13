@@ -690,6 +690,34 @@ and in the notification row, for operators and for the API, and "Technical
 detail" prints it as written rather than translating it. The choice is
 recorded in `docs/decisions/0009-job-failure-codes.md`.
 
+### Postmortems and recurrence
+
+A failed, stalled (a failed job with `JOB_STALLED`) or cancelled job writes one
+`postmortems` row from the same guarded terminal transition that writes its
+`job.*` event, so a replayed callback cannot create a second write-up and a
+succeeded, queued, running or paused job writes none. `src/lib/postmortem.ts`
+derives the category from the existing failure classifier and records evidence
+from fields that already exist: the error and code, the last heartbeat, the job
+stage, the repository instance's status and last error, and the `job_events`
+timeline. A suspected cause is stated only when an error or code exists. A row
+with neither is `unverified` with a null cause; it is not guessed.
+
+The recurrence key is a hash of the category and the stable error code, or of a
+normalised error sentence when no code exists (job ids, URLs and numbers are
+removed so two sightings of one cause land on one key). `postmortem_recurrences`
+holds one ledger row per key with the count, first/last seen and the affected
+repositories. A second sighting increments the count and emits one `ops`
+notification plus a `postmortem_escalated` event; later sightings keep counting
+without escalating again.
+
+A preventive action is `test`, `guard`, `doc` or `config` plus a reference to the
+PR, issue or test that prevents the cause. `Store.linkPreventiveAction` records
+it without closing the postmortem; `Store.verifyPreventiveAction` refuses unless
+a linked action exists and, when the action lands, marks it verified, sets
+`status = 'closed'` and stamps `closed_at`. The repository page lists open
+postmortems and the recurrence ledger; the job page links the one postmortem for
+that job (`#postmortems`), never a duplicate.
+
 ### Enforcement: path guard, evidence verification and merge readiness
 
 Plan path constraints are now enforced, not only included in the prompt. After a
@@ -1367,6 +1395,8 @@ listing, and every row links to the page that already owns it.
 | `api_tokens` | `flg_` tokens (PAT, job or instance), hashed, with `scope` (only `gateway` today) and `expires_at`; a PAT always carries an expiry |
 | `quota_ledger` | per-request cost records |
 | `notifications` | in-app messages (quota, job failure), stored as written and localized at render |
+| `postmortems` | one evidence-backed write-up per failed/stalled/cancelled job, with category, recurrence key, owner and preventive action |
+| `postmortem_recurrences` | one ledger row per recurrence key: count, first/last seen, affected repositories and the single escalation marker |
 | `audit_log` | who changed what |
 | `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
 

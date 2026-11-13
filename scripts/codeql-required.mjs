@@ -14,9 +14,7 @@
 
 import { appendFileSync, readFileSync } from 'node:fs'
 
-import { analysisFor, codeqlRequired } from './lib/codeql-required.mjs'
-
-const WORKFLOW = 'codeql.yml'
+import { analysisFromApi, codeqlRequired } from './lib/codeql-required.mjs'
 
 function readEvent(eventPath) {
   if (eventPath === '') return {}
@@ -42,14 +40,6 @@ function apiClient({ token, base }) {
     if (!response.ok) throw new Error(`GitHub ${response.status} ${path}: ${text.slice(0, 200)}`)
     return text === '' ? null : JSON.parse(text)
   }
-}
-
-// The match is a lib function so the suite can drive it; this wrapper only reads
-// the completed runs of `codeql.yml` and hands the list over.
-async function analysisForCommit(api, repo, sha) {
-  const runs = await api(`/repos/${repo}/actions/workflows/${WORKFLOW}/runs?status=completed&per_page=20`)
-  const list = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : []
-  return analysisFor(list, sha)
 }
 
 function writeSummary(line) {
@@ -85,9 +75,13 @@ async function main() {
     verdict = await codeqlRequired(
       { eventName, sha, payload },
       {
-        analysisFor: async (asked) => {
+        // #585: the lookup names the commit in its query, so the page cannot be
+        // outrun by the repository's other runs. `deadline` is the bound the
+        // module computes; the fallback scan for an API that ignores the filter
+        // stops inside it.
+        analysisFor: async (asked, hint) => {
           try {
-            return await analysisForCommit(api, repository, asked)
+            return await analysisFromApi({ api, repo: repository, sha: asked, deadline: hint?.deadline })
           } catch (error) {
             throw new Error(`cannot read the CodeQL analysis for ${asked}: ${error.message}`)
           }
