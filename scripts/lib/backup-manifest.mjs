@@ -79,6 +79,9 @@ export function readManifest(copyPath) {
       && typeof manifest.encryption.format === 'string'
       && typeof manifest.encryption.keyId === 'string'
       && typeof manifest.encryption.keyVersion === 'number'
+      // Optional: copies written before the derivation was recorded have no `kdf`,
+      // and the field is new information, never a requirement to read the copy.
+      && (manifest.encryption.kdf === undefined || typeof manifest.encryption.kdf === 'string')
     ))
   if (!usable) throw new Error(`not a backup manifest: ${path}`)
   // A manifest describes exactly one file: a copy renamed away from its manifest

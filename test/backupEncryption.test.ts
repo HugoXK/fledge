@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { createHash, scryptSync } from 'node:crypto'
 import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Store } from '../src/db.js'
+import { readManifest as readManifestFile } from '../scripts/lib/backup-manifest.mjs'
 import { makeTerminalJob, makeUser } from './helpers.js'
 
 const require = createRequire(import.meta.url)
@@ -37,17 +38,14 @@ function run(script: string, args: string[], env: Record<string, string> = {}): 
   for (const [name, value] of Object.entries(process.env)) {
     if (value !== undefined && !(KEY_VARIABLES as readonly string[]).includes(name)) inherited[name] = value
   }
-  try {
-    const stdout = execFileSync(process.execPath, [script, ...args], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...inherited, ...env },
-    })
-    return { code: 0, stdout, stderr: '' }
-  } catch (error) {
-    const failure = error as { status?: number | null; stdout?: string; stderr?: string }
-    return { code: failure.status ?? -1, stdout: failure.stdout ?? '', stderr: failure.stderr ?? '' }
-  }
+  // spawnSync, not execFileSync: a successful run can still write a warning to
+  // stderr (a key file with a mode wider than 0600), and execFileSync drops it.
+  const result = spawnSync(process.execPath, [script, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...inherited, ...env },
+  })
+  return { code: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
 }
 
 function seed(dbPath: string): void {
@@ -397,4 +395,141 @@ test('the deploy runbook documents encryption, key custody, decryption and the l
   assert.match(doc, /lost[ -]?key/i, 'the runbook must cover the lost-key failure')
   assert.match(doc, /decrypt/i, 'the runbook must cover decryption')
   assert.match(doc, /key custody|keep the key|custody/i, 'the runbook must cover key custody')
+  assert.match(doc, /base64-shaped|not base64/i, 'the runbook must say how to declare a passphrase now that a truncated base64 key is refused')
+})
+
+test('a copy says which key derivation produced it, in the manifest and on the printed line', () => {
+  // #588: the envelope records `kdf` (`backup-crypto.mjs:104`) but everything an
+  // operator reads drops it, so a copy written under a passphrase and one written
+  // under a raw key are indistinguishable without re-deriving the id by hand.
+  const root = mkdtempSync(join(tmpdir(), 'fledge-encrypted-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const rawDir = join(root, 'raw')
+  const phraseDir = join(root, 'phrase')
+  seed(dbPath)
+
+  const raw = run(backupScript, ['--db', dbPath, '--backup-dir', rawDir], { BACKUP_ENCRYPTION_KEY: TEST_KEY })
+  assert.equal(raw.code, 0, raw.stderr)
+  const rawCopy = onlyBackup(rawDir)
+  assert.equal(readEnvelope(rawCopy).kdf, 'raw')
+  assert.equal((readManifest(rawCopy).encryption as Record<string, unknown>).kdf, 'raw', 'the manifest must say how the key was derived')
+  assert.match(raw.stdout, /^encryption=aes-256-gcm kdf=raw key_id=[0-9a-f]{16} key_version=1$/m)
+
+  const phrase = run(backupScript, ['--db', dbPath, '--backup-dir', phraseDir], { BACKUP_ENCRYPTION_KEY: TEST_PASSPHRASE })
+  assert.equal(phrase.code, 0, phrase.stderr)
+  const phraseCopy = onlyBackup(phraseDir)
+  assert.equal(readEnvelope(phraseCopy).kdf, 'scrypt')
+  assert.equal((readManifest(phraseCopy).encryption as Record<string, unknown>).kdf, 'scrypt')
+  assert.match(phrase.stdout, /^encryption=aes-256-gcm kdf=scrypt key_id=[0-9a-f]{16} key_version=1$/m)
+
+  // The drill prints the same line when it decrypts an existing copy, so a
+  // restore is self-describing too.
+  const drill = run(drillScript, ['--db', dbPath, '--backup-dir', phraseDir, '--work-dir', join(root, 'work')], { BACKUP_ENCRYPTION_KEY: TEST_PASSPHRASE })
+  assert.equal(drill.code, 0, drill.stderr)
+  assert.match(drill.stdout, /^encryption=aes-256-gcm kdf=scrypt key_id=[0-9a-f]{16} key_version=1$/m)
+})
+
+test('a truncated base64 key is refused instead of silently becoming a passphrase', () => {
+  // #588: a 32-byte base64 key is 44 characters. Cut to 42 or 40 it still looks
+  // like base64, decodes to 31 or 30 bytes, fails the exactly-32 check and used to
+  // fall through to the passphrase path: the copy is written under a key the
+  // operator does not think it set, with an id that looks normal.
+  const root = mkdtempSync(join(tmpdir(), 'fledge-encrypted-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  seed(dbPath)
+  const cases = [
+    { label: '31 bytes', value: TEST_KEY.slice(0, 42), bytes: 31, source: 'BACKUP_ENCRYPTION_KEY', dir: join(root, 'inline') },
+    { label: '30 bytes', value: TEST_KEY.slice(0, 40), bytes: 30, source: 'BACKUP_ENCRYPTION_KEY_FILE', dir: join(root, 'file') },
+  ] as const
+  for (const item of cases) {
+    assert.equal(Buffer.from(item.value, 'base64').length, item.bytes, `the fixture for ${item.label} must decode to ${item.bytes} bytes`)
+    let env: Record<string, string>
+    if (item.source === 'BACKUP_ENCRYPTION_KEY') {
+      env = { BACKUP_ENCRYPTION_KEY: item.value }
+    } else {
+      const keyFile = join(root, 'truncated.key')
+      writeFileSync(keyFile, `${item.value}\n`, { mode: 0o600 })
+      chmodSync(keyFile, 0o600)
+      env = { BACKUP_ENCRYPTION_KEY_FILE: keyFile }
+    }
+    const result = run(backupScript, ['--db', dbPath, '--backup-dir', item.dir], env)
+    assert.equal(result.code, 2, `a ${item.label} base64 key must refuse, got exit ${result.code}: ${result.stdout}${result.stderr}`)
+    assert.match(result.stderr, new RegExp(item.source), `the refusal must name the source it came from (${item.label})`)
+    assert.match(result.stderr, new RegExp(`\\b${item.bytes}\\b`), 'the refusal must name the decoded byte count')
+    assert.match(result.stderr, /32/, 'the refusal must say what a full key looks like')
+    assert.ok(!result.stderr.includes(item.value), 'the refusal must never echo the value')
+    assert.ok(!result.stdout.includes(item.value), 'the refusal must never echo the value')
+    assert.equal(backupFiles(item.dir).length, 0, 'a refused run must not write a copy of any kind')
+    assert.equal(existsSync(item.dir), false, 'a refused run must not create the backup directory')
+  }
+})
+
+test('a passphrase that is not base64-shaped still encrypts and drills back', () => {
+  // The refusal above must not narrow the documented fallback: a value outside the
+  // base64 alphabet is the documented way to say "this is a passphrase".
+  const root = mkdtempSync(join(tmpdir(), 'fledge-encrypted-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+  seed(dbPath)
+  const passphrase = 'fladge backup, spaces and a comma'
+  assert.doesNotMatch(passphrase, /^[A-Za-z0-9+/]+={0,2}$/)
+
+  const backup = run(backupScript, ['--db', dbPath, '--backup-dir', backupDir], { BACKUP_ENCRYPTION_KEY: passphrase })
+  assert.equal(backup.code, 0, backup.stderr)
+  const copy = onlyBackup(backupDir)
+  assert.equal(readEnvelope(copy).kdf, 'scrypt')
+
+  const drill = run(drillScript, ['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir], { BACKUP_ENCRYPTION_KEY: passphrase })
+  assert.equal(drill.code, 0, drill.stderr)
+  assert.match(drill.stdout, /^restore-drill: OK$/m)
+  assertNoKeyMaterial(backup.stdout + backup.stderr + drill.stdout + drill.stderr, passphrase)
+})
+
+test('a key file readable by others still encrypts but warns, and never refuses', () => {
+  // #588: the runbook requires 0600 of the key file and nothing enforced it.
+  // Warning rather than refusing on purpose: a backup that refuses at 03:00 is an
+  // outage, and the operator can fix the mode themselves.
+  const root = mkdtempSync(join(tmpdir(), 'fledge-encrypted-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+  const keyFile = join(root, 'backup.key')
+  seed(dbPath)
+  writeFileSync(keyFile, `${TEST_KEY}\n`, { mode: 0o600 })
+  chmodSync(keyFile, 0o644)
+  assert.equal(statSync(keyFile).mode & 0o777, 0o644)
+
+  const env = { BACKUP_ENCRYPTION_KEY_FILE: keyFile }
+  const backup = run(backupScript, ['--db', dbPath, '--backup-dir', backupDir], env)
+  assert.equal(backup.code, 0, `a readable key file must not stop the backup: ${backup.stderr}`)
+  assert.match(backup.stderr, /BACKUP_ENCRYPTION_KEY_FILE/, 'the warning must name the source')
+  assert.match(backup.stderr, new RegExp(keyFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'the warning must name the path')
+  assert.match(backup.stderr, /0600|0644/, 'the warning must name the mode it found and the mode it wants')
+  assert.match(backup.stderr, /warn/i)
+  assertNoKeyMaterial(backup.stdout + backup.stderr, TEST_KEY)
+
+  const drill = run(drillScript, ['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir], env)
+  assert.equal(drill.code, 0, drill.stderr)
+  assert.match(drill.stdout, /^restore-drill: OK$/m)
+})
+
+test('a manifest written before kdf was recorded still validates', () => {
+  // Copies written by an earlier tip have no `kdf` in `manifest.encryption`; the
+  // field is new information, never a requirement to read the copy.
+  const root = mkdtempSync(join(tmpdir(), 'fledge-encrypted-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+
+  const backup = run(backupScript, ['--db', dbPath, '--backup-dir', backupDir], { BACKUP_ENCRYPTION_KEY: TEST_KEY })
+  assert.equal(backup.code, 0, backup.stderr)
+  const copy = onlyBackup(backupDir)
+  const manifestPath = `${copy}.json`
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { encryption: Record<string, unknown> }
+  delete manifest.encryption.kdf
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })
+  const read = readManifestFile(copy)
+  assert.ok(read !== null)
+  assert.equal(read.encryption?.kdf, undefined)
 })

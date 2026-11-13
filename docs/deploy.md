@@ -43,8 +43,8 @@ Key settings:
 | `JOB_TIMEOUT_MINUTES` / `JOB_STALL_MINUTES` | Hard timeout (default 90) and no-heartbeat stall timeout (default 30) |
 | `FLYBOT_BRIDGE_URL` / `FLYBOT_BRIDGE_TOKEN` | Bridge endpoint and shared secret |
 | `DATA_DIR` / `DB_PATH` | Defaults `./data`, `./data/fledge.db` |
-| `BACKUP_ENCRYPTION_KEY` | Optional backup key: base64 32 bytes, or any other value treated as a passphrase and stretched with scrypt. Environment only, never argv or git |
-| `BACKUP_ENCRYPTION_KEY_FILE` | Optional 0600 file holding the same key value; set exactly one of this and `BACKUP_ENCRYPTION_KEY` |
+| `BACKUP_ENCRYPTION_KEY` | Optional backup key: base64 32 bytes, or a value that is not base64-shaped, treated as a passphrase and stretched with scrypt. A base64-shaped value that decodes to 16–31 bytes is refused as a truncated key rather than used as a passphrase. Environment only, never argv or git |
+| `BACKUP_ENCRYPTION_KEY_FILE` | Optional 0600 file holding the same key value; set exactly one of this and `BACKUP_ENCRYPTION_KEY`. A file readable by group or others still backs up but warns on stderr |
 | `BACKUP_ENCRYPTION_REQUIRED` | `true` makes `npm run db:backup` refuse to run without a key; default `false` keeps plaintext backups |
 | `ALLOW_PRIVATE_MODEL_URLS` | Keep `false` for untrusted users |
 | `PAT_EXPIRY_DAYS` | Default lifetime of a new personal `flg_` gateway token, in days (default 90); only an admin may create one without an expiry |
@@ -427,15 +427,33 @@ BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key npm run db:backup
 ```
 
 The key is read only from the environment or the key file: never pass it on the
-command line, and never commit it. A value that is not a base64-encoded 32-byte
-key is treated as a passphrase and stretched with scrypt using a random salt per
-copy. The encrypted file is a JSON envelope header (format version, key id and
-key version, scrypt salt when used, IV, GCM authentication tag) followed by the
-ciphertext. The key itself is never in the envelope or the manifest. Set exactly
-one key source; setting both is refused instead of guessing, and a source that is
-present but empty — `BACKUP_ENCRYPTION_KEY=` from a secret that expanded to
-`""`, or an empty key file — is refused with a non-zero exit naming that source,
-rather than falling back to a plaintext copy.
+command line, and never commit it. A value that is a base64-encoded 32-byte key is
+used as the key; any other value is a passphrase, stretched with scrypt using a
+random salt per copy. Because a 32-byte base64 key is 44 characters, a truncated
+one still looks like base64: a value that is base64-shaped but decodes to 16–31
+bytes is therefore refused with a non-zero exit naming the source and the byte
+count, instead of silently becoming a passphrase and encrypting the copy under a
+key you did not set. **To declare a passphrase, pick a value that is not
+base64-shaped** — one space or one character outside the base64 alphabet is
+enough; `correct horse battery staple` works, `correcthorsebatterystaple` does
+not. The encrypted file is a JSON envelope header (format version, the key
+derivation `raw` or `scrypt`, key id and key version, scrypt salt when used, IV,
+GCM authentication tag) followed by the ciphertext. The key itself is never in
+the envelope or the manifest. Set exactly one key source; setting both is refused
+instead of guessing, and a source that is present but empty —
+`BACKUP_ENCRYPTION_KEY=` from a secret that expanded to `""`, or an empty key file
+— is refused with a non-zero exit naming that source, rather than falling back to
+a plaintext copy.
+
+The derivation a copy needs is recorded: the envelope, `manifest.encryption.kdf`
+and the `encryption=… kdf=… key_id=… key_version=…` line the backup and the
+restore drill print all say `raw` or `scrypt`, so whoever restores a copy knows
+whether to supply a 32-byte key or a passphrase without matching ids by hand. A
+manifest written before the field existed still validates; `kdf` is new
+information, never a requirement to read the copy. A key file readable by group
+or others still backs up — refusing at 03:00 over a mode bit would be a worse
+failure than the warning — and the run prints a warning naming the path and the
+mode it found.
 
 The key id in the envelope and the manifest is a truncated sha256 of the key the
 copy was encrypted with. For a base64 32-byte key that is the key itself; for a

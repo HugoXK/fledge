@@ -386,7 +386,7 @@ async function main() {
       } catch (error) {
         fail(1, `cannot decrypt ${backupPath}: ${error instanceof Error ? error.message : String(error)}`)
       }
-      process.stdout.write(`encryption=${encryption.algorithm} key_id=${encryption.keyId} key_version=${encryption.keyVersion}\n`)
+      process.stdout.write(`encryption=${encryption.algorithm} kdf=${String(encryption.kdf)} key_id=${encryption.keyId} key_version=${encryption.keyVersion}\n`)
     } else {
       copyFileSync(backupPath, restoredPath)
       chmodSync(restoredPath, 0o600)
