@@ -1,1 +1,0 @@
-Settings and Admin now open with a sticky section navigation that follows the page, so the account, model, notification and token settings (and the admin release, backups, users, jobs and audit sections) are one tap away instead of a long scroll.
