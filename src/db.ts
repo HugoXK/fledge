@@ -6,6 +6,7 @@ import { log } from './lib/log.js'
 import { nowIso } from './lib/time.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 import { parseModelRun } from './lib/modelRun.js'
+import { redact } from './lib/secrets.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 import { buildPostmortem, isPreventiveActionKind, type PreventiveActionKind } from './lib/postmortem.js'
 import { artifactKey, candidateRefusal, type CandidateRefusal } from './lib/evolution/artifacts.js'
@@ -1085,6 +1086,18 @@ function durationMs(start: string | null, end: string | null): number | null {
 // stable tie-break, and both callers must order the same way.
 function newestJobOrder(alias: string): string {
   return `${alias}.created_at DESC, ${alias}.rowid DESC`
+}
+
+// #458: `summary` and `error` are the two free-text columns a runner can echo a
+// secret into. Both writers pass through this one helper, so a caller that skips
+// the job service (a retry, a test, a future runner) cannot store a raw value.
+function redactJobText(patch: Record<string, unknown>): Record<string, unknown> {
+  if (typeof patch.summary !== 'string' && typeof patch.error !== 'string') return patch
+  return {
+    ...patch,
+    ...(typeof patch.summary === 'string' ? { summary: redact(patch.summary) } : {}),
+    ...(typeof patch.error === 'string' ? { error: redact(patch.error) } : {}),
+  }
 }
 
 export class Store {
@@ -3221,9 +3234,8 @@ export class Store {
     )
   }
 
-
   updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'model_json' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
-    const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
+    const entries = Object.entries(redactJobText(patch as Record<string, unknown>)).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets: string[] = []
     const values: unknown[] = []
@@ -3253,7 +3265,7 @@ export class Store {
   // The terminal transition is the callback idempotency key: only the delivery
   // that moves the row out of queued/running may run side effects.
   claimJobTerminal(jobId: string, status: string, fingerprint: string | null, patch: Record<string, unknown>): boolean {
-    const entries = Object.entries({ ...patch, status, ...(fingerprint === null ? {} : { callback_fingerprint: fingerprint }) }).filter(([, value]) => value !== undefined)
+    const entries = Object.entries(redactJobText({ ...patch, status, ...(fingerprint === null ? {} : { callback_fingerprint: fingerprint }) })).filter(([, value]) => value !== undefined)
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
     const changes = this.runChanges(
       `UPDATE jobs SET ${sets} WHERE id = ? AND status IN ('queued','running')`,

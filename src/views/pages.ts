@@ -8,6 +8,7 @@ import { aheadOfViewer, queueRanks, rankQueued, type QueueRank } from '../lib/qu
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { renderState, stateCell, type StateAction } from './states.js'
+import { redact } from '../lib/secrets.js'
 import { REVIEW_INSTRUCTION_LABEL, reviewInstructionFromGoal } from '../lib/followUpInstruction.js'
 import { firstRunOutcome, setupChecklist, type SetupState, type SetupStepKey } from './checklist.js'
 import { oauthConfigured, tokenLoginEnabled } from '../auth/login.js'
@@ -309,7 +310,10 @@ function jobSummary(locale: Locale, t: Translate, job: JobRow): string {
   // #231: the failure code decides the sentence; the dictionary stays for a row
   // that carries no code (a job written before the column, or a free-text summary).
   const byCode = job.summary === null || job.summary.trim() === '' ? failureSentence(t, job.error_code) : null
-  const raw = (byCode ?? localizeMessage(locale, (job.summary ?? job.error ?? '').trim()) ?? '').trim()
+  // #458: the row is written through the redactor, but a row stored before that
+  // change still holds the raw text, so the render pass is the second line of
+  // defence. Every summary cell and the job page go through this function.
+  const raw = redact((byCode ?? localizeMessage(locale, (job.summary ?? job.error ?? '').trim()) ?? '').trim())
   const cost = job.cost_usd > 0 ? ` · $${job.cost_usd.toFixed(4)}` : ''
   if (job.kind === 'review') {
     const score = job.review_score === null ? '' : ` · ${job.review_score}/100`
@@ -2497,7 +2501,7 @@ export function jobPage(input: {
   // #357: a budget stop is not a failure category — the job stopped on purpose
   // and the only useful next step is the budget. The reason string carries the
   // observed cost, so the page says both without a second lookup.
-  const budgetStop = (job.error ?? '').startsWith('JOB_BUDGET_') ? (job.error ?? '').replace(/^JOB_BUDGET_(PAUSED|CANCELLED):\s*/, '') : ''
+  const budgetStop = (job.error ?? '').startsWith('JOB_BUDGET_') ? redact((job.error ?? '').replace(/^JOB_BUDGET_(PAUSED|CANCELLED):\s*/, '')) : ''
   const attribution = jobAttribution(t, job)
   // #358: which model actually answered, and what it fell through. A job whose
   // primary was rate-limited finished on another model, so the page must name the
@@ -2664,7 +2668,7 @@ export function jobPage(input: {
       ${reviewerInstruction === '' ? '' : `<p class="fine" data-reviewer-instruction><strong>${escapeHtml(t('审核者要求', REVIEW_INSTRUCTION_LABEL))}:</strong> ${escapeHtml(reviewerInstruction)}</p>`}
       ${failure === null ? '' : renderState({ kind: 'error', title: failureLabel(t, failure.kind), body: t(failure.hint[0], failure.hint[1]), action: failureLink === '' ? { label: t('按上面的动作处理后再重试。', 'Fix the cause above, then retry.') } : { href: failureLink, label: failureActionLabel(t, failure.action) } })}
       ${budgetStop === '' ? '' : renderState({ kind: 'error', title: t('已达单任务预算', 'Per-job budget reached'), body: budgetStop, action: { href: `/repos/${repo.id}#repo-settings`, label: t('提高单任务预算', 'Raise the per-job budget') } })}
-      ${job.error === null || job.error === '' ? '' : `<details class="fine"><summary>${escapeHtml(t('技术详情', 'Technical detail'))}</summary><p>${escapeHtml(job.error)}</p></details>`}
+      ${job.error === null || job.error === '' ? '' : `<details class="fine"><summary>${escapeHtml(t('技术详情', 'Technical detail'))}</summary><p>${escapeHtml(redact(job.error))}</p></details>`}
       <p class="fine">${escapeHtml(t('成本', 'Cost'))} ${escapeHtml(cost)} · ${escapeHtml(t('创建', 'Created'))} ${escapeHtml(humanTimeShort(job.created_at))} · ${escapeHtml(t('结束', 'Finished'))} ${escapeHtml(humanTimeShort(job.finished_at))}</p>
       ${attribution === '' ? '' : `<p class="fine">${escapeHtml(attribution)}</p>`}
       ${modelLine}
@@ -3169,7 +3173,7 @@ export function searchPage(input: {
   const [reposOut, jobsOut, itemsOut, auditOut] = [results?.repos.rows ?? [], results?.jobs.rows ?? [], results?.workItems.rows ?? [], results?.audit.rows ?? []]
   const sections = [
     table(t('仓库', 'Repositories'), [t('仓库', 'Repository'), t('状态', 'Status')], reposOut.map((row) => `<tr><td><a href="/repos/${escapeHtml(row.id)}">${text(`${row.owner}/${row.name}`)}</a></td><td>${escapeHtml(row.enabled === 1 ? t('已启用', 'enabled') : t('已暂停', 'paused'))}</td></tr>`), results?.repos.capped === true),
-    table(t('任务', 'Jobs'), [t('任务', 'Job'), t('状态', 'Status'), t('摘要', 'Summary'), 'PR / Issue'], jobsOut.map((job) => `<tr><td><a href="/repos/${escapeHtml(job.repo_id)}/jobs/${escapeHtml(job.id)}"><code>${text(job.id)}</code></a><br /><span class="fine">${text(labels.get(job.repo_id) ?? job.repo_id)}</span></td><td>${badge(t, job.status)} <span class="badge kind">${text(jobKindLabel(t, job))}</span></td><td>${text(job.summary ?? job.error ?? job.goal)}</td><td>${open(job.pr_url ?? job.issue_url)}</td></tr>`), results?.jobs.capped === true),
+    table(t('任务', 'Jobs'), [t('任务', 'Job'), t('状态', 'Status'), t('摘要', 'Summary'), 'PR / Issue'], jobsOut.map((job) => `<tr><td><a href="/repos/${escapeHtml(job.repo_id)}/jobs/${escapeHtml(job.id)}"><code>${text(job.id)}</code></a><br /><span class="fine">${text(labels.get(job.repo_id) ?? job.repo_id)}</span></td><td>${badge(t, job.status)} <span class="badge kind">${text(jobKindLabel(t, job))}</span></td><td>${text(redact(job.summary ?? job.error ?? job.goal))}</td><td>${open(job.pr_url ?? job.issue_url)}</td></tr>`), results?.jobs.capped === true),
     table(t('工作项', 'Work items'), [t('工作项', 'Work item'), t('状态', 'Status'), 'PR / Issue'], itemsOut.map((item) => `<tr><td><a href="/repos/${escapeHtml(item.repo_id)}/workspace">${text(item.title)}</a><br /><span class="fine">${text(labels.get(item.repo_id) ?? item.repo_id)} · ${text(item.id)}</span></td><td>${text(workItemStateLabel(t, item.state))}</td><td>${open(item.pr_url ?? item.issue_url)}</td></tr>`), results?.workItems.capped === true),
     // Audit rows carry no repository, so that filter does not narrow them and the
     // section says so rather than quietly returning another repository's trail.
