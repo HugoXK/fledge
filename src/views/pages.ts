@@ -271,13 +271,13 @@ function goalTemplateSelect(t: Translate, target: string): string {
   </label>`
 }
 
-function jobKindLabel(t: Translate, job: JobRow): string {
-  if (job.kind === 'review') return t('审核', 'Review')
-  if (job.kind === 'plan') return t('计划', 'Plan')
-  if (job.kind === 'discover') return t('发现', 'Discovery')
-  if (job.kind === 'triage') return t('分诊', 'Triage')
+function jobKindLabel(t: Translate, job: { kind: string }): string {
+  // #568: the chain used to fall through to 迭代 / Iterate for a kind it did not
+  // name, and `scope` and `verify` were missing, so two real kinds read as a
+  // third. One label table (`KIND_LABELS` in `lib/jobFilters.ts`) is the source;
+  // `research` stays here only for a row written before the type dropped it.
   if (job.kind === 'research') return t('分析', 'Research')
-  return t('迭代', 'Iterate')
+  return kindFilterLabel(t, job.kind)
 }
 
 function jobLinks(job: JobRow): string {
@@ -3048,18 +3048,26 @@ export function searchPage(input: {
   const [reposOut, jobsOut, itemsOut, auditOut] = [results?.repos.rows ?? [], results?.jobs.rows ?? [], results?.workItems.rows ?? [], results?.audit.rows ?? []]
   const sections = [
     table(t('仓库', 'Repositories'), [t('仓库', 'Repository'), t('状态', 'Status')], reposOut.map((row) => `<tr><td><a href="/repos/${escapeHtml(row.id)}">${text(`${row.owner}/${row.name}`)}</a></td><td>${escapeHtml(row.enabled === 1 ? t('已启用', 'enabled') : t('已暂停', 'paused'))}</td></tr>`), results?.repos.capped === true),
-    table(t('任务', 'Jobs'), [t('任务', 'Job'), t('状态', 'Status'), t('摘要', 'Summary'), 'PR / Issue'], jobsOut.map((job) => `<tr><td><a href="/repos/${escapeHtml(job.repo_id)}/jobs/${escapeHtml(job.id)}"><code>${text(job.id)}</code></a><br /><span class="fine">${text(labels.get(job.repo_id) ?? job.repo_id)}</span></td><td>${badge(t, job.status)} <span class="badge kind">${text(job.kind)}</span></td><td>${text(job.summary ?? job.error ?? job.goal)}</td><td>${open(job.pr_url ?? job.issue_url)}</td></tr>`), results?.jobs.capped === true),
-    table(t('工作项', 'Work items'), [t('工作项', 'Work item'), t('状态', 'Status'), 'PR / Issue'], itemsOut.map((item) => `<tr><td><a href="/repos/${escapeHtml(item.repo_id)}/workspace">${text(item.title)}</a><br /><span class="fine">${text(labels.get(item.repo_id) ?? item.repo_id)} · ${text(item.id)}</span></td><td>${text(item.state)}</td><td>${open(item.pr_url ?? item.issue_url)}</td></tr>`), results?.workItems.capped === true),
+    table(t('任务', 'Jobs'), [t('任务', 'Job'), t('状态', 'Status'), t('摘要', 'Summary'), 'PR / Issue'], jobsOut.map((job) => `<tr><td><a href="/repos/${escapeHtml(job.repo_id)}/jobs/${escapeHtml(job.id)}"><code>${text(job.id)}</code></a><br /><span class="fine">${text(labels.get(job.repo_id) ?? job.repo_id)}</span></td><td>${badge(t, job.status)} <span class="badge kind">${text(jobKindLabel(t, job))}</span></td><td>${text(job.summary ?? job.error ?? job.goal)}</td><td>${open(job.pr_url ?? job.issue_url)}</td></tr>`), results?.jobs.capped === true),
+    table(t('工作项', 'Work items'), [t('工作项', 'Work item'), t('状态', 'Status'), 'PR / Issue'], itemsOut.map((item) => `<tr><td><a href="/repos/${escapeHtml(item.repo_id)}/workspace">${text(item.title)}</a><br /><span class="fine">${text(labels.get(item.repo_id) ?? item.repo_id)} · ${text(item.id)}</span></td><td>${text(workItemStateLabel(t, item.state))}</td><td>${open(item.pr_url ?? item.issue_url)}</td></tr>`), results?.workItems.capped === true),
     // Audit rows carry no repository, so that filter does not narrow them and the
     // section says so rather than quietly returning another repository's trail.
     table(t('审计', 'Audit'), [t('时间', 'When'), t('动作', 'Action'), t('说明', 'Detail')], auditOut.map((row) => `<tr><td>${escapeHtml(humanTimeShort(row.at))}</td><td><code>${text(row.action)}</code></td><td>${text(row.detail ?? '—')}</td></tr>`), results?.audit.capped === true, filters.repo === '' ? '' : t('不限仓库', 'not scoped by repository')),
   ].join('')
   const option = (value: string, label: string, selected: string): string => `<option value="${escapeHtml(value)}"${value === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`
   const all = t('全部', 'All')
+  const statusOptions = ['', ...JOB_FILTER_STATUSES].map((value) => option(value, value === '' ? all : statusFilterLabel(t, value), filters.status)).join('')
+  // #568: `/search` applies the `kind` it is given, so an applied kind the form
+  // does not offer — `discover`, or a token no job can have — is still the
+  // selected option: visible, named and clearable, never hidden behind 全部类型 /
+  // All kinds while the WHERE clause narrows by something else. The value is
+  // clipped but never validated, so it is built by `option()`, which escapes it.
+  const kindValues = filters.kind !== '' && !(JOB_FILTER_KINDS as string[]).includes(filters.kind) ? [...JOB_FILTER_KINDS, filters.kind] : [...JOB_FILTER_KINDS]
+  const kindOptions = ['', ...kindValues].map((value) => option(value, value === '' ? all : kindFilterLabel(t, value), filters.kind)).join('')
   const body = `<a class="back" href="/console">← ${escapeHtml(t('返回工作区', 'Back to workspace'))}</a>
     <section class="card"><div class="eyebrow">${escapeHtml(t('搜索', 'SEARCH'))}</div><h1>${escapeHtml(t('在你的数据里查找', 'Search your own data'))}</h1><p class="muted">${escapeHtml(t(`只查你自己：仓库、任务、工作项和审计。每类最多显示前 ${cap} 条。`, `Your own data only: repositories, jobs, work items and audit. First ${cap} results per section.`))}</p>
-      <form method="get" action="/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" placeholder="${escapeHtml(t('任务 id、PR 链接、摘要…', 'job id, PR link, summary…'))}" /></label><label>${escapeHtml(t('仓库', 'Repository'))} <select name="repo">${[option('', t('全部仓库', 'All repositories'), filters.repo), ...repos.map((repo) => option(repo.id, labels.get(repo.id) ?? repo.id, filters.repo))].join('')}</select></label><label>${escapeHtml(t('状态', 'Status'))} <select name="status">${['', 'queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted'].map((value) => option(value, value === '' ? all : value, filters.status)).join('')}</select></label><label>${escapeHtml(t('类型', 'Kind'))} <select name="kind">${['', ...JOB_FILTER_KINDS].map((value) => option(value, value === '' ? all : value, filters.kind)).join('')}</select></label><label>${escapeHtml(t('从', 'From'))} <input name="from" value="${escapeHtml(filters.from)}" placeholder="YYYY-MM-DD" /></label><label>${escapeHtml(t('到', 'To'))} <input name="to" value="${escapeHtml(filters.to)}" placeholder="YYYY-MM-DD" /></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button></div></form></section>
-    ${results === null ? empty(t('输入关键词开始搜索。', 'Type a keyword to search.'), t('搜索范围只有你自己：仓库、任务、工作项和审计。', 'The scope is your own data only: repositories, jobs, work items and audit.')) : sections === '' ? empty(t('没有匹配的结果。', 'No matches.'), t('换一个关键词，缩短它，或清空仓库、状态、类型和日期筛选来缩小范围。', 'Try another keyword, shorten it, or clear the repository, status, kind and date filters to narrow your search.')) : sections}`
+      <form method="get" action="/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" placeholder="${escapeHtml(t('任务 id、PR 链接、摘要…', 'job id, PR link, summary…'))}" /></label><label>${escapeHtml(t('仓库', 'Repository'))} <select name="repo">${[option('', t('全部仓库', 'All repositories'), filters.repo), ...repos.map((repo) => option(repo.id, labels.get(repo.id) ?? repo.id, filters.repo))].join('')}</select></label><label>${escapeHtml(t('状态', 'Status'))} <select name="status">${statusOptions}</select></label><label>${escapeHtml(t('类型', 'Kind'))} <select name="kind">${kindOptions}</select></label><label>${escapeHtml(t('从', 'From'))} <input name="from" value="${escapeHtml(filters.from)}" placeholder="YYYY-MM-DD" /></label><label>${escapeHtml(t('到', 'To'))} <input name="to" value="${escapeHtml(filters.to)}" placeholder="YYYY-MM-DD" /></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button></div></form></section>
+    ${results === null ? empty(t('输入关键词开始搜索。', 'Type a keyword to search.'), t('搜索范围只有你自己：仓库、任务、工作项和审计。', 'The scope is your own data only: repositories, jobs, work items and audit.')) : sections === '' ? empty(t('没有匹配的结果。', 'No matches.'), t('换一个关键词、缩短它，或增加一项筛选来缩小范围；清空筛选会扩大范围。', 'Try another keyword, shorten it, or add a filter to narrow the search; clearing a filter widens it.') + (filters.kind === '' ? '' : ' ' + t(`当前类型：${kindFilterLabel(t, filters.kind)}。`, `Kind: ${kindFilterLabel(t, filters.kind)}.`))) : sections}`
   return layout({ title: t('搜索', 'Search'), viewer, body, config, locale, path: '/search', active: 'console', notice, error })
 }
 
