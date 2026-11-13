@@ -305,10 +305,13 @@ login photographed the dashboard twice. It then signs in and renders the
 dashboard, settings, admin, add-repository and workspace surfaces at
 360/390/430/640/768/1024/1280/1440/1920 in both languages. It fails when the
 document leaves the viewport, or when an element does and nothing can scroll it
-into view: an element clipped by a `.table-scroll` ancestor, or by an ancestor
-whose computed `overflow-x` is `auto`/`scroll` and which itself overflows, needs
-`data-allow-overflow` to be waived, and a scroller that overflows itself is never
-waived. It writes full-page screenshots under `visual-matrix/` (ignored by git).
+into view. An element is waived only on evidence: a `.table-scroll` ancestor, or
+any ancestor whose computed `overflow-x` is `auto`/`scroll`, counts only while it
+really scrolls (`scrollWidth` above `clientWidth` by more than a rounding pixel);
+a box that merely carries the class waives nothing, an element that is itself the
+overflowing scroller is never waived, and anything else that has to overflow needs
+`data-allow-overflow` next to such a scrolling ancestor. It writes full-page
+screenshots under `visual-matrix/` (ignored by git).
 CI uploads that directory as the `visual-matrix` artifact. The matrix does not
 contact GitHub, SMTP or a FlyBot instance.
 
