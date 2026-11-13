@@ -948,6 +948,15 @@ also assign a selected model to each DSH bot role; after the restart Fledge call
 `update-bot` with `model: <provider>/<model>` for every role, using the assigned
 model or the new default, so a bot cannot keep a stale provider reference.
 
+Provider metadata also carries a region tag, an optional data-policy URL and an
+allowed flag. A repository can set a provider allowlist and a required region;
+the gateway enforces both at candidate resolution, including the fallback loop,
+and refuses a disallowed model with a stable code before any upstream call. The
+job row records the answering provider id, label, region and model, and the job
+page and review packet show them. `repos.provider_allowlist` and
+`repos.required_region` are additive columns, so an existing repository keeps the
+unrestricted behaviour until an owner sets a policy.
+
 ### Per-job cost, evidence and metrics
 
 The bridge's model proxy normally uses the per-repository instance token. While

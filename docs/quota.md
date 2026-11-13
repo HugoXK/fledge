@@ -136,6 +136,16 @@ provider/model rows at startup. Existing `flybot:<repo>` and `job:<id>` tokens
 are backfilled with their repository id, so new usage is attributed per
 repository. Historical ledger rows without a job id remain unattributed.
 
+### Repository provider policy
+
+A repository may keep a provider allowlist and an optional region tag. The
+gateway checks every candidate, including a fallback, before dispatch and refuses
+a provider that is disabled, outside the allowlist or outside the required
+region with `FLEDGE_PROVIDER_DISABLED`, `FLEDGE_PROVIDER_NOT_ALLOWED` or
+`FLEDGE_PROVIDER_REGION_NOT_ALLOWED`. The refusal is returned as HTTP 403 with
+`error.type = provider_policy_refused`, so no quota is spent and no upstream call
+is made. An empty allowlist or region means no restriction in this version.
+
 ## Admin
 
 Admins can set `quota_cny` per user from `/admin` (0–10000), or tick
