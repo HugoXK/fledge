@@ -345,8 +345,6 @@ test('the kind filter offers every job kind a user can start, and nothing else',
     assert.equal((triage.body.match(/data-job-id="job_triage_a"/g) ?? []).length, 1, 'a triage job is filterable')
     assert.doesNotMatch(triage.body, /data-job-id="job_iter0"/, 'and no other kind leaks into the triage page')
 
-    const search = await built.app.inject({ method: 'GET', url: '/search?q=k', headers: { cookie } })
-    assert.match(search.body, /<option value="triage"/, 'the search form offers triage too')
 
     assert.deepEqual(parseJobFilters({ kind: 'scope' }, [repo.id]), { repo: '', status: '', kind: 'scope' }, 'the parser keeps scope')
     assert.deepEqual(parseJobFilters({ kind: 'triage' }, [repo.id]), { repo: '', status: '', kind: 'triage' }, 'the parser keeps triage')

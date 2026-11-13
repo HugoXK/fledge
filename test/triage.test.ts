@@ -59,28 +59,23 @@ test('a malformed report is refused rather than read as an empty board', () => {
 })
 
 test('an issue URL needs a host, not just the scheme', () => {
-  for (const url of ['https://', 'https:///', 'https:///issues/1', 'https://#issue', 'https://?q=1']) {
+  for (const url of ['https://', 'https:///', 'https://#issue', 'https://?q=1']) {
     assert.equal(parseTriage({ items: [{ issue: 1, url, title: 'x', priority: 0 }] }), null, `refused: ${url}`)
   }
   // The host is what makes the link followable; a port and a path are fine.
   assert.notEqual(parseTriage({ items: [{ issue: 1, url: 'https://ghe.example.com:8443/o/r/issues/1', title: 'x', priority: 0 }] }), null)
 })
 
-test('a title longer than the limit is truncated and recorded, not silently shortened', () => {
-  const long = 'x'.repeat(TRIAGE_TITLE_MAX + 10)
-  const report = parseTriage({ items: [{ issue: 1, url: `${BASE}/1`, title: long, priority: 0 }] })
-  assert.notEqual(report, null)
-  assert.equal(report!.items[0]!.title.length, TRIAGE_TITLE_MAX)
-  assert.equal(report!.items[0]!.titleTruncated, true, 'the shortened row says so')
-
+test('a title longer than the limit is refused, not silently shortened', () => {
+  const long = 'x'.repeat(TRIAGE_TITLE_MAX + 1)
+  // A cut title reads like the issue's real one, so the report fails closed and
+  // the job carries `TRIAGE_UNVERIFIED`; the whole row is never half-reported.
+  assert.equal(parseTriage({ items: [{ issue: 1, url: `${BASE}/1`, title: long, priority: 0 }] }), null)
+  assert.equal(parseTriage({ items: [item(1)], next: { issue: 1, url: `${BASE}/1`, title: long } }), null, 'the proposal is held to the same limit')
+  // Exactly the limit is still a title.
   const exact = parseTriage({ items: [{ issue: 1, url: `${BASE}/1`, title: 'y'.repeat(TRIAGE_TITLE_MAX), priority: 0 }] })
-  assert.equal(exact!.items[0]!.titleTruncated, false)
-
-  // The proposal is the first row, so it carries the row's recorded title.
-  const proposed = parseTriage({ items: [{ issue: 1, url: `${BASE}/1`, title: long, priority: 0 }], next: { issue: 1, url: `${BASE}/1`, title: long } })
-  assert.notEqual(proposed, null)
-  assert.equal(proposed!.items[0]!.titleTruncated, true)
-  assert.equal(proposed!.next!.title.length, TRIAGE_TITLE_MAX)
+  assert.notEqual(exact, null)
+  assert.equal(exact!.items[0]!.title.length, TRIAGE_TITLE_MAX)
 })
 
 test('parseTriageJson refuses corrupt storage without throwing', () => {

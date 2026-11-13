@@ -102,6 +102,30 @@ export interface PlatformResumeOutcome {
   due: string[]
 }
 
+// #390 review: one answer for "what kind does a re-enqueued run have?", shared by
+// resume and retry so the two cannot disagree. A row keeps its own kind when that
+// kind's contract does not depend on the row being re-enqueued — a plan is still a
+// plan, a review a review, a triage run a triage run. `scope` and `verify` are
+// work-item runs and `discover` is scheduler-owned, so those re-enqueue as iterate
+// work, which is the contract they can actually run under.
+const REENQUEUE_KEEPS_KIND: ReadonlySet<string> = new Set(['review', 'plan', 'triage'])
+
+function reenqueueKind(job: JobRow): JobKind {
+  // `jobs.kind` is a TEXT column, so the stored value is checked against the
+  // declared set before it is narrowed back to `JobKind`.
+  const kind = job.kind
+  return REENQUEUE_KEEPS_KIND.has(kind) ? (kind as JobKind) : 'iterate'
+}
+
+/**
+ * A declared work type that is not what the new kind implies is carried through
+ * the re-enqueue, so a row written under a contract with no handler is refused
+ * (`WORK_TYPE_UNSUPPORTED`) instead of quietly running as iterate work.
+ */
+function reenqueueWorkType(job: JobRow, kind: JobKind): string | undefined {
+  return job.work_type !== null && job.work_type !== workTypeForKind(kind) ? job.work_type : undefined
+}
+
 function progressSummary(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const text = value.trim()
@@ -283,7 +307,10 @@ export class Jobs {
     const repo = this.store.getRepo(job.repo_id)
     if (repo === undefined) return { ok: false, error: '仓库不存在。' }
     const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
-    const result = await this.enqueue(repo, 'manual', goal, job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : 'iterate', {
+    const kind = reenqueueKind(job)
+    const declared = reenqueueWorkType(job, kind)
+    const result = await this.enqueue(repo, 'manual', goal, kind, {
+      ...(declared === undefined ? {} : { workType: declared }),
       ...(job.branch === null ? {} : { branch: job.branch }),
       ...(job.pr_url === null ? {} : { prUrl: job.pr_url }),
       ...(job.base_branch === null ? {} : { baseBranch: job.base_branch }),
@@ -309,7 +336,11 @@ export class Jobs {
     if (job.status === 'queued' || job.status === 'running') return { ok: false, error: '这个任务还在运行；请先暂停或取消。' }
     const repo = this.store.getRepo(job.repo_id)
     if (repo === undefined) return { ok: false, error: '仓库不存在。' }
-    const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : 'iterate'
+    // #390 review: the kind comes from the shared rule, not a ternary — mapping
+    // a triage row to `iterate` turned a no-touch, read-only run into a job that
+    // may write, and the same expression sat in the resume path.
+    const kind = reenqueueKind(job)
+    const declared = reenqueueWorkType(job, kind)
     const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
     const resumePr = kind === 'iterate' && job.pr_url !== null
     const result = await this.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, {
@@ -317,6 +348,7 @@ export class Jobs {
       // issue-thread `/fledge retry` — so the run is theirs. The trigger alone
       // cannot say that: `followup` is also what `tick()` enqueues.
       ownerStarted: true,
+      ...(declared === undefined ? {} : { workType: declared }),
       ...(resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {}),
       ...(options.workItemId === undefined ? {} : { workItemId: options.workItemId }),
     })
@@ -596,8 +628,12 @@ export class Jobs {
     if (!isImplementedWorkType(workType.type)) {
       return { ok: false, error: `${workType.type} 工作类型已登记但还没有实现。`, code: 'WORK_TYPE_UNSUPPORTED', detail: workType.type }
     }
-    if (workType.type === 'triage' && kind !== 'triage') {
-      return { ok: false, error: '分诊是独立的任务类型，不能借用其他任务类型。', code: 'UNKNOWN_WORK_TYPE', detail: workType.type }
+    // #390 review: the pair must agree in both directions. Refusing only
+    // `iterate` + `workType='triage'` let a triage run be declared as another
+    // work type, which stored `work_type='iterate'` and showed the iterate
+    // contract for a run that is forbidden to open a branch or a PR.
+    if ((workType.type === 'triage') !== (kind === 'triage')) {
+      return { ok: false, error: '分诊是独立的任务类型，不能借用其他任务类型。', code: 'UNKNOWN_WORK_TYPE', detail: `${kind}/${workType.type}` }
     }
     if (kind !== 'triage' && workType.branch === false) {
       return { ok: false, error: `${workType.type} 工作类型不能创建分支或 PR。`, code: 'UNKNOWN_WORK_TYPE', detail: workType.type }

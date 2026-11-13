@@ -14,7 +14,9 @@
 //   }
 //
 // `items` is ranked highest first, and `duplicateOf` names the issue that stays
-// open — the duplicate is linked, not duplicated.
+// open — the duplicate is linked, not duplicated. An issue URL must carry a host
+// (`https://` alone is refused), and a title longer than `TRIAGE_TITLE_MAX` is
+// refused rather than shortened, so the board never shows a cut title as the real one.
 
 export const TRIAGE_MAX_ITEMS = 50
 export const TRIAGE_TITLE_MAX = 200
@@ -44,24 +46,36 @@ function positiveInteger(value: unknown): number | null {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null
 }
 
-function httpsUrl(value: unknown): string | null {
+function parseIssueUrl(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const text = value.trim()
   if (!text.startsWith('https://') || text.length > 500) return null
-  return text
+  // `https://` alone is not a link: without a host there is nothing to open, and
+  // a scheme-only string used to become a work item whose URL went nowhere.
+  let host = ''
+  try {
+    host = new URL(text).host
+  } catch {
+    return null
+  }
+  return host === '' ? null : text
 }
 
 function cleanTitle(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const text = value.trim()
-  return text === '' ? null : text.slice(0, TRIAGE_TITLE_MAX)
+  if (text === '') return null
+  // #390 review: an over-long title is refused, not shortened. A cut title reads
+  // like the issue's real one, and the whole report fails closed as
+  // `TRIAGE_UNVERIFIED` rather than carrying data that was silently lost.
+  return text.length > TRIAGE_TITLE_MAX ? null : text
 }
 
 function parseItem(value: unknown): TriageItem | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
   const raw = value as Record<string, unknown>
   const issue = positiveInteger(raw.issue)
-  const url = httpsUrl(raw.url)
+  const url = parseIssueUrl(raw.url)
   const title = cleanTitle(raw.title)
   const priority = typeof raw.priority === 'number' && PRIORITIES.has(raw.priority) ? raw.priority : null
   if (issue === null || url === null || title === null || priority === null) return null
@@ -106,7 +120,7 @@ export function parseTriage(value: unknown): TriageReport | null {
     if (typeof raw.next !== 'object' || Array.isArray(raw.next)) return null
     const rawNext = raw.next as Record<string, unknown>
     const issue = positiveInteger(rawNext.issue)
-    const url = httpsUrl(rawNext.url)
+    const url = parseIssueUrl(rawNext.url)
     const title = cleanTitle(rawNext.title)
     if (issue === null || url === null || title === null) return null
     const item = items.find((entry) => entry.issue === issue)
@@ -114,7 +128,9 @@ export function parseTriage(value: unknown): TriageReport | null {
     // be a duplicate, so the scheduler cannot start on a row triage just folded.
     if (item === undefined || item.duplicateOf !== null) return null
     if (items.length > 0 && items[0]!.issue !== issue) return null
-    next = { issue, url, title }
+    // The proposal is that row, so it carries the row's own link and title
+    // rather than a second copy the scheduler could read differently.
+    next = { issue, url: item.url, title: item.title }
   }
   return { schema_version: 1, items, next }
 }

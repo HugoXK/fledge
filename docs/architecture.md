@@ -770,6 +770,24 @@ which is the same path the next scheduled work session already consumes, so a
 triage run proposes work without opening a branch and without a second scheduler.
 The decision record is `docs/decisions/0014-work-types.md`.
 
+The kind and the work type are checked as a pair in both directions: a
+`triage` run cannot be declared as another work type, and no other kind can
+borrow the triage contract, so the page can never show the iterate contract for a
+run that is forbidden to write. Resume and retry read one shared rule instead of
+a ternary: a row keeps its own kind when that kind's contract does not depend on
+the row being re-enqueued (review, plan, triage), everything else runs as iterate
+work, and a declared work type that is not what the new kind implies travels with
+the re-enqueue so a contract with no handler is refused rather than re-labelled.
+A failed triage row therefore comes back as `kind='triage'`. What a triage row can
+never do is start itself: this slice has no route, form or scheduler branch that
+enqueues `kind='triage'`, so `triage` rows come from the service and from retry
+only; the console control that starts one is tracked in #523. The report itself is
+strict: an issue URL must carry a host (`https://` alone is refused) and a title
+over `TRIAGE_TITLE_MAX` is refused rather than shortened, because a cut title
+reads like the issue's real one. `triage` is also a filterable kind: it is in the
+dashboard's `JOB_FILTER_KINDS`, while `discover` stays out of it because an
+account never starts a discovery run by hand.
+
 ### Platform emergency stop
 
 The stop is one `settings` row (`platform.stop`: when, who, why), not a field on
