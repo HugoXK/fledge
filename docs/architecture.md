@@ -1159,11 +1159,17 @@ model or the new default, so a bot cannot keep a stale provider reference.
 Provider metadata also carries a region tag, an optional data-policy URL and an
 allowed flag. A repository can set a provider allowlist and a required region;
 the gateway enforces both at candidate resolution, including the fallback loop,
-and refuses a disallowed model with a stable code before any upstream call. The
-job row records the answering provider id, label, region and model, and the job
-page and review packet show them. `repos.provider_allowlist` and
-`repos.required_region` are additive columns, so an existing repository keeps the
-unrestricted behaviour until an owner sets a policy.
+and refuses a disallowed model with a stable code before any upstream call. With
+a policy set, a call must name one of the repository's models: a call that omits
+`model`, or names a model that does not resolve, is refused with
+`FLEDGE_PROVIDER_POLICY_NO_MODEL` rather than reaching the caller's own model or
+the platform model, which carry no provider id or region. The job row records the
+answering provider id, label, region and model, keeps those values when a later
+call resolves no provider, and the job page and review packet show them. The
+settings form disables the checkbox of a provider whose allowed flag is off.
+`repos.provider_allowlist` and `repos.required_region` are additive columns, so an
+existing repository keeps the unrestricted behaviour until an owner sets a
+policy.
 
 ### Per-job cost, evidence and metrics
 

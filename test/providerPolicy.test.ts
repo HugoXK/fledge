@@ -46,6 +46,7 @@ interface Harness {
   repo: RepoRow
   jobId: string
   call: (model: string) => Promise<{ statusCode: number; body: string; json: () => unknown }>
+  callBody: (payload: Record<string, unknown>) => Promise<{ statusCode: number; body: string; json: () => unknown }>
   close: () => Promise<void>
 }
 
@@ -56,11 +57,14 @@ async function harness(input: {
   requiredRegion: string
   primaryModelId: string
   fallbackModelId?: string
+  platformUrl?: string
+  ownUrl?: string
 }): Promise<Harness> {
-  const config = testConfig({})
+  const config = testConfig(input.platformUrl === undefined ? {} : { llm: { baseUrl: `${input.platformUrl}/v1`, key: 'platform-key', model: 'platform-model', pricePerTokenUsd: 0.0000002 } })
   const store = new Store(':memory:')
   const app = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   const user = makeUser(store, { login: `policy-${randomToken(4)}`, status: 'approved' })
+  if (input.ownUrl !== undefined) store.setUserOwnModel(user.id, `${input.ownUrl}/v1`, encryptSecret('own-key', config.tokenEncryptionKey), 'own-model')
   const repo = store.createRepo({ id: `repo_${randomToken(6)}`, userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
   const primary = store.createModelProvider({
     id: input.primary.id,
@@ -102,6 +106,12 @@ async function harness(input: {
     user,
     repo,
     jobId,
+    callBody: (payload: Record<string, unknown>) => app.app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: { authorization: `Bearer ${raw}`, 'content-type': 'application/json' },
+      payload,
+    }),
     call: (model: string) => app.app.inject({
       method: 'POST',
       url: '/v1/chat/completions',
@@ -315,3 +325,132 @@ test('a gateway refusal writes no provider key or credential-bearing URL to the 
     await primary.close()
   }
 })
+
+test('a call that names no model is refused when the repository sets a policy', async () => {
+  const hits: string[] = []
+  const primary = await providerServer('ok', hits)
+  const platformHits: string[] = []
+  const platform = await providerServer('ok', platformHits)
+  const h = await harness({
+    primary: { id: 'prv_no_model', url: primary.url, label: 'Policy provider', region: 'eu' },
+    allowlist: ['prv_no_model'],
+    requiredRegion: 'eu',
+    primaryModelId: 'pvm_no_model',
+    platformUrl: platform.url,
+  })
+  try {
+    const response = await h.callBody({ messages: [{ role: 'user', content: 'hi' }] })
+    assert.equal(response.statusCode, 403)
+    const error = (response.json() as { error: { type: string; code: string } }).error
+    assert.equal(error.type, 'provider_policy_refused')
+    assert.equal(error.code, 'FLEDGE_PROVIDER_POLICY_NO_MODEL')
+    assert.deepEqual(hits, [], 'no repository provider was called')
+    assert.deepEqual(platformHits, [], 'the platform model was not called either')
+  } finally {
+    await h.close()
+    await primary.close()
+    await platform.close()
+  }
+})
+
+test('a call naming a model that does not resolve is refused under the same policy', async () => {
+  const hits: string[] = []
+  const primary = await providerServer('ok', hits)
+  const platformHits: string[] = []
+  const platform = await providerServer('ok', platformHits)
+  const h = await harness({
+    primary: { id: 'prv_unresolved', url: primary.url, label: 'Policy provider', region: 'eu' },
+    allowlist: ['prv_unresolved'],
+    requiredRegion: '',
+    primaryModelId: 'pvm_resolved',
+    platformUrl: platform.url,
+  })
+  try {
+    const response = await h.call('pvm_missing')
+    assert.equal(response.statusCode, 403)
+    const error = (response.json() as { error: { code: string } }).error
+    assert.equal(error.code, 'FLEDGE_PROVIDER_POLICY_NO_MODEL')
+    assert.deepEqual(hits, [])
+    assert.deepEqual(platformHits, [])
+  } finally {
+    await h.close()
+    await primary.close()
+    await platform.close()
+  }
+})
+
+test('the policy also covers a user own model, which the allowlist does not name', async () => {
+  const hits: string[] = []
+  const primary = await providerServer('ok', hits)
+  const ownHits: string[] = []
+  const own = await providerServer('ok', ownHits)
+  const h = await harness({
+    primary: { id: 'prv_own_gap', url: primary.url, label: 'Policy provider', region: 'eu' },
+    allowlist: ['prv_own_gap'],
+    requiredRegion: 'eu',
+    primaryModelId: 'pvm_own_gap',
+    ownUrl: own.url,
+  })
+  try {
+    const response = await h.callBody({ model: 'pvm_missing', messages: [{ role: 'user', content: 'hi' }] })
+    assert.equal(response.statusCode, 403)
+    const error = (response.json() as { error: { code: string } }).error
+    assert.equal(error.code, 'FLEDGE_PROVIDER_POLICY_NO_MODEL')
+    assert.deepEqual(ownHits, [], 'the user own model was not called under a repository policy')
+  } finally {
+    await h.close()
+    await primary.close()
+    await own.close()
+  }
+})
+
+test('a later call with no model keeps the provider the job already recorded', async () => {
+  const hits: string[] = []
+  const primary = await providerServer('ok', hits)
+  const platformHits: string[] = []
+  const platform = await providerServer('ok', platformHits)
+  const h = await harness({
+    primary: { id: 'prv_keep', url: primary.url, label: 'Keep provider', region: 'eu' },
+    allowlist: [],
+    requiredRegion: '',
+    primaryModelId: 'pvm_keep',
+    platformUrl: platform.url,
+  })
+  try {
+    const first = await h.call('pvm_keep')
+    assert.equal(first.statusCode, 200)
+    const recorded = h.store.getJob(h.jobId)!
+    assert.equal(recorded.provider_id, 'prv_keep')
+    assert.equal(recorded.provider_model, 'allowed-model')
+
+    const second = await h.callBody({ messages: [{ role: 'user', content: 'again' }] })
+    assert.equal(second.statusCode, 200)
+    assert.deepEqual(platformHits, ['platform-model'], 'the model-less call ran on the platform model')
+    const job = h.store.getJob(h.jobId)!
+    assert.equal(job.provider_id, 'prv_keep', 'the recorded provider is kept, not cleared')
+    assert.equal(job.provider_label, 'Keep provider')
+    assert.equal(job.provider_region, 'eu')
+    assert.equal(job.provider_model, 'allowed-model')
+  } finally {
+    await h.close()
+    await primary.close()
+    await platform.close()
+  }
+})
+
+test('a disabled provider is not offered as an allowlist entry', async () => {
+  const config = testConfig({})
+  const store = new Store(':memory:')
+  const app = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'policy-disabled-entry', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_disabled_entry', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const retired = store.createModelProvider({ id: 'prv_retired_entry', userId: user.id, label: 'Retired provider', baseUrl: 'https://models.example/v1', keyEnc: encryptSecret('k', config.tokenEncryptionKey), allowPrivate: false, region: 'eu', dataPolicyUrl: '', allowed: false })
+    const page = await app.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie: sessionFor(app, user).cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, new RegExp(`name="allowedProviderIds" value="${retired.id}" disabled`))
+  } finally {
+    await app.close()
+  }
+})
+

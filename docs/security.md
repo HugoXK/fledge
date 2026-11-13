@@ -519,11 +519,20 @@ for the allowlist, `FLEDGE_PROVIDER_REGION_NOT_ALLOWED` for the region and
 outside the policy is therefore refused at the same seam and is never silently
 used.
 
+A repository that sets a policy must name one of its models on every call. A
+call whose `model` is missing, or names a model that does not resolve, is
+refused with `FLEDGE_PROVIDER_POLICY_NO_MODEL` before any target is chosen. The
+alternative targets — the caller's own `own_llm_*` model and the platform model —
+carry no provider id and no region, so without this refusal omitting one field
+would bypass both the allowlist and the region constraint.
+
 The job row records the provider id, label, region and the actual model that
 answered. The job page, the pull-request review packet and the `job.succeeded`
 audit detail show those fields. Provider settings and the per-repository policy
 are owner-only: a non-owner, including an administrator, cannot read another
-user's providers or change that repository's policy.
+user's providers or change that repository's policy. A later call that resolves
+no provider keeps the values the job already recorded instead of clearing them,
+and settings do not offer a disabled provider as an allowlist entry.
 
 ### Gateway
 
