@@ -24,7 +24,15 @@ test('the registry declares every work type the issue names', () => {
     assert.equal(contract.type, type)
     assert.ok(contract.label[0] !== '' && contract.label[1] !== '', `${type} has a bilingual label`)
     assert.ok(contract.purpose[0] !== '' && contract.purpose[1] !== '', `${type} has a bilingual purpose`)
-    assert.ok(contract.budgetUsd > 0, `${type} declares a budget`)
+    // #529: the registry used to declare a per-type budget in USD, and nothing
+    // metered it — the enforced per-job cap is the repository's `job_budget_cny`
+    // at the jobs checkpoint. A contract field no code reads is a number the page
+    // shows and nothing can bind, so the exact key set is pinned instead.
+    assert.deepEqual(
+      Object.keys(contract).sort(),
+      ['autoMerge', 'branch', 'evidence', 'label', 'purpose', 'risk', 'stages', 'type'],
+      `${type} declares only fields the platform enforces`,
+    )
     assert.match(contract.risk, /^T[0-3]$/)
   }
 })
