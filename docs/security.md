@@ -431,6 +431,34 @@ User model base URLs are validated before saving and before use:
 DNS rebinding is not fully mitigated; deploy behind an egress policy if users
 are untrusted.
 
+### Provider policy
+
+A model provider carries a display label, base URL, region/jurisdiction tag, an
+optional data-policy URL and an allowed flag. The base URL and the data-policy
+URL reject credentials, and neither is written to a log or an audit row; the
+stored key is encrypted and never rendered.
+
+A repository may keep a provider allowlist and an optional region constraint.
+The allowlist names provider ids owned by the repository owner; an empty
+allowlist means no restriction in this version, and a region constraint matches
+the provider's region tag case-insensitively, with an empty value allowing any
+region. The region tag is descriptive metadata, not a residency guarantee or a
+certification.
+
+The gateway applies the effective policy when it resolves each candidate model,
+before any upstream request, and the same path covers the fallback loop. A
+disallowed candidate is refused with a stable code: `FLEDGE_PROVIDER_NOT_ALLOWED`
+for the allowlist, `FLEDGE_PROVIDER_REGION_NOT_ALLOWED` for the region and
+`FLEDGE_PROVIDER_DISABLED` for a provider whose allowed flag is off. A fallback
+outside the policy is therefore refused at the same seam and is never silently
+used.
+
+The job row records the provider id, label, region and the actual model that
+answered. The job page, the pull-request review packet and the `job.succeeded`
+audit detail show those fields. Provider settings and the per-repository policy
+are owner-only: a non-owner, including an administrator, cannot read another
+user's providers or change that repository's policy.
+
 ### Gateway
 
 - `flg_` tokens are random, hashed at rest, revocable, and can expire.
@@ -485,6 +513,7 @@ treat it as a secret.
 | Approval link leaked | Single-use, 7 days, only changes pending → approved/rejected |
 | Malicious repo token | Token is only used through the GitHub API for that repo; validated on add |
 | SSRF via model URL | HTTPS + DNS/IP checks; egress policy recommended |
+| Unapproved model provider | Repository allowlist and region check at gateway resolution, stable refusal code, fallback covered |
 | Quota abuse | Per-user ledger, hard 402, admin adjustments audited |
 | Job secret leak | Short-lived, per job, credential endpoint scoped to the job |
 | Log leak | Redaction; no request bodies; secrets never rendered |

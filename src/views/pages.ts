@@ -969,12 +969,14 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number } }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; models?: Array<ProviderModelRow & { provider_label: string }>; providers?: ModelProviderRow[]; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number } }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const workItems = input.workItems ?? []
   const workState = input.workState
   const prJobs = input.prJobs ?? []
   const models = input.models ?? []
+  const providers = input.providers ?? []
+  const providerPolicy = new Set((repo.provider_allowlist ?? '').split(',').map((id) => id.trim()).filter((id) => id !== ''))
   const repoModelIds = new Set(input.repoModelIds ?? [])
   const repoDefaultModelId = input.repoDefaultModelId ?? ''
   const botModelMap = new Map((input.repoBotModels ?? []).map((entry) => [entry.role, entry.provider_model_id]))
@@ -1331,6 +1333,15 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
               : `<span class="list">${[...new Set(models.map((model) => model.provider_label))].map((provider) => `<div class="mb-6"><strong>${escapeHtml(provider)}</strong><br />${models.filter((model) => model.provider_label === provider).map((model) => `<label class="check"><input type="checkbox" name="modelIds" value="${escapeHtml(model.id)}" ${repoModelIds.has(model.id) ? 'checked' : ''} /> ${escapeHtml(model.label)} <small class="muted">${escapeHtml(model.model)}</small></label>`).join('')}</div>`).join('')}</span>`}
           </label>
         </div>
+        <div class="row">
+          <label class="grow">${escapeHtml(t('允许的提供方（可选）', 'Allowed providers (optional)'))}${infoTip(t('只允许这个仓库使用勾选的提供方；一个都不勾表示不限制。提供方本身由你在 Settings 里添加。', 'Restrict this repository to the checked providers; none checked means no allowlist. Providers are added in Settings.'))}
+            ${providers.length === 0
+              ? `<span class="muted">${escapeHtml(t('还没有提供方。先到 Settings 添加。', 'No providers yet. Add one in Settings.'))}</span>`
+              : `<span class="list">${providers.map((provider) => `<label class="check"><input type="checkbox" name="allowedProviderIds" value="${escapeHtml(provider.id)}" ${providerPolicy.has(provider.id) ? 'checked' : ''} /> ${escapeHtml(provider.label)} <small class="muted">${escapeHtml(provider.region === '' ? t('未标注区域', 'no region') : provider.region)}${provider.allowed === 1 ? '' : ` · ${escapeHtml(t('已停用', 'disabled'))}`}</small>${provider.data_policy_url === '' ? '' : ` · <a class="link" href="${escapeHtml(provider.data_policy_url)}" rel="noreferrer noopener" target="_blank">${escapeHtml(t('数据政策', 'Data policy'))}</a>`}</label>`).join('')}</span>`}
+          </label>
+          <label>${escapeHtml(t('区域约束（可选）', 'Region constraint (optional)'))} <input name="providerRegion" value="${escapeHtml(repo.required_region ?? '')}" maxlength="80" placeholder="eu" /></label>
+        </div>
+        <p class="fine">${escapeHtml(t('区域约束比较提供方标注的区域（不区分大小写）；留空表示不限区域。这个策略只作用于当前仓库。', 'The region constraint compares the provider region label case-insensitively; empty allows any region. This policy applies to this repository only.'))}</p>
         <label>${escapeHtml(t('默认模型', 'Default model'))} <select name="defaultModelId"><option value="">${escapeHtml(t('平台默认', 'Platform default'))}</option>${models.map((model) => `<option value="${escapeHtml(model.id)}"${repoDefaultModelId === model.id ? ' selected' : ''}>${escapeHtml(model.provider_label)} · ${escapeHtml(model.label)}${repoModelIds.has(model.id) ? '' : ' *'}</option>`).join('')}</select></label>
         ${models.length === 0 ? '' : `<div class="row bot-models">${([['chief', 'Chief'], ['lead', 'Lead'], ['product', 'Product'], ['test', 'Test'], ['security', 'Security'], ['reviewer', 'Reviewer'], ['dev1', 'Dev-1'], ['dev2', 'Dev-2']] as const).map(([role, label]) => `<label>${escapeHtml(label)} <select name="botModel_${role}"><option value="">${escapeHtml(t('跟随默认', 'Follow default'))}</option>${models.filter((model) => repoModelIds.has(model.id)).map((model) => `<option value="${escapeHtml(model.id)}"${botModelMap.get(role) === model.id ? ' selected' : ''}>${escapeHtml(model.provider_label)} · ${escapeHtml(model.label)}</option>`).join('')}</select></label>`).join('')}</div>
         <p class="fine">${escapeHtml(t('每个 bot 可以单独选择模型；不选则跟随默认。保存选择后，空闲时点击“应用模型并重启工作区”才会生效，Fledge 会通过 DSH 把模型分配给对应 bot。', 'Each bot can choose a model; empty follows the default. After saving, use "Apply models and restart workspace" while idle; Fledge assigns the model through DSH.'))}</p>`}
@@ -1601,7 +1612,7 @@ export function settingsPage(input: {
           const pending = (discoveredProvider === provider.id ? discovered : []).filter((id) => !provider.models.some((model) => model.model === id))
           return `<div class="card provider-card">
           <div class="row between">
-            <div><strong>${escapeHtml(provider.label)}</strong>${provider.allow_private === 1 ? ' · private' : ''}<br /><code>${escapeHtml(provider.base_url)}</code></div>
+            <div><strong>${escapeHtml(provider.label)}</strong>${provider.allow_private === 1 ? ' · private' : ''} · ${escapeHtml(provider.region === '' ? t('区域未标注', 'no region') : provider.region)} · ${provider.allowed === 1 ? escapeHtml(t('允许', 'allowed')) : escapeHtml(t('已停用', 'disabled'))}<br /><code>${escapeHtml(provider.base_url)}</code>${provider.data_policy_url === '' ? '' : `<br /><a class="link" href="${escapeHtml(provider.data_policy_url)}" rel="noreferrer noopener" target="_blank">${escapeHtml(t('数据政策', 'Data policy'))}</a>`}</div>
             <form method="post" action="/settings/providers/${escapeHtml(provider.id)}/delete">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('删除提供方', 'Delete provider'))}</button></form>
           </div>
           ${provider.models.length === 0
@@ -1627,6 +1638,11 @@ export function settingsPage(input: {
                 <label class="grow">Base URL <input name="baseUrl" value="${escapeHtml(provider.base_url)}" /></label>
               </div>
               <label>API Key <input name="apiKey" type="password" placeholder="${escapeHtml(t('留空不修改', 'Leave blank to keep'))}" autocomplete="off" /></label>
+              <div class="row">
+                <label class="grow">${escapeHtml(t('区域 / 司法辖区', 'Region / jurisdiction'))} <input name="region" value="${escapeHtml(provider.region)}" maxlength="80" placeholder="eu" /></label>
+                <label class="grow">${escapeHtml(t('数据政策 URL', 'Data-policy URL'))} <input name="dataPolicyUrl" value="${escapeHtml(provider.data_policy_url)}" maxlength="2048" placeholder="https://…" /></label>
+              </div>
+              <label>${escapeHtml(t('提供方状态', 'Provider status'))} <select name="allowed"><option value="1"${provider.allowed === 1 ? ' selected' : ''}>${escapeHtml(t('允许使用', 'Allowed'))}</option><option value="0"${provider.allowed === 0 ? ' selected' : ''}>${escapeHtml(t('停用', 'Disabled'))}</option></select></label>
               ${canPrivate ? `<label class="check"><input type="checkbox" name="allowPrivate" value="1"${provider.allow_private === 1 ? ' checked' : ''} /> ${escapeHtml(t('允许 HTTP / 内网地址', 'Allow HTTP / private address'))}</label>` : ''}
               <button class="btn btn-ghost" type="submit">${escapeHtml(t('保存提供方', 'Save provider'))}</button>
             </form>
@@ -1640,6 +1656,11 @@ export function settingsPage(input: {
         <label class="grow">Base URL <input name="baseUrl" required placeholder="https://api.example.com/v1" autocomplete="off" /></label>
       </div>
       <label>API Key <input name="apiKey" required type="password" placeholder="sk-…" autocomplete="off" /></label>
+      <div class="row">
+        <label class="grow">${escapeHtml(t('区域 / 司法辖区', 'Region / jurisdiction'))} <input name="region" maxlength="80" placeholder="eu" /></label>
+        <label class="grow">${escapeHtml(t('数据政策 URL', 'Data-policy URL'))} <input name="dataPolicyUrl" maxlength="2048" placeholder="https://…" /></label>
+        <label>${escapeHtml(t('提供方状态', 'Provider status'))} <select name="allowed"><option value="1">${escapeHtml(t('允许使用', 'Allowed'))}</option><option value="0">${escapeHtml(t('停用', 'Disabled'))}</option></select></label>
+      </div>
       ${config.allowPrivateModelUrls || viewer.user.allow_private_models === 1 || viewer.user.role === 'superadmin' ? `<label class="check"><input type="checkbox" name="allowPrivate" value="1" /> ${escapeHtml(t('允许 HTTP / 内网地址（Fledge 必须能访问）', 'Allow HTTP / private address (Fledge must be able to reach it)'))}</label>` : `<p class="fine">${escapeHtml(t('需要管理员在 Admin 中为你的账号开启“内网模型”权限，或由运维设置 ALLOW_PRIVATE_MODEL_URLS=true。', 'An admin must enable private models for your account in Admin, or the operator must set ALLOW_PRIVATE_MODEL_URLS=true.'))}</p>`}
       <button class="btn" type="submit">${escapeHtml(t('添加提供方', 'Add provider'))}</button>
     </form>
@@ -2338,6 +2359,14 @@ export function jobPage(input: {
   const modelLine = modelRun === null
     ? ''
     : `<p class="fine" data-model><strong>${escapeHtml(t('模型', 'Model'))}:</strong> ${escapeHtml(modelRun.model === null ? t('没有完成的调用', 'no completed call') : modelRun.model.label)}${modelRun.attempts.length === 0 ? '' : escapeHtml(` · ${t(`此前尝试 ${triedText(modelRun)}`, `tried ${triedText(modelRun)}`)}`)}${escapeHtml(fellBackText(modelRun))}</p>`
+  const providerParts = [
+    job.provider_label === null ? '' : job.provider_label,
+    job.provider_region === null ? '' : job.provider_region,
+    job.provider_model === null ? '' : job.provider_model,
+  ].filter((part) => part !== '')
+  const providerLine = providerParts.length === 0
+    ? ''
+    : `<p class="fine" data-provider><strong>${escapeHtml(t('提供方', 'Provider'))}:</strong> ${escapeHtml(providerParts.join(' · '))}</p>`
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
   const teamStats = jobTeamStats(job)
@@ -2413,6 +2442,7 @@ export function jobPage(input: {
       <p class="fine">${escapeHtml(t('成本', 'Cost'))} ${escapeHtml(cost)} · ${escapeHtml(t('创建', 'Created'))} ${escapeHtml(humanTimeShort(job.created_at))} · ${escapeHtml(t('结束', 'Finished'))} ${escapeHtml(humanTimeShort(job.finished_at))}</p>
       ${attribution === '' ? '' : `<p class="fine">${escapeHtml(attribution)}</p>`}
       ${modelLine}
+      ${providerLine}
       ${job.checkpoint === null || job.checkpoint === '' ? '' : `<p class="fine"><strong>${escapeHtml(t('断点', 'Checkpoint'))}:</strong> ${escapeHtml(job.checkpoint)}</p>`}
       <p class="fine">${jobLinks(job)}</p>
     </div>

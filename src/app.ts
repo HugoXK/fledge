@@ -16,7 +16,7 @@ import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
 import { notifyEmail } from './email/recipient.js'
 import { registerGateway } from './gateway/gateway.js'
-import { assertSafeModelUrl } from './gateway/modelUrl.js'
+import { assertSafeModelUrl, normalizeDataPolicyUrl, normalizeProviderRegion } from './gateway/modelUrl.js'
 import { quotaView } from './gateway/quota.js'
 import { parseAttributionJson } from './lib/attribution.js'
 import { failureBreakdown } from './lib/failure.js'
@@ -1280,6 +1280,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         ...(workState !== undefined && isWorkItemState(workState) ? { workState } : {}),
         reviewTrend,
         models: store.listUserProviderModels(repo.user_id),
+        providers: store.listModelProviders(repo.user_id),
         repoModelIds: repoModels.map((model) => model.id),
         repoBotModels: store.listRepoBotModels(repo.id),
         repoDefaultModelId: repoModels.find((model) => model.is_default === 1)?.id ?? '',
@@ -2198,6 +2199,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       store.setRepoModelSelection(repo.id, requestedModels, effectiveDefault === '' ? null : effectiveDefault)
       store.audit(viewer.user.id, 'repo.models.changed', `${repo.owner}/${repo.name} models=${requestedModels.length} default=${effectiveDefault || 'none'}`)
     }
+    const ownedProviders = new Set(store.listModelProviders(viewer.user.id).map((provider) => provider.id))
+    const requestedProviders = [...new Set(formList(request, 'allowedProviderIds').filter((id) => ownedProviders.has(id)))]
+    const requiredRegion = normalizeProviderRegion(body.providerRegion)
+    const currentPolicy = store.repoProviderPolicy(repo.id)
+    if ([...currentPolicy.allowlist].sort().join(',') !== requestedProviders.sort().join(',') || currentPolicy.requiredRegion !== requiredRegion) {
+      store.setRepoProviderPolicy(repo.id, requestedProviders, requiredRegion)
+      store.audit(viewer.user.id, 'repo.provider_policy.changed', `${repo.owner}/${repo.name} providers=${requestedProviders.length} region=${requiredRegion || 'any'}`)
+    }
     if (repo.enabled === 1 && body.enabled !== '1') {
       await jobs.cancelRepoJobs(repo.id, '仓库已停用', 'REPO_DISABLED')
     }
@@ -2284,6 +2293,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const canPrivate = config.allowPrivateModelUrls || viewer.user.allow_private_models === 1 || viewer.user.role === 'superadmin'
       const allowPrivate = canPrivate && (config.allowPrivateModelUrls || body.allowPrivate === '1')
       const safeUrl = await assertSafeModelUrl(baseUrl, allowPrivate)
+      const region = normalizeProviderRegion(body.region)
+      const dataPolicyUrl = normalizeDataPolicyUrl(body.dataPolicyUrl)
+      const allowed = body.allowed !== '0'
       const provider = store.createModelProvider({
         id: randomId('prv'),
         userId: viewer.user.id,
@@ -2291,8 +2303,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         baseUrl: safeUrl,
         keyEnc: encryptSecret(key, config.tokenEncryptionKey),
         allowPrivate,
+        region,
+        dataPolicyUrl,
+        allowed,
       })
-      store.audit(viewer.user.id, 'model.provider.added', `${provider.id} ${label} private=${allowPrivate ? 'on' : 'off'}`)
+      store.audit(viewer.user.id, 'model.provider.added', `${provider.id} ${label} private=${allowPrivate ? 'on' : 'off'} region=${region || 'any'} allowed=${allowed ? 'on' : 'off'}`)
       return reply.redirect(`/settings?notice=${encodeURIComponent('模型提供方已添加。添加模型时会由 Fledge 测试连接。')}#model-providers`)
     } catch (error) {
       return reply.redirect(`/settings?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}#model-providers`)
@@ -2312,6 +2327,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const allowPrivate = canPrivate && body.allowPrivate === '1'
       const safeUrl = await assertSafeModelUrl(baseUrl, allowPrivate)
       const key = (body.apiKey ?? '').trim() !== '' ? (body.apiKey ?? '').trim() : decryptSecret(provider.key_enc, config.tokenEncryptionKey)
+      const region = body.region === undefined ? provider.region : normalizeProviderRegion(body.region)
+      const dataPolicyUrl = body.dataPolicyUrl === undefined ? provider.data_policy_url : normalizeDataPolicyUrl(body.dataPolicyUrl)
+      const allowed = body.allowed === undefined ? provider.allowed === 1 : body.allowed === '1'
       if (safeUrl !== provider.base_url || key !== decryptSecret(provider.key_enc, config.tokenEncryptionKey)) {
         for (const model of store.listProviderModels(provider.id)) {
           await testOwnModel(safeUrl, key, model.model)
@@ -2322,8 +2340,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         base_url: safeUrl,
         key_enc: encryptSecret(key, config.tokenEncryptionKey),
         allow_private: allowPrivate ? 1 : 0,
+        region,
+        data_policy_url: dataPolicyUrl,
+        allowed: allowed ? 1 : 0,
       })
-      store.audit(viewer.user.id, 'model.provider.updated', `${provider.id} ${label} private=${allowPrivate ? 'on' : 'off'}`)
+      store.audit(viewer.user.id, 'model.provider.updated', `${provider.id} ${label} private=${allowPrivate ? 'on' : 'off'} region=${region || 'any'} allowed=${allowed ? 'on' : 'off'}`)
       return reply.redirect(`/settings?notice=${encodeURIComponent('模型提供方已更新。')}#model-providers`)
     } catch (error) {
       return reply.redirect(`/settings?error=${encodeURIComponent(`提供方测试失败，未保存：${error instanceof Error ? error.message : String(error)}`)}#model-providers`)
