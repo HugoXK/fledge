@@ -1,0 +1,298 @@
+[
+  {
+    "page": "after-zh-360",
+    "overflow": 0,
+    "a11y": {
+      "present": true,
+      "entryRows": 3,
+      "detail": {
+        "revision": "2",
+        "historical": "false",
+        "versionCount": "2"
+      },
+      "labels": [
+        "键",
+        "类型目标决定约定实现经验假设",
+        "状态有效待复核有冲突已归档已撤销",
+        "验证人已确认观察所得未验证",
+        "可见范围项目共享仅维护者仅开发者",
+        "范围（模块或路径）",
+        "正文The review queue is the bottleneck, no",
+        "修改原因（可选）"
+      ],
+      "keyLabelFor": "memory-key",
+      "hintText": 6.11,
+      "buttonText": "写入新版本",
+      "textareaHeight": 127.5625,
+      "keyHeight": 48.390625,
+      "buttonHeight": 44,
+      "keyFontSize": "16px",
+      "rowFontSize": "13.5px",
+      "htmlLang": "zh-CN"
+    }
+  },
+  {
+    "page": "after-zh-768",
+    "overflow": 0,
+    "a11y": {
+      "present": true,
+      "entryRows": 3,
+      "detail": {
+        "revision": "2",
+        "historical": "false",
+        "versionCount": "2"
+      },
+      "labels": [
+        "键",
+        "类型目标决定约定实现经验假设",
+        "状态有效待复核有冲突已归档已撤销",
+        "验证人已确认观察所得未验证",
+        "可见范围项目共享仅维护者仅开发者",
+        "范围（模块或路径）",
+        "正文The review queue is the bottleneck, no",
+        "修改原因（可选）"
+      ],
+      "keyLabelFor": "memory-key",
+      "hintText": 6.11,
+      "buttonText": "写入新版本",
+      "textareaHeight": 114.375,
+      "keyHeight": 45.09375,
+      "buttonHeight": 44,
+      "keyFontSize": "14px",
+      "rowFontSize": "13.5px",
+      "htmlLang": "zh-CN"
+    }
+  },
+  {
+    "page": "after-zh-1280",
+    "overflow": 0,
+    "a11y": {
+      "present": true,
+      "entryRows": 3,
+      "detail": {
+        "revision": "2",
+        "historical": "false",
+        "versionCount": "2"
+      },
+      "labels": [
+        "键",
+        "类型目标决定约定实现经验假设",
+        "状态有效待复核有冲突已归档已撤销",
+        "验证人已确认观察所得未验证",
+        "可见范围项目共享仅维护者仅开发者",
+        "范围（模块或路径）",
+        "正文The review queue is the bottleneck, no",
+        "修改原因（可选）"
+      ],
+      "keyLabelFor": "memory-key",
+      "hintText": 6.11,
+      "buttonText": "写入新版本",
+      "textareaHeight": 114.375,
+      "keyHeight": 45.09375,
+      "buttonHeight": 44,
+      "keyFontSize": "14px",
+      "rowFontSize": "13.5px",
+      "htmlLang": "zh-CN"
+    }
+  },
+  {
+    "page": "after-en-360",
+    "overflow": 0,
+    "a11y": {
+      "present": true,
+      "entryRows": 3,
+      "detail": {
+        "revision": "2",
+        "historical": "false",
+        "versionCount": "2"
+      },
+      "labels": [
+        "Key",
+        "KindGoalDecisionConventionImplementation",
+        "StatusActiveNeeds reviewConflictArchived",
+        "VerificationHuman assertedObservedUnveri",
+        "AudienceShared with the projectMaintaine",
+        "Scope (module or path)",
+        "BodyThe review queue is the bottleneck, ",
+        "Reason (optional)"
+      ],
+      "keyLabelFor": "memory-key",
+      "hintText": 6.11,
+      "buttonText": "Write new revision",
+      "textareaHeight": 127.5625,
+      "keyHeight": 48.390625,
+      "buttonHeight": 44,
+      "keyFontSize": "16px",
+      "rowFontSize": "13.5px",
+      "htmlLang": "en"
+    }
+  },
+  {
+    "page": "after-en-768",
+    "overflow": 0,
+    "a11y": {
+      "present": true,
+      "entryRows": 3,
+      "detail": {
+        "revision": "2",
+        "historical": "false",
+        "versionCount": "2"
+      },
+      "labels": [
+        "Key",
+        "KindGoalDecisionConventionImplementation",
+        "StatusActiveNeeds reviewConflictArchived",
+        "VerificationHuman assertedObservedUnveri",
+        "AudienceShared with the projectMaintaine",
+        "Scope (module or path)",
+        "BodyThe review queue is the bottleneck, ",
+        "Reason (optional)"
+      ],
+      "keyLabelFor": "memory-key",
+      "hintText": 6.11,
+      "buttonText": "Write new revision",
+      "textareaHeight": 114.375,
+      "keyHeight": 45.09375,
+      "buttonHeight": 44,
+      "keyFontSize": "14px",
+      "rowFontSize": "13.5px",
+      "htmlLang": "en"
+    }
+  },
+  {
+    "page": "after-en-1280",
+    "overflow": 0,
+    "a11y": {
+      "present": true,
+      "entryRows": 3,
+      "detail": {
+        "revision": "2",
+        "historical": "false",
+        "versionCount": "2"
+      },
+      "labels": [
+        "Key",
+        "KindGoalDecisionConventionImplementation",
+        "StatusActiveNeeds reviewConflictArchived",
+        "VerificationHuman assertedObservedUnveri",
+        "AudienceShared with the projectMaintaine",
+        "Scope (module or path)",
+        "BodyThe review queue is the bottleneck, ",
+        "Reason (optional)"
+      ],
+      "keyLabelFor": "memory-key",
+      "hintText": 6.11,
+      "buttonText": "Write new revision",
+      "textareaHeight": 114.375,
+      "keyHeight": 45.09375,
+      "buttonHeight": 44,
+      "keyFontSize": "14px",
+      "rowFontSize": "13.5px",
+      "htmlLang": "en"
+    }
+  },
+  {
+    "keyboard": [
+      {
+        "tag": "INPUT",
+        "id": "memory-key",
+        "name": "key",
+        "text": "",
+        "outline": "3px none rgb(16, 22, 31)",
+        "borderColor": "rgb(43, 79, 208)",
+        "boxShadow": "rgba(123, 149, 255, 0.14) 0px 0px 0px 3px",
+        "height": 45
+      },
+      {
+        "tag": "SELECT",
+        "id": "memory-kind",
+        "name": "kind",
+        "text": "目标决定约定实现经验假设",
+        "outline": "3px none rgb(16, 22, 31)",
+        "borderColor": "rgb(43, 79, 208)",
+        "boxShadow": "rgba(123, 149, 255, 0.14) 0px 0px 0px 3px",
+        "height": 44
+      },
+      {
+        "tag": "SELECT",
+        "id": "memory-status",
+        "name": "status",
+        "text": "有效待复核有冲突已归档已撤销",
+        "outline": "3px none rgb(16, 22, 31)",
+        "borderColor": "rgb(43, 79, 208)",
+        "boxShadow": "rgba(123, 149, 255, 0.14) 0px 0px 0px 3px",
+        "height": 44
+      },
+      {
+        "tag": "SELECT",
+        "id": "memory-verification",
+        "name": "verification",
+        "text": "人已确认观察所得未验证",
+        "outline": "3px none rgb(16, 22, 31)",
+        "borderColor": "rgb(43, 79, 208)",
+        "boxShadow": "rgba(123, 149, 255, 0.14) 0px 0px 0px 3px",
+        "height": 44
+      },
+      {
+        "tag": "SELECT",
+        "id": "memory-audience",
+        "name": "audience",
+        "text": "项目共享仅维护者仅开发者",
+        "outline": "3px none rgb(16, 22, 31)",
+        "borderColor": "rgb(43, 79, 208)",
+        "boxShadow": "rgba(123, 149, 255, 0.14) 0px 0px 0px 3px",
+        "height": 44
+      },
+      {
+        "tag": "INPUT",
+        "id": "memory-scope",
+        "name": "scope",
+        "text": "",
+        "outline": "3px none rgb(16, 22, 31)",
+        "borderColor": "rgb(43, 79, 208)",
+        "boxShadow": "rgba(123, 149, 255, 0.14) 0px 0px 0px 3px",
+        "height": 45
+      },
+      {
+        "tag": "TEXTAREA",
+        "id": "memory-body",
+        "name": "body",
+        "text": "The review queue is the ",
+        "outline": "3px none rgb(16, 22, 31)",
+        "borderColor": "rgb(43, 79, 208)",
+        "boxShadow": "rgba(123, 149, 255, 0.14) 0px 0px 0px 3px",
+        "height": 114
+      },
+      {
+        "tag": "INPUT",
+        "id": "memory-reason",
+        "name": "reason",
+        "text": "",
+        "outline": "3px none rgb(16, 22, 31)",
+        "borderColor": "rgb(43, 79, 208)",
+        "boxShadow": "rgba(123, 149, 255, 0.14) 0px 0px 0px 3px",
+        "height": 45
+      },
+      {
+        "tag": "BUTTON",
+        "id": null,
+        "name": null,
+        "text": "写入新版本",
+        "outline": "2px solid rgb(43, 79, 208)",
+        "borderColor": "rgb(29, 60, 184)",
+        "boxShadow": "rgba(76, 102, 245, 0.16) 0px 6px 18px 0px",
+        "height": 44
+      },
+      {
+        "tag": "A",
+        "id": null,
+        "name": null,
+        "text": "文档",
+        "outline": "2px solid rgb(43, 79, 208)",
+        "borderColor": "rgb(89, 99, 111)",
+        "boxShadow": "none",
+        "height": 44
+      }
+    ]
+  }
+]

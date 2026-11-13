@@ -1480,3 +1480,42 @@ private self-hosted target. Errors name the host but never the secret or payload
 - Auto-merging.
 - Multi-tenant process isolation (one instance = one operator/team).
 - Billing integration; the 1 CNY quota is a soft platform budget, not an invoice.
+
+## Project memory (`#539`)
+
+A repository can keep durable, versioned memory: decisions, conventions and
+experience that a later job cites instead of re-deriving. The store is
+`project_memories` (the current revision, unique per `(repo_id, key)`) plus
+`project_memory_versions` (every revision, including the first, written once and
+never updated in place). `src/lib/memory.ts` holds the rules that are not SQL.
+
+- **Writes are fenced.** Every write carries `expected_revision`; `0` means
+  create-only. A stale revision is refused with `memory_revision_conflict` and
+  the current entry is left untouched — the store compares inside one
+  `BEGIN IMMEDIATE` transaction and appends the version only after the fence
+  passes. An identical write is a no-op and creates no revision.
+- **Reads are exact.** A read names a revision and returns that body, its
+  `sha256` digest and whether it is historical. Nothing is served from a cache
+  and no read returns "the latest" when a revision was asked for.
+- **Audience is a role, not a permission.** An entry is `project` or
+  `role:<maintainer|developer>`. The reader's role is the repository's own chosen
+  role, so an administrator acting as a developer reads the developer view, and
+  an entry outside the audience is reported as absent (404) rather than listed.
+  A writer may not author an entry for a role it cannot act as.
+- **The page is reachable.** The repository page's memory card links to
+  `/repos/:id/memory`; the page is not an orphan that only a typed URL opens.
+- **Sources are shown.** An exact-revision read lists that revision's `sources`
+  next to the body, links the ones Fledge can turn into a GitHub URL (`pr#N`,
+  `file:<path>`, `commit:<sha>`, an `http(s)` URL) and marks the rest
+  unrecognised. It does not claim the reference still resolves upstream.
+- **Lookups are bounded.** Search is a case-insensitive substring match over the
+  key, body and scope of the visible entries: the query is capped at 120
+  characters (a longer one is refused by name) and results are capped at 50. The
+  result table lists the key and its metadata, never the body, so a long entry
+  cannot lengthen the list. There is no ranking and no embedding, so the same
+  store always answers the same way.
+
+The slice is the repository page (`/repos/:id/memory`, `src/views/memory.ts`).
+Not built yet: the bounded index handed to a job prompt and the agent read tool
+(`src/jobs/service.ts`), the three-notes-per-run agent writer, repository-document
+promotion with merge/blob proof, review scheduling and export.
