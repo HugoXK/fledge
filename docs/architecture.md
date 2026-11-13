@@ -201,6 +201,16 @@ defect.
   option values stay the codes, so the query, the totals and the CSV export are
   unchanged. A second hand-written list in a view is how `scope` and `verify`
   went missing from a form once already.
+- **Admin CSV exports**: both `/admin/export/jobs.csv` and
+  `/admin/export/audit.csv` write one `admin.jobs_export` / `admin.audit_export`
+  row once the body is known — `filters=` echoes the allow-listed codes and ISO
+  dates verbatim, `q` and `action` are recorded only as `<length>ch#<8 hex>`,
+  `scope=all|users:<n>` names the visibility list the query actually used,
+  `rows=` is the data-line count, and `sha256=` is the digest of the exact body
+  sent, so a file found elsewhere can be matched to its row. The read is paged
+  at 500 rows, so no store call materialises the 5000-row cap, and
+  `/admin/search` renders the newest completed export for the viewer's scope
+  above each table.
 - **Redirect targets**: every `next=` / `returnTo` value goes through one helper
   that returns a path on this site or the fallback. It validates the parsed
   result, not the input, so a value that is a plain path before parsing and
