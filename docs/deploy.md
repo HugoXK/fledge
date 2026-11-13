@@ -430,7 +430,16 @@ key is treated as a passphrase and stretched with scrypt using a random salt per
 copy. The encrypted file is a JSON envelope header (format version, key id and
 key version, scrypt salt when used, IV, GCM authentication tag) followed by the
 ciphertext. The key itself is never in the envelope or the manifest. Set exactly
-one key source; setting both is refused instead of guessing.
+one key source; setting both is refused instead of guessing, and a source that is
+present but empty — `BACKUP_ENCRYPTION_KEY=` from a secret that expanded to
+`""`, or an empty key file — is refused with a non-zero exit naming that source,
+rather than falling back to a plaintext copy.
+
+The key id in the envelope and the manifest is a truncated sha256 of the key the
+copy was encrypted with. For a base64 32-byte key that is the key itself; for a
+passphrase it is the scrypt-stretched key, so it is per copy and recovering it
+from a guess costs one scrypt, not one fast hash. It names which key a copy
+needs without being a cheap oracle for passphrase guesses.
 
 For production, require encryption so a misconfigured schedule cannot silently
 write plaintext:
@@ -447,7 +456,8 @@ restorable; only new copies are encrypted.
 machine or a different medium, readable only by the operator (`0600`). A copy
 held with its key hands both halves to anyone who finds the disk. Rotation means
 starting a new key and keeping the old one for as long as its copies are
-retained; the manifest names the key id each copy needs.
+retained; the manifest names the key id each copy needs (a per-copy id for a
+passphrase, a stable id for a base64 key).
 
 `/admin` shows what is in that directory, read-only: the newest copy with its
 size and age, whether that copy's manifest still matches (size and `sha256`),

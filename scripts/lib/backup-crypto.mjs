@@ -2,7 +2,9 @@
 // Backup encryption: AES-256-GCM over a streamed online copy. A base64 32-byte
 // key is used as-is; any other value is treated as a passphrase and stretched
 // with scrypt and a random per-copy salt. The key id is a non-reversible
-// fingerprint, never the key, so a manifest can name the key a copy needs.
+// fingerprint of the key the copy was encrypted with, never the key: for a
+// passphrase that means the scrypt-stretched key, so the published id cannot be
+// used as an offline verifier that skips the stretching cost.
 import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { chmodSync, closeSync, createReadStream, createWriteStream, openSync, readFileSync, readSync, rmSync, writeFileSync } from 'node:fs'
 import { pipeline } from 'node:stream/promises'
@@ -35,31 +37,39 @@ function base64Key(value) {
 }
 
 export function loadBackupKey(env = process.env) {
-  const inline = env.BACKUP_ENCRYPTION_KEY ?? ''
-  const file = env.BACKUP_ENCRYPTION_KEY_FILE ?? ''
-  if (inline !== '' && file !== '') {
+  // Presence decides whether a source is configured, not non-emptiness: a
+  // variable that exists but is empty is a broken expansion (a secret that
+  // resolved to ""), and treating it as "unset" would silently write a
+  // plaintext backup under a schedule that believes it is encrypting.
+  const inline = env.BACKUP_ENCRYPTION_KEY
+  const file = env.BACKUP_ENCRYPTION_KEY_FILE
+  const hasInline = inline !== undefined
+  const hasFile = file !== undefined
+  if (hasInline && hasFile) {
     throw new BackupKeyError('set only one of BACKUP_ENCRYPTION_KEY and BACKUP_ENCRYPTION_KEY_FILE')
   }
   let secret
   let source
-  if (file !== '') {
+  if (hasFile) {
     try {
       secret = readFileSync(file, 'utf8')
     } catch (error) {
       throw new BackupKeyError(`cannot read BACKUP_ENCRYPTION_KEY_FILE ${file}: ${error instanceof Error ? error.message : String(error)}`)
     }
-    source = 'file'
-  } else if (inline !== '') {
+    source = 'BACKUP_ENCRYPTION_KEY_FILE'
+  } else if (hasInline) {
     secret = inline
-    source = 'env'
+    source = 'BACKUP_ENCRYPTION_KEY'
   } else {
     return null
   }
   secret = stripTrailingNewlines(secret)
-  if (secret === '') throw new BackupKeyError('the backup encryption key is empty')
+  if (secret === '') throw new BackupKeyError(`the backup encryption key from ${source} is empty`)
   const raw = base64Key(secret)
   if (raw !== null) return { kind: 'raw', key: raw, id: keyId(raw), source }
-  return { kind: 'passphrase', secret, id: keyId(Buffer.from(secret, 'utf8')), source }
+  // No id yet: the fingerprint is over the stretched key, and the salt that
+  // stretches it is random per copy, so it is computed where the copy is written.
+  return { kind: 'passphrase', secret, source }
 }
 
 function encryptionMetadata(header) {
@@ -76,6 +86,10 @@ export async function encryptBackupFile(plaintextPath, targetPath, keyInfo) {
   if (keyInfo === null) throw new BackupKeyError('no backup encryption key configured')
   const salt = keyInfo.kind === 'raw' ? undefined : randomBytes(SALT_BYTES)
   const key = keyInfo.kind === 'raw' ? keyInfo.key : scryptSync(keyInfo.secret, salt, KEY_BYTES)
+  // The id names the key this copy is encrypted with, so it is computed from the
+  // key and not from the key's input: for a passphrase the salt makes it per
+  // copy, and guessing a passphrase from it costs a full scrypt per guess.
+  const id = keyId(key)
   const iv = randomBytes(IV_BYTES)
   const cipher = createCipheriv(ALGORITHM, key, iv)
   // The tag is only known after the ciphertext stream ends, so compose the
@@ -88,7 +102,7 @@ export async function encryptBackupFile(plaintextPath, targetPath, keyInfo) {
       version: BACKUP_ENVELOPE_VERSION,
       algorithm: ALGORITHM,
       kdf: keyInfo.kind === 'raw' ? 'raw' : 'scrypt',
-      keyId: keyInfo.id,
+      keyId: id,
       keyVersion: BACKUP_KEY_VERSION,
       ...(salt === undefined ? {} : { salt: salt.toString('base64') }),
       iv: iv.toString('base64'),
@@ -157,11 +171,15 @@ function decryptionKey(header, keyInfo) {
 }
 
 export async function decryptBackupFile(path, targetPath, keyInfo) {
+  if (keyInfo === null) throw new BackupKeyError('no backup encryption key configured')
   const { header, bodyOffset } = readBackupEnvelope(path)
-  if (!sameKeyId(String(header.keyId), keyInfo.id)) {
-    throw new BackupKeyError(`key id ${String(header.keyId)} does not match the configured key ${keyInfo.id}: wrong key or lost key`)
-  }
   const key = decryptionKey(header, keyInfo)
+  // The id is derived from the key, so the envelope salt is part of the cost of
+  // checking it: a wrong passphrase pays the same scrypt the ciphertext does.
+  const id = keyId(key)
+  if (!sameKeyId(String(header.keyId), id)) {
+    throw new BackupKeyError(`key id ${String(header.keyId)} does not match the configured key ${id}: wrong key or lost key`)
+  }
   const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(header.iv, 'base64'))
   decipher.setAuthTag(Buffer.from(header.tag, 'base64'))
   try {

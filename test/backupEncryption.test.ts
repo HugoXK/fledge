@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, scryptSync } from 'node:crypto'
 import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -27,18 +27,21 @@ interface RunResult {
   stderr: string
 }
 
+// The three variables are deleted rather than set to '': an empty value is a
+// configured-but-empty source since #553, so `''` would mean "broken expansion"
+// here instead of "no key". A case that wants that shape passes `''` itself.
+const KEY_VARIABLES = ['BACKUP_ENCRYPTION_KEY', 'BACKUP_ENCRYPTION_KEY_FILE', 'BACKUP_ENCRYPTION_REQUIRED'] as const
+
 function run(script: string, args: string[], env: Record<string, string> = {}): RunResult {
+  const inherited: Record<string, string> = {}
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value !== undefined && !(KEY_VARIABLES as readonly string[]).includes(name)) inherited[name] = value
+  }
   try {
     const stdout = execFileSync(process.execPath, [script, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        BACKUP_ENCRYPTION_KEY: '',
-        BACKUP_ENCRYPTION_KEY_FILE: '',
-        BACKUP_ENCRYPTION_REQUIRED: '',
-        ...env,
-      },
+      env: { ...inherited, ...env },
     })
     return { code: 0, stdout, stderr: '' }
   } catch (error) {
@@ -73,6 +76,10 @@ function onlyBackup(dir: string): string {
 
 function sha256File(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
+}
+
+function expectedKeyId(key: Buffer): string {
+  return createHash('sha256').update(key).digest('hex').slice(0, 16)
 }
 
 function readManifest(copyPath: string): Record<string, unknown> {
@@ -221,6 +228,55 @@ test('a passphrase is derived with scrypt and a random salt kept in the envelope
   const wrong = run(drillScript, ['--db', dbPath, '--backup-dir', backupDir, '--work-dir', join(root, 'wrong')], { BACKUP_ENCRYPTION_KEY: `${TEST_PASSPHRASE}!` })
   assert.equal(wrong.code, 1, wrong.stdout)
   assert.match(wrong.stderr, /wrong key|lost[ -]?key|key id/i)
+})
+
+test('a passphrase copy records an id derived from the stretched key, not a fast hash of the passphrase', () => {
+  // #553 review: the id is published (envelope header, manifest, every log line
+  // that prints `key_id`), so sha256(passphrase)[:16] would be an offline verifier
+  // that tests guesses at one sha256 each and skips the scrypt cost the rest of
+  // the file depends on. The id must be a fingerprint of the key the copy was
+  // actually encrypted with, which for a passphrase is the stretched key.
+  const root = mkdtempSync(join(tmpdir(), 'fledge-encrypted-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+  seed(dbPath)
+
+  const backup = run(backupScript, ['--db', dbPath, '--backup-dir', backupDir], { BACKUP_ENCRYPTION_KEY: TEST_PASSPHRASE })
+  assert.equal(backup.code, 0, backup.stderr)
+  const copy = onlyBackup(backupDir)
+  const envelope = readEnvelope(copy)
+  assert.equal(envelope.kdf, 'scrypt')
+
+  const fastHash = createHash('sha256').update(TEST_PASSPHRASE).digest('hex').slice(0, 16)
+  assert.notEqual(envelope.keyId, fastHash, 'the published key id must not be an offline verifier for the passphrase')
+  const stretched = scryptSync(TEST_PASSPHRASE, Buffer.from(String(envelope.salt), 'base64'), 32)
+  assert.equal(envelope.keyId, expectedKeyId(stretched), 'the id must fingerprint the stretched key')
+  assert.equal((readManifest(copy).encryption as Record<string, unknown>).keyId, envelope.keyId, 'the manifest must name the same key as the envelope')
+  assert.doesNotMatch(backup.stdout, new RegExp(TEST_PASSPHRASE))
+
+  // The copy the id names must still open with the passphrase that wrote it.
+  const drill = run(drillScript, ['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir], { BACKUP_ENCRYPTION_KEY: TEST_PASSPHRASE })
+  assert.equal(drill.code, 0, drill.stderr)
+  assert.match(drill.stdout, /^restore-drill: OK$/m)
+})
+
+test('an empty inline key is refused instead of silently writing a plaintext backup', () => {
+  // #553 review: `BACKUP_ENCRYPTION_KEY=` is present but empty, which is what a
+  // secret that expands to "" looks like. The empty-key guard only covered the
+  // file source, so this shape fell through to `key === null` and wrote an
+  // unencrypted copy with exit 0.
+  const root = mkdtempSync(join(tmpdir(), 'fledge-encrypted-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+
+  const result = run(backupScript, ['--db', dbPath, '--backup-dir', backupDir], { BACKUP_ENCRYPTION_KEY: '' })
+  assert.equal(result.code, 2, `an empty inline key must refuse, got exit ${result.code}: ${result.stdout}${result.stderr}`)
+  assert.match(result.stderr, /BACKUP_ENCRYPTION_KEY/, 'the refusal must name the empty source')
+  assert.match(result.stderr, /empty/i)
+  assert.equal(backupFiles(backupDir).length, 0, 'a refused run must not write a copy of any kind')
+  assert.equal(existsSync(backupDir), false, 'a refused run must not create the backup directory')
 })
 
 test('the key file is supported and the key is still never printed', () => {
