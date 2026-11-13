@@ -20,7 +20,22 @@ export declare function checkWorkflow(text: string, file: string): ActionPinFind
 
 export declare function scanWorkflows(dir: string): ActionPinReport
 
-export type ActorGateProblem = 'missing-association-gate'
+// One per reason the gate refuses: an ungated privileged job, an event it cannot
+// classify, a privileged job whose triggers it could not read, and every shape it
+// will not guess at (an `on:` value, a `jobs:` block, a header or a permission).
+export type ActorGateProblem =
+  | 'missing-association-gate'
+  | 'unknown-event'
+  | 'no-readable-trigger'
+  | 'missing-trigger-block'
+  | 'unparsed-on-entries'
+  | 'unparsed-event-header'
+  | `unparsed-on "${string}"`
+  | 'missing-jobs-block'
+  | 'unparsed-jobs-block'
+  | 'unparsed-jobs-value'
+  | 'unparsed-job-header'
+  | `unparsed permissions value "${string}"`
 
 export interface ActorGateFinding {
   file: string

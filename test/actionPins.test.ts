@@ -250,3 +250,91 @@ test('the association list must be exactly the three roles, not merely contain t
   const exactOtherOrder = withRoles('["collaborator","owner","member"]')
   assert.deepEqual(checkActorGates(exactOtherOrder, 'fixture.yml'), [], 'the same three roles in another order and case still gate the actor')
 })
+
+// YAML does not fix the indentation of a block: a file whose `jobs:` keys sit at
+// four spaces is the same file, and a rule that only sees two-space jobs exempts
+// that whole file. These fixtures state the indentation explicitly rather than
+// reusing the two-space helpers above.
+const FOUR_SPACE_JOB = (condition: string | null, permissions: string[] = ['        permissions:', '            actions: write']) => [
+  'jobs:',
+  '    repair:',
+  ...(condition === null ? [] : [`        if: ${condition}`]),
+  '        runs-on: ubuntu-latest',
+  ...permissions,
+  '        steps:',
+  `            - uses: actions/checkout@${PIN} # v4.4.0`,
+  '',
+]
+const withEvents = (events: string[], jobLines: string[]): string => ['on:', ...events, '', ...jobLines].join('\n')
+
+test('a job block indented four spaces is scanned, not exempted', (t) => {
+  const ungated = withEvents(['    pull_request_review:'], FOUR_SPACE_JOB("always() && github.event_name == 'pull_request_review'"))
+  assert.deepEqual(
+    checkActorGates(ungated, 'fixture.yml').map((finding) => `${finding.job}:${finding.event}:${finding.problem}`),
+    ['repair:pull_request_review:missing-association-gate'],
+    'a four-space jobs block is still a jobs block',
+  )
+
+  const gated = withEvents(['    pull_request_review:'], FOUR_SPACE_JOB(`always() && ${GATE}github.event.review.author_association)`))
+  assert.deepEqual(checkActorGates(gated, 'fixture.yml'), [], 'a gated four-space job passes, so the finding above is about the gate and not the layout')
+
+  const readOnly = withEvents(['    pull_request_review:'], FOUR_SPACE_JOB("always() && github.event_name == 'pull_request_review'", ['        permissions:', '            actions: read']))
+  assert.deepEqual(checkActorGates(readOnly, 'fixture.yml'), [], 'a four-space job without actions: write needs no association gate, so the shape itself is not a false red')
+
+  // The count is the only signal that a scan saw anything, so the same file must
+  // also be counted as one privileged job rather than zero.
+  const dir = mkdtempSync(join(tmpdir(), 'action-pins-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  writeFileSync(join(dir, 'four-space.yml'), gated)
+  const report = scanActorGates(dir)
+  assert.deepEqual(report.findings, [])
+  assert.equal(report.checked, 1, 'the four-space job is counted as privileged, not skipped')
+})
+
+test('the on: map is read at its own indentation too', () => {
+  const onAtFour = ['on:', '    pull_request_review:', '', 'jobs:', privilegedJob('repair', "always() && github.event_name == 'pull_request_review'"), ''].join('\n')
+  assert.deepEqual(
+    checkActorGates(onAtFour, 'fixture.yml').map((finding) => `${finding.job}:${finding.event}:${finding.problem}`),
+    ['repair:pull_request_review:missing-association-gate'],
+    'a four-space on: map still names its events, so the job is judged on pull_request_review',
+  )
+
+  const gated = ['on:', '    pull_request_review:', '', 'jobs:', privilegedJob('repair', `always() && ${GATE}github.event.review.author_association)`), ''].join('\n')
+  assert.deepEqual(checkActorGates(gated, 'fixture.yml'), [], 'the same map with the gate passes')
+})
+
+test('an on: value the parser cannot read fails closed instead of yielding no events', () => {
+  // Flow mapping: valid YAML that GitHub runs. Its keys are readable, so the job
+  // underneath is judged on the event it names rather than skipped.
+  const flow = ['on: { pull_request_review: {} }', '', 'jobs:', privilegedJob('repair', "always() && github.event_name == 'pull_request_review'"), ''].join('\n')
+  assert.deepEqual(
+    checkActorGates(flow, 'fixture.yml').map((finding) => `${finding.job}:${finding.event}:${finding.problem}`),
+    ['repair:pull_request_review:missing-association-gate'],
+    'a flow mapping names its events, so an ungated privileged job under it must red',
+  )
+
+  // A flow value whose entries are not `name:` pairs is not guessed at.
+  const unreadableFlow = ['on: { pull_request_review }', '', 'jobs:', privilegedJob('repair', "always() && github.event_name == 'pull_request_review'"), ''].join('\n')
+  const flowProblems = checkActorGates(unreadableFlow, 'fixture.yml').map((finding) => finding.problem)
+  assert.ok(flowProblems.some((problem) => problem.startsWith('unparsed-on')), `expected an unparsed on: finding, got ${flowProblems.join(', ')}`)
+  assert.ok(flowProblems.includes('no-readable-trigger'), `expected the privileged job to be refused, got ${flowProblems.join(', ')}`)
+
+  // An `on:` with no entry at any indentation is the same hole by another shape.
+  const empty = ['on:', '', 'jobs:', privilegedJob('repair', null), ''].join('\n')
+  const problems = checkActorGates(empty, 'fixture.yml').map((finding) => finding.problem)
+  assert.ok(problems.includes('unparsed-on-entries'), `expected an unparsed on: entry finding, got ${problems.join(', ')}`)
+  assert.ok(problems.includes('no-readable-trigger'), `expected the privileged job to be refused, got ${problems.join(', ')}`)
+})
+
+test('an event the gate cannot classify is a finding until it is classified', () => {
+  const unknown = workflow('  pull_request_review_comment:', privilegedJob('repair', null))
+  assert.deepEqual(
+    checkActorGates(unknown, 'fixture.yml').map((finding) => `${finding.event}:${finding.problem}`),
+    ['pull_request_review_comment:unknown-event'],
+    'a stranger-reachable event with no association expression must red, not be skipped',
+  )
+
+  for (const safe of ['push', 'schedule', 'workflow_dispatch']) {
+    assert.deepEqual(checkActorGates(workflow(`  ${safe}:`, privilegedJob('repair', null)), 'fixture.yml'), [], `${safe} cannot be started by an outside account`)
+  }
+})

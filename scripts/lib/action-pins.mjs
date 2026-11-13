@@ -96,55 +96,168 @@ export const STRANGER_EVENT_ASSOCIATION = {
 
 const ASSOCIATION_ROLES = ['OWNER', 'MEMBER', 'COLLABORATOR']
 
+// Events a stranger cannot start here: each needs write access, an admin action
+// or a schedule. The list is explicit rather than "anything the association map
+// does not name", because an event nobody has classified must red the gate
+// instead of passing as harmless — a new trigger type stays a finding until
+// someone states here that an outside account cannot reach it.
+const SAFE_EVENTS = new Set([
+  'push',
+  'schedule',
+  'workflow_dispatch',
+  'workflow_call',
+  'workflow_run',
+  'merge_group',
+  'release',
+  'create',
+  'delete',
+  'repository_dispatch',
+  'deployment',
+  'deployment_status',
+  'page_build',
+  'status',
+  'registry_package',
+  'branch_protection_rule',
+  'public',
+])
+
+function indentOf(line) {
+  return /^(\s*)/.exec(line)?.[1]?.length ?? 0
+}
+
+// The first line inside a block that carries content: blank and comment lines do
+// not set the indentation, and they are not the block's end either.
+function firstContentLine(lines, start) {
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index] ?? ''
+    if (line.trim() !== '' && !line.trim().startsWith('#')) return index
+  }
+  return -1
+}
+
+// A block mapping key, bare or quoted, with an optional trailing comment. YAML
+// does not fix the indent, so callers take it from the file (below) rather than
+// assuming two spaces: a file indented three or four spaces is the same file.
+const MAPPING_KEY = /^([A-Za-z0-9_-]+|"[^"]+"|'[^']+')\s*:/
+
+// Keys of a flow mapping (`{ pull_request_review: {}, push: {} }`), read at depth
+// 1 so a nested `{…}` or `[…]` value is not split into keys. Returns null when an
+// entry is not a `name:` pair, which the caller reports rather than guesses.
+function flowMappingKeys(value) {
+  const inner = value.slice(1, -1)
+  const entries = []
+  let current = ''
+  let depth = 0
+  for (const character of inner) {
+    if (character === '{' || character === '[') depth += 1
+    if (character === '}' || character === ']') depth -= 1
+    if (character === ',' && depth === 0) {
+      entries.push(current)
+      current = ''
+      continue
+    }
+    current += character
+  }
+  entries.push(current)
+  const keys = []
+  for (const entry of entries) {
+    if (entry.trim() === '') continue
+    const match = MAPPING_KEY.exec(entry.trim())
+    if (match === null) return null
+    keys.push(unquote(match[1] ?? ''))
+  }
+  return keys
+}
+
+// Returns the event names plus one problem per `on:` value the parser cannot
+// read as an event list. A block mapping is read at the indentation its own
+// first key uses, not at two spaces; a flow mapping is read key by key; a value
+// that is neither is reported, because an empty event list would judge nothing
+// and look like a pass.
 function workflowEvents(text) {
   const lines = text.split(/\r?\n/)
   const start = lines.findIndex((line) => /^on\s*:/.test(line))
-  if (start === -1) return []
-  const rest = (lines[start] ?? '').replace(/^on\s*:/, '').replace(/(^|\s)#.*$/, '').trim()
+  if (start === -1) return { events: [], problems: [{ line: 1, problem: 'missing-trigger-block' }] }
+  const rest = (lines[start] ?? '').replace(/^on\s*:/, '').replace(/\s+#.*$/, '').trim()
   if (rest.startsWith('[')) {
-    return rest.replace(/^\[|\]$/g, '').split(',').map((entry) => entry.trim().replace(/^['"]|['"]$/g, '')).filter((entry) => entry !== '')
+    const events = rest.replace(/^\[|\]$/g, '').split(',').map((entry) => entry.trim().replace(/^['"]|['"]$/g, '')).filter((entry) => entry !== '')
+    return { events, problems: [] }
   }
-  if (rest !== '') return [rest.replace(/^['"]|['"]$/g, '')]
+  if (rest.startsWith('{')) {
+    const events = rest.endsWith('}') ? (flowMappingKeys(rest) ?? []) : []
+    if (events.length === 0) return { events: [], problems: [{ line: start + 1, problem: `unparsed-on "${rest}"` }] }
+    return { events, problems: [] }
+  }
+  if (rest !== '') return { events: [rest.replace(/^['"]|['"]$/g, '')], problems: [] }
+  const first = firstContentLine(lines, start)
+  if (first === -1) return { events: [], problems: [{ line: start + 1, problem: 'unparsed-on-entries' }] }
+  const baseIndent = indentOf(lines[first] ?? '')
+  if (baseIndent === 0) return { events: [], problems: [{ line: start + 1, problem: 'unparsed-on-entries' }] }
   const events = []
-  for (let index = start + 1; index < lines.length; index += 1) {
+  const problems = []
+  for (let index = first; index < lines.length; index += 1) {
     const line = lines[index] ?? ''
     if (line.trim() === '' || line.trim().startsWith('#')) continue
-    if (!/^\s/.test(line)) break
-    const match = /^\s{2}([A-Za-z0-9_-]+)\s*:/.exec(line)
-    if (match !== null) events.push(match[1])
+    const indent = indentOf(line)
+    if (indent < baseIndent) break
+    // Deeper lines configure an event that is already listed (`types:`, `inputs:`).
+    if (indent > baseIndent) continue
+    const match = MAPPING_KEY.exec(line.trim())
+    if (match === null) {
+      problems.push({ line: index + 1, problem: 'unparsed-event-header' })
+      continue
+    }
+    events.push(unquote(match[1] ?? ''))
   }
-  return events
+  if (events.length === 0) problems.push({ line: start + 1, problem: 'unparsed-on-entries' })
+  return { events, problems }
 }
 
 // Splits the file into `jobs:` entries, keeping each job's own lines so a
 // permission or an `if:` is read against the job it belongs to, never the file.
-// A header with a trailing comment is still a header, and a line at the jobs'
-// own indentation that does not parse is reported: a quoted key or a shape this
-// regex does not cover must red the gate rather than exempt the job it names.
-const JOB_HEADER = /^ {2}([A-Za-z0-9_-]+)\s*:\s*(?:#.*)?$/
+// The jobs' indentation is taken from the first key under `jobs:` — YAML does not
+// fix it at two spaces, and a whole file must not be exempt just because its job
+// block is indented differently. A header with a trailing comment is still a
+// header, and a line at the jobs' own indentation that does not parse is
+// reported: a quoted key or a shape this regex does not cover must red the gate
+// rather than exempt the job it names.
+const JOB_HEADER = /^([A-Za-z0-9_-]+)\s*:\s*(?:#.*)?$/
 
 function jobBlocks(text) {
   const lines = text.split(/\r?\n/)
   const start = lines.findIndex((line) => /^jobs\s*:/.test(line))
-  if (start === -1) return { jobs: [], problems: [] }
+  if (start === -1) return { jobs: [], problems: [{ line: 1, text: 'jobs', problem: 'missing-jobs-block' }] }
+  const rest = (lines[start] ?? '').replace(/^jobs\s*:/, '').replace(/\s+#.*$/, '').trim()
+  if (rest !== '') return { jobs: [], problems: [{ line: start + 1, text: rest, problem: 'unparsed-jobs-value' }] }
+  const first = firstContentLine(lines, start)
+  // An empty `jobs:` map and one whose first content line is a top-level key are
+  // both a shape this parser cannot read; reporting zero jobs would look clean.
+  if (first === -1 || indentOf(lines[first] ?? '') === 0) {
+    return { jobs: [], problems: [{ line: start + 1, text: 'jobs', problem: 'unparsed-jobs-block' }] }
+  }
+  const baseIndent = indentOf(lines[first] ?? '')
   const jobs = []
   const problems = []
   let current = null
-  for (let index = start + 1; index < lines.length; index += 1) {
+  for (let index = first; index < lines.length; index += 1) {
     const line = lines[index] ?? ''
-    if (/^\S/.test(line) && line.trim() !== '' && !line.trim().startsWith('#')) break
-    if (/^ {2}\S/.test(line) && line.trim() !== '' && !line.trim().startsWith('#')) {
-      const header = JOB_HEADER.exec(line)
-      if (header !== null) {
-        current = { name: header[1], line: index + 1, lines: [] }
-        jobs.push(current)
-        continue
-      }
-      problems.push({ line: index + 1, text: line.trim(), problem: 'unparsed-job-header' })
-      current = null
+    if (line.trim() === '' || line.trim().startsWith('#')) continue
+    const indent = indentOf(line)
+    if (indent < baseIndent) break
+    if (indent > baseIndent) {
+      if (current !== null) current.lines.push(line)
       continue
     }
-    if (current !== null) current.lines.push(line)
+    const header = JOB_HEADER.exec(line.trim())
+    if (header !== null) {
+      current = { name: header[1], line: index + 1, lines: [] }
+      jobs.push(current)
+      continue
+    }
+    // A key we cannot read may still own the lines below it, so they must not be
+    // handed to the previous job and judged under its permissions.
+    problems.push({ line: index + 1, text: line.trim(), problem: 'unparsed-job-header' })
+    current = null
   }
   return { jobs, problems }
 }
@@ -271,15 +384,20 @@ function associationGate(condition, expression) {
 }
 
 // Returns one finding per privileged job that a stranger could start on an event
-// whose association it never tests, plus one per job or `permissions:` value the
-// parser could not read. A job whose `if:` names its events is judged on those;
-// one that names none can run on every trigger the workflow has. A job inherits
-// a workflow-level block it does not override.
+// whose association it never tests, plus one per job, `on:` value or
+// `permissions:` value the parser could not read. A job whose `if:` names its
+// events is judged on those; one that names none can run on every trigger the
+// workflow has. A job inherits a workflow-level block it does not override. An
+// event the checker cannot classify fails closed: silence there would make the
+// gate's contract ("a shape I do not know is a finding") false.
 export function checkActorGates(text, file) {
-  const triggers = workflowEvents(text)
+  const { events: triggers, problems: triggerProblems } = workflowEvents(text)
   const workflowScope = workflowPermissionsFacts(text)
   const { jobs, problems } = jobBlocks(text)
   const findings = problems.map((problem) => ({ file, line: problem.line, job: '', event: '', problem: problem.problem }))
+  for (const problem of triggerProblems) {
+    findings.push({ file, line: problem.line, job: '(workflow)', event: '', problem: problem.problem })
+  }
   if (workflowScope.problem !== null) {
     findings.push({ file, line: workflowScope.line, job: '(workflow)', event: '', problem: workflowScope.problem })
   }
@@ -290,11 +408,21 @@ export function checkActorGates(text, file) {
     }
     const privileged = facts.actionsWrite || (!facts.declaresPermissions && workflowScope.grantsActions)
     if (!privileged) continue
+    // A privileged job whose triggers could not be read cannot be cleared: an
+    // empty reachable set would judge nothing and look like a pass.
+    if (triggers.length === 0) {
+      findings.push({ file, line: job.line, job: String(job.name), event: '', problem: 'no-readable-trigger' })
+      continue
+    }
     const named = triggers.filter((event) => facts.condition.includes(`'${event}'`) || facts.condition.includes(`"${event}"`))
     const reachable = named.length > 0 ? named : triggers
     for (const event of reachable) {
       const expression = STRANGER_EVENT_ASSOCIATION[event]
-      if (expression === undefined) continue
+      if (expression === undefined) {
+        if (SAFE_EVENTS.has(event)) continue
+        findings.push({ file, line: job.line, job: String(job.name), event, problem: 'unknown-event' })
+        continue
+      }
       if (associationGate(facts.condition, expression)) continue
       findings.push({
         file,
