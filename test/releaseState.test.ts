@@ -91,6 +91,29 @@ test('a single flat page is accepted as well', () => {
   assert.equal(state.fragments, 2)
 })
 
+// #501: the planner input flattened the fragment count to a one-element
+// sentinel, so `plan.fragments` was `1` for any non-zero count and both the step
+// summary and the release body printed `changelog fragments: 1` whatever the
+// release actually folded. The count has to reach the plan unchanged.
+test('the fragment count reaches the plan as the real number, not a sentinel', () => {
+  const state = buildState({
+    lastTag: 'v0.3.0',
+    lastTagCommittedAt: '2026-10-31T00:00:00Z',
+    packageVersion: '0.3.0',
+    fragments: 42,
+    tags: ['v0.3.0'],
+    closedPages: [MERGED_TWELVE],
+    openPages: [],
+    checks: [{ id: 9, name: 'ci-ok', conclusion: 'success' }],
+  })
+  assert.equal(state.fragments, 42, 'the state keeps the true count')
+  const input = plannerInput(state)
+  assert.equal(input.fragments, 42, 'the projection must carry the count, not a sentinel')
+  const plan = planRelease(input)
+  assert.equal(plan.fragments, 42, 'the plan reports the count the release folds')
+  assert.equal(plan.shouldRelease, true, 'a non-zero count still satisfies the fragment rule')
+})
+
 test('the newest ci-ok run wins, not the first in the list', () => {
   // The API lists the oldest run first; after a re-run `first` would read a stale
   // conclusion and could refuse a night that should have released.

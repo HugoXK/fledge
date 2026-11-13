@@ -1,0 +1,1 @@
+An issue thread now accepts `/fledge retry`, `/fledge pause`, `/fledge resume` and `/fledge cancel` from an owner, member or collaborator: each one runs the same job action as the console and reports the result in the thread, a duplicate comment id is ignored, and a command with no matching job refuses in the thread instead of starting a new one.

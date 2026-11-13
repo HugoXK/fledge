@@ -251,12 +251,18 @@ and the accessibility contract are fixed:
 - The three live streams (notifications, questions, chief) announce
   `connecting`, `lost` and `recovered` in an `aria-live="polite"` status node
   (`[data-inbox-status]`, `[data-chief-status]`), instead of stopping silently.
-- Evidence for the change: `test/uiStates.test.ts` (11 assertions; 6 of them red
-  on the base commit with only the renderer added, and 3 of the 4 icon assertions
-  red until the SVG map replaced the glyphs), plus before/after captures under
-  `docs/images/ui-v2/69-*.jpg` at 1280 and 360 in both languages. The state icons
-  have their own captures: `docs/images/ui-v2/476-before-*.jpg` and
-  `476-after-*.jpg` at 1280, 768 and 360, Chinese and English on one page.
+- Evidence for this change: at the tree it was cut from, `5d848df8`, and again
+  at the merged base `d63753ba`, `test/uiStates.test.ts` runs 14 assertions and
+  fails only the three added here — `not ok 12/13/14` (11 pass / 3 fail) —
+  because `/search` still wrote the literal `0` in `src/views/pages.ts` (2929 at
+  `d63753ba`, 2908 at `5d848df8`) and `.state-icon` still carried the dead font
+  declarations in `public/app.css` (743-746 at `d63753ba`, 737-741 before the
+  fold); all 14 pass at the tip. The icon group's reds belong to the SVG set in
+  `#502`: the 11-assertion file dropped
+  onto `6271f9ec`, before that set, is 8 pass / 3 fail (`not ok 8/9/10`), and
+  11 pass / 0 fail at `eef9cfa`, where the set landed. The icons have their own
+  captures, `docs/images/ui-v2/476-before-*.jpg` and `476-after-*.jpg` at 1280,
+  768 and 360, Chinese and English on one page.
 
 ## Review trend numbers (审核趋势)
 
@@ -316,3 +322,21 @@ the query is anchored on the user id, so it cannot return another user's row, an
 email or a token column, and `%`/`_` match as text. A repository filter narrows the
 three sections that own one; audit rows carry none, so that section says so. Rows
 link to the existing pages; an empty result uses the shared empty state.
+
+## Table header and density (#473)
+A table taller than the window keeps its column names. Above 641px `.table-scroll`
+is a bounded scrollport — `overflow-y: auto` with
+`max-height: calc(100dvh - var(--header-h) - var(--space-7))`, and the same bound
+minus `var(--subnav-h)` on a repository page — and every `thead th` inside it is
+`position: sticky; top: 0` on `--panel`, so rows scroll under an opaque header
+instead of replacing it. The pair is one contract: a sticky header in an
+unbounded scroller does nothing, and a bound that ignores the subnav parks the
+header under it; `test/density.test.ts` asserts both.
+
+Density is a saved preference, not a client-side class flip: `/density/compact`
+and `/density/comfortable` set the `fledge_density` cookie and redirect through
+`safeLocalPath`, an unknown mode is a 404, and `<html data-density>` carries the
+value (comfortable when nothing is saved). Compact trims only the cell padding —
+a control inside a cell keeps its box. Below 641px the tables are the card stack
+(#130), the `thead` is hidden and the 44px touch floor is untouched, so neither
+the bound nor the density rules apply in that band.

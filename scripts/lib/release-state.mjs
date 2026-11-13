@@ -128,7 +128,10 @@ export function plannerInput(state) {
       labels: (Array.isArray(pr?.labels) ? pr.labels : []).map((label) => String(label?.name ?? '')),
       mergedAt: String(pr?.merged_at ?? pr?.mergedAt ?? ''),
     })),
-    fragments: Number(state?.fragments ?? 0) > 0 ? ['fragment'] : [],
+    // The count, not a sentinel: `['fragment']` made every night report one
+    // fragment whatever `changelog.d/` held, so the summary and the release body
+    // both printed `changelog fragments: 1`.
+    fragments: Number(state?.fragments ?? 0),
     openReleasePr: state?.openPr !== null && state?.openPr !== undefined,
     existingTags: Array.isArray(state?.tags) ? state.tags.map(String) : [],
     lastTagCommittedAt: String(state?.lastTagCommittedAt ?? ''),

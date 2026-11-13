@@ -35,13 +35,24 @@ a dropped stream reports `lost` and `recovered` instead of going quiet. Each
 state's icon is an inline `<svg>` from a literal map in the same file, on one
 `viewBox`, `aria-hidden` and inheriting `currentColor`, so the five states share
 a geometry instead of five font glyphs. The state contract and its evidence are
-in [docs/ui.md](ui.md).
+in [docs/ui.md](ui.md). No page composes a state by hand: `/search` used to, and
+its own empty state carried a text `0` where the icon belongs, so
+`test/uiStates.test.ts` renders that page's two empty branches and asserts the
+shared `<svg>` in the slot with no bare glyph beside it.
 
 The console renders UTC and says so: every timestamp goes through
 `humanTimeShort` in `src/lib/time.ts`, which prints the UTC wall clock with an
 explicit `UTC` suffix. The digest is scheduled in `DIGEST_TIMEZONE` and
 `/settings` names that zone, so an unlabelled timestamp beside it would read as
 a second clock that disagrees.
+
+`/settings` and `/admin` carry a sticky section nav: one chip per `.card[id]`, in
+the order the page draws the cards, so the marker can always name the section on
+screen. `test/sectionNav.test.ts` asserts that mapping in both directions, which
+is how a card added without a chip fails the suite instead of quietly leaving
+the previous chip marked. `/admin`'s top card has no `id` on purpose — it is the
+page header, not a section — so nothing is marked at the very top of that page;
+that is the accepted state, not a defect.
 
 ## Components
 
@@ -432,7 +443,17 @@ tables, and the support view's repository and job tables. Adding the class and a
 `data-label` per cell is the whole change; a table must not grow a second card
 mechanism. The delivery board is the one exception, `table-cards table-cards-head`:
 its header row is the stage filter, so it stays in the flow and reflows as a
-wrapping row of links above the cards instead of disappearing. Between 641px and 960px a wide table (the
+wrapping row of links above the cards instead of disappearing. Above 640px the scroller is also bounded vertically
+(`100dvh` minus `--header-h` and `--space-7`, and minus the repository
+subnav's `--subnav-h` on a repository page) and its `thead th` is sticky on an
+opaque `--panel`, so column names stay above the rows they label; the two rules
+are one contract and `test/density.test.ts` asserts both. The row density is a
+saved preference: `/density/:mode` writes the `fledge_density` cookie the way
+`/lang/:locale` writes the language one, `<html data-density>` carries it (the
+response hook fills it in from the cookie, so no page builder has to remember),
+and `<html data-density="compact">` trims only the cell box. Below 641px the
+bounded scroller and the density do not apply: the tables are the card stack and
+the 44px touch floor stays. Between 641px and 960px a wide table (the
 delivery board is 952px wide at 768) can still be wider than its `.table-scroll`
 box, so that band draws an always-present classic scrollbar — an explicit track
 plus `scrollbar-width`/`scrollbar-color` for Firefox — instead of relying on a
@@ -830,6 +851,24 @@ A collaborator can drive a work item from the issue thread with `/fledge status`
 association, dedupes by comment id, creates or reuses the work item, and replies
 on the issue with the work-item/job/PR state. `/fledge approve` is maintainer-only
 and approves the latest completed plan.
+
+Four verbs act on the job the work item already has: `/fledge retry`,
+`/fledge pause`, `/fledge resume` and `/fledge cancel`. Retry goes through the
+same `Jobs.retryJob` mapping the console's retry button uses, so the two surfaces
+cannot drift, and a retried job that already carries a pull request continues it
+as a `followup` on the same branch instead of opening a second one. Pause and
+cancel call the existing stop paths, and the reply is built from the outcome
+`pauseJob`/`cancelJob` return rather than from an assumption: it reports how many
+live sessions were stopped, how many were asked to stop at the next safe point,
+that no live session was reachable, or that the stop could not be delivered (no
+controller in queue-dispatch mode, or a failed bridge call), so it never claims a
+send that did not happen. A verb looks the job up by the work item, not through a
+window of the repository's newest jobs, so an older item is still answered
+truthfully. Resume creates the resumed job from the paused one. A verb with no work item, no job, or a job in a status it does not
+apply to is refused in the thread and creates nothing, so a command can never
+manufacture work. Each action reuses the existing audit strings (`job.retried`,
+`job.paused`, `job.resumed`, `job.cancelled`) and their timeline kinds rather
+than adding a second naming scheme.
 
 The inbox is also available as `GET /api/inbox/events`, a per-user SSE stream.
 The server reuses the cached inbox snapshot, sends the server-rendered inbox HTML
