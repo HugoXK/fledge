@@ -227,6 +227,39 @@ test('pruneOldData removes old jobs, notifications and settings keys', () => {
   }
 })
 
+// #419: one `plan_expired:` and one `plan_reminded:` row is written per
+// unapproved plan by `expirePlans`, and they are only read to make a second tick
+// a no-op. `pruneOldData` never selected either prefix, so they were the one
+// per-job record that outlived both the job row and every retention window.
+test('retention reclaims the per-job plan markers and keeps a live job\'s', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'plan-retention-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_plan_prune', userId: user.id, owner: 'o', name: 'p', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const jobs: Array<[string, string]> = [
+      ['job_plan_old', '2000-01-01T00:00:00.000Z'],
+      ['job_plan_live', new Date().toISOString()],
+    ]
+    for (const [id, finishedAt] of jobs) {
+      store.createJob({ id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: `cb_${id}`, platformTokenHash: '' })
+      store.updateJob(id, { status: 'succeeded', finished_at: finishedAt })
+    }
+    store.setSetting('plan_expired:job_plan_old', '2000-01-01T00:00:00.000Z')
+    store.setSetting('plan_reminded:job_plan_old', '2000-01-01T00:00:00.000Z')
+    store.setSetting('plan_expired:job_plan_live', new Date().toISOString())
+    store.setSetting('plan_reminded:job_plan_live', new Date().toISOString())
+
+    store.pruneOldData()
+
+    assert.equal(store.getSetting('plan_expired:job_plan_old'), undefined, 'an expired plan marker is reclaimed past its own cutoff')
+    assert.equal(store.getSetting('plan_reminded:job_plan_old'), undefined, 'a reminder marker is reclaimed the same way')
+    assert.notEqual(store.getSetting('plan_expired:job_plan_live'), undefined, 'a live job keeps its idempotency marker')
+    assert.notEqual(store.getSetting('plan_reminded:job_plan_live'), undefined)
+  } finally {
+    store.close()
+  }
+})
+
 test('work items persist, update and are found by issue or PR', () => {
   const store = new Store(':memory:')
   try {

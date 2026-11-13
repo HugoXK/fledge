@@ -3102,28 +3102,43 @@ export class Store {
     this.run("DELETE FROM jobs WHERE status IN ('succeeded', 'failed', 'quota_exhausted') AND finished_at IS NOT NULL AND finished_at < ?", cutoff(365))
     this.run('DELETE FROM audit_log WHERE at < ?', cutoff(365))
     this.run('DELETE FROM quota_ledger WHERE at < ?', cutoff(730))
-    const settings = this.all<{ key: string; value: string }>(
-      "SELECT key, value FROM settings WHERE key LIKE 'followup:%' OR key LIKE 'question_notified:%' OR key LIKE 'digest_sent:%' OR key LIKE 'email_test:%' OR key LIKE 'webhook_delivery:%' OR key LIKE 'email_reply:%' OR key LIKE 'github_app_state:%' OR key LIKE 'installation_sender:%'",
-    )
-    const limits: Array<[string, string]> = [
-      ['followup:', cutoff(30)],
-      ['question_notified:', cutoff(30)],
-      ['digest_sent:', cutoff(14)],
-      ['email_test:', cutoff(1)],
-      ['webhook_delivery:', cutoff(30)],
-      ['merge_reconcile:', cutoff(30)],
-      ['email_reply:', cutoff(7)],
-      ['github_app_state:', cutoff(1)],
-      ['installation_sender:', cutoff(30)],
+    // #419: the prefix list and the cutoff table were two hand-kept copies of
+    // one mapping, so a key could be written without either half ever selecting
+    // it. `plan_expired:` and `plan_reminded:` are written per unapproved plan
+    // by `expirePlans` and sat outside the SELECT, so one row per plan stayed in
+    // `settings` forever. One table now feeds both the query and the cutoffs, so
+    // a prefix cannot half-exist again.
+    //
+    // `merge_reconcile:`, `retry_pending:` and `pending_followup:` are not here
+    // on purpose: they are reclaimed when the job they name is gone
+    // (`reconcileOrphans`), not by age. `merge_reconcile:` also throttles the
+    // merge pass, so its age is not a retention signal.
+    const SETTINGS_RETENTION: ReadonlyArray<readonly [string, number]> = [
+      ['followup:', 30],
+      ['question_notified:', 30],
+      ['digest_sent:', 14],
+      ['email_test:', 1],
+      ['webhook_delivery:', 30],
+      ['email_reply:', 7],
+      ['github_app_state:', 1],
+      ['installation_sender:', 30],
+      // A plan marker is read only while its job is unapproved, which ends at
+      // the plan deadline; the job row itself is kept for 365 days, so the
+      // marker gets the same window from the moment it was written.
+      ['plan_reminded:', 365],
+      ['plan_expired:', 365],
     ]
+    const settings = this.all<{ key: string; value: string }>(
+      `SELECT key, value FROM settings WHERE ${SETTINGS_RETENTION.map(([prefix]) => `key LIKE '${prefix}%'`).join(' OR ')}`,
+    )
     for (const row of settings) {
-      const limit = limits.find(([prefix]) => row.key.startsWith(prefix))?.[1]
-      if (limit === undefined) continue
+      const days = SETTINGS_RETENTION.find(([prefix]) => row.key.startsWith(prefix))?.[1]
+      if (days === undefined) continue
       const raw = row.value.slice(row.value.lastIndexOf(':') + 1)
       const at = /^\d{4}-\d{2}-\d{2}T/.test(row.value) ? Date.parse(row.value) : Number(raw)
       if (!Number.isFinite(at) || at === 0) continue
       const iso = at > 10_000_000_000 ? new Date(at).toISOString() : row.value
-      if (iso < limit) this.run('DELETE FROM settings WHERE key = ?', row.key)
+      if (iso < cutoff(days)) this.run('DELETE FROM settings WHERE key = ?', row.key)
     }
   }
 
