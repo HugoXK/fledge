@@ -228,6 +228,8 @@ function permissionLabel(t: Translate, permission: string): string {
   return value === undefined ? permission : t(value[0], value[1])
 }
 
+const DISCOVERY_INTERVALS = ITERATION_INTERVALS.filter((value) => value >= 60)
+
 function intervalOptions(t: Translate, selected = 1440, values = ITERATION_INTERVALS): string {
   const current = normalizeInterval(selected)
   const list = values.includes(current) ? values : [...values, current].sort((a, b) => a - b)
@@ -867,7 +869,7 @@ export function dashboardPage(input: {
         <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定。模板会填入一个可执行的目标。', 'The more concrete the goal, the more stable the output. A template fills in a ready prompt.'))} <textarea id="goal-new" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
-          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval">${intervalOptions(t)}</select></label>
+          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session (minimum 60 minutes) that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval">${intervalOptions(t, 1440, DISCOVERY_INTERVALS)}</select></label>
         </div>
         <div class="row" data-review-group>
           <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时才可启用；审核任务独立于迭代任务。', 'Available only with the maintainer role and GitHub admin/maintain permission; review jobs run separately from iterate jobs.'))}</label>
@@ -1287,7 +1289,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" ${repo.auto_iterate === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
           <label class="check"><input type="checkbox" name="enabled" value="1" ${repo.enabled === 1 ? 'checked' : ''} /> ${escapeHtml(t('启用', 'Enabled'))}</label>
-          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval">${intervalOptions(t, repo.interval_minutes)}</select></label>
+          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session (minimum 60 minutes) that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval">${intervalOptions(t, Math.max(60, repo.interval_minutes), DISCOVERY_INTERVALS)}</select></label>
         </div>
         <div class="row" data-review-group>
           <label class="check"><input type="checkbox" name="review" value="1" ${reviewerEnabled ? 'checked' : ''} ${canReview ? '' : 'disabled'} data-role-can-review="${githubCanReview ? '1' : '0'}" /> ${escapeHtml(t('启用 PR 审核', 'Enable PR reviewer'))}</label>
@@ -2642,7 +2644,7 @@ export function appReposPage(input: {
       <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定。模板会填入一个可执行的目标。', 'The more concrete the goal, the more stable the output. A template fills in a ready prompt.'))} <textarea id="goal-app" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
       <div class="row">
         <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
-        <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval">${intervalOptions(t)}</select></label>
+        <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session (minimum 60 minutes) that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval">${intervalOptions(t, 1440, DISCOVERY_INTERVALS)}</select></label>
       </div>
       <div class="row">
         <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时才可启用。', 'Available only with the maintainer role and GitHub admin/maintain permission.'))}</label>
