@@ -154,7 +154,7 @@ async function sendToBot(text, sessionId) {
 }
 
 function buildText(job) {
-  const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : job.kind === 'scope' ? 'scope' : job.kind === 'verify' ? 'verify' : job.kind === 'provision' ? 'provision' : 'iterate'
+  const kind = job.kind === 'review' ? 'review' : job.kind === 'discover' ? 'discover' : job.kind === 'plan' ? 'plan' : job.kind === 'scope' ? 'scope' : job.kind === 'verify' ? 'verify' : job.kind === 'provision' ? 'provision' : 'iterate'
   const upstream = job.upstream || job.repo || {}
   const fork = job.fork || job.repo || upstream
   const rules = kind === 'review'
@@ -164,7 +164,15 @@ function buildText(job) {
         '- Include followUps in the final callback for every Fledge PR that needs changes: [{prUrl, branch, headSha, baseBranch, reason}] so Fledge queues a same-branch fix.',
         '- Do not modify code in review mode.',
       ]
-    : kind === 'plan'
+    : kind === 'discover'
+      ? [
+          '- This is a discovery job. Do not write code, create a branch, push, open a PR or change settings.',
+          '- Inspect the upstream branch, open issues/PRs, README/docs, tests and recent CI. Find one concrete, reproducible defect or high-value improvement that is not already covered.',
+          '- If you find one concrete issue, create exactly one focused issue on the upstream with evidence and a failing-test idea; report issueUrl. If nothing is concrete, report zero output and create nothing.',
+          '- Never create an inventory, backlog, 盘点, 清账, reconcile or "audit the backlog" issue. Do not duplicate an open issue or PR.',
+          '- Do not open a PR or send branch/prUrl.',
+        ]
+      : kind === 'plan'
       ? [
           '- Do not write code, create a branch, push, open a PR/issue or change settings.',
           '- Inspect the repository, docs, issues/PRs and tests; produce one concrete plan.',

@@ -87,6 +87,44 @@ only that container.
   the second IPv6 group, is dropped) and never prints another user's rows.
 - Expired sessions are swept every minute.
 
+### Recent re-authentication
+
+A session cookie lives 30 days, so the cookie alone is not evidence that the
+person at the keyboard is still the GitHub account behind it. Destructive writes
+therefore require a GitHub confirmation inside `RECENT_AUTH_MINUTES` (default 15),
+tracked as `sessions.recent_auth_at`:
+
+- Gated actions: repository delete, turning a repository's auto-merge on or off,
+  quota changes, API-token creation and revocation, admin approve/reject, and
+  stopping a FlyBot instance. Reads and normal job actions are unaffected.
+- A session that has not re-authenticated (`recent_auth_at` is `NULL`, which is
+  also every session that predates this control) is refused, audited as
+  `recent_auth_required` with the action and path, and redirected through
+  `/auth/github/reauthorize?next=…` to the form it came from.
+- That refresh updates the existing session row instead of creating a new
+  session, so the returning form keeps its CSRF token; the form explains why it
+  came back and the action is submitted again.
+- Role checks still run first: a non-admin is refused with 403 before the
+  recency check, and a fresh re-authentication does not grant a role.
+- The same handlers are rate-limited (60 attempts a minute per route and client
+  address) through `@fastify/rate-limit`, registered with `global: false` so the
+  ceiling is a property of the eight routes that name `config.rateLimit` and
+  nothing else. The key generator is `rateLimitKey` over the address
+  `TRUST_PROXY` resolves, so a caller cannot mint a new bucket with a header or a
+  form field, and a refused attempt answers the plugin's 429 before the handler —
+  and therefore before anything is written or audited.
+
+The ceiling is `max: 60` in a `timeWindow` of `60_000` ms, counted per route and
+per bucket, and it has no environment knob by design: the only way to loosen or
+revert it is to edit the two constants of `destructiveLimit` in `src/app.ts`
+(`max` and `timeWindow`) or to revert the commit that registered it, and
+loosening it gives up exactly the property above.
+
+A burst from one account — a batch of approvals, or a script driving several
+destructive calls — can therefore answer 429 inside a minute, and that is the
+control working, not a defect: the request was refused before anything was
+written or audited, and it succeeds again once the window has passed.
+
 ### CSRF
 
 Every state-changing browser form includes a hidden `csrf` field derived from

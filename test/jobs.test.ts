@@ -736,6 +736,67 @@ test('maintainer auto-merge merges only after checks pass and no changes are req
   }
 })
 
+test('auto-merge refuses a low review score and a manual maintainer merge overrides it', async () => {
+  const merges: string[] = []
+  const github = await startFakeServer((request, response) => {
+    const method = request.method ?? 'GET'
+    const url = request.url ?? ''
+    if (method === 'GET' && url === '/repos/o/r/pulls/1') {
+      json(response, 200, { number: 1, html_url: 'https://github.com/o/r/pull/1', title: 'fix', state: 'open', head: { ref: 'fledge/fix', sha: 'abc' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/abc/check-runs?per_page=100') {
+      json(response, 200, { check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/abc/status') {
+      json(response, 200, { state: 'success', statuses: [] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/pulls/1/reviews?per_page=100') {
+      json(response, 200, [])
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/branches/main/protection') {
+      json(response, 200, { required_status_checks: { contexts: ['ci'] }, required_pull_request_reviews: { required_approving_review_count: 0 } })
+      return
+    }
+    if (method === 'PUT' && url === '/repos/o/r/pulls/1/merge') {
+      merges.push('merge')
+      json(response, 200, { merged: true, sha: 'def' })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'review-score-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_review_score', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, upstreamHtmlUrl: 'https://github.com/o/r', forkHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_review_score', repoId: repo.id, userId: user.id, title: 'fix', prUrl: 'https://github.com/o/r/pull/1', state: 'pr_ready' })
+    const review = store.createJob({ id: 'job_review_score', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'review', callbackHash: 'review-hash', platformTokenHash: '', kind: 'review', workItemId: item.id })
+    store.updateJob(review.id, { status: 'succeeded', review_score: 60, finished_at: new Date().toISOString() })
+
+    const secret = 'low-score-secret'
+    store.createJob({ id: 'job_iterate_score', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main', workItemId: item.id })
+    store.updateJob('job_iterate_score', { status: 'running', branch: 'fledge/fix', started_at: new Date().toISOString() })
+    const result = await jobs.handleCallback('job_iterate_score', secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/1', summary: 'done' })
+    assert.equal(result.ok, true)
+    assert.equal(merges.length, 0, 'a score below 80 must block auto-merge')
+    assert.ok(store.listAudit().some((entry) => entry.action === 'job.merge_skipped' && (entry.detail ?? '').includes('review gate')))
+
+    const manual = await jobs.manualMerge(repo, store.getJob('job_iterate_score')!)
+    assert.equal(manual.ok, true)
+    assert.equal(merges.length, 1, 'a manual maintainer merge may override the score')
+    assert.ok(store.listAudit().some((entry) => entry.action === 'job.merge_review_override'))
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
+
 test('review jobs require a fresh GitHub permission check', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
@@ -2101,12 +2162,22 @@ test('carry-over is bounded, names the open work and is explicitly data', () => 
   assert.match(text, /https:\/\/x\/pr\/3/)
 })
 
-test('a due repo with no open work stays idle instead of inventing a job', () => {
+test('a due repo with no open work stays idle until discovery is due', () => {
   const next = decideNextJob({
     repo: repo(), now, lastRunAt: iso(-2 * 3_600_000), intervalMinutes: 60,
     lastDurationMs: 1_000, failureStreak: 0, openWork: [], reviewerEnabled: false, reviewDue: true,
+    lastDiscoverAt: iso(-60 * 60_000), discoverIntervalMinutes: 720,
   })
   assert.deepEqual(next, { kind: 'none', reason: 'idle' })
+})
+
+test('an idle repo runs one discovery session when the discovery interval is due', () => {
+  const next = decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-2 * 3_600_000), intervalMinutes: 60,
+    lastDurationMs: 1_000, failureStreak: 0, openWork: [], reviewerEnabled: false, reviewDue: true,
+    lastDiscoverAt: iso(-13 * 60 * 60_000), discoverIntervalMinutes: 720,
+  })
+  assert.deepEqual(next, { kind: 'discover' })
 })
 
 test('open work continues instead of starting another isolated iterate', () => {
@@ -2152,16 +2223,95 @@ test('the interval respects the last duration and backs off after failures', () 
   )
   const notDue = decideNextJob({
     repo: repo(), now, lastRunAt: iso(-30 * 60_000), intervalMinutes: 60,
-    lastDurationMs: 60 * 60_000, failureStreak: 1, openWork: [], reviewerEnabled: false, reviewDue: true,
+    lastDurationMs: 60 * 60_000, failureStreak: 1, openWork: [workItem()], reviewerEnabled: false, reviewDue: true,
   })
   assert.equal(notDue.kind, 'none')
   const backedOff = decideNextJob({
     repo: repo(), now, lastRunAt: iso(-90 * 60_000), intervalMinutes: 60,
-    lastDurationMs: 0, failureStreak: 3, openWork: [], reviewerEnabled: false, reviewDue: true,
+    lastDurationMs: 0, failureStreak: 3, openWork: [workItem()], reviewerEnabled: false, reviewDue: true,
   })
   assert.equal(backedOff.kind, 'none')
 })
 
+
+test('the scheduler runs one discovery session when idle, then idles', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'capture', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'scheduler-discover', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_scheduler_discover', userId: user.id, owner: 'o', name: 'discover',
+      defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
+      repoRole: 'developer', goal: 'fix bugs', autoIterate: true, intervalMinutes: 60,
+    })
+    await jobs.tick()
+    const created = store.listJobsForRepo(repo.id)
+    assert.equal(created.length, 1)
+    assert.equal(created[0]?.kind, 'discover')
+    assert.ok(store.getSetting(`discover:${repo.id}`) !== undefined)
+
+    store.updateJob(created[0]!.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    await jobs.tick()
+    assert.equal(store.listJobsForRepo(repo.id).length, 1, 'discovery must not repeat before its interval')
+    assert.equal(store.getRepo(repo.id)?.last_status, 'idle')
+  } finally {
+    store.close()
+  }
+})
+
+test('a discover callback cannot open a branch or pull request', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'discover-pr-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_discover_pr', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', upstreamHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: true, intervalMinutes: 60 })
+    const secret = 'discover-pr-secret'
+    store.createJob({ id: 'job_discover_pr', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'discover', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'discover' })
+    store.updateJob('job_discover_pr', { status: 'running', started_at: new Date().toISOString() })
+    const result = await jobs.handleCallback('job_discover_pr', secret, { status: 'succeeded', branch: 'fledge/x', prUrl: 'https://github.com/o/r/pull/1', summary: 'found' })
+    assert.equal(result.status, 422)
+    assert.match(String(result.error), /DISCOVERY_PR_FORBIDDEN/)
+    assert.equal(store.getJob('job_discover_pr')?.status, 'failed')
+    assert.ok(store.listAudit().some((entry) => entry.action === 'job.discovery_pr_forbidden'))
+
+    store.createJob({ id: 'job_discover_heartbeat', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'discover', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'discover' })
+    store.updateJob('job_discover_heartbeat', { status: 'running', started_at: new Date().toISOString() })
+    const heartbeat = await jobs.handleCallback('job_discover_heartbeat', secret, { status: 'running', branch: 'fledge/x' })
+    assert.equal(heartbeat.status, 400)
+  } finally {
+    store.close()
+  }
+})
+
+test('a discover callback with an issue creates exactly one work item', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'discover-issue-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_discover_issue', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', upstreamHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: true, intervalMinutes: 60 })
+    const secret = 'discover-issue-secret'
+    store.createJob({ id: 'job_discover_issue', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'discover', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'discover' })
+    store.updateJob('job_discover_issue', { status: 'running', started_at: new Date().toISOString() })
+    const issueUrl = 'https://github.com/o/r/issues/7'
+    const result = await jobs.handleCallback('job_discover_issue', secret, { status: 'succeeded', issueUrl, summary: 'found a concrete bug' })
+    assert.equal(result.ok, true)
+    const item = store.findWorkItemByIssueUrl(repo.id, issueUrl)
+    assert.equal(item?.state, 'in_progress')
+    assert.equal(store.getJob('job_discover_issue')?.output_kind, 'issue')
+
+    await jobs.tick()
+    const after = store.listJobsForRepo(repo.id)
+    assert.equal(after.length, 2, 'the discovered issue feeds the next work session')
+    assert.equal(after[0]?.kind, 'iterate')
+    assert.equal(after[0]?.work_item_id, item?.id)
+  } finally {
+    store.close()
+  }
+})
 
 test('the scheduler idles with no work and starts once a work item appears', async () => {
   const config = testConfig()
@@ -2182,8 +2332,9 @@ test('the scheduler idles with no work and starts once a work item appears', asy
       defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
       repoRole: 'developer', goal: 'fix bugs', autoIterate: true, intervalMinutes: 60,
     })
+    store.setSetting(`discover:${repo.id}`, new Date().toISOString())
     await jobs.tick()
-    assert.equal(store.listJobsForRepo(repo.id).length, 0, 'no work means no job')
+    assert.equal(store.listJobsForRepo(repo.id).length, 0, 'no work means no work job')
     assert.equal(store.getRepo(repo.id)?.last_status, 'idle')
 
     store.createWorkItem({

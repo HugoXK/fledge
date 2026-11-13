@@ -23,6 +23,7 @@ import { failureBreakdown } from './lib/failure.js'
 import { Jobs } from './jobs/service.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
+import fastifyRateLimit from '@fastify/rate-limit'
 import { rateLimitKey, RateLimiter } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
 import { expiryFromDays, GATEWAY_SCOPE, isTokenScope, patExpiryDays } from './lib/tokens.js'
@@ -239,6 +240,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const jobs = new Jobs(store, config, runner, mailer, instances, githubApp)
   const loginLimiter = new RateLimiter(30, 60_000)
   const apiLimiter = new RateLimiter(120, 60_000)
+  // #460 review: the destructive actions below are rate-limited as well as
+  // re-authenticated, through `@fastify/rate-limit` (registered `global: false`
+  // below) so the limit is visible to callers and to CodeQL's Fastify model
+  // rather than hidden in a helper no analyzer follows. The key stays the client
+  // address through rateLimitKey, never a value the caller can mint; 60 a minute
+  // leaves room for an admin working through a batch of approvals while still
+  // stopping a loop, a resubmitting page or a stolen cookie.
+  const destructiveLimit = {
+    max: 60,
+    timeWindow: 60_000,
+    keyGenerator: (request: FastifyRequest): string => rateLimitKey(request),
+  }
 
   const app = Fastify({
     logger: false,
@@ -264,6 +277,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   await app.register(fastifyCookie)
   await app.register(fastifyFormbody)
   await app.register(fastifyStatic, { root: join(process.cwd(), 'public'), prefix: '/assets/', decorateReply: false })
+  // `global: false`: only the routes that name `config.rateLimit` are limited.
+  await app.register(fastifyRateLimit, { global: false })
 
   app.addHook('onRequest', async (request) => {
     request.viewer = sessions.read(request) ?? undefined
@@ -352,6 +367,47 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     extra,
   })
 
+
+  // A stolen session cookie must not be enough for a destructive write: those
+  // ask for a GitHub confirmation inside the configured window. On refusal the
+  // action is audited and the browser is sent through /auth/github/reauthorize,
+  // which refreshes this session in place so the form keeps its CSRF token.
+  const recentAuthFresh = (viewer: { recentAuthAt: string | null }): boolean => {
+    if (viewer.recentAuthAt === null) return false
+    const at = Date.parse(viewer.recentAuthAt)
+    return !Number.isNaN(at) && Date.now() - at <= config.recentAuthMinutes * 60_000
+  }
+
+  const requireRecentAuth = (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    viewer: Viewer,
+    action: string,
+  ): boolean => {
+    if (recentAuthFresh(viewer)) return false
+    const path = request.url.split('?')[0] ?? ''
+    store.audit(viewer.user.id, 'recent_auth_required', `${action} ${path}`)
+    const referer = String(request.headers.referer ?? '')
+    let back = referer.startsWith('/') ? referer : ''
+    if (back === '' && referer !== '') {
+      try {
+        const url = new URL(referer)
+        back = `${url.pathname}${url.search}`
+      } catch {
+        back = ''
+      }
+    }
+    const t = translator(request.locale ?? 'zh')
+    const notice = t(
+      `这个操作需要重新用 GitHub 确认身份（${config.recentAuthMinutes} 分钟内有效），确认后请再次提交。`,
+      `This action needs a fresh GitHub confirmation (valid for ${config.recentAuthMinutes} minutes). Submit it again after confirming.`,
+    )
+    const page = safeLocalPath(back, '/dashboard')
+    const target = `${page}${page.includes('?') ? '&' : '?'}notice=${encodeURIComponent(notice)}`
+    reply.redirect(`/auth/github/reauthorize?next=${encodeURIComponent(target)}`)
+    return true
+  }
+
   const ownedRepo = (request: FastifyRequest, id: string, mutating = false) => {
     const viewer = mutating ? approvedCsrfGuard(request) : requireApproved(request)
     const repo = store.getRepo(id)
@@ -392,7 +448,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (user.status === 'approved') instances.ensureUserDir(user.id)
     const raw = sessions.start(user.id, request)
     const sessionHash = sha256Hex(raw)
-    sessions.setCookies(reply, raw, { sessionHash, user, csrfToken: sessions.csrfFor(sessionHash) })
+    sessions.setCookies(reply, raw, { sessionHash, user, csrfToken: sessions.csrfFor(sessionHash), recentAuthAt: new Date().toISOString() })
     sessions.setPreview(reply, false)
   }
 
@@ -633,7 +689,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.setUserGithubToken(user.id, encryptSecret(token, config.tokenEncryptionKey), oauthScopes)
     store.audit(user.id, 'login.github', `@${profile.login}`)
     store.event('login', { userId: user.id, meta: 'github' })
-    startSession(user, request, reply)
+    // A re-authentication from /auth/github/reauthorize arrives with the session
+    // it is refreshing; keeping that session keeps the form's CSRF token valid.
+    const refreshing = request.viewer !== undefined && request.viewer.user.id === user.id
+    if (refreshing) sessions.markRecentAuth(request)
+    else startSession(user, request, reply)
     if (user.status === 'approved') return reply.redirect(oauthState.redirect_to === null ? '/dashboard' : safeLocalPath(oauthState.redirect_to, '/dashboard'))
     if (user.status === 'onboarding') return reply.redirect('/apply')
     return reply.redirect('/apply/status')
@@ -2043,8 +2103,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例初始化中。')}`)
   })
 
-  app.post('/repos/:id/instance/stop', async (request, reply) => {
+  app.post('/repos/:id/instance/stop', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (requireRecentAuth(request, reply, viewer, 'flybot.instance.stop')) return reply
     await instances.stop(repo.id)
     await jobs.cancelRepoJobs(repo.id, 'FlyBot 实例已停止', 'BRIDGE_ERROR')
     store.audit(viewer.user.id, 'flybot.instance.stopped', `${repo.owner}/${repo.name}`)
@@ -2076,7 +2137,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(role === 'maintainer' ? t('已选择角色：Maintainer。', 'Role selected: Maintainer.') : t('已选择角色：Developer。', 'Role selected: Developer.'))}`)
   })
 
-  app.post('/repos/:id/settings', async (request, reply) => {
+  app.post('/repos/:id/settings', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const body = form(request)
     const interval = normalizeInterval(body.interval, repo.interval_minutes)
@@ -2092,6 +2153,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('你的 GitHub 权限不允许选择这个角色。', 'Your GitHub permission does not allow this role.'))}#repo-settings`)
     }
     const canMaintain = repoRole === 'maintainer'
+    const autoMergeToggled = canMaintain && (body.autoMerge === '1') !== (repo.auto_merge === 1)
+    if (autoMergeToggled && requireRecentAuth(request, reply, viewer, 'repo.auto_merge')) return reply
     const roleChanged = repoRole !== currentRole
     const goal = (body.goal ?? '').slice(0, 4000)
     const goalChanged = goal !== repo.goal
@@ -2186,8 +2249,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('仓库已停用，任务不会再运行。')}`)
   })
 
-  app.post('/repos/:id/delete', async (request, reply) => {
+  app.post('/repos/:id/delete', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (requireRecentAuth(request, reply, viewer, 'repo.delete')) return reply
     const confirmName = (form(request).confirmName ?? '').trim()
     if (confirmName !== repo.name && confirmName !== `${repo.owner}/${repo.name}`) {
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请输入仓库名确认删除。')}#danger`)
@@ -2405,8 +2469,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/settings?notice=${encodeURIComponent('通知设置已保存。')}`)
   })
 
-  app.post('/settings/tokens', async (request, reply) => {
+  app.post('/settings/tokens', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
+    if (requireRecentAuth(request, reply, viewer, 'token.create')) return reply
     const body = form(request)
     const name = (body.name ?? '').trim().slice(0, 80) || 'default'
     // #355: a posted `scope` may only name a scope the code enforces, so an
@@ -2447,8 +2512,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     )
   })
 
-  app.post('/settings/tokens/:id/revoke', async (request, reply) => {
+  app.post('/settings/tokens/:id/revoke', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
+    if (requireRecentAuth(request, reply, viewer, 'token.revoke')) return reply
     store.revokeApiToken(String((request.params as Record<string, string>).id), viewer.user.id)
     store.audit(viewer.user.id, 'token.revoked')
     return reply.redirect(`/settings?notice=${encodeURIComponent('Token 已撤销。')}`)
@@ -2489,7 +2555,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const raw = sessions.start(viewer.user.id, request)
     const hash = sha256Hex(raw)
     store.deleteSession(viewer.sessionHash)
-    sessions.setCookies(reply, raw, { sessionHash: hash, user: viewer.user, csrfToken: sessions.csrfFor(hash), preview: viewer.preview })
+    // The rotated session is a new row, so it starts recent: `sessions.start`
+    // recorded `recent_auth_at` for it and the viewer has to carry the same fact.
+    sessions.setCookies(reply, raw, { sessionHash: hash, user: viewer.user, csrfToken: sessions.csrfFor(hash), recentAuthAt: new Date().toISOString(), preview: viewer.preview })
     store.audit(viewer.user.id, 'session.rotated')
     return reply.redirect(`/settings?notice=${encodeURIComponent('已换成新的会话 cookie，旧 cookie 已作废。')}#sessions`)
   })
@@ -2829,7 +2897,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/admin?notice=${encodeURIComponent(`${head}${due}`)}`)
   })
 
-  const adminStatus = async (request: FastifyRequest, status: 'approved' | 'rejected') => {
+  const adminStatus = async (request: FastifyRequest, reply: FastifyReply, status: 'approved' | 'rejected'): Promise<'blocked' | UserRow> => {
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
     const id = String((request.params as Record<string, string>).id)
@@ -2837,6 +2905,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (user === undefined) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
     if (user.id === viewer.user.id || user.role === 'superadmin') throw httpError(403, '不能修改这个账号。', 'ROLE_PROTECTED')
     if (viewer.user.role !== 'superadmin' && user.role !== 'user') throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
+    if (requireRecentAuth(request, reply, viewer, `admin.user.${status}`)) return 'blocked'
     store.setUserStatus(user.id, status, `admin:${viewer.user.login}`)
     if (status === 'approved') instances.ensureUserDir(user.id)
     if (status === 'rejected') {
@@ -2870,19 +2939,20 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
   })
 
-  app.post('/admin/users/:id/approve', async (request, reply) => {
-    await adminStatus(request, 'approved')
+  app.post('/admin/users/:id/approve', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
+    if ((await adminStatus(request, reply, 'approved')) === 'blocked') return reply
     return reply.redirect(`/admin?notice=${encodeURIComponent('已批准。')}`)
   })
 
-  app.post('/admin/users/:id/reject', async (request, reply) => {
-    await adminStatus(request, 'rejected')
+  app.post('/admin/users/:id/reject', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
+    if ((await adminStatus(request, reply, 'rejected')) === 'blocked') return reply
     return reply.redirect(`/admin?notice=${encodeURIComponent('已拒绝。')}`)
   })
 
-  app.post('/admin/users/:id/quota', async (request, reply) => {
+  app.post('/admin/users/:id/quota', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
+    if (requireRecentAuth(request, reply, viewer, 'admin.quota')) return reply
     const id = String((request.params as Record<string, string>).id)
     const user = store.userById(id)
     if (user === undefined) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')

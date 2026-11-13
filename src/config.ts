@@ -25,6 +25,8 @@ export interface Config {
     instancesPerUser: number
     instancesGlobal: number
   }
+  // How long a GitHub re-authentication stays "recent" for destructive actions.
+  recentAuthMinutes: number
   tokenEncryptionKey: string
   github: {
     clientId: string
@@ -98,6 +100,8 @@ export interface Config {
   }
   autoMerge: {
     reconcileMinutes: number
+    /** A linked work item below this review score cannot auto-merge. */
+    minReviewScore: number
   }
   ops: {
     alertCooldownMinutes: number
@@ -247,6 +251,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       instancesPerUser: Math.max(0, number('LIMIT_INSTANCES_PER_USER', 3)),
       instancesGlobal: Math.max(0, number('LIMIT_INSTANCES_GLOBAL', 0)),
     },
+    recentAuthMinutes: Math.max(1, number('RECENT_AUTH_MINUTES', 15)),
     tokenEncryptionKey: encryptionKey,
     github: {
       clientId: text('GITHUB_CLIENT_ID'),
@@ -316,6 +321,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     autoMerge: {
       reconcileMinutes: Math.max(1, number('AUTO_MERGE_RECONCILE_MINUTES', 5)),
+      minReviewScore: Math.min(100, Math.max(0, number('AUTO_MERGE_MIN_REVIEW_SCORE', 80))),
     },
     ops: {
       alertCooldownMinutes: Math.max(0, number('OPS_ALERT_COOLDOWN_MINUTES', 360)),

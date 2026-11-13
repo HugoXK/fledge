@@ -124,6 +124,7 @@ function parseDigest(value: string | null): RunDigest | null {
 }
 
 export type NextJob =
+  | { kind: 'discover' }
   | { kind: 'followup'; workItemId: string; prUrl?: string; branch?: string }
   | { kind: 'review'; workItemId: string; prUrl: string; branch?: string }
   | { kind: 'none'; reason: 'not due' | 'idle' }
@@ -138,6 +139,10 @@ export interface SchedulerState {
   openWork: WorkItemRow[]
   reviewerEnabled: boolean
   reviewDue: boolean
+  /** Last discovery session for this repo, from the `discover:<repo>` setting. */
+  lastDiscoverAt?: string | null
+  /** The repo interval; discovery runs at this cadence, not every work tick. */
+  discoverIntervalMinutes?: number
 }
 
 export const DEFAULT_COOLDOWN_MS = 10 * 60_000
@@ -145,16 +150,19 @@ export const DEFAULT_COOLDOWN_MS = 10 * 60_000
 //: Pick the next scheduled job kind. This never blocks a due repo (the #219
 //: lesson): when work is open it changes *what* runs, not whether a run happens.
 export function decideNextJob(state: SchedulerState, options: { cooldownMs?: number } = {}): NextJob {
-  if (!isDue(state, options.cooldownMs ?? DEFAULT_COOLDOWN_MS)) {
-    return { kind: 'none', reason: 'not due' }
-  }
   const work = state.openWork
     .filter((item) => item.state !== 'merged' && item.state !== 'closed')
     .sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at))
-  // #478: no open work is a valid state. The scheduler must idle, not invent a
-  // job from repo.goal; a generic iterate here is what turned the team into a
-  // timer that produced a PR whether or not there was work.
-  if (work.length === 0) return { kind: 'none', reason: 'idle' }
+  // #478/#503: no open work is a valid state. The team may run one low-frequency
+  // discovery session, but it never invents a PR. The work cooldown only gates
+  // work items, not discovery.
+  if (work.length === 0) {
+    if (isDiscoverDue(state)) return { kind: 'discover' }
+    return { kind: 'none', reason: 'idle' }
+  }
+  if (!isDue(state, options.cooldownMs ?? DEFAULT_COOLDOWN_MS)) {
+    return { kind: 'none', reason: 'not due' }
+  }
   const item = work[0]
   if (item === undefined) return { kind: 'none', reason: 'idle' }
   if (item.pr_url) {
@@ -166,6 +174,14 @@ export function decideNextJob(state: SchedulerState, options: { cooldownMs?: num
     return { kind: 'followup', workItemId: item.id, prUrl: item.pr_url }
   }
   return { kind: 'followup', workItemId: item.id }
+}
+
+export function isDiscoverDue(state: SchedulerState, now: number = state.now): boolean {
+  if (state.lastDiscoverAt === null || state.lastDiscoverAt === undefined || state.lastDiscoverAt === '') return true
+  const last = Date.parse(state.lastDiscoverAt)
+  if (!Number.isFinite(last)) return true
+  const interval = Math.max(15, state.discoverIntervalMinutes ?? state.intervalMinutes) * 60_000
+  return now - last >= interval
 }
 
 export function isDue(state: SchedulerState, cooldownMs: number = DEFAULT_COOLDOWN_MS): boolean {

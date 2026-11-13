@@ -108,25 +108,62 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // stay exact so a silent re-label is still a failing test.
   // #251 moved these five route registrations: one import line at `:40` and
   // five lines inside the webhook path. #357 adds one line above the webhook
-  // Positions follow the tree that ships this file, not a frozen sha: the gate
-  // compares against the pull request's own tree, so a reviewed PR that inserts
-  // before an anchor refreshes that line (see the baseline note). The pins below
-  // stay exact so a silent re-label is still a failing test. This anchor has
-  // moved with each merge that inserted above it (#251, #357, #353, #341, #359,
-  // #355, #418, #362, #416, #356, #457), and #488/#489 merged without touching
-  // src/app.ts. This branch's third forward-merge onto main@a7e78981 re-read all
-  // seven lines on the merged tree rather than summing onto the last read: the
-  // four top-of-file registrations are `:516`/`:551`/`:561`/`:571`, the webhook
-  // registration is `:3245` (main's `:3197` plus this branch's 48 lines above
-  // it), and the two gateway registrations are `:155`/`:180`. No result is added
-  // or dismissed: the two gateway alerts (#41, #42) stay the two dismissed false
-  // positives.
+  // route registration, so the `:2957` pin and its baseline entry moved to
+  // `:2958` together in that commit. #358 moved the two gateway registrations
+  // the same way: two import lines and the `readAnswer` helper above them, 19
+  // lines in total, with no new route and no change to the limiter call that
+  // opens each handler; alerts #41 and #42 stay the same two dismissed results.
+  // #359 then moved the webhook registration to `:2979` on its own tree, and
+  // #353 (four inserts: two in the failure path, two in the retry route) plus
+  // #341 (two comment lines in the retry route) took it to `:2983` on main. In
+  // a tree carrying both, the anchor is measured once rather than added, and
+  // the baseline entry and this pin move there together in the merge commit,
+  // which keeps "refreshed" from becoming "silently re-labelled".
+  // #355 then moved anchors on its own: its one import line at `:27` sits above
+  // the four route registrations near the top of the file, so those read
+  // `:471`/`:506`/`:516`/`:526` rather than main's `:469`/`:504`/`:514`/`:524`;
+  // its scope and expiry checks sit in the token create route above the webhook
+  // registration, which read `:2996` on `e268836` alone; and its gateway rewrite
+  // adds 10 lines above both gateway registrations, which read `:155`/`:180`.
+  // #418's review-trend read model then inserts six lines above the webhook
+  // registration, and #441, #442, #444 and #447 changed console strings, type
+  // scale, viewport rules and table layout without touching a route. This
+  // branch's three settings session routes, their rate-limit calls and their
+  // CSRF guards insert 44 lines above the webhook registration, so the merged
+  // tree measures `:3046`. #362 and #416 landed on main before this merge: the search import, the search route and the export-cap refusal all sit above the webhook registration, which read `:3062` on main before this branch's 44 lines. On the merged tree those read `:471`/`:506`/`:516`/`:526` and `:3106`, and the two gateway registrations `:155`/`:180`. Every number above was read from this tree, never
+  // added to a base: no result was added or dismissed, and the two gateway
+  // alerts (#41, #42, both dismissed false positive) are the same two. #457
+  // then adds its limit guard, its two refusal helpers and its two add-path
+  // call sites: the four top-of-file registrations read `:516`/`:551`/`:561`/`:571`
+  // on the merged tree and the webhook registration reads `:3197`, while the
+  // gateway pair stays `:155`/`:180`. #488 (the settings-anchor call site) and
+  // #489 (`public/app.css` plus two layout tests) then merged without touching
+  // `src/app.ts`, so the refresh onto `main@fd76f696` re-read all seven route
+  // lines on the merged tree and moved none of them. The rework after review
+  // `901ad95` adds eight lines to the bulk add path below the four top-of-file
+  // registrations, so the webhook anchor reads `:3197` and the rest stay.
+  // #460 rebases onto a main carrying #499 and re-reads all seven lines on its
+  // own tree: the re-authentication helper, the route-level limit handed to
+  // `@fastify/rate-limit` and the plugin registration add 56 lines above the four
+  // top-of-file registrations, which read `:572`/`:607`/`:617`/`:627`, while the
+  // eight destructive registrations and the plugin's bookkeeping leave the
+  // webhook registration at `:3267`. The gateway pair does not move and stays
+  // `:155`/`:180`, because #497's change to that file lands below both
+  // registrations; no result is added or dismissed.
+  // #360's refresh onto `main@15c336e9` re-read all seven lines on the merged
+  // tree rather than summing them: this branch adds an 18-line reply helper above
+  // the four top-of-file registrations and its 48-line issue-verb block above the
+  // webhook registration, so those read `:590`/`:625`/`:635`/`:645` and the
+  // webhook registration `:3333`. The gateway pair does not move and stays
+  // `:155`/`:180`. No result is added or dismissed: the two gateway alerts (#41,
+  // #42) stay the two dismissed false positives.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3245',
-    'js/missing-rate-limiting|src/app.ts|516',
-    'js/missing-rate-limiting|src/app.ts|551',
-    'js/missing-rate-limiting|src/app.ts|561',
-    'js/missing-rate-limiting|src/app.ts|571',
+    'js/missing-rate-limiting|src/app.ts|3333',
+    'js/missing-rate-limiting|src/app.ts|590',
+    'js/missing-rate-limiting|src/app.ts|625',
+    'js/missing-rate-limiting|src/app.ts|635',
+    'js/missing-rate-limiting|src/app.ts|645',
+
     'js/missing-rate-limiting|src/gateway/gateway.ts|155',
     'js/missing-rate-limiting|src/gateway/gateway.ts|180',
   ])

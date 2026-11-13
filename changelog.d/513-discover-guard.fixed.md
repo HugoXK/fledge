@@ -1,0 +1,1 @@
+A discovery session can no longer return a branch or pull request. The callback refuses it with DISCOVERY_PR_FORBIDDEN and audits the attempt; a discovery result with only an issue still creates one work item.

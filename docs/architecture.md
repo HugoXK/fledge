@@ -31,8 +31,11 @@ Every list, panel and live stream renders its non-data states through
 success and disabled — so the aria contract (`status`, `alert`, `aria-busy`,
 `aria-disabled`) is decided once instead of per page. The stream status lines
 (`[data-inbox-status]`, `[data-chief-status]`) are `aria-live="polite"` regions:
-a dropped stream reports `lost` and `recovered` instead of going quiet. The
-state contract and its evidence are in [docs/ui.md](ui.md).
+a dropped stream reports `lost` and `recovered` instead of going quiet. Each
+state's icon is an inline `<svg>` from a literal map in the same file, on one
+`viewBox`, `aria-hidden` and inheriting `currentColor`, so the five states share
+a geometry instead of five font glyphs. The state contract and its evidence are
+in [docs/ui.md](ui.md).
 
 The console renders UTC and says so: every timestamp goes through
 `humanTimeShort` in `src/lib/time.ts`, which prints the UTC wall clock with an
@@ -212,8 +215,10 @@ a second clock that disagrees.
   lease and queue columns are schema version 33.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
-  a maintainer reviewer is due); with no open work it **stays idle** and creates
-  no issue or PR. The latest three run digests and open work items are carried
+  a maintainer reviewer is due); with no open work it **stays idle** unless the
+  discovery interval is due, in which case it may run one `discover` job that
+  creates at most one concrete issue and never a PR. The latest three run digests
+  and open work items are carried
   into the goal as bounded data. Work sessions use a short global cooldown
   (`WORK_SESSION_COOLDOWN_MINUTES`, default 15 minutes); the per-repository
   interval is only an upper bound on the idle check, not a reason to produce.
@@ -274,9 +279,13 @@ a second clock that disagrees.
   it is on, Fledge (not the agent) verifies the PR is open and mergeable, every
   check run is green, the combined commit status is not failing, and no current
   review requests changes, and the branch protection rule confirms the required
-  checks and approvals before it performs a squash merge. The agent prompt
-  always forbids merging. The switch is stored on the repository and included
-  in the job payload for reporting. A stale or downgraded role blocks the merge.
+  checks and approvals before it performs a squash merge. It also refuses when
+  the linked work item is `changes_requested` or the newest succeeded review job
+  for that PR has a score below `AUTO_MERGE_MIN_REVIEW_SCORE` (default 80). A
+  manual maintainer merge may override the review-score gate, and the override
+  is audited as `job.merge_review_override`. The agent prompt always forbids
+  merging. The switch is stored on the repository and included in the job
+  payload for reporting. A stale or downgraded role blocks the merge.
   A merge also needs the newest `iterate` job for that pull request to have
   succeeded: a queued, running, failed, cancelled or paused follow-up on the
   same PR holds it back, so an older succeeded job cannot merge work that is
@@ -700,7 +709,11 @@ A due repository with open work is never skipped because the item exists.
 `decideNextJob()` carries the highest-priority open item into a `followup` job,
 or a `review` when the item has a PR and a maintainer reviewer is due. With no
 open work it returns `none` with reason `idle`: the scheduler writes
-`last_status='idle'` and creates no job, issue or PR. The job goal gets a bounded
+`last_status='idle'` and creates no job, issue or PR. When the repository's
+discovery interval is due, it may instead run one `discover` job; that job may
+create at most one concrete issue (never a PR/branch), and if it finds nothing
+concrete it creates nothing. The callback refuses a discovery result that carries
+a branch or pull request (`DISCOVERY_PR_FORBIDDEN`). The job goal gets a bounded
 `Carry-over` block with the last three run digests and up to four open items; the
 block is data, not an instruction, and is capped well below the 4000-character
 goal limit. Each finished run is classified as `pr`, `issue`, `review`, `zero`,
@@ -1192,7 +1205,7 @@ callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
 
 | Boundary | Control |
 |---|---|
-| Browser → Fledge | session cookie, CSRF token on every form, rate limits |
+| Browser → Fledge | session cookie, CSRF token on every form, rate limits; destructive writes also need a GitHub re-authentication inside `RECENT_AUTH_MINUTES` (`sessions.recent_auth_at`, audited as `recent_auth_required`) |
 | Fledge → GitHub | user's fine-grained token; platform OAuth only for identity |
 | Fledge → SMTP | credentials in env, never logged |
 | FlyBot bridge → Fledge | job callback secret; credential URL; job token |
