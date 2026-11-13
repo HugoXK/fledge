@@ -307,6 +307,18 @@ defect.
   upstream can enable a scheduled reviewer. Review jobs list every open upstream
   PR, score each one, and post a COMMENT review; they never merge or modify
   code. A developer cannot run review jobs even when GitHub grants write access.
+- **Starting a triage job**: triage is repository-scoped, not issue-scoped, so a
+  person starts one from the repository page (`POST /repos/:id/triage`, behind
+  `ownedRepo` and the CSRF guard) rather than from `/admin`: an operator-only
+  start would leave the repository's own owner unable to triage it, and a
+  maintainer or developer role is enough. The control accepts one optional input,
+  an issue URL that focuses the board, and the route binds it to the repository
+  with `parseIssueUrl` before anything is enqueued, so a foreign host or a
+  foreign repository is refused with a visible error and no job row instead of
+  being caught only when the callback's board comes back. The duplicate rule is
+  the existing `jobs_one_active_per_repo` index: a start while a job is queued or
+  running is refused with `JOB_ACTIVE`, while a start after the previous one
+  finished is allowed because triage only reads.
 - **Work items and gates**: each repository has work items with a
   triage-to-merge state machine (`proposed → triaged → assigned → in_progress →
   pr_ready → in_review → changes_requested → approved → merged/closed`, plus the
