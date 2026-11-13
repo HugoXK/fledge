@@ -4,6 +4,55 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch)
 }
 
+const DOCS_URL = 'https://fledge-docs.hugoxk.online/docs/'
+const STATUS_URL = 'https://hugoxk.online/status/'
+
+// One shell for every transactional mail: a 640px table measure that survives
+// Outlook, inline styles only, and the meta pair that lets a client pick its
+// dark palette without a <style> block.
+function emailShell(bodyHtml: string): string {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<meta name="supported-color-schemes" content="light dark" />
+<title>Fledge</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6f9;color:#10161f;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;background:#f4f6f9;">
+<tr>
+<td align="center" style="padding:24px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:640px;box-sizing:border-box;border-collapse:collapse;background:#ffffff;border:1px solid #dbe1e9;border-radius:12px;">
+<tr>
+<td style="padding:24px;box-sizing:border-box;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+<tr>
+<td style="padding:0 0 16px;border-bottom:1px solid #dbe1e9;font-size:18px;font-weight:700;letter-spacing:-0.02em;color:#10161f;"><span style="color:#3f7a12;">Fledge</span> <span style="font-size:12px;font-weight:400;color:#59636f;">羽巢</span></td>
+</tr>
+</table>
+<div style="font-size:14px;line-height:1.6;color:#10161f;overflow-wrap:break-word;word-break:break-word;">
+${bodyHtml}
+</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+<tr>
+<td style="padding:20px 0 0;border-top:1px solid #dbe1e9;font-size:12px;line-height:1.5;color:#59636f;">
+Fledge · powered by FlyBot<br />
+<a href="${DOCS_URL}" style="color:#2b4fd0;text-decoration:underline;">文档 / Docs</a> · <a href="${STATUS_URL}" style="color:#2b4fd0;text-decoration:underline;">状态 / Status</a>
+</td>
+</tr>
+</table>
+</td>
+</tr>
+</table>
+</td>
+</tr>
+</table>
+</body>
+</html>`
+}
+
 export function applicationEmail(user: UserRow, approveUrl: string, rejectUrl: string, baseUrl: string, position: number | null): { subject: string; text: string; html: string } {
   const who = user.name === null || user.name === '' ? user.login : `${user.name} (@${user.login})`
   const subject = `[Fledge] 权限申请：${user.login}`
@@ -23,7 +72,7 @@ export function applicationEmail(user: UserRow, approveUrl: string, rejectUrl: s
     '',
     `两个链接均为一次性，7 天内有效。也可以登录 ${baseUrl} 在 Admin 面板处理。`,
   ].join('\n')
-  const html = `<p>有人在 <strong>Fledge</strong> 申请接入仓库自迭代。</p>
+  const html = emailShell(`<p>有人在 <strong>Fledge</strong> 申请接入仓库自迭代。</p>
 <ul>
   <li>GitHub：<strong>${escapeHtml(who)}</strong></li>
   <li>邮箱：${escapeHtml(user.email ?? '（未公开）')}</li>
@@ -34,90 +83,118 @@ export function applicationEmail(user: UserRow, approveUrl: string, rejectUrl: s
   <li>IP：${escapeHtml(user.application_ip ?? '—')}</li>
 </ul>
 <p><a href="${escapeHtml(approveUrl)}">批准</a> · <a href="${escapeHtml(rejectUrl)}">拒绝</a></p>
-<p>两个链接均为一次性，7 天内有效。</p>`
+<p>两个链接均为一次性，7 天内有效。</p>`)
   return { subject, text, html }
 }
 
-export function applicationReceivedEmail(user: UserRow, position: number | null): { subject: string; text: string } {
-  return {
-    subject: '[Fledge] 申请已收到',
-    text: [
-      `@${user.login}，你好：`,
-      '',
-      '你的 Fledge 访问申请已经收到。',
-      `排队位置：第 ${position ?? '—'} 位。`,
-      '管理员审批后会再发一封通知；请不要重复提交，排队状态可以在申请页查看。',
-      '',
-      '注意：Fledge 的审批只覆盖 Fledge，不代表获得 FlyBot、Bot Social 或 ScienceDiscovery 的权限。',
-    ].join('\n'),
-  }
+export function applicationReceivedEmail(user: UserRow, position: number | null): { subject: string; text: string; html: string } {
+  const subject = '[Fledge] 申请已收到'
+  const text = [
+    `@${user.login}，你好：`,
+    '',
+    '你的 Fledge 访问申请已经收到。',
+    `排队位置：第 ${position ?? '—'} 位。`,
+    '管理员审批后会再发一封通知；请不要重复提交，排队状态可以在申请页查看。',
+    '',
+    '注意：Fledge 的审批只覆盖 Fledge，不代表获得 FlyBot、Bot Social 或 ScienceDiscovery 的权限。',
+  ].join('\n')
+  const html = emailShell(`<p>@${escapeHtml(user.login)}，你好：</p>
+<p>你的 Fledge 访问申请已经收到。</p>
+<p>排队位置：第 ${position ?? '—'} 位。</p>
+<p>管理员审批后会再发一封通知；请不要重复提交，排队状态可以在申请页查看。</p>
+<p>注意：Fledge 的审批只覆盖 Fledge，不代表获得 FlyBot、Bot Social 或 ScienceDiscovery 的权限。</p>`)
+  return { subject, text, html }
 }
 
-export function approvedEmail(user: UserRow, baseUrl: string): { subject: string; text: string } {
-  return {
-    subject: '[Fledge] 你的访问申请已通过',
-    text: [
-      `@${user.login}，你好：`,
-      '',
-      '你的 Fledge 访问申请已经通过。登录后可以：',
-      '· 绑定一个或多个 GitHub 仓库（提供 fine-grained token）；',
-      '· 让 FlyBot 持续分析、提交变更并开 PR；',
-      '· 平台初始额度 1 元，用完后在设置里配置你自己的模型 API。',
-      '',
-      'Fledge 的批准只覆盖 Fledge；FlyBot、Bot Social 和 ScienceDiscovery 需要分别授权。',
-      '',
-      `登录：${baseUrl}`,
-    ].join('\n'),
-  }
+export function approvedEmail(user: UserRow, baseUrl: string): { subject: string; text: string; html: string } {
+  const subject = '[Fledge] 你的访问申请已通过'
+  const text = [
+    `@${user.login}，你好：`,
+    '',
+    '你的 Fledge 访问申请已经通过。登录后可以：',
+    '· 绑定一个或多个 GitHub 仓库（提供 fine-grained token）；',
+    '· 让 FlyBot 持续分析、提交变更并开 PR；',
+    '· 平台初始额度 1 元，用完后在设置里配置你自己的模型 API。',
+    '',
+    'Fledge 的批准只覆盖 Fledge；FlyBot、Bot Social 和 ScienceDiscovery 需要分别授权。',
+    '',
+    `登录：${baseUrl}`,
+  ].join('\n')
+  const html = emailShell(`<p>@${escapeHtml(user.login)}，你好：</p>
+<p>你的 Fledge 访问申请已经通过。登录后可以：</p>
+<ul>
+  <li>绑定一个或多个 GitHub 仓库（提供 fine-grained token）；</li>
+  <li>让 FlyBot 持续分析、提交变更并开 PR；</li>
+  <li>平台初始额度 1 元，用完后在设置里配置你自己的模型 API。</li>
+</ul>
+<p>Fledge 的批准只覆盖 Fledge；FlyBot、Bot Social 和 ScienceDiscovery 需要分别授权。</p>
+<p><a href="${escapeHtml(baseUrl)}">登录 Fledge</a></p>`)
+  return { subject, text, html }
 }
 
-export function rejectedEmail(user: UserRow, reason: string): { subject: string; text: string } {
-  return {
-    subject: '[Fledge] 你的访问申请未通过',
-    text: [`@${user.login}，你好：`, '', '这次申请没有通过。', reason === '' ? '' : `原因：${reason}`, '', '如果情况有变化，可以稍后重新申请。'].join('\n'),
-  }
+export function rejectedEmail(user: UserRow, reason: string): { subject: string; text: string; html: string } {
+  const subject = '[Fledge] 你的访问申请未通过'
+  const text = [`@${user.login}，你好：`, '', '这次申请没有通过。', reason === '' ? '' : `原因：${reason}`, '', '如果情况有变化，可以稍后重新申请。'].join('\n')
+  const html = emailShell(`<p>@${escapeHtml(user.login)}，你好：</p>
+<p>这次申请没有通过。</p>
+${reason === '' ? '' : `<p>原因：${escapeHtml(reason)}</p>`}
+<p>如果情况有变化，可以稍后重新申请。</p>`)
+  return { subject, text, html }
 }
 
 // #265: the notice the sweep sends exactly once. Both languages in one mail
 // because the console locale is not stored: the reader is whoever registered,
 // and the rule, the exemption and the way back must all be readable without it.
-export function trialExpiredEmail(user: UserRow, baseUrl: string): { subject: string; text: string } {
-  return {
-    subject: '[Fledge] 预览试用已结束 / Preview trial ended',
-    text: [
-      `@${user.login}，你好：`,
-      '',
-      '你的 Fledge 预览试用已经结束：注册后 7 天内没有绑定任何仓库。',
-      '如果你曾经绑定过仓库（即使后来移除了），这条规则不适用于你——回复这封邮件，我们会恢复你的账号。',
-      '想继续使用，请联系管理员重新批准这个账号；重新批准后不会再按 7 天规则收走访问。',
-      '',
-      `登录：${baseUrl}`,
-      '',
-      '---',
-      '',
-      `@${user.login}, hello:`,
-      '',
-      'Your Fledge preview trial has ended: no repository was connected within 7 days of registration.',
-      'If you connected a repository at any point, even one you removed later, this rule does not apply to you — reply to this mail and we will restore the account.',
-      'To keep using Fledge, ask the administrator to re-approve the account; a re-approved account is not subject to the 7-day rule again.',
-      '',
-      `Sign in: ${baseUrl}`,
-    ].join('\n'),
-  }
+export function trialExpiredEmail(user: UserRow, baseUrl: string): { subject: string; text: string; html: string } {
+  const subject = '[Fledge] 预览试用已结束 / Preview trial ended'
+  const text = [
+    `@${user.login}，你好：`,
+    '',
+    '你的 Fledge 预览试用已经结束：注册后 7 天内没有绑定任何仓库。',
+    '如果你曾经绑定过仓库（即使后来移除了），这条规则不适用于你——回复这封邮件，我们会恢复你的账号。',
+    '想继续使用，请联系管理员重新批准这个账号；重新批准后不会再按 7 天规则收走访问。',
+    '',
+    `登录：${baseUrl}`,
+    '',
+    '---',
+    '',
+    `@${user.login}, hello:`,
+    '',
+    'Your Fledge preview trial has ended: no repository was connected within 7 days of registration.',
+    'If you connected a repository at any point, even one you removed later, this rule does not apply to you — reply to this mail and we will restore the account.',
+    'To keep using Fledge, ask the administrator to re-approve the account; a re-approved account is not subject to the 7-day rule again.',
+    '',
+    `Sign in: ${baseUrl}`,
+  ].join('\n')
+  const html = emailShell(`<p>@${escapeHtml(user.login)}，你好：</p>
+<p>你的 Fledge 预览试用已经结束：注册后 7 天内没有绑定任何仓库。</p>
+<p>如果你曾经绑定过仓库（即使后来移除了），这条规则不适用于你——回复这封邮件，我们会恢复你的账号。</p>
+<p>想继续使用，请联系管理员重新批准这个账号；重新批准后不会再按 7 天规则收走访问。</p>
+<p><a href="${escapeHtml(baseUrl)}">登录 Fledge</a></p>
+<hr />
+<p>@${escapeHtml(user.login)}, hello:</p>
+<p>Your Fledge preview trial has ended: no repository was connected within 7 days of registration.</p>
+<p>If you connected a repository at any point, even one you removed later, this rule does not apply to you — reply to this mail and we will restore the account.</p>
+<p>To keep using Fledge, ask the administrator to re-approve the account; a re-approved account is not subject to the 7-day rule again.</p>
+<p><a href="${escapeHtml(baseUrl)}">Sign in to Fledge</a></p>`)
+  return { subject, text, html }
 }
 
-export function quotaExhaustedEmail(user: UserRow, baseUrl: string): { subject: string; text: string } {
-  return {
-    subject: '[Fledge] 平台额度已用完，请配置自己的模型 API',
-    text: [
-      `@${user.login}，你好：`,
-      '',
-      '你的 1 元平台初始额度已经用完，平台不会再替你调用模型。',
-      '请到 Settings → Model 填入你自己的 OpenAI 兼容服务（Base URL / Key / Model），然后重新运行仓库任务。',
-      '',
-      `登录：${baseUrl}/settings`,
-    ].join('\n'),
-  }
+export function quotaExhaustedEmail(user: UserRow, baseUrl: string): { subject: string; text: string; html: string } {
+  const subject = '[Fledge] 平台额度已用完，请配置自己的模型 API'
+  const text = [
+    `@${user.login}，你好：`,
+    '',
+    '你的 1 元平台初始额度已经用完，平台不会再替你调用模型。',
+    '请到 Settings → Model 填入你自己的 OpenAI 兼容服务（Base URL / Key / Model），然后重新运行仓库任务。',
+    '',
+    `登录：${baseUrl}/settings`,
+  ].join('\n')
+  const html = emailShell(`<p>@${escapeHtml(user.login)}，你好：</p>
+<p>你的 1 元平台初始额度已经用完，平台不会再替你调用模型。</p>
+<p>请到 Settings → Model 填入你自己的 OpenAI 兼容服务（Base URL / Key / Model），然后重新运行仓库任务。</p>
+<p><a href="${escapeHtml(`${baseUrl}/settings`)}">登录并配置模型 API</a></p>`)
+  return { subject, text, html }
 }
 
 export interface JobMailContext {
@@ -162,7 +239,7 @@ export function jobSucceededEmail(user: UserRow, context: JobMailContext): { sub
     '',
     mailFooter(),
   ].filter((line) => line !== '').join('\n')
-  const html = `<p>@${escapeHtml(user.login)}，你好：</p>
+  const html = emailShell(`<p>@${escapeHtml(user.login)}，你好：</p>
 <p>${escapeHtml(review ? `${context.repo} 的审核任务已完成。` : `${context.repo} 的任务已完成。`)}${score === '' ? '' : ` ${escapeHtml(score)}`}</p>
 <ul>
   <li>任务：<code>${escapeHtml(context.jobId)}</code></li>
@@ -171,8 +248,7 @@ export function jobSucceededEmail(user: UserRow, context: JobMailContext): { sub
 </ul>
 ${context.summary === '' ? '' : `<p style="white-space:pre-wrap">${escapeHtml(context.summary)}</p>`}
 <p>Fledge 不会自动合并；请到 GitHub review 后由你决定是否 merge。</p>
-<p><a href="${escapeHtml(context.teamUrl)}">打开任务</a></p>
-<p><small>${escapeHtml(mailFooter())}</small></p>`
+<p><a href="${escapeHtml(context.teamUrl)}">打开任务</a></p>`)
   return { subject, text, html }
 }
 
@@ -194,8 +270,10 @@ export function jobFailedEmail(user: UserRow, context: JobMailContext): { subjec
     '',
     mailFooter(),
   ].filter((line) => line !== '').join('\n')
-  const html = `<p>@${escapeHtml(user.login)}，你好：</p>
-<p>${escapeHtml(context.repo)} 的${escapeHtml(context.kind === 'review' ? '审核' : '任务')}没有完成。</p>
+  const kind = context.kind === 'review' ? '审核' : '任务'
+  const banner = `<h2 style="color:#b42318;font-size:18px;margin:0 0 12px">⚠ ${escapeHtml(kind)}失败，请查看原因</h2>`
+  const html = emailShell(`${banner}<p>@${escapeHtml(user.login)}，你好：</p>
+<p>${escapeHtml(context.repo)} 的${escapeHtml(kind)}没有完成。</p>
 <ul>
   <li>任务：<code>${escapeHtml(context.jobId)}</code></li>
   ${context.error === '' ? '' : `<li>原因：${escapeHtml(context.error)}</li>`}
@@ -203,8 +281,7 @@ export function jobFailedEmail(user: UserRow, context: JobMailContext): { subjec
   <li>PR：${context.prUrl === null ? '—' : `<a href="${escapeHtml(context.prUrl)}">${escapeHtml(context.prUrl)}</a>`}</li>
 </ul>
 <p>可以在任务页查看最后进度，修正后重新运行；Fledge 不会自动合并。</p>
-<p><a href="${escapeHtml(context.teamUrl)}">打开任务</a></p>
-<p><small>${escapeHtml(mailFooter())}</small></p>`
+<p><a href="${escapeHtml(context.teamUrl)}">打开任务</a></p>`)
   return { subject, text, html }
 }
 
@@ -226,13 +303,13 @@ export function jobAttentionEmail(user: UserRow, input: { repo: string; question
     '',
     mailFooter(),
   ].filter((line) => line !== '').join('\n')
-  const html = `<p>@${escapeHtml(user.login)}，你好：</p>
+  const banner = '<h2 style="color:#b42318;font-size:18px;margin:0 0 12px">⚠ 需要你回答，任务正在等待</h2>'
+  const html = emailShell(`${banner}<p>@${escapeHtml(user.login)}，你好：</p>
 <p>${escapeHtml(input.repo)} 的团队在等你回答一个问题：</p>
 <blockquote>${escapeHtml(input.question)}${input.detail === '' ? '' : `<br /><small>${escapeHtml(input.detail)}</small>`}</blockquote>
 ${input.options.length === 0 ? '' : `<ul>${input.options.map((option) => `<li>${escapeHtml(option)}</li>`).join('')}</ul>`}
 <p><a href="${escapeHtml(input.teamUrl)}">打开仓库收件箱回答</a></p>
-<p>如果不回答，任务可能停在当前步骤。</p>
-<p><small>${escapeHtml(mailFooter())}</small></p>`
+<p>如果不回答，任务可能停在当前步骤。</p>`)
   return { subject, text, html }
 }
 
@@ -302,7 +379,7 @@ export function dailyDigestEmail(user: UserRow, input: DigestInput): { subject: 
     ...(input.replyAddress === undefined ? [] : [`回复这封邮件也可以给团队下指示（保持 Reply-To 不变）：${input.replyAddress}`, '']),
     mailFooter(),
   ].join('\n')
-  const html = `${failureBanner}<p>@${escapeHtml(user.login)}，这是 Fledge 今天为你托管仓库做的工作。</p>
+  const html = emailShell(`${failureBanner}<p>@${escapeHtml(user.login)}，这是 Fledge 今天为你托管仓库做的工作。</p>
 <p>${input.jobs.length} 个任务（成功 ${succeeded} / 失败 ${failed} / 进行中 ${running}），打开 ${pullRequests} 个 PR；${escapeHtml(usage)}。</p>
 <h3>今天</h3>
 ${input.jobs.length === 0 ? '<p>今天没有新任务。</p>' : `<ul>${input.jobs.slice(0, 12).map((job) => `<li${isFailure(job.status) ? ' style="color:#b42318"' : ''}><strong>${escapeHtml(job.repo)}</strong> · ${escapeHtml(job.kind)} · ${escapeHtml(job.status)}${job.reviewScore === null ? '' : ` · ${job.reviewScore}/100`}${job.costUsd > 0 ? ` · $${job.costUsd.toFixed(4)}` : ''}${job.summary === '' ? '' : `<br />${escapeHtml(job.summary.slice(0, 240))}`}${job.issueUrl === null ? '' : `<br />Issue: <a href="${escapeHtml(job.issueUrl)}">${escapeHtml(job.issueUrl)}</a>`}${job.prUrl === null ? '' : `<br />PR: <a href="${escapeHtml(job.prUrl)}">${escapeHtml(job.prUrl)}</a>`}</li>`).join('')}</ul>`}
@@ -316,8 +393,7 @@ ${input.questions.length === 0 ? '<li>没有待回答的问题。</li>' : input.
 ${input.teamLinks.length === 0 ? '<li>暂无仓库。</li>' : input.teamLinks.map((link) => `<li>${escapeHtml(link.repo)}：<a href="${escapeHtml(link.url)}">${escapeHtml(link.url)}</a></li>`).join('')}
 </ul>
 <p>Fledge 不会自动合并；PR 需要你 review 后决定。</p>
-${input.replyAddress === undefined ? '' : `<p>回复这封邮件也可以给团队下指示（保持 Reply-To 不变）：<code>${escapeHtml(input.replyAddress)}</code></p>`}
-<p><small>${escapeHtml(mailFooter())}</small></p>`
+${input.replyAddress === undefined ? '' : `<p>回复这封邮件也可以给团队下指示（保持 Reply-To 不变）：<code>${escapeHtml(input.replyAddress)}</code></p>`}`)
   return { subject, text, html }
 }
 
@@ -325,6 +401,6 @@ export function testEmail(user: UserRow, baseUrl: string): { subject: string; te
   return {
     subject: '[Fledge] 测试邮件',
     text: [`@${user.login}，你好：`, '', '这是一封 Fledge 测试邮件。收到它说明你的通知邮箱和 SMTP 发信都正常。', '', mailFooter(), '', baseUrl].join('\n'),
-    html: `<p>@${escapeHtml(user.login)}，你好：</p><p>这是一封 Fledge 测试邮件。收到它说明你的通知邮箱和 SMTP 发信都正常。</p><p><small>${escapeHtml(mailFooter())}</small></p><p><a href="${escapeHtml(baseUrl)}">${escapeHtml(baseUrl)}</a></p>`,
+    html: emailShell(`<p>@${escapeHtml(user.login)}，你好：</p><p>这是一封 Fledge 测试邮件。收到它说明你的通知邮箱和 SMTP 发信都正常。</p><p><a href="${escapeHtml(baseUrl)}">${escapeHtml(baseUrl)}</a></p>`),
   }
 }
