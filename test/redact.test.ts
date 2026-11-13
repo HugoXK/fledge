@@ -55,6 +55,20 @@ test('a PEM private-key block is redacted whole', () => {
   assert.match(output, /\[redacted-private-key\]/)
 })
 
+test('repeated private-key headers cannot stall the log redactor', () => {
+  // CodeQL js/polynomial-redos at src/lib/redact.ts:25: `[A-Z ]*` before
+  // `PRIVATE KEY` shares the class with its suffix, so a log full of BEGIN
+  // markers made the pattern backtrack once per marker. One MiB must stay
+  // linear, because a job log is untrusted and the app is single-process.
+  const begin = `${DASHES}BEGIN PRIVATE KEY${DASHES}`
+  const log = begin.repeat(Math.ceil(1_048_576 / begin.length))
+  const started = performance.now()
+  const output = redact(log)
+  const elapsed = performance.now() - started
+  assert.equal(output.includes(begin), false)
+  assert.ok(elapsed < 500, `took ${elapsed.toFixed(0)} ms; a quadratic PEM scan blocks the whole app`)
+})
+
 test('token= and password= values are redacted where they appear', () => {
   const output = redact('https://example.test/cb?token=synthetic-token-value&x=1 password=synthetic-password')
   assert.equal(output.includes('synthetic-token-value'), false)

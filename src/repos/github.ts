@@ -173,7 +173,6 @@ async function readBoundedText(response: Response, maxBytes: number): Promise<st
     const chunk = Buffer.from(value)
     if (total + chunk.length > maxBytes) {
       if (maxBytes > total) chunks.push(chunk.subarray(0, maxBytes - total))
-      total = maxBytes
       truncated = true
       await reader.cancel().catch(() => {
         // The read stopped at the cap on purpose; the rest of the stream is not needed.

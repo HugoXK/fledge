@@ -14,6 +14,30 @@ export function registerRedactionSecrets(values: readonly string[]): void {
   registeredSecrets = [...unique].sort((a, b) => b.length - a.length)
 }
 
+// A PEM block is bounded by its own markers, so walk from each begin marker to
+// the next end marker instead of letting one regex span arbitrary log text.
+// Both header patterns cap the label at 32 characters; an unbounded `[A-Z ]*`
+// before a literal that shares that class backtracked once per marker (CodeQL
+// js/polynomial-redos). An unmatched begin redacts the rest: a partial block is
+// still key material.
+const PRIVATE_KEY_BEGIN = /-----BEGIN [A-Z ]{0,32}PRIVATE KEY-----/g
+const PRIVATE_KEY_END = /-----END [A-Z ]{0,32}PRIVATE KEY-----/g
+
+function redactPrivateKeys(text: string): string {
+  let output = ''
+  let cursor = 0
+  PRIVATE_KEY_BEGIN.lastIndex = 0
+  for (let begin = PRIVATE_KEY_BEGIN.exec(text); begin !== null; begin = PRIVATE_KEY_BEGIN.exec(text)) {
+    PRIVATE_KEY_END.lastIndex = begin.index + begin[0].length
+    const end = PRIVATE_KEY_END.exec(text)
+    const stop = end === null ? text.length : end.index + end[0].length
+    output += `${text.slice(cursor, begin.index)}[redacted-private-key]`
+    cursor = stop
+    PRIVATE_KEY_BEGIN.lastIndex = stop
+  }
+  return output + text.slice(cursor)
+}
+
 // One deterministic recogniser for every secret shape Fledge can meet in a job
 // log, a callback or a URL. Run it before a slice: a secret cut in half is a
 // fragment no pattern can recognise, and redacting after the cut would leave it.
@@ -22,8 +46,7 @@ export function redact(value: string): string {
   for (const secret of registeredSecrets) {
     if (text.includes(secret)) text = text.split(secret).join('[redacted-secret]')
   }
-  return text
-    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[redacted-private-key]')
+  return redactPrivateKeys(text)
     // No leading boundary on an opaque prefix: a summary can glue a token onto a
     // word ("…xyzghp_…") and a fragment of a token is still a token. `sk-` keeps
     // its boundary because English words contain "sk-" ("ri sk-assessment…").
