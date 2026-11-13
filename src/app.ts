@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
-import { openStore, type JobRow, type RepoRow, type Store, type UserRow } from './db.js'
+import { openStore, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow } from './db.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
 import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions, type Viewer } from './auth/session.js'
@@ -74,6 +74,8 @@ import {
   type InboxQuestion,
 } from './views/pages.js'
 import { withDensity } from './views/layout.js'
+import { memoryMissingPage, memoryPage } from './views/memory.js'
+import { memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from './lib/memory.js'
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
 import { GithubClient, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
 import { GithubApp } from './repos/app.js'
@@ -1364,6 +1366,89 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         error: queryText(request, 'error'),
       }),
     )
+  })
+
+  // #539: project memory. This slice is one repository page — a bounded search,
+  // an exact-version read and a revision-fenced write. The reader's role is the
+  // repository's chosen role, so an administrator acting as a developer reads the
+  // developer view; a write for a role the actor cannot act as is refused before
+  // the store sees it.
+  app.get('/repos/:id/memory', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const role = parseRepoRole(repo.repo_role)
+    const entries = store.listMemoriesForRepo(repo.id)
+    const query = queryText(request, 'q') ?? ''
+    const search = searchMemories(entries, query, role)
+    const locale = request.locale ?? 'zh'
+    const key = queryText(request, 'key')
+    let detail
+    let versions: ProjectMemoryVersionRow[] = []
+    if (key !== undefined) {
+      const entry = visibleMemories(entries, role).find((row) => row.key === key)
+      if (entry === undefined) {
+        return htmlPage(reply, 404, memoryMissingPage({ config, locale, viewer: viewOf(viewer), repo }))
+      }
+      versions = store.listMemoryVersions(entry.id)
+      const rawRevision = queryText(request, 'rev')
+      const wanted = rawRevision === undefined ? entry.revision : Number(rawRevision)
+      const version = Number.isInteger(wanted) ? store.getMemoryVersion(entry.id, wanted) : undefined
+      if (version === undefined) {
+        return htmlPage(reply, 404, memoryMissingPage({ config, locale, viewer: viewOf(viewer), repo }))
+      }
+      detail = { entry, version, historical: version.revision !== entry.revision }
+    }
+    const conflict = queryText(request, 'conflict')
+    const refused = queryText(request, 'refused')
+    return reply.type('text/html').send(memoryPage({
+      config,
+      locale,
+      viewer: viewOf(viewer),
+      repo,
+      role,
+      search,
+      ...(detail === undefined ? {} : { detail }),
+      versions,
+      query,
+      saved: queryText(request, 'saved') !== undefined,
+      unchanged: queryText(request, 'unchanged') !== undefined,
+      ...(conflict === undefined ? {} : { conflictRevision: Number(conflict) }),
+      ...(refused === undefined ? {} : { refused }),
+    }))
+  })
+
+  app.post('/repos/:id/memory', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const role = parseRepoRole(repo.repo_role)
+    const parsed = parseMemoryInput(form(request), { role, allowedRoles: allowedRepoRoles(repo.permission) })
+    if (!parsed.ok) {
+      return reply.redirect(`/repos/${repo.id}/memory?refused=${encodeURIComponent(parsed.refused)}`)
+    }
+    const input = parsed.value
+    const result = store.writeMemory({
+      repoId: repo.id,
+      key: input.key,
+      kind: input.kind,
+      status: input.status,
+      verification: input.verification,
+      audience: input.audience,
+      scope: input.scope,
+      body: input.body,
+      digest: memoryDigest(input.body),
+      sourcesJson: input.sourcesJson,
+      actorType: 'human',
+      actorId: viewer.user.id,
+      sourceJobId: null,
+      reason: input.reason,
+      expectedRevision: input.expectedRevision,
+    })
+    if (!result.ok) {
+      // A write aimed at a revision that no longer exists has no key to show, so
+      // it names the refusal instead of landing on a page for an entry that is gone.
+      if (result.code === 'memory_not_found') return reply.redirect(`/repos/${repo.id}/memory?refused=memory_not_found`)
+      return reply.redirect(`/repos/${repo.id}/memory?key=${encodeURIComponent(input.key)}&conflict=${result.revision}`)
+    }
+    const base = `/repos/${repo.id}/memory?key=${encodeURIComponent(input.key)}`
+    return reply.redirect(result.noop ? `${base}&unchanged=1` : `${base}&saved=1`)
   })
 
   app.get('/repos/:id/settings', async (request, reply) => {

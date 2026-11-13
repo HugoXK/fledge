@@ -598,3 +598,14 @@ Use GitHub's private vulnerability reporting on this repository
 (**Security → Report a vulnerability**) with a minimal reproduction. Do not
 open a public issue for a vulnerability. Please allow 72 hours for a first
 response.
+
+## Project memory visibility (`#539`)
+
+Project memory keeps a versioned record per repository, and an entry is either
+shared with the project or scoped to one role (`role:maintainer`,
+`role:developer`). The audience is resolved from the repository's chosen role,
+not from the account's permission: an administrator acting as a developer reads
+the developer view and an entry outside that audience is reported as absent, so
+a role boundary is not a list filter that a direct URL walks around. A writer may
+not author an entry for a role it cannot act as, and the store refuses a write
+whose `expected_revision` is stale instead of overwriting the current body.

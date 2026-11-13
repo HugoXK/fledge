@@ -558,6 +558,72 @@ export interface AlertView {
   message: string
 }
 
+// #539: a versioned project-memory entry. The row in `project_memories` is the
+// current revision; every revision including the first lives in
+// `project_memory_versions`, and no version row is ever updated in place.
+// `audience` is `project` or `role:<id>` and is decided by the reader's
+// repository role, never by an administrator's permission.
+export interface ProjectMemoryRow {
+  id: string
+  repo_id: string
+  key: string
+  kind: string
+  status: string
+  verification: string
+  audience: string
+  scope: string
+  body: string
+  digest: string
+  sources_json: string
+  owner_type: string
+  owner_id: string | null
+  source_job_id: string | null
+  revision: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ProjectMemoryVersionRow {
+  memory_id: string
+  revision: number
+  kind: string
+  status: string
+  verification: string
+  audience: string
+  scope: string
+  body: string
+  digest: string
+  sources_json: string
+  actor_type: string
+  actor_id: string | null
+  reason: string
+  created_at: string
+}
+
+export interface MemoryWriteInput {
+  repoId: string
+  key: string
+  kind: string
+  status: string
+  verification: string
+  audience: string
+  scope: string
+  body: string
+  digest: string
+  sourcesJson: string
+  actorType: string
+  actorId: string | null
+  sourceJobId: string | null
+  reason: string
+  // The revision the writer believed it was replacing. `0` means "create only":
+  // an existing entry at the same key refuses the write instead of adopting it.
+  expectedRevision: number
+}
+
+export type MemoryWriteResult =
+  | { ok: true; created: boolean; noop: boolean; row: ProjectMemoryRow }
+  | { ok: false; code: 'memory_revision_conflict' | 'memory_not_found'; current: ProjectMemoryRow | null; revision: number }
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
@@ -1061,6 +1127,46 @@ CREATE INDEX IF NOT EXISTS jobs_created_idx ON jobs(created_at);
 CREATE INDEX IF NOT EXISTS events_at_idx ON events(at);
 CREATE INDEX IF NOT EXISTS quota_ledger_at_idx ON quota_ledger(at);
 CREATE INDEX IF NOT EXISTS work_items_merged_idx ON work_items(merged_at);
+
+CREATE TABLE IF NOT EXISTS project_memories (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  verification TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL,
+  digest TEXT NOT NULL,
+  sources_json TEXT NOT NULL DEFAULT '[]',
+  owner_type TEXT NOT NULL,
+  owner_id TEXT,
+  source_job_id TEXT,
+  revision INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(repo_id, key)
+);
+CREATE INDEX IF NOT EXISTS project_memories_repo_idx ON project_memories(repo_id, audience, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS project_memory_versions (
+  memory_id TEXT NOT NULL REFERENCES project_memories(id) ON DELETE CASCADE,
+  revision INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  verification TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL,
+  digest TEXT NOT NULL,
+  sources_json TEXT NOT NULL,
+  actor_type TEXT NOT NULL,
+  actor_id TEXT,
+  reason TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (memory_id, revision)
+);
 `
 
 function clean(params: unknown[]): unknown[] {
@@ -1790,6 +1896,133 @@ export class Store {
         WHERE recurrence_key IN (SELECT recurrence_key FROM postmortems WHERE repo_id = ?)
         ORDER BY last_seen_at DESC`,
       repoId,
+    )
+  }
+
+  // #539: the project-memory store. Every write goes through the revision fence
+  // in `writeMemory`; reads are plain selects so a caller can apply the audience
+  // rule (`audienceVisible`) before it shows anything.
+  listMemoriesForRepo(repoId: string): ProjectMemoryRow[] {
+    return this.all<ProjectMemoryRow>(
+      'SELECT * FROM project_memories WHERE repo_id = ? ORDER BY updated_at DESC, rowid DESC',
+      repoId,
+    )
+  }
+
+  getMemory(repoId: string, key: string): ProjectMemoryRow | undefined {
+    return this.get<ProjectMemoryRow>('SELECT * FROM project_memories WHERE repo_id = ? AND key = ?', repoId, key)
+  }
+
+  getMemoryVersion(memoryId: string, revision: number): ProjectMemoryVersionRow | undefined {
+    return this.get<ProjectMemoryVersionRow>(
+      'SELECT * FROM project_memory_versions WHERE memory_id = ? AND revision = ?',
+      memoryId,
+      revision,
+    )
+  }
+
+  listMemoryVersions(memoryId: string): ProjectMemoryVersionRow[] {
+    return this.all<ProjectMemoryVersionRow>(
+      'SELECT * FROM project_memory_versions WHERE memory_id = ? ORDER BY revision DESC',
+      memoryId,
+    )
+  }
+
+  writeMemory(input: MemoryWriteInput): MemoryWriteResult {
+    const at = nowIso()
+    return this.transaction<MemoryWriteResult>(() => {
+      const current = this.getMemory(input.repoId, input.key)
+      if (current === undefined) {
+        if (input.expectedRevision !== 0) {
+          return { ok: false, code: 'memory_not_found', current: null, revision: 0 }
+        }
+        const id = `mem_${randomBytes(8).toString('hex')}`
+        this.run(
+          `INSERT INTO project_memories
+            (id, repo_id, key, kind, status, verification, audience, scope, body, digest, sources_json,
+             owner_type, owner_id, source_job_id, revision, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+          id,
+          input.repoId,
+          input.key,
+          input.kind,
+          input.status,
+          input.verification,
+          input.audience,
+          input.scope,
+          input.body,
+          input.digest,
+          input.sourcesJson,
+          input.actorType,
+          input.actorId,
+          input.sourceJobId,
+          at,
+          at,
+        )
+        this.insertMemoryVersion(id, 1, input, at)
+        const row = this.getMemory(input.repoId, input.key)
+        if (row === undefined) throw new Error('memory entry disappeared inside its own insert')
+        return { ok: true, created: true, noop: false, row }
+      }
+      // A stale writer is refused by name and the current entry is untouched.
+      if (current.revision !== input.expectedRevision) {
+        return { ok: false, code: 'memory_revision_conflict', current, revision: current.revision }
+      }
+      const unchanged =
+        current.kind === input.kind &&
+        current.status === input.status &&
+        current.verification === input.verification &&
+        current.audience === input.audience &&
+        current.scope === input.scope &&
+        current.body === input.body &&
+        current.sources_json === input.sourcesJson
+      if (unchanged) return { ok: true, created: false, noop: true, row: current }
+      const next = current.revision + 1
+      this.run(
+        `UPDATE project_memories
+            SET kind = ?, status = ?, verification = ?, audience = ?, scope = ?, body = ?, digest = ?,
+                sources_json = ?, revision = ?, updated_at = ?
+          WHERE id = ? AND revision = ?`,
+        input.kind,
+        input.status,
+        input.verification,
+        input.audience,
+        input.scope,
+        input.body,
+        input.digest,
+        input.sourcesJson,
+        next,
+        at,
+        current.id,
+        current.revision,
+      )
+      this.insertMemoryVersion(current.id, next, input, at)
+      const row = this.getMemory(input.repoId, input.key)
+      if (row === undefined) throw new Error('memory entry disappeared inside its own update')
+      return { ok: true, created: false, noop: false, row }
+    })
+  }
+
+  private insertMemoryVersion(memoryId: string, revision: number, input: MemoryWriteInput, at: string): void {
+    this.run(
+      `INSERT INTO project_memory_versions
+        (memory_id, revision, kind, status, verification, audience, scope, body, digest, sources_json,
+         actor_type, actor_id, reason, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      memoryId,
+      revision,
+      input.kind,
+      input.status,
+      input.verification,
+      input.audience,
+      input.scope,
+      input.body,
+      input.digest,
+      input.sourcesJson,
+      input.actorType,
+      input.actorId,
+      input.reason,
+      at,
     )
   }
 
