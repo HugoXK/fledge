@@ -43,6 +43,9 @@ export const DEFAULT_SCOPE_GOAL =
 export const DEFAULT_VERIFY_GOAL =
   'Verify the existing pull request and branch with the Test role: run the relevant tests, report the failing evidence and the passing evidence after the fix, plus CI/check status. Do not write code, push, open a PR or merge.'
 
+export const DEFAULT_DISCOVER_GOAL =
+  'Discovery only: inspect the repository, open issues/PRs, tests and recent CI. Do not write code, create a branch, push, open a PR or change settings. If you find one concrete, reproducible defect or high-value improvement not already covered, create exactly one focused issue on the upstream with evidence and a failing-test idea, then report issueUrl. If there is nothing concrete, report zero output and create nothing. Never create an inventory/backlog/盘点/清账/reconcile issue.'
+
 export const DEFAULT_REVIEW_GOAL =
   'Review every open pull request on the upstream repository. For each PR, inspect the diff, tests and risk, give a score from 0 to 100 with a short rationale, and post a COMMENT review. Do not request changes, approve, merge, push or change repository settings. Return followUps for every Fledge PR that needs a same-branch fix. Summarize the scores and the most important issues.'
 
@@ -399,9 +402,10 @@ export class Jobs {
       if (!this.userReadyForScheduling(repo.user_id)) continue
       if (!this.instanceReady(repo.id)) continue
       if (this.store.activeJobForRepo(repo.id) !== undefined) continue
-      // #478: a due timer alone is not work. Only a repo with an open work item
-      // can be a scheduled work session; review due is still its own lane.
-      if (this.store.listOpenWorkItems(repo.id).length > 0 && this.workDue(repo)) due.add(`${repo.owner}/${repo.name}`)
+      // #478/#503: work items drive work sessions; an empty backlog may still
+      // produce one low-frequency discovery session. Review due is its own lane.
+      const work = this.store.listOpenWorkItems(repo.id)
+      if (work.length > 0 ? this.workDue(repo) : this.discoverDue(repo)) due.add(`${repo.owner}/${repo.name}`)
     }
     return [...due].sort()
   }
@@ -563,6 +567,7 @@ export class Jobs {
     if (active !== undefined) return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
     const user = this.store.userById(repo.user_id)
     if (user === undefined || user.status !== 'approved') return { ok: false, error: '用户不可用', code: 'USER_UNAVAILABLE' }
+    if (kind === 'discover') this.store.setSetting(`discover:${repo.id}`, nowIso())
     if (this.config.runner.queueDispatch) {
       if (this.store.countQueuedJobs() >= this.config.runner.maxQueueDepth) {
         incCounter('fledge_admission_rejected_total', { reason: 'queue_full' }, 1, 'Queue admission rejections')
@@ -600,7 +605,7 @@ export class Jobs {
       preflightSha = preflight.baseSha ?? null
       preflightWarning = preflight.warning ?? ''
     }
-    const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : kind === 'scope' ? DEFAULT_SCOPE_GOAL : kind === 'verify' ? DEFAULT_VERIFY_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
+    const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : kind === 'discover' ? DEFAULT_DISCOVER_GOAL : kind === 'scope' ? DEFAULT_SCOPE_GOAL : kind === 'verify' ? DEFAULT_VERIFY_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
     const rawGoal = goalOverride ?? baseGoal
     const carryOver = trigger === 'schedule' || trigger === 'followup'
       ? buildCarryOver({ recent: this.store.listJobsForRepo(repo.id, 3), openWork: this.store.listOpenWorkItems(repo.id) })
@@ -2600,6 +2605,8 @@ export class Jobs {
         openWork: this.store.listOpenWorkItems(repo.id),
         reviewerEnabled: repo.reviewer_enabled === 1,
         reviewDue: this.dueReview(repo),
+        lastDiscoverAt: this.store.getSetting(`discover:${repo.id}`),
+        discoverIntervalMinutes: repo.interval_minutes,
       })
       if (next.kind === 'none') {
         // #478: an empty backlog is not a reason to create a job. Keep the
@@ -2613,11 +2620,13 @@ export class Jobs {
       }
       const result = next.kind === 'review'
         ? await this.enqueue(repo, 'schedule', undefined, 'review', { workItemId: next.workItemId, prUrl: next.prUrl })
-        : await this.enqueue(repo, 'followup', undefined, 'iterate', {
-            workItemId: next.workItemId,
-            ...(next.prUrl === undefined ? {} : { prUrl: next.prUrl }),
-            ...(next.branch === undefined ? {} : { branch: next.branch }),
-          })
+        : next.kind === 'discover'
+          ? await this.enqueue(repo, 'schedule', undefined, 'discover')
+          : await this.enqueue(repo, 'followup', undefined, 'iterate', {
+              workItemId: next.workItemId,
+              ...(next.prUrl === undefined ? {} : { prUrl: next.prUrl }),
+              ...(next.branch === undefined ? {} : { branch: next.branch }),
+            })
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
       log.info('scheduled job', {
         repo: `${repo.owner}/${repo.name}`,
@@ -2644,6 +2653,14 @@ export class Jobs {
     if (!Number.isFinite(last)) return true
     const cooldown = Math.min(repo.interval_minutes, this.config.runner.workCooldownMinutes)
     return Date.now() - last >= Math.max(15, cooldown) * 60_000
+  }
+
+  private discoverDue(repo: RepoRow): boolean {
+    const at = this.store.getSetting(`discover:${repo.id}`)
+    if (at === undefined || at === null || at === '') return true
+    const last = Date.parse(at)
+    if (!Number.isFinite(last)) return true
+    return Date.now() - last >= Math.max(15, repo.interval_minutes) * 60_000
   }
 
   private dueReview(repo: RepoRow): boolean {

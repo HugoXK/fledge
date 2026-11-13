@@ -256,6 +256,7 @@ function goalTemplateSelect(t: Translate, target: string): string {
 function jobKindLabel(t: Translate, job: JobRow): string {
   if (job.kind === 'review') return t('审核', 'Review')
   if (job.kind === 'plan') return t('计划', 'Plan')
+  if (job.kind === 'discover') return t('发现', 'Discovery')
   if (job.kind === 'research') return t('分析', 'Research')
   return t('迭代', 'Iterate')
 }
@@ -866,7 +867,7 @@ export function dashboardPage(input: {
         <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定。模板会填入一个可执行的目标。', 'The more concrete the goal, the more stable the output. A template fills in a ready prompt.'))} <textarea id="goal-new" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
-          <label>${escapeHtml(t('最长空闲检查间隔', 'Max idle check interval'))}${infoTip(t('有开放工作项时按全局最短工作间隔推进；没有工作项时保持空闲，不会为了产出而开 PR/issue。这个值只是空闲检查的上限。', 'With open work items the global short work cooldown applies; with no work the repository stays idle and does not open a PR/issue to look busy. This value is only the idle-check upper bound.'))} <select name="interval">${intervalOptions(t)}</select></label>
+          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval">${intervalOptions(t)}</select></label>
         </div>
         <div class="row" data-review-group>
           <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时才可启用；审核任务独立于迭代任务。', 'Available only with the maintainer role and GitHub admin/maintain permission; review jobs run separately from iterate jobs.'))}</label>
@@ -1043,7 +1044,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const nextRunText = repo.auto_iterate !== 1
     ? t('自动工作已关闭', 'Auto work off')
     : !openWork
-      ? t('空闲：没有开放工作项', 'Idle: no open work item')
+      ? t('空闲：没有开放工作项；会按发现间隔检查', 'Idle: no open work; the discovery interval still runs')
       : activeJob
         ? t('当前任务结束后再排', 'After the active job finishes')
         : nextRun === null
@@ -1286,7 +1287,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" ${repo.auto_iterate === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
           <label class="check"><input type="checkbox" name="enabled" value="1" ${repo.enabled === 1 ? 'checked' : ''} /> ${escapeHtml(t('启用', 'Enabled'))}</label>
-          <label>${escapeHtml(t('最长空闲检查间隔', 'Max idle check interval'))}${infoTip(t('有工作项时按全局最短工作间隔推进；没有工作项时保持空闲。这个值只是空闲检查的上限。', 'Open work uses the global short cooldown; no work stays idle. This is only the idle-check upper bound.'))} <select name="interval">${intervalOptions(t, repo.interval_minutes)}</select></label>
+          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval">${intervalOptions(t, repo.interval_minutes)}</select></label>
         </div>
         <div class="row" data-review-group>
           <label class="check"><input type="checkbox" name="review" value="1" ${reviewerEnabled ? 'checked' : ''} ${canReview ? '' : 'disabled'} data-role-can-review="${githubCanReview ? '1' : '0'}" /> ${escapeHtml(t('启用 PR 审核', 'Enable PR reviewer'))}</label>
@@ -2661,7 +2662,7 @@ export function appReposPage(input: {
       <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定。模板会填入一个可执行的目标。', 'The more concrete the goal, the more stable the output. A template fills in a ready prompt.'))} <textarea id="goal-app" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
       <div class="row">
         <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
-        <label>${escapeHtml(t('最长空闲检查间隔', 'Max idle check interval'))}${infoTip(t('有工作项时按全局最短工作间隔推进；没有工作项时保持空闲，不会为了产出而开 PR/issue。这个值只是空闲检查的上限。', 'Open work uses the global short cooldown; no work stays idle and does not open a PR/issue to look busy. This is only the idle-check upper bound.'))} <select name="interval">${intervalOptions(t)}</select></label>
+        <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval">${intervalOptions(t)}</select></label>
       </div>
       <div class="row">
         <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时才可启用。', 'Available only with the maintainer role and GitHub admin/maintain permission.'))}</label>
