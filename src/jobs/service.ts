@@ -29,7 +29,7 @@ import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
 import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
-import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs } from './continuity.js'
+import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES } from './continuity.js'
 import { repoGithubToken } from '../repos/token.js'
 import { parseTeam } from '../flybot/instances.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
@@ -2111,6 +2111,19 @@ export class Jobs {
     if (status !== 'running' && this.pastHardTimeout(job)) return { ok: false, status: 409, error: 'job timed out' }
     // A queued job has no dispatched worker yet, so a heartbeat may not promote it.
     if (status === 'running' && job.status !== 'running') return { ok: false, status: 409, error: 'job not dispatched' }
+    const revoke = (): void => {
+      const row = this.store.findApiToken(job.platform_token_hash ?? '')
+      if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
+    }
+    // #513: discovery is issue-only. The prompt says so, but the callback is the
+    // boundary that actually protects the repository from a timer-produced PR.
+    if (job.kind === 'discover' && (branch !== undefined || (prUrl !== undefined && prUrl !== null))) {
+      const message = 'DISCOVERY_PR_FORBIDDEN: discovery may create one issue, not a branch or PR.'
+      this.store.audit(job.user_id, 'job.discovery_pr_forbidden', `${jobId}: branch=${branch ?? '-'} pr=${prUrl ?? '-'}`)
+      if (status === 'running') return { ok: false, status: 400, error: message }
+      this.finish(jobId, { status: 'failed', error: message, issueUrl }, revoke, attribution, evidence, fingerprint)
+      return { ok: false, status: 422, error: message }
+    }
     // Only a callback that will be acted on may refresh the stall window.
     this.store.touchJobCallback(jobId)
     if (status === 'running') {
@@ -2138,10 +2151,6 @@ export class Jobs {
       // a second model call, so it is where a pause/cancel budget acts.
       await this.enforceJobBudget(job, repoRow)
       return { ok: true }
-    }
-    const revoke = (): void => {
-      const row = this.store.findApiToken(job.platform_token_hash ?? '')
-      if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     }
     if (status === 'succeeded') {
       const stageMode = parseStageMode(repoRow?.stage_mode) ?? 'off'
@@ -2636,7 +2645,7 @@ export class Jobs {
         reviewerEnabled: repo.reviewer_enabled === 1,
         reviewDue: this.dueReview(repo),
         lastDiscoverAt: this.store.getSetting(`discover:${repo.id}`),
-        discoverIntervalMinutes: repo.interval_minutes,
+        discoverIntervalMinutes: Math.max(MIN_DISCOVERY_INTERVAL_MINUTES, repo.interval_minutes),
       })
       if (next.kind === 'none') {
         // #478: an empty backlog is not a reason to create a job. Keep the
@@ -2690,7 +2699,7 @@ export class Jobs {
     if (at === undefined || at === null || at === '') return true
     const last = Date.parse(at)
     if (!Number.isFinite(last)) return true
-    return Date.now() - last >= Math.max(15, repo.interval_minutes) * 60_000
+    return Date.now() - last >= Math.max(MIN_DISCOVERY_INTERVAL_MINUTES, repo.interval_minutes) * 60_000
   }
 
   private dueReview(repo: RepoRow): boolean {

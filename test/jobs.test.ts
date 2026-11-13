@@ -2234,6 +2234,21 @@ test('the interval respects the last duration and backs off after failures', () 
 })
 
 
+test('discovery never runs more often than every 60 minutes', () => {
+  const early = decideNextJob({
+    repo: repo(), now, lastRunAt: null, intervalMinutes: 15,
+    lastDurationMs: 0, failureStreak: 0, openWork: [], reviewerEnabled: false, reviewDue: false,
+    lastDiscoverAt: iso(-30 * 60_000), discoverIntervalMinutes: 15,
+  })
+  assert.equal(early.kind, 'none')
+  const due = decideNextJob({
+    repo: repo(), now, lastRunAt: null, intervalMinutes: 15,
+    lastDurationMs: 0, failureStreak: 0, openWork: [], reviewerEnabled: false, reviewDue: false,
+    lastDiscoverAt: iso(-61 * 60_000), discoverIntervalMinutes: 15,
+  })
+  assert.equal(due.kind, 'discover')
+})
+
 test('the scheduler runs one discovery session when idle, then idles', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
@@ -2256,6 +2271,58 @@ test('the scheduler runs one discovery session when idle, then idles', async () 
     await jobs.tick()
     assert.equal(store.listJobsForRepo(repo.id).length, 1, 'discovery must not repeat before its interval')
     assert.equal(store.getRepo(repo.id)?.last_status, 'idle')
+  } finally {
+    store.close()
+  }
+})
+
+test('a discover callback cannot open a branch or pull request', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'discover-pr-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_discover_pr', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', upstreamHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: true, intervalMinutes: 60 })
+    const secret = 'discover-pr-secret'
+    store.createJob({ id: 'job_discover_pr', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'discover', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'discover' })
+    store.updateJob('job_discover_pr', { status: 'running', started_at: new Date().toISOString() })
+    const result = await jobs.handleCallback('job_discover_pr', secret, { status: 'succeeded', branch: 'fledge/x', prUrl: 'https://github.com/o/r/pull/1', summary: 'found' })
+    assert.equal(result.status, 422)
+    assert.match(String(result.error), /DISCOVERY_PR_FORBIDDEN/)
+    assert.equal(store.getJob('job_discover_pr')?.status, 'failed')
+    assert.ok(store.listAudit().some((entry) => entry.action === 'job.discovery_pr_forbidden'))
+
+    store.createJob({ id: 'job_discover_heartbeat', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'discover', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'discover' })
+    store.updateJob('job_discover_heartbeat', { status: 'running', started_at: new Date().toISOString() })
+    const heartbeat = await jobs.handleCallback('job_discover_heartbeat', secret, { status: 'running', branch: 'fledge/x' })
+    assert.equal(heartbeat.status, 400)
+  } finally {
+    store.close()
+  }
+})
+
+test('a discover callback with an issue creates exactly one work item', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'discover-issue-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_discover_issue', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', upstreamHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: true, intervalMinutes: 60 })
+    const secret = 'discover-issue-secret'
+    store.createJob({ id: 'job_discover_issue', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'discover', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'discover' })
+    store.updateJob('job_discover_issue', { status: 'running', started_at: new Date().toISOString() })
+    const issueUrl = 'https://github.com/o/r/issues/7'
+    const result = await jobs.handleCallback('job_discover_issue', secret, { status: 'succeeded', issueUrl, summary: 'found a concrete bug' })
+    assert.equal(result.ok, true)
+    const item = store.findWorkItemByIssueUrl(repo.id, issueUrl)
+    assert.equal(item?.state, 'in_progress')
+    assert.equal(store.getJob('job_discover_issue')?.output_kind, 'issue')
+
+    await jobs.tick()
+    const after = store.listJobsForRepo(repo.id)
+    assert.equal(after.length, 2, 'the discovered issue feeds the next work session')
+    assert.equal(after[0]?.kind, 'iterate')
+    assert.equal(after[0]?.work_item_id, item?.id)
   } finally {
     store.close()
   }

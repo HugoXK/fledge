@@ -1,1 +1,0 @@
-An idle repository can now run one low-frequency discovery session at its configured interval. The session may create at most one concrete issue and never a branch or PR; an empty result stays idle, so the team no longer invents work on a timer.

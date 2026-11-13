@@ -1,1 +1,0 @@
-Fledge now refuses to start when `PLAN_REMINDER_DAYS` is equal to or larger than `PLAN_EXPIRY_DAYS`, naming both values. That pair used to collapse the reminder window to zero and tell maintainers a plan was about to expire the moment it ended unapproved, with the deadline still days away.
