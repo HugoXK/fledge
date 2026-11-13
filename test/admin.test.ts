@@ -270,6 +270,41 @@ test('admins can search and export jobs and audit within their visibility scope'
   }
 })
 
+test('the admin job filter offers every kind and status under its console label, not the internal code', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'filter-admin', admin: true })
+    const repo = store.createRepo({ id: 'repo_filter', userId: admin.id, owner: 'o', name: 'filter', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'fix', autoIterate: false, intervalMinutes: 1440 })
+    makeTerminalJob(store, { id: 'job_filter_verify', repoId: repo.id, userId: admin.id, trigger: 'manual', goal: 'verify goal', callbackHash: 'cb-v', platformTokenHash: '', kind: 'verify' })
+    makeTerminalJob(store, { id: 'job_filter_iterate', repoId: repo.id, userId: admin.id, trigger: 'manual', goal: 'iterate goal', callbackHash: 'cb-i', platformTokenHash: '', kind: 'iterate' })
+    const { cookie } = sessionFor(built, admin)
+    const pageFor = async (locale: 'zh' | 'en'): Promise<string> => {
+      const response = await built.app.inject({ method: 'GET', url: '/admin/search', headers: { cookie: `${cookie}; fledge_lang=${locale}` } })
+      assert.equal(response.statusCode, 200)
+      return response.body
+    }
+    // `scope` and `verify` are job kinds the table already badges, so the filter
+    // that sits above it must offer them; the labels come from the same helper.
+    const chinese = await pageFor('zh')
+    assert.match(chinese, /<option value="verify"[^>]*>验证<\/option>/)
+    assert.match(chinese, /<option value="scope"[^>]*>范围<\/option>/)
+    assert.match(chinese, /<option value="quota_exhausted"[^>]*>额度用尽<\/option>/)
+    const english = await pageFor('en')
+    assert.match(english, /<option value="verify"[^>]*>Verify<\/option>/)
+    assert.match(english, /<option value="quota_exhausted"[^>]*>Quota exhausted<\/option>/)
+    // The value stays the code, so the option the form now offers is the filter
+    // that isolates a `verify` job and leaves an `iterate` job out.
+    const byKind = await built.app.inject({ method: 'GET', url: '/admin/search?kind=verify', headers: { cookie } })
+    assert.equal(byKind.statusCode, 200)
+    assert.match(byKind.body, /job_filter_verify/)
+    assert.doesNotMatch(byKind.body, /job_filter_iterate/)
+  } finally {
+    await built.close()
+  }
+})
+
 test('a CSV export refuses instead of silently stopping at 5000 rows', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
