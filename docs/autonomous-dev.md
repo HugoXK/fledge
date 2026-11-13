@@ -361,7 +361,14 @@ Enforcement is a second question and `#304` answers it: `analyze` runs in
 required context named it — a red analysis blocked only itself. The
 `codeql-required` job reads the completed run of `codeql.yml` for this event's
 commit and fails `ci-ok` when that analysis is red or absent, so the verdict is
-required through the aggregate that already gates every merge. The commit is
+required through the aggregate that already gates every merge. The lookup names
+the commit in its query (`?head_sha=…&status=completed`) instead of scanning the
+workflow's newest runs: on a busy repository a commit's own run falls outside any
+fixed window, so a green analysis reads as absent and the gate reds a mergeable
+pull request (#585). The exact `head_sha === sha` predicate is unchanged — a row
+that merely advertises the commit in `pull_requests[].head.sha` never answers for
+it — and an API that ignores the filter is paged inside the same ten-minute
+bound, capped at ten pages of a hundred runs. The commit is
 chosen per event (`scripts/lib/codeql-required.mjs`): `push` and
 `workflow_dispatch` gate the commit they run on; `pull_request` gates the pull
 request head, which is the commit the analysis run reports, because `GITHUB_SHA`
