@@ -251,12 +251,18 @@ and the accessibility contract are fixed:
 - The three live streams (notifications, questions, chief) announce
   `connecting`, `lost` and `recovered` in an `aria-live="polite"` status node
   (`[data-inbox-status]`, `[data-chief-status]`), instead of stopping silently.
-- Evidence for the change: `test/uiStates.test.ts` (11 assertions; 6 of them red
-  on the base commit with only the renderer added, and 3 of the 4 icon assertions
-  red until the SVG map replaced the glyphs), plus before/after captures under
-  `docs/images/ui-v2/69-*.jpg` at 1280 and 360 in both languages. The state icons
-  have their own captures: `docs/images/ui-v2/476-before-*.jpg` and
-  `476-after-*.jpg` at 1280, 768 and 360, Chinese and English on one page.
+- Evidence for this change: at the tree it was cut from, `5d848df8`, and again
+  at the merged base `d63753ba`, `test/uiStates.test.ts` runs 14 assertions and
+  fails only the three added here — `not ok 12/13/14` (11 pass / 3 fail) —
+  because `/search` still wrote the literal `0` in `src/views/pages.ts` (2929 at
+  `d63753ba`, 2908 at `5d848df8`) and `.state-icon` still carried the dead font
+  declarations in `public/app.css` (743-746 at `d63753ba`, 737-741 before the
+  fold); all 14 pass at the tip. The icon group's reds belong to the SVG set in
+  `#502`: the 11-assertion file dropped
+  onto `6271f9ec`, before that set, is 8 pass / 3 fail (`not ok 8/9/10`), and
+  11 pass / 0 fail at `eef9cfa`, where the set landed. The icons have their own
+  captures, `docs/images/ui-v2/476-before-*.jpg` and `476-after-*.jpg` at 1280,
+  768 and 360, Chinese and English on one page.
 
 ## Review trend numbers (审核趋势)
 
