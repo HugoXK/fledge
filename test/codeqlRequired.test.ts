@@ -228,39 +228,61 @@ interface WorkflowRun {
   pull_requests?: { head: { sha: string } }[]
 }
 
+interface WorkflowRun {
+  head_sha: string
+  conclusion: string
+  pull_requests?: { head: { sha: string } }[]
+}
+
 // #422: `analysisFor` matched a run whose `pull_requests[].head.sha` was the
 // commit under test. GitHub fills that field from the pull request's *current*
 // head, so every superseded run of the same pull request claimed to be about the
 // newest tip, and a stale failure answered a commit whose own analysis was still
-// running. The list below is the shape the API returns — newest run first — and
-// the ordering is not the bug: the predicate is.
-test('the analysis matcher answers only the commit the run actually analysed', async () => {
+// running. The lists below are the shape the API returns — newest run first — and
+// the ordering is not the bug: the predicate is. Each case is its own test so
+// the base can be read per case rather than stopping at the first failure.
+const TIP = 'd'.repeat(40)
+const OLDER = 'e'.repeat(40)
+const supersededFailure: WorkflowRun = {
+  head_sha: OLDER,
+  conclusion: 'failure',
+  pull_requests: [{ head: { sha: TIP } }],
+}
+const exactSuccess: WorkflowRun = { head_sha: TIP, conclusion: 'success' }
+
+async function matcher(): Promise<(runs: WorkflowRun[], sha: string) => Analysis | null> {
   const { analysisFor } = (await import(libUrl)) as unknown as {
     analysisFor: (runs: WorkflowRun[], sha: string) => Analysis | null
   }
-  const tip = 'd'.repeat(40)
-  const older = 'e'.repeat(40)
-  const supersededFailure: WorkflowRun = {
-    head_sha: older,
-    conclusion: 'failure',
-    pull_requests: [{ head: { sha: tip } }],
-  }
-  const exactSuccess: WorkflowRun = { head_sha: tip, conclusion: 'success' }
+  return analysisFor
+}
 
-  // 1. the measured #404 case: the newest completed run is the superseded
-  // failure, and the tip's own analysis has already concluded success. Today the
-  // live-head arm selects the failure.
-  assert.deepEqual(analysisFor([supersededFailure, exactSuccess], tip), { conclusion: 'success' })
-  // 2. superseded only: no analysis yet, so the gate stays pending. Adopting the
-  // other commit's conclusion is the false red the card measured.
-  assert.equal(analysisFor([supersededFailure], tip), null)
-  // 3. two exact matches that disagree: the first (newest) wins, exactly as the
-  // API order already gives it. This pins the ordering so a later refactor
-  // cannot silently flip it.
-  assert.deepEqual(analysisFor([{ head_sha: tip, conclusion: 'failure' }, exactSuccess], tip), { conclusion: 'failure' })
-  // 4. the control: a matcher that never matched would satisfy 1 and 2 while
-  // reddening every pull request.
-  assert.deepEqual(analysisFor([exactSuccess], tip), { conclusion: 'success' })
+test('the CodeQL matcher answers the tip from its own run, not from a superseded one that advertises it', async () => {
+  // The measured #404 case: the newest completed run analysed an older commit
+  // and failed, while the tip's own analysis has already concluded success.
+  const analysisFor = await matcher()
+  assert.deepEqual(analysisFor([supersededFailure, exactSuccess], TIP), { conclusion: 'success' })
+})
+
+test('the CodeQL matcher stays pending when only a superseded run exists', async () => {
+  // No analysis of this commit yet: the gate must wait, never adopt another
+  // commit's conclusion. Adopting it is the false red the card measured.
+  const analysisFor = await matcher()
+  assert.equal(analysisFor([supersededFailure], TIP), null)
+})
+
+test('the CodeQL matcher takes the first exact match when two disagree', async () => {
+  // The API returns newest first and `.find()` keeps that order; this pins the
+  // ordering so a later refactor cannot silently flip the verdict.
+  const analysisFor = await matcher()
+  assert.deepEqual(analysisFor([{ head_sha: TIP, conclusion: 'failure' }, exactSuccess], TIP), { conclusion: 'failure' })
+})
+
+test('the CodeQL matcher still answers a lone exact match', async () => {
+  // The control: a matcher that never matched would satisfy the two cases above
+  // while reddening every pull request.
+  const analysisFor = await matcher()
+  assert.deepEqual(analysisFor([exactSuccess], TIP), { conclusion: 'success' })
 })
 
 test('the CLI delegates the match to the lib and carries no live-head arm', () => {
