@@ -114,6 +114,17 @@ tracked as `sessions.recent_auth_at`:
   form field, and a refused attempt answers the plugin's 429 before the handler —
   and therefore before anything is written or audited.
 
+The ceiling is `max: 60` in a `timeWindow` of `60_000` ms, counted per route and
+per bucket, and it has no environment knob by design: the only way to loosen or
+revert it is to edit the two constants of `destructiveLimit` in `src/app.ts`
+(`max` and `timeWindow`) or to revert the commit that registered it, and
+loosening it gives up exactly the property above.
+
+A burst from one account — a batch of approvals, or a script driving several
+destructive calls — can therefore answer 429 inside a minute, and that is the
+control working, not a defect: the request was refused before anything was
+written or audited, and it succeeds again once the window has passed.
+
 ### CSRF
 
 Every state-changing browser form includes a hidden `csrf` field derived from
