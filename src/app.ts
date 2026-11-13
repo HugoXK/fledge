@@ -84,6 +84,9 @@ export interface BuildOptions {
   mailer?: Mailer
   runner?: Runner
   startScheduler?: boolean
+  // Injected by tests that drive the route with a fake live-session controller;
+  // production always builds its own.
+  instances?: InstanceManager
 }
 
 export interface BuiltApp {
@@ -114,6 +117,21 @@ function refusalValue(result: { code?: string; detail?: string; error?: string }
   if (code === '') return text
   const detail = result.detail ?? ''
   return `${code}:${detail !== '' ? detail : text}`
+}
+
+// #360 review: the pause/cancel reply is built from the stop's own outcome, so it
+// never claims a send that did not happen. `sent` absent means no attempt was made
+// (a queued job, or no live-session controller in queue-dispatch mode), `false`
+// means the bridge call failed, and the counts are what `stopSessions` reported.
+function describeJobStop(result: { sent?: boolean; stopped?: number; requested?: number }): string {
+  if (result.sent === undefined) return 'no live session was reachable to stop'
+  if (result.sent !== true) return 'the stop could not be delivered'
+  const stopped = result.stopped ?? 0
+  const requested = result.requested ?? 0
+  if (stopped > 0 && requested > 0) return `stopped ${stopped} session(s) and requested a stop for ${requested} at the next safe point`
+  if (stopped > 0) return `stopped ${stopped} session(s)`
+  if (requested > 0) return `requested a stop for ${requested} session(s) at the next safe point`
+  return 'no live session was reachable to stop'
 }
 
 function queryText(request: FastifyRequest, name: string): string | undefined {
@@ -216,8 +234,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const oauth = new GithubOAuth(config)
   const sessions = new Sessions(store, config)
   const approvals = new Approvals(store, config, mailer)
-  const instances = new InstanceManager(store, config)
-  if (options.startScheduler !== false && config.env !== 'test' && config.flybot.instanceImage !== '') {
+  const instances = options.instances ?? new InstanceManager(store, config)
+  if (options.instances === undefined && options.startScheduler !== false && config.env !== 'test' && config.flybot.instanceImage !== '') {
     void instances.healthSweep().catch((error) => log.warn('startup instance health sweep failed', { error: String(error) }))
   }
   const githubApp = new GithubApp(config)
@@ -1758,13 +1776,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const active = store.activeJobForRepo(repo.id)
     if (active !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}`)
-    const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : 'iterate'
-    const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
-    const resumePr = kind === 'iterate' && job.pr_url !== null
-    // #353: this route is a person pressing a button, so the run is theirs. The
-    // trigger alone cannot say that — `followup` is also what `tick()` enqueues.
-    const result = await jobs.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, { ownerStarted: true, ...(resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {}) })
-    store.audit(viewer.user.id, 'job.retried', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
+    const result = await jobs.retryJob(job.id, viewer.user.id)
     if (!result.ok || result.job === undefined) {
       return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(refusalValue(result, '重试失败。'))}`)
     }
@@ -3140,16 +3152,70 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const key = `issue_command:${parsed.commentId}`
     if (store.getSetting(key) !== undefined) return
     store.setSetting(key, nowIso())
-    let item = store.findWorkItemByIssueUrl(repo.id, issueUrl)
-    if (item === undefined) {
-      item = store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, detail, issueUrl, state: 'proposed' })
-    }
     const token = await repoGithubToken(repo, config, githubApp, store)
     const client = new GithubClient(token, config.github.apiBase)
     const owner = repo.upstream_owner || repo.owner
     const name = repo.upstream_name || repo.name
     const reply = async (message: string): Promise<void> => {
       await client.comment(owner, name, number, `${message}\n\n<sub>Fledge · issue command</sub>`)
+    }
+    // The four job verbs act on the job attached to the issue's work item. They
+    // never create that item: with no item — or no job on it — the answer is a
+    // refusal, because a control command that starts work is a surprise, not a
+    // retry. Each verb reuses the service action the console already calls, so the
+    // audit rows and the timeline events are the same ones.
+    if (command === 'retry' || command === 'pause' || command === 'resume' || command === 'cancel') {
+      const linked = store.findWorkItemByIssueUrl(repo.id, issueUrl)
+      if (linked === undefined) {
+        await reply(`No work item is linked to this issue; nothing to ${command}.`)
+        return
+      }
+      // #360 review: by the item, not through the repository's newest 20 — an older
+      // work item's job must not be answered "no job is attached".
+      const job = store.latestJobForWorkItem(linked.id)
+      if (job === undefined) {
+        await reply(`No job is attached to work item ${linked.id}; nothing to ${command}.`)
+        return
+      }
+      const active = job.status === 'queued' || job.status === 'running'
+      if (command === 'pause' || command === 'cancel') {
+        if (!active) {
+          await reply(`Job ${job.id} is ${job.status}; there is no queued or running job to ${command}.`)
+          return
+        }
+        const result = command === 'pause' ? await jobs.pauseJob(job.id, 'issue command') : await jobs.cancelJob(job.id, 'issue command')
+        if (!result.ok) {
+          await reply(`Could not ${command} job ${job.id}: ${result.error ?? 'unknown error'}`)
+          return
+        }
+        // The service returns what the stop path actually did, so the sentence
+        // reports a hard stop, a request, no reachable session or a failed call —
+        // never a send that did not happen, and never a claim a process was killed.
+        const verb = command === 'pause' ? 'Paused' : 'Cancelled'
+        const state = command === 'pause' ? 'paused' : 'cancelled'
+        await reply(`${verb} job ${job.id}: ${describeJobStop(result)}; the row is ${state}.`)
+        return
+      }
+      if (command === 'resume') {
+        if (job.status !== 'paused') {
+          await reply(`Job ${job.id} is ${job.status}; only a paused job can be resumed.`)
+          return
+        }
+        const result = await jobs.resumeJob(job.id)
+        await reply(result.ok && result.job !== undefined ? `Resumed job ${job.id} as job ${result.job.id}.` : `Could not resume job ${job.id}: ${result.error ?? 'unknown error'}`)
+        return
+      }
+      if (active) {
+        await reply(`Job ${job.id} is still ${job.status}; pause or cancel it before retrying.`)
+        return
+      }
+      const result = await jobs.retryJob(job.id, repo.user_id, { workItemId: linked.id })
+      await reply(result.ok && result.job !== undefined ? `Queued job ${result.job.id} to retry job ${job.id}.` : `Could not retry job ${job.id}: ${result.error ?? 'unknown error'}`)
+      return
+    }
+    let item = store.findWorkItemByIssueUrl(repo.id, issueUrl)
+    if (item === undefined) {
+      item = store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, detail, issueUrl, state: 'proposed' })
     }
     if (command === 'status') {
       const latest = store.listJobsForRepo(repo.id, 20).find((job) => job.work_item_id === item.id)
