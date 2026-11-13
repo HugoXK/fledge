@@ -91,6 +91,38 @@ them; this page only fixes the names and the values.
 - No new token without a row in this table. Test `test/uiTokens.test.ts` fails
   when a token exists in `:root` and this page does not name it.
 
+## Chinese typography (中文排版)
+
+The console renders both locales from one stylesheet, so a heading rule tuned for
+Latin is used for Chinese too. Latin heading tracking is negative — `h1` at
+`-0.02em`, `.brand` at `-0.03em`, `.workspace-user h1` and `.stat strong` at
+`-0.045em` — which tightens a Latin word and sets a Chinese heading as a solid
+block, because a Chinese glyph is square and already carries its own side
+bearing. The base stack is Latin-first, so a Chinese run inside an English
+sentence falls through two Latin faces before it reaches a CJK one and is set in
+two faces on one line.
+
+`public/app.css` keys a `:lang(zh)` block off `<html lang="zh-CN">`, which
+`src/views/layout.ts` already renders. The rules:
+
+- Every heading rule that carries negative tracking has a `:lang(zh)`
+  counterpart whose `letter-spacing` is `0`; the Latin rules keep theirs.
+- `h1`, `.hero-copy h1` and `.stat strong` get a taller Chinese `line-height`
+  (`1.18`, `1.14`, `1.15`). A Chinese rule never declares a different
+  `font-size`, so the locale changes the texture, never the scale.
+- `html:lang(zh) body` sets a CJK-first `font-family` and nothing else: the base
+  rule at `:215` is the `font` shorthand, so re-declaring `font` there would
+  reset the size and the line-height this block exists to protect.
+- Nothing is downloaded: the stack names faces the platform already has, so the
+  CSP and the request count are unchanged.
+
+`test/chineseTypography.test.ts` computes those relationships from
+`test/cssRules.ts`'s `parseRules` — coverage, scale equality, line-height, the
+stack — and pins the precondition that a Chinese render declares
+`<html lang="zh-CN"`, without which no `:lang(zh)` rule can match. The 360/768
+overflow half belongs to the visual matrix (`## Visual matrix (多设备视觉矩阵)`),
+not to a second harness.
+
 ## Surfaces, radii and accents (#229)
 
 The templates carry no layout of their own. `src/views/pages.ts` used to hold 25
@@ -247,6 +279,26 @@ unknown one:
   smooths a single review into a trend, and never hides it either.
 - Every cell is scoped to one repository and its owner: another user's
   repository, or another repository of the same owner, is not counted.
+
+## Visual matrix (多设备视觉矩阵)
+
+`npm run visual:matrix` boots a throwaway app on `127.0.0.1:18180` with the
+development login, a temporary SQLite database and the mock runner. It captures
+the landing page first, in a signed-out context, because `/` answers 302 to
+`/dashboard` for a visitor with a session: capturing it after the development
+login photographed the dashboard twice. It then signs in and renders the
+dashboard, settings, admin, add-repository and workspace surfaces at
+360/390/430/640/768/1024/1280/1440/1920 in both languages, fails when the
+document or an element leaves the viewport, and writes full-page screenshots
+under `visual-matrix/` (ignored by git). CI uploads that directory as the
+`visual-matrix` artifact. The matrix does not contact GitHub, SMTP or a FlyBot
+instance.
+
+On `/settings` it also checks the `#tokens` anchor — the target the zero-token
+empty state links to. A page without that element is a failure
+(`the page has no #tokens anchor to scroll to`), not a skipped measurement, and
+a section that starts under the sticky header fails separately. `test/pages.test.ts`
+pins the same rule for every in-page link the page renders.
 
 ## Owner search (#362)
 `/search` searches only the signed-in owner's rows — repositories, jobs, work items

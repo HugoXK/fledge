@@ -1,0 +1,1 @@
+A gateway call can only record its model and its cost on a job that the token's own user owns and that the token's `kind` marks as a job. A personal token named `job:<id>` is refused with `403 invalid_job_token` before the provider is called, so a name alone can no longer rewrite another user's job record.

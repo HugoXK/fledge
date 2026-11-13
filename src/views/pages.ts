@@ -1,5 +1,5 @@
 import type { Config } from '../config.js'
-import type { AlertView, AuditRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, ProviderModelRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
+import type { AlertView, AuditRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, ProviderModelRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkItemRow } from '../db.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
@@ -143,6 +143,19 @@ function maskEmail(email: string): string {
   const local = email.slice(0, at)
   const domain = email.slice(at + 1)
   return `${local.slice(0, 1)}***@${domain}`
+}
+
+// #356: a session row is recognisable without handing out the address. The last
+// IPv4 octet and everything past the second IPv6 group are dropped, so a user can
+// tell their own sessions apart but the page never carries a full address.
+function maskIp(ip: string | null): string {
+  if (ip === null || ip === '') return '—'
+  if (ip.includes(':')) {
+    const groups = ip.split(':').filter((group) => group !== '')
+    return `${groups.slice(0, 2).join(':')}::`
+  }
+  const parts = ip.split('.')
+  return parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}.0` : ip
 }
 
 function agreementHtml(text: string): string {
@@ -339,9 +352,10 @@ function jobRows(locale: Locale, jobs: JobRow[], empty?: EmptyJobs): string {
     .join('')
 }
 
-function jobTable(locale: Locale, jobs: JobRow[], empty?: EmptyJobs): string {
+function jobTable(locale: Locale, jobs: JobRow[], empty: EmptyJobs | undefined, table: { id: string; name?: string }): string {
   const t = translator(locale)
-  return `<div class="table-scroll"><table class="job-table table-priority"><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('PR / Issue', 'PR / Issue'))}</th><th data-priority="low">${escapeHtml(t('摘要', 'Summary'))}</th></tr></thead><tbody>${jobRows(locale, jobs, empty)}</tbody></table></div>`
+  const name = escapeHtml(table.name ?? t('任务', 'Jobs'))
+  return `<div class="table-scroll"><table class="job-table table-priority" id="${escapeHtml(table.id)}" aria-label="${name}"><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('PR / Issue', 'PR / Issue'))}</th><th data-priority="low">${escapeHtml(t('摘要', 'Summary'))}</th></tr></thead><tbody>${jobRows(locale, jobs, empty)}</tbody></table></div>`
 }
 
 function jobList(locale: Locale, jobs: JobRow[], repoLabels: Map<string, string> = new Map(), empty?: EmptyJobs): string {
@@ -944,7 +958,7 @@ export function dashboardPage(input: {
           body: jobFilterLabels(jobFilter, repoOptions, t).join(t('、', ', ')),
           action: { href: dashboardHref(NO_JOB_FILTER, windowDays), label: t('清除筛选', 'Clear filters') },
         })
-      : jobTable(locale, jobs, { body: t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })}
+      : jobTable(locale, jobs, { body: t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } }, { id: 'dashboard-jobs-table' })}
     ${pager('/dashboard', 'jobsPage', jobsPage, jobsTotal, 10, t, { reposPage, ...(windowDays === 30 ? { window: 30 } : {}), ...jobFilterParams(jobFilter) }, '#jobs')}
   </section>
     </div>
@@ -952,7 +966,7 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number } }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const workItems = input.workItems ?? []
   const workState = input.workState
@@ -1251,12 +1265,18 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const repoSection = (id: string, content: string): string => `<section class="repo-section" id="${id}" data-repo-section="${id}" aria-labelledby="repo-tab-${id}">${content}</section>`
   const jobsCard = `  <section class="card" id="jobs">
     <h2>${escapeHtml(t('任务', 'Jobs'))}</h2>
-    ${jobTable(locale, jobs, emptyJobs)}
+    ${jobTable(locale, jobs, emptyJobs, { id: 'repo-jobs-table' })}
     ${pager(`/repos/${repo.id}`, 'jobsPage', jobsPage, jobsTotal, 10, t, {}, '#jobs')}
   </section>`
+  const usage = input.usage
+  const usageLine = usage === undefined ? '' : `<p class="muted" data-usage-line>${escapeHtml(t(
+    `已用仓库 ${usage.repos}/${usage.reposCap === 0 ? '∞' : usage.reposCap}，FlyBot 实例 ${usage.instances}/${usage.instancesCap === 0 ? '∞' : usage.instancesCap}`,
+    `Repositories used ${usage.repos}/${usage.reposCap === 0 ? '∞' : usage.reposCap}, FlyBot instances ${usage.instances}/${usage.instancesCap === 0 ? '∞' : usage.instancesCap}`,
+  ))}</p>`
   const settingsCards = `  <section class="cols">
     <div class="card" id="repo-settings">
       <h2>${escapeHtml(t('迭代目标', 'Iteration goal'))}</h2>
+      ${usageLine}
       <form method="post" action="/repos/${escapeHtml(repo.id)}/settings" class="form">
         ${csrf(viewer)}
         ${goalTemplateSelect(t, 'goal-settings')}
@@ -1502,7 +1522,7 @@ export function teamPage(input: {
   </section>
   <section class="card" id="jobs">
     <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
-    ${jobTable(locale, jobs, { body: t('去这个仓库的页面运行第一个任务；每次运行最多开一个 PR。', 'Run the first job from this repository page; each run opens at most one pull request.'), action: { href: `/repos/${escapeHtml(repo.id)}`, label: t('去仓库运行', 'Run from the repository') } })}
+    ${jobTable(locale, jobs, { body: t('去这个仓库的页面运行第一个任务；每次运行最多开一个 PR。', 'Run the first job from this repository page; each run opens at most one pull request.'), action: { href: `/repos/${escapeHtml(repo.id)}`, label: t('去仓库运行', 'Run from the repository') } }, { id: 'team-jobs-table' })}
     ${pager(`/repos/${repo.id}`, 'jobsPage', jobsPage, jobsTotal, 10, t, {}, '#jobs')}
   </section>
   <script src="/assets/team.js" defer></script>`
@@ -1514,6 +1534,8 @@ export function settingsPage(input: {
   locale: Locale
   viewer: Viewer
   tokens: ApiTokenRow[]
+  sessions: SessionRow[]
+  currentSessionHash: string
   providers: Array<ModelProviderRow & { models: ProviderModelRow[] }>
   discoveredProvider?: string
   discovered?: string[]
@@ -1521,7 +1543,7 @@ export function settingsPage(input: {
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, tokens, providers, discoveredProvider, discovered = [], newToken, notice, error } = input
+  const { config, locale, viewer, tokens, sessions, currentSessionHash, providers, discoveredProvider, discovered = [], newToken, notice, error } = input
   const t = translator(locale)
   const user = viewer.user
   const quota = quotaView(user, config)
@@ -1544,6 +1566,21 @@ export function settingsPage(input: {
           return `<tr><td><code>${escapeHtml(token.prefix)}…</code></td><td>${escapeHtml(token.name)}</td><td><code>${escapeHtml(token.scope)}</code></td><td>${escapeHtml(expires)}</td><td>${escapeHtml(humanTimeShort(token.last_used_at))}</td><td><form method="post" action="/settings/tokens/${escapeHtml(token.id)}/revoke">${csrf(viewer)}<button class="link" type="submit">${escapeHtml(t('撤销', 'Revoke'))}</button></form></td></tr>`
         })
         .join('')
+  const sessionRows = sessions.length === 0
+    ? stateCell(4, { kind: 'empty', title: t('只有当前这一个会话。', 'Only this session.'), body: t('在另一台设备登录后会在这里出现。', 'Another device appears here after it signs in.'), action: { href: '/settings', label: t('刷新', 'Refresh') } })
+    : sessions
+        .map((session) => {
+          const current = session.id_hash === currentSessionHash
+          const agent = (session.user_agent ?? '').trim()
+          const agentLabel = agent === '' ? t('未知客户端', 'Unknown client') : agent.length > 60 ? `${agent.slice(0, 60)}…` : agent
+          const marker = current ? `<span class="badge good">${escapeHtml(t('当前', 'Current'))}</span>` : ''
+          const action = current
+            ? marker
+            : `<form method="post" action="/settings/sessions/${escapeHtml(session.id_hash)}/revoke">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('撤销', 'Revoke'))}</button></form>`
+          return `<tr><td>${escapeHtml(maskIp(session.ip))}</td><td>${escapeHtml(agentLabel)}</td><td>${escapeHtml(humanTimeShort(session.created_at))}</td><td>${marker}${current ? '' : action}</td></tr>`
+        })
+        .join('')
+
   const body = `<nav class="section-nav" aria-label="${escapeHtml(t('页面导航', 'Section navigation'))}">
     <a href="#account">${escapeHtml(t('账户', 'Account'))}</a>
     <a href="#model-providers">${escapeHtml(t('模型', 'Models'))}</a>
@@ -1647,6 +1684,16 @@ export function settingsPage(input: {
       </label>
       <button class="btn" type="submit">${escapeHtml(t('创建 token', 'Create token'))}</button></form>
     <p class="fine">${escapeHtml(t('范围固定为 gateway：这是目前唯一会校验 token 的能力边界，暂时不提供单选项以外的选择。', 'The scope is fixed to gateway: it is the only capability boundary that checks a token today, so there is no choice to make yet.'))}</p>
+  </section>
+
+  <section class="card" id="sessions">
+    <h2>${escapeHtml(t('登录设备', 'Sessions'))}</h2>
+    <p class="muted">${escapeHtml(t('这些是当前有效的登录会话。撤销后那个 cookie 立即失效；退出其他会话不会退出当前这个。', 'These are the live sign-ins. Revoking one ends that cookie immediately; signing out the others keeps this one.'))}</p>
+    <div class="table-scroll"><table><thead><tr><th>IP</th><th>${escapeHtml(t('客户端', 'Client'))}</th><th>${escapeHtml(t('登录时间', 'Signed in'))}</th><th></th></tr></thead><tbody>${sessionRows}</tbody></table></div>
+    <div class="row">
+      <form method="post" action="/settings/sessions/revoke-others">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('退出其他会话', 'Sign out other sessions'))}</button></form>
+      <form method="post" action="/settings/sessions/rotate">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('轮换当前会话', 'Rotate this session'))}</button></form>
+    </div>
   </section>`
   return layout({ title: t('设置', 'Settings'), viewer, body, config, locale, path: '/settings', active: 'settings', notice, error })
 }
@@ -2011,16 +2058,16 @@ export function adminPage(input: {
   </section>
   <section class="card" id="users">
     <h2>${escapeHtml(t('用户', 'Users'))} <small class="count">${users.length}</small></h2>
-    <div class="table-scroll"><table class="admin-users-table table-cards table-priority"><thead><tr><th>${escapeHtml(t('登录名', 'Login'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('角色', 'Role'))}</th><th>${escapeHtml(t('额度', 'Quota'))}</th><th data-priority="low">${escapeHtml(t('已用', 'Used'))}</th><th data-priority="low">${escapeHtml(t('活动', 'Activity'))}</th><th>${escapeHtml(t('调整', 'Adjust'))}</th></tr></thead><tbody>${userRows}</tbody></table></div>
+    <div class="table-scroll"><table class="admin-users-table table-cards table-priority" id="admin-users-table" aria-label="${escapeHtml(t('用户', 'Users'))}"><thead><tr><th>${escapeHtml(t('登录名', 'Login'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('角色', 'Role'))}</th><th>${escapeHtml(t('额度', 'Quota'))}</th><th data-priority="low">${escapeHtml(t('已用', 'Used'))}</th><th data-priority="low">${escapeHtml(t('活动', 'Activity'))}</th><th>${escapeHtml(t('调整', 'Adjust'))}</th></tr></thead><tbody>${userRows}</tbody></table></div>
   </section>
   <section class="card" id="jobs">
     <div class="row between"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))} <small class="count">${jobsTotal}</small></h2><span class="fine">${escapeHtml(t('每页 10 条', '10 per page'))}</span></div>
-    ${jobTable(locale, jobs, { body: t('这里汇总所有用户的任务；还没有任何一条。', 'Jobs from every user are collected here; there are none yet.'), action: { href: '/admin/users', label: t('查看用户', 'View users') } })}
+    ${jobTable(locale, jobs, { body: t('这里汇总所有用户的任务；还没有任何一条。', 'Jobs from every user are collected here; there are none yet.'), action: { href: '/admin/users', label: t('查看用户', 'View users') } }, { id: 'admin-jobs-table', name: t('最近任务', 'Recent jobs') })}
     ${pager('/admin', 'jobsPage', jobsPage, jobsTotal, perPage, t, showAudit ? { auditPage } : {})}
   </section>
   ${showAudit ? `<section class="card" id="audit">
     <div class="row between"><h2>${escapeHtml(t('审计', 'Audit'))} <small class="count">${auditTotal}</small></h2><span class="fine">${escapeHtml(t('每页 10 条', '10 per page'))}</span></div>
-    <div class="table-scroll"><table class="table-cards table-priority"><thead><tr><th>${escapeHtml(t('时间', 'Time'))}</th><th>${escapeHtml(t('动作', 'Action'))}</th><th>${escapeHtml(t('操作者', 'Actor'))}</th><th data-priority="low">${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${auditRows(locale, audit, usersById, hideActor)}</tbody></table></div>
+    <div class="table-scroll"><table class="table-cards table-priority" id="audit-table" aria-label="${escapeHtml(t('审计', 'Audit'))}"><thead><tr><th>${escapeHtml(t('时间', 'Time'))}</th><th>${escapeHtml(t('动作', 'Action'))}</th><th>${escapeHtml(t('操作者', 'Actor'))}</th><th data-priority="low">${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${auditRows(locale, audit, usersById, hideActor)}</tbody></table></div>
     ${pager('/admin', 'auditPage', auditPage, auditTotal, perPage, t, { jobsPage })}
   </section>` : ''}`
   return layout({ title: t('管理', 'Admin'), viewer, body, config, locale, path: '/admin', active: 'admin', notice, error, release })

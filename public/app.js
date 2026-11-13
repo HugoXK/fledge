@@ -199,10 +199,18 @@
     button.type = 'button'
     button.className = 'table-more btn btn-ghost btn-small'
     button.setAttribute('aria-expanded', 'false')
+    // #452: three of these controls sit on one page, so each one has to say
+    // which table it opens. The name comes from the table itself, which keeps
+    // it translated without a second string table.
+    const tableName = table.getAttribute('aria-label') ?? ''
+    if (table.id !== '') button.setAttribute('aria-controls', table.id)
     const label = () => {
       const showing = table.getAttribute('data-show-low') === 'true'
-      if (current === 'en') return showing ? 'Fewer columns' : 'Show all columns'
-      return showing ? '收起全部列' : '显示全部列'
+      const action = current === 'en'
+        ? (showing ? 'Fewer columns' : 'Show all columns')
+        : (showing ? '收起全部列' : '显示全部列')
+      if (tableName === '') return action
+      return current === 'en' ? `${action} — ${tableName}` : `${action}（${tableName}）`
     }
     button.textContent = label()
     table.setAttribute('data-table-ready', 'true')

@@ -183,10 +183,28 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
     if (auth.kind !== 'ok') return refuse(reply, auth)
     // Captured once: a closure below must not lose the narrowing of the union.
     const authed = auth
+    // #481: a job token is a `kind`, never a name. `src/app.ts` lets any approved
+    // user mint a personal token with an arbitrary name, so the `job:` prefix
+    // alone would let that token address another user's job by id — both writes
+    // below are `WHERE id = ?` (`updateJob`, `addJobCost`). The kind is written by
+    // the platform and the row's owner is checked here, before the upstream call,
+    // so a forged name cannot spend quota either. A real job token whose row was
+    // deleted records nothing and still answers: the row is the record, and
+    // `recordModel` already tolerates its absence.
+    const jobClaim = auth.token.name.startsWith('job:') ? auth.token.name.slice(4) : null
+    let jobId: string | null = null
+    if (jobClaim !== null) {
+      const claimedJob = store.getJob(jobClaim)
+      if (auth.token.kind === 'job' && claimedJob !== undefined && claimedJob.user_id === auth.user.id) jobId = jobClaim
+      // A job token whose job has been deleted keeps its old behaviour (no
+      // record); anything else that claims a job it does not own is refused.
+      else if (!(auth.token.kind === 'job' && claimedJob === undefined)) {
+        return reply.code(403).send({ error: { type: 'invalid_job_token', message: 'This Fledge API token does not name a job of its own' } })
+      }
+    }
     const body = (request.body ?? {}) as ChatBody
     const repoModel = auth.token.repo_id === null || typeof body.model !== 'string' ? undefined : store.providerModelForRun(auth.token.repo_id, body.model)
     const stream = body.stream === true
-    const jobId = auth.token.name.startsWith('job:') ? auth.token.name.slice(4) : null
     const started = Date.now()
     const quota = quotaView(auth.user, config)
 

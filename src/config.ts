@@ -18,6 +18,13 @@ export interface Config {
   trustProxy: string[]
   baseUrl: string
   sessionSecret: string
+  // Ceilings on what one user may create that consumes host resources. 0 means
+  // no ceiling; admins and superadmins are exempt (see src/lib/limits.ts).
+  limits: {
+    reposPerUser: number
+    instancesPerUser: number
+    instancesGlobal: number
+  }
   tokenEncryptionKey: string
   github: {
     clientId: string
@@ -235,6 +242,11 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     trustProxy: parseTrustProxy(text('TRUST_PROXY', DEFAULT_TRUST_PROXY)),
     baseUrl: text('BASE_URL', 'http://localhost:8080').replace(/\/$/, ''),
     sessionSecret: secret('SESSION_SECRET', 32),
+    limits: {
+      reposPerUser: Math.max(0, number('LIMIT_REPOS_PER_USER', 10)),
+      instancesPerUser: Math.max(0, number('LIMIT_INSTANCES_PER_USER', 3)),
+      instancesGlobal: Math.max(0, number('LIMIT_INSTANCES_GLOBAL', 0)),
+    },
     tokenEncryptionKey: encryptionKey,
     github: {
       clientId: text('GITHUB_CLIENT_ID'),

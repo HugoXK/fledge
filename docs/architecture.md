@@ -34,6 +34,12 @@ success and disabled — so the aria contract (`status`, `alert`, `aria-busy`,
 a dropped stream reports `lost` and `recovered` instead of going quiet. The
 state contract and its evidence are in [docs/ui.md](ui.md).
 
+The console renders UTC and says so: every timestamp goes through
+`humanTimeShort` in `src/lib/time.ts`, which prints the UTC wall clock with an
+explicit `UTC` suffix. The digest is scheduled in `DIGEST_TIMEZONE` and
+`/settings` names that zone, so an unlabelled timestamp beside it would read as
+a second clock that disagrees.
+
 ## Components
 
 ```
@@ -422,7 +428,13 @@ box, so that band draws an always-present classic scrollbar — an explicit trac
 plus `scrollbar-width`/`scrollbar-color` for Firefox — instead of relying on a
 thumb that is 1.5:1 on the panel. The band has its own
 `(min-width: 641px) and (max-width: 960px)` block in `public/app.css`; the cards
-below 641px and the table above 960px are unchanged. Add repository presents two explicit
+below 641px and the table above 960px are unchanged. The band's column control is
+built by the script from the table itself: every `table-priority` carries an `id`
+and an `aria-label`, the button points at that id with `aria-controls`, and its
+label repeats the table's name (`Show all columns — Users` / `显示全部列（用户）`),
+so the three controls on `/admin` are not announced identically. A new priority
+table must bring both attributes; without them the control is created unnamed and
+the association is lost. Add repository presents two explicit
 alternatives: the GitHub App installation path (recommended) and a collapsed
 fine-grained token form; users pick one, not both. The App repository picker
 carries the same task template, goal, auto-iterate interval and reviewer
@@ -499,6 +511,24 @@ GitHub token and cannot change the evaluator, CI or merge gate. See
 `scripts/evolution-shadow.mjs` exporter turns recent jobs into a redacted
 dataset, and `--report` prints the baseline plus a time-ordered train/holdout
 split; it does not write to the database.
+
+The ledger's shape is the table that already existed, extended rather than
+replaced: `artifact_versions` gains `kind`, `scope`, `repo_id`, `parent_id` (the
+lineage edge), `base_version`, `frozen` and `paths_json`, and one new table
+`artifact_pointers` holds what `dev` and `stable` point at, because a pointer is
+not a version. A candidate write is a compare-and-swap against the head of its
+own lineage, so a candidate built on a stale version is refused rather than
+re-based; a candidate naming a frozen path is refused before it is stored and
+the refusal is audited (`evolution.candidate.refused`); and a rollback moves the
+pointer, which keeps both versions readable. The eligible artifacts, in risk
+order, and the frozen paths are data in `src/lib/evolution/artifacts.ts`, so the
+set is reviewed as a list rather than inferred from branches; the frozen set
+includes the stage gate (`src/lib/stages.ts`) and the merge gate
+(`src/jobs/service.ts`), and a candidate path is normalised before it is matched
+so `./src/auth/session.ts` and `src/jobs/../auth/session.ts` cannot walk around
+it. The migration fills one `stable` pointer per promoted artifact rather than
+one for the whole table.
+
 ### Failure categories and recovery guidance
 
 A failed job carries a stable category derived from its error (`quota`,
@@ -1108,7 +1138,7 @@ listing, and every row links to the page that already owns it.
 | Table | Purpose |
 |---|---|
 | `users` | GitHub identity, application status, signed agreement fields (name/version/time/IP/UA), role, quota, own model (encrypted key) |
-| `sessions` | hashed session id, expiry, IP/UA |
+| `sessions` | hashed session id, expiry, IP/UA; the settings page lists and revokes the viewer's rows by `user_id` |
 | `oauth_states` | short-lived OAuth `state` values |
 | `approval_tokens` | single-use approve/reject links |
 | `repos` | upstream/fork identity, encrypted token, permission, reviewer config, goal, cadence, state |
@@ -1117,7 +1147,7 @@ listing, and every row links to the page that already owns it.
 | `quota_ledger` | per-request cost records |
 | `notifications` | in-app messages (quota, job failure), stored as written and localized at render |
 | `audit_log` | who changed what |
-| `settings` | small key/value flags (e.g. quota notice dedupe) |
+| `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
 
 ## Job lifecycle
 
@@ -1149,6 +1179,7 @@ callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
 | Fledge → SMTP | credentials in env, never logged |
 | FlyBot bridge → Fledge | job callback secret; credential URL; job token |
 | Fledge → model provider | platform key or user key; SSRF guard on user URLs |
+| User → host resources | per-user ceilings on repositories (`LIMIT_REPOS_PER_USER`) and FlyBot instances (`LIMIT_INSTANCES_PER_USER`, optional `LIMIT_INSTANCES_GLOBAL`), refused before anything is created and audited as `limit.refused`. The explicit provision and both repository-add paths consult the instance ceiling, so an add cannot bypass it; only an instance that holds a slot counts, so a stopped instance does not block its own restart. Admins are exempt |
 | Admin email link | single-use 32-byte token, 7-day expiry |
 
 ## Failure modes

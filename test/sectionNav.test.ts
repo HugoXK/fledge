@@ -51,7 +51,9 @@ function render(picker: 'settings' | 'admin'): string {
   const user = makeUser(store, { admin: picker === 'admin' })
   const viewer = { user, csrfToken: 'csrf-token' }
   const config = testConfig()
-  if (picker === 'settings') return settingsPage({ config, locale: 'en', viewer, tokens: [], providers: [] })
+  // main added the session list and its current-row marker to the settings page;
+  // the nav has to keep working over the page as it renders today.
+  if (picker === 'settings') return settingsPage({ config, locale: 'en', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] })
   return adminPage({
     config,
     locale: 'en',

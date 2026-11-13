@@ -9,7 +9,8 @@ import { assertProductionConfig } from './config.js'
 import { openStore, type JobRow, type RepoRow, type Store, type UserRow } from './db.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
-import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions } from './auth/session.js'
+import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions, type Viewer } from './auth/session.js'
+import { dedupeRepoNames, instanceLimitRefusal, repoLimitRefusal, type LimitRefusal } from './lib/limits.js'
 import { isTrialFilter } from './lib/trials.js'
 import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
@@ -288,6 +289,50 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (viewer.user.status !== 'approved') throw httpError(403, '账号正在等待审批。', 'NOT_APPROVED')
     return viewer
   }
+
+  // #457: a user may not create repositories or FlyBot instances without a
+  // ceiling; the refusal carries a stable code and is audited, and it happens
+  // before anything is created so no half-built repo or container is left.
+  const refuseLimit = (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    viewer: Viewer,
+    refusal: LimitRefusal,
+    back: string,
+  ): FastifyReply => {
+    const t = translator(request.locale ?? 'zh')
+    store.audit(viewer.user.id, 'limit.refused', `${refusal.code} used=${refusal.used} cap=${refusal.cap}`)
+    const message = refusal.code === 'REPO_LIMIT'
+      ? t(
+        `仓库数量已达上限（${refusal.used}/${refusal.cap}）。请先移除一个仓库，或请管理员调整上限。`,
+        `Repository limit reached (${refusal.used}/${refusal.cap}). Remove a repository or ask an admin to raise the limit.`,
+      )
+      : t(
+        `FlyBot 实例数量已达上限（${refusal.used}/${refusal.cap}）。请先停止或移除一个实例，或请管理员调整上限。`,
+        `FlyBot instance limit reached (${refusal.used}/${refusal.cap}). Stop or remove an instance, or ask an admin to raise the limit.`,
+      )
+    const joiner = back.includes('?') ? '&' : '?'
+    return reply.redirect(`${back}${joiner}error=${encodeURIComponent(message)}&code=${refusal.code}`)
+  }
+
+  const repoCapRefusal = (viewer: Viewer): LimitRefusal | null => repoLimitRefusal({
+    used: store.countReposForUser(viewer.user.id),
+    cap: config.limits.reposPerUser,
+    admin: isAdminRole(viewer.user.role),
+  })
+
+  // #457 review: the instance ceiling has to see an add that will provision, not
+  // only the explicit provision route. `extra` is how many instances the caller
+  // is about to create; `excludeRepoId` is the repository whose own row (stopped
+  // or not) must not count against its restart.
+  const instanceCapRefusal = (viewer: Viewer, extra = 1, excludeRepoId = ''): LimitRefusal | null => instanceLimitRefusal({
+    usedForUser: store.countRepoInstancesForUser(viewer.user.id, excludeRepoId),
+    capForUser: config.limits.instancesPerUser,
+    usedGlobal: store.countRepoInstances(excludeRepoId),
+    capGlobal: config.limits.instancesGlobal,
+    admin: isAdminRole(viewer.user.role),
+    extra,
+  })
 
   const ownedRepo = (request: FastifyRequest, id: string, mutating = false) => {
     const viewer = mutating ? approvedCsrfGuard(request) : requireApproved(request)
@@ -968,9 +1013,35 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`)
     }
     const byName = new Map(available.map((repo) => [repo.fullName.toLowerCase(), repo]))
+    // #457 review: the selection is counted once per repository. A repeated
+    // value ("o/a" and "O/A") would otherwise inflate both the repository
+    // arithmetic below and the instance count those additions would provision.
+    const chosen = dedupeRepoNames(selected)
+    const fresh = chosen.filter((fullName) => {
+      const info = byName.get(fullName)
+      return info !== undefined && store.getRepoByOwnerName(viewer.user.id, info.owner, info.name) === undefined
+    })
+    // `extra` is what this request would add: a selection that exactly fills the
+    // last free slots is allowed, and one with nothing fresh to create
+    // (extra 0) is never refused because it would create nothing.
+    const refusal = repoLimitRefusal({
+      used: store.countReposForUser(viewer.user.id),
+      cap: config.limits.reposPerUser,
+      admin: isAdminRole(viewer.user.role),
+      extra: fresh.length,
+    })
+    if (refusal !== null) return refuseLimit(request, reply, viewer, refusal, `/repos/new?installation=${installationId}`)
+    // Every fresh repository is provisioned below, so the instance ceiling has
+    // to be consulted for all of them before the first create: refusing later
+    // would leave repositories added with no instance, or a running instance
+    // past the ceiling.
+    if (config.flybot.instanceImage !== '') {
+      const instanceRefusal = instanceCapRefusal(viewer, fresh.length)
+      if (instanceRefusal !== null) return refuseLimit(request, reply, viewer, instanceRefusal, `/repos/new?installation=${installationId}`)
+    }
     const added: string[] = []
-    for (const fullName of selected) {
-      const repoInfo = byName.get(fullName.toLowerCase())
+    for (const fullName of chosen) {
+      const repoInfo = byName.get(fullName)
       if (repoInfo === undefined) continue
       if (store.getRepoByOwnerName(viewer.user.id, repoInfo.owner, repoInfo.name) !== undefined) continue
       try {
@@ -1036,6 +1107,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const existing = store.getRepoByOwnerName(viewer.user.id, owner, name)
       if (existing !== undefined) {
         return reply.redirect(`/repos/${existing.id}?notice=${encodeURIComponent('这个仓库已经添加过了。')}`)
+      }
+      const refusal = repoCapRefusal(viewer)
+      if (refusal !== null) return refuseLimit(request, reply, viewer, refusal, '/repos/new')
+      // This add provisions an instance below when FlyBot is configured, so it
+      // has to answer to the instance ceiling too — before anything is created.
+      if (config.flybot.instanceImage !== '') {
+        const instanceRefusal = instanceCapRefusal(viewer)
+        if (instanceRefusal !== null) return refuseLimit(request, reply, viewer, instanceRefusal, '/repos/new')
       }
       store.event('repo_connect_start', { userId: viewer.user.id, meta: `${owner}/${name}` })
       const token = (body.token ?? '').trim()
@@ -1121,6 +1200,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         viewer: viewOf(viewer),
         repo,
         instance,
+        usage: {
+          repos: store.countReposForUser(viewer.user.id),
+          reposCap: config.limits.reposPerUser,
+          instances: store.countRepoInstancesForUser(viewer.user.id),
+          instancesCap: config.limits.instancesPerUser,
+        },
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
         prJobs: store.listPrJobsForRepo(repo.id, 10),
         workItems: store.listWorkItems(repo.id),
@@ -1933,8 +2018,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/instance', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     if (config.flybot.instanceImage === '') throw httpError(400, 'FlyBot 实例未配置', 'INSTANCE_DISABLED')
-    instances.ensureUserDir(viewer.user.id)
+    // #457 review: the guard used to run before this route knew the repository
+    // already had a row, so a stopped instance counted against its own restart
+    // and the only way out was deleting it. Exclude the row being provisioned
+    // and count only the statuses that hold a slot.
     const existing = store.getRepoInstance(repo.id)
+    const refusal = instanceCapRefusal(viewer, 1, repo.id)
+    if (refusal !== null) return refuseLimit(request, reply, viewer, refusal, `/repos/${repo.id}`)
+    instances.ensureUserDir(viewer.user.id)
     if (existing !== undefined && existing.status !== 'ready' && !instances.isProvisioning(repo.id)) await instances.stop(repo.id)
     void instances.provision(repo).catch((error) => log.error('flybot provisioning failed', { repo: repo.id, error: String(error) }))
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例初始化中。')}`)
@@ -2107,6 +2198,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'),
+        sessions: store.listSessions(viewer.user.id),
+        currentSessionHash: viewer.sessionHash,
         providers: store.listModelProviders(viewer.user.id).map((provider) => ({ ...provider, models: store.listProviderModels(provider.id) })),
         discoveredProvider: queryText(request, 'discoveredProvider'),
         discovered: (queryText(request, 'discovered') ?? '').split(',').filter((value) => value !== ''),
@@ -2333,6 +2426,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'),
+        sessions: store.listSessions(viewer.user.id),
+        currentSessionHash: viewer.sessionHash,
         providers: store.listModelProviders(viewer.user.id).map((provider) => ({ ...provider, models: store.listProviderModels(provider.id) })),
         newToken: raw,
         notice: '新 token 只显示这一次，请现在复制保存。',
@@ -2345,6 +2440,46 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.revokeApiToken(String((request.params as Record<string, string>).id), viewer.user.id)
     store.audit(viewer.user.id, 'token.revoked')
     return reply.redirect(`/settings?notice=${encodeURIComponent('Token 已撤销。')}`)
+  })
+
+  // #356: a stolen cookie otherwise stays valid for the rest of its 30 days with
+  // no way to see or end it. Every route here is scoped to the viewer's own rows:
+  // a hash that is not theirs deletes nothing and answers the same way a
+  // non-existent one does, so the page cannot be used to probe another account.
+  // Each mutation takes the same limiter window as the other mutating form posts
+  // and answers the same 429 page: CSRF proves the request came from our page, it
+  // does not bound how many a stolen cookie may send.
+  app.post('/settings/sessions/:hash/revoke', async (request, reply) => {
+    if (!loginLimiter.take(`session-revoke:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    const viewer = approvedCsrfGuard(request)
+    const hash = String((request.params as Record<string, string>).hash)
+    if (hash === viewer.sessionHash) {
+      return reply.redirect(`/settings?error=${encodeURIComponent('这是当前会话。请用“轮换当前会话”换一个新 cookie，或用退出登录结束它。')}#sessions`)
+    }
+    if (!store.deleteSessionOfUser(viewer.user.id, hash)) {
+      return reply.redirect(`/settings?error=${encodeURIComponent('这个会话不存在，或不属于你。')}#sessions`)
+    }
+    store.audit(viewer.user.id, 'session.revoked', `one ${hash.slice(0, 8)}…`)
+    return reply.redirect(`/settings?notice=${encodeURIComponent('会话已撤销，那个 cookie 现在就会被拒绝。')}#sessions`)
+  })
+
+  app.post('/settings/sessions/revoke-others', async (request, reply) => {
+    if (!loginLimiter.take(`session-revoke-others:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    const viewer = approvedCsrfGuard(request)
+    const removed = store.deleteOtherSessions(viewer.user.id, viewer.sessionHash)
+    store.audit(viewer.user.id, 'session.revoked', `others=${removed}`)
+    return reply.redirect(`/settings?notice=${encodeURIComponent(removed === 0 ? '没有其他会话需要退出。' : `已退出 ${removed} 个其他会话。`)}#sessions`)
+  })
+
+  app.post('/settings/sessions/rotate', async (request, reply) => {
+    if (!loginLimiter.take(`session-rotate:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    const viewer = approvedCsrfGuard(request)
+    const raw = sessions.start(viewer.user.id, request)
+    const hash = sha256Hex(raw)
+    store.deleteSession(viewer.sessionHash)
+    sessions.setCookies(reply, raw, { sessionHash: hash, user: viewer.user, csrfToken: sessions.csrfFor(hash), preview: viewer.preview })
+    store.audit(viewer.user.id, 'session.rotated')
+    return reply.redirect(`/settings?notice=${encodeURIComponent('已换成新的会话 cookie，旧 cookie 已作废。')}#sessions`)
   })
 
   app.post('/notifications/read', async (request, reply) => {

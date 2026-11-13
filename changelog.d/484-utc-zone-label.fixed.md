@@ -1,0 +1,1 @@
+Console timestamps now carry an explicit `UTC` suffix, so `Last run`, job and audit times, and every other cell rendered by `humanTimeShort` say which clock they show; the instant itself does not move, the reader's own zone is still not applied, and the digest's `Asia/Shanghai` sentence is unchanged.

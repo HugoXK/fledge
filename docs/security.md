@@ -55,6 +55,12 @@ only that container.
   revokes and re-mints them.
 - Job-issued tokens (`kind = 'job'`, `kind = 'instance'`) keep the lifetime their
   own lifecycle sets; the backfill only touches `kind = 'pat'`.
+- A gateway call writes the model and the cost onto a job only when the token's
+  `kind` is `job` and that job belongs to the token's user. The `job:` prefix in a
+  token name is a label, never the binding: a personal token may be named
+  anything, so a name that claims a job it does not own is refused with
+  `403 invalid_job_token` before the upstream call (#481). A job token whose job
+  has been deleted still runs and records nothing.
 - The gateway refuses an expired or revoked token with `401 invalid_api_key` and
   a token whose scope is not `gateway` with `403 insufficient_scope`. A refused
   scope does not write `last_used_at` and no refusal echoes the secret.
@@ -70,6 +76,15 @@ only that container.
   in step with the platform-wide `hugoxk-lang` localStorage preference.
 - Logout deletes the session row and clears the session and CSRF cookies; the
   language preference remains.
+- Settings lists the signed-in user's live sessions (masked IP, client string,
+  sign-in time, and which row is the current one). Revoking a row, or "sign out
+  other sessions", deletes rows scoped to `user_id` and writes `session.revoked`
+  to the audit log; a foreign or unknown hash deletes nothing and answers the
+  same way, so the page cannot probe another account. Revoking the current row
+  is refused by name - that is what "rotate this session" is for (new cookie,
+  old hash deleted) - and every mutation is CSRF-guarded.
+- The list never prints a full address (the last IPv4 octet, or everything past
+  the second IPv6 group, is dropped) and never prints another user's rows.
 - Expired sessions are swept every minute.
 
 ### CSRF
