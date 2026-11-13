@@ -904,6 +904,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         repoOptions: allRepos.map((repo) => ({ id: repo.id, label: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}` })),
         allRepos,
         nextRunFacts,
+        queued: store.listQueuedJobs(),
         questions,
         personal,
         windowDays,
@@ -1329,6 +1330,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
           instancesCap: config.limits.instancesPerUser,
         },
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
+        queued: store.listQueuedJobs(),
         prJobs: store.listPrJobsForRepo(repo.id, 10),
         workItems: store.listWorkItems(repo.id),
         // #359: the page names the deadline and the way out, so an ignored plan
@@ -1387,6 +1389,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       state,
       stateError,
       jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
+      queued: store.listQueuedJobs(),
       jobsPage,
       jobsTotal,
       notice: queryText(request, 'notice'),
@@ -1750,14 +1753,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const queued = store.listQueuedJobs()
-    const queueIndex = queued.findIndex((entry) => entry.id === job.id)
+    // #565: the queue is instance-wide, the ahead-list is the viewer's own. The
+    // label map keeps the viewer's own repositories readable without naming
+    // anybody else's.
+    const repoLabels = new Map(store.listRepos(viewer.user.id).map((entry) => [entry.id, `${entry.upstream_owner || entry.owner}/${entry.upstream_name || entry.name}`]))
     return reply.type('text/html').send(jobPage({
       config,
       locale: request.locale ?? 'zh',
       viewer: viewOf(viewer),
       repo,
       job,
-      queuePosition: queueIndex === -1 ? undefined : queueIndex + 1,
+      queued,
+      viewerActive: store.listActiveJobsForUser(viewer.user.id),
+      repoLabels,
       events: store.listJobEvents(job.id, 200),
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
