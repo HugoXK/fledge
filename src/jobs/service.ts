@@ -1028,7 +1028,10 @@ export class Jobs {
       log.warn('clear job model token failed', { trace: jobId, error: String(error) })
     })
     revoke()
-    this.store.audit(job.user_id, `job.${result.status}`, jobId)
+    const providerAudit = [finalJob.provider_label, finalJob.provider_region, finalJob.provider_model]
+      .filter((part): part is string => part !== null && part !== '')
+      .map((part) => part.replace(/[\r\n]+/g, ' ').slice(0, 120))
+    this.store.audit(job.user_id, `job.${result.status}`, providerAudit.length === 0 ? jobId : `${jobId} ${providerAudit.join(' · ')}`)
     this.store.event(`job_${result.status}`, { userId: job.user_id, repoId: job.repo_id, jobId })
     // The event meta keeps its original choice of value (the payload's error,
     // else its summary), redacted; the fallback to `job.error` stays local to the
@@ -2435,6 +2438,10 @@ export class Jobs {
     const modelLine = modelRun === null || modelRun.model === null
       ? []
       : [`- Model: ${modelRun.model.label}${modelRun.attempts.length === 0 ? '' : ` (tried ${modelRun.attempts.map((entry) => `${entry.label} ${entry.status}`).join(', ')})`}`]
+    const providerParts = [job.provider_label, job.provider_region, job.provider_model]
+      .filter((part): part is string => part !== null && part !== '')
+      .map((part) => part.replace(/[\r\n]+/g, ' ').slice(0, 120))
+    const providerLine = providerParts.length === 0 ? [] : [`- Provider: ${providerParts.join(' · ')}`]
     const body = [
       '<details>',
       `<summary>Fledge automation · ${teamLabel} · job <code>${job.id}</code> (${job.trigger}, ${job.kind})</summary>`,
@@ -2445,6 +2452,7 @@ export class Jobs {
       '',
       `- Issue: ${result.issueUrl ?? 'none'}`,
       ...modelLine,
+      ...providerLine,
       `- Fledge job: ${this.config.baseUrl}/repos/${job.repo_id}/jobs/${job.id}`,
       '</details>',
     ]

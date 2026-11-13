@@ -136,6 +136,23 @@ provider/model rows at startup. Existing `flybot:<repo>` and `job:<id>` tokens
 are backfilled with their repository id, so new usage is attributed per
 repository. Historical ledger rows without a job id remain unattributed.
 
+### Repository provider policy
+
+A repository may keep a provider allowlist and an optional region tag. The
+gateway checks every candidate, including a fallback, before dispatch and refuses
+a provider that is disabled, outside the allowlist or outside the required
+region with `FLEDGE_PROVIDER_DISABLED`, `FLEDGE_PROVIDER_NOT_ALLOWED` or
+`FLEDGE_PROVIDER_REGION_NOT_ALLOWED`. The refusal is returned as HTTP 403 with
+`error.type = provider_policy_refused`, so no quota is spent and no upstream call
+is made. An empty allowlist or region means no restriction in this version.
+
+A repository that sets a policy must also name one of its models on every call.
+A call that omits `model`, or names a model that does not resolve, is refused
+with `FLEDGE_PROVIDER_POLICY_NO_MODEL` instead of falling through to the caller's
+own model or the platform model: neither carries a provider id or a region, so
+the policy would never be consulted. Omitting the field is therefore never a way
+around the policy.
+
 ### Model URL guard and webhook egress
 
 The model URL guard and the notification-webhook guard share one IP classifier

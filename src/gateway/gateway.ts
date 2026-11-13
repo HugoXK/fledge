@@ -8,6 +8,7 @@ import { log } from '../lib/log.js'
 import { decryptSecret, sha256Hex } from '../lib/secrets.js'
 import { costUsdFromUsage, headerCost, quotaView } from './quota.js'
 import { modelOrder, retryableModelFailure } from './modelFallback.js'
+import { parseProviderAllowlist, providerPolicyRefusal } from './modelUrl.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import type { ModelAttempt, ModelFallback } from '../lib/modelRun.js'
 import { rateLimitKey, RateLimiter } from '../lib/rateLimit.js'
@@ -216,6 +217,25 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
     const selection = auth.token.repo_id === null ? [] : store.listRepoModelSelection(auth.token.repo_id)
     const candidates: Array<RepoProviderModelRow | undefined> =
       repoModel === undefined ? [undefined] : modelOrder(selection, repoModel.id)
+    const repoPolicy = auth.token.repo_id === null ? undefined : store.getRepo(auth.token.repo_id)
+    const providerPolicy = {
+      allowlist: new Set(parseProviderAllowlist(repoPolicy?.provider_allowlist)),
+      requiredRegion: repoPolicy?.required_region ?? '',
+    }
+    // #396: a repository that sets a policy must name one of its models on every
+    // call. Without this, a request that omits `model` (or names one that does
+    // not resolve) keeps `repoModel === undefined`, and `targetFor` answers with
+    // the user's own model or the platform model — neither carries a provider id
+    // or a region, so the allowlist and the region constraint are never read.
+    if (auth.token.repo_id !== null && repoModel === undefined && (providerPolicy.allowlist.size > 0 || providerPolicy.requiredRegion !== '')) {
+      return reply.code(403).send({
+        error: {
+          type: 'provider_policy_refused',
+          code: 'FLEDGE_PROVIDER_POLICY_NO_MODEL',
+          message: 'This repository sets a provider policy, so a gateway call must name one of its allowed models.',
+        },
+      })
+    }
     const attempts: ModelAttempt[] = []
     const quotaHeaders = (): Record<string, string> => ({
       'x-fledge-quota-remaining-cny': quota.unlimited ? 'unlimited' : quota.remainingCny.toFixed(4),
@@ -227,22 +247,42 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
     // #407: `attempts` is this call's list, so the fallback is kept beside it —
     // the first one the job ever made survives every later call, whether that call
     // answered on the primary or fell back again to a different pair.
-    const recordModel = (winner: { id: string; label: string } | null, fallback: ModelFallback | null): void => {
+    const recordModel = (winner: { id: string; label: string; providerId?: string | null; providerLabel?: string | null; providerRegion?: string | null; model?: string | null } | null, fallback: ModelFallback | null): void => {
       if (jobId === null) return
       try {
-        const stored = parseModelRun(store.getJob(jobId)?.model_json ?? null)?.fallback ?? null
-        store.updateJob(jobId, { model_json: JSON.stringify({ model: winner, attempts, fallback: stored ?? fallback }) })
+        const job = store.getJob(jobId)
+        const stored = parseModelRun(job?.model_json ?? null)?.fallback ?? null
+        // #396: a later call with no candidate names no provider at all, so no
+        // provider column may be cleared by it. Only a winner that actually
+        // resolved a repository provider writes those four columns; every other
+        // call keeps the values the job already recorded, so the job page, the
+        // audit detail and the review packet never end up naming no provider for
+        // a job that ran on one.
+        const named = winner !== null && winner.providerId !== undefined && winner.providerId !== null ? winner : null
+        store.updateJob(jobId, {
+          model_json: JSON.stringify({ model: winner, attempts, fallback: stored ?? fallback }),
+          provider_id: named?.providerId ?? job?.provider_id ?? null,
+          provider_label: named?.providerLabel ?? job?.provider_label ?? null,
+          provider_region: named?.providerRegion ?? job?.provider_region ?? null,
+          provider_model: named?.model ?? job?.provider_model ?? null,
+        })
       } catch (error) {
         log.warn('gateway model record failed', { trace: jobId, error: String(error) })
       }
     }
 
     let target: { baseUrl: string; key: string; model: string; platformFunded: boolean } | null = null
-    let targetName: { modelId: string; label: string } | null = null
+    let targetName: { modelId: string; label: string; providerId: string | null; providerLabel: string | null; providerRegion: string | null; model: string } | null = null
     let upstream: Awaited<ReturnType<typeof upstreamRequest>> | null = null
     let lastFailure: { status: number; text: string; headers: Record<string, string> } | null = null
 
     for (const candidate of candidates) {
+      if (candidate !== undefined) {
+        const refusal = providerPolicyRefusal({ id: candidate.provider_id, region: candidate.provider_region, allowed: candidate.provider_allowed }, providerPolicy)
+        if (refusal !== null) {
+          return reply.code(403).send({ error: { type: 'provider_policy_refused', code: refusal.code, message: refusal.message } })
+        }
+      }
       const attemptTarget = targetFor(auth.user, config, body, candidate)
       if ('error' in attemptTarget) return reply.code(503).send({ error: { type: 'platform_model_unavailable', message: attemptTarget.error } })
       if (attemptTarget.platformFunded && quota.exhausted) {
@@ -277,7 +317,13 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
       }
       if (answer.status >= 200 && answer.status < 300) {
         target = attemptTarget
-        targetName = attemptName
+        targetName = {
+          ...attemptName,
+          providerId: candidate?.provider_id ?? null,
+          providerLabel: candidate?.provider_label ?? null,
+          providerRegion: candidate?.provider_region ?? null,
+          model: attemptTarget.model,
+        }
         upstream = answer
         break
       }
@@ -306,7 +352,14 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
           to: { modelId: targetName.modelId, label: targetName.label },
           status: firstAttempt.status,
         }
-    recordModel({ id: target.model, label: targetName.label }, fellBack)
+    recordModel({
+      id: target.model,
+      label: targetName.label,
+      providerId: targetName.providerId,
+      providerLabel: targetName.providerLabel,
+      providerRegion: targetName.providerRegion,
+      model: targetName.model,
+    }, fellBack)
     const funded = target.platformFunded
     const targetModel = target.model
     const costFromHeader = headerCost(upstream.headers)

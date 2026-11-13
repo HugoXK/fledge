@@ -2,6 +2,70 @@ import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
 import { isBlockedIpAddress } from '../lib/ipAddress.js'
 
+export interface ProviderPolicy {
+  allowlist: ReadonlySet<string>
+  requiredRegion: string
+}
+
+export interface ProviderIdentity {
+  id: string
+  region: string
+  allowed: number
+}
+
+export interface ProviderPolicyRefusal {
+  code: 'FLEDGE_PROVIDER_DISABLED' | 'FLEDGE_PROVIDER_NOT_ALLOWED' | 'FLEDGE_PROVIDER_REGION_NOT_ALLOWED'
+  message: string
+}
+
+const PROVIDER_ID = /^[A-Za-z0-9_-]{1,80}$/
+
+export function parseProviderAllowlist(raw: string | null | undefined): string[] {
+  if (raw === null || raw === undefined || raw.trim() === '') return []
+  const ids = raw.split(',').map((id) => id.trim()).filter((id) => PROVIDER_ID.test(id))
+  return [...new Set(ids)].slice(0, 200)
+}
+
+export function normalizeProviderRegion(raw: string | null | undefined): string {
+  return Array.from(raw ?? '')
+    .filter((char) => {
+      const code = char.charCodeAt(0)
+      return code >= 32 && code !== 127
+    })
+    .join('')
+    .trim()
+    .slice(0, 80)
+}
+
+export function normalizeDataPolicyUrl(raw: string | null | undefined): string {
+  const trimmed = (raw ?? '').trim()
+  if (trimmed === '') return ''
+  if (trimmed.length > 2048) throw new Error('数据政策 URL 太长')
+  let url: URL
+  try {
+    url = new URL(trimmed)
+  } catch {
+    throw new Error('数据政策 URL 不是合法 URL')
+  }
+  if (url.username !== '' || url.password !== '') throw new Error('数据政策 URL 不能包含用户名或密码')
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('数据政策 URL 必须是 https:// 或 http://')
+  return url.toString()
+}
+
+export function providerPolicyRefusal(provider: ProviderIdentity, policy: ProviderPolicy): ProviderPolicyRefusal | null {
+  if (provider.allowed !== 1) {
+    return { code: 'FLEDGE_PROVIDER_DISABLED', message: 'This model provider is disabled by its owner.' }
+  }
+  if (policy.allowlist.size > 0 && !policy.allowlist.has(provider.id)) {
+    return { code: 'FLEDGE_PROVIDER_NOT_ALLOWED', message: 'This model provider is outside the repository allowlist.' }
+  }
+  const required = normalizeProviderRegion(policy.requiredRegion).toLowerCase()
+  if (required !== '' && normalizeProviderRegion(provider.region).toLowerCase() !== required) {
+    return { code: 'FLEDGE_PROVIDER_REGION_NOT_ALLOWED', message: `This model provider does not match the repository region (${required}).` }
+  }
+  return null
+}
+
 export async function assertSafeModelUrl(raw: string, allowPrivate: boolean): Promise<string> {
   let url: URL
   try {
