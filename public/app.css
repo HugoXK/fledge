@@ -551,6 +551,13 @@ input, textarea, select {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(123, 149, 255, 0.14); }
+/* A forced-colours theme paints no box-shadow and forces border-color to a
+   system colour, so the ring above leaves a focused field with no indicator.
+   This block repeats the same selectors after it: at equal specificity the
+   outline wins on source order, so it must stay below that rule. */
+@media (forced-colors: active) {
+  input:focus, textarea:focus, select:focus { outline: 2px solid CanvasText; outline-offset: 2px; box-shadow: none; }
+}
 input[type="checkbox"] { width: auto; }
 textarea { resize: vertical; min-height: 70px; }
 .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
