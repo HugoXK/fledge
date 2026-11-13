@@ -19,6 +19,12 @@ export interface AdversarialPacketInput {
   diff: string
   verifier: string
   policy: string[]
+  // A caller that cut the diff itself knows which files it left out; the
+  // assembler still detects a cut from the length alone, but it cannot name a
+  // file it never saw.
+  truncated?: boolean
+  omittedFiles?: string[]
+  omittedBytes?: number
 }
 
 export interface AdversarialPacket {
@@ -27,6 +33,11 @@ export interface AdversarialPacket {
   diff: string
   verifier: string
   policy: string[]
+  // #556: a diff that was cut is not a reviewed diff. The packet says so, the
+  // prompt says so, and a caller that ignores the flag is the bug this records.
+  truncated: boolean
+  omittedFiles: string[]
+  omittedBytes: number
 }
 
 export type AdversarialVerdict =
@@ -46,8 +57,33 @@ export type AdversarialModel = (prompt: string) => Promise<string>
 
 // One huge pull request must not turn the review into a second copy of the
 // repository, and a 20 MB prompt would only fail upstream.
-const MAX_DIFF_CHARS = 60_000
+// Exported because the caller that builds the diff has to stop at the same cut
+// point to say what it left out; a second private copy would drift.
+export const MAX_DIFF_CHARS = 60_000
 const SHA = /^[0-9a-f]{40}$/i
+
+// A caller that cut the diff itself names the files it dropped; otherwise the
+// names come from the diff markers, because the cut can land inside a file and
+// that file is only half read either way.
+function omittedFilesOf(diff: string, declared: string[]): string[] {
+  if (declared.length > 0) return declared
+  const markers: Array<{ name: string; at: number }> = []
+  const pattern = /^diff --git a\/(.+?) b\//gm
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(diff)) !== null) markers.push({ name: match[1]!, at: match.index })
+  const names: string[] = []
+  const firstPast = markers.findIndex((marker) => marker.at >= MAX_DIFF_CHARS)
+  if (firstPast === -1) {
+    // The cut falls inside the last file of the diff.
+    const last = markers[markers.length - 1]
+    if (last !== undefined && diff.length > MAX_DIFF_CHARS) names.push(last.name)
+    return names
+  }
+  const straddled = markers[firstPast - 1]
+  if (straddled !== undefined && markers[firstPast]!.at > MAX_DIFF_CHARS) names.push(straddled.name)
+  for (const marker of markers.slice(firstPast)) names.push(marker.name)
+  return [...new Set(names)].slice(0, 50)
+}
 
 export function assembleAdversarialPacket(input: AdversarialPacketInput): AdversarialPacket {
   const baseSha = typeof input?.baseSha === 'string' ? input.baseSha.trim() : ''
@@ -62,8 +98,26 @@ export function assembleAdversarialPacket(input: AdversarialPacketInput): Advers
     .filter((entry) => entry !== '')
     .slice(0, 20)
   if (policy.length === 0) throw new Error('an adversarial review needs the repository policy')
+  // #556: the cut is reported, not silently applied. A model handed a partial
+  // diff and told nothing answers "No concrete risk" about a change it did not
+  // read, which is a pass this gate must never produce.
+  const cut = diff.length > MAX_DIFF_CHARS
+  const omittedFiles = (Array.isArray(input?.omittedFiles) ? input.omittedFiles : [])
+    .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+    .filter((entry) => entry !== '')
+    .slice(0, 50)
+  const declaredOmitted = Number.isFinite(input?.omittedBytes) ? Math.max(0, Math.trunc(Number(input?.omittedBytes))) : 0
   // Named fields only: a spread here would carry whatever else the caller holds.
-  return { baseSha, tipSha, diff: diff.slice(0, MAX_DIFF_CHARS), verifier: verifier.slice(0, 4000), policy }
+  return {
+    baseSha,
+    tipSha,
+    diff: diff.slice(0, MAX_DIFF_CHARS),
+    verifier: verifier.slice(0, 4000),
+    policy,
+    truncated: cut || input?.truncated === true,
+    omittedFiles: cut ? omittedFilesOf(diff, omittedFiles) : omittedFiles,
+    omittedBytes: cut ? diff.length - MAX_DIFF_CHARS + declaredOmitted : declaredOmitted,
+  }
 }
 
 export function adversarialPrompt(packet: AdversarialPacket): { text: string; hash: string } {
@@ -75,6 +129,11 @@ export function adversarialPrompt(packet: AdversarialPacket): { text: string; ha
     `Base: ${packet.baseSha}`,
     `Tip: ${packet.tipSha}`,
     '',
+    ...(packet.truncated ? [
+      `Caveat: the diff below is partial — it was truncated after ${MAX_DIFF_CHARS} characters, so ${packet.omittedBytes} bytes were not read${packet.omittedFiles.length > 0 ? ` in ${packet.omittedFiles.join(', ')}` : ''}.`,
+      'You cannot judge a change you did not fully read: do not answer "No concrete risk" here. Answer "Cannot judge: the diff is truncated" and name what you could not read.',
+      '',
+    ] : []),
     'Repository policy:',
     ...packet.policy.map((entry) => `- ${entry}`),
     '',
