@@ -436,7 +436,12 @@ count, instead of silently becoming a passphrase and encrypting the copy under a
 key you did not set. **To declare a passphrase, pick a value that is not
 base64-shaped** — one space or one character outside the base64 alphabet is
 enough; `correct horse battery staple` works, `correcthorsebatterystaple` does
-not. The encrypted file is a JSON envelope header (format version, the key
+not. The window is exactly those 16–31 decoded bytes: a base64-shaped value of
+32 bytes is the key itself, and one of 33 bytes or more (or 15 or fewer) is not a
+truncated 32-byte key, so it stays a passphrase — the boundary is
+`TRUNCATED_KEY_MIN_BYTES`/`TRUNCATED_KEY_MAX_BYTES` in
+`scripts/lib/backup-crypto.mjs`. The encrypted file is a JSON envelope header
+(format version, the key
 derivation `raw` or `scrypt`, key id and key version, scrypt salt when used, IV,
 GCM authentication tag) followed by the ciphertext. The key itself is never in
 the envelope or the manifest. Set exactly one key source; setting both is refused

@@ -486,6 +486,45 @@ test('a passphrase that is not base64-shaped still encrypts and drills back', ()
   assertNoKeyMaterial(backup.stdout + backup.stderr + drill.stdout + drill.stderr, passphrase)
 })
 
+test('the truncated-key window is pinned on both sides: 31 bytes refuses, 32 is a key, 33 is a passphrase', () => {
+  // A one-sided boundary test is how a window becomes a hole later, so all three
+  // neighbours are pinned: the byte below the window, the accepted key length and
+  // the byte above the window (which is not a truncated 32-byte key and stays a
+  // passphrase, as docs/deploy.md has always documented).
+  const root = mkdtempSync(join(tmpdir(), 'fledge-encrypted-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  seed(dbPath)
+  // The 31-byte case is the 44-character key cut by two characters, which is what
+  // a copy that lost its tail looks like; the 33-byte one is a different value that
+  // happens to be a valid base64 length, so it exercises the top edge, not a cut.
+  const thirtyOne = TEST_KEY.slice(0, 42)
+  const thirtyTwo = TEST_KEY
+  const thirtyThree = Buffer.alloc(33, 0x44).toString('base64')
+  assert.equal(Buffer.from(thirtyOne, 'base64').length, 31)
+  assert.equal(Buffer.from(thirtyTwo, 'base64').length, 32)
+  assert.equal(Buffer.from(thirtyThree, 'base64').length, 33)
+
+  const refusedDir = join(root, 'refused')
+  const refused = run(backupScript, ['--db', dbPath, '--backup-dir', refusedDir], { BACKUP_ENCRYPTION_KEY: thirtyOne })
+  assert.equal(refused.code, 2, `31 bytes must refuse, got exit ${refused.code}: ${refused.stdout}${refused.stderr}`)
+  assert.match(refused.stderr, /\b31\b/, 'the refusal must name the decoded byte count')
+  assert.equal(existsSync(refusedDir), false)
+
+  const rawDir = join(root, 'raw')
+  const raw = run(backupScript, ['--db', dbPath, '--backup-dir', rawDir], { BACKUP_ENCRYPTION_KEY: thirtyTwo })
+  assert.equal(raw.code, 0, raw.stderr)
+  const rawCopy = onlyBackup(rawDir)
+  assert.equal(readEnvelope(rawCopy).kdf, 'raw')
+  assert.equal((readManifest(rawCopy).encryption as Record<string, unknown>).kdf, 'raw')
+
+  const phraseDir = join(root, 'phrase')
+  const phrase = run(backupScript, ['--db', dbPath, '--backup-dir', phraseDir], { BACKUP_ENCRYPTION_KEY: thirtyThree })
+  assert.equal(phrase.code, 0, phrase.stderr)
+  const phraseCopy = onlyBackup(phraseDir)
+  assert.equal(readEnvelope(phraseCopy).kdf, 'scrypt', '33 bytes is above the truncated-key window and stays a passphrase')
+  assert.equal((readManifest(phraseCopy).encryption as Record<string, unknown>).kdf, 'scrypt')
+})
+
 test('a key file readable by others still encrypts but warns, and never refuses', () => {
   // #588: the runbook requires 0600 of the key file and nothing enforced it.
   // Warning rather than refusing on purpose: a backup that refuses at 03:00 is an
