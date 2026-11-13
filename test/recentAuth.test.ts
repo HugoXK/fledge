@@ -80,6 +80,47 @@ test('a fresh session may still delete its repository', async () => {
   }
 })
 
+// #555: a settings save leaves `notice=` in the address bar and a fragment
+// never travels in a Referer, so the bounce can start from a page that already
+// carries a message. Appending a second `notice=` makes the query parser hand
+// back an array, `queryText()` refuses a non-string, and the console then shows
+// nothing at all.
+test('a bounce from a page that already carries a notice returns exactly one notice', async () => {
+  const { built, store } = await build()
+  try {
+    const user = makeUser(store, { login: 'stale-with-notice', status: 'approved' })
+    const repo = repoFor(store, user.id)
+    const { raw, cookie, csrf } = sessionFor(built, user)
+    clearRecentAuth(store, raw)
+    const refused = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/delete`,
+      headers: {
+        cookie,
+        referer: `http://127.0.0.1:9999/repos/${repo.id}?notice=old`,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      payload: formBody({ csrf, confirmName: 'dt' }),
+    })
+    assert.equal(refused.statusCode, 302)
+    const next = new URL(String(refused.headers.location), 'http://127.0.0.1:9999').searchParams.get('next') ?? ''
+    const target = new URL(next, 'http://127.0.0.1:9999')
+    const notices = target.searchParams.getAll('notice')
+    assert.equal(notices.length, 1, 'the return target must carry one notice, not an array')
+    assert.match(notices[0] ?? '', /重新用 GitHub 确认|re-authenticat/, 'the notice must be the re-auth reason, not the stale one')
+    const page = await built.app.inject({ method: 'GET', url: `${target.pathname}${target.search}`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(
+      page.body,
+      /<div class="banner ok" role="status">[^<]*(重新用 GitHub 确认|re-authenticat)[^<]*<\/div>/,
+      'the returned page must show the re-auth notice inside the banner',
+    )
+    assert.equal(store.getRepo(repo.id) !== undefined, true, 'a refused delete must not remove the repository')
+  } finally {
+    await built.close()
+  }
+})
+
 test('a real re-authentication refreshes the same session and keeps its CSRF token', async () => {
   const { built, store } = await build()
   try {
