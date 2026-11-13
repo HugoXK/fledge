@@ -1129,24 +1129,39 @@ export class Store {
     }
     // A promoted row written before the pointer table existed becomes the
     // `stable` pointer, so "what is stable now" has one answer after boot.
-    const promoted = this.get<{ id: string; artifact: string; promoted_at: string }>(
-      "SELECT id, artifact, promoted_at FROM artifact_versions WHERE status = 'promoted' ORDER BY promoted_at DESC, rowid DESC LIMIT 1",
+    // One row per artifact, not one row for the table: a table with two
+    // promoted artifacts has two stable pointers to fill, and a migration is
+    // write-once, so a second boot must not be the thing that would have fixed
+    // it (#494 finding 3).
+    const promoted = this.all<{ id: string; artifact: string; promoted_at: string | null }>(
+      `SELECT v.id, v.artifact, v.promoted_at
+         FROM artifact_versions v
+        WHERE v.status = 'promoted'
+          AND v.rowid = (
+            SELECT v2.rowid
+              FROM artifact_versions v2
+             WHERE v2.artifact = v.artifact AND v2.status = 'promoted'
+             ORDER BY v2.version DESC, v2.rowid DESC
+             LIMIT 1
+          )
+        ORDER BY v.artifact`,
     )
-    if (promoted === undefined) return
-    const pointer = this.get<{ version_id: string }>(
-      "SELECT version_id FROM artifact_pointers WHERE artifact = ? AND channel = 'stable'",
-      promoted.artifact,
-    )
-    if (pointer !== undefined) return
-    this.run(
-      "INSERT OR REPLACE INTO artifact_pointers (artifact, channel, version_id, updated_at) VALUES (?, 'stable', ?, ?)",
-      promoted.artifact,
-      promoted.id,
-      // A row can carry status `promoted` without a timestamp: `promoted_at` is
-      // only written by `promoteArtifactVersion`. The pointer needs a value, and
-      // the honest one is the moment this migration ran.
-      promoted.promoted_at ?? nowIso(),
-    )
+    for (const row of promoted) {
+      const pointer = this.get<{ version_id: string }>(
+        "SELECT version_id FROM artifact_pointers WHERE artifact = ? AND channel = 'stable'",
+        row.artifact,
+      )
+      if (pointer !== undefined) continue
+      this.run(
+        "INSERT OR REPLACE INTO artifact_pointers (artifact, channel, version_id, updated_at) VALUES (?, 'stable', ?, ?)",
+        row.artifact,
+        row.id,
+        // A row can carry status `promoted` without a timestamp: `promoted_at`
+        // is only written by `promoteArtifactVersion`. The pointer needs a
+        // value, and the honest one is the moment this migration ran.
+        row.promoted_at ?? nowIso(),
+      )
+    }
   }
 
   private migrateColumns(): void {
@@ -1676,17 +1691,33 @@ export class Store {
     evidenceJson?: string | null
   }): ArtifactWriteResult {
     const repoId = input.repoId ?? null
-    const artifact = artifactKey({ kind: input.kind, scope: input.scope, repoId })
-    const head = this.artifactHead(artifact)
-    const refusal = candidateRefusal({
+    // Decide the refusal before building the key: `artifactKey()` throws when a
+    // repository-scoped candidate carries no repository, and a refusal is a
+    // value here, not an exception (#494 finding 4). The head is only needed
+    // for the compare-and-swap, so the pre-check passes the declared base as
+    // the head and the CAS runs on its own afterwards.
+    const label = input.scope === 'repository' && (repoId === null || repoId === '') ? `${input.kind}@?` : input.kind
+    const preRefusal = candidateRefusal({
       kind: input.kind,
       scope: input.scope,
       repoId,
       paths: input.paths,
       baseVersion: input.baseVersion,
-      headVersion: head,
+      headVersion: input.baseVersion,
     })
-    if (refusal !== null) {
+    if (preRefusal !== null) {
+      this.audit(null, 'evolution.candidate.refused', `${label}: ${preRefusal.code} — ${preRefusal.detail}`)
+      return { ok: false, refusal: preRefusal }
+    }
+    const artifact = artifactKey({ kind: input.kind, scope: input.scope, repoId })
+    const head = this.artifactHead(artifact)
+    if (input.baseVersion !== head) {
+      // Compare-and-swap: the candidate declares the version it was built
+      // against; a stale candidate is refused rather than re-based.
+      const refusal: CandidateRefusal = {
+        code: 'STALE_BASE',
+        detail: `declared base ${String(input.baseVersion)} but the head is ${String(head)}`,
+      }
       this.audit(null, 'evolution.candidate.refused', `${artifact}: ${refusal.code} — ${refusal.detail}`)
       return { ok: false, refusal }
     }

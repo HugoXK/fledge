@@ -40,15 +40,17 @@ export const ARTIFACT_KINDS: readonly ArtifactKindSpec[] = [
   { kind: 'policy', risk: 'high', apply: 'text' },
 ]
 
-// Frozen: the evaluator, authentication, the gateway, the merge gate and the CI
-// configuration. A candidate that names any of these is refused before it is
-// evaluated — not down-weighted, not deferred. The merge gate lives in
-// `src/jobs/service.ts`, so the whole file is frozen rather than a symbol
-// inside it: a path is the unit the ledger can check without parsing code.
+// Frozen: the evaluator, authentication, the gateway, the stage gate, the merge
+// gate and the CI configuration. A candidate that names any of these is refused
+// before it is evaluated — not down-weighted, not deferred. The merge gate lives
+// in `src/jobs/service.ts` and the stage transitions in `src/lib/stages.ts`, so
+// the whole file is frozen rather than a symbol inside it: a path is the unit
+// the ledger can check without parsing code.
 export const FROZEN_PATHS: readonly string[] = [
   'src/lib/evolution/', // the evaluator and this ledger
   'src/auth/', // authentication and sessions
   'src/gateway/', // the model gateway and quota
+  'src/lib/stages.ts', // the stage gate, which ADR 0003 names frozen beside the merge gate
   'src/jobs/service.ts', // the merge gate and the job lifecycle
   '.github/workflows/', // CI configuration
   '.github/agent/', // the review, risk and check policy the gates read
@@ -65,9 +67,33 @@ export function artifactSpec(kind: string): ArtifactKindSpec | null {
   return ARTIFACT_KINDS.find((spec) => spec.kind === kind) ?? null
 }
 
+/**
+ * A candidate path as the guard compares it: forward slashes, no leading `./`,
+ * and no `.`/`..` segments. Candidate paths are generated input, so `./src/auth/
+ * session.ts` and `src/jobs/../auth/session.ts` have to mean `src/auth/
+ * session.ts` here; otherwise the frozen set is a spelling convention rather
+ * than a guard.
+ */
+export function normalizeArtifactPath(value: string): string {
+  const segments: string[] = []
+  for (const segment of value.trim().replace(/\\/g, '/').split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') {
+      segments.pop()
+      continue
+    }
+    segments.push(segment)
+  }
+  return segments.join('/')
+}
+
 function matchesFrozen(path: string, frozen: string): boolean {
-  if (frozen.endsWith('/')) return path === frozen || path.startsWith(frozen)
-  return path === frozen
+  const file = normalizeArtifactPath(path)
+  const entry = normalizeArtifactPath(frozen)
+  if (file === '' || entry === '') return false
+  // A frozen directory is a prefix; a frozen file is exactly that file.
+  if (frozen.trim().endsWith('/')) return file === entry || file.startsWith(`${entry}/`)
+  return file === entry
 }
 
 /** The frozen paths a candidate names, in the order it named them. */

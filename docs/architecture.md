@@ -516,7 +516,13 @@ re-based; a candidate naming a frozen path is refused before it is stored and
 the refusal is audited (`evolution.candidate.refused`); and a rollback moves the
 pointer, which keeps both versions readable. The eligible artifacts, in risk
 order, and the frozen paths are data in `src/lib/evolution/artifacts.ts`, so the
-set is reviewed as a list rather than inferred from branches.
+set is reviewed as a list rather than inferred from branches; the frozen set
+includes the stage gate (`src/lib/stages.ts`) and the merge gate
+(`src/jobs/service.ts`), and a candidate path is normalised before it is matched
+so `./src/auth/session.ts` and `src/jobs/../auth/session.ts` cannot walk around
+it. The migration fills one `stable` pointer per promoted artifact rather than
+one for the whole table.
+
 ### Failure categories and recovery guidance
 
 A failed job carries a stable category derived from its error (`quota`,

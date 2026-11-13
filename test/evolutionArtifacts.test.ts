@@ -101,7 +101,14 @@ test('an accepted candidate records its parent and moves the dev pointer', () =>
 
 test('a candidate naming a frozen path is refused before evaluation and audited', () => {
   const { store, repoA } = storeWithRepos()
-  for (const frozen of ['src/lib/evolution/evaluate.ts', 'src/jobs/service.ts', '.github/workflows/ci.yml', 'src/auth/session.ts']) {
+  const frozenList = [
+    'src/lib/evolution/evaluate.ts',
+    'src/jobs/service.ts',
+    'src/lib/stages.ts',
+    '.github/workflows/ci.yml',
+    'src/auth/session.ts',
+  ]
+  for (const frozen of frozenList) {
     const refused = candidate(store, { id: `cand-${frozen}`, repoId: repoA, baseVersion: 0, paths: ['repos.goal', frozen] })
     assert.equal(refused.ok, false, `${frozen} must be refused`)
     assert.equal(refused.ok ? '' : refused.refusal.code, 'FROZEN_PATH')
@@ -110,13 +117,39 @@ test('a candidate naming a frozen path is refused before evaluation and audited'
   // Nothing was stored, so nothing can be evaluated later.
   assert.equal(store.listArtifactVersions(artifactKey({ kind: 'repo-goal', scope: 'repository', repoId: repoA }), 10).length, 0)
   const refusals = store.listAudit(40).filter((row) => row.action === 'evolution.candidate.refused')
-  assert.equal(refusals.length, 4)
+  assert.equal(refusals.length, frozenList.length)
   assert.ok(refusals.every((row) => (row.detail ?? '').includes('FROZEN_PATH')))
   // The rule is data: every frozen entry is a path the ADR names, and the
   // evaluator itself is frozen so a candidate cannot edit its own judge.
   assert.ok(FROZEN_PATHS.includes('src/lib/evolution/'))
+  // The ADR's table names the stage gate frozen beside the merge gate; the code
+  // has to name the same file or the record contradicts the guard (#494 #1).
+  assert.ok(FROZEN_PATHS.includes('src/lib/stages.ts'))
   assert.deepEqual(frozenPathsNamed(['public/app.css', 'src/gateway/route.ts']), ['src/gateway/route.ts'])
   assert.ok(ARTIFACT_KINDS.every((spec) => spec.risk === 'low' || spec.risk === 'medium' || spec.risk === 'high'))
+})
+
+test('a frozen path is refused whatever spelling it is written in', () => {
+  const { store } = storeWithRepos()
+  // Candidate paths are generated input, so an equivalent spelling that walks
+  // around the set would make it a convention rather than a guard (#494 #2).
+  const spellings = ['./src/auth/session.ts', 'src/jobs/../auth/session.ts', '/src/gateway/route.ts', 'src\\auth\\session.ts']
+  for (const spelling of spellings) {
+    assert.deepEqual(frozenPathsNamed([spelling]), [spelling], `${spelling} must be recognised as frozen`)
+    const refused = store.createArtifactCandidate({
+      id: `cand-spelling-${spelling}`,
+      kind: 'playbook',
+      scope: 'global',
+      content: 'candidate text',
+      hash: `hash-${spelling}`,
+      baseVersion: 0,
+      paths: ['playbook', spelling],
+    })
+    assert.equal(refused.ok, false)
+    assert.equal(refused.ok ? '' : refused.refusal.code, 'FROZEN_PATH')
+  }
+  // Normalisation is not an over-match: an ordinary path stays admissible.
+  assert.deepEqual(frozenPathsNamed(['playbook', 'src/lib/stages.ts.bak', 'src/authz/session.ts']), [])
 })
 
 test('a rollback moves the pointer back and leaves both versions readable', () => {
@@ -187,12 +220,34 @@ test('the migration keeps an existing artifact version’s content, hash and sta
       status: 'promoted',
       evidenceJson: '{"dataset":"holdout"}',
     })
+    // A second promoted artifact: the backfill is per artifact, not one row for
+    // the whole table, so both get a `stable` pointer on the same boot (#494 #3).
+    before.createArtifactVersion({
+      id: 'legacy-2',
+      artifact: 'default-goal',
+      version: 1,
+      hash: 'legacy-hash-2',
+      content: 'the default goal as it was',
+      status: 'promoted',
+      evidenceJson: '{"dataset":"holdout"}',
+    })
+    // An older promoted row must not win over the newer one for the same
+    // artifact: the pointer is what the latest promotion left behind.
+    before.createArtifactVersion({
+      id: 'legacy-3',
+      artifact: 'playbook',
+      version: 2,
+      hash: 'legacy-hash-3',
+      content: 'the playbook, second promotion',
+      status: 'promoted',
+      evidenceJson: '{"dataset":"holdout"}',
+    })
     before.close()
 
     const after = new Store(path)
     const rows = after.listArtifactVersions('playbook', 10)
-    assert.equal(rows.length, 1)
-    const row = rows[0]
+    assert.equal(rows.length, 2)
+    const row = rows.find((entry) => entry.id === 'legacy-1')
     assert.ok(row !== undefined)
     assert.equal(row.hash, 'legacy-hash')
     assert.equal(row.content, 'the playbook as it was')
@@ -203,12 +258,37 @@ test('the migration keeps an existing artifact version’s content, hash and sta
     assert.equal(row.scope, 'global')
     assert.equal(row.frozen, 0)
     // A promoted legacy row becomes the stable pointer, so "what is stable now"
-    // has one answer after the migration.
-    assert.equal(after.artifactPointer('playbook', 'stable')?.id, 'legacy-1')
+    // has one answer after the migration — one answer per artifact.
+    assert.equal(after.artifactPointer('playbook', 'stable')?.id, 'legacy-3')
+    assert.equal(after.artifactPointer('default-goal', 'stable')?.id, 'legacy-2')
     after.close()
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('a repository-scoped candidate without a repository is refused, not thrown', () => {
+  const { store } = storeWithRepos()
+  // `artifactKey()` cannot name a repository-scoped artifact without a
+  // repository, and a refusal is a value here rather than an exception
+  // (#494 finding 4), so the scope check has to run before the key is built.
+  const refused = store.createArtifactCandidate({
+    id: 'cand-no-repo',
+    kind: 'repo-goal',
+    scope: 'repository',
+    content: 'goal',
+    hash: 'hash-no-repo',
+    baseVersion: 0,
+    paths: ['repos.goal'],
+  })
+  assert.equal(refused.ok, false)
+  assert.equal(refused.ok ? '' : refused.refusal.code, 'SCOPE_MISMATCH')
+  assert.equal(store.listArtifactVersions('repo-goal', 10).length, 0)
+  assert.ok(
+    store.listAudit(20).some(
+      (row) => row.action === 'evolution.candidate.refused' && (row.detail ?? '').includes('SCOPE_MISMATCH'),
+    ),
+  )
 })
 
 test('the pure contract refuses an unknown kind before it looks at anything else', () => {

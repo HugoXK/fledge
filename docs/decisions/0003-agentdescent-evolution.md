@@ -103,8 +103,9 @@ extends the first rather than adding a fourth:
 - `artifact_pointers` — `(artifact, channel, version_id, updated_at)` with
   `channel` in `dev`/`stable`. A pointer is not a version: it is the one row that
   says what each channel currently resolves to, and a rollback is a move of that
-  row. Versions written before this table existed are not rewritten; a promoted
-  row becomes the `stable` pointer during the same migration.
+  row. Versions written before this table existed are not rewritten; each
+  promoted legacy row becomes that artifact's `stable` pointer during the same
+  migration, so two promoted artifacts are two pointers rather than one.
 - `evaluations` — artifact, dataset, metric, value, confidence interval and
   sample count;
 - `promotions` — decision, reason, evidence hash and approver.
@@ -113,8 +114,11 @@ The eligible artifact kinds, in risk order, and the frozen paths are data in
 `src/lib/evolution/artifacts.ts`: `repo-goal`, `repo-model`, `task-template`,
 `default-goal`, `playbook`, `review-rubric`, `policy` are evolvable; the
 evaluator (`src/lib/evolution/`), authentication (`src/auth/`), the gateway
-(`src/gateway/`), the merge gate (`src/jobs/service.ts`) and the CI and gate
-policy (`.github/workflows/`, `.github/agent/`) are frozen. A candidate naming a
+(`src/gateway/`), the stage gate (`src/lib/stages.ts`), the merge gate
+(`src/jobs/service.ts`) and the CI and gate policy (`.github/workflows/`,
+`.github/agent/`) are frozen. A candidate path is normalised before it is
+matched, so an equivalent spelling such as `./src/auth/session.ts` or
+`src/jobs/../auth/session.ts` is refused the same way. A candidate naming a
 frozen path is refused before evaluation, with `evolution.candidate.refused` in
 the audit log.
 
