@@ -6,7 +6,11 @@ export interface PrRef {
   number: number
 }
 
-export type PrUrlResult = { ok: true; ref: PrRef } | { ok: false; reason: string }
+// `canonical` is the URL rebuilt from the parts that were checked. A caller that
+// puts a link into text an agent reads as instructions must use it: everything
+// the user typed beyond owner/name/number - a query, a fragment - is dropped,
+// because that text would otherwise become part of the prompt.
+export type PrUrlResult = { ok: true; ref: PrRef; canonical: string } | { ok: false; reason: string }
 
 // Only an absolute http(s) URL has an origin we can compare. Everything else is
 // treated as "not recorded", not as a wildcard.
@@ -81,7 +85,8 @@ function parseRepoResourceUrl(repo: RepoRow, value: string, apiBase: string, kin
   if (match === null) {
     return { ok: false, reason: `${what} URL ${url.pathname} is not ${owner}/${name}/${kind}/<number>` }
   }
-  return { ok: true, ref: { owner, name, number: Number(match[1]) } }
+  const ref = { owner, name, number: Number(match[1]) }
+  return { ok: true, ref, canonical: `${actual}/${ref.owner}/${ref.name}/${kind}/${ref.number}` }
 }
 
 // The single definition used by the merge path and by head resolution.
