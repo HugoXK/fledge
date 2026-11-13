@@ -1,0 +1,1 @@
+Auto-merge now refuses a pull request whose linked work item is changes_requested, or whose newest succeeded review score is below AUTO_MERGE_MIN_REVIEW_SCORE (default 80). A manual maintainer merge can override the score gate, and the override is audited.

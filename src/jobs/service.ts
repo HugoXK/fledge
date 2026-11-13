@@ -19,6 +19,7 @@ import { duplicateOutcome, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
+import { reviewMergeBlock } from '../lib/mergeReview.js'
 import { evaluateTestEvidence, type VerificationResult } from '../lib/verification.js'
 import { observedAttribution } from '../lib/teamStats.js'
 import { reviewInstructionLine } from '../lib/followUpInstruction.js'
@@ -1253,6 +1254,35 @@ export class Jobs {
     if (repo === undefined) return { ok: false, message: '仓库不存在。' }
     if (repo.repo_role !== 'maintainer') return { ok: false, message: '只有 maintainer 可以合并。' }
     if (!manual && repo.auto_merge !== 1) return { ok: false, message: '自动合并未开启。' }
+    // #507: the reviewer's signal has to reach the merge path. A low score or a
+    // changes_requested work item blocks the automatic merge; a maintainer can
+    // override it explicitly, and that override is audited.
+    const linkedItem = job.work_item_id === null ? this.store.findWorkItemByPrUrl(repo.id, prUrl) : this.store.getWorkItem(job.work_item_id)
+    const review = linkedItem === undefined
+      ? undefined
+      : this.store.listJobsForRepo(repo.id, 50).find((entry) =>
+          entry.kind === 'review' && entry.status === 'succeeded' && entry.work_item_id === linkedItem.id && entry.review_score !== null,
+        )
+    const reviewBlock = reviewMergeBlock({
+      state: linkedItem?.state,
+      score: review?.review_score ?? null,
+      minScore: this.config.autoMerge.minReviewScore,
+    })
+    if (reviewBlock !== null) {
+      const detail = reviewBlock.kind === 'changes_requested'
+        ? 'work item changes_requested'
+        : `review ${reviewBlock.score} < ${reviewBlock.minScore}`
+      if (!manual) {
+        this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: review gate ${detail}`)
+        return {
+          ok: false,
+          message: reviewBlock.kind === 'changes_requested'
+            ? '审核要求修改，自动合并已阻止。'
+            : `最新审核分 ${reviewBlock.score} 低于 ${reviewBlock.minScore}，自动合并已阻止。`,
+        }
+      }
+      this.store.audit(job.user_id, 'job.merge_review_override', `${job.id}: ${detail}`)
+    }
     if (!manual) {
       // Defence in depth for the automatic path: the job must be the newest
       // iterate job for this PR and it must have succeeded. A caller that

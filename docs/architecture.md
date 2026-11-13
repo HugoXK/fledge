@@ -276,9 +276,13 @@ a second clock that disagrees.
   it is on, Fledge (not the agent) verifies the PR is open and mergeable, every
   check run is green, the combined commit status is not failing, and no current
   review requests changes, and the branch protection rule confirms the required
-  checks and approvals before it performs a squash merge. The agent prompt
-  always forbids merging. The switch is stored on the repository and included
-  in the job payload for reporting. A stale or downgraded role blocks the merge.
+  checks and approvals before it performs a squash merge. It also refuses when
+  the linked work item is `changes_requested` or the newest succeeded review job
+  for that PR has a score below `AUTO_MERGE_MIN_REVIEW_SCORE` (default 80). A
+  manual maintainer merge may override the review-score gate, and the override
+  is audited as `job.merge_review_override`. The agent prompt always forbids
+  merging. The switch is stored on the repository and included in the job
+  payload for reporting. A stale or downgraded role blocks the merge.
   A merge also needs the newest `iterate` job for that pull request to have
   succeeded: a queued, running, failed, cancelled or paused follow-up on the
   same PR holds it back, so an older succeeded job cannot merge work that is
