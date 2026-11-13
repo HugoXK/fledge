@@ -31,7 +31,7 @@ import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
 import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale } from './i18n.js'
 import { normalizeInterval } from './lib/intervals.js'
-import { parseJobFilters } from './lib/jobFilters.js'
+import { JOB_FILTER_STATUSES, parseJobFilters } from './lib/jobFilters.js'
 import { isValidBranchName } from './lib/branches.js'
 import { allowedRepoRoles, parseRepoRole, roleAllowed } from './lib/repoRole.js'
 import { isWorkItemState, MAINTAINER_ONLY_STATES, WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
@@ -971,7 +971,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const filters = {
       q: clip('q', 200),
       repo: repos.some((row) => row.id === repo) ? repo : '',
-      status: ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted'].includes(status) ? status : '',
+      // #568: the same list the control renders, so a status the form offers can never be dropped here.
+      status: (JOB_FILTER_STATUSES as string[]).includes(status) ? status : '',
       kind,
       from: from === '' ? '' : `${from}T00:00:00.000Z`, to: to === '' ? '' : `${to}T23:59:59.999Z`,
     }
