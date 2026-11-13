@@ -103,7 +103,17 @@ defect.
   the known next scheduled automatic run (a repository the scheduler has never
   run is not a known time and never shadows one), or says that no repository runs
   automatically. Every source is one the route already loads, so the block cannot
-  disagree with the sections below it. The newest job is read on its own, not
+  disagree with the sections below it.
+- **One next-run rule** (`src/lib/nextRun.ts`, `nextRun`): both the all-clear card
+  and the repository page's next-run line call one function, which copies the
+  worker's due rule — `max(15, min(intervalMinutes, workCooldownMinutes))` after
+  the last run (`src/jobs/service.ts`, `workDue`) — instead of the discovery
+  interval. It also answers why a run will not start now: a disabled repository, a
+  FlyBot instance that is not ready, auto-iteration switched off, an active job,
+  no open work, or a repository the scheduler has never run. The dashboard route
+  passes open work, the active job and instance readiness per repository because
+  those live outside `RepoRow`; the two surfaces therefore print one string, and
+  the wording says "next run", never an estimate. The newest job is read on its own, not
   from the job-table slice: the table is paged and filtered, and `?jobsPage=2` or
   `?status=` must not change the sentence the page opens with. The first-run
   checklist becomes the detail of the same action and does not render a second

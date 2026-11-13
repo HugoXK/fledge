@@ -879,6 +879,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       firstPrUrl: firstJob?.pr_url ?? null,
       repoHref: allRepos[0] === undefined ? null : `/repos/${allRepos[0].id}`,
     }
+    // #564: open work, an active job and a ready instance decide when a
+    // repository runs again, and none of them is on RepoRow.
+    const nextRunFacts = allRepos.map((repo) => ({
+      repoId: repo.id,
+      openWork: store.listOpenWorkItems(repo.id).length > 0,
+      activeJob: store.activeJobForRepo(repo.id) !== undefined,
+      instanceReady: store.getRepoInstance(repo.id)?.status === 'ready',
+    }))
     return reply.type('text/html').send(
       dashboardPage({
         config,
@@ -895,6 +903,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobFilter,
         repoOptions: allRepos.map((repo) => ({ id: repo.id, label: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}` })),
         allRepos,
+        nextRunFacts,
         questions,
         personal,
         windowDays,
