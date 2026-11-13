@@ -736,6 +736,67 @@ test('maintainer auto-merge merges only after checks pass and no changes are req
   }
 })
 
+test('auto-merge refuses a low review score and a manual maintainer merge overrides it', async () => {
+  const merges: string[] = []
+  const github = await startFakeServer((request, response) => {
+    const method = request.method ?? 'GET'
+    const url = request.url ?? ''
+    if (method === 'GET' && url === '/repos/o/r/pulls/1') {
+      json(response, 200, { number: 1, html_url: 'https://github.com/o/r/pull/1', title: 'fix', state: 'open', head: { ref: 'fledge/fix', sha: 'abc' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/abc/check-runs?per_page=100') {
+      json(response, 200, { check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/abc/status') {
+      json(response, 200, { state: 'success', statuses: [] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/pulls/1/reviews?per_page=100') {
+      json(response, 200, [])
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/branches/main/protection') {
+      json(response, 200, { required_status_checks: { contexts: ['ci'] }, required_pull_request_reviews: { required_approving_review_count: 0 } })
+      return
+    }
+    if (method === 'PUT' && url === '/repos/o/r/pulls/1/merge') {
+      merges.push('merge')
+      json(response, 200, { merged: true, sha: 'def' })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'review-score-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_review_score', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, upstreamHtmlUrl: 'https://github.com/o/r', forkHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_review_score', repoId: repo.id, userId: user.id, title: 'fix', prUrl: 'https://github.com/o/r/pull/1', state: 'pr_ready' })
+    const review = store.createJob({ id: 'job_review_score', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'review', callbackHash: 'review-hash', platformTokenHash: '', kind: 'review', workItemId: item.id })
+    store.updateJob(review.id, { status: 'succeeded', review_score: 60, finished_at: new Date().toISOString() })
+
+    const secret = 'low-score-secret'
+    store.createJob({ id: 'job_iterate_score', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main', workItemId: item.id })
+    store.updateJob('job_iterate_score', { status: 'running', branch: 'fledge/fix', started_at: new Date().toISOString() })
+    const result = await jobs.handleCallback('job_iterate_score', secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/1', summary: 'done' })
+    assert.equal(result.ok, true)
+    assert.equal(merges.length, 0, 'a score below 80 must block auto-merge')
+    assert.ok(store.listAudit().some((entry) => entry.action === 'job.merge_skipped' && (entry.detail ?? '').includes('review gate')))
+
+    const manual = await jobs.manualMerge(repo, store.getJob('job_iterate_score')!)
+    assert.equal(manual.ok, true)
+    assert.equal(merges.length, 1, 'a manual maintainer merge may override the score')
+    assert.ok(store.listAudit().some((entry) => entry.action === 'job.merge_review_override'))
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
+
 test('review jobs require a fresh GitHub permission check', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
