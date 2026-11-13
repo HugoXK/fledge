@@ -422,7 +422,17 @@ tables, and the support view's repository and job tables. Adding the class and a
 `data-label` per cell is the whole change; a table must not grow a second card
 mechanism. The delivery board is the one exception, `table-cards table-cards-head`:
 its header row is the stage filter, so it stays in the flow and reflows as a
-wrapping row of links above the cards instead of disappearing. Between 641px and 960px a wide table (the
+wrapping row of links above the cards instead of disappearing. Above 640px the scroller is also bounded vertically
+(`100dvh` minus `--header-h` and `--space-7`, and minus the repository
+subnav's `--subnav-h` on a repository page) and its `thead th` is sticky on an
+opaque `--panel`, so column names stay above the rows they label; the two rules
+are one contract and `test/density.test.ts` asserts both. The row density is a
+saved preference: `/density/:mode` writes the `fledge_density` cookie the way
+`/lang/:locale` writes the language one, `<html data-density>` carries it (the
+response hook fills it in from the cookie, so no page builder has to remember),
+and `<html data-density="compact">` trims only the cell box. Below 641px the
+bounded scroller and the density do not apply: the tables are the card stack and
+the 44px touch floor stays. Between 641px and 960px a wide table (the
 delivery board is 952px wide at 768) can still be wider than its `.table-scroll`
 box, so that band draws an always-present classic scrollbar — an explicit track
 plus `scrollbar-width`/`scrollbar-color` for Firefox — instead of relying on a
