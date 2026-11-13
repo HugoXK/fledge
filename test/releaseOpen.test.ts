@@ -39,6 +39,7 @@ interface Fixture {
   packageVersion?: string
   changelogEntries?: Array<{ name: string; type: string }>
   pullStatus?: number
+  omitNumber?: boolean
   maintainerCanModify?: boolean
   login?: string
   userStatus?: number
@@ -91,8 +92,13 @@ function makeServer(fixture: Fixture = {}) {
       return json({ files: files.map((filename) => ({ filename })) })
     }
     if (method === 'GET' && route === '/git/ref/heads/main') return json({ object: { sha: fixture.mainSha ?? MAIN } })
-    if (method === 'POST' && route === '/pulls') return json({ number: pullNumber, html_url: `https://github.com/${REPO}/pull/${pullNumber}` }, fixture.pullStatus ?? 201)
-    if (method === 'GET' && route === `/pulls/${pullNumber}`) return json({ number: pullNumber, maintainer_can_modify: fixture.maintainerCanModify ?? true })
+    // A same-repo head is what the release pushes, so this flag is always
+    // `false` for it; `true` would mean the pull request heads a fork.
+    if (method === 'POST' && route === '/pulls') {
+      if (fixture.pullStatus !== undefined) return json({ message: 'Server Error' }, fixture.pullStatus)
+      return json(fixture.omitNumber === true ? { html_url: `https://github.com/${REPO}/pull/${pullNumber}` } : { number: pullNumber, html_url: `https://github.com/${REPO}/pull/${pullNumber}` }, 201)
+    }
+    if (method === 'GET' && route === `/pulls/${pullNumber}`) return json({ number: pullNumber, maintainer_can_modify: fixture.maintainerCanModify ?? false })
     return json({ message: `unexpected ${method} ${route}` }, 500)
   }
   return { fetch: fetchImpl as typeof fetch, calls }
@@ -142,11 +148,13 @@ test('opens exactly one pull request from the verified branch and asserts what i
   assert.equal(result.pr, 210)
   assert.deepEqual(posts(calls).length, 1)
   const post = posts(calls)[0]!
+  // #575: the release head is pushed to this repository, and GitHub only reports
+  // `maintainer_can_modify: true` for a fork head. Sending the field could only
+  // ever produce a readback that refuses the run, so the request does not carry it.
   assert.deepEqual(post.body, {
     title: `release: v${VERSION}`,
     head: BRANCH,
     base: 'main',
-    maintainer_can_modify: true,
     body: post.body?.body,
   })
   const body = String(post.body?.body ?? '')
@@ -292,12 +300,42 @@ test('opens the pull request with a credential that cannot push', async () => {
   assert.equal(exitCodeFor(result), 0)
 })
 
-test('refuses a pull request that came back not maintainer-editable', async () => {
+test('opens the pull request when the same-repo head reads back not maintainer-editable', async () => {
+  // #575: this is the live case, not a corner. The release branch is pushed to
+  // the same repository, so `maintainer_can_modify` reads back `false` and the
+  // old invariant could never hold: the opener created the pull request and then
+  // refused the whole run. The flag is now a fork tripwire, so `false` opens.
   const { result, calls } = await run({}, { maintainerCanModify: false })
+  assert.equal(result.status, 'opened', `a same-repo head was refused: ${result.status === 'refused' ? result.reason : ''}`)
+  assert.equal(result.pr, 210)
+  assert.equal(exitCodeFor(result), 0)
+  assert.equal(posts(calls).filter((call) => call.route === '/pulls').length, 1)
+})
+
+test('refuses a pull request whose readback says its head is a fork', async () => {
+  // The release never pushes a fork head, so `true` here means the readback
+  // describes a different repository's branch; failing closed is still right.
+  const { result, calls } = await run({}, { maintainerCanModify: true })
   assert.equal(result.status, 'refused')
   assert.equal(result.pr, 210)
   assert.match(result.reason, /maintainer_can_modify/)
+  assert.match(result.reason, /fork/)
   assert.equal(posts(calls).length, 1)
+})
+
+test('refuses when POST /pulls does not answer 201', async () => {
+  const { result, calls } = await run({}, { pullStatus: 500 })
+  assert.equal(result.status, 'refused')
+  assert.match(result.reason, /POST \/pulls answered 500/)
+  assert.equal(result.pr, undefined)
+  assert.equal(calls.filter((call) => call.method === 'GET' && call.route.startsWith('/pulls/')).length, 0)
+})
+
+test('refuses when POST /pulls answers no pull request number', async () => {
+  const { result, calls } = await run({}, { omitNumber: true })
+  assert.equal(result.status, 'refused')
+  assert.match(result.reason, /no pull request number/)
+  assert.equal(calls.filter((call) => call.method === 'GET' && call.route.startsWith('/pulls/')).length, 0)
 })
 
 test('the child environment is fixed: no inherited tag variable and no token in an argument', async () => {

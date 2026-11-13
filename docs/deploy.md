@@ -297,9 +297,11 @@ leaves `CHANGELOG.md`, `README.md`, `README.zh.md`, `changelog.d/`,
 request at the same commit instead of
 opening a second one, and prints the JSON it acted on. It writes that one pull
 request and nothing else, and it carries no tag endpoint: the tag stays in the
-workflow. A `POST /pulls` whose readback does not show
-`maintainer_can_modify: true` is a refusal, but the pull request already exists
-at that point, so close it by hand before retrying.
+workflow. A `POST /pulls` that answers non-201, or answers no pull request
+number, or a readback that reports `maintainer_can_modify: true` — that flag is
+only true for a fork head, and the release head is pushed to this repository — is
+a refusal, but the pull request already exists at that point, so close it by hand
+before retrying.
 
 ### Verify a release
 
