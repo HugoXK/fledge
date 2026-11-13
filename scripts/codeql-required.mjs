@@ -14,7 +14,7 @@
 
 import { appendFileSync, readFileSync } from 'node:fs'
 
-import { codeqlRequired } from './lib/codeql-required.mjs'
+import { analysisFor, codeqlRequired } from './lib/codeql-required.mjs'
 
 const WORKFLOW = 'codeql.yml'
 
@@ -44,18 +44,12 @@ function apiClient({ token, base }) {
   }
 }
 
-// The analysis for a commit is the completed run of `codeql.yml` that reported
-// that commit as its head. A pull request run reports the pull request head; the
-// `pull_requests[].head.sha` match covers a run object that reports the merge
-// commit instead, so the lookup cannot miss the run that answered this commit.
-async function analysisFor(api, repo, sha) {
+// The match is a lib function so the suite can drive it; this wrapper only reads
+// the completed runs of `codeql.yml` and hands the list over.
+async function analysisForCommit(api, repo, sha) {
   const runs = await api(`/repos/${repo}/actions/workflows/${WORKFLOW}/runs?status=completed&per_page=20`)
   const list = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : []
-  const match = list.find(
-    (run) => run?.head_sha === sha || (Array.isArray(run?.pull_requests) && run.pull_requests.some((pull) => pull?.head?.sha === sha)),
-  )
-  if (match === undefined) return null
-  return { conclusion: String(match.conclusion ?? '') }
+  return analysisFor(list, sha)
 }
 
 function writeSummary(line) {
@@ -93,7 +87,7 @@ async function main() {
       {
         analysisFor: async (asked) => {
           try {
-            return await analysisFor(api, repository, asked)
+            return await analysisForCommit(api, repository, asked)
           } catch (error) {
             throw new Error(`cannot read the CodeQL analysis for ${asked}: ${error.message}`)
           }

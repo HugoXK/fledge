@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url'
 const ciWorkflowPath = fileURLToPath(new URL('../.github/workflows/ci.yml', import.meta.url))
 const codeqlWorkflowPath = fileURLToPath(new URL('../.github/workflows/codeql.yml', import.meta.url))
 const libUrl = new URL('../scripts/lib/codeql-required.mjs', import.meta.url).href
+const codeqlCliPath = fileURLToPath(new URL('../scripts/codeql-required.mjs', import.meta.url))
 
 interface Analysis {
   conclusion: string
@@ -219,4 +220,51 @@ test('codeql-required is in ci-ok needs, is never skippable, and adds no merge_g
     /^  merge_group:$/m,
     'running the analysis on a synthetic commit nobody ships doubles the minutes for no extra evidence',
   )
+})
+
+interface WorkflowRun {
+  head_sha: string
+  conclusion: string
+  pull_requests?: { head: { sha: string } }[]
+}
+
+// #422: `analysisFor` matched a run whose `pull_requests[].head.sha` was the
+// commit under test. GitHub fills that field from the pull request's *current*
+// head, so every superseded run of the same pull request claimed to be about the
+// newest tip, and a stale failure answered a commit whose own analysis was still
+// running. The list below is the shape the API returns — newest run first — and
+// the ordering is not the bug: the predicate is.
+test('the analysis matcher answers only the commit the run actually analysed', async () => {
+  const { analysisFor } = (await import(libUrl)) as unknown as {
+    analysisFor: (runs: WorkflowRun[], sha: string) => Analysis | null
+  }
+  const tip = 'd'.repeat(40)
+  const older = 'e'.repeat(40)
+  const supersededFailure: WorkflowRun = {
+    head_sha: older,
+    conclusion: 'failure',
+    pull_requests: [{ head: { sha: tip } }],
+  }
+  const exactSuccess: WorkflowRun = { head_sha: tip, conclusion: 'success' }
+
+  // 1. the measured #404 case: the newest completed run is the superseded
+  // failure, and the tip's own analysis has already concluded success. Today the
+  // live-head arm selects the failure.
+  assert.deepEqual(analysisFor([supersededFailure, exactSuccess], tip), { conclusion: 'success' })
+  // 2. superseded only: no analysis yet, so the gate stays pending. Adopting the
+  // other commit's conclusion is the false red the card measured.
+  assert.equal(analysisFor([supersededFailure], tip), null)
+  // 3. two exact matches that disagree: the first (newest) wins, exactly as the
+  // API order already gives it. This pins the ordering so a later refactor
+  // cannot silently flip it.
+  assert.deepEqual(analysisFor([{ head_sha: tip, conclusion: 'failure' }, exactSuccess], tip), { conclusion: 'failure' })
+  // 4. the control: a matcher that never matched would satisfy 1 and 2 while
+  // reddening every pull request.
+  assert.deepEqual(analysisFor([exactSuccess], tip), { conclusion: 'success' })
+})
+
+test('the CLI delegates the match to the lib and carries no live-head arm', () => {
+  const cli = readFileSync(codeqlCliPath, 'utf8')
+  assert.match(cli, /import \{[^}]*analysisFor[^}]*\} from '\.\/lib\/codeql-required\.mjs'/, 'the matcher lives in the lib, where the suite can drive it')
+  assert.doesNotMatch(cli, /pull_requests/, 'a live pull request head is not an input to the matcher')
 })
