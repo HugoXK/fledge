@@ -1581,11 +1581,16 @@ export function settingsPage(input: {
         })
         .join('')
 
+  // The chips are a horizontal strip that scrolls under the thumb on a phone, so
+  // at 360px the last chip sits past the viewport edge on purpose: the document
+  // itself still never scrolls sideways (the matrix's document rule), and the
+  // strip is the scroller the reader swipes. `data-allow-overflow` says so to the
+  // matrix, which otherwise reads a deliberate scroller as clipped content.
   const body = `<nav class="section-nav" aria-label="${escapeHtml(t('页面导航', 'Section navigation'))}">
-    <a href="#account">${escapeHtml(t('账户', 'Account'))}</a>
-    <a href="#model-providers">${escapeHtml(t('模型', 'Models'))}</a>
-    <a href="#notifications">${escapeHtml(t('通知', 'Notifications'))}</a>
-    <a href="#tokens">${escapeHtml(t('API token', 'API tokens'))}</a>
+    <a href="#account" data-allow-overflow>${escapeHtml(t('账户', 'Account'))}</a>
+    <a href="#model-providers" data-allow-overflow>${escapeHtml(t('模型', 'Models'))}</a>
+    <a href="#notifications" data-allow-overflow>${escapeHtml(t('通知', 'Notifications'))}</a>
+    <a href="#tokens" data-allow-overflow>${escapeHtml(t('API token', 'API tokens'))}</a>
   </nav>
   <section class="card" id="account">
     <div class="eyebrow">${escapeHtml(t('账户', 'ACCOUNT'))}</div>
@@ -2041,13 +2046,13 @@ export function adminPage(input: {
     ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出用户视图预览', 'Exit user preview') : t('预览用户视图', 'Preview the user view'))}</button></form>` : ''}
   </section>
   <nav class="section-nav" aria-label="${escapeHtml(t('页面导航', 'Section navigation'))}">
-    <a href="#release">${escapeHtml(t('发布', 'Release'))}</a>
-    <a href="#release-chain">${escapeHtml(t('发布链', 'Release chain'))}</a>
-    <a href="#backups">${escapeHtml(t('备份', 'Backups'))}</a>
-    <a href="#pending">${escapeHtml(t('待审批', 'Pending'))}</a>
-    <a href="#users">${escapeHtml(t('用户', 'Users'))}</a>
-    <a href="#jobs">${escapeHtml(t('任务', 'Jobs'))}</a>
-    ${showAudit ? `<a href="#audit">${escapeHtml(t('审计', 'Audit'))}</a>` : ''}
+    <a href="#release" data-allow-overflow>${escapeHtml(t('发布', 'Release'))}</a>
+    <a href="#release-chain" data-allow-overflow>${escapeHtml(t('发布链', 'Release chain'))}</a>
+    <a href="#backups" data-allow-overflow>${escapeHtml(t('备份', 'Backups'))}</a>
+    <a href="#pending" data-allow-overflow>${escapeHtml(t('待审批', 'Pending'))}</a>
+    <a href="#users" data-allow-overflow>${escapeHtml(t('用户', 'Users'))}</a>
+    <a href="#jobs" data-allow-overflow>${escapeHtml(t('任务', 'Jobs'))}</a>
+    ${showAudit ? `<a href="#audit" data-allow-overflow>${escapeHtml(t('审计', 'Audit'))}</a>` : ''}
   </nav>
   ${releaseCard}
   ${chainCard}
