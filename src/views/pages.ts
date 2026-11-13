@@ -1411,6 +1411,13 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     <p class="muted">${escapeHtml(t('这个仓库的版本化记忆：决策、约定和踩过的坑，按角色可见，每次读到的是确定的版本而不是摘要。', "This repository's versioned memory: decisions, conventions and hard-won lessons, scoped by role, and always read as an exact revision rather than a summary."))}</p>
     <p><a class="link" href="/repos/${escapeHtml(repo.id)}/memory">${escapeHtml(t('打开项目记忆', 'Open project memory'))}</a></p>
   </section>`
+  // #543: the gate page is a page, not a section of this one: a plan is
+  // proposed through the API and confirmed by a maintainer there.
+  const gateCard = `<section class="card" id="repo-gate">
+    <h2>${escapeHtml(t('仓库门禁', 'Repository gate'))}</h2>
+    <p class="muted">${escapeHtml(t('查看已提出的门禁计划和确认状态。确认只记录决定，不会写入仓库。', 'Read the proposed gate plans and their confirmation state. Confirming records the decision only; it writes nothing to the repository.'))}</p>
+    <p><a class="link" href="/repos/${escapeHtml(repo.id)}/gate">${escapeHtml(t('打开仓库门禁', 'Open repository gate'))}</a></p>
+  </section>`
   // #234: the page was one long column of sixteen cards, so the things a user
   // acts on sat under configuration. The six sections below are a regroup of
   // cards that already render here - nothing new is computed - and #overview is
@@ -1514,7 +1521,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <p class="fine">${escapeHtml(t('平台只通过 GitHub API 读取元数据、创建 fork 和分支/PR；不会 clone 到公共磁盘。', 'The platform only uses the GitHub API to read metadata, create forks and open branches/PRs; it never clones to public disk.'))}</p>
     </div>
   </section>`
-  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${planBanner}${lifecycleBanner}${triageCard}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}`)}${repoSection('delivery', `${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceNotice}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
+  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${planBanner}${lifecycleBanner}${triageCard}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}`)}${repoSection('delivery', `${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceNotice}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : '<script src="/assets/chief.js" defer></script>'}<script src="/assets/repoTabs.js" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
 }
 

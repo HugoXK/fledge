@@ -1613,3 +1613,41 @@ The slice is the repository page (`/repos/:id/memory`, `src/views/memory.ts`).
 Not built yet: the bounded index handed to a job prompt and the agent read tool
 (`src/jobs/service.ts`), the three-notes-per-run agent writer, repository-document
 promotion with merge/blob proof, review scheduling and export.
+
+## Gate plans and sessions (`#543` first slice)
+
+A repository onboarding run proposes a **gate plan** before anything is written.
+This slice stores the proposal and the human decision; it never writes to the
+repository.
+
+- **The plan is a closed schema** (`src/gates/plan.ts`). It names `baseSha`
+  (40-hex), `mergeQueue`, `existingFiles`, `gaps`, `notes` and exactly the four
+  lanes `pr-ready`, `pr-merge`, `daily` and `release`. Each lane carries
+  `commands`, `observe`, `source` and an optional `durationMs`. Unknown fields
+  and lanes, empty commands, a malformed SHA and an oversize value are refused by
+  `validateGatePlan` with a stable code and field path. The normalized plan is
+  hashed with SHA-256 over canonical JSON, so the same plan hashes the same way
+  regardless of property order.
+- **A session is the record** (`gate_sessions` in `src/db.ts`). It holds the
+  repository, status (`analyzing`, `proposed`, `confirmed`, `created`, `refused`,
+  `failed`), the base SHA, the canonical plan JSON, its hash, the confirming
+  actor and time, and the future PR/branch/error fields. `Store` exposes
+  `createGateSession`, `getGateSession`, `getGateSessionForRepo`,
+  `updateGateSession` and `listGateSessionsForRepo`.
+- **The API proposes, it does not write.** `POST /repos/:id/gate/sessions` is
+  maintainer-only and CSRF-checked. It validates the plan, optionally reads the
+  default-branch SHA with a GitHub `GET /branches/:branch` call, and refuses a
+  stale plan with `STALE_BASE_SHA`; if GitHub is unavailable the explicit
+  `baseSha` is stored. `GET /repos/:id/gate/sessions/:sessionId` returns the
+  stored plan and status. `POST /repos/:id/gate/sessions/:sessionId/confirm`
+  recomputes the hash from the stored plan, then marks the session `confirmed`
+  with the actor and time. No route calls a GitHub write endpoint, opens a branch
+  or creates a pull request.
+- **The page is reachable.** The repository page's gate card links to
+  `/repos/:id/gate` (`src/views/gate.ts`), which lists sessions, renders the plan
+  preview, and offers a maintainer a confirm form. Every value is escaped and
+  every sentence is bilingual.
+
+Not built yet: the gate pull request, GitHub file/commit writes, merging the
+planned job into an existing workflow YAML, and trial runs; those belong to later
+slices of #543.
