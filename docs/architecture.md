@@ -1412,6 +1412,23 @@ listing, and every row links to the page that already owns it.
 | `audit_log` | who changed what |
 | `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
 
+## Deployment records
+
+A release and a deployment are separate events. `scripts/verify-release.mjs`
+proves the tag/image chain; an operator records the deployment itself on
+`/admin/deployments` (admin-only) with the environment, version, commit, image
+digest, operator and the observed `/healthz` / `/readyz`. Fledge never opens a
+host connection or runs the deploy: every field is a recorded fact.
+
+The read model compares the latest recorded deployment with the newest released
+tag and reports `ok`, `behind`, `mismatch` or `unknown`; a `/healthz` commit that
+does not match the record is a mismatch. Promotion requires a canary checklist
+(`/healthz`, `/readyz`, a smoke job, error and latency windows) and fails closed
+when evidence is missing. A rollback record names the previous digest/commit,
+owner and redacted command, and is verified only when the resulting `/healthz`
+matches the previous commit. `scripts/verify-release.mjs --deployment FILE`
+turns the same drift verdict into a release-check link.
+
 ## Job lifecycle
 
 ```

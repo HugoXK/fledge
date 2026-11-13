@@ -336,6 +336,68 @@ request head is then the record of the tip.
 `--fixtures <file>` replays a recorded chain instead of reading the API, which is
 how the test suite exercises the same code path.
 
+### Deployment records, drift and rollback
+
+A release tag is not a deploy. Fledge keeps a **record** of what an operator
+deployed to an environment, and compares it with the latest release snapshot the
+verify command writes. It never reads the host, SSHes, calls Docker or runs the
+rollback command.
+
+The read model is admin-only:
+
+- `GET /admin/deployments` renders it (the admin page links to it as
+  **Deployments**);
+- `GET /api/admin/deployments` returns the same facts as JSON.
+
+Every record carries the environment, version, commit, image digest,
+`deployedAt`, operator, the `/healthz` and `/readyz` results measured at deploy
+time, and the GitHub Release link. A non-admin receives `403`; no token, provider
+key or host path is stored or rendered.
+
+The drift view compares what an environment actually runs with the latest
+release in `${DATA_DIR}/release-status.json` (written by
+`node scripts/verify-release.mjs --write …`). What it runs is the newest
+deployment, unless a rollback was recorded after that deployment and names a
+different commit or digest: then the environment is the rollback's previous
+commit and digest, it carries no version, and it never reads `ok`. It reports:
+
+- **behind** when the deployed version is older than the released version;
+- **mismatch** when the deployed version is ahead, the tag commit differs, or a
+  `/healthz` probe names a different commit or version;
+- **unknown** when no deployment or no release snapshot is recorded, and for a
+  rollback record that names no readable commit or digest;
+- **ok** only when the version, commit and recorded health agree, and no newer
+  rollback moved the environment.
+
+Only **behind** and **mismatch** alert. `verify-release.mjs --deployment FILE`
+performs the same comparison in the CLI, adds a `deployment` link and exits `1`
+when the recorded deployment is behind or mismatched.
+
+A promotion is written only after its canary checklist passes:
+
+1. `/healthz` returns `2xx` with the promoted commit and version;
+2. `/readyz` returns `2xx`;
+   A status field that is present and non-empty must be an integer from 100 to
+   599; anything else (a typo such as `2OO`, a word, a number out of range)
+   blocks the write instead of being recorded as `200`. Only an absent field
+   defaults to `200`. The same rule applies to the rollback form.
+3. a named smoke job passed;
+4. the error window has a measured duration, error count and the error threshold
+   it is judged against;
+5. the latency window has a measured duration, p95 and the p95 threshold it is
+   judged against.
+
+Missing evidence fails the gate; a failed gate writes an audit line and **does
+not** create a deployment record. A window that claims `ok` without a threshold
+is missing evidence, not a pass: the measured number alone proves nothing. The
+admin page states which item blocked the promotion.
+
+A rollback plan must name a previously recorded digest and commit, the owner and
+the command the host owner will run. Fledge records that decision and checks the
+resulting `/healthz` against the previous commit, but it never executes the
+command. The command is recorded with token/secret assignments redacted, and a
+value containing a host path is refused.
+
 ## 6. Reverse proxy
 
 Ready-to-copy samples live in [`deploy/`](../deploy/): a systemd unit and an nginx
