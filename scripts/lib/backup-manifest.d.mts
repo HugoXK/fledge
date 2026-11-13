@@ -5,6 +5,16 @@ export interface ManifestDatabaseFacts {
   schemaVersion: number
 }
 
+export interface BackupManifestEncryption {
+  format: string
+  version: number
+  algorithm: string
+  /** Which derivation produced the key: a 32-byte key used as-is, or scrypt over a passphrase. */
+  kdf?: 'raw' | 'scrypt'
+  keyId: string
+  keyVersion: number
+}
+
 export interface BackupManifest {
   copy: string
   createdAt: string
@@ -12,6 +22,7 @@ export interface BackupManifest {
   sha256: string
   schemaVersion: number
   tables: Record<string, number>
+  encryption?: BackupManifestEncryption
 }
 
 export declare function manifestPath(copyPath: string): string

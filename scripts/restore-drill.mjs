@@ -125,7 +125,16 @@ function configuredBackupKey() {
 }
 
 function encryptionKeyForDrill() {
-  const key = configuredBackupKey()
+  // Restoring is not writing: a copy that already exists under a base64-shaped
+  // passphrase must stay readable, and the only way to read it is the derivation
+  // it actually used. GCM authentication and the key id decide whether the value
+  // reproduces it, so the 16–31 byte write-side window is not applied here.
+  let key
+  try {
+    key = loadBackupKey(process.env, { rejectTruncatedBase64Key: false })
+  } catch (error) {
+    fail(2, error instanceof Error ? error.message : String(error))
+  }
   if (key === null) {
     fail(1, 'the backup is encrypted but no backup encryption key is configured; without the key the copy cannot be restored (lost key). Set BACKUP_ENCRYPTION_KEY or BACKUP_ENCRYPTION_KEY_FILE to the key the copy was written with')
   }
@@ -386,7 +395,7 @@ async function main() {
       } catch (error) {
         fail(1, `cannot decrypt ${backupPath}: ${error instanceof Error ? error.message : String(error)}`)
       }
-      process.stdout.write(`encryption=${encryption.algorithm} key_id=${encryption.keyId} key_version=${encryption.keyVersion}\n`)
+      process.stdout.write(`encryption=${encryption.algorithm} kdf=${String(encryption.kdf)} key_id=${encryption.keyId} key_version=${encryption.keyVersion}\n`)
     } else {
       copyFileSync(backupPath, restoredPath)
       chmodSync(restoredPath, 0o600)
