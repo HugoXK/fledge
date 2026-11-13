@@ -1643,6 +1643,157 @@ test('every redirect banner value has an English form', () => {
   }
 })
 
+// --- errorPage localization (#449) ------------------------------------------
+//
+// `errorPage(config, viewer, title, message, locale)` runs both sentences through
+// `localizeMessage`, which returns an unmatched literal verbatim, so a title or a
+// message with no `MESSAGES` row ships in Chinese inside the English console.
+// Until this guard only the 404 pair (#444) was pinned, by hand. The walk below
+// reads every `errorPage(` call in `src/app.ts` and takes arguments 3 and 4
+// (title, message); the fifth argument is the action, whose label is bilingual by
+// construction (`t('使用 GitHub 登录', 'Sign in with GitHub')`).
+//
+// An argument is read as the sentences it can be at run time: a literal, both
+// branches of a top-level conditional, or the English side of a `t(zh, en)`
+// call. Anything else is reported in `unreadable` rather than dropped, so a
+// variable that hides a sentence costs one assertion instead of silence.
+
+type ErrorPageArgument = { texts: string[]; unreadable: string[] }
+
+function literalText(expression: string): string | null {
+  const trimmed = expression.trim()
+  if (trimmed === '') return null
+  const quote = trimmed[0]
+  if (quote !== "'" && quote !== '"' && quote !== '`') return null
+  const end = quote === '`' ? skipTemplate(trimmed, 0) : skipQuoted(trimmed, 0)
+  if (end !== trimmed.length - 1) return null
+  let text = ''
+  let index = 1
+  while (index < trimmed.length - 1) {
+    const char = trimmed[index]
+    if (char === '\\') { text += trimmed[index + 1] ?? ''; index += 2; continue }
+    if (char === '$' && trimmed[index + 1] === '{') { index = balanced(trimmed, index + 1).end + 1; continue }
+    text += char
+    index += 1
+  }
+  return text
+}
+
+function ternaryBranches(expression: string): { consequent: string; alternate: string } | null {
+  let depth = 0
+  let question = -1
+  let index = 0
+  while (index < expression.length) {
+    const char = expression[index]
+    if (char === '`') { index = skipTemplate(expression, index) + 1; continue }
+    if (char === '"' || char === "'") { index = skipQuoted(expression, index) + 1; continue }
+    if (char === '(' || char === '[' || char === '{') { depth += 1; index += 1; continue }
+    if (char === ')' || char === ']' || char === '}') { depth -= 1; index += 1; continue }
+    if (depth === 0 && char === '?') {
+      // `?.` and `??` are not conditionals.
+      if (expression[index + 1] === '.' || expression[index + 1] === '?') { index += 2; continue }
+      question = index
+      break
+    }
+    index += 1
+  }
+  if (question === -1) return null
+  let nesting = 0
+  depth = 0
+  index = question + 1
+  while (index < expression.length) {
+    const char = expression[index]
+    if (char === '`') { index = skipTemplate(expression, index) + 1; continue }
+    if (char === '"' || char === "'") { index = skipQuoted(expression, index) + 1; continue }
+    if (char === '(' || char === '[' || char === '{') { depth += 1; index += 1; continue }
+    if (char === ')' || char === ']' || char === '}') { depth -= 1; index += 1; continue }
+    if (depth === 0 && char === '?') { nesting += 1; index += 1; continue }
+    if (depth === 0 && char === ':') {
+      if (nesting === 0) {
+        return { consequent: expression.slice(question + 1, index), alternate: expression.slice(index + 1) }
+      }
+      nesting -= 1
+    }
+    index += 1
+  }
+  return null
+}
+
+function errorPageArgumentTexts(expression: string): ErrorPageArgument {
+  const read: ErrorPageArgument = { texts: [], unreadable: [] }
+
+  const walk = (candidate: string): void => {
+    const trimmed = candidate.trim()
+    const branches = ternaryBranches(trimmed)
+    if (branches !== null) {
+      walk(branches.consequent)
+      walk(branches.alternate)
+      return
+    }
+    const literal = literalText(trimmed)
+    if (literal !== null) {
+      if (literal.trim() !== '') read.texts.push(literal)
+      return
+    }
+    if (trimmed.startsWith('t(')) {
+      const call = balanced(trimmed, 1)
+      if (call.end === trimmed.length - 1) {
+        walk(splitTopLevel(call.body)[1] ?? '')
+        return
+      }
+    }
+    read.unreadable.push(trimmed)
+  }
+
+  walk(expression)
+  return read
+}
+
+function errorPageTexts(source: string): { texts: string[]; unreadable: string[]; calls: number } {
+  const texts: string[] = []
+  const unreadable: string[] = []
+  const seen = new Set<string>()
+  let calls = 0
+  const needle = 'errorPage('
+  let at = source.indexOf(needle)
+  while (at !== -1) {
+    calls += 1
+    const call = balanced(source, at + needle.length - 1)
+    const args = splitTopLevel(call.body)
+    for (const index of [2, 3]) {
+      const read = errorPageArgumentTexts(args[index] ?? '')
+      for (const text of read.texts) {
+        if (seen.has(text)) continue
+        seen.add(text)
+        texts.push(text)
+      }
+      unreadable.push(...read.unreadable)
+    }
+    at = source.indexOf(needle, at + needle.length)
+  }
+  return { texts, unreadable: [...new Set(unreadable)].sort(), calls }
+}
+
+test('every errorPage sentence has an English form', () => {
+  const source = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8')
+  const { texts, unreadable, calls } = errorPageTexts(source)
+  assert.ok(calls >= 20, `walked ${calls} errorPage calls in src/app.ts; the guard is meant to cover every call site`)
+  assert.ok(texts.length >= 16, `read ${texts.length} errorPage sentences; an extraction that reads nothing must not pass`)
+  assert.deepEqual(
+    unreadable,
+    ['message'],
+    'exactly one errorPage argument is not a sentence the walk can read: the 500 handler forwards the caught message at src/app.ts setErrorHandler. A second one is a decision, not a silent skip',
+  )
+  const unresolved = [...new Set(texts)]
+    .filter((text) => CJK.test(localizeMessage('en', text) ?? ''))
+    .sort()
+  assert.deepEqual(
+    unresolved,
+    [],
+    'these errorPage sentences have no English form; add a MESSAGES row in src/i18n.ts for each',
+  )
+})
+
 test('the repository settings can turn the per-job budget into a stop, in both languages', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
