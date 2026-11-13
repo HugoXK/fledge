@@ -4,6 +4,9 @@ COPY package.json package-lock.json* ./
 RUN npm ci
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
+# #395: src/lib/deployments.ts imports the shared pure drift/gate module under
+# scripts/lib, so the build stage needs that tree as well as src.
+COPY scripts ./scripts
 RUN npm run build
 
 FROM node:22-alpine AS runtime
