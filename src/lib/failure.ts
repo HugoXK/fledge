@@ -109,6 +109,7 @@ export const FAILURE_CODES = [
   'JOB_BUDGET_EXCEEDED',
   'DUPLICATE_WORK',
   'STAGE_EVIDENCE_MISSING',
+  'WORK_TYPE_EVIDENCE_MISSING',
   'BRIDGE_ERROR',
   'REPO_DISABLED',
   'PROVIDER_BUDGET_EXCEEDED',
@@ -127,6 +128,7 @@ export const FAILURE_CODE_KIND: Record<FailureCode, FailureKind> = {
   JOB_BUDGET_EXCEEDED: 'quota',
   DUPLICATE_WORK: 'workflow',
   STAGE_EVIDENCE_MISSING: 'stage_evidence',
+  WORK_TYPE_EVIDENCE_MISSING: 'stage_evidence',
   BRIDGE_ERROR: 'bridge',
   REPO_DISABLED: 'workflow',
   // #260: the provider refused the model call inside the instance. It reaches
@@ -147,6 +149,7 @@ const FAILURE_SENTENCES: Record<FailureCode, [string, string]> = {
   JOB_BUDGET_EXCEEDED: ['任务成本超过这个仓库的单任务预算。', "The job cost more than this repository's single-job budget."],
   DUPLICATE_WORK: ['已有 PR 覆盖这个 issue。', 'A pull request already covers this issue.'],
   STAGE_EVIDENCE_MISSING: ['任务缺少阶段证据，已停止。', 'The job is missing stage evidence, so it stopped.'],
+  WORK_TYPE_EVIDENCE_MISSING: ['任务缺少工作类型要求的证据，结果未核实。', 'The job is missing evidence required by its work type; the result is unverified.'],
   BRIDGE_ERROR: ['FlyBot 实例不可用，任务无法启动。', 'The FlyBot instance for this repository is unavailable.'],
   REPO_DISABLED: ['这个仓库已停用。', 'This repository is disabled.'],
   PROVIDER_BUDGET_EXCEEDED: ['模型供应商拒绝了这次调用：实例的 DSH 预算已用完。请检查供应商额度，或配置自己的模型 API 后重试。', 'The model provider refused the call: the DSH budget of the instance is used up. Check the provider quota, or add your own model API, then retry.'],

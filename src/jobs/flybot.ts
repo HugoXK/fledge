@@ -5,7 +5,7 @@ import type { Runner, RunnerContext, RunnerResult } from './runner.js'
 
 interface BridgePayload {
   jobId: string
-  kind: 'iterate' | 'review' | 'plan' | 'scope' | 'verify' | 'discover'
+  kind: RunnerContext['kind']
   branch?: string
   prUrl?: string
   sessionId?: string
@@ -67,6 +67,16 @@ function discoverInstructions(context: RunnerContext): string[] {
       : `The token cannot create issues; if you find a concrete issue, report it in summary and finish succeeded with no issueUrl. Do not open a PR.`,
     'Never create an inventory, backlog, 盘点, 清账, reconcile or "audit the backlog" issue. Do not duplicate an open issue or PR.',
     'Finish with the callback; do not send branch or prUrl.',
+  ]
+}
+
+function triageInstructions(context: RunnerContext): string[] {
+  const upstream = context.upstream
+  return [
+    `Mode: triage. Repository: ${upstream.owner}/${upstream.name}. Do not write code, create a branch, push, open a PR/issue, merge or change settings.`,
+    `Read the open issues and open pull requests on the upstream branch ${upstream.defaultBranch}.`,
+    'Report every open item in the callback triage field as { issues: [{ url, number, title, body, labels }], pulls: [{ url, number, title, body, head, base }] }. Fledge links duplicates, maps priority labels and ranks the issues.',
+    'Finish with status succeeded and the triage field; do not send branch or prUrl. Stop after reporting.',
   ]
 }
 
@@ -178,7 +188,7 @@ export class FlyBotRunner implements Runner {
         'You are the Fledge repository worker.',
         `Get the GitHub token with GET ${context.credential.url} and header "Authorization: Bearer ${context.credential.secret}".`,
         `Use the platform model at ${context.platform.baseUrl} with the job token as the API key; the model is ${context.platform.model}.`,
-        ...(context.kind === 'review' ? reviewInstructions(context) : context.kind === 'discover' ? discoverInstructions(context) : context.kind === 'plan' ? planInstructions(context) : context.kind === 'scope' ? scopeInstructions(context) : context.kind === 'verify' ? verifyInstructions(context) : iterateInstructions(context)),
+        ...(context.kind === 'review' ? reviewInstructions(context) : context.kind === 'discover' ? discoverInstructions(context) : context.kind === 'triage' ? triageInstructions(context) : context.kind === 'plan' ? planInstructions(context) : context.kind === 'scope' ? scopeInstructions(context) : context.kind === 'verify' ? verifyInstructions(context) : iterateInstructions(context)),
         `Send a progress heartbeat after each major step and at least every 10 minutes: POST ${context.callback.url} with JSON {"status":"running","summary":"<one line progress>","checkpoint":"<done + next>"} and "Authorization: Bearer ${context.callback.secret}".`,
         'GitHub attribution: end every issue, PR and comment you create with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',
         'Final callback: include "attribution": {"writtenBy":"...","claimedBy":"...","implementedBy":"...","testedBy":"...","reviewedBy":"..."} with role names only (Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2). Omit a key for a step that did not happen; never write "not run", "pending" or "(Team)".',

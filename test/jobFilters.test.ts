@@ -313,7 +313,7 @@ test('the kind filter offers every job kind the runner can start, and nothing el
   // copy of that union silently hides the jobs a user wants to find — `scope`
   // and `verify` are started by the work-item buttons — and offers a kind no job
   // can have.
-  assert.deepEqual([...JOB_FILTER_KINDS].sort(), ['iterate', 'plan', 'review', 'scope', 'verify'], 'the filter list is the JobKind union')
+  assert.deepEqual([...JOB_FILTER_KINDS].sort(), ['iterate', 'plan', 'review', 'scope', 'triage', 'verify'], 'the filter list is the JobKind union')
 
   const config = testConfig()
   const store = new Store(':memory:')
@@ -327,7 +327,7 @@ test('the kind filter offers every job kind the runner can start, and nothing el
     makeJobs(store, user.id, repo.id, 'iter', 2, 'succeeded', 'iterate')
 
     const page = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
-    for (const kind of ['iterate', 'review', 'plan', 'scope', 'verify']) {
+    for (const kind of ['iterate', 'review', 'plan', 'scope', 'verify', 'triage']) {
       assert.match(page.body, new RegExp(`<option value="${kind}"`), `the form offers ${kind}`)
     }
     assert.doesNotMatch(page.body, /<option value="research"/, 'the form offers no kind a job cannot have')
