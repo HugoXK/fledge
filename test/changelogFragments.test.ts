@@ -66,6 +66,47 @@ test('a directory that cannot be read fails instead of counting zero', () => {
   assert.equal(run.stdout.trim(), '', 'nothing that reads as a count reaches the planner')
 })
 
+// #563: the argv parser turned a missing value into the default directory, so a
+// caller that mis-built `--dir` got `changelog.d`'s number and exit 0 — the
+// silent miscount the helper exists to prevent. A usage error is exit 2 and
+// names the flag; it must not reach `readdirSync` and come back as an I/O error.
+function runArgs(args: string[]) {
+  return spawnSync(process.execPath, ['scripts/fragment-count.mjs', ...args], { encoding: 'utf8' })
+}
+
+test('a --dir without a usable value is exit 2 and names the flag', () => {
+  const missing = runArgs(['--dir'])
+  assert.equal(missing.status, 2, 'no value after --dir is a usage error, not the default directory')
+  assert.equal(missing.stdout.trim(), '', 'nothing that reads as a count reaches the planner')
+  assert.match(missing.stderr, /--dir/, 'the message names the flag to fix')
+
+  const nextFlag = runArgs(['--dir', '--verbose'])
+  assert.equal(nextFlag.status, 2, 'another flag is not a directory value')
+  assert.match(nextFlag.stderr, /--dir/)
+  assert.equal(/ENOENT/.test(nextFlag.stderr), false, 'a usage error must not be reported as an I/O error')
+
+  const empty = runArgs(['--dir', ''])
+  assert.equal(empty.status, 2, 'an empty value is not a directory')
+  assert.equal(empty.stdout.trim(), '')
+  assert.match(empty.stderr, /--dir/)
+})
+
+test('the --dir= form is never silently ignored', () => {
+  const dir = scratch()
+  try {
+    withFragment(dir, 'README.md')
+    withFragment(dir, 'other-one.fixed.md')
+    const run = runArgs([`--dir=${dir}`])
+    // Either the form is honoured — then the count is that directory's one
+    // fragment — or it is rejected as usage. Both are honest; defaulting to
+    // `changelog.d` and exiting 0 is the defect.
+    if (run.status === 0) assert.equal(run.stdout.trim(), '1', 'a --dir= form that exits 0 must have counted that directory')
+    else assert.notEqual(run.status, 0, '--dir=<dir> must not be ignored')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('fragments are counted, README.md is not, and the order is stable', () => {
   const dir = scratch()
   try {
