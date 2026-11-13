@@ -2234,6 +2234,21 @@ test('the interval respects the last duration and backs off after failures', () 
 })
 
 
+test('discovery never runs more often than every 60 minutes', () => {
+  const early = decideNextJob({
+    repo: repo(), now, lastRunAt: null, intervalMinutes: 15,
+    lastDurationMs: 0, failureStreak: 0, openWork: [], reviewerEnabled: false, reviewDue: false,
+    lastDiscoverAt: iso(-30 * 60_000), discoverIntervalMinutes: 15,
+  })
+  assert.equal(early.kind, 'none')
+  const due = decideNextJob({
+    repo: repo(), now, lastRunAt: null, intervalMinutes: 15,
+    lastDurationMs: 0, failureStreak: 0, openWork: [], reviewerEnabled: false, reviewDue: false,
+    lastDiscoverAt: iso(-61 * 60_000), discoverIntervalMinutes: 15,
+  })
+  assert.equal(due.kind, 'discover')
+})
+
 test('the scheduler runs one discovery session when idle, then idles', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
