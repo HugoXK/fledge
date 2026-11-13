@@ -123,3 +123,48 @@ test('an admin action is still refused for a non-admin after re-authentication',
     await built.close()
   }
 })
+
+// #460 review: the eight destructive handlers this change touches also have to
+// be rate-limited. A stolen cookie (or a page that resubmits itself) must not be
+// able to hammer one of them, and the bucket has to be keyed on the client
+// address rather than on anything the caller can mint per request.
+const DESTRUCTIVE_ATTEMPTS = 61
+
+async function hammerDelete(remoteAddress: string, forwardedFor?: string): Promise<number[]> {
+  const { built, store } = await build()
+  try {
+    const user = makeUser(store, { login: `hammer-${remoteAddress}`, status: 'approved' })
+    const repo = repoFor(store, user.id)
+    const { raw, cookie, csrf } = sessionFor(built, user)
+    // A stale session keeps every attempt side-effect free: each one is refused
+    // with the re-auth redirect, so what the loop measures is the limiter.
+    clearRecentAuth(store, raw)
+    const statuses: number[] = []
+    for (let i = 0; i < DESTRUCTIVE_ATTEMPTS; i += 1) {
+      const headers: Record<string, string> = { cookie, 'content-type': 'application/x-www-form-urlencoded' }
+      if (forwardedFor !== undefined) headers['x-forwarded-for'] = forwardedFor.replace('{n}', String(i + 1))
+      const response = await built.app.inject({
+        method: 'POST',
+        url: `/repos/${repo.id}/delete`,
+        headers,
+        payload: formBody({ csrf, confirmName: 'dt' }),
+        remoteAddress,
+      })
+      statuses.push(response.statusCode)
+    }
+    assert.equal(store.getRepo(repo.id) !== undefined, true, 'a refused attempt must not delete the repository')
+    return statuses
+  } finally {
+    await built.close()
+  }
+}
+
+test('a destructive action is refused with 429 once one client retries it too often', async () => {
+  const statuses = await hammerDelete('203.0.113.9')
+  assert.equal(statuses[DESTRUCTIVE_ATTEMPTS - 1], 429, `the ${DESTRUCTIVE_ATTEMPTS}th attempt answered ${statuses[DESTRUCTIVE_ATTEMPTS - 1]} instead of 429; statuses ${statuses.join(',')}`)
+})
+
+test('a rotating forged X-Forwarded-For does not buy unlimited destructive attempts', async () => {
+  const statuses = await hammerDelete('203.0.113.9', '198.51.100.{n}')
+  assert.equal(statuses[DESTRUCTIVE_ATTEMPTS - 1], 429, `a forged left end must not mint buckets; statuses ${statuses.join(',')}`)
+})

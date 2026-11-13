@@ -221,6 +221,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const jobs = new Jobs(store, config, runner, mailer, instances, githubApp)
   const loginLimiter = new RateLimiter(30, 60_000)
   const apiLimiter = new RateLimiter(120, 60_000)
+  // #460 review: the destructive actions below are rate-limited as well as
+  // re-authenticated. The bucket key is the client address through
+  // rateLimitKey, never a value the caller can mint; 60 a minute leaves room for
+  // an admin working through a batch of approvals while still stopping a loop, a
+  // resubmitting page or a stolen cookie.
+  const destructiveLimiter = new RateLimiter(60, 60_000)
+  const tooMany = (request: FastifyRequest, reply: FastifyReply): FastifyReply =>
+    htmlPage(reply, 429, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '请求过多', '这个操作尝试过于频繁，请稍后再试。', request.locale))
 
   const app = Fastify({
     logger: false,
@@ -2077,6 +2085,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/instance/stop', async (request, reply) => {
+    if (!destructiveLimiter.take(`flybot.instance.stop:${rateLimitKey(request)}`)) return tooMany(request, reply)
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     if (requireRecentAuth(request, reply, viewer, 'flybot.instance.stop')) return reply
     await instances.stop(repo.id)
@@ -2111,6 +2120,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/settings', async (request, reply) => {
+    if (!destructiveLimiter.take(`repo.settings:${rateLimitKey(request)}`)) return tooMany(request, reply)
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const body = form(request)
     const interval = normalizeInterval(body.interval, repo.interval_minutes)
@@ -2223,6 +2233,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/delete', async (request, reply) => {
+    if (!destructiveLimiter.take(`repo.delete:${rateLimitKey(request)}`)) return tooMany(request, reply)
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     if (requireRecentAuth(request, reply, viewer, 'repo.delete')) return reply
     const confirmName = (form(request).confirmName ?? '').trim()
@@ -2443,6 +2454,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/settings/tokens', async (request, reply) => {
+    if (!destructiveLimiter.take(`token.create:${rateLimitKey(request)}`)) return tooMany(request, reply)
     const viewer = approvedCsrfGuard(request)
     if (requireRecentAuth(request, reply, viewer, 'token.create')) return reply
     const body = form(request)
@@ -2486,6 +2498,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/settings/tokens/:id/revoke', async (request, reply) => {
+    if (!destructiveLimiter.take(`token.revoke:${rateLimitKey(request)}`)) return tooMany(request, reply)
     const viewer = approvedCsrfGuard(request)
     if (requireRecentAuth(request, reply, viewer, 'token.revoke')) return reply
     store.revokeApiToken(String((request.params as Record<string, string>).id), viewer.user.id)
@@ -2528,7 +2541,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const raw = sessions.start(viewer.user.id, request)
     const hash = sha256Hex(raw)
     store.deleteSession(viewer.sessionHash)
-    sessions.setCookies(reply, raw, { sessionHash: hash, user: viewer.user, csrfToken: sessions.csrfFor(hash), preview: viewer.preview })
+    // The rotated session is a new row, so it starts recent: `sessions.start`
+    // recorded `recent_auth_at` for it and the viewer has to carry the same fact.
+    sessions.setCookies(reply, raw, { sessionHash: hash, user: viewer.user, csrfToken: sessions.csrfFor(hash), recentAuthAt: new Date().toISOString(), preview: viewer.preview })
     store.audit(viewer.user.id, 'session.rotated')
     return reply.redirect(`/settings?notice=${encodeURIComponent('已换成新的会话 cookie，旧 cookie 已作废。')}#sessions`)
   })
@@ -2911,16 +2926,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/admin/users/:id/approve', async (request, reply) => {
+    if (!destructiveLimiter.take(`admin.user.approve:${rateLimitKey(request)}`)) return tooMany(request, reply)
     if ((await adminStatus(request, reply, 'approved')) === 'blocked') return reply
     return reply.redirect(`/admin?notice=${encodeURIComponent('已批准。')}`)
   })
 
   app.post('/admin/users/:id/reject', async (request, reply) => {
+    if (!destructiveLimiter.take(`admin.user.reject:${rateLimitKey(request)}`)) return tooMany(request, reply)
     if ((await adminStatus(request, reply, 'rejected')) === 'blocked') return reply
     return reply.redirect(`/admin?notice=${encodeURIComponent('已拒绝。')}`)
   })
 
   app.post('/admin/users/:id/quota', async (request, reply) => {
+    if (!destructiveLimiter.take(`admin.quota:${rateLimitKey(request)}`)) return tooMany(request, reply)
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
     if (requireRecentAuth(request, reply, viewer, 'admin.quota')) return reply
