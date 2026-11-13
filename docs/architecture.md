@@ -325,7 +325,11 @@ defect.
   an issue URL that focuses the board, and the route binds it to the repository
   with `parseIssueUrl` before anything is enqueued, so a foreign host or a
   foreign repository is refused with a visible error and no job row instead of
-  being caught only when the callback's board comes back. The duplicate rule is
+  being caught only when the callback's board comes back. Because the goal is
+  read by the agent as instructions, the route names the issue by the canonical
+  URL the parser rebuilds from the checked owner, name and number, never by the
+  pasted string: a query string or fragment on the link cannot reach the prompt.
+  The duplicate rule is
   the existing `jobs_one_active_per_repo` index: a start while a job is queued or
   running is refused with `JOB_ACTIVE`, while a start after the previous one
   finished is allowed because triage only reads.

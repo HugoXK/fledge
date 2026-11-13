@@ -2172,13 +2172,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/triage', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const t = translator(request.locale ?? 'zh')
-    const issueUrl = (form(request).issueUrl ?? '').trim()
-    if (issueUrl !== '' && !parseIssueUrl(repo, issueUrl, config.github.apiBase).ok) {
-      store.audit(viewer.user.id, 'triage.refused', `${repo.owner}/${repo.name}: ${issueUrl.slice(0, 200)}`)
+    const issueInput = (form(request).issueUrl ?? '').trim()
+    const issue = issueInput === '' ? undefined : parseIssueUrl(repo, issueInput, config.github.apiBase)
+    if (issue !== undefined && !issue.ok) {
+      store.audit(viewer.user.id, 'triage.refused', `${repo.owner}/${repo.name}: ${issueInput.slice(0, 200)}`)
       const message = t('这个 Issue 链接不属于当前仓库，分诊没有开始。', 'That issue link does not belong to this repository, so no triage job started.')
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(message)}#triage`)
     }
-    const goal = issueUrl === '' ? undefined : `${DEFAULT_TRIAGE_GOAL}\n\nStart the board with the issue at ${issueUrl}.`
+    // #595: this goal is instruction text. Name the issue by the URL the parser
+    // rebuilt from the parts it checked, never by what was pasted, so a query or
+    // fragment cannot ride into the prompt as attacker-authored instructions.
+    const goal = issue === undefined || !issue.ok ? undefined : `${DEFAULT_TRIAGE_GOAL}\n\nStart the board with the issue at ${issue.canonical}.`
     const result = await jobs.enqueue(repo, 'manual', goal, 'triage')
     store.audit(viewer.user.id, 'triage.enqueued', `${repo.owner}/${repo.name} ${result.ok ? 'ok' : result.error ?? 'failed'}`)
     const key = result.ok ? 'notice' : 'error'
