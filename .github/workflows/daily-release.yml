@@ -98,7 +98,12 @@ jobs:
           # live in scripts/lib/release-state.mjs, where a test executes them.
           gh api --paginate "repos/${REPO}/pulls?state=closed&per_page=100&sort=updated" | jq -s . > "$RUNNER_TEMP/prs.json"
           gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" | jq -s . > "$RUNNER_TEMP/open.json"
-          gh api "repos/${REPO}/commits/main/check-runs?per_page=100" > "$RUNNER_TEMP/checks.json"
+          # #567: ask for the named check. An unfiltered page holds the newest
+          # 100 runs, and four comment-triggered runs per issue comment push a
+          # green `ci-ok` onto page 2, where the planner reported it missing.
+          # The single-object answer is accepted by `checkRunsOf` in
+          # `scripts/lib/release-state.mjs`.
+          gh api "repos/${REPO}/commits/main/check-runs?per_page=100&check_name=ci-ok" > "$RUNNER_TEMP/checks.json"
           # The release branches, for the orphan classification: a branch the
           # routine pushed has to be distinguishable from one it never made
           # (#333). `GET /branches` answers `{ name, commit: { sha } }`; the sha is
