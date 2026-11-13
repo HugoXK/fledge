@@ -849,6 +849,24 @@ association, dedupes by comment id, creates or reuses the work item, and replies
 on the issue with the work-item/job/PR state. `/fledge approve` is maintainer-only
 and approves the latest completed plan.
 
+Four verbs act on the job the work item already has: `/fledge retry`,
+`/fledge pause`, `/fledge resume` and `/fledge cancel`. Retry goes through the
+same `Jobs.retryJob` mapping the console's retry button uses, so the two surfaces
+cannot drift, and a retried job that already carries a pull request continues it
+as a `followup` on the same branch instead of opening a second one. Pause and
+cancel call the existing stop paths, and the reply is built from the outcome
+`pauseJob`/`cancelJob` return rather than from an assumption: it reports how many
+live sessions were stopped, how many were asked to stop at the next safe point,
+that no live session was reachable, or that the stop could not be delivered (no
+controller in queue-dispatch mode, or a failed bridge call), so it never claims a
+send that did not happen. A verb looks the job up by the work item, not through a
+window of the repository's newest jobs, so an older item is still answered
+truthfully. Resume creates the resumed job from the paused one. A verb with no work item, no job, or a job in a status it does not
+apply to is refused in the thread and creates nothing, so a command can never
+manufacture work. Each action reuses the existing audit strings (`job.retried`,
+`job.paused`, `job.resumed`, `job.cancelled`) and their timeline kinds rather
+than adding a second naming scheme.
+
 The inbox is also available as `GET /api/inbox/events`, a per-user SSE stream.
 The server reuses the cached inbox snapshot, sends the server-rendered inbox HTML
 when the question signature changes, and the browser replaces the section and
