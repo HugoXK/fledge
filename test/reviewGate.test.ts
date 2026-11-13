@@ -46,6 +46,7 @@ interface FakeState {
   branch: string
   comments: Array<Record<string, unknown>>
   reviews: Array<Record<string, unknown>>
+  commits: Array<Record<string, unknown>>
   checkRuns: Array<Record<string, unknown>>
   runs: Array<Record<string, unknown>>
   jobs: Record<string, Array<Record<string, unknown>>>
@@ -71,6 +72,7 @@ function initialState(): FakeState {
     branch: 'dev2/something',
     comments: [],
     reviews: [],
+    commits: [],
     checkRuns: [],
     runs: [],
     jobs: {},
@@ -109,6 +111,12 @@ async function withFakeGitHub(state: FakeState, body: (env: Record<string, strin
     }
     if (path === '/repos/o/r/pulls/7/reviews') {
       json(response, 200, state.reviews)
+      return
+    }
+    if (path === '/repos/o/r/pulls/7/commits') {
+      const perPage = Number(url.searchParams.get('per_page') ?? '100')
+      const page = Number(url.searchParams.get('page') ?? '1')
+      json(response, 200, state.commits.slice((page - 1) * perPage, page * perPage))
       return
     }
     if (path === '/repos/o/r/issues/7/comments') {
@@ -205,7 +213,7 @@ const { evaluateGate, COMMENT_VERDICT_FALLBACK_UNTIL } = (await import(REVIEW_GA
     api: (path: string) => Promise<unknown>
     threads?: (repo: string, prNumber: number) => Promise<unknown[]>
     repo: string
-    policy: { writers: string[]; requiredPass?: string; selfReview?: string[] }
+    policy: { writers: string[]; requiredPass?: string; selfReview?: string[]; reviewers?: string[]; requiredPassEmail?: string }
     prNumber: number
     tier?: string
     sha?: string
@@ -223,6 +231,11 @@ function fakeGateApi(state: FakeState): (path: string) => Promise<unknown> {
     }
     if (pathname === '/repos/o/r/pulls/7/files') return state.files.map((file) => (typeof file === 'string' ? { filename: file } : file))
     if (pathname === '/repos/o/r/pulls/7/reviews') return state.reviews
+    if (pathname === '/repos/o/r/pulls/7/commits') {
+      const perPage = Number(url.searchParams.get('per_page') ?? '100')
+      const page = Number(url.searchParams.get('page') ?? '1')
+      return state.commits.slice((page - 1) * perPage, page * perPage)
+    }
     if (pathname === '/repos/o/r/issues/7/comments') return state.comments
     throw new Error(`unexpected ${pathname}`)
   }
@@ -1373,4 +1386,110 @@ test('#341: a plan without a verdict timestamp fails closed instead of comparing
   const plan = repairPlan(blockingFixture({ verdictAt: undefined }))
   assert.equal(plan.action, 'blocked')
   assert.deepEqual(plan.ids, [], 'no repaint may be posted on a comparison it cannot make')
+})
+
+// --- #144: a PASS is not independent when a reviewer identity authored the tip
+//
+// The gate compared the verdict's `Written-by` to `pr.user.login` and never read
+// the commits under the tip. On 2026-11-09 `#104` and `#112` merged that way: the
+// PR author was `HugoXK`, the tip's commit was authored by `HugoXK-bot`, and the
+// PASS came from `HugoXK-bot` — one shared address resolves both accounts, so the
+// old check was satisfied by the author field alone.
+function reviewerCommit(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    sha: SHA,
+    author: { login: 'HugoXK-bot' },
+    commit: { author: { name: 'HugoXK', email: 'hugo2001xk@gmail.com' } },
+    ...overrides,
+  }
+}
+
+function reviewerPass(login = 'HugoXK-bot'): Record<string, unknown> {
+  return { body: PASS_BODY, state: 'APPROVED', submitted_at: '2026-11-09T07:00:00Z', user: { login }, author_association: 'COLLABORATOR' }
+}
+
+function shippedPolicy(): string {
+  return readFileSync(fileURLToPath(new URL('../.github/agent/review-policy.json', import.meta.url)), 'utf8')
+}
+
+test('#144: a PASS at a tip whose commit carries the reviewer login is refused', async () => {
+  const state = initialState()
+  state.policy = shippedPolicy()
+  state.author = 'HugoXK'
+  state.commits = [reviewerCommit()]
+  state.reviews = [reviewerPass()]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.notEqual(result.code, 0, 'a PASS cannot make a reviewer-authored tip independently reviewed')
+    assert.match(result.stderr, /authored by reviewer identity hugoxk-bot/)
+  })
+})
+
+test('#144: the unlinked-address branch refuses on the commit email when author.login is null', async () => {
+  const state = initialState()
+  state.policy = shippedPolicy()
+  state.author = 'HugoXK'
+  // An address the author can choose freely: the API leaves `author` null, so the
+  // only field left to compare is `commit.author.email`.
+  state.commits = [reviewerCommit({ author: null, commit: { author: { name: 'Day Dreamer', email: 'hugo2001xk@gmail.com' } } })]
+  state.reviews = [reviewerPass()]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.notEqual(result.code, 0, 'an unlinked reviewer address must not pass')
+    assert.match(result.stderr, /authored by reviewer identity hugo2001xk@gmail\.com/)
+  })
+})
+
+test('#144: an unreadable commit list fails the gate, it does not pass it', async () => {
+  const state = initialState()
+  state.author = 'HugoXK'
+  state.failPaths = ['/repos/o/r/pulls/7/commits']
+  state.reviews = [reviewerPass()]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.notEqual(result.code, 0, '"could not read" is never "no reviewer commits"')
+    assert.match(result.stderr, /cannot read the pull request commits, so the tip cannot be called independently reviewed/)
+  })
+})
+
+test('#144: a reviewer-authored commit past the first page is still caught', async () => {
+  const state = initialState()
+  state.author = 'HugoXK'
+  // The helper pages at per_page=100, so a 31-commit list never leaves page 1.
+  // Page 1 is full and clean; the reviewer commit is the only entry on page 2.
+  const filler = Array.from({ length: 100 }, (_, index) => ({
+    sha: `f${index}`,
+    author: { login: `dev-${index}` },
+    commit: { author: { name: 'Dev', email: `dev${index}@example.com` } },
+  }))
+  state.commits = [...filler, reviewerCommit()]
+  state.reviews = [reviewerPass()]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.notEqual(result.code, 0, 'the page-2 commit must be read')
+    assert.match(result.stderr, /authored by reviewer identity hugoxk-bot/)
+  })
+})
+
+test('#144: a normal Dev-authored tip still passes with a reviewer PASS', async () => {
+  const state = initialState()
+  state.commits = [{ sha: SHA, author: { login: 'HugoXK' }, commit: { author: { name: 'Fledge Platform Dev-3', email: 'dev3@fledge.local' } } }]
+  state.reviews = [reviewerPass()]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /PASS/)
+  })
+})
+
+test('#144: every login named in policy.reviewers is refused, not only requiredPass', async () => {
+  const state = initialState()
+  state.policy = JSON.stringify({ writers: ['HugoXK', 'HugoXK-bot'], requiredPass: 'HugoXK-bot', reviewers: ['HugoXK-bot', 'HugoXK-helper'] })
+  state.commits = [reviewerCommit({ author: { login: 'HugoXK-helper' }, commit: { author: { name: 'Helper', email: 'helper@example.com' } } })]
+  state.reviews = [reviewerPass()]
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(gateScript, ['--pr', '7'], env)
+    assert.notEqual(result.code, 0)
+    assert.match(result.stderr, /authored by reviewer identity hugoxk-helper/)
+  })
 })
