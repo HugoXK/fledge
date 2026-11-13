@@ -2724,6 +2724,15 @@ export class Store {
     return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?', repoId, limit)
   }
 
+  // #360 review: a work item's job is looked up by the item, not through a window
+  // of the repository's newest jobs. The window said "no job is attached" for a
+  // work item whose job was older than the limit — a false statement, and a
+  // refused control command. The newest row for the item is the one the console
+  // shows, so `created_at DESC, rowid DESC` keeps the two surfaces agreeing.
+  latestJobForWorkItem(workItemId: string): JobRow | undefined {
+    return this.get<JobRow>('SELECT * FROM jobs WHERE work_item_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', workItemId)
+  }
+
   listPrJobsForRepo(repoId: string, limit = 20): JobRow[] {
     return this.all<JobRow>("SELECT * FROM jobs WHERE repo_id = ? AND pr_url IS NOT NULL AND kind = 'iterate' AND (pr_state IS NULL OR pr_state != 'merged') ORDER BY created_at DESC, rowid DESC LIMIT ?", repoId, limit)
   }

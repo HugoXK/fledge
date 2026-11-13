@@ -142,19 +142,38 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // lines on the merged tree and moved none of them. The rework after review
   // `901ad95` adds eight lines to the bulk add path below the four top-of-file
   // registrations, so the webhook anchor reads `:3197` and the rest stay.
-  // The merge that puts #473 onto main@6271f9ec re-reads all five lines on the
-  // merged tree: main carries #460's 56 lines above the four top-of-file
-  // registrations, and #473 adds 25 more (the `densityMode` import, the
-  // response-hook branch and the `/density/:mode` route) above them, so those
-  // read `:597`/`:632`/`:642`/`:652` and the webhook registration `:3292`. The
-  // gateway pair does not move and stays `:155`/`:180`, because the insert lands
-  // below both. No result is added or dismissed.
+  // #460 rebases onto a main carrying #499 and re-reads all seven lines on its
+  // own tree: the re-authentication helper, the route-level limit handed to
+  // `@fastify/rate-limit` and the plugin registration add 56 lines above the four
+  // top-of-file registrations, which read `:572`/`:607`/`:617`/`:627`, while the
+  // eight destructive registrations and the plugin's bookkeeping leave the
+  // webhook registration at `:3267`. The gateway pair does not move and stays
+  // `:155`/`:180`, because #497's change to that file lands below both
+  // registrations; no result is added or dismissed.
+  // #360's refresh onto `main@15c336e9` re-read all seven lines on the merged
+  // tree rather than summing them: this branch adds an 18-line reply helper above
+  // the four top-of-file registrations and its 48-line issue-verb block above the
+  // webhook registration, so those read `:590`/`:625`/`:635`/`:645` and the
+  // webhook registration `:3333`. The gateway pair does not move and stays
+  // `:155`/`:180`. No result is added or dismissed: the two gateway alerts (#41,
+  // #42) stay the two dismissed false positives.
+  // The tip then merges `main@f20c8de`: #517 floors discovery at 60 minutes in
+  // `src/jobs/service.ts` and #514 rewrites the daily-release header, and neither
+  // touches `src/app.ts`, so that merge re-read all seven anchors and moved none
+  // (`:590`/`:625`/`:635`/`:645`/`:3333` and `:155`/`:180` then).
+  // #473 then lands on main (the `densityMode` import, the response-hook branch
+  // and the `/density/:mode` route, 25 lines) above the four top-of-file
+  // registrations, so the refresh onto `main@5d848df` re-reads all seven anchors
+  // on the merged tree: those read `:615`/`:650`/`:660`/`:670` and the webhook
+  // registration `:3358`, while the gateway pair stays `:155`/`:180` because the
+  // insert lands below both. No result is added or dismissed.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3292',
-    'js/missing-rate-limiting|src/app.ts|597',
-    'js/missing-rate-limiting|src/app.ts|632',
-    'js/missing-rate-limiting|src/app.ts|642',
-    'js/missing-rate-limiting|src/app.ts|652',
+    'js/missing-rate-limiting|src/app.ts|3358',
+    'js/missing-rate-limiting|src/app.ts|615',
+    'js/missing-rate-limiting|src/app.ts|650',
+    'js/missing-rate-limiting|src/app.ts|660',
+    'js/missing-rate-limiting|src/app.ts|670',
+
     'js/missing-rate-limiting|src/gateway/gateway.ts|155',
     'js/missing-rate-limiting|src/gateway/gateway.ts|180',
   ])
