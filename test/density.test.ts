@@ -90,6 +90,12 @@ test('#473: the sticky thead and the bounded scrollport are one contract', () =>
     'sticky without a bounded scrollport does nothing: .table-scroll needs overflow-y: auto and a max-height that subtracts var(--header-h) from 100dvh',
   )
 
+  // The bound belongs to the table layout: it must be live on a desktop and a
+  // tablet, and absent at 360 where the same markup is a card stack.
+  assert.equal(conditionHolds(bounded.media ?? '', 1280), true, 'the bounded scrollport must apply at 1280px')
+  assert.equal(conditionHolds(bounded.media ?? '', 768), true, 'the bounded scrollport must apply at 768px')
+  assert.equal(conditionHolds(bounded.media ?? '', 360), false, 'the bounded scrollport must not bound the phone card stack')
+
   // Two layers already stick above a repository page: the header and the
   // repository subnav. A bound that ignores the subnav parks the thead under it.
   const subnavBound = rules.find((rule) => {
