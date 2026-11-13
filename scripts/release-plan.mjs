@@ -84,10 +84,10 @@ export function planRelease(input) {
     releaseAt,
   } = input ?? {}
 
-  // The planner is told how many fragments exist, not what they are called. A
-  // caller that still passes the legacy list keeps working: the count is its
-  // length, which is the number this used to report anyway.
-  const fragmentCount = Array.isArray(fragments) ? fragments.length : Number(fragments ?? 0)
+  // The planner is told how many fragments exist, not what they are called. The
+  // contract is a count and nothing else: a malformed value is zero, so the
+  // night is refused as `no-fragments` instead of printing `NaN` in the body.
+  const fragmentCount = Number.isInteger(fragments) && fragments > 0 ? fragments : 0
   const tags = Array.isArray(existingTags) ? existingTags : []
   const windowed = windowOf(Array.isArray(prs) ? prs : [], lastTagCommittedAt)
 

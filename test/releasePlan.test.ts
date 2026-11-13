@@ -83,12 +83,15 @@ test('no changelog fragment blocks the release and the count is still reported',
   assert.equal(plan.reason, 'no-fragments')
 })
 
-test('the legacy list shape still counts by its length', () => {
-  // A caller that has not moved to the count keeps working, and the plan reports
-  // the same number either way.
-  const plan = planRelease(input({ prs: [feat(1), feat(2), feat(3), feat(4), feat(5), fix(6), fix(7), fix(8), fix(9), fix(10)], fragments: ['a.fixed.md', 'b.fixed.md'] }))
-  assert.equal(plan.fragments, 2)
-  assert.equal(plan.shouldRelease, true)
+test('a malformed fragment count counts as zero instead of reaching the body', () => {
+  // `NaN` used to travel through the plan into "changelog fragments: **NaN**".
+  // The planner now refuses the night, which is the safe answer.
+  for (const fragments of [Number.NaN, 1.5, -3]) {
+    const plan = planRelease(input({ prs: [feat(1), feat(2), feat(3), feat(4), feat(5), fix(6), fix(7), fix(8), fix(9), fix(10)], fragments }))
+    assert.equal(plan.fragments, 0, `${fragments} is not a count`)
+    assert.equal(plan.reason, 'no-fragments')
+    assert.equal(plan.shouldRelease, false)
+  }
 })
 
 test('an open release PR blocks a second one', () => {
