@@ -1,1 +1,0 @@
-The page frame, header and footer now keep their content clear of a phone's home indicator and of the notch's side insets: each padding adds the matching `safe-area-inset` to the design value, so the clearance survives the 960px breakpoint instead of being dropped by a later shorthand, and a landscape notched phone no longer puts the first column under the sensor housing.
