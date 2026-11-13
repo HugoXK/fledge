@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import fastifyCookie from '@fastify/cookie'
 import fastifyFormbody from '@fastify/formbody'
 import fastifyStatic from '@fastify/static'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { Config } from './config.js'
@@ -2755,6 +2756,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       jobsTotal,
       auditPage, auditTotal,
       perPage,
+      lastJobsExport: lastExportOf(userIds, 'admin.jobs_export'),
+      lastAuditExport: lastExportOf(userIds, 'admin.audit_export'),
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
@@ -2787,6 +2790,58 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     ))
   }
 
+  // #459: the trail has to tie a file to its row and say how far the export
+  // reached. Allow-listed filters are codes and ISO dates, so they are echoed
+  // verbatim; `q` and `action` are free text (an admin may search by an address),
+  // so they are recorded lossily as length plus a digest prefix and never
+  // verbatim. No field may carry an address or a fragment of an exported row.
+  const lossyFilter = (name: string, value: string): string => {
+    const digest = createHash('sha256').update(value).digest('hex').slice(0, 8)
+    return `${name}=${String(value.length)}ch#${digest}`
+  }
+
+  const exportScope = (userIds: string[] | null): string => userIds === null ? 'scope=all' : `scope=users:${String(userIds.length)}`
+
+  const exportTrailDetail = (input: { filters: string[]; q: string; action?: string; rows: number; scope: string; sha256: string }): string => {
+    const parts: string[] = []
+    const echoed = input.filters.filter((value) => value !== '')
+    if (echoed.length > 0) parts.push(`filters=${echoed.join(',')}`)
+    if (input.q !== '') parts.push(lossyFilter('q', input.q))
+    if (input.action !== undefined && input.action !== '') parts.push(lossyFilter('action', input.action))
+    parts.push(`rows=${String(input.rows)}`, input.scope, `sha256=${input.sha256}`)
+    return parts.join(' ')
+  }
+
+  // The cap test asserts whole bodies, so the read is paged but the document is
+  // still assembled before sending: no single store call materialises the cap.
+  const EXPORT_PAGE_ROWS = 500
+  const assembleCsv = <T>(header: string, total: number, read: (limit: number, offset: number) => T[], line: (row: T) => string): { csv: string; rows: number } => {
+    const parts: string[] = [header]
+    let seen = 0
+    while (seen < total) {
+      const page = read(Math.min(EXPORT_PAGE_ROWS, total - seen), seen)
+      if (page.length === 0) break
+      for (const row of page) {
+        parts.push(line(row))
+        seen += 1
+      }
+    }
+    return { csv: parts.join('\n'), rows: seen }
+  }
+
+  // The newest completed export for the viewer's scope. A refused export keeps
+  // the pre-#459 `refused=too_large …` detail, so it is skipped: it has no file.
+  const lastExportOf = (userIds: string[] | null, action: 'admin.audit_export' | 'admin.jobs_export'): { at: string; rows: number; scope: string; sha256: string } | null => {
+    for (const row of store.searchAudit(userIds, { action }, 20, 0)) {
+      const detail = row.detail ?? ''
+      const rows = /(?:^|\s)rows=(\d+)(?:\s|$)/.exec(detail)
+      const scope = /(?:^|\s)(scope=all|scope=users:\d+)(?:\s|$)/.exec(detail)
+      const sha256 = /(?:^|\s)sha256=([0-9a-f]{64})(?:\s|$)/.exec(detail)
+      if (rows !== null && scope !== null && sha256 !== null) return { at: row.at, rows: Number(rows[1]), scope: scope[1] ?? '', sha256: sha256[1] ?? '' }
+    }
+    return null
+  }
+
   app.get('/admin/export/audit.csv', async (request, reply) => {
     const viewer = requireAdmin(request)
     if (viewer.preview === true) return reply.code(403).send({ error: 'preview' })
@@ -2795,10 +2850,21 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), action: (queryText(request, 'action') ?? '').slice(0, 80), from: (queryText(request, 'from') ?? '').slice(0, 20), to: to === '' ? '' : (to.length === 10 ? `${to}T23:59:59.999Z` : to) }
     const matched = store.countSearchAudit(userIds, filters)
     if (matched > EXPORT_ROW_CAP) return refuseLargeExport(request, reply, viewer, 'audit', matched)
-    const rows = store.searchAudit(userIds, filters, EXPORT_ROW_CAP, 0)
-    const csv = ['at,user_id,action,detail', ...rows.map((row) => [row.at, row.user_id ?? '', row.action, row.detail ?? ''].map(csvCell).join(','))].join('\n')
-    store.audit(viewer.user.id, 'admin.audit_export', `rows=${rows.length}`)
-    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-audit.csv"').send(csv)
+    const built = assembleCsv(
+      'at,user_id,action,detail',
+      matched,
+      (limit, offset) => store.searchAudit(userIds, filters, limit, offset),
+      (row) => [row.at, row.user_id ?? '', row.action, row.detail ?? ''].map(csvCell).join(','),
+    )
+    store.audit(viewer.user.id, 'admin.audit_export', exportTrailDetail({
+      filters: [filters.from === '' ? '' : `from=${filters.from}`, filters.to === '' ? '' : `to=${filters.to}`],
+      q: filters.q,
+      action: filters.action,
+      rows: built.rows,
+      scope: exportScope(userIds),
+      sha256: createHash('sha256').update(built.csv).digest('hex'),
+    }))
+    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-audit.csv"').send(built.csv)
   })
 
   app.get('/admin/export/jobs.csv', async (request, reply) => {
@@ -2808,10 +2874,20 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), status: (queryText(request, 'status') ?? '').slice(0, 30), kind: (queryText(request, 'kind') ?? '').slice(0, 30) }
     const matched = store.countSearchJobs(userIds, filters)
     if (matched > EXPORT_ROW_CAP) return refuseLargeExport(request, reply, viewer, 'jobs', matched)
-    const rows = store.searchJobs(userIds, filters, EXPORT_ROW_CAP, 0)
-    const csv = ['id,repo_id,user_id,status,kind,trigger,created_at,finished_at,pr_url,issue_url,cost_usd', ...rows.map((row) => [row.id, row.repo_id, row.user_id, row.status, row.kind, row.trigger, row.created_at, row.finished_at ?? '', row.pr_url ?? '', row.issue_url ?? '', row.cost_usd].map(csvCell).join(','))].join('\n')
-    store.audit(viewer.user.id, 'admin.jobs_export', `rows=${rows.length}`)
-    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-jobs.csv"').send(csv)
+    const built = assembleCsv(
+      'id,repo_id,user_id,status,kind,trigger,created_at,finished_at,pr_url,issue_url,cost_usd',
+      matched,
+      (limit, offset) => store.searchJobs(userIds, filters, limit, offset),
+      (row) => [row.id, row.repo_id, row.user_id, row.status, row.kind, row.trigger, row.created_at, row.finished_at ?? '', row.pr_url ?? '', row.issue_url ?? '', row.cost_usd].map(csvCell).join(','),
+    )
+    store.audit(viewer.user.id, 'admin.jobs_export', exportTrailDetail({
+      filters: [filters.status === '' ? '' : `status=${filters.status}`, filters.kind === '' ? '' : `kind=${filters.kind}`],
+      q: filters.q,
+      rows: built.rows,
+      scope: exportScope(userIds),
+      sha256: createHash('sha256').update(built.csv).digest('hex'),
+    }))
+    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-jobs.csv"').send(built.csv)
   })
 
   app.get('/admin/webhooks', async (request, reply) => {

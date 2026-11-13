@@ -242,6 +242,15 @@ per day. Test mail is rate-limited to one per minute.
   another admin or the super admin. Admin jobs and audit rows are filtered to that
   visible set and actor names are masked in the admin audit view. The owner sees
   all users and actions.
+- The two admin CSV exports (`/admin/export/jobs.csv`, `/admin/export/audit.csv`)
+  leave one `admin.jobs_export` / `admin.audit_export` row per file recording
+  `filters=` (the allow-listed codes and ISO dates verbatim), `rows=`, `scope=`
+  (`all` for the owner, `users:<n>` for a scoped admin), and `sha256=` over the
+  exact bytes sent, so a file found elsewhere can be matched to its row. Free-text
+  filters (`q`, `action`) are recorded only as `<length>ch#<8 hex>`, because an
+  admin may search by an address; no trail field carries an address or a fragment
+  of an exported row. The search page shows the newest export for the viewer's
+  scope, and the read is paged so one query never materialises the 5000-row cap.
 - The super-admin-only preview cookie renders the normal-user UI while leaving the
   actual session owner-scoped behind the scenes. The owner workspace is available
   in preview like a normal-user page; advanced team routes remain blocked.
