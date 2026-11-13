@@ -32,6 +32,9 @@ stream ends. A request that is already in flight is allowed to finish; the
 - Before a platform-funded request: if `remaining_cny <= 0`, return HTTP 402
   immediately and mark that user's active jobs `quota_exhausted` (their job
   tokens are revoked) so the UI does not wait for the job timeout.
+- Before the upstream call: a token that claims a `job:` id it does not own is
+  refused with `403 invalid_job_token` (#481), so a forged name spends no quota
+  and writes no ledger row, no `jobs.cost_usd` and no `users.quota_used_usd`.
 - After a platform-funded request: record a `quota_ledger` row and increment
   `users.quota_used_usd`. While a job is running the bridge injects the
   job-scoped `flg_` token into the model proxy, so the row also carries
@@ -176,10 +179,14 @@ When a chat call to the primary is refused **transiently** — `429` rate limit,
 retired — the gateway retries the same request on the next model in that order
 and answers with the first success. The job finishes once, on one model, and its
 row records which model replied plus the models it fell through (`jobs.model_json`).
-The record is per **chat call**, not per job: every call a job makes rewrites it,
-so a fallback that happened in an earlier call is not retained once a later call
-answers on the primary. The job page and the pull-request automation comment name
-the model of that last call.
+The record is per **chat call**, not per job: every call a job makes rewrites which
+model answered and which models **that call** tried, and the job page and the
+pull-request automation comment name the model of the last call. The fallback a job
+made is kept separately, as `fallback: { from, to, status }`, so the job page still
+states it after a later call answered on the primary; the first fallback is the one
+kept, and neither a later call that does not fall back nor one that falls back to a
+different pair can clear or replace it. The pull-request automation comment names
+only the last call's model and its attempts — it does not state an earlier fallback.
 
 It never falls back on:
 

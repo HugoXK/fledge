@@ -124,10 +124,9 @@ function parseDigest(value: string | null): RunDigest | null {
 }
 
 export type NextJob =
-  | { kind: 'iterate' }
   | { kind: 'followup'; workItemId: string; prUrl?: string; branch?: string }
   | { kind: 'review'; workItemId: string; prUrl: string; branch?: string }
-  | { kind: 'none'; reason: string }
+  | { kind: 'none'; reason: 'not due' | 'idle' }
 
 export interface SchedulerState {
   repo: RepoRow
@@ -152,9 +151,12 @@ export function decideNextJob(state: SchedulerState, options: { cooldownMs?: num
   const work = state.openWork
     .filter((item) => item.state !== 'merged' && item.state !== 'closed')
     .sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at))
-  if (work.length === 0) return { kind: 'iterate' }
+  // #478: no open work is a valid state. The scheduler must idle, not invent a
+  // job from repo.goal; a generic iterate here is what turned the team into a
+  // timer that produced a PR whether or not there was work.
+  if (work.length === 0) return { kind: 'none', reason: 'idle' }
   const item = work[0]
-  if (item === undefined) return { kind: 'iterate' }
+  if (item === undefined) return { kind: 'none', reason: 'idle' }
   if (item.pr_url) {
     const canReview = state.reviewerEnabled && state.repo.repo_role === 'maintainer'
     // A review that is not due never skips a due repo (#219). Continue the same
@@ -170,8 +172,11 @@ export function isDue(state: SchedulerState, cooldownMs: number = DEFAULT_COOLDO
   if (state.lastRunAt === null) return true
   const last = Date.parse(state.lastRunAt)
   if (!Number.isFinite(last)) return true
-  const duration = state.lastDurationMs === null || state.lastDurationMs < 0 ? 0 : state.lastDurationMs
-  const base = Math.max(state.intervalMinutes * 60_000, duration * 1.5 + cooldownMs)
+  // #478: this is the work-session cooldown, already capped by the caller at
+  // WORK_SESSION_COOLDOWN_MINUTES. The last job's duration no longer pushes the
+  // next work item out by another 1.5x; a finished job may be followed as soon
+  // as the cooldown has passed.
+  const base = Math.max(Math.max(1, state.intervalMinutes) * 60_000, cooldownMs)
   const backoff = state.failureStreak >= 2
     ? Math.min(2 ** (state.failureStreak - 1), 4)
     : 1

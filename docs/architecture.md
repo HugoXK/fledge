@@ -34,6 +34,12 @@ success and disabled — so the aria contract (`status`, `alert`, `aria-busy`,
 a dropped stream reports `lost` and `recovered` instead of going quiet. The
 state contract and its evidence are in [docs/ui.md](ui.md).
 
+The console renders UTC and says so: every timestamp goes through
+`humanTimeShort` in `src/lib/time.ts`, which prints the UTC wall clock with an
+explicit `UTC` suffix. The digest is scheduled in `DIGEST_TIMEZONE` and
+`/settings` names that zone, so an unlabelled timestamp beside it would read as
+a second clock that disagrees.
+
 ## Components
 
 ```
@@ -206,15 +212,15 @@ state contract and its evidence are in [docs/ui.md](ui.md).
   lease and queue columns are schema version 33.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
-  a maintainer reviewer is due); with no open work it starts an `iterate` from
-  the goal. The latest three run digests and open work items are carried into
-  the goal as bounded data. The interval is the minimum gap between runs, not a
-  cap on PRs or issues; it stretches to the last run's duration plus a cooldown
-  and backs off after two unproductive (failed, zero-output or meta) runs. A run
+  a maintainer reviewer is due); with no open work it **stays idle** and creates
+  no issue or PR. The latest three run digests and open work items are carried
+  into the goal as bounded data. Work sessions use a short global cooldown
+  (`WORK_SESSION_COOLDOWN_MINUTES`, default 15 minutes); the per-repository
+  interval is only an upper bound on the idle check, not a reason to produce.
+  A run backs off after two unproductive (failed, zero-output or meta) runs and
   is skipped while another job for that repository is active. The global
-  concurrency cap is 2. Iteration cadence ranges from every 15 minutes to every
-  30 days; review cadence from every 6 hours to every 30 days. Jobs that exceed
-  the timeout are failed.
+  concurrency cap is 2. Review cadence is from every 6 hours to every 30 days.
+  Jobs that exceed the timeout are failed.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
@@ -304,8 +310,12 @@ revoke stays one click.
   (`ORDER BY mp.created_at ASC, pm.created_at ASC`, `src/db.ts`), the same order
   the per-instance picker walks; there is no order column. The job row records
   the model that answered and the attempts of the **last chat call** —
-  `recordModel` rewrites `jobs.model_json` on every call — so an earlier
-  fallback is not retained across calls.
+  `recordModel` rewrites `jobs.model_json` on every call. The fallback a job made
+  is recorded beside that, as `fallback: { from, to, status }`, and the first one
+  is kept: a later call cannot erase it or replace it, whether that call answers on
+  the primary or falls back again to a different pair. The job page states that
+  pair on the `data-model` line unless the line's own `tried` clause already names
+  the same model; the pull-request automation comment states only the last call.
 
 The operator chooses the upstream through `PLATFORM_LLM_BASE_URL`; keep the
 real endpoint and key out of git and out of public documentation.
@@ -418,7 +428,13 @@ box, so that band draws an always-present classic scrollbar — an explicit trac
 plus `scrollbar-width`/`scrollbar-color` for Firefox — instead of relying on a
 thumb that is 1.5:1 on the panel. The band has its own
 `(min-width: 641px) and (max-width: 960px)` block in `public/app.css`; the cards
-below 641px and the table above 960px are unchanged. Add repository presents two explicit
+below 641px and the table above 960px are unchanged. The band's column control is
+built by the script from the table itself: every `table-priority` carries an `id`
+and an `aria-label`, the button points at that id with `aria-controls`, and its
+label repeats the table's name (`Show all columns — Users` / `显示全部列（用户）`),
+so the three controls on `/admin` are not announced identically. A new priority
+table must bring both attributes; without them the control is created unnamed and
+the association is lost. Add repository presents two explicit
 alternatives: the GitHub App installation path (recommended) and a collapsed
 fine-grained token form; users pick one, not both. The App repository picker
 carries the same task template, goal, auto-iterate interval and reviewer
@@ -466,6 +482,22 @@ product funnel, delivery efficiency (success and merge rate, median job and
 merge duration, review duration and score), cost by repository and by model,
 daily trend buckets, and current alerts. Alerts are localized, sorted by severity, and link to the affected repository or job; the dashboard shows the same alerts scoped to the signed-in user. Missing values render as `—`, never as a confident zero.
 
+The repository page's Delivery section also carries `#review-trend`, one row per
+fixed window (7 and 30 days). `Store.reviewTrend(repoId, sinceIso)` is a read
+model over rows the platform already stores — completed review jobs for the
+score, the recorded model and the PR link, `work_items` for when the pull request
+was opened and merged, and the `work_item.review_outcome` audit row for the
+outcome. The audit row, not the work item's state, is the outcome: a review that
+asks for changes moves the item to `changes_requested` and the next fix moves it
+on, so the current state would lose exactly the rework the trend is meant to
+show. There is no new table and no new job; the route computes the two cut-offs
+and the store returns one window each. A window with no review renders `—` in
+every cell with an empty-window sentence, the changes-requested rate prints its
+own denominator (`50% (1/2)`) or `—` when no review recorded an outcome, and
+fewer than `REVIEW_TREND_SMALL_SAMPLE` (5) reviews are shown with a
+`Small sample n=<n>` badge rather than smoothed into a trend. What each cell
+means is fixed in [ui.md](ui.md).
+
 `GET /api/read/metrics` exposes the same read model as JSON for an external
 control room: a normal user gets `personal`, a super admin gets the global sections.
 The route is read-only and session-scoped.
@@ -479,6 +511,24 @@ GitHub token and cannot change the evaluator, CI or merge gate. See
 `scripts/evolution-shadow.mjs` exporter turns recent jobs into a redacted
 dataset, and `--report` prints the baseline plus a time-ordered train/holdout
 split; it does not write to the database.
+
+The ledger's shape is the table that already existed, extended rather than
+replaced: `artifact_versions` gains `kind`, `scope`, `repo_id`, `parent_id` (the
+lineage edge), `base_version`, `frozen` and `paths_json`, and one new table
+`artifact_pointers` holds what `dev` and `stable` point at, because a pointer is
+not a version. A candidate write is a compare-and-swap against the head of its
+own lineage, so a candidate built on a stale version is refused rather than
+re-based; a candidate naming a frozen path is refused before it is stored and
+the refusal is audited (`evolution.candidate.refused`); and a rollback moves the
+pointer, which keeps both versions readable. The eligible artifacts, in risk
+order, and the frozen paths are data in `src/lib/evolution/artifacts.ts`, so the
+set is reviewed as a list rather than inferred from branches; the frozen set
+includes the stage gate (`src/lib/stages.ts`) and the merge gate
+(`src/jobs/service.ts`), and a candidate path is normalised before it is matched
+so `./src/auth/session.ts` and `src/jobs/../auth/session.ts` cannot walk around
+it. The migration fills one `stable` pointer per promoted artifact rather than
+one for the whole table.
+
 ### Failure categories and recovery guidance
 
 A failed job carries a stable category derived from its error (`quota`,
@@ -646,17 +696,19 @@ a later schedule can pick it up, and both edges are in `WORK_ITEM_TRANSITIONS`,
 so the manual status endpoint and the work-item board offer the moves the
 service itself writes.
 
-A due repository is never skipped because work is open. `decideNextJob()` carries
-the highest-priority open item into a `followup` job, or a `review` when the item
-has a PR and a maintainer reviewer is due. With no open work it starts a fresh
-`iterate`. The job goal gets a bounded `Carry-over` block with the last three run
-digests and up to four open items; the block is data, not an instruction, and is
-capped well below the 4000-character goal limit. Each finished run is classified
-as `pr`, `issue`, `review`, `zero`, `meta` or `failed`. A meta issue
+A due repository with open work is never skipped because the item exists.
+`decideNextJob()` carries the highest-priority open item into a `followup` job,
+or a `review` when the item has a PR and a maintainer reviewer is due. With no
+open work it returns `none` with reason `idle`: the scheduler writes
+`last_status='idle'` and creates no job, issue or PR. The job goal gets a bounded
+`Carry-over` block with the last three run digests and up to four open items; the
+block is data, not an instruction, and is capped well below the 4000-character
+goal limit. Each finished run is classified as `pr`, `issue`, `review`, `zero`,
+`meta` or `failed`. A meta issue
 (`存量/盘点/清账/reconcile/inventory/backlog audit`) is closed on the tracking
 board and notifies the owner instead of counting as a productive run. Two
 consecutive failed, zero-output or meta iterate runs double the effective
-interval up to a 4x cap; the manual run path and reviews bypass the backoff.
+cooldown up to a 4x cap; the manual run path and reviews bypass the backoff.
 
 ### Platform emergency stop
 
@@ -876,7 +928,8 @@ Admins get a read-only `/admin/metrics` funnel:
 users, approved, repos, users with jobs/PRs, success rate, job cost, attributed
 vs unattributed cost, scope/verify/iterate/review counts, Lead-only and grounded
 attribution events, and recent events. `/admin/search` filters jobs and audit entries by the same user
-visibility as the admin page and can export the current result as CSV.
+visibility as the admin page, pages each section twenty rows at a time with a pager that carries the
+active filters and the other section's page number, and can export the current result as CSV. An export whose filter matches more than 5000 rows is refused with the matched count and the cap instead of being truncated, and the refusal is audited; a filter at the cap still gets the whole file.
 
 `/admin/trials` shows every account, with the state derived at read time instead
 of stored: `running` and `expiring` inside the 7-day preview, `eligible` once it
@@ -1072,12 +1125,33 @@ states whether the maintainer enabled auto-merge. A missing step is omitted rath
 Both endpoints require `Authorization: Bearer <callbackSecret>`. The secret is
 generated per job, stored as a hash, and never appears in the UI.
 
+## Owner search
+
+`/search` answers "where is my X" without a query that can leave the signed-in
+owner's rows. The route in `src/app.ts` parses `q` plus optional `kind` and `repo`
+filters, then calls one store method per section — `Store.searchOwned` in
+`src/db.ts` — for repositories, jobs, work items and audit rows, and
+`searchPage` in `src/views/pages.ts` renders them, 20 rows per section with the
+cap stated on the page.
+
+The scoping is the point of the read model, so it lives in the SQL and not in the
+view: every section's clause carries `user_id = ?`, and the `repo` filter is
+resolved against that owner's own repository ids, which means a repository id
+belonging to someone else is dropped rather than answered — the page cannot be
+used to probe another account's ids. `LIKE` patterns are built by `likePattern`,
+which escapes `%`, `_` and `\` and appends `ESCAPE '\'`, so a user's `%` matches
+a literal `%`. Row types are `Pick<>`s of the full row types, so no section can
+render a token, a key or an email column: those are not selected at all. Audit
+rows carry no repository, so the audit section is labelled as unscoped rather
+than filtered by `repo`. An empty `q` renders the empty state instead of a
+listing, and every row links to the page that already owns it.
+
 ## Data model
 
 | Table | Purpose |
 |---|---|
 | `users` | GitHub identity, application status, signed agreement fields (name/version/time/IP/UA), role, quota, own model (encrypted key) |
-| `sessions` | hashed session id, expiry, IP/UA |
+| `sessions` | hashed session id, expiry, IP/UA; the settings page lists and revokes the viewer's rows by `user_id` |
 | `oauth_states` | short-lived OAuth `state` values |
 | `approval_tokens` | single-use approve/reject links |
 | `repos` | upstream/fork identity, encrypted token, permission, reviewer config, goal, cadence, state |
@@ -1086,7 +1160,7 @@ generated per job, stored as a hash, and never appears in the UI.
 | `quota_ledger` | per-request cost records |
 | `notifications` | in-app messages (quota, job failure), stored as written and localized at render |
 | `audit_log` | who changed what |
-| `settings` | small key/value flags (e.g. quota notice dedupe) |
+| `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
 
 ## Job lifecycle
 
@@ -1118,6 +1192,7 @@ callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
 | Fledge → SMTP | credentials in env, never logged |
 | FlyBot bridge → Fledge | job callback secret; credential URL; job token |
 | Fledge → model provider | platform key or user key; SSRF guard on user URLs |
+| User → host resources | per-user ceilings on repositories (`LIMIT_REPOS_PER_USER`) and FlyBot instances (`LIMIT_INSTANCES_PER_USER`, optional `LIMIT_INSTANCES_GLOBAL`), refused before anything is created and audited as `limit.refused`. The explicit provision and both repository-add paths consult the instance ceiling, so an add cannot bypass it; only an instance that holds a slot counts, so a stopped instance does not block its own restart. Admins are exempt |
 | Admin email link | single-use 32-byte token, 7-day expiry |
 
 ## Failure modes

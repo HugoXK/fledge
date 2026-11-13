@@ -5,7 +5,9 @@ import { mkdirSync } from 'node:fs'
 import { log } from './lib/log.js'
 import { nowIso } from './lib/time.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
+import { parseModelRun } from './lib/modelRun.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
+import { artifactKey, candidateRefusal, type CandidateRefusal } from './lib/evolution/artifacts.js'
 
 // #355: one settings row marks the PAT expiry backfill as done, so a later
 // operator token (explicitly minted without an expiry) is never given one by a
@@ -31,6 +33,26 @@ const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: st
 export type UserStatus = 'onboarding' | 'pending' | 'approved' | 'rejected'
 export type UserRole = 'user' | 'admin' | 'superadmin'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'paused' | 'quota_exhausted'
+
+// #361: a repository's review history, read from rows that already exist.
+// A window is one `since`; the page asks for two. The outcome of a review is
+// not the work item's current state (a later fix moves it on), so the count
+// comes from the audit row the job service writes when the review finishes.
+export interface ReviewTrendWindow {
+  reviews: number
+  averageScore: number | null
+  outcomes: number
+  changesRequested: number
+  changesRequestedRate: number | null
+  medianPrOpenToReviewMs: number | null
+  medianPrOpenToMergeMs: number | null
+  models: Array<{ label: string; reviews: number }>
+  smallSample: boolean
+}
+
+// Below this many completed reviews the page says "small sample" instead of
+// letting one score read as a trend.
+export const REVIEW_TREND_SMALL_SAMPLE = 5
 
 export interface UserRow {
   id: string
@@ -337,6 +359,41 @@ export interface AuditRow {
   detail: string | null
 }
 
+// #362: only the columns the owner search renders, so a row it returns can carry
+// no `token_enc`, `platform_token_hash` or email.
+export type SearchRepoRow = Pick<RepoRow, 'id' | 'owner' | 'name' | 'enabled'>
+export type SearchJobRow = Pick<JobRow, 'id' | 'repo_id' | 'status' | 'kind' | 'goal' | 'summary' | 'error' | 'pr_url' | 'issue_url' | 'created_at'>
+export type SearchWorkItemRow = Pick<WorkItemRow, 'id' | 'repo_id' | 'title' | 'state' | 'issue_url' | 'pr_url' | 'updated_at'>
+export type SearchAuditRow = Pick<AuditRow, 'id' | 'at' | 'action' | 'detail'>
+
+export interface OwnedSearchFilters {
+  q: string
+  repo: string
+  kind: string
+  status: string
+  from: string
+  to: string
+}
+
+export interface OwnedSearchSection<T> {
+  rows: T[]
+  capped: boolean
+}
+
+export interface OwnedSearch {
+  repos: OwnedSearchSection<SearchRepoRow>
+  jobs: OwnedSearchSection<SearchJobRow>
+  workItems: OwnedSearchSection<SearchWorkItemRow>
+  audit: OwnedSearchSection<SearchAuditRow>
+}
+
+// A LIKE pattern built from a person's text has to match that text: `%`, `_` and
+// the escape character itself are escaped, and every clause that uses this also
+// carries `ESCAPE '\'`.
+function likePattern(q: string): string {
+  return `%${q.replace(/[\\%_]/g, (char) => `\\${char}`)}%`
+}
+
 export interface JobEventRow {
   id: number
   at: string
@@ -359,7 +416,28 @@ export interface ArtifactVersionRow {
   evidence_json: string | null
   created_at: string
   promoted_at: string | null
+  /** `unspecified` on rows written before ADR 0003's ledger columns existed. */
+  kind: string
+  scope: string
+  repo_id: string | null
+  /** The version this candidate was built on; null for a lineage root. */
+  parent_id: string | null
+  base_version: number | null
+  frozen: number
+  paths_json: string | null
 }
+
+export interface ArtifactPointerRow {
+  artifact: string
+  channel: string
+  version_id: string
+  updated_at: string
+}
+
+// A candidate write either lands or carries the reason it did not. Refusals are
+// values, not exceptions: the caller writes the audit reason and answers the
+// user, and a test can assert the pair without catching.
+export type ArtifactWriteResult = { ok: true; row: ArtifactVersionRow } | { ok: false; refusal: CandidateRefusal }
 
 export interface EvaluationRow {
   id: string
@@ -818,9 +896,27 @@ CREATE TABLE IF NOT EXISTS artifact_versions (
   evidence_json TEXT,
   created_at TEXT NOT NULL,
   promoted_at TEXT,
+  kind TEXT NOT NULL DEFAULT 'unspecified',
+  scope TEXT NOT NULL DEFAULT 'global',
+  repo_id TEXT,
+  parent_id TEXT,
+  base_version INTEGER,
+  frozen INTEGER NOT NULL DEFAULT 0,
+  paths_json TEXT,
   UNIQUE(artifact, version)
 );
 CREATE INDEX IF NOT EXISTS artifact_versions_artifact_idx ON artifact_versions(artifact, version DESC);
+
+-- ADR 0003's ledger pointers: one row per artifact and channel, so "what is dev
+-- right now" is a row rather than a scan, and a compare-and-swap has something
+-- concrete to compare against. A version row is immutable; a pointer moves.
+CREATE TABLE IF NOT EXISTS artifact_pointers (
+  artifact TEXT NOT NULL,
+  channel TEXT NOT NULL CHECK (channel IN ('dev', 'stable')),
+  version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE CASCADE,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (artifact, channel)
+);
 
 CREATE TABLE IF NOT EXISTS evaluations (
   id TEXT PRIMARY KEY,
@@ -902,6 +998,7 @@ export class Store {
     this.migrateColumns()
     this.migrateRepoColumns()
     this.migrateWebhookColumns()
+    this.migrateArtifactColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
     this.migrateModelsV2()
@@ -1009,6 +1106,61 @@ export class Store {
     ]
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE webhook_deliveries ADD COLUMN ${name} ${type}`)
+    }
+  }
+
+  // ADR 0003 (`#424`): the ledger columns are added to the table that already
+  // holds versions, so existing rows keep their evidence and their foreign keys.
+  // `kind = 'unspecified'` is the honest value for a row written before the
+  // evolvable set existed; it is not silently claimed to be an evolvable kind.
+  private migrateArtifactColumns(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(artifact_versions)').map((row) => row.name))
+    const additions: Array<[string, string]> = [
+      ['kind', "TEXT NOT NULL DEFAULT 'unspecified'"],
+      ['scope', "TEXT NOT NULL DEFAULT 'global'"],
+      ['repo_id', 'TEXT'],
+      ['parent_id', 'TEXT'],
+      ['base_version', 'INTEGER'],
+      ['frozen', 'INTEGER NOT NULL DEFAULT 0'],
+      ['paths_json', 'TEXT'],
+    ]
+    for (const [name, type] of additions) {
+      if (!columns.has(name)) this.run(`ALTER TABLE artifact_versions ADD COLUMN ${name} ${type}`)
+    }
+    // A promoted row written before the pointer table existed becomes the
+    // `stable` pointer, so "what is stable now" has one answer after boot.
+    // One row per artifact, not one row for the table: a table with two
+    // promoted artifacts has two stable pointers to fill, and a migration is
+    // write-once, so a second boot must not be the thing that would have fixed
+    // it (#494 finding 3).
+    const promoted = this.all<{ id: string; artifact: string; promoted_at: string | null }>(
+      `SELECT v.id, v.artifact, v.promoted_at
+         FROM artifact_versions v
+        WHERE v.status = 'promoted'
+          AND v.rowid = (
+            SELECT v2.rowid
+              FROM artifact_versions v2
+             WHERE v2.artifact = v.artifact AND v2.status = 'promoted'
+             ORDER BY v2.version DESC, v2.rowid DESC
+             LIMIT 1
+          )
+        ORDER BY v.artifact`,
+    )
+    for (const row of promoted) {
+      const pointer = this.get<{ version_id: string }>(
+        "SELECT version_id FROM artifact_pointers WHERE artifact = ? AND channel = 'stable'",
+        row.artifact,
+      )
+      if (pointer !== undefined) continue
+      this.run(
+        "INSERT OR REPLACE INTO artifact_pointers (artifact, channel, version_id, updated_at) VALUES (?, 'stable', ?, ?)",
+        row.artifact,
+        row.id,
+        // A row can carry status `promoted` without a timestamp: `promoted_at`
+        // is only written by `promoteArtifactVersion`. The pointer needs a
+        // value, and the honest one is the moment this migration ran.
+        row.promoted_at ?? nowIso(),
+      )
     }
   }
 
@@ -1509,6 +1661,159 @@ export class Store {
     this.run('UPDATE artifact_versions SET status = ?, promoted_at = ? WHERE id = ?', status, nowIso(), id)
   }
 
+  // --- ADR 0003 ledger (#424) ------------------------------------------------
+  //
+  // A version row is immutable once written; the pointer is what moves. The
+  // compare-and-swap compares the candidate's declared base against the head of
+  // its own lineage, so a candidate built on a stale version is refused instead
+  // of being silently re-based and evaluated as a diff nobody reviewed.
+
+  artifactHead(artifact: string): number {
+    const row = this.get<{ version: number | null }>('SELECT MAX(version) AS version FROM artifact_versions WHERE artifact = ?', artifact)
+    return row?.version ?? 0
+  }
+
+  artifactPointer(artifact: string, channel: 'dev' | 'stable' = 'dev'): ArtifactVersionRow | null {
+    const pointer = this.get<ArtifactPointerRow>('SELECT * FROM artifact_pointers WHERE artifact = ? AND channel = ?', artifact, channel)
+    if (pointer === undefined) return null
+    return this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', pointer.version_id) ?? null
+  }
+
+  createArtifactCandidate(input: {
+    id: string
+    kind: string
+    scope: 'global' | 'repository'
+    repoId?: string | null
+    content: string
+    hash: string
+    baseVersion: number
+    paths: readonly string[]
+    evidenceJson?: string | null
+  }): ArtifactWriteResult {
+    const repoId = input.repoId ?? null
+    // Decide the refusal before building the key: `artifactKey()` throws when a
+    // repository-scoped candidate carries no repository, and a refusal is a
+    // value here, not an exception (#494 finding 4). The head is only needed
+    // for the compare-and-swap, so the pre-check passes the declared base as
+    // the head and the CAS runs on its own afterwards.
+    const label = input.scope === 'repository' && (repoId === null || repoId === '') ? `${input.kind}@?` : input.kind
+    const preRefusal = candidateRefusal({
+      kind: input.kind,
+      scope: input.scope,
+      repoId,
+      paths: input.paths,
+      baseVersion: input.baseVersion,
+      headVersion: input.baseVersion,
+    })
+    if (preRefusal !== null) {
+      this.audit(null, 'evolution.candidate.refused', `${label}: ${preRefusal.code} — ${preRefusal.detail}`)
+      return { ok: false, refusal: preRefusal }
+    }
+    const artifact = artifactKey({ kind: input.kind, scope: input.scope, repoId })
+    const head = this.artifactHead(artifact)
+    if (input.baseVersion !== head) {
+      // Compare-and-swap: the candidate declares the version it was built
+      // against; a stale candidate is refused rather than re-based.
+      const refusal: CandidateRefusal = {
+        code: 'STALE_BASE',
+        detail: `declared base ${String(input.baseVersion)} but the head is ${String(head)}`,
+      }
+      this.audit(null, 'evolution.candidate.refused', `${artifact}: ${refusal.code} — ${refusal.detail}`)
+      return { ok: false, refusal }
+    }
+    const parent = head === 0
+      ? null
+      : this.get<{ id: string }>('SELECT id FROM artifact_versions WHERE artifact = ? AND version = ?', artifact, input.baseVersion) ?? null
+    return this.transaction(() => {
+      this.run(
+        'INSERT INTO artifact_versions (id, artifact, version, hash, content, status, evidence_json, created_at, promoted_at, kind, scope, repo_id, parent_id, base_version, frozen, paths_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 0, ?)',
+        input.id,
+        artifact,
+        head + 1,
+        input.hash,
+        input.content,
+        'candidate',
+        input.evidenceJson ?? null,
+        nowIso(),
+        input.kind,
+        input.scope,
+        repoId,
+        parent?.id ?? null,
+        head,
+        JSON.stringify(input.paths),
+      )
+      return { ok: true as const, row: this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', input.id)! }
+    })
+  }
+
+  /**
+   * Move a candidate onto a channel. `repoId` is the caller's own repository:
+   * a repository-scoped artifact may only be accepted by that repository, and a
+   * global artifact carries no repository at all.
+   */
+  acceptArtifactCandidate(input: { id: string; repoId?: string | null; channel?: 'dev' | 'stable' }): ArtifactWriteResult {
+    const row = this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', input.id)
+    if (row === undefined) return { ok: false, refusal: { code: 'NOT_FOUND', detail: `no artifact version ${input.id}` } }
+    const repoId = input.repoId ?? null
+    if (row.scope === 'repository' && row.repo_id !== repoId) {
+      return { ok: false, refusal: { code: 'SCOPE_MISMATCH', detail: `artifact ${row.artifact} belongs to another repository` } }
+    }
+    if (row.scope === 'global' && repoId !== null) {
+      return { ok: false, refusal: { code: 'SCOPE_MISMATCH', detail: `artifact ${row.artifact} is global` } }
+    }
+    const channel = input.channel ?? 'dev'
+    return this.transaction(() => {
+      this.run('UPDATE artifact_versions SET status = ?, promoted_at = ? WHERE id = ?', channel === 'stable' ? 'promoted' : 'accepted', nowIso(), row.id)
+      this.run(
+        'INSERT INTO artifact_pointers (artifact, channel, version_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(artifact, channel) DO UPDATE SET version_id = excluded.version_id, updated_at = excluded.updated_at',
+        row.artifact,
+        channel,
+        row.id,
+        nowIso(),
+      )
+      return { ok: true as const, row: this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', row.id)! }
+    })
+  }
+
+  /**
+   * Point a channel back at an earlier version of the same artifact. The rows
+   * in between stay readable: a rollback is a pointer move, not a delete, which
+   * is what makes "both versions readable" true after one.
+   */
+  rollbackArtifact(input: { artifact: string; toVersionId: string; channel?: 'dev' | 'stable' }): ArtifactWriteResult {
+    const target = this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', input.toVersionId)
+    if (target === undefined) return { ok: false, refusal: { code: 'NOT_FOUND', detail: `no artifact version ${input.toVersionId}` } }
+    if (target.artifact !== input.artifact) {
+      return { ok: false, refusal: { code: 'SCOPE_MISMATCH', detail: `artifact ${input.toVersionId} belongs to ${target.artifact}, not ${input.artifact}` } }
+    }
+    const channel = input.channel ?? 'dev'
+    return this.transaction(() => {
+      this.run(
+        'INSERT INTO artifact_pointers (artifact, channel, version_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(artifact, channel) DO UPDATE SET version_id = excluded.version_id, updated_at = excluded.updated_at',
+        input.artifact,
+        channel,
+        target.id,
+        nowIso(),
+      )
+      return { ok: true as const, row: this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', target.id)! }
+    })
+  }
+
+  /** The lineage from a version back to its root, newest first. */
+  artifactLineage(id: string): ArtifactVersionRow[] {
+    const lineage: ArtifactVersionRow[] = []
+    let current = this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', id)
+    const seen = new Set<string>()
+    while (current !== undefined && !seen.has(current.id)) {
+      seen.add(current.id)
+      lineage.push(current)
+      current = current.parent_id === null
+        ? undefined
+        : this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', current.parent_id)
+    }
+    return lineage
+  }
+
   createEvaluation(input: {
     id: string
     artifactId: string
@@ -1677,6 +1982,63 @@ export class Store {
       medianJobMs: median(jobDurations),
       medianMergeMs: median(mergeDurations),
       medianReviewMs: median(reviewDurations),
+    }
+  }
+
+  reviewTrend(repoId: string, sinceIso: string): ReviewTrendWindow {
+    const reviewJobs = this.all<JobRow>(
+      `SELECT * FROM jobs
+        WHERE repo_id = ? AND kind = 'review' AND status = 'succeeded'
+          AND review_score IS NOT NULL AND finished_at IS NOT NULL AND finished_at >= ?`,
+      repoId,
+      sinceIso,
+    )
+    const scores = reviewJobs.flatMap((job) => (job.review_score === null ? [] : [job.review_score]))
+    const averageScore = scores.length === 0 ? null : Math.round((scores.reduce((sum, score) => sum + score, 0) / scores.length) * 10) / 10
+    const outcomes = this.all<{ outcome: string }>(
+      `SELECT CASE WHEN a.detail LIKE '%: changes_requested score=%' THEN 'changes_requested' ELSE 'approved' END AS outcome
+         FROM audit_log a
+         JOIN work_items w ON w.id = substr(a.detail, 1, instr(a.detail, ':') - 1)
+        WHERE a.action = 'work_item.review_outcome' AND a.at >= ? AND w.repo_id = ?
+          AND (a.detail LIKE '%: changes_requested score=%' OR a.detail LIKE '%: approved score=%')`,
+      sinceIso,
+      repoId,
+    )
+    const changesRequested = outcomes.filter((row) => row.outcome === 'changes_requested').length
+    const reviewDelays = this.all<{ opened: string; reviewed: string }>(
+      `SELECT w.created_at AS opened, j.finished_at AS reviewed
+         FROM jobs j
+         JOIN work_items w ON w.id = j.work_item_id
+        WHERE j.repo_id = ? AND j.kind = 'review' AND j.status = 'succeeded'
+          AND j.finished_at IS NOT NULL AND j.finished_at >= ? AND w.pr_url IS NOT NULL`,
+      repoId,
+      sinceIso,
+    ).flatMap((row) => {
+      const value = durationMs(row.opened, row.reviewed)
+      return value === null ? [] : [value]
+    })
+    const mergeDelays = this.all<WorkItemRow>('SELECT * FROM work_items WHERE repo_id = ? AND merged_at IS NOT NULL AND merged_at >= ?', repoId, sinceIso).flatMap((item) => {
+      const value = durationMs(item.created_at, item.merged_at)
+      return value === null ? [] : [value]
+    })
+    const byModel = new Map<string, number>()
+    for (const job of reviewJobs) {
+      const label = parseModelRun(job.model_json)?.model?.label
+      if (label === undefined) continue
+      byModel.set(label, (byModel.get(label) ?? 0) + 1)
+    }
+    return {
+      reviews: reviewJobs.length,
+      averageScore,
+      outcomes: outcomes.length,
+      changesRequested,
+      changesRequestedRate: outcomes.length === 0 ? null : Math.round((changesRequested / outcomes.length) * 1000) / 10,
+      medianPrOpenToReviewMs: median(reviewDelays),
+      medianPrOpenToMergeMs: median(mergeDelays),
+      models: [...byModel.entries()]
+        .map(([label, reviews]) => ({ label, reviews }))
+        .sort((a, b) => b.reviews - a.reviews || a.label.localeCompare(b.label)),
+      smallSample: reviewJobs.length < REVIEW_TREND_SMALL_SAMPLE,
     }
   }
 
@@ -1999,6 +2361,26 @@ export class Store {
     this.run('DELETE FROM sessions WHERE id_hash = ?', idHash)
   }
 
+  // #356: the settings page lists a user's live sessions and revokes them. Every
+  // read and every delete is scoped to `user_id`, so one user's handle can never
+  // address another user's row: a wrong or foreign hash deletes nothing and the
+  // caller cannot tell the two apart.
+  listSessions(userId: string): SessionRow[] {
+    return this.all<SessionRow>(
+      'SELECT * FROM sessions WHERE user_id = ? AND expires_at > ? ORDER BY created_at DESC',
+      userId,
+      nowIso(),
+    )
+  }
+
+  deleteSessionOfUser(userId: string, idHash: string): boolean {
+    return this.runChanges('DELETE FROM sessions WHERE id_hash = ? AND user_id = ?', idHash, userId) > 0
+  }
+
+  deleteOtherSessions(userId: string, keepIdHash: string): number {
+    return this.runChanges('DELETE FROM sessions WHERE user_id = ? AND id_hash <> ?', userId, keepIdHash)
+  }
+
   deleteExpiredSessions(): void {
     this.run('DELETE FROM sessions WHERE expires_at <= ?', nowIso())
   }
@@ -2175,6 +2557,28 @@ export class Store {
 
   listRepoInstances(): RepoInstanceRow[] {
     return this.all<RepoInstanceRow>('SELECT * FROM repo_instances ORDER BY created_at DESC')
+  }
+
+  // #457 review: the ceiling counts instances that occupy a slot, not rows.
+  // `stop()` keeps the row with `status = 'stopped'` and a failed provision
+  // leaves one behind, so counting every row would refuse a user at the cap the
+  // restart of their own stopped instance. `excludeRepoId` is the repository
+  // being provisioned: its own row must not count against its restart either.
+  countRepoInstancesForUser(userId: string, excludeRepoId = ''): number {
+    return this.get<{ total: number }>(
+      `SELECT COUNT(*) AS total FROM repo_instances
+       WHERE user_id = ? AND status IN ('starting', 'provisioning', 'ready') AND repo_id <> ?`,
+      userId,
+      excludeRepoId,
+    )?.total ?? 0
+  }
+
+  countRepoInstances(excludeRepoId = ''): number {
+    return this.get<{ total: number }>(
+      `SELECT COUNT(*) AS total FROM repo_instances
+       WHERE status IN ('starting', 'provisioning', 'ready') AND repo_id <> ?`,
+      excludeRepoId,
+    )?.total ?? 0
   }
 
   saveRepoInstance(input: RepoInstanceRow): RepoInstanceRow {
@@ -2698,28 +3102,43 @@ export class Store {
     this.run("DELETE FROM jobs WHERE status IN ('succeeded', 'failed', 'quota_exhausted') AND finished_at IS NOT NULL AND finished_at < ?", cutoff(365))
     this.run('DELETE FROM audit_log WHERE at < ?', cutoff(365))
     this.run('DELETE FROM quota_ledger WHERE at < ?', cutoff(730))
-    const settings = this.all<{ key: string; value: string }>(
-      "SELECT key, value FROM settings WHERE key LIKE 'followup:%' OR key LIKE 'question_notified:%' OR key LIKE 'digest_sent:%' OR key LIKE 'email_test:%' OR key LIKE 'webhook_delivery:%' OR key LIKE 'email_reply:%' OR key LIKE 'github_app_state:%' OR key LIKE 'installation_sender:%'",
-    )
-    const limits: Array<[string, string]> = [
-      ['followup:', cutoff(30)],
-      ['question_notified:', cutoff(30)],
-      ['digest_sent:', cutoff(14)],
-      ['email_test:', cutoff(1)],
-      ['webhook_delivery:', cutoff(30)],
-      ['merge_reconcile:', cutoff(30)],
-      ['email_reply:', cutoff(7)],
-      ['github_app_state:', cutoff(1)],
-      ['installation_sender:', cutoff(30)],
+    // #419: the prefix list and the cutoff table were two hand-kept copies of
+    // one mapping, so a key could be written without either half ever selecting
+    // it. `plan_expired:` and `plan_reminded:` are written per unapproved plan
+    // by `expirePlans` and sat outside the SELECT, so one row per plan stayed in
+    // `settings` forever. One table now feeds both the query and the cutoffs, so
+    // a prefix cannot half-exist again.
+    //
+    // `merge_reconcile:`, `retry_pending:` and `pending_followup:` are not here
+    // on purpose: they are reclaimed when the job they name is gone
+    // (`reconcileOrphans`), not by age. `merge_reconcile:` also throttles the
+    // merge pass, so its age is not a retention signal.
+    const SETTINGS_RETENTION: ReadonlyArray<readonly [string, number]> = [
+      ['followup:', 30],
+      ['question_notified:', 30],
+      ['digest_sent:', 14],
+      ['email_test:', 1],
+      ['webhook_delivery:', 30],
+      ['email_reply:', 7],
+      ['github_app_state:', 1],
+      ['installation_sender:', 30],
+      // A plan marker is read only while its job is unapproved, which ends at
+      // the plan deadline; the job row itself is kept for 365 days, so the
+      // marker gets the same window from the moment it was written.
+      ['plan_reminded:', 365],
+      ['plan_expired:', 365],
     ]
+    const settings = this.all<{ key: string; value: string }>(
+      `SELECT key, value FROM settings WHERE ${SETTINGS_RETENTION.map(([prefix]) => `key LIKE '${prefix}%'`).join(' OR ')}`,
+    )
     for (const row of settings) {
-      const limit = limits.find(([prefix]) => row.key.startsWith(prefix))?.[1]
-      if (limit === undefined) continue
+      const days = SETTINGS_RETENTION.find(([prefix]) => row.key.startsWith(prefix))?.[1]
+      if (days === undefined) continue
       const raw = row.value.slice(row.value.lastIndexOf(':') + 1)
       const at = /^\d{4}-\d{2}-\d{2}T/.test(row.value) ? Date.parse(row.value) : Number(raw)
       if (!Number.isFinite(at) || at === 0) continue
       const iso = at > 10_000_000_000 ? new Date(at).toISOString() : row.value
-      if (iso < limit) this.run('DELETE FROM settings WHERE key = ?', row.key)
+      if (iso < cutoff(days)) this.run('DELETE FROM settings WHERE key = ?', row.key)
     }
   }
 
@@ -2903,6 +3322,36 @@ export class Store {
   countSearchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string }): number {
     const query = this.jobFilter(userIds, filters, 0, 0, true)
     return Number(this.get<{ n: number }>(query.sql, ...query.params)?.n ?? 0)
+  }
+
+  // #362: the owner-facing search. It takes no user list — every clause is anchored
+  // on the signed-in `user_id`, so `adminVisibleUserIds` cannot widen it — and
+  // `filters.q` is text, so LIKE wildcards are escaped. `cap + 1` rows per section
+  // let the page state the cap without a second count query.
+  searchOwned(userId: string, filters: OwnedSearchFilters, cap: number): OwnedSearch {
+    const like = likePattern(filters.q)
+    // The shared tail: the date range on the section's own timestamp, plus the
+    // repository clause for the three tables that own one. Audit rows carry no
+    // repository, so that filter does not narrow them and the page says so.
+    const tail = (column: string, repoColumn: string | null): { sql: string; params: string[] } => {
+      const parts: Array<[string, string]> = []
+      if (repoColumn !== null && filters.repo !== '') parts.push([`${repoColumn} = ?`, filters.repo])
+      if (filters.from !== '') parts.push([`${column} >= ?`, filters.from])
+      if (filters.to !== '') parts.push([`${column} <= ?`, filters.to])
+      return { sql: parts.map(([clause]) => ` AND ${clause}`).join(''), params: parts.map(([, value]) => value) }
+    }
+    const section = <T>(rows: T[]): OwnedSearchSection<T> => ({ rows: rows.slice(0, cap), capped: rows.length > cap })
+    const read = <T>(sql: string, params: Array<string | number>): OwnedSearchSection<T> => section(this.all<T>(`${sql} LIMIT ?`, ...params, cap + 1))
+    const repo = tail('created_at', 'id')
+    const job = tail('created_at', 'repo_id')
+    const item = tail('updated_at', 'repo_id')
+    const audit = tail('at', null)
+    return {
+      repos: read<SearchRepoRow>(`SELECT id, owner, name, enabled FROM repos WHERE user_id = ? AND (name LIKE ? ESCAPE '\\' OR owner || '/' || name LIKE ? ESCAPE '\\' OR goal LIKE ? ESCAPE '\\')${repo.sql} ORDER BY name, id`, [userId, like, like, like, ...repo.params]),
+      jobs: read<SearchJobRow>(`SELECT id, repo_id, status, kind, goal, summary, error, pr_url, issue_url, created_at FROM jobs WHERE user_id = ? AND (id LIKE ? ESCAPE '\\' OR goal LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' OR error LIKE ? ESCAPE '\\' OR pr_url LIKE ? ESCAPE '\\' OR issue_url LIKE ? ESCAPE '\\')${filters.status === '' ? '' : ' AND status = ?'}${filters.kind === '' ? '' : ' AND kind = ?'}${job.sql} ORDER BY created_at DESC, rowid DESC`, [userId, like, like, like, like, like, like, ...(filters.status === '' ? [] : [filters.status]), ...(filters.kind === '' ? [] : [filters.kind]), ...job.params]),
+      workItems: read<SearchWorkItemRow>(`SELECT id, repo_id, title, state, issue_url, pr_url, updated_at FROM work_items WHERE user_id = ? AND (title LIKE ? ESCAPE '\\' OR detail LIKE ? ESCAPE '\\' OR issue_url LIKE ? ESCAPE '\\' OR pr_url LIKE ? ESCAPE '\\')${item.sql} ORDER BY updated_at DESC`, [userId, like, like, like, like, ...item.params]),
+      audit: read<SearchAuditRow>(`SELECT id, at, action, detail FROM audit_log WHERE user_id = ? AND (action LIKE ? ESCAPE '\\' OR detail LIKE ? ESCAPE '\\')${audit.sql} ORDER BY id DESC`, [userId, like, like, ...audit.params]),
+    }
   }
 
   listJobsPage(limit: number, offset: number): JobRow[] {

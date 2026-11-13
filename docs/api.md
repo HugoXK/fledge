@@ -408,11 +408,17 @@ Every gateway route answers three stable failure shapes before it does any work:
 |---|---|---|
 | `401` | `invalid_api_key` | no `flg_` token, an unknown hash, a revoked token, an expired `expires_at`, or a token whose user is not approved |
 | `403` | `insufficient_scope` | a live token whose `scope` is not `gateway`; `last_used_at` is not written, so a refused token leaves no trace |
+| `403` | `invalid_job_token` | a token whose name claims `job:<id>` but whose `kind` is not `job`, or whose job belongs to another user; decided before the upstream call, so a forged name spends no quota |
 | `429` | `rate_limited` | the per-token or per-IP limiter refused the request |
 
 Neither refusal echoes the token. A personal token always carries an `expires_at`
 (#355); only an operator token created by an admin may be minted without one, and
 `PAT_EXPIRY_DAYS` (default 90) sets the default lifetime.
+
+A chat call records its model and its cost on a job only when the token's `kind`
+is `job` and the job belongs to the token's user (#481). The `job:` prefix in the
+name is a label, not the binding; a token that claims a job it does not own is
+refused with `invalid_job_token` before the provider is called.
 
 ### `GET /v1/models`
 

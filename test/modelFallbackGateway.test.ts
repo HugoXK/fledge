@@ -4,6 +4,7 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { encryptSecret, randomToken, sha256Hex } from '../src/lib/secrets.js'
 import { parseModelRun } from '../src/lib/modelRun.js'
+import { jobPage } from '../src/views/pages.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { json, makeUser, readBody, startFakeServer, testConfig, MemoryMailer } from './helpers.js'
 
@@ -157,5 +158,282 @@ test('when every model refuses, one failure is reported, not two jobs', async ()
     await built.close()
     await primary.close()
     await fallback.close()
+  }
+})
+
+// #407: the record is rewritten by every chat call, so a job that fell back once
+// and later answered on the primary lost the fallback the page exists to show.
+// The fallback therefore lives in its own field, is never unioned into
+// `attempts` (which stays the last call's list), and the first one the job saw
+// wins. A job token may drive several calls, so these cases call twice.
+
+type Reply = { status: number; payload: unknown }
+
+function answered(text: string): Reply {
+  return { status: 200, payload: { id: 'ok', choices: [{ message: { role: 'assistant', content: text } }], usage: { total_tokens: 10 } } }
+}
+
+async function multiCallJob(prefix: string, primaryAnswer: (hit: number) => Reply, fallbackAnswer: (hit: number) => Reply, thirdAnswer?: (hit: number) => Reply) {
+  let primaryHits = 0
+  let fallbackHits = 0
+  let thirdHits = 0
+  const primary = await startFakeServer(async (request, response) => {
+    await readBody(request)
+    primaryHits += 1
+    const reply = primaryAnswer(primaryHits)
+    json(response, reply.status, reply.payload)
+  })
+  const fallback = await startFakeServer(async (request, response) => {
+    await readBody(request)
+    fallbackHits += 1
+    const reply = fallbackAnswer(fallbackHits)
+    json(response, reply.status, reply.payload)
+  })
+  const third = thirdAnswer === undefined
+    ? null
+    : await startFakeServer(async (request, response) => {
+        await readBody(request)
+        thirdHits += 1
+        const reply = thirdAnswer(thirdHits)
+        json(response, reply.status, reply.payload)
+      })
+
+  const config = testConfig({})
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  const user = makeUser(store, { login: `${prefix}-user`, status: 'approved' })
+  const repo = store.createRepo({ id: `repo_${prefix}`, userId: user.id, owner: 'o', name: prefix, defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+  const primaryProvider = store.createModelProvider({ id: `prv_${prefix}_primary`, userId: user.id, label: 'Primary', baseUrl: `${primary.url}/v1`, keyEnc: encryptSecret('k', config.tokenEncryptionKey), allowPrivate: true })
+  const fallbackProvider = store.createModelProvider({ id: `prv_${prefix}_fallback`, userId: user.id, label: 'Fallback', baseUrl: `${fallback.url}/v1`, keyEnc: encryptSecret('k2', config.tokenEncryptionKey), allowPrivate: true })
+  const primaryModel = store.createProviderModel({ id: `pvm_${prefix}_primary`, providerId: primaryProvider.id, model: `${prefix}-primary`, label: 'Primary Model' })
+  const fallbackModel = store.createProviderModel({ id: `pvm_${prefix}_fallback`, providerId: fallbackProvider.id, model: `${prefix}-fallback`, label: 'Fallback Model' })
+  const thirdModel = third === null
+    ? null
+    : store.createProviderModel({
+        id: `pvm_${prefix}_third`,
+        providerId: store.createModelProvider({ id: `prv_${prefix}_third`, userId: user.id, label: 'Third', baseUrl: `${third.url}/v1`, keyEnc: encryptSecret('k3', config.tokenEncryptionKey), allowPrivate: true }).id,
+        model: `${prefix}-third`,
+        label: 'Third Model',
+      })
+  store.setRepoModelSelection(
+    repo.id,
+    thirdModel === null ? [primaryModel.id, fallbackModel.id] : [primaryModel.id, fallbackModel.id, thirdModel.id],
+    primaryModel.id,
+  )
+  store.createJob({ id: `job_${prefix}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+  const raw = `flg_${randomToken(32)}`
+  store.createApiToken({ id: `tok_${prefix}`, userId: user.id, kind: 'job', name: `job:job_${prefix}`, tokenHash: sha256Hex(raw), prefix: raw.slice(0, 8), repoId: repo.id, expiresAt: null })
+
+  const call = async (modelId: string = primaryModel.id) => built.app.inject({
+    method: 'POST',
+    url: '/v1/chat/completions',
+    headers: { authorization: `Bearer ${raw}`, 'content-type': 'application/json' },
+    payload: { model: modelId, messages: [{ role: 'user', content: 'hi' }] },
+  })
+  const jobHtml = () => jobPage({
+    config,
+    locale: 'en',
+    viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
+    repo,
+    job: store.getJob(`job_${prefix}`)!,
+    events: [],
+  })
+  const close = async () => {
+    await built.close()
+    await primary.close()
+    await fallback.close()
+    if (third !== null) await third.close()
+  }
+  return { store, primaryModel, fallbackModel, thirdModel, jobId: `job_${prefix}`, call, jobHtml, close, hits: () => ({ primaryHits, fallbackHits, thirdHits }) }
+}
+
+test('a fallback from an earlier call survives a later call that answers on the primary', async () => {
+  const job = await multiCallJob(
+    'earlier',
+    (hit) => (hit === 1 ? { status: 429, payload: { error: { message: 'Rate limit reached for requests' } } } : answered('from the primary')),
+    () => answered('from the fallback'),
+  )
+  try {
+    const first = await job.call()
+    assert.equal(first.statusCode, 200, 'the first call finishes on the fallback')
+    const second = await job.call()
+    assert.equal(second.statusCode, 200, 'the second call finishes on the primary')
+    assert.deepEqual(job.hits(), { primaryHits: 2, fallbackHits: 1, thirdHits: 0 })
+
+    const run = parseModelRun(job.store.getJob(job.jobId)?.model_json ?? null)
+    assert.notEqual(run, null, 'the job still records a model run')
+    assert.equal(run?.model?.label, 'Primary Model', 'the last call still names the model that answered it')
+    assert.deepEqual(run?.attempts, [], "the attempt list stays the last call's list")
+    assert.deepEqual(run?.fallback, {
+      from: { modelId: job.primaryModel.id, label: 'Primary Model' },
+      to: { modelId: job.fallbackModel.id, label: 'Fallback Model' },
+      status: 429,
+    }, 'the fallback the job actually made survives the call that did not fall back')
+
+    const page = job.jobHtml()
+    assert.match(page, /Model:<\/strong> Primary Model/, 'the page names the model of the last call')
+    assert.match(page, /earlier call fell back \(429\) to Fallback Model/, 'the page states the fallback an earlier call made')
+  } finally {
+    await job.close()
+  }
+})
+
+test('when the last call is itself the fallback, the tried clause says it once', async () => {
+  const job = await multiCallJob(
+    'lastfallback',
+    () => ({ status: 429, payload: { error: { message: 'Rate limit reached for requests' } } }),
+    () => answered('from the fallback'),
+  )
+  try {
+    assert.equal((await job.call()).statusCode, 200)
+    assert.equal((await job.call()).statusCode, 200)
+
+    const run = parseModelRun(job.store.getJob(job.jobId)?.model_json ?? null)
+    assert.equal(run?.model?.label, 'Fallback Model')
+    assert.equal(run?.fallback?.to.label, run?.model?.label, 'the fallback the job kept ends on the model that answered last')
+
+    const page = job.jobHtml()
+    assert.match(page, /tried Primary Model \(429\)/, "the last call's attempt list is still shown")
+    assert.doesNotMatch(page, /earlier call fell back/, 'the fallback is not stated twice in the same line')
+  } finally {
+    await job.close()
+  }
+})
+
+test('a job that never fell back records no fallback and says nothing about one', async () => {
+  const job = await multiCallJob('nofallback', () => answered('from the primary'), () => answered('must not happen'))
+  try {
+    assert.equal((await job.call()).statusCode, 200)
+    assert.deepEqual(job.hits(), { primaryHits: 1, fallbackHits: 0, thirdHits: 0 }, 'the second model was never asked')
+
+    const run = parseModelRun(job.store.getJob(job.jobId)?.model_json ?? null)
+    assert.equal(run?.model?.label, 'Primary Model')
+    assert.equal(run?.fallback, null, 'no fallback is invented for a job that recovered on no earlier call')
+    assert.doesNotMatch(job.jobHtml(), /fell back/, 'the page does not mention a fallback that never happened')
+  } finally {
+    await job.close()
+  }
+})
+
+test('a record from an older release, or a malformed fallback, still renders its model', () => {
+  const older = parseModelRun(JSON.stringify({ model: { id: 'provider-model', label: 'Primary Model' }, attempts: [] }))
+  assert.deepEqual(older, { model: { id: 'provider-model', label: 'Primary Model' }, attempts: [], fallback: null })
+
+  const malformed = parseModelRun(JSON.stringify({ model: { id: 'provider-model', label: 'Primary Model' }, attempts: [], fallback: 42 }))
+  assert.equal(malformed?.model?.label, 'Primary Model', 'a bad fallback does not cost the page its model')
+  assert.equal(malformed?.fallback, null)
+
+  const half = parseModelRun(JSON.stringify({ model: { id: 'provider-model', label: 'Primary Model' }, attempts: [], fallback: { from: 'x' } }))
+  assert.equal(half?.fallback, null, 'a fallback missing one side is ignored, not half-rendered')
+
+  const kept = parseModelRun(JSON.stringify({
+    model: { id: 'provider-model', label: 'Primary Model' },
+    attempts: [],
+    fallback: { from: { modelId: 'a', label: 'A' }, to: { modelId: 'b' }, status: 429 },
+  }))
+  assert.deepEqual(kept?.fallback, { from: { modelId: 'a', label: 'A' }, to: { modelId: 'b', label: 'b' }, status: 429 }, 'a side without a label falls back to its id')
+})
+
+// #407 review: the record keeps the FIRST fallback the job made. A later call that
+// falls back again is a second real pair, so "first wins" needs a call that has a
+// different pair of its own — otherwise the two rules are indistinguishable.
+test('a later call that falls back again does not replace the first pair', async () => {
+  const job = await multiCallJob(
+    'twopairs',
+    () => ({ status: 429, payload: { error: { message: 'Rate limit reached for requests' } } }),
+    (hit) => (hit === 1 ? answered('from the fallback') : { status: 429, payload: { error: { message: 'Rate limit reached for requests' } } }),
+    () => answered('from the third'),
+  )
+  try {
+    assert.equal((await job.call()).statusCode, 200, 'the first call finishes on the second model')
+    assert.equal((await job.call()).statusCode, 200, 'the second call finishes on the third model')
+    assert.deepEqual(job.hits(), { primaryHits: 2, fallbackHits: 2, thirdHits: 1 })
+
+    const run = parseModelRun(job.store.getJob(job.jobId)?.model_json ?? null)
+    assert.equal(run?.model?.label, 'Third Model', 'the last call still names the model that answered it')
+    assert.deepEqual(run?.attempts.map((entry) => entry.label), ['Primary Model', 'Fallback Model'], "the attempt list stays the last call's own refusals")
+    assert.deepEqual(run?.fallback, {
+      from: { modelId: job.primaryModel.id, label: 'Primary Model' },
+      to: { modelId: job.fallbackModel.id, label: 'Fallback Model' },
+      status: 429,
+    }, "the first pair is kept; the second call's own pair does not replace it")
+
+    assert.match(job.jobHtml(), /earlier call fell back \(429\) to Fallback Model/, 'the page states the pair the job made first')
+  } finally {
+    await job.close()
+  }
+})
+
+// #407 review: the skip exists to avoid saying the same model twice in one line,
+// so it may only apply when the `tried` clause is actually there. A call that names
+// the fallback model directly makes no attempt of its own and would otherwise hide
+// the pair the row still holds.
+test('a call that names the fallback model itself still states the earlier fallback', async () => {
+  const job = await multiCallJob(
+    'namedfallback',
+    () => ({ status: 429, payload: { error: { message: 'Rate limit reached for requests' } } }),
+    () => answered('from the fallback'),
+  )
+  try {
+    assert.equal((await job.call()).statusCode, 200, 'the first call falls back to the second model')
+    assert.equal((await job.call(job.fallbackModel.id)).statusCode, 200, 'the second call answers on the model it named')
+
+    const run = parseModelRun(job.store.getJob(job.jobId)?.model_json ?? null)
+    assert.equal(run?.model?.label, 'Fallback Model')
+    assert.deepEqual(run?.attempts, [], 'the call refused nothing, so there is no tried clause')
+    assert.equal(run?.fallback?.to.label, 'Fallback Model', 'the row still holds the pair the first call made')
+
+    const page = job.jobHtml()
+    assert.doesNotMatch(page, / · tried /, 'the page has no tried clause for a call with no attempt')
+    assert.match(page, /earlier call fell back \(429\) to Fallback Model/, 'the fallback is stated when nothing else on the line names that model')
+  } finally {
+    await job.close()
+  }
+})
+
+// #407 review: a last call that failed outright still leaves the earlier pair in
+// the row, so the page must state it beside "no completed call" rather than drop it.
+test('a failed last call still states the fallback an earlier call made', async () => {
+  const job = await multiCallJob(
+    'nulllast',
+    () => ({ status: 429, payload: { error: { message: 'Rate limit reached for requests' } } }),
+    (hit) => (hit === 1 ? answered('from the fallback') : { status: 503, payload: { error: { message: 'upstream unavailable' } } }),
+  )
+  try {
+    assert.equal((await job.call()).statusCode, 200, 'the first call finishes on the second model')
+    assert.equal((await job.call()).statusCode, 503, 'the second call has no winner and forwards the refusal')
+
+    const run = parseModelRun(job.store.getJob(job.jobId)?.model_json ?? null)
+    assert.equal(run?.model, null, 'the failed call finished on no model')
+    assert.deepEqual(run?.attempts.map((entry) => [entry.label, entry.status]), [['Primary Model', 429], ['Fallback Model', 503]])
+    assert.equal(run?.fallback?.to.label, 'Fallback Model', 'a failed call does not clear the pair an earlier call made')
+
+    const page = job.jobHtml()
+    assert.match(page, /no completed call/, 'the page says the last call finished on no model')
+    assert.match(page, /earlier call fell back \(429\) to Fallback Model/, 'the page still states what an earlier call did')
+  } finally {
+    await job.close()
+  }
+})
+
+// #407 review, non-blocking: a row whose status is not a real HTTP code must not
+// render as `(0)`. The pair is real, so it is stated without a number.
+test('a fallback recorded without a usable status is stated without a number', async () => {
+  const job = await multiCallJob('nostatus', () => answered('from the primary'), () => answered('must not happen'))
+  try {
+    assert.equal((await job.call()).statusCode, 200)
+    job.store.updateJob(job.jobId, {
+      model_json: JSON.stringify({
+        model: { id: 'provider-model', label: 'Primary Model' },
+        attempts: [],
+        fallback: { from: { modelId: 'a', label: 'A' }, to: { modelId: 'b', label: 'B' }, status: 0 },
+      }),
+    })
+
+    const page = job.jobHtml()
+    assert.match(page, /earlier call fell back to B/, 'the pair is still stated')
+    assert.doesNotMatch(page, /fell back \(0\)/, 'no invented status number is rendered')
+  } finally {
+    await job.close()
   }
 })

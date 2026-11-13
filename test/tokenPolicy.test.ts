@@ -12,20 +12,20 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { randomToken, sha256Hex } from '../src/lib/secrets.js'
-import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { formBody, json, makeTerminalJob, makeUser, MemoryMailer, readBody, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
 const DAY = 86_400_000
 const past = (): string => new Date(Date.now() - 60_000).toISOString()
 
-function token(store: Store, input: { id: string; userId: string; raw: string; kind?: string; expiresAt?: string | null; scope?: string }): string {
+function token(store: Store, input: { id: string; userId: string; raw: string; kind?: string; name?: string; repoId?: string | null; expiresAt?: string | null; scope?: string }): string {
   store.createApiToken({
     id: input.id,
     userId: input.userId,
     kind: input.kind ?? 'pat',
-    name: input.id,
+    name: input.name ?? input.id,
     tokenHash: sha256Hex(input.raw),
     prefix: input.raw.slice(0, 8),
-    repoId: null,
+    repoId: input.repoId === undefined ? null : input.repoId,
     expiresAt: input.expiresAt === undefined ? new Date(Date.now() + 30 * DAY).toISOString() : input.expiresAt,
     ...(input.scope === undefined ? {} : { scope: input.scope }),
   })
@@ -240,5 +240,111 @@ test('opening an older database gives a legacy PAT a scope and a finite expiry, 
     }
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// #481: a job token is a `kind`, never a name. The name is user input at PAT
+// creation, so a `job:` prefix alone cannot decide which row a gateway call
+// writes to — `updateJob` and `addJobCost` are both `WHERE id = ?`.
+test('a personal token named like a job token cannot write another user\'s job', async () => {
+  let platformHits = 0
+  const platform = await startFakeServer(async (request, response) => {
+    await readBody(request)
+    platformHits += 1
+    json(response, 200, { id: 'x', choices: [{ message: { role: 'assistant', content: 'ok' } }], usage: { total_tokens: 1000 } }, { 'x-litellm-response-cost': '0.0002' })
+  })
+  const config = testConfig({
+    llm: { baseUrl: `${platform.url}/v1`, key: 'platform-key', model: 'platform-model', pricePerTokenUsd: 0.0000002 },
+    quota: { initialCny: 10, usdCny: 7.2 },
+  })
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const victim = makeUser(store, { login: 'job-victim', status: 'approved', quota: 10 })
+    const attacker = makeUser(store, { login: 'job-attacker', status: 'approved', quota: 10 })
+    const victimRepo = store.createRepo({ id: 'repo_victim', userId: victim.id, owner: 'o', name: 'v', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const attackerRepo = store.createRepo({ id: 'repo_attacker', userId: attacker.id, owner: 'o', name: 'a', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    makeTerminalJob(store, { id: 'job_victim', repoId: victimRepo.id, userId: victim.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    // A real record on the victim's job stands in for a run, so the assertion can
+    // see a rewrite rather than only a null that stayed null.
+    store.updateJob('job_victim', { model_json: JSON.stringify({ model: { id: 'victim-model', label: 'Victim Model' }, attempts: [], fallback: null }), cost_usd: 0.5 })
+    const before = store.getJob('job_victim')!
+    const payload = { model: 'ignored', messages: [{ role: 'user', content: 'hi' }] }
+
+    const forgedRaw = token(store, { id: 'tok_forged', userId: attacker.id, raw: `flg_${randomToken(32)}`, name: 'job:job_victim' })
+    const forged = await built.app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: { authorization: `Bearer ${forgedRaw}`, 'content-type': 'application/json' },
+      payload,
+    })
+    assert.equal(forged.statusCode, 403, 'a name that claims a job on a personal token is refused')
+    assert.equal((forged.json() as { error: { type: string } }).error.type, 'invalid_job_token')
+    assert.equal(platformHits, 0, 'the refusal is decided before the upstream call, so a forged name cannot spend quota')
+    const afterForged = store.getJob('job_victim')!
+    assert.equal(afterForged.model_json, before.model_json, 'a forged job name must not rewrite the model record')
+    assert.equal(afterForged.cost_usd, before.cost_usd, 'a forged job name must not add cost')
+
+    // `kind` alone is not enough either: a token that really is a job token but
+    // names another user's job must not address that row.
+    const crossRaw = token(store, { id: 'tok_cross', userId: attacker.id, raw: `flg_${randomToken(32)}`, kind: 'job', name: 'job:job_victim' })
+    const cross = await built.app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: { authorization: `Bearer ${crossRaw}`, 'content-type': 'application/json' },
+      payload,
+    })
+    assert.equal(cross.statusCode, 403, 'a job token cannot name a job of another user')
+    assert.equal((cross.json() as { error: { type: string } }).error.type, 'invalid_job_token')
+    assert.equal(platformHits, 0)
+    assert.equal(store.getJob('job_victim')!.model_json, before.model_json)
+
+    // A personal token naming its own job is still refused: the binding is the
+    // token's `kind`, not the owner check alone. Without this case a fix that
+    // dropped the kind test would pass the two above.
+    makeTerminalJob(store, { id: 'job_attacker', repoId: attackerRepo.id, userId: attacker.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    const ownPatRaw = token(store, { id: 'tok_own_pat', userId: attacker.id, raw: `flg_${randomToken(32)}`, name: 'job:job_attacker' })
+    const ownPat = await built.app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: { authorization: `Bearer ${ownPatRaw}`, 'content-type': 'application/json' },
+      payload,
+    })
+    assert.equal(ownPat.statusCode, 403, 'a job binding needs kind job, even for the caller\'s own job')
+    assert.equal((ownPat.json() as { error: { type: string } }).error.type, 'invalid_job_token')
+    assert.equal(platformHits, 0)
+    assert.equal(store.getJob('job_attacker')!.model_json, null, 'a personal token must not write job records')
+
+    // The positive control: the same shape with `kind: 'job'` and the token's own
+    // job still records the model and the cost. Stripping the record entirely
+    // would pass the cases above and break the job page.
+    const ownRaw = token(store, { id: 'tok_own', userId: attacker.id, raw: `flg_${randomToken(32)}`, kind: 'job', name: 'job:job_attacker', repoId: attackerRepo.id })
+    const own = await built.app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: { authorization: `Bearer ${ownRaw}`, 'content-type': 'application/json' },
+      payload,
+    })
+    assert.equal(own.statusCode, 200)
+    assert.equal(platformHits, 1)
+    const ownJob = store.getJob('job_attacker')!
+    assert.match(String(ownJob.model_json), /platform-model/, 'a real job token still records the model that ran')
+    assert.ok((ownJob.cost_usd ?? 0) > 0, 'a real job token still meters the cost')
+    assert.equal(store.getJob('job_victim')!.cost_usd, before.cost_usd, 'a real job call leaves the victim job alone')
+
+    // A genuine job token whose row was deleted keeps working and records
+    // nothing: the row is the record, and `recordModel` already tolerates its
+    // absence. The fix must not turn retention into a new refusal.
+    const goneRaw = token(store, { id: 'tok_gone', userId: attacker.id, raw: `flg_${randomToken(32)}`, kind: 'job', name: 'job:job_never_created' })
+    const gone = await built.app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: { authorization: `Bearer ${goneRaw}`, 'content-type': 'application/json' },
+      payload,
+    })
+    assert.equal(gone.statusCode, 200, 'a job deleted under its token does not fail the call')
+  } finally {
+    await built.close()
+    await platform.close()
   }
 })

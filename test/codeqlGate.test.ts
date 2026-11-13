@@ -108,33 +108,29 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // stay exact so a silent re-label is still a failing test.
   // #251 moved these five route registrations: one import line at `:40` and
   // five lines inside the webhook path. #357 adds one line above the webhook
-  // route registration (once from #357, and #353 adds four more: two in the
-  // failure path, two in the retry route), so the pin and its baseline entry
-  // move to `:2962`. #359 inserts the pending-plan spread and the late-approval
-  // guard in the repository and plan routes, all above the webhook registration,
-  // which moved the same pair to `:2979` on its own tree. In a tree carrying
-  // both, the anchor is measured once rather than added: `#403`'s 21 lines and
-  // this PR's four compose to `:2983`. #360's first merge of `main c6939e68`
-  // measured `:3031` on its merged tree, and this second merge re-measures it
-  // again: `#355`'s token route, `#361`'s read model and `#440`'s job changes
-  // all sit above the same registration since, so the tree carrying them reads
-  // `:3044` — read off this tree, never summed onto an older number. #355's
-  // first import line also lifted the four top-of-file registrations, which read
-  // `:470`/`:505`/`:515`/`:525` here rather than main's `:469`/`:504`/`:514`/
-  // `:524`, and its gateway rewrite lifted the two gateway registrations to
-  // `:154`/`:179`; #358 moved that pair the same way once before, with two
-  // imports and the `readAnswer` helper, and no new route and no change to the
-  // limiter call that opens each handler. No result is added or dismissed: the
-  // two gateway alerts (#41, #42) stay the same two dismissed false positives.
+  // Positions follow the tree that ships this file, not a frozen sha: the gate
+  // compares against the pull request's own tree, so a reviewed PR that inserts
+  // before an anchor refreshes that line (see the baseline note). The pins below
+  // stay exact so a silent re-label is still a failing test. This anchor has
+  // moved with each merge that inserted above it (#251, #357, #353, #341, #359,
+  // #355, #418, #362, #416, #356, #457), and #488/#489 merged without touching
+  // src/app.ts. This branch's third forward-merge onto main@a7e78981 re-read all
+  // seven lines on the merged tree rather than summing onto the last read: the
+  // four top-of-file registrations are `:516`/`:551`/`:561`/`:571`, the webhook
+  // registration is `:3245` (main's `:3197` plus this branch's 48 lines above
+  // it), and the two gateway registrations are `:155`/`:180`. No result is added
+  // or dismissed: the two gateway alerts (#41, #42) stay the two dismissed false
+  // positives.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3044',
-    'js/missing-rate-limiting|src/app.ts|470',
-    'js/missing-rate-limiting|src/app.ts|505',
-    'js/missing-rate-limiting|src/app.ts|515',
-    'js/missing-rate-limiting|src/app.ts|525',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|154',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|179',
+    'js/missing-rate-limiting|src/app.ts|3245',
+    'js/missing-rate-limiting|src/app.ts|516',
+    'js/missing-rate-limiting|src/app.ts|551',
+    'js/missing-rate-limiting|src/app.ts|561',
+    'js/missing-rate-limiting|src/app.ts|571',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|155',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|180',
   ])
+
   const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
   assert.equal(dismissed.length, 3, 'the three dismissed false-positive results are recorded with their reason')
   assert.deepEqual(addedAlerts(keys, baseline.alerts).map((alert) => alertKey(alert)), [], 'the baseline must not fail its own alerts')

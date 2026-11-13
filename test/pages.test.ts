@@ -6,7 +6,7 @@ import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { formBody, json, makeTerminalJob, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
-import { appReposPage, dashboardPage, jobPage, landingPage, metricsPage, repoPage, settingsPage, workspacePage } from '../src/views/pages.js'
+import { adminSearchPage, appReposPage, dashboardPage, jobPage, landingPage, metricsPage, repoPage, settingsPage, workspacePage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
 import { localizeMessage } from '../src/i18n.js'
 import { encryptSecret } from '../src/lib/secrets.js'
@@ -1218,7 +1218,7 @@ test('every empty data region uses the shared state component and points at its 
     assert.doesNotMatch(consoleRecent, /<p class="muted">No jobs yet\.<\/p>/, 'the console no longer falls back to a bare grey sentence')
     assert.match(consoleRecent, /class="actions"/, 'the console empty state carries an action')
 
-    const settingsHtml = settingsPage({ config, locale: 'en', viewer, tokens: [], providers: [] })
+    const settingsHtml = settingsPage({ config, locale: 'en', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] })
     const providerCard = cardWithId(settingsHtml, 'model-providers')
     assert.match(providerCard, /data-state="empty"/, 'settings renders the shared empty state when there is no provider')
     assert.doesNotMatch(providerCard, /<p class="muted">No model providers yet\.<\/p>/, 'settings no longer falls back to a bare grey sentence')
@@ -1253,7 +1253,7 @@ test('non-empty data regions render exactly as before, with no state wrapper', (
     assert.doesNotMatch(consoleRecent, /data-state=/, 'a non-empty recent-jobs list gains no state wrapper')
 
     const provider = store.createModelProvider({ id: 'prov_filled', userId: user.id, label: 'Filled provider', baseUrl: 'https://api.example.com/v1', keyEnc: 'x', allowPrivate: false })
-    const settingsHtml = settingsPage({ config, locale: 'en', viewer, tokens: [], providers: [{ ...provider, models: [] }] })
+    const settingsHtml = settingsPage({ config, locale: 'en', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [{ ...provider, models: [] }] })
     const providerCard = cardWithId(settingsHtml, 'model-providers')
     assert.match(providerCard, /Filled provider/)
     assert.doesNotMatch(providerCard, /data-state=/, 'a configured settings page gains no state wrapper')
@@ -1704,5 +1704,60 @@ test('a job stopped by its budget names the action and the next step, in both la
     assert.match(english.body, /Raise the per-job budget/)
   } finally {
     await built.close()
+  }
+})
+
+test('admin search links every later page and keeps the filters per section', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'search-pager', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const filters = { q: 'x', status: 'failed', kind: 'iterate', action: 'repo.settings', from: '2026-01-01', to: '2026-01-31' }
+    const page = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map([[user.id, user.login]]), filters, jobsPage: 1, jobsTotal: 45, auditPage: 2, auditTotal: 60, perPage: 20 })
+
+    const jobsNext = page.match(/href="([^"]*jobsPage=2[^"]*)"/)?.at(1)
+    assert.ok(jobsNext, 'the jobs section links to its own second page')
+    assert.match(jobsNext, /q=x/, 'the jobs link keeps the keyword')
+    assert.match(jobsNext, /status=failed/, 'the jobs link keeps the status filter')
+    assert.match(jobsNext, /kind=iterate/, 'the jobs link keeps the kind filter')
+    assert.match(jobsNext, /auditPage=2/, 'the jobs link keeps the audit section on its page')
+    assert.doesNotMatch(jobsNext, /action=/, 'the jobs link carries no audit-only filter')
+
+    const auditNext = page.match(/href="([^"]*auditPage=3[^"]*)"/)?.at(1)
+    assert.ok(auditNext, 'the audit section links to its own next page')
+    assert.match(auditNext, /q=x/, 'the audit link keeps the keyword')
+    assert.match(auditNext, /action=repo\.settings/, 'the audit link keeps the action filter')
+    assert.match(auditNext, /from=2026-01-01/, 'the audit link keeps the date range')
+    assert.match(auditNext, /jobsPage=1/, 'the audit link keeps the jobs section on its page')
+    assert.doesNotMatch(auditNext, /status=/, 'the audit link carries no jobs-only filter')
+
+    const short = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map(), filters, jobsPage: 1, jobsTotal: 20, auditPage: 1, auditTotal: 20, perPage: 20 })
+    assert.doesNotMatch(short, /jobsPage=2/, 'a section that fits one page renders no jobs pager')
+    assert.doesNotMatch(short, /auditPage=2/, 'a section that fits one page renders no audit pager')
+  } finally {
+    store.close()
+  }
+})
+
+// #453 review: the settings page linked its zero-token empty state at `#tokens`
+// while the card carrying that anchor did not exist, so the visual matrix's
+// `getElementById('tokens')` returned null and its "section clears the sticky
+// header" assertion was skipped rather than failed. One test now covers the
+// class: every in-page link on the page that renders that empty state has to
+// point at an element that exists.
+test('every in-page anchor on the settings page has a matching target', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'anchor-user', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const html = settingsPage({ config, locale: 'en', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] })
+    const targets = [...html.matchAll(/href="#([A-Za-z][\w:-]*)"/g)].map((match) => match[1] ?? '')
+    assert.ok(targets.includes('tokens'), 'the empty token list still links to the token form')
+    const missing = [...new Set(targets)].filter((id) => !html.includes(`id="${id}"`))
+    assert.deepEqual(missing, [], `in-page links without a target: ${missing.join(', ')}`)
+  } finally {
+    store.close()
   }
 })

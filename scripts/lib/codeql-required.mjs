@@ -36,6 +36,27 @@ export function shaForEvent({ eventName, sha, payload }) {
   return sha ?? null
 }
 
+// Which completed analysis answers a commit (#422).
+//
+// Only `head_sha` counts. `pull_requests[].head.sha` is filled from the pull
+// request's *current* head, not from the commit the run analysed, so every
+// superseded run of a pull request claims to be about the newest tip: a stale
+// failure then answers a commit whose own analysis is still running, and the
+// required check flaps on ordering luck. The verdict for a commit must come from
+// the run that actually analysed that commit.
+//
+// The list is the API's newest-first order and `.find()` takes the first match.
+// That ordering is not the defect and is deliberately unchanged: with an exact
+// predicate a tip whose own analysis has not finished yields no match, so the
+// existing poll keeps the check pending instead of red or green on another
+// commit's conclusion.
+export function analysisFor(runs, sha) {
+  const list = Array.isArray(runs) ? runs : []
+  const match = list.find((run) => run?.head_sha === sha)
+  if (match === undefined) return null
+  return { conclusion: String(match.conclusion ?? '') }
+}
+
 // `lookups.analysisFor(sha)` resolves the completed analysis for that commit,
 // or `null` while there is none yet. `clock` is `{ now, sleep }`.
 export async function codeqlRequired(input, lookups, clock) {

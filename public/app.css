@@ -8,6 +8,11 @@
      for a graphical object), because a column hidden behind a 1.5:1 thumb looks
      like a column that does not exist. */
 :root {
+  /* Both schemes are supported; each explicit data-theme pins one below, so a
+     light desktop with an explicit dark choice does not get half-light controls,
+     scrollbars and selection (WCAG 2.1 AA 1.4.11 assumes a control matches the
+     surface it sits on). */
+  color-scheme: light dark;
   --bg: #07090d;
   --bg-soft: #0a0e14;
   --panel: #0d1118;
@@ -100,6 +105,104 @@
   --card-pad: clamp(18px, 2.4vw, 28px);
 }
 
+/* Light palette (#467). Same token names, same 4/8 spacing and type scales; only
+   the colours move, so a component written against the tokens works in both and
+   no view tests the scheme. The palette appears twice on purpose: a media query
+   and an attribute selector cannot share one declaration block, and the system
+   preference has to work with JavaScript off, so neither branch can be dropped.
+   Ratios, measured with the same formula test/uiTokens.test.ts uses:
+   --text 16.8:1 on --bg, --muted-2 5.8:1 on --panel-2, --badge-ink 7.3:1 on
+   --badge-bg, --scroll-track 3.4:1 on --panel and 3.3:1 on --scroll-thumb. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #f4f6f9;
+    --bg-soft: #eef1f6;
+    --panel: #ffffff;
+    --panel-2: #f7f9fc;
+    --surface-sunken: #eef1f6;
+    --surface-inset: #e9edf3;
+    --surface-raised: #ffffff;
+    --field: #ffffff;
+    --track: #e8ecf2;
+    --row-line: #e4e9f0;
+    --raised-top: #ffffff;
+    --raised-bottom: #f3f6fa;
+    --line: #dbe1e9;
+    --line-strong: #b9c2cf;
+    --scroll-track: #828c9a;
+    --scroll-thumb: #333c48;
+    --text: #10161f;
+    --muted: #47515f;
+    --muted-2: #59636f;
+    --brand: #3f7a12;
+    --brand-2: #0e7a5c;
+    --accent: #2b4fd0;
+    --accent-strong: #1d3cb8;
+    --accent-hover: #2646c4;
+    --accent-ink: #ffffff;
+    --good: #0a6e55;
+    --warn: #7a5200;
+    --danger: #b3261e;
+    --mint: #0a6e55;
+    --blue: #2b4fd0;
+    --violet: #6236a8;
+    --mark-ink: #0b1220;
+    --badge-bg: #e7ecf3;
+    --badge-ink: #414d5c;
+    --lede-ink: #333e4d;
+    --tip-ink: #1a2330;
+    --paper: #ffffff;
+    --shadow: 0 24px 80px rgba(15, 23, 42, 0.14);
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f6f9;
+  --bg-soft: #eef1f6;
+  --panel: #ffffff;
+  --panel-2: #f7f9fc;
+  --surface-sunken: #eef1f6;
+  --surface-inset: #e9edf3;
+  --surface-raised: #ffffff;
+  --field: #ffffff;
+  --track: #e8ecf2;
+  --row-line: #e4e9f0;
+  --raised-top: #ffffff;
+  --raised-bottom: #f3f6fa;
+  --line: #dbe1e9;
+  --line-strong: #b9c2cf;
+  --scroll-track: #828c9a;
+  --scroll-thumb: #333c48;
+  --text: #10161f;
+  --muted: #47515f;
+  --muted-2: #59636f;
+  --brand: #3f7a12;
+  --brand-2: #0e7a5c;
+  --accent: #2b4fd0;
+  --accent-strong: #1d3cb8;
+  --accent-hover: #2646c4;
+  --accent-ink: #ffffff;
+  --good: #0a6e55;
+  --warn: #7a5200;
+  --danger: #b3261e;
+  --mint: #0a6e55;
+  --blue: #2b4fd0;
+  --violet: #6236a8;
+  --mark-ink: #0b1220;
+  --badge-bg: #e7ecf3;
+  --badge-ink: #414d5c;
+  --lede-ink: #333e4d;
+  --tip-ink: #1a2330;
+  --paper: #ffffff;
+  --shadow: 0 24px 80px rgba(15, 23, 42, 0.14);
+}
+
+/* An explicit dark choice must win over a light system preference: the media
+   branch above already excludes it, and this pins the controls' scheme too. */
+:root[data-theme="dark"] { color-scheme: dark; }
+
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 [id] { scroll-margin-top: var(--header-h); }
@@ -111,9 +214,10 @@ body {
   color: var(--text);
   font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   min-height: 100vh;
+  min-height: 100dvh;
   -webkit-font-smoothing: antialiased;
 }
-::selection { background: rgba(123, 149, 255, 0.34); color: var(--accent-ink); }
+::selection { background: rgba(123, 149, 255, 0.34); color: var(--text); }
 .skip-link { position: absolute; left: -9999px; top: 0; z-index: 100; padding: 10px 14px; border-radius: 0 0 var(--radius-sm) 0; background: var(--accent-strong); color: var(--accent-ink); font-weight: 700; }
 .skip-link:focus { left: 0; }
 a { color: var(--accent); text-decoration: none; }
@@ -172,7 +276,17 @@ p { margin: 0 0 12px; }
 }
 .top-inner {
   max-width: var(--content); margin: 0 auto; min-height: 66px;
-  padding: 0 var(--page-pad); display: flex; align-items: center; gap: 16px 22px; flex-wrap: wrap;
+  /* `viewport-fit=cover` moved the notch duty into this sheet (issue 451): each
+     side that can sit under the housing adds its inset to --page-pad, and
+     env() resolves to 0 on a device without a safe area. This line is what a
+     browser without env() keeps; the @supports block below is the one that
+     adds the insets, because a var()-bearing declaration for the same property
+     is invalid at computed-value time and lands on the initial value (#492). */
+  padding: 0 var(--page-pad);
+  display: flex; align-items: center; gap: 16px 22px; flex-wrap: wrap;
+}
+@supports (padding: env(safe-area-inset-top)) {
+  .top-inner { padding: 0 calc(var(--page-pad) + env(safe-area-inset-right)) 0 calc(var(--page-pad) + env(safe-area-inset-left)); }
 }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 800; letter-spacing: -0.03em; white-space: nowrap; }
 .brand:hover { text-decoration: none; }
@@ -211,11 +325,25 @@ p { margin: 0 0 12px; }
 .lang a:hover { color: var(--text); text-decoration: none; }
 .lang a[aria-pressed="true"] { background: rgba(123, 149, 255, 0.16); color: var(--accent); }
 
-.wrap { max-width: var(--content); margin: 0 auto; padding: var(--section-gap) var(--page-pad) 80px; min-height: calc(100vh - 220px); }
+.wrap {
+  max-width: var(--content); margin: 0 auto;
+  /* The inset is added to the rhythm rather than capped under it, and it rides
+     in a gated declaration so a browser without env() keeps the plain 80px
+     shorthand instead of landing on the initial value (#489, #492). */
+  padding: var(--section-gap) var(--page-pad) 80px;
+  min-height: calc(100vh - 220px);
+  min-height: calc(100dvh - 220px);
+}
+@supports (padding: env(safe-area-inset-top)) {
+  .wrap { padding: var(--section-gap) calc(var(--page-pad) + env(safe-area-inset-right)) calc(80px + env(safe-area-inset-bottom)) calc(var(--page-pad) + env(safe-area-inset-left)); }
+}
 .foot {
   display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap;
   max-width: var(--content); margin: 0 auto; color: var(--muted-2); font-size: 12px;
   padding: 28px var(--page-pad) 52px; border-top: 1px solid var(--line);
+}
+@supports (padding: env(safe-area-inset-top)) {
+  .foot { padding: 28px calc(var(--page-pad) + env(safe-area-inset-right)) calc(52px + env(safe-area-inset-bottom)) calc(var(--page-pad) + env(safe-area-inset-left)); }
 }
 .foot-links { display: flex; gap: 16px; flex-wrap: wrap; }
 .foot a { color: var(--muted-2); }
@@ -423,6 +551,13 @@ input, textarea, select {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(123, 149, 255, 0.14); }
+/* A forced-colours theme paints no box-shadow and forces border-color to a
+   system colour, so the ring above leaves a focused field with no indicator.
+   This block repeats the same selectors after it: at equal specificity the
+   outline wins on source order, so it must stay below that rule. */
+@media (forced-colors: active) {
+  input:focus, textarea:focus, select:focus { outline: 2px solid CanvasText; outline-offset: 2px; box-shadow: none; }
+}
 input[type="checkbox"] { width: auto; }
 textarea { resize: vertical; min-height: 70px; }
 .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -654,6 +789,9 @@ a.list-row:hover strong { color: var(--accent); }
      reasoning is why both bands promise one height in either locale. */
   :root { --header-h: 90px; }
   .top-inner { height: 64px; min-height: 0; flex-wrap: nowrap; padding: 0 16px; gap: 10px; }
+  @supports (padding: env(safe-area-inset-top)) {
+    .top-inner { padding: 0 calc(16px + env(safe-area-inset-right)) 0 calc(16px + env(safe-area-inset-left)); }
+  }
   .brand { margin-right: auto; }
   .brand small { display: none; }
   .spacer { display: none; }
@@ -673,16 +811,25 @@ a.list-row:hover strong { color: var(--accent); }
     padding: 4px 16px 8px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
     background: var(--panel); box-shadow: var(--shadow);
   }
+  @supports (padding: env(safe-area-inset-top)) {
+    .top .nav { padding: 4px calc(16px + env(safe-area-inset-right)) 8px calc(16px + env(safe-area-inset-left)); }
+  }
   .top[data-nav-open="true"] .nav { display: flex; }
   /* The panel rows keep the 44px floor the wide header's links carry, so a
      tablet reaches every destination with a finger, not only with a cursor. */
   .top .nav a { padding: 0; min-height: var(--touch); border-bottom: 1px solid var(--row-line); }
   .top .nav a:last-child { border-bottom: 0; }
   .wrap { padding: 28px 16px 72px; }
+  @supports (padding: env(safe-area-inset-top)) {
+    .wrap { padding: 28px calc(16px + env(safe-area-inset-right)) calc(72px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
+  }
   .quota-card { flex-direction: column; align-items: flex-start; gap: 14px; }
   .meter { width: 100%; max-width: none; }
   .grid3 { grid-template-columns: 1fr; }
   .foot { padding: 24px 16px 44px; }
+  @supports (padding: env(safe-area-inset-top)) {
+    .foot { padding: 24px calc(16px + env(safe-area-inset-right)) calc(44px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
+  }
 }
 
 @media (max-width: 640px) {
@@ -707,6 +854,9 @@ a.list-row:hover strong { color: var(--accent); }
      phone's tighter padding and without the account pill. */
   :root { --header-h: 90px; }
   .top-inner { height: 64px; min-height: 0; flex-wrap: nowrap; padding: 0 12px; gap: 10px; }
+  @supports (padding: env(safe-area-inset-top)) {
+    .top-inner { padding: 0 calc(12px + env(safe-area-inset-right)) 0 calc(12px + env(safe-area-inset-left)); }
+  }
   .brand small { display: none; }
   .account .pill { display: none; }
   .nav-toggle {
@@ -723,6 +873,9 @@ a.list-row:hover strong { color: var(--accent); }
     order: initial; width: 100%; flex-direction: column; gap: 0;
     padding: 4px 16px 8px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
     background: var(--panel); box-shadow: var(--shadow);
+  }
+  @supports (padding: env(safe-area-inset-top)) {
+    .top .nav { padding: 4px calc(16px + env(safe-area-inset-right)) 8px calc(16px + env(safe-area-inset-left)); }
   }
   .top[data-nav-open="true"] .nav { display: flex; }
   .top .nav a { padding: 0; border-bottom: 1px solid var(--row-line); }
@@ -795,6 +948,9 @@ a.list-row:hover strong { color: var(--accent); }
      switch keeps both targets and the account keeps its exit. #133 acceptance
      3's 44px floor is not touched here. */
   .top-inner { padding: 0 10px; gap: 8px; }
+  @supports (padding: env(safe-area-inset-top)) {
+    .top-inner { padding: 0 calc(10px + env(safe-area-inset-right)) 0 calc(10px + env(safe-area-inset-left)); }
+  }
   .brand > span:not(.mark) { display: none; }
 }
 
@@ -803,7 +959,16 @@ a.list-row:hover strong { color: var(--accent); }
   * { transition: none !important; animation: none !important; }
 }
 
-.workspace-frame { width: 100%; height: calc(100vh - var(--header-h)); min-height: 620px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper); }
+@media (pointer: coarse) {
+  .btn:hover, .stat:hover { transform: none; }
+}
+
+.workspace-frame {
+  width: 100%; height: calc(100vh - var(--header-h));
+  height: calc(100dvh - var(--header-h));
+  min-height: 620px; min-height: min(620px, 80dvh);
+  border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper);
+}
 .workspace-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
 .add-choice { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 14px; margin-bottom: 12px; }
@@ -811,9 +976,15 @@ a.list-row:hover strong { color: var(--accent); }
 .add-manual { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 10px; }
 .add-manual summary { cursor: pointer; color: var(--muted-2); font-size: 13px; }
 
-.info-tip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin-left: 4px; border: 1px solid var(--line); border-radius: 50%; color: var(--muted-2); font-size: 10px; line-height: 1; cursor: help; position: relative; vertical-align: middle; }
-.info-tip::after { content: attr(data-tip); position: absolute; left: 0; top: 130%; z-index: 60; width: 270px; max-width: min(270px, calc(100vw - 48px)); padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--tip-ink); font-size: 11.5px; font-weight: 400; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; opacity: 0; pointer-events: none; transform: translateY(-3px); transition: opacity .12s ease; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
-.info-tip:hover::after, .info-tip:focus::after { opacity: 1; }
+.info-tip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin-left: 4px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: transparent; color: var(--muted-2); font: inherit; font-size: 10px; line-height: 1; cursor: help; position: relative; vertical-align: middle; }
+.info-tip::after { content: attr(data-tip); position: absolute; left: 0; top: 130%; z-index: 60; width: 270px; max-width: min(270px, calc(100vw - 48px)); padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--tip-ink); font-size: 11.5px; font-weight: 400; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; display: none; opacity: 0; pointer-events: none; transform: translateY(-3px); transition: opacity .12s ease; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
+/* Hover and focus are the no-JavaScript fallback only: with no script there is no
+   state to toggle, so CSS must still reveal the hint. Once app.js runs it sets
+   `data-js` and the explicit `aria-expanded` state is the single reveal, or a
+   `:hover` that sticks to a tapped control and a button that keeps `:focus`
+   outrank the script and a dismissed tooltip stays on screen (WCAG 1.4.13 d). */
+html:not([data-js]) .info-tip:hover::after, html:not([data-js]) .info-tip:focus::after { display: block; opacity: 1; }
+.info-tip[aria-expanded="true"]::after { display: block; opacity: 1; }
 
 /* Below the desktop layout neither box may widen the document. A grid item takes
    its content's min-content width as an automatic minimum unless the track or
@@ -854,3 +1025,51 @@ a.list-row:hover strong { color: var(--accent); }
 .inbox[hidden] {
   display: none;
 }
+
+@media (min-width: 641px) and (max-width: 960px) {
+  .table-scroll {
+    scrollbar-gutter: stable;
+    overscroll-behavior-x: contain;
+    box-shadow: inset -14px 0 14px -14px rgba(0, 0, 0, 0.65);
+  }
+  .table-scroll th:first-child,
+  .table-scroll td:first-child {
+    position: sticky; left: 0; z-index: 1;
+    background: var(--panel);
+  }
+  .table-scroll thead th:first-child { z-index: 2; }
+  .table-scroll tbody tr:hover td:first-child { background: var(--panel-2); }
+}
+
+.table-more { display: none; margin: 0 0 var(--space-2); }
+@media (min-width: 641px) and (max-width: 960px) {
+  .table-more { display: inline-flex; }
+  table.table-priority[data-table-ready="true"] th[data-priority="low"],
+  table.table-priority[data-table-ready="true"] td[data-priority="low"] { display: none; }
+  table.table-priority[data-table-ready="true"][data-show-low="true"] th[data-priority="low"],
+  table.table-priority[data-table-ready="true"][data-show-low="true"] td[data-priority="low"] { display: table-cell; }
+}
+
+.confirm-dialog { width: min(440px, calc(100vw - 32px)); border: 1px solid var(--line-strong); border-radius: var(--radius-md); padding: 22px; background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+.confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
+.confirm-dialog h2 { margin-bottom: 10px; }
+.confirm-dialog p { color: var(--muted); }
+.confirm-dialog .row { justify-content: flex-end; margin-top: 18px; }
+
+/* Chinese typography (#474). Latin tracking tightens a Latin heading. A Chinese
+   heading is square and already carries its own side bearing, so the same
+   negative tracking sets it as a solid block, and the Latin-first stack sets one
+   bilingual line in two faces. Both are locale defects, so both live inside
+   `:lang(zh)`: the Latin rules above are untouched, and no heading size moves. */
+html:lang(zh) body {
+  /* `font-family` only. The base rule at `:215` is the `font` shorthand, so
+     re-declaring `font` here would reset `font-size` and `line-height` and undo
+     the scale rule this section exists to keep. */
+  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+html:lang(zh) h1 { letter-spacing: 0; line-height: 1.18; }
+html:lang(zh) h2 { letter-spacing: 0; }
+html:lang(zh) .brand { letter-spacing: 0; }
+html:lang(zh) .hero-copy h1 { letter-spacing: 0; line-height: 1.14; }
+html:lang(zh) .workspace-user h1 { letter-spacing: 0; }
+html:lang(zh) .stat strong { letter-spacing: 0; line-height: 1.15; }

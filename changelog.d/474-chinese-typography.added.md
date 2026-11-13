@@ -1,0 +1,1 @@
+Chinese headings now lift the Latin negative tracking to zero, take a slightly taller line-height, and are set in a Chinese-first font stack when the console is rendered in Chinese; heading sizes and the English rendering are unchanged.
