@@ -2068,6 +2068,88 @@ test('claimQueuedJob leases the highest-priority queued job exactly once', () =>
   }
 })
 
+// #545: two jobs that arrive together are ordered by whatever the query happens
+// to return, because nothing stable distinguishes them. The ticket is that
+// distinction: allocated in the insert transaction, never reused, and the only
+// tie-break below priority.
+function leaseMakeJobAt(store: Store, repoId: string, userId: string, id: string, priority: number, createdAt: string): void {
+  store.createJob({
+    id,
+    repoId,
+    userId,
+    trigger: 'schedule',
+    goal: 'g',
+    callbackHash: 'h',
+    platformTokenHash: '',
+    kind: 'iterate',
+    priority,
+    createdAt,
+  })
+}
+
+const SAME_ARRIVAL = '2026-11-13T00:00:00.000Z'
+
+// One active job per repository, so each queue row needs its own repo.
+function ticketRepo(store: Store, userId: string, id: string): string {
+  return queueRepoFor(store, userId, id).id
+}
+
+test('a queued job gets a persistent ticket, so equal arrivals keep a stable order', () => {
+  const { store, userId } = leaseSetup()
+  try {
+    leaseMakeJobAt(store, ticketRepo(store, userId, 'repo_t_a'), userId, 'job_a', 0, SAME_ARRIVAL)
+    leaseMakeJobAt(store, ticketRepo(store, userId, 'repo_t_b'), userId, 'job_b', 0, SAME_ARRIVAL)
+    leaseMakeJobAt(store, ticketRepo(store, userId, 'repo_t_c'), userId, 'job_c', 0, SAME_ARRIVAL)
+
+    assert.equal(store.getJob('job_a')?.queue_seq, 1, 'the first arrival holds the first ticket')
+    assert.equal(store.getJob('job_b')?.queue_seq, 2)
+    assert.equal(store.getJob('job_c')?.queue_seq, 3)
+    assert.deepEqual(store.listQueuedJobs().map((job) => job.id), ['job_a', 'job_b', 'job_c'])
+  } finally {
+    store.close()
+  }
+})
+
+test('a priority change takes a tail ticket, and a no-op save keeps the one it has', () => {
+  const { store, userId } = leaseSetup()
+  try {
+    leaseMakeJobAt(store, ticketRepo(store, userId, 'repo_t_a'), userId, 'job_a', 0, SAME_ARRIVAL)
+    leaseMakeJobAt(store, ticketRepo(store, userId, 'repo_t_b'), userId, 'job_b', 0, SAME_ARRIVAL)
+    leaseMakeJobAt(store, ticketRepo(store, userId, 'repo_t_c'), userId, 'job_c', 0, SAME_ARRIVAL)
+
+    store.updateJob('job_a', { priority: 0 })
+    assert.equal(store.getJob('job_a')?.queue_seq, 1, 'saving the same priority is not a new arrival')
+
+    store.updateJob('job_a', { priority: 5 })
+    assert.equal(store.getJob('job_a')?.queue_seq, 4, 'a real change goes to the tail of its new level')
+    // Priority first, ticket second: the promoted job now leads, and the two it
+    // passed keep their order relative to each other.
+    assert.deepEqual(store.listQueuedJobs().map((job) => job.id), ['job_a', 'job_b', 'job_c'])
+    // Saving the new value again is a no-op, not another move.
+    store.updateJob('job_a', { priority: 5 })
+    assert.equal(store.getJob('job_a')?.queue_seq, 4)
+  } finally {
+    store.close()
+  }
+})
+
+test('the claim follows the ticket, not the clock, when two jobs arrive together', () => {
+  const { store, userId } = leaseSetup()
+  try {
+    leaseMakeJobAt(store, ticketRepo(store, userId, 'repo_t_a'), userId, 'job_a', 0, SAME_ARRIVAL)
+    leaseMakeJobAt(store, ticketRepo(store, userId, 'repo_t_b'), userId, 'job_b', 0, SAME_ARRIVAL)
+
+    const first = store.claimQueuedJob('worker-1', 60_000)
+    assert.equal(first?.id, 'job_a')
+    assert.equal(first?.queue_seq, 1)
+    const second = store.claimQueuedJob('worker-2', 60_000)
+    assert.equal(second?.id, 'job_b')
+    assert.equal(second?.queue_seq, 2)
+  } finally {
+    store.close()
+  }
+})
+
 // -- scheduled-iteration continuity -----------------------------------------
 
 const now = Date.now()

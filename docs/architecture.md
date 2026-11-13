@@ -242,7 +242,15 @@ defect.
   same transaction (a legal `in_progress -> triaged` edge in
   `WORK_ITEM_TRANSITIONS`) and its audit row names the item id, because the item
   would otherwise stay `in_progress` behind a job that can never finish. The
-  lease and queue columns are schema version 33.
+  lease and queue columns are schema version 34.
+- **Queue tickets**: every job carries a `queue_seq` taken inside its insert, so
+  two jobs created at the same instant cannot be handed the same one, and the
+  queue is ordered by priority, then `queue_seq`, then `id` — never by a clock
+  that can tie. A priority change moves the row to the tail of its new level,
+  because that is a new arrival; saving the same value again is not a move and
+  keeps the ticket. `0` marks a row written before the column existed, and it is
+  backfilled in `created_at` order when the database opens, which is the order
+  those rows were already ranked by. A running job is never preempted.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
   a maintainer reviewer is due); with no open work it **stays idle** unless the
