@@ -32,7 +32,7 @@ import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256H
 import { expiryFromDays, GATEWAY_SCOPE, isTokenScope, patExpiryDays } from './lib/tokens.js'
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
-import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale } from './i18n.js'
+import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale, type Translate } from './i18n.js'
 import { normalizeInterval } from './lib/intervals.js'
 import { JOB_FILTER_STATUSES, parseJobFilters } from './lib/jobFilters.js'
 import { isValidBranchName } from './lib/branches.js'
@@ -96,6 +96,8 @@ import { GithubApp } from './repos/app.js'
 import { repoGithubToken } from './repos/token.js'
 import { InstanceManager } from './flybot/instances.js'
 import { dshCookie, proxyWorkspaceHttp, proxyWorkspaceUpgrade } from './flybot/workspace.js'
+import { managementActor } from './management/actor.js'
+import { ManagementService, type ManagementCode } from './management/service.js'
 
 export interface BuildOptions {
   config: Config
@@ -167,6 +169,29 @@ function form(request: FastifyRequest): Record<string, string> {
     if (FORM_KEY.test(key) && typeof value === 'string') out[key] = value
   }
   return out
+}
+
+// #540: the management codes are stable identifiers, so the sentence a person
+// reads is chosen here, once, in both languages.
+function managementRefusal(t: Translate, code: ManagementCode): string {
+  switch (code) {
+    case 'management_revision_conflict':
+      return t('这个任务在你打开页面之后已经变化，请重新打开任务后再操作。', 'This job changed after you opened the page; reopen it before acting.')
+    case 'idempotency_conflict':
+      return t('这个请求已经用不同的内容提交过，已拒绝。请刷新页面后重试。', 'That request was already submitted with different content; reload the page and try again.')
+    case 'authorization_revoked':
+      return t('你已经没有执行这个操作的权限。', 'You no longer have permission for this action.')
+    case 'job_not_cancellable':
+      return t('这个任务已经结束。', 'This job has already finished.')
+    case 'job_not_found':
+      return t('任务不存在。', 'The job does not exist.')
+    case 'actor_not_allowed':
+      return t('请求里不能包含身份或权限字段。', 'A request may not carry identity or permission fields.')
+    case 'unknown_operation':
+      return t('不支持的操作。', 'Unsupported operation.')
+    default:
+      return t('取消失败。', 'The cancel failed.')
+  }
 }
 
 function formList(request: FastifyRequest, key: string): string[] {
@@ -271,6 +296,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   }
   const githubApp = new GithubApp(config)
   const jobs = new Jobs(store, config, runner, mailer, instances, githubApp)
+  // #540: one contract behind the console writes that have migrated. The first
+  // is the job cancel form; the rest still call their services directly.
+  const management = new ManagementService(store, jobs)
   const loginLimiter = new RateLimiter(30, 60_000)
   const apiLimiter = new RateLimiter(120, 60_000)
   // #460 review: the destructive actions below are rate-limited as well as
@@ -1875,17 +1903,40 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repoLabels,
       events: store.listJobEvents(job.id, 200),
       postmortem: store.getPostmortemForJob(job.id) ?? null,
+      // #540: the cancel form carries the revision it rendered and a fresh key,
+      // so a double submit replays the same receipt and a stale page conflicts.
+      cancel: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
   })
 
+  // #540: the form route is an adapter over the management contract. It resolves
+  // the actor, hands over the revision and key the page rendered, and turns the
+  // receipt into a redirect. The cancel rules themselves live in Jobs.cancelJob.
   app.post('/repos/:id/jobs/:jobId/cancel', async (request, reply) => {
-    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
-    const result = await jobs.cancelJob(job.id, '用户取消任务')
-    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${result.ok ? 'notice' : 'error'}=${encodeURIComponent(result.ok ? '任务已取消。' : result.error ?? '取消失败。')}`)
+    const body = form(request)
+    const t = translator(request.locale ?? 'zh')
+    const current = management.revisionOf('job', job.id)
+    const rendered = Number.parseInt(body.expected_revision ?? '', 10)
+    const expectedRevision = Number.isFinite(rendered) && rendered >= 1 ? rendered : current
+    // A page cached before the hidden fields existed still cancels once: it just
+    // has no key to replay, so the server mints one for this one request.
+    const idempotencyKey = body.idempotency_key !== undefined && body.idempotency_key !== '' ? body.idempotency_key : randomId('cmd')
+    const actor = managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
+    const outcome = await management.run(actor, {
+      operation: 'task.cancel',
+      target: { projectId: repo.id, jobId: job.id },
+      arguments: {},
+      expectedRevision,
+      idempotencyKey,
+    })
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    if (outcome.ok) return reply.redirect(`${back}?notice=${encodeURIComponent(t('任务已取消。', 'Job cancelled.'))}`)
+    return reply.redirect(`${back}?error=${encodeURIComponent(managementRefusal(t, outcome.code))}&code=${outcome.code}`)
   })
 
   app.post('/repos/:id/jobs/:jobId/pause', async (request, reply) => {

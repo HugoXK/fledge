@@ -1425,6 +1425,8 @@ listing, and every row links to the page that already owns it.
 | `postmortems` | one evidence-backed write-up per failed/stalled/cancelled job, with category, recurrence key, owner and preventive action |
 | `postmortem_recurrences` | one ledger row per recurrence key: count, first/last seen, affected repositories and the single escalation marker |
 | `audit_log` | who changed what |
+| `management_commands` | one receipt per command: principal, channel, idempotency scope/key, request hash, operation, target, arguments, expected/before/after revision, status and result (#540) |
+| `resource_revisions` | the fence a command compares against, one row per resource; a resource with no row is at revision 1 (#540) |
 | `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
 
 ## Deployment records
@@ -1464,6 +1466,48 @@ queued ──► running ──► succeeded
 
 The claim/worker dispatch model, the `queued` meaning and the idempotent
 callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
+
+## Management commands (#540)
+
+Every console write used to be its own route: parse the form, check the owner,
+call the service, write an audit row, redirect. A second surface (an API, a chat
+entry, automation) would have had to copy all four steps. `src/management/`
+replaces that shape with one contract, and the first migrated write is the job
+cancel form.
+
+A command is an operation from a closed catalog (`src/management/catalog.ts`),
+a target (`projectId`, plus `jobId` today), validated arguments, the revision the
+caller saw (`expected_revision`), an idempotency key, and the source conversation
+or message when the caller has one. The actor — principal, channel, tenant,
+capabilities — is built by the server from the session and the repository; a form
+field, an IM message or a model cannot supply it, and an argument that names one
+(`actor`, `tenant_id`, `capabilities`, `sql`, `url`, `path`) is refused rather
+than ignored.
+
+The service stores a receipt before the business write, in `accepted` state.
+Repeating the same key with the same request hash returns that receipt and runs
+nothing; reusing the key with different arguments returns
+`idempotency_conflict`; a revision that has moved on returns
+`management_revision_conflict` and writes no receipt at all. Execution re-reads
+the caller's capabilities from the database and compares the revision again, so
+a change of hands between acceptance and execution fails the receipt before the
+business write. On success the receipt, the revision bump and the
+`management.command` audit row commit in one transaction.
+
+`task.cancel` is not fully transactional, and that is deliberate: it calls
+`Jobs.cancelJob`, which stops live bot sessions over the bridge before the local
+status write, so the external step cannot sit inside the SQLite transaction. Its
+external call is best-effort and safe to repeat, so the operation never needs the
+`unknown` state; the first operation that does (a release, or a resume that
+enqueues through an external surface) will bring
+`management_command_attempts` and a reconcile step with it. The form route stays
+a thin adapter: it renders the revision and a fresh key, calls the service, and
+turns the receipt into the same redirect as before.
+
+The rest of the write surface — job create/pause/resume/retry, repository
+settings, releases, member grants — still calls its service directly. Each
+migrates by registering one operation and leaving its route as an adapter; none
+of them may keep a second copy of the rules.
 
 ## Notification webhook egress
 
