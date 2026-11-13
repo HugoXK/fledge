@@ -12,7 +12,9 @@ export interface ReleasePlanInput {
   lastTag: string
   packageVersion: string
   prs: ReleasePlanPr[]
-  fragments: string[]
+  /** How many `changelog.d/` fragments are pending: a count, never a list. A
+   * malformed value counts as zero, so the night is refused. */
+  fragments: number
   openReleasePr: boolean
   existingTags: string[]
   crossCheck?: { logPrNumbers: number[] }

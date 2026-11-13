@@ -84,7 +84,10 @@ export function planRelease(input) {
     releaseAt,
   } = input ?? {}
 
-  const fragmentList = Array.isArray(fragments) ? fragments : []
+  // The planner is told how many fragments exist, not what they are called. The
+  // contract is a count and nothing else: a malformed value is zero, so the
+  // night is refused as `no-fragments` instead of printing `NaN` in the body.
+  const fragmentCount = Number.isInteger(fragments) && fragments > 0 ? fragments : 0
   const tags = Array.isArray(existingTags) ? existingTags : []
   const windowed = windowOf(Array.isArray(prs) ? prs : [], lastTagCommittedAt)
 
@@ -113,7 +116,7 @@ export function planRelease(input) {
   else if (openReleasePr === true) tokens.push('open-release-pr')
   else if (total < MIN_PRS) tokens.push('not-enough-prs')
   else if (features < MIN_FEATURES) tokens.push('not-enough-features')
-  else if (fragmentList.length === 0) tokens.push('no-fragments')
+  else if (fragmentCount === 0) tokens.push('no-fragments')
   else tokens.push('ok')
 
   tokens.push(...crossCheckLines(apiNumbers, crossCheck?.logPrNumbers))
@@ -121,7 +124,7 @@ export function planRelease(input) {
   return {
     total,
     features,
-    fragments: fragmentList.length,
+    fragments: fragmentCount,
     nextVersion,
     bump: next.bump,
     reason: tokens.join('; '),
