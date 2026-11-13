@@ -12,7 +12,10 @@ import { json, makeUser, MemoryMailer, startFakeServer, testConfig } from './hel
 const HEAD = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 const BASE = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 
-interface FileRow { filename: string; patch?: string }
+// A row carries `status` and the line counts because a hunkless rename is only
+// distinguishable from a patch-less `modified` file by those fields: the API
+// sends no `patch` key for either shape (#566).
+interface FileRow { filename: string; patch?: string; status?: string; additions?: number; deletions?: number }
 
 // The fake repository: one pull request, one page of files (plus an optional
 // empty second page for the truncated-listing case), and a recorded merge.
@@ -60,7 +63,7 @@ async function runPass(input: {
       return
     }
     if (method === 'GET' && url === '/repos/o/r/pulls/1/files?per_page=100&page=1') {
-      json(response, 200, input.files.map((file) => ({ filename: file.filename, status: 'modified', additions: 1, deletions: 1, ...(file.patch === undefined ? {} : { patch: file.patch }) })))
+      json(response, 200, input.files.map((file) => ({ filename: file.filename, status: file.status ?? 'modified', additions: file.additions ?? 1, deletions: file.deletions ?? 1, ...(file.patch === undefined ? {} : { patch: file.patch }) })))
       return
     }
     if (method === 'GET' && url === '/repos/o/r/pulls/1/files?per_page=100&page=2') {
@@ -220,4 +223,52 @@ test('an unconfigured platform model stays fail-open with a recorded reason', as
   const event = result.events.find((entry) => entry.step === 'skipped')
   assert.ok(event !== undefined)
   assert.match(String(event?.meta ?? ''), /not configured/)
+})
+
+// #566: a 100 %-similarity rename arrives with no hunks, so the API sends no
+// `patch` for it and the pass counted a file it could in fact identify as the
+// one thing it could not read.
+test('a hunkless rename beside a readable change is reviewed and merges', async () => {
+  const result = await runPass({
+    changedFiles: 2,
+    files: [
+      { filename: 'rollup.config.ts', status: 'renamed', additions: 0, deletions: 0 },
+      { filename: 'src/x.ts', patch: '@@ -1 +1 @@\n-const a = 0\n+const a = 1' },
+    ],
+  })
+  assert.equal(result.merges, 1, 'a rename with no hunks is not an unread file')
+  const incomplete = result.events.find((entry) => entry.step === 'incomplete')
+  assert.equal(incomplete, undefined, 'the pass read every changed line, so there is nothing to refuse')
+  const reviewed = result.events.find((entry) => entry.step === 'none')
+  assert.ok(reviewed !== undefined, 'the readable half is still reviewed by the model')
+})
+
+test('a pull request whose every changed file is a hunkless rename still refuses', async () => {
+  // A pure path move is how something gets disabled without a diff to read, so
+  // this stays refused through the nothing-readable branch. It is a pin, not
+  // the red half: the behaviour is already correct at the tip.
+  const result = await runPass({
+    changedFiles: 2,
+    files: [
+      { filename: 'ci.yml.disabled', status: 'renamed', additions: 0, deletions: 0 },
+      { filename: 'Dockerfile.disabled', status: 'renamed', additions: 0, deletions: 0 },
+    ],
+  })
+  assert.equal(result.merges, 0, 'a pass that read nothing never auto-merges')
+  assert.ok(result.events.some((entry) => entry.step === 'incomplete'), 'the refusal is recorded')
+})
+
+test('a hunkless rename beside an allowlisted asset still refuses', async () => {
+  // Excluding renames from `unread` alone leaves `readable` empty and `unread`
+  // holding only the asset, so the asset skip would release a change that also
+  // moved a file out of the way. The exclusion therefore keeps its own list.
+  const result = await runPass({
+    changedFiles: 2,
+    files: [
+      { filename: 'ci.yml.disabled', status: 'renamed', additions: 0, deletions: 0 },
+      { filename: 'public/logo.png' },
+    ],
+  })
+  assert.equal(result.merges, 0, 'the asset skip must not release a rename with it')
+  assert.ok(result.events.some((entry) => entry.step === 'incomplete'), 'the refusal is recorded')
 })
