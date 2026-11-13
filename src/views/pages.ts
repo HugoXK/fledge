@@ -14,6 +14,8 @@ import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkI
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
+import { contractOf, resolveWorkType, workTypeLabel, workTypePurpose } from '../lib/workTypes.js'
+import { parseTriageJson, triageSummaryLine } from '../lib/triage.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
@@ -259,6 +261,7 @@ function jobKindLabel(t: Translate, job: JobRow): string {
   if (job.kind === 'review') return t('审核', 'Review')
   if (job.kind === 'plan') return t('计划', 'Plan')
   if (job.kind === 'discover') return t('发现', 'Discovery')
+  if (job.kind === 'triage') return t('分诊', 'Triage')
   if (job.kind === 'research') return t('分析', 'Research')
   return t('迭代', 'Iterate')
 }
@@ -2400,6 +2403,36 @@ export function jobPage(input: {
         </form>` : job.plan_approved_at !== null ? `<p class="fine">${escapeHtml(t('批准人', 'Approved by'))} ${escapeHtml(job.plan_approved_by ?? '—')} · ${escapeHtml(t('允许路径', 'Allowed'))} ${escapeHtml(job.plan_allow_paths ?? '—')} · ${escapeHtml(t('禁止路径', 'Forbidden'))} ${escapeHtml(job.plan_deny_paths ?? '—')}</p>` : ''}
       </section>`
     : ''
+  // #390: the work type is data, so the page reads it back from the registry
+  // instead of restating it. An unknown or missing type renders as iterate, which
+  // is what every row written before the column means.
+  const workType = resolveWorkType(job.work_type) ?? contractOf('iterate')
+  const workTypeCard = `<section class="card" data-work-type="${escapeHtml(workType.type)}">
+    <h2>${escapeHtml(t('工作类型', 'Work type'))}</h2>
+    <p><strong>${escapeHtml(workTypeLabel(t, workType.type))}</strong> — ${escapeHtml(workTypePurpose(t, workType.type))}</p>
+    <div class="list">
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('可用阶段', 'Stages'))}</strong><small>${escapeHtml(workType.stages.length === 0 ? t('无（只读）', 'none (read-only)') : workType.stages.join(', '))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('必需证据', 'Required evidence'))}</strong><small>${escapeHtml(workType.evidence.length === 0 ? t('无', 'none') : workType.evidence.map((key) => `evidence.${key}`).join(', '))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('风险等级', 'Risk tier'))}</strong><small>${escapeHtml(workType.risk)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('单任务预算', 'Per-job budget'))}</strong><small>$${workType.budgetUsd}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('可创建分支/PR', 'May open a branch/PR'))}</strong><small>${escapeHtml(workType.branch ? t('是', 'yes') : t('否', 'no'))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('可自动合并', 'May auto-merge'))}</strong><small>${escapeHtml(workType.autoMerge ? t('是', 'yes') : t('否', 'no'))}</small></div></div>
+    </div>
+  </section>`
+  const triageReport = parseTriageJson(job.triage_json)
+  const triageRows = triageReport === null
+    ? ''
+    : triageReport.items.length === 0
+      ? `<p class="muted">${escapeHtml(t('看板上没有待办 issue。', 'No open issue is waiting on the board.'))}</p>`
+      : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('排名', 'Rank'))}</th><th>issue</th><th>${escapeHtml(t('优先级', 'Priority'))}</th><th>${escapeHtml(t('重复于', 'Duplicate of'))}</th></tr></thead><tbody>${triageReport.items.map((item, index) => `<tr><td>${index + 1}</td><td><a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">#${item.issue}</a> ${escapeHtml(item.title)}${triageReport.next !== null && triageReport.next.issue === item.issue ? ` · <strong>${escapeHtml(t('下一项', 'next'))}</strong>` : ''}</td><td>${item.priority}</td><td>${item.duplicateOf === null ? '—' : `#${item.duplicateOf}`}</td></tr>`).join('')}</tbody></table></div>`
+  const triageCard = job.kind !== 'triage'
+    ? ''
+    : `<section class="card" data-triage>
+    <h2>${escapeHtml(t('分诊结果', 'Triage result'))}</h2>
+    ${triageReport === null
+      ? `<p class="muted">${escapeHtml(t('还没有分诊结果。', 'No triage result yet.'))}</p>`
+      : `<p class="fine">${escapeHtml(triageSummaryLine(triageReport))}</p>${triageRows}`}
+  </section>`
   const jobLoading = job.status === 'queued' || job.status === 'running'
     ? renderState({ kind: 'loading', title: job.status === 'queued' ? t('任务已排队。', 'This job is queued.') : t('任务正在运行。', 'This job is running.'), body: job.status === 'queued' ? t('前面的任务结束后自动开始；这个页面会自己更新。', 'It starts as soon as the jobs ahead finish; this page updates by itself.') : t('团队进度会写进下面的时间线，不需要手动刷新。', 'Team progress lands in the timeline below; no manual refresh needed.'), skeletonLines: 2 })
     : ''
@@ -2423,6 +2456,8 @@ export function jobPage(input: {
   </section>
   ${jobLoading}
   ${supportMode ? '' : planCard}
+  ${supportMode ? '' : workTypeCard}
+  ${supportMode ? '' : triageCard}
   <section class="cols">
     <div class="card">
       <h2>${escapeHtml(t('结果', 'Result'))}</h2>
@@ -2943,7 +2978,7 @@ export function searchPage(input: {
   const all = t('全部', 'All')
   const body = `<a class="back" href="/console">← ${escapeHtml(t('返回工作区', 'Back to workspace'))}</a>
     <section class="card"><div class="eyebrow">${escapeHtml(t('搜索', 'SEARCH'))}</div><h1>${escapeHtml(t('在你的数据里查找', 'Search your own data'))}</h1><p class="muted">${escapeHtml(t(`只查你自己：仓库、任务、工作项和审计。每类最多显示前 ${cap} 条。`, `Your own data only: repositories, jobs, work items and audit. First ${cap} results per section.`))}</p>
-      <form method="get" action="/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" placeholder="${escapeHtml(t('任务 id、PR 链接、摘要…', 'job id, PR link, summary…'))}" /></label><label>${escapeHtml(t('仓库', 'Repository'))} <select name="repo">${[option('', t('全部仓库', 'All repositories'), filters.repo), ...repos.map((repo) => option(repo.id, labels.get(repo.id) ?? repo.id, filters.repo))].join('')}</select></label><label>${escapeHtml(t('状态', 'Status'))} <select name="status">${['', 'queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted'].map((value) => option(value, value === '' ? all : value, filters.status)).join('')}</select></label><label>${escapeHtml(t('类型', 'Kind'))} <select name="kind">${['', 'iterate', 'review', 'plan'].map((value) => option(value, value === '' ? all : value, filters.kind)).join('')}</select></label><label>${escapeHtml(t('从', 'From'))} <input name="from" value="${escapeHtml(filters.from)}" placeholder="YYYY-MM-DD" /></label><label>${escapeHtml(t('到', 'To'))} <input name="to" value="${escapeHtml(filters.to)}" placeholder="YYYY-MM-DD" /></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button></div></form></section>
+      <form method="get" action="/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" placeholder="${escapeHtml(t('任务 id、PR 链接、摘要…', 'job id, PR link, summary…'))}" /></label><label>${escapeHtml(t('仓库', 'Repository'))} <select name="repo">${[option('', t('全部仓库', 'All repositories'), filters.repo), ...repos.map((repo) => option(repo.id, labels.get(repo.id) ?? repo.id, filters.repo))].join('')}</select></label><label>${escapeHtml(t('状态', 'Status'))} <select name="status">${['', 'queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted'].map((value) => option(value, value === '' ? all : value, filters.status)).join('')}</select></label><label>${escapeHtml(t('类型', 'Kind'))} <select name="kind">${['', ...JOB_FILTER_KINDS].map((value) => option(value, value === '' ? all : value, filters.kind)).join('')}</select></label><label>${escapeHtml(t('从', 'From'))} <input name="from" value="${escapeHtml(filters.from)}" placeholder="YYYY-MM-DD" /></label><label>${escapeHtml(t('到', 'To'))} <input name="to" value="${escapeHtml(filters.to)}" placeholder="YYYY-MM-DD" /></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button></div></form></section>
     ${results === null ? empty(t('输入关键词开始搜索。', 'Type a keyword to search.'), t('搜索范围只有你自己：仓库、任务、工作项和审计。', 'The scope is your own data only: repositories, jobs, work items and audit.')) : sections === '' ? empty(t('没有匹配的结果。', 'No matches.'), t('换一个关键词，缩短它，或清空仓库、状态、类型和日期筛选来缩小范围。', 'Try another keyword, shorten it, or clear the repository, status, kind and date filters to narrow your search.')) : sections}`
   return layout({ title: t('搜索', 'Search'), viewer, body, config, locale, path: '/search', active: 'console', notice, error })
 }
@@ -2979,7 +3014,7 @@ export function adminSearchPage(input: {
   const auditQuery = query({ q: filters.q, action: filters.action, from: filters.from, to: filters.to })
   const body = `<a class="back" href="/admin">← ${escapeHtml(t('返回管理', 'Back to admin'))}</a>
     <section class="card"><div class="eyebrow">${escapeHtml(t('搜索与导出', 'SEARCH & EXPORT'))}</div><h1>${escapeHtml(t('审计与任务', 'Audit and jobs'))}</h1><p class="muted">${escapeHtml(t('按用户范围过滤；可导出当前结果。', 'Scoped by the same user visibility as the admin page; export the current result.'))}</p></section>
-    <section class="card"><h2>${escapeHtml(t('任务', 'Jobs'))}</h2><form method="get" action="/admin/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" /></label><label>${escapeHtml(t('状态', 'Status'))} <select name="status"><option value="">${escapeHtml(t('全部', 'All'))}</option>${['queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted'].map((status) => `<option value="${status}"${filters.status === status ? ' selected' : ''}>${status}</option>`).join('')}</select></label><label>${escapeHtml(t('类型', 'Kind'))} <select name="kind"><option value="">${escapeHtml(t('全部', 'All'))}</option>${['iterate', 'review', 'plan'].map((kind) => `<option value="${kind}"${filters.kind === kind ? ' selected' : ''}>${kind}</option>`).join('')}</select></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button><a class="btn btn-ghost" href="/admin/export/jobs.csv?${escapeHtml(jobQuery)}">${escapeHtml(t('导出 CSV', 'Export CSV'))}</a></div></form><div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('用户', 'User'))}</th><th>PR / Issue</th></tr></thead><tbody>${jobRows}</tbody></table></div><p class="fine">${escapeHtml(t('共', 'Total'))} ${jobsTotal} · ${escapeHtml(t('第', 'Page'))} ${jobsPage}</p>${pager('/admin/search', 'jobsPage', jobsPage, jobsTotal, perPage, t, { q: filters.q, status: filters.status, kind: filters.kind, auditPage })}</section>
+    <section class="card"><h2>${escapeHtml(t('任务', 'Jobs'))}</h2><form method="get" action="/admin/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" /></label><label>${escapeHtml(t('状态', 'Status'))} <select name="status"><option value="">${escapeHtml(t('全部', 'All'))}</option>${['queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted'].map((status) => `<option value="${status}"${filters.status === status ? ' selected' : ''}>${status}</option>`).join('')}</select></label><label>${escapeHtml(t('类型', 'Kind'))} <select name="kind"><option value="">${escapeHtml(t('全部', 'All'))}</option>${JOB_FILTER_KINDS.map((kind) => `<option value="${kind}"${filters.kind === kind ? ' selected' : ''}>${kind}</option>`).join('')}</select></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button><a class="btn btn-ghost" href="/admin/export/jobs.csv?${escapeHtml(jobQuery)}">${escapeHtml(t('导出 CSV', 'Export CSV'))}</a></div></form><div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('用户', 'User'))}</th><th>PR / Issue</th></tr></thead><tbody>${jobRows}</tbody></table></div><p class="fine">${escapeHtml(t('共', 'Total'))} ${jobsTotal} · ${escapeHtml(t('第', 'Page'))} ${jobsPage}</p>${pager('/admin/search', 'jobsPage', jobsPage, jobsTotal, perPage, t, { q: filters.q, status: filters.status, kind: filters.kind, auditPage })}</section>
     <section class="card"><h2>${escapeHtml(t('审计', 'Audit'))}</h2><form method="get" action="/admin/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" /></label><label>${escapeHtml(t('动作', 'Action'))} <input name="action" value="${escapeHtml(filters.action)}" placeholder="repo.settings" /></label><label>${escapeHtml(t('从', 'From'))} <input name="from" value="${escapeHtml(filters.from)}" placeholder="YYYY-MM-DD" /></label><label>${escapeHtml(t('到', 'To'))} <input name="to" value="${escapeHtml(filters.to)}" placeholder="YYYY-MM-DD" /></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button><a class="btn btn-ghost" href="/admin/export/audit.csv?${escapeHtml(auditQuery)}">${escapeHtml(t('导出 CSV', 'Export CSV'))}</a></div></form>${auditTable}<p class="fine">${escapeHtml(t('共', 'Total'))} ${auditTotal} · ${escapeHtml(t('第', 'Page'))} ${auditPage}</p>${pager('/admin/search', 'auditPage', auditPage, auditTotal, perPage, t, { q: filters.q, action: filters.action, from: filters.from, to: filters.to, jobsPage })}</section>`
   return layout({ title: t('审计与任务', 'Audit and jobs'), viewer, body, config, locale, path: '/admin/search', active: 'admin', notice, error })
 }

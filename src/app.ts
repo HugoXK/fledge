@@ -938,8 +938,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     )
   })
 
-  // #362: every filter is validated here and the query is anchored on
-  // `viewer.user.id`, so an unknown `repo` value is dropped, not answered.
+  // #362: the query is anchored on `viewer.user.id`, so an unknown `repo` is dropped
+  // and never answered; `kind` is applied as given, so an unknown kind matches nothing.
   app.get('/search', async (request, reply) => {
     const viewer = requireApproved(request)
     const repos = store.listRepos(viewer.user.id)
@@ -954,7 +954,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       q: clip('q', 200),
       repo: repos.some((row) => row.id === repo) ? repo : '',
       status: ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted'].includes(status) ? status : '',
-      kind: ['iterate', 'review', 'plan'].includes(kind) ? kind : '',
+      kind,
       from: from === '' ? '' : `${from}T00:00:00.000Z`, to: to === '' ? '' : `${to}T23:59:59.999Z`,
     }
     return reply.type('text/html').send(searchPage({
