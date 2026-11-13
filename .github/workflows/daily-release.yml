@@ -1,8 +1,14 @@
 name: Daily minor release
 
-# Owner decision 2026-11-06: a minor release every night at 22:30 Asia/Shanghai
-# (14:30 UTC) when the rule in issue #80 is satisfied, and the annotated tag for
-# that release once its mechanical pull request is merged.
+# Owner decision 2026-11-06, cadence corrected by ADR 0008 (accepted 2026-11-10):
+# a nightly release at 22:30 Asia/Shanghai (14:30 UTC) when the rule in issue #80
+# is satisfied. The version bumps the minor on the first release of a UTC week and
+# the patch on later nights in the same week
+# (`docs/decisions/0008-release-cadence.md`), and the annotated tag for that
+# release is pushed once its mechanical pull request is merged.
+#
+# The workflow and job names below still read "daily minor release"; ADR 0008:42-43
+# records that label as non-authoritative, and the version decides the bump.
 #
 # Two jobs, three triggers, two credentials:
 #   release  plans the night on `schedule`, on `workflow_dispatch` and on a push
