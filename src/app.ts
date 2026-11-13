@@ -45,7 +45,6 @@ import { VERSION } from './version.js'
 import { incCounter, observeHistogram, renderMetrics } from './lib/metrics.js'
 import { readReleaseStatus } from './lib/releaseStatus.js'
 import {
-  deploymentDrift,
   deploymentFromRow,
   deploymentHealth,
   deploymentReadiness,
