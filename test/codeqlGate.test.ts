@@ -142,12 +142,18 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // lines on the merged tree and moved none of them. The rework after review
   // `901ad95` adds eight lines to the bulk add path below the four top-of-file
   // registrations, so the webhook anchor reads `:3197` and the rest stay.
+  // #473 inserts one `/density/:mode` route above the four top-of-file
+  // registrations, so those read `:541`/`:576`/`:586`/`:596` and the webhook
+  // registration reads `:3222`; the gateway pair stays `:155`/`:180`. The shift
+  // is uniform (+25 lines, an import, the response-hook branch and the route),
+  // and each moved line was read on this tree and carries the same
+  // registration it did on main: no result was added and none was dismissed.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3197',
-    'js/missing-rate-limiting|src/app.ts|516',
-    'js/missing-rate-limiting|src/app.ts|551',
-    'js/missing-rate-limiting|src/app.ts|561',
-    'js/missing-rate-limiting|src/app.ts|571',
+    'js/missing-rate-limiting|src/app.ts|3222',
+    'js/missing-rate-limiting|src/app.ts|541',
+    'js/missing-rate-limiting|src/app.ts|576',
+    'js/missing-rate-limiting|src/app.ts|586',
+    'js/missing-rate-limiting|src/app.ts|596',
     'js/missing-rate-limiting|src/gateway/gateway.ts|155',
     'js/missing-rate-limiting|src/gateway/gateway.ts|180',  ])
   const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
