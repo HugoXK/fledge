@@ -65,6 +65,7 @@ const KIND_LABELS: Record<JobKind, [string, string]> = {
   scope: ['范围', 'Scope'],
   verify: ['验证', 'Verify'],
   discover: ['发现', 'Discovery'],
+  triage: ['分诊', 'Triage'],
 }
 
 export function statusFilterLabel(t: Translate, status: string): string {

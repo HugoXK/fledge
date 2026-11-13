@@ -30,6 +30,8 @@ import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, re
 import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
 import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES } from './continuity.js'
+import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTypeForKind, workTypeMayAutoMerge } from '../lib/workTypes.js'
+import { parseTriage } from '../lib/triage.js'
 import { repoGithubToken } from '../repos/token.js'
 import { parseTeam } from '../flybot/instances.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
@@ -46,6 +48,9 @@ export const DEFAULT_VERIFY_GOAL =
 
 export const DEFAULT_DISCOVER_GOAL =
   'Discovery only: inspect the repository, open issues/PRs, tests and recent CI. Do not write code, create a branch, push, open a PR or change settings. If you find one concrete, reproducible defect or high-value improvement not already covered, create exactly one focused issue on the upstream with evidence and a failing-test idea, then report issueUrl. If there is nothing concrete, report zero output and create nothing. Never create an inventory/backlog/盘点/清账/reconcile issue.'
+
+export const DEFAULT_TRIAGE_GOAL =
+  'Triage only: read the open issues and pull requests of the upstream repository, rank them by the priority labels, link duplicates and name the one item the next work session should start with. Do not write code, create a branch, open a pull request or merge. Return the board in the callback "triage" object.'
 
 export const DEFAULT_REVIEW_GOAL =
   'Review every open pull request on the upstream repository. For each PR, inspect the diff, tests and risk, give a score from 0 to 100 with a short rationale, and post a COMMENT review. Do not request changes, approve, merge, push or change repository settings. Return followUps for every Fledge PR that needs a same-branch fix. Summarize the scores and the most important issues.'
@@ -139,6 +144,7 @@ export interface CallbackPayload {
   evidence?: unknown
   checkpoint?: unknown
   followUps?: unknown
+  triage?: unknown
 }
 
 // The canonical form of a terminal report. Two deliveries that describe the same
@@ -543,11 +549,26 @@ export class Jobs {
     return options.ownerStarted ?? trigger === 'manual'
   }
 
-  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean } = {}): Promise<EnqueueResult> {
+  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean; workType?: string } = {}): Promise<EnqueueResult> {
     // #283: the platform stop outranks every other refusal. It is checked before
     // the per-repository and per-role gates so the answer says the platform is
     // stopped, not that this one repository is disabled, and it is checked in the
     // admission path itself: a due repository reaches `enqueue` without a route.
+    // #390: the work type is resolved before anything else, and an unknown one is
+    // refused. A default here would run work under a contract nobody declared.
+    const workType = resolveWorkType(options.workType ?? workTypeForKind(kind))
+    if (workType === null) {
+      return { ok: false, error: '未知的工作类型。', code: 'UNKNOWN_WORK_TYPE', detail: String(options.workType ?? kind) }
+    }
+    if (!isImplementedWorkType(workType.type)) {
+      return { ok: false, error: `${workType.type} 工作类型已登记但还没有实现。`, code: 'WORK_TYPE_UNSUPPORTED', detail: workType.type }
+    }
+    if (workType.type === 'triage' && kind !== 'triage') {
+      return { ok: false, error: '分诊是独立的任务类型，不能借用其他任务类型。', code: 'UNKNOWN_WORK_TYPE', detail: workType.type }
+    }
+    if (kind !== 'triage' && workType.branch === false) {
+      return { ok: false, error: `${workType.type} 工作类型不能创建分支或 PR。`, code: 'UNKNOWN_WORK_TYPE', detail: workType.type }
+    }
     if (this.platformStop() !== null) return { ok: false, error: '平台已紧急停止，暂不接受新任务。', code: 'PLATFORM_PAUSED' }
     if (repo.enabled !== 1) return { ok: false, error: '这个仓库已停用', code: 'REPO_DISABLED' }
     if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
@@ -606,7 +627,7 @@ export class Jobs {
       preflightSha = preflight.baseSha ?? null
       preflightWarning = preflight.warning ?? ''
     }
-    const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : kind === 'discover' ? DEFAULT_DISCOVER_GOAL : kind === 'scope' ? DEFAULT_SCOPE_GOAL : kind === 'verify' ? DEFAULT_VERIFY_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
+    const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : kind === 'discover' ? DEFAULT_DISCOVER_GOAL : kind === 'triage' ? DEFAULT_TRIAGE_GOAL : kind === 'scope' ? DEFAULT_SCOPE_GOAL : kind === 'verify' ? DEFAULT_VERIFY_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
     const rawGoal = goalOverride ?? baseGoal
     const carryOver = trigger === 'schedule' || trigger === 'followup'
       ? buildCarryOver({ recent: this.store.listJobsForRepo(repo.id, 3), openWork: this.store.listOpenWorkItems(repo.id) })
@@ -620,7 +641,7 @@ export class Jobs {
     const platformFunded = user.own_llm_base_url === null || user.own_llm_base_url === '' || user.own_llm_key_enc === null
 
     if (platformFunded && quotaView(user, this.config).exhausted) {
-      const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind, ownerStarted: this.ownerStartedFor(trigger, options) })
+      const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind, workType: workType.type, ownerStarted: this.ownerStartedFor(trigger, options) })
       this.store.updateJob(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。', error_code: 'QUOTA_EXHAUSTED', finished_at: nowIso() })
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'quota_exhausted' })
       else if (kind === 'iterate') this.store.updateRepo(repo.id, { last_status: 'quota_exhausted', last_run_at: nowIso() })
@@ -688,7 +709,7 @@ export class Jobs {
     const priority = options.priority ?? (trigger === 'followup' ? 20 : trigger === 'manual' ? 10 : 0)
     let job: JobRow
     try {
-      job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null, ownerStarted: this.ownerStartedFor(trigger, options) })
+      job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, workType: workType.type, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null, ownerStarted: this.ownerStartedFor(trigger, options) })
     } catch (error) {
       // SQLite reports the column of a partial unique index, not its name, so
       // this index surfaces as "UNIQUE constraint failed: jobs.repo_id". Only
@@ -772,7 +793,7 @@ export class Jobs {
         isFork: repo.is_fork === 1,
         permission: repo.permission,
         repoRole: repo.repo_role === 'maintainer' || repo.repo_role === 'developer' ? repo.repo_role : null,
-        autoMerge: kind === 'iterate' && repo.repo_role === 'maintainer' && repo.auto_merge === 1,
+        autoMerge: kind === 'iterate' && workTypeMayAutoMerge(workType.type) && repo.repo_role === 'maintainer' && repo.auto_merge === 1,
         canReview: repo.can_review === 1,
         canCreateIssue: repo.can_create_issue === 1,
         callback: { url: `${this.config.baseUrl}/api/jobs/${job.id}/callback`, secret: callbackSecret },
@@ -1427,7 +1448,10 @@ export class Jobs {
     const current = this.store.getJob(jobId)
     if (current === undefined || current.pr_url === null) return
     await this.verifyPullRequest(current, current.pr_url)
-    if (current.kind === 'iterate') await this.maybeAutoMerge(current, current.pr_url)
+    // #390: only a work type whose contract allows it may hand its PR to the
+    // maintainer-enabled auto-merge; a dependency, security or docs job must not
+    // inherit iterate's eligibility.
+    if (current.kind === 'iterate' && workTypeMayAutoMerge(current.work_type)) await this.maybeAutoMerge(current, current.pr_url)
   }
 
   async reconcilePr(repo: RepoRow, prUrl: string): Promise<void> {
@@ -2011,7 +2035,9 @@ export class Jobs {
     const number = Number(match[1])
     const teamLabel = team ?? `${owner}/${name}`
     const journey = attributionSentence(attribution)
-    const autoMergeEnabled = repo.repo_role === 'maintainer' && repo.auto_merge === 1 && job.kind === 'iterate'
+    // #390: the registry decides whether this work type may merge; the repo's
+    // auto-merge setting is permission, not eligibility.
+    const autoMergeEnabled = repo.repo_role === 'maintainer' && repo.auto_merge === 1 && job.kind === 'iterate' && workTypeMayAutoMerge(job.work_type)
     // #358: a fallback means the repository's primary did not answer, so the pull
     // request names the model that produced the work instead of implying the
     // configured default did.
@@ -2124,6 +2150,26 @@ export class Jobs {
       this.finish(jobId, { status: 'failed', error: message, issueUrl }, revoke, attribution, evidence, fingerprint)
       return { ok: false, status: 422, error: message }
     }
+    // #390: triage is the work type that may not touch the repository. The prompt
+    // says so; this is the boundary that enforces it.
+    if (job.kind === 'triage' && (branch !== undefined || (prUrl !== undefined && prUrl !== null))) {
+      const message = 'TRIAGE_PR_FORBIDDEN: triage may not create a branch, a pull request or a merge.'
+      this.store.audit(job.user_id, 'job.triage_pr_forbidden', `${jobId}: branch=${branch ?? '-'} pr=${prUrl ?? '-'}`)
+      if (status === 'running') return { ok: false, status: 400, error: message }
+      this.finish(jobId, { status: 'failed', error: message, issueUrl }, revoke, attribution, evidence, fingerprint)
+      return { ok: false, status: 422, error: message }
+    }
+    // #390: the triage report is the job's whole output, so a success without one
+    // is not a success. It is checked before the generic evidence gate because a
+    // prose summary is exactly what this replaces.
+    const triage = job.kind === 'triage' ? parseTriage(payload.triage) : null
+    if (job.kind === 'triage' && status === 'succeeded' && triage === null) {
+      const message = 'TRIAGE_UNVERIFIED: the triage report is missing or malformed.'
+      this.store.event('job_triage_unverified', { userId: job.user_id, repoId: job.repo_id, jobId })
+      this.store.audit(job.user_id, 'job.triage_unverified', jobId)
+      this.finish(jobId, { status: 'failed', error: message, errorCode: 'TRIAGE_UNVERIFIED' }, revoke, attribution, evidence, fingerprint)
+      return { ok: false, status: 422, error: message }
+    }
     // Only a callback that will be acted on may refresh the stall window.
     this.store.touchJobCallback(jobId)
     if (status === 'running') {
@@ -2168,6 +2214,21 @@ export class Jobs {
           return { ok: false, status: 422, error: message }
         }
       }
+      // #390: a typed work type fails closed when its own evidence is absent. The
+      // iterate type keeps the stage gate above as its rule, so this second gate
+      // only covers the work types that declare a different contract; it is not a
+      // second opinion on the same rule.
+      if (job.work_type !== 'iterate') {
+        const missing = missingWorkTypeEvidence(job.work_type, evidence)
+        if (missing.length > 0) {
+          const detail = missing.map((key) => `evidence.${key}`).join(', ')
+          const message = `WORK_TYPE_UNVERIFIED: ${job.work_type} 缺少证据：${detail}`
+          this.store.event('work_type_evidence_missing', { userId: job.user_id, repoId: job.repo_id, jobId, meta: `${job.work_type}:${missing.join('|')}`.slice(0, 400) })
+          this.store.audit(job.user_id, 'job.work_type_unverified', `${jobId}: ${job.work_type} ${detail}`.slice(0, 600))
+          this.finish(jobId, { status: 'failed', branch, prUrl, issueUrl, summary, error: message, errorCode: 'WORK_TYPE_UNVERIFIED' }, revoke, attribution, evidence, fingerprint)
+          return { ok: false, status: 422, error: message }
+        }
+      }
     }
     const claimed = this.finish(jobId, { status, branch, prUrl, issueUrl, reviewScore, summary, error }, revoke, attribution, evidence, fingerprint)
     if (!claimed) {
@@ -2180,6 +2241,22 @@ export class Jobs {
     if (status === 'succeeded' && followUps.length > 0) {
       await this.queueReviewFollowUps(job, followUps)
       await this.releasePendingFollowups(job.repo_id)
+    }
+    if (status === 'succeeded' && job.kind === 'triage' && triage !== null) {
+      // The board is the record, and its first row is what the scheduler can pick
+      // up: a work item for the proposal is the same path discovery already uses.
+      this.store.updateJob(jobId, { triage_json: JSON.stringify(triage) })
+      const next = triage.next
+      if (next !== null) {
+        const priority = triage.items.find((item) => item.issue === next.issue)?.priority ?? 0
+        const existing = this.store.findWorkItemByIssueUrl(job.repo_id, next.url)
+        if (existing === undefined) {
+          this.store.createWorkItem({ id: randomId('work'), repoId: job.repo_id, userId: job.user_id, title: next.title, issueUrl: next.url, state: 'proposed', priority })
+        } else if (existing.state !== 'closed' && existing.state !== 'merged') {
+          this.store.updateWorkItem(existing.id, { priority })
+        }
+        this.store.audit(job.user_id, 'job.triage_proposal', `${jobId}: #${next.issue} -> work item`)
+      }
     }
     if (status === 'succeeded' && job.work_item_id !== null) {
       const item = this.store.getWorkItem(job.work_item_id)
@@ -2290,7 +2367,7 @@ export class Jobs {
         isFork: repo.is_fork === 1,
         permission: repo.permission,
         repoRole: repo.repo_role,
-        autoMerge: job.kind === 'iterate' && repo.repo_role === 'maintainer' && repo.auto_merge === 1,
+        autoMerge: job.kind === 'iterate' && workTypeMayAutoMerge(job.work_type) && repo.repo_role === 'maintainer' && repo.auto_merge === 1,
         canReview: repo.can_review === 1,
         canCreateIssue: repo.can_create_issue === 1,
       }
@@ -2434,7 +2511,7 @@ export class Jobs {
         isFork: repo.is_fork === 1,
         permission: repo.permission,
         repoRole: repo.repo_role === 'maintainer' || repo.repo_role === 'developer' ? repo.repo_role : null,
-        autoMerge: kind === 'iterate' && repo.repo_role === 'maintainer' && repo.auto_merge === 1,
+        autoMerge: kind === 'iterate' && workTypeMayAutoMerge(job.work_type) && repo.repo_role === 'maintainer' && repo.auto_merge === 1,
         canReview: repo.can_review === 1,
         canCreateIssue: repo.can_create_issue === 1,
         callback: { url: `${this.config.baseUrl}/api/jobs/${job.id}/callback`, secret: callbackSecret },

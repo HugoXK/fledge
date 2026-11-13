@@ -734,6 +734,34 @@ board and notifies the owner instead of counting as a productive run. Two
 consecutive failed, zero-output or meta iterate runs double the effective
 cooldown up to a 4x cap; the manual run path and reviews bypass the backoff.
 
+### Work types and triage
+
+A job carries two independent values. `kind` is the pipeline that runs it
+(`iterate`, `review`, `plan`, `scope`, `verify`, `discover`, `triage`); `work_type`
+is the contract the work is held to and is stored on the row. The registry in
+`src/lib/workTypes.ts` is the only list of work types — `iterate`, `triage`,
+`dependency`, `security`, `docs`, `performance`, `accessibility`, `migration` —
+and each entry declares its allowed stages, the evidence keys it requires, a
+declared risk tier, a per-job budget ceiling, whether it may open a branch and
+whether its pull request may auto-merge. Only `iterate` and `triage` have a
+handler in this slice; a declared type with no handler is refused at enqueue
+exactly like an unknown one (`UNKNOWN_WORK_TYPE` / `WORK_TYPE_UNSUPPORTED`),
+because nothing may run under a contract that is not enforced.
+
+Auto-merge reads the registry. The gate is still the repository's `repo_role`,
+`auto_merge` setting and a green tip, plus `workTypeMayAutoMerge(job.work_type)`,
+so a dependency, security or docs job cannot inherit iterate's eligibility. The
+registry can only remove eligibility, never grant it.
+
+`triage` is read-only: the callback refuses a result that carries a branch or a
+pull request (`TRIAGE_PR_FORBIDDEN`), and a success without a valid report fails
+as `TRIAGE_UNVERIFIED`. The report is a ranked list of open issues with
+`duplicateOf` links, stored as `triage_json` and rendered on the job page
+together with the work type's contract. Its first row is written as a work item,
+which is the same path the next scheduled work session already consumes, so a
+triage run proposes work without opening a branch and without a second scheduler.
+The decision record is `docs/decisions/0014-work-types.md`.
+
 ### Platform emergency stop
 
 The stop is one `settings` row (`platform.stop`: when, who, why), not a field on

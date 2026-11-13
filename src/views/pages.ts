@@ -14,6 +14,8 @@ import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkI
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
+import { contractOf, resolveWorkType, workTypeLabel, workTypePurpose } from '../lib/workTypes.js'
+import { parseTriageJson, triageSummaryLine } from '../lib/triage.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
@@ -259,6 +261,7 @@ function jobKindLabel(t: Translate, job: JobRow): string {
   if (job.kind === 'review') return t('审核', 'Review')
   if (job.kind === 'plan') return t('计划', 'Plan')
   if (job.kind === 'discover') return t('发现', 'Discovery')
+  if (job.kind === 'triage') return t('分诊', 'Triage')
   if (job.kind === 'research') return t('分析', 'Research')
   return t('迭代', 'Iterate')
 }
@@ -2379,6 +2382,36 @@ export function jobPage(input: {
         </form>` : job.plan_approved_at !== null ? `<p class="fine">${escapeHtml(t('批准人', 'Approved by'))} ${escapeHtml(job.plan_approved_by ?? '—')} · ${escapeHtml(t('允许路径', 'Allowed'))} ${escapeHtml(job.plan_allow_paths ?? '—')} · ${escapeHtml(t('禁止路径', 'Forbidden'))} ${escapeHtml(job.plan_deny_paths ?? '—')}</p>` : ''}
       </section>`
     : ''
+  // #390: the work type is data, so the page reads it back from the registry
+  // instead of restating it. An unknown or missing type renders as iterate, which
+  // is what every row written before the column means.
+  const workType = resolveWorkType(job.work_type) ?? contractOf('iterate')
+  const workTypeCard = `<section class="card" data-work-type="${escapeHtml(workType.type)}">
+    <h2>${escapeHtml(t('工作类型', 'Work type'))}</h2>
+    <p><strong>${escapeHtml(workTypeLabel(t, workType.type))}</strong> — ${escapeHtml(workTypePurpose(t, workType.type))}</p>
+    <div class="list">
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('可用阶段', 'Stages'))}</strong><small>${escapeHtml(workType.stages.length === 0 ? t('无（只读）', 'none (read-only)') : workType.stages.join(', '))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('必需证据', 'Required evidence'))}</strong><small>${escapeHtml(workType.evidence.length === 0 ? t('无', 'none') : workType.evidence.map((key) => `evidence.${key}`).join(', '))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('风险等级', 'Risk tier'))}</strong><small>${escapeHtml(workType.risk)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('单任务预算', 'Per-job budget'))}</strong><small>$${workType.budgetUsd}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('可创建分支/PR', 'May open a branch/PR'))}</strong><small>${escapeHtml(workType.branch ? t('是', 'yes') : t('否', 'no'))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('可自动合并', 'May auto-merge'))}</strong><small>${escapeHtml(workType.autoMerge ? t('是', 'yes') : t('否', 'no'))}</small></div></div>
+    </div>
+  </section>`
+  const triageReport = parseTriageJson(job.triage_json)
+  const triageRows = triageReport === null
+    ? ''
+    : triageReport.items.length === 0
+      ? `<p class="muted">${escapeHtml(t('看板上没有待办 issue。', 'No open issue is waiting on the board.'))}</p>`
+      : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('排名', 'Rank'))}</th><th>issue</th><th>${escapeHtml(t('优先级', 'Priority'))}</th><th>${escapeHtml(t('重复于', 'Duplicate of'))}</th></tr></thead><tbody>${triageReport.items.map((item, index) => `<tr><td>${index + 1}</td><td><a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">#${item.issue}</a> ${escapeHtml(item.title)}${triageReport.next !== null && triageReport.next.issue === item.issue ? ` · <strong>${escapeHtml(t('下一项', 'next'))}</strong>` : ''}</td><td>${item.priority}</td><td>${item.duplicateOf === null ? '—' : `#${item.duplicateOf}`}</td></tr>`).join('')}</tbody></table></div>`
+  const triageCard = job.kind !== 'triage'
+    ? ''
+    : `<section class="card" data-triage>
+    <h2>${escapeHtml(t('分诊结果', 'Triage result'))}</h2>
+    ${triageReport === null
+      ? `<p class="muted">${escapeHtml(t('还没有分诊结果。', 'No triage result yet.'))}</p>`
+      : `<p class="fine">${escapeHtml(triageSummaryLine(triageReport))}</p>${triageRows}`}
+  </section>`
   const jobLoading = job.status === 'queued' || job.status === 'running'
     ? renderState({ kind: 'loading', title: job.status === 'queued' ? t('任务已排队。', 'This job is queued.') : t('任务正在运行。', 'This job is running.'), body: job.status === 'queued' ? t('前面的任务结束后自动开始；这个页面会自己更新。', 'It starts as soon as the jobs ahead finish; this page updates by itself.') : t('团队进度会写进下面的时间线，不需要手动刷新。', 'Team progress lands in the timeline below; no manual refresh needed.'), skeletonLines: 2 })
     : ''
@@ -2402,6 +2435,8 @@ export function jobPage(input: {
   </section>
   ${jobLoading}
   ${supportMode ? '' : planCard}
+  ${supportMode ? '' : workTypeCard}
+  ${supportMode ? '' : triageCard}
   <section class="cols">
     <div class="card">
       <h2>${escapeHtml(t('结果', 'Result'))}</h2>

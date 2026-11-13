@@ -5,7 +5,7 @@ import type { Runner, RunnerContext, RunnerResult } from './runner.js'
 
 interface BridgePayload {
   jobId: string
-  kind: 'iterate' | 'review' | 'plan' | 'scope' | 'verify' | 'discover'
+  kind: 'iterate' | 'review' | 'plan' | 'scope' | 'verify' | 'discover' | 'triage'
   branch?: string
   prUrl?: string
   sessionId?: string
@@ -67,6 +67,22 @@ function discoverInstructions(context: RunnerContext): string[] {
       : `The token cannot create issues; if you find a concrete issue, report it in summary and finish succeeded with no issueUrl. Do not open a PR.`,
     'Never create an inventory, backlog, 盘点, 清账, reconcile or "audit the backlog" issue. Do not duplicate an open issue or PR.',
     'Finish with the callback; do not send branch or prUrl.',
+  ]
+}
+
+// #390: triage reads and ranks; it is the one work type that must never leave a
+// branch, a pull request or a merge behind. The board it returns is the whole
+// output, so the callback carries it as data and the job page renders it.
+function triageInstructions(context: RunnerContext): string[] {
+  const upstream = context.upstream
+  return [
+    `Mode: triage. Repository: ${upstream.owner}/${upstream.name}. Do not write code, create a branch, push, open a pull request or merge; this work type may not touch the repository.`,
+    `Read the open issues and pull requests of ${upstream.owner}/${upstream.name}, the priority labels and any obvious duplicate pairs.`,
+    'Rank the open issues that are still worth doing, highest first. Priority labels map to 30 (high), 20 (medium), 10 (low), 0 (none). Link a duplicate with "duplicateOf": <the issue number that stays open>; never list the same issue twice.',
+    'Choose the one item the next work session should start with as "next": it must be the first ranked row and must not itself be a duplicate. If the board is empty, return "items": [] and "next": null.',
+    'Return the board only; do not create an issue, a comment, a branch or a pull request. Finish with the callback and include this exact object:',
+    `{"status":"succeeded","triage":{"items":[{"issue":12,"url":"https://github.com/${upstream.owner}/${upstream.name}/issues/12","title":"short title","priority":30,"duplicateOf":null}],"next":{"issue":12,"url":"https://github.com/${upstream.owner}/${upstream.name}/issues/12","title":"short title"}},"summary":"<one line: how many open, how many duplicates, which item is next>","evidence":{"tests":"not run: triage is read-only","checks":"read-only"}}`,
+    'A triage callback without a valid "triage" object is failed as TRIAGE_UNVERIFIED, so do not send a prose summary in its place.',
   ]
 }
 
@@ -178,7 +194,7 @@ export class FlyBotRunner implements Runner {
         'You are the Fledge repository worker.',
         `Get the GitHub token with GET ${context.credential.url} and header "Authorization: Bearer ${context.credential.secret}".`,
         `Use the platform model at ${context.platform.baseUrl} with the job token as the API key; the model is ${context.platform.model}.`,
-        ...(context.kind === 'review' ? reviewInstructions(context) : context.kind === 'discover' ? discoverInstructions(context) : context.kind === 'plan' ? planInstructions(context) : context.kind === 'scope' ? scopeInstructions(context) : context.kind === 'verify' ? verifyInstructions(context) : iterateInstructions(context)),
+        ...(context.kind === 'review' ? reviewInstructions(context) : context.kind === 'discover' ? discoverInstructions(context) : context.kind === 'triage' ? triageInstructions(context) : context.kind === 'plan' ? planInstructions(context) : context.kind === 'scope' ? scopeInstructions(context) : context.kind === 'verify' ? verifyInstructions(context) : iterateInstructions(context)),
         `Send a progress heartbeat after each major step and at least every 10 minutes: POST ${context.callback.url} with JSON {"status":"running","summary":"<one line progress>","checkpoint":"<done + next>"} and "Authorization: Bearer ${context.callback.secret}".`,
         'GitHub attribution: end every issue, PR and comment you create with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',
         'Final callback: include "attribution": {"writtenBy":"...","claimedBy":"...","implementedBy":"...","testedBy":"...","reviewedBy":"..."} with role names only (Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2). Omit a key for a step that did not happen; never write "not run", "pending" or "(Team)".',
