@@ -242,6 +242,8 @@ export interface JobRow {
   platform_token_hash: string | null
   callback_hash: string
   kind: string
+  work_type: string
+  triage_json: string | null
   issue_url: string | null
   pr_state: string | null
   review_score: number | null
@@ -297,6 +299,15 @@ export interface WorkItemRow {
   merge_commit: string | null
   created_at: string
   updated_at: string
+}
+
+export interface TriageLinkRow {
+  id: number
+  repo_id: string
+  job_id: string
+  duplicate_url: string
+  canonical_url: string
+  created_at: string
 }
 
 export interface ApiTokenRow {
@@ -667,6 +678,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   platform_token_hash TEXT,
   callback_hash TEXT NOT NULL,
   kind TEXT NOT NULL DEFAULT 'iterate',
+  work_type TEXT NOT NULL DEFAULT 'iterate',
+  triage_json TEXT,
   issue_url TEXT,
   pr_state TEXT,
   review_score INTEGER,
@@ -955,6 +968,17 @@ CREATE INDEX IF NOT EXISTS jobs_created_idx ON jobs(created_at);
 CREATE INDEX IF NOT EXISTS events_at_idx ON events(at);
 CREATE INDEX IF NOT EXISTS quota_ledger_at_idx ON quota_ledger(at);
 CREATE INDEX IF NOT EXISTS work_items_merged_idx ON work_items(merged_at);
+
+CREATE TABLE IF NOT EXISTS triage_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  duplicate_url TEXT NOT NULL,
+  canonical_url TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS triage_links_job_idx ON triage_links(job_id);
+CREATE INDEX IF NOT EXISTS triage_links_repo_idx ON triage_links(repo_id, created_at DESC);
 `
 
 function clean(params: unknown[]): unknown[] {
@@ -1247,6 +1271,8 @@ export class Store {
     if (!sessionColumns.has('recent_auth_at')) this.run('ALTER TABLE sessions ADD COLUMN recent_auth_at TEXT')
     const jobColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(jobs)').map((row) => row.name))
     if (!jobColumns.has('kind')) this.run("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'iterate'")
+    if (!jobColumns.has('work_type')) this.run("ALTER TABLE jobs ADD COLUMN work_type TEXT NOT NULL DEFAULT 'iterate'")
+    if (!jobColumns.has('triage_json')) this.run('ALTER TABLE jobs ADD COLUMN triage_json TEXT')
     if (!jobColumns.has('issue_url')) this.run('ALTER TABLE jobs ADD COLUMN issue_url TEXT')
     if (!jobColumns.has('review_score')) this.run('ALTER TABLE jobs ADD COLUMN review_score INTEGER')
     if (!jobColumns.has('attribution_json')) this.run('ALTER TABLE jobs ADD COLUMN attribution_json TEXT')
@@ -2632,10 +2658,10 @@ export class Store {
     this.run('DELETE FROM repo_instances WHERE repo_id = ?', repoId)
   }
 
-  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string }): JobRow {
+  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; workType?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string }): JobRow {
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, base_branch, work_item_id, priority, base_sha, retry_attempt, retry_of, owner_started, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, work_type, base_branch, work_item_id, priority, base_sha, retry_attempt, retry_of, owner_started, created_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -2644,6 +2670,7 @@ export class Store {
       input.callbackHash,
       input.platformTokenHash,
       input.kind ?? 'iterate',
+      input.workType ?? 'iterate',
       input.baseBranch ?? null,
       input.workItemId ?? null,
       input.priority ?? 0,
@@ -2821,6 +2848,21 @@ export class Store {
     this.run(`UPDATE work_items SET ${sets} WHERE id = ?`, ...entries.map(([, value]) => value), id)
   }
 
+  addTriageLink(input: { repoId: string; jobId: string; duplicateUrl: string; canonicalUrl: string }): void {
+    this.run(
+      'INSERT INTO triage_links (repo_id, job_id, duplicate_url, canonical_url, created_at) VALUES (?, ?, ?, ?, ?)',
+      input.repoId,
+      input.jobId,
+      input.duplicateUrl,
+      input.canonicalUrl,
+      nowIso(),
+    )
+  }
+
+  listTriageLinksForJob(jobId: string): TriageLinkRow[] {
+    return this.all<TriageLinkRow>('SELECT * FROM triage_links WHERE job_id = ? ORDER BY id ASC', jobId)
+  }
+
   workItemMetrics(sinceIso: string): { total: number; open: number; merged: number; closed: number } {
     const count = (sql: string): number => Number(this.get<{ n: number }>(sql, sinceIso)?.n ?? 0)
     return {
@@ -2923,7 +2965,7 @@ export class Store {
   }
 
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'model_json' | 'output_kind' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'triage_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'model_json' | 'output_kind' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')

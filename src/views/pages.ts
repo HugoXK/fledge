@@ -22,6 +22,7 @@ import { readBackupStatus, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupS
 import { classifyFailure, failureLabel, failureSentence, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { filterTrials, trialCounts, trialStateOf, TRIAL_DAYS, type TrialCandidateSource, type TrialFilter } from '../lib/trials.js'
 import { STAGE_MODES } from '../lib/stages.js'
+import { defaultWorkTypeForKind, parseTriageProposal, resolveWorkType, type WorkTypeDefinition } from '../lib/workTypes.js'
 import { JOB_FILTER_KINDS, JOB_FILTER_STATUSES, jobFilterIsActive, jobFilterLabels, jobFilterParams, kindFilterLabel, statusFilterLabel, type JobFilter } from '../lib/jobFilters.js'
 import type { InstallationRepo } from '../repos/app.js'
 import { localizeMessage, localizeNotification, translator, type Locale, type Translate } from '../i18n.js'
@@ -259,6 +260,7 @@ function jobKindLabel(t: Translate, job: JobRow): string {
   if (job.kind === 'review') return t('审核', 'Review')
   if (job.kind === 'plan') return t('计划', 'Plan')
   if (job.kind === 'discover') return t('发现', 'Discovery')
+  if (job.kind === 'triage') return t('分诊', 'Triage')
   if (job.kind === 'research') return t('分析', 'Research')
   return t('迭代', 'Iterate')
 }
@@ -2271,6 +2273,88 @@ export function messagePage(config: Config, title: string, message: string, view
   })
 }
 
+const WORK_TYPE_STAGE_LABELS: Record<string, [string, string]> = {
+  iterate: ['实现', 'Iterate'],
+  review: ['审核', 'Review'],
+  plan: ['计划', 'Plan'],
+  scope: ['范围', 'Scope'],
+  verify: ['验证', 'Verify'],
+  discover: ['发现', 'Discovery'],
+  triage: ['分诊', 'Triage'],
+}
+
+const WORK_TYPE_EVIDENCE_LABELS: Record<string, [string, string]> = {
+  scope: ['范围', 'Scope'],
+  acceptance: ['验收标准', 'Acceptance'],
+  testPlan: ['测试计划', 'Test plan'],
+  testRed: ['失败测试', 'Red test'],
+  testGreen: ['通过测试', 'Green test'],
+  tests: ['测试', 'Tests'],
+  checks: ['CI / checks', 'CI / checks'],
+  files: ['改动文件', 'Files'],
+  risk: ['风险', 'Risk'],
+  rollback: ['回滚', 'Rollback'],
+  triage: ['分诊结果', 'Triage output'],
+}
+
+function workTypeLabel(t: Translate, def: WorkTypeDefinition): string {
+  return t(def.label.zh, def.label.en)
+}
+
+function workTypeStageLabel(t: Translate, stage: string): string {
+  const label = WORK_TYPE_STAGE_LABELS[stage]
+  return label === undefined ? stage : t(label[0], label[1])
+}
+
+function workTypeEvidenceLabel(t: Translate, key: string): string {
+  const label = WORK_TYPE_EVIDENCE_LABELS[key]
+  return label === undefined ? key : t(label[0], label[1])
+}
+
+function workTypeAutoMergeLabel(t: Translate, def: WorkTypeDefinition): string {
+  if (!def.producesPullRequest) return t('不产生 PR，不自动合并', 'Produces no pull request; never auto-merges')
+  if (def.autoMerge === 'allow') return t('满足仓库开关与检查后自动合并', 'Auto-merges when the repository switch and checks allow')
+  if (def.autoMerge === 'review') return t('需要人工审核，不自动合并', 'Human review required; no auto-merge')
+  return t('从不自动合并', 'Never auto-merges')
+}
+
+function workTypeCardHtml(t: Translate, def: WorkTypeDefinition): string {
+  const stages = def.allowedStages.map((stage) => workTypeStageLabel(t, stage)).join(' · ')
+  const evidence = def.requiredEvidence.map((key) => workTypeEvidenceLabel(t, key)).join(' · ')
+  return `<section class="card" data-work-type="${escapeHtml(def.id)}">
+    <div class="row between"><h2>${escapeHtml(t('工作类型合约', 'Work type contract'))}</h2><span class="badge kind">${escapeHtml(workTypeLabel(t, def))}</span></div>
+    <div class="list">
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('类型', 'Type'))}</strong><small><code>${escapeHtml(def.id)}</code></small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('允许阶段', 'Allowed stages'))}</strong><small>${escapeHtml(stages)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('必需证据', 'Required evidence'))}</strong><small>${escapeHtml(evidence)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('风险等级', 'Risk tier'))}</strong><small>${escapeHtml(def.riskTier)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('预算', 'Budget'))}</strong><small>${escapeHtml(quotaMoney(def.budgetCny))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('自动合并', 'Auto-merge'))}</strong><small>${escapeHtml(workTypeAutoMergeLabel(t, def))}</small></div></div>
+    </div>
+  </section>`
+}
+
+function triageCardHtml(t: Translate, proposal: ReturnType<typeof parseTriageProposal>): string {
+  if (proposal === null) return ''
+  const ranked = proposal.ranked.length === 0
+    ? `<p class="muted">${escapeHtml(t('没有可排序的开放 issue。', 'No open issues to rank.'))}</p>`
+    : `<div class="table-scroll"><table data-triage-ranked><thead><tr><th>#</th><th>${escapeHtml(t('Issue', 'Issue'))}</th><th>${escapeHtml(t('优先级', 'Priority'))}</th><th>${escapeHtml(t('已有 PR', 'Open PR'))}</th></tr></thead><tbody>${proposal.ranked.map((item, index) => `<tr><td>${index + 1}</td><td><a href="${escapeHtml(item.issueUrl)}" rel="noreferrer"><code>${escapeHtml(item.issueUrl)}</code></a><br /><small>${escapeHtml(item.title)}</small></td><td>${item.priority}</td><td>${item.inFlight ? escapeHtml(t('是', 'Yes')) : '—'}</td></tr>`).join('')}</tbody></table></div>`
+  const duplicates = proposal.duplicates.length === 0
+    ? `<p class="muted">${escapeHtml(t('没有发现重复 issue。', 'No duplicate issues found.'))}</p>`
+    : `<div class="table-scroll"><table data-triage-duplicates><thead><tr><th>${escapeHtml(t('重复', 'Duplicate'))}</th><th>${escapeHtml(t('指向', 'Canonical'))}</th></tr></thead><tbody>${proposal.duplicates.map((link) => `<tr><td><a href="${escapeHtml(link.duplicateUrl)}" rel="noreferrer"><code>${escapeHtml(link.duplicateUrl)}</code></a></td><td><a href="${escapeHtml(link.canonicalUrl)}" rel="noreferrer"><code>${escapeHtml(link.canonicalUrl)}</code></a></td></tr>`).join('')}</tbody></table></div>`
+  const next = proposal.next === null
+    ? `<p class="muted">${escapeHtml(t('没有可提出的下一项。', 'No next item can be proposed.'))}</p>`
+    : `<p data-triage-next><strong>${escapeHtml(t('下一项', 'Next'))}:</strong> <a href="${escapeHtml(proposal.next.issueUrl)}" rel="noreferrer"><code>${escapeHtml(proposal.next.issueUrl)}</code></a> ${escapeHtml(proposal.next.title)} <span class="badge kind">${proposal.next.priority}</span></p>`
+  return `<section class="card" data-triage-output>
+    <div class="row between"><h2>${escapeHtml(t('分诊结果', 'Triage output'))}</h2><span class="fine">${escapeHtml(t(`读取 ${proposal.source.issues} 个 issue / ${proposal.source.pulls} 个 PR`, `${proposal.source.issues} issue(s) / ${proposal.source.pulls} PR(s) read`))}</span></div>
+    ${next}
+    <h3 class="mt-16">${escapeHtml(t('排序', 'Ranked issues'))}</h3>
+    ${ranked}
+    <h3 class="mt-16">${escapeHtml(t('重复链接', 'Duplicate links'))}</h3>
+    ${duplicates}
+  </section>`
+}
+
 export function jobPage(input: {
   config: Config
   locale: Locale
@@ -2294,6 +2378,10 @@ export function jobPage(input: {
   const verification = parseVerification(job.verification_json)
   const pathGuard = parsePathGuard(job.path_guard_json)
   const readiness = mergeReadiness(job)
+  const workType = resolveWorkType(job.work_type) ?? resolveWorkType(defaultWorkTypeForKind(job.kind))
+  const triageProposal = parseTriageProposal(job.triage_json)
+  const workTypeOutput = workType === null ? '' : workTypeCardHtml(t, workType)
+  const triageOutput = triageCardHtml(t, triageProposal)
   // The badge above combines the path guard with the PR evidence; the evidence
   // row used to read verification.ok alone, so a PR the guard blocked still
   // claimed its evidence had passed. The row carries the combined verdict now:
@@ -2402,6 +2490,8 @@ export function jobPage(input: {
   </section>
   ${jobLoading}
   ${supportMode ? '' : planCard}
+  ${workTypeOutput}
+  ${triageOutput}
   <section class="cols">
     <div class="card">
       <h2>${escapeHtml(t('结果', 'Result'))}</h2>

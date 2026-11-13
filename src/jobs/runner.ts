@@ -5,7 +5,7 @@ import type { RepoRole } from '../lib/repoRole.js'
 import { FlyBotRunner } from './flybot.js'
 import { MockRunner } from './mock.js'
 
-export type JobKind = 'iterate' | 'review' | 'plan' | 'scope' | 'verify' | 'discover'
+export type JobKind = 'iterate' | 'review' | 'plan' | 'scope' | 'verify' | 'discover' | 'triage'
 
 export interface JobCredential {
   url: string

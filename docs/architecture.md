@@ -293,6 +293,31 @@ a second clock that disagrees.
   still in flight or that failed afterwards. A pull request that is already
   merged is never a candidate, so the bulk merge does not re-check it on every
   pass.
+- **Work types and triage**: `src/lib/workTypes.ts` is the data registry for
+  `iterate`, `triage`, `dependency`, `security`, `docs`, `performance`,
+  `accessibility` and `migration`. Each entry declares the stages it may run,
+  the evidence it requires, its risk tier, its budget and its auto-merge rule;
+  it is data, not an agent role. A job row stores the resolved `work_type`, and
+  an unknown type is refused at admission with `UNKNOWN_WORK_TYPE` before any
+  row is written. Triage is the first implemented workflow: its only stage is
+  `triage`, it requires the `triage` evidence field, and it never produces a
+  branch or pull request. The bridge reports the open issues and pull requests
+  in that field; Fledge links duplicate issues (an explicit `duplicate of #N`
+  or an identical normalized title) in `triage_links`, maps priority labels
+  through the existing issue-priority rules, ranks the canonical issues, and
+  stores the result on `jobs.triage_json`. Canonical issues become work items,
+  the highest-ranked item without an open pull request is marked `triaged`, and
+  the next scheduled run consumes it through the existing work-item order.
+  Duplicates are linked rather than duplicated, and nothing is auto-closed. A
+  successful job under any work type other than `iterate` must carry its
+  required evidence; a missing field fails closed with
+  `WORK_TYPE_EVIDENCE_MISSING` and an `unverified` result instead of a pass.
+  Auto-merge reads the same contract for every job: only types whose rule is
+  `allow` (today `iterate`) may auto-merge, while `dependency`, `docs` and the
+  other review-required types wait for a human and `security`/`triage` never
+  auto-merge. A maintainer can still merge a PR by hand for a work type that
+  produces one. The new job columns and the `triage_links` table are additive
+  after schema version 33.
 
 ### Model gateway
 
