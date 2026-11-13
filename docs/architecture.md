@@ -422,7 +422,13 @@ box, so that band draws an always-present classic scrollbar — an explicit trac
 plus `scrollbar-width`/`scrollbar-color` for Firefox — instead of relying on a
 thumb that is 1.5:1 on the panel. The band has its own
 `(min-width: 641px) and (max-width: 960px)` block in `public/app.css`; the cards
-below 641px and the table above 960px are unchanged. Add repository presents two explicit
+below 641px and the table above 960px are unchanged. The band's column control is
+built by the script from the table itself: every `table-priority` carries an `id`
+and an `aria-label`, the button points at that id with `aria-controls`, and its
+label repeats the table's name (`Show all columns — Users` / `显示全部列（用户）`),
+so the three controls on `/admin` are not announced identically. A new priority
+table must bring both attributes; without them the control is created unnamed and
+the association is lost. Add repository presents two explicit
 alternatives: the GitHub App installation path (recommended) and a collapsed
 fine-grained token form; users pick one, not both. The App repository picker
 carries the same task template, goal, auto-iterate interval and reviewer
