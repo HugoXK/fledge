@@ -21,7 +21,9 @@ import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
 import { reviewMergeBlock } from '../lib/mergeReview.js'
 import {
+  MAX_DIFF_CHARS,
   adversarialMergeBlock,
+  adversarialPrompt,
   assembleAdversarialPacket,
   openAiAdversarialModel,
   runAdversarialReview,
@@ -203,6 +205,17 @@ function terminalFingerprint(input: {
     attribution: input.attribution,
     followUps: input.followUps.map((entry) => ({ prUrl: entry.prUrl, branch: entry.branch, headSha: entry.headSha ?? null })),
   }))
+}
+
+// #556: the one class of patch-less file that may still merge. A screenshot or
+// font change must not be refused for a binary, and the exemption is assets
+// under public/ or docs/ only — code, config, lockfiles and scripts are exactly
+// what this gate exists to read, so a patch the API withheld for them is a
+// refusal, not an exemption. Widening this list needs a reason in the diff.
+const ADVERSARIAL_ASSET_EXEMPT = /^(?:public|docs)\/.+\.(?:png|jpe?g|gif|webp|ico|woff2?|ttf|eot)$/i
+
+function adversarialAssetExempt(filename: string): boolean {
+  return ADVERSARIAL_ASSET_EXEMPT.test(filename)
 }
 
 export class Jobs {
@@ -1364,7 +1377,7 @@ export class Jobs {
     name: string,
     pr: { number: number; headSha: string; base: string; changedFiles: number },
     checks: Array<{ name: string; status: string; conclusion: string | null }>,
-  ): Promise<{ block: { file: string; line: number } | null; reused: boolean }> {
+  ): Promise<{ block: { file: string; line: number } | null; reused: boolean; refusal: string | null }> {
     const record = (status: string, detail: Record<string, unknown>): void => {
       this.store.recordJobEvent({
         jobId: job.id,
@@ -1387,44 +1400,117 @@ export class Jobs {
     const previous = this.store.listJobEvents(job.id).find((event) => event.kind === 'job.adversarial' && event.step !== 'skipped' && event.step !== 'unavailable')
     if (previous !== undefined) {
       try {
-        const stored = JSON.parse(previous.meta ?? '') as { tipSha?: unknown; verdict?: unknown }
+        const stored = JSON.parse(previous.meta ?? '') as { tipSha?: unknown; verdict?: unknown; status?: unknown; reason?: unknown }
         if (stored.tipSha === pr.headSha && stored.verdict !== null && typeof stored.verdict === 'object') {
-          return { block: adversarialMergeBlock({ verdict: stored.verdict as AdversarialVerdict }), reused: true }
+          // A refusal re-read from the record still blocks, and still says it was
+          // a refusal: the notification must not present a fake file:line as a
+          // risk the model named.
+          const refusal = stored.status === 'incomplete' && typeof stored.reason === 'string' && stored.reason.trim() !== '' ? stored.reason : null
+          return { block: adversarialMergeBlock({ verdict: stored.verdict as AdversarialVerdict }), reused: true, refusal }
         }
       } catch {}
     }
     const model = this.adversarialModel
     if (model === null && this.config.llm.key === '') {
       record('skipped', { status: 'skipped', reason: 'platform model is not configured' })
-      return { block: null, reused: false }
+      return { block: null, reused: false, refusal: null }
     }
     const branch = await client.getBranch(owner, name, pr.base).catch(() => null)
     const baseSha = job.base_sha ?? branch?.sha ?? ''
     if (baseSha === '') {
       record('skipped', { status: 'skipped', reason: 'base sha is unknown' })
-      return { block: null, reused: false }
+      return { block: null, reused: false, refusal: null }
     }
     const listed = await client.listPullRequestFiles(owner, name, pr.number, pr.changedFiles).catch((error) => {
       record('unavailable', { status: 'unavailable', reason: String(error).slice(0, 300) })
       return null
     })
-    if (listed === null) return { block: null, reused: false }
-    if (!listed.complete) {
-      record('skipped', { status: 'skipped', reason: 'the changed-file list is truncated' })
-      return { block: null, reused: false }
+    if (listed === null) return { block: null, reused: false, refusal: null }
+    // #556: a refusal names what it could not read and records the tip, so the
+    // next reconcile of the same tip reads the refusal instead of paying for a
+    // second model call. The stored verdict is risk-shaped because that is the
+    // shape the reuse path above reads; the reason carries the truth.
+    const refuse = (reason: string, target: string, detail: Record<string, unknown>): { block: { file: string; line: number }; reused: boolean; refusal: string } => {
+      record('incomplete', {
+        status: 'incomplete',
+        tipSha: pr.headSha,
+        reason,
+        ...detail,
+        verdict: { kind: 'risk', file: target, line: 0, failureMode: reason, repro: 'open the pull request files page and read the file named in the refusal', checks: [] },
+        target: `${target}:0`,
+      })
+      this.store.audit(job.user_id, 'job.adversarial_incomplete', `${job.id}: ${reason}`)
+      return { block: { file: target, line: 0 }, reused: false, refusal: reason }
     }
-    const diff = listed.files
-      .filter((file) => typeof file.patch === 'string' && file.patch !== '')
-      .map((file) => `diff --git a/${file.filename} b/${file.filename}\n${file.patch}`)
-      .join('\n')
-    if (diff === '') {
-      record('skipped', { status: 'skipped', reason: 'no patch in the changed-file list' })
-      return { block: null, reused: false }
+    if (!listed.complete) {
+      // The listing is the input to the review. A pass over the files it did
+      // reach, presented as a pass over the change, is the fail-open this card
+      // closes: it answers about a subset it was never told about.
+      return refuse(
+        `the changed-file list is truncated: ${listed.files.length} of ${pr.changedFiles} files were listed, so the rest were not read`,
+        '(changed-file list)',
+        { listed: listed.files.length, reported: pr.changedFiles },
+      )
+    }
+    // A file that arrives without a patch is unread, and an unread file outside
+    // the asset allowlist is a refusal. This runs before the empty-diff branch:
+    // a pull request whose every file is patch-less used to reach that branch and
+    // skip with no block at all.
+    const unread = listed.files.filter((file) => typeof file.patch !== 'string' || file.patch === '').map((file) => file.filename)
+    const unreadBeyondAssets = unread.filter((filename) => !adversarialAssetExempt(filename))
+    if (unreadBeyondAssets.length > 0) {
+      const named = unreadBeyondAssets.slice(0, 10).join(', ')
+      return refuse(
+        `a changed file arrived without a patch, so the pass could not read it: ${named}${unreadBeyondAssets.length > 10 ? ` and ${unreadBeyondAssets.length - 10} more` : ''}`,
+        unreadBeyondAssets[0]!,
+        { unread: unreadBeyondAssets.slice(0, 50) },
+      )
+    }
+    const readable = listed.files.filter((file) => typeof file.patch === 'string' && file.patch !== '')
+    if (readable.length === 0) {
+      if (unread.length === 0) {
+        return refuse('the changed-file list reports no readable file, so there was nothing to review', '(changed-file list)', {})
+      }
+      // The one skip that survives: every unread file is an asset inside the
+      // allowlist, so there is no text to send and nothing a model could read.
+      // The assets are still named in the record — this merges as "unread", not
+      // as "reviewed".
+      record('skipped', { status: 'skipped', reason: 'every changed file is an unread binary asset inside the allowlist', unread: unread.slice(0, 50) })
+      return { block: null, reused: false, refusal: null }
+    }
+    // The cut is taken here, at the same point the packet applies, so the pass
+    // can name the files it left out. Then it stops instead of skipping the big
+    // file: a gap in the middle of a diff reads as if the omitted file was never
+    // part of the change.
+    let diff = ''
+    const omittedFiles: string[] = []
+    let omittedBytes = 0
+    for (const [index, file] of readable.entries()) {
+      const entry = `diff --git a/${file.filename} b/${file.filename}\n${file.patch}`
+      const candidate = diff === '' ? entry : `${diff}\n${entry}`
+      if (candidate.length <= MAX_DIFF_CHARS) {
+        diff = candidate
+        continue
+      }
+      // Keep the part that fits so the model still sees a change, and count the
+      // rest as unread. An oversized first file would otherwise leave an empty
+      // diff and no honest way to name what was dropped.
+      diff = candidate.slice(0, MAX_DIFF_CHARS)
+      omittedFiles.push(file.filename)
+      omittedBytes += candidate.length - MAX_DIFF_CHARS
+      for (const later of readable.slice(index + 1)) {
+        omittedBytes += `diff --git a/${later.filename} b/${later.filename}\n${later.patch}\n`.length
+        omittedFiles.push(later.filename)
+      }
+      break
     }
     const packet = assembleAdversarialPacket({
       baseSha,
       tipSha: pr.headSha,
       diff,
+      truncated: omittedFiles.length > 0,
+      omittedFiles,
+      omittedBytes,
       verifier: `checks at ${pr.headSha}: ${checks.map((run) => `${run.name}=${run.conclusion ?? run.status}`).join(', ')}`,
       policy: [
         'every check must be green at the tip',
@@ -1432,6 +1518,31 @@ export class Jobs {
         'a T2 or T3 change needs a PASS at the same tip',
       ],
     })
+    // #556: a cut diff is a refusal the packet alone decides. The model is still
+    // asked so the record carries its answer, but the refusal is taken from the
+    // cut, not from the answer: letting an outage of the model decide is the same
+    // fail-open this card closes, reached through the one carve-out that stays.
+    // The prompt still carries the caveat, because a model asked about a partial
+    // diff must not report it as a whole one.
+    const refuseTruncated = (detail: { model: string; promptHash: string; checks: string[]; outage: string | null }): { block: { file: string; line: number }; reused: boolean; refusal: string } => {
+      const reason = `the diff was truncated at ${MAX_DIFF_CHARS} characters: ${packet.omittedBytes} bytes in ${packet.omittedFiles.length} file(s) were not read${detail.outage === null ? '' : ', and the model could not be asked'}`
+      const target = packet.omittedFiles[0] ?? '(diff cut)'
+      record('incomplete', {
+        status: 'incomplete',
+        tipSha: pr.headSha,
+        reason,
+        truncated: true,
+        omittedFiles: packet.omittedFiles.slice(0, 50),
+        omittedBytes: packet.omittedBytes,
+        model: detail.model,
+        promptHash: detail.promptHash,
+        ...(detail.outage === null ? {} : { outage: detail.outage }),
+        verdict: { kind: 'risk', file: target, line: 0, failureMode: reason, repro: 'open the pull request files page and read the files named in the refusal', checks: detail.checks },
+        target: `${target}:0`,
+      })
+      this.store.audit(job.user_id, 'job.adversarial_incomplete', `${job.id}: ${reason}`)
+      return { block: { file: target, line: 0 }, reused: false, refusal: reason }
+    }
     let review: AdversarialReview
     try {
       review = await runAdversarialReview({
@@ -1444,20 +1555,38 @@ export class Jobs {
         modelId: this.config.llm.model,
       })
     } catch (error) {
+      if (packet.truncated) {
+        return refuseTruncated({ model: this.config.llm.model, promptHash: adversarialPrompt(packet).hash, checks: [], outage: String(error).slice(0, 300) })
+      }
       record('unavailable', { status: 'unavailable', reason: String(error).slice(0, 300) })
-      return { block: null, reused: false }
+      return { block: null, reused: false, refusal: null }
+    }
+    if (packet.truncated) {
+      // The model was told the diff is partial; the block does not depend on it
+      // answering well. A cut diff is not a reviewed diff, and recording it as
+      // `skipped` (what this used to do) let the merge proceed.
+      return refuseTruncated({
+        model: review.model,
+        promptHash: review.promptHash,
+        checks: review.verdict.kind === 'none' ? review.verdict.checks : [],
+        outage: null,
+      })
     }
     const block = adversarialMergeBlock(review)
     record(review.verdict.kind, {
       ...review,
       target: block === null ? null : `${block.file}:${block.line}`,
+      // #556 review finding 2: in a mixed change an allowlisted asset is left out
+      // of the packet, and the record has to name it — otherwise the docs' "is
+      // recorded as unread" is only true for the all-asset case.
+      ...(unread.length === 0 ? {} : { unread: unread.slice(0, 50) }),
     })
     if (block !== null) {
       this.store.audit(job.user_id, 'job.adversarial_risk', `${job.id}: ${block.file}:${block.line}`)
     } else if (review.verdict.kind === 'invalid') {
       this.store.audit(job.user_id, 'job.adversarial_rejected', `${job.id}: ${review.verdict.reason}`)
     }
-    return { block, reused: false }
+    return { block, reused: false, refusal: null }
   }
 
   private async tryMerge(job: JobRow, prUrl: string, manual: boolean): Promise<{ ok: boolean; message?: string }> {
@@ -1623,13 +1752,22 @@ export class Jobs {
           // and announced when the pass first ran; recording it again on every
           // reconcile pass would grow the audit trail 1,2,3,4 and notify the same
           // maintainer about the same commit every few minutes.
+          const where = `${adversarial.block.file}:${adversarial.block.line}`
+          // A refusal is not a risk the model named: it says the pass could not
+          // read the change. Same block, different sentence — a `:0` locator
+          // announced as a concrete risk is a report that invents evidence.
+          const refusal = adversarial.refusal
           if (!adversarial.reused) {
-            this.store.audit(job.user_id, 'job.merge_adversarial_blocked', `${job.id}: ${adversarial.block.file}:${adversarial.block.line}`)
-            this.store.notify(job.user_id, 'job', `任务 ${job.id} 的独立对抗式审核指出了具体风险 ${adversarial.block.file}:${adversarial.block.line}，自动合并已阻止。`)
+            this.store.audit(job.user_id, 'job.merge_adversarial_blocked', `${job.id}: ${refusal === null ? where : `incomplete: ${refusal.slice(0, 300)}`}`)
+            this.store.notify(job.user_id, 'job', refusal === null
+              ? `任务 ${job.id} 的独立对抗式审核指出了具体风险 ${where}，自动合并已阻止。`
+              : `任务 ${job.id} 的独立对抗式审核未能读完整改动（${refusal}），自动合并已阻止。`)
           }
           return {
             ok: false,
-            message: `独立对抗式审核指出具体风险：${adversarial.block.file}:${adversarial.block.line}，自动合并已阻止。`,
+            message: refusal === null
+              ? `独立对抗式审核指出具体风险：${where}，自动合并已阻止。`
+              : `独立对抗式审核未能读完整改动：${refusal}，自动合并已阻止。`,
           }
         }
       }
