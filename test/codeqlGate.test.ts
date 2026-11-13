@@ -115,27 +115,67 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // opens each handler; alerts #41 and #42 stay the same two dismissed results.
   // #359 then moved the webhook registration to `:2979` on its own tree, and
   // #353 (four inserts: two in the failure path, two in the retry route) plus
-  // #341 (two comment lines in the retry route) took it to `:2983` on main.
-  // #355 moved anchors for two reasons and its merge re-measured all of them:
-  // one import line at `:27` sits above the four top-of-file route
-  // registrations, so those read `:470`/`:505`/`:515`/`:525` rather than main's
-  // `:469`/`:504`/`:514`/`:524`, its scope and expiry checks sit in the token
-  // create route above the webhook registration, so that tree read `:2996`, and
-  // its gateway rewrite adds 10 lines above both gateway registrations, which
-  // read `:154`/`:179`. This branch's review-trend read model sits six lines
-  // above the webhook registration, so the merged tree reads `:3002` there while
-  // the four top routes stay at `:470`/`:505`/`:515`/`:525`. Every number above
-  // was read from the tree that ships this file, never added to a base: no
-  // result was added or dismissed, and the two gateway alerts (#41, #42, both
-  // dismissed false positive) are the same two.
+  // #341 (two comment lines in the retry route) took it to `:2983` on main. In
+  // a tree carrying both, the anchor is measured once rather than added, and
+  // the baseline entry and this pin move there together in the merge commit,
+  // which keeps "refreshed" from becoming "silently re-labelled".
+  // #355 then moved anchors on its own: its one import line at `:27` sits above
+  // the four route registrations near the top of the file, so those read
+  // `:471`/`:506`/`:516`/`:526` rather than main's `:469`/`:504`/`:514`/`:524`;
+  // its scope and expiry checks sit in the token create route above the webhook
+  // registration, which read `:2996` on `e268836` alone; and its gateway rewrite
+  // adds 10 lines above both gateway registrations, which read `:155`/`:180`.
+  // #418's review-trend read model then inserts six lines above the webhook
+  // registration, and #441, #442, #444 and #447 changed console strings, type
+  // scale, viewport rules and table layout without touching a route. This
+  // branch's three settings session routes, their rate-limit calls and their
+  // CSRF guards insert 44 lines above the webhook registration, so the merged
+  // tree measures `:3046`. #362 and #416 landed on main before this merge: the search import, the search route and the export-cap refusal all sit above the webhook registration, which read `:3062` on main before this branch's 44 lines. On the merged tree those read `:471`/`:506`/`:516`/`:526` and `:3106`, and the two gateway registrations `:155`/`:180`. Every number above was read from this tree, never
+  // added to a base: no result was added or dismissed, and the two gateway
+  // alerts (#41, #42, both dismissed false positive) are the same two. #457
+  // then adds its limit guard, its two refusal helpers and its two add-path
+  // call sites: the four top-of-file registrations read `:516`/`:551`/`:561`/`:571`
+  // on the merged tree and the webhook registration reads `:3197`, while the
+  // gateway pair stays `:155`/`:180`. #488 (the settings-anchor call site) and
+  // #489 (`public/app.css` plus two layout tests) then merged without touching
+  // `src/app.ts`, so the refresh onto `main@fd76f696` re-read all seven route
+  // lines on the merged tree and moved none of them. The rework after review
+  // `901ad95` adds eight lines to the bulk add path below the four top-of-file
+  // registrations, so the webhook anchor reads `:3197` and the rest stay.
+  // #460 rebases onto a main carrying #499 and re-reads all seven lines on its
+  // own tree: the re-authentication helper, the route-level limit handed to
+  // `@fastify/rate-limit` and the plugin registration add 56 lines above the four
+  // top-of-file registrations, which read `:572`/`:607`/`:617`/`:627`, while the
+  // eight destructive registrations and the plugin's bookkeeping leave the
+  // webhook registration at `:3267`. The gateway pair does not move and stays
+  // `:155`/`:180`, because #497's change to that file lands below both
+  // registrations; no result is added or dismissed.
+  // #360's refresh onto `main@15c336e9` re-read all seven lines on the merged
+  // tree rather than summing them: this branch adds an 18-line reply helper above
+  // the four top-of-file registrations and its 48-line issue-verb block above the
+  // webhook registration, so those read `:590`/`:625`/`:635`/`:645` and the
+  // webhook registration `:3333`. The gateway pair does not move and stays
+  // `:155`/`:180`. No result is added or dismissed: the two gateway alerts (#41,
+  // #42) stay the two dismissed false positives.
+  // The tip then merges `main@f20c8de`: #517 floors discovery at 60 minutes in
+  // `src/jobs/service.ts` and #514 rewrites the daily-release header, and neither
+  // touches `src/app.ts`, so that merge re-read all seven anchors and moved none
+  // (`:590`/`:625`/`:635`/`:645`/`:3333` and `:155`/`:180` then).
+  // #473 then lands on main (the `densityMode` import, the response-hook branch
+  // and the `/density/:mode` route, 25 lines) above the four top-of-file
+  // registrations, so the refresh onto `main@5d848df` re-reads all seven anchors
+  // on the merged tree: those read `:615`/`:650`/`:660`/`:670` and the webhook
+  // registration `:3358`, while the gateway pair stays `:155`/`:180` because the
+  // insert lands below both. No result is added or dismissed.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3002',
-    'js/missing-rate-limiting|src/app.ts|470',
-    'js/missing-rate-limiting|src/app.ts|505',
-    'js/missing-rate-limiting|src/app.ts|515',
-    'js/missing-rate-limiting|src/app.ts|525',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|154',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|179',
+    'js/missing-rate-limiting|src/app.ts|3358',
+    'js/missing-rate-limiting|src/app.ts|615',
+    'js/missing-rate-limiting|src/app.ts|650',
+    'js/missing-rate-limiting|src/app.ts|660',
+    'js/missing-rate-limiting|src/app.ts|670',
+
+    'js/missing-rate-limiting|src/gateway/gateway.ts|155',
+    'js/missing-rate-limiting|src/gateway/gateway.ts|180',
   ])
   const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
   assert.equal(dismissed.length, 3, 'the three dismissed false-positive results are recorded with their reason')

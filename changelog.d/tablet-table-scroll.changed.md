@@ -1,1 +1,0 @@
-On a tablet, a table that is wider than its card now keeps the first column visible while the rest scrolls, shows a readable scrollbar gutter and a subtle edge shadow, and stops a sideways swipe from moving the page instead of the table.

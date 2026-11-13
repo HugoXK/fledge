@@ -24,7 +24,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     tokenEncryptionKey: randomBytes(32).toString('base64'),
     dataDir: '/tmp/fledge-test',
     dbPath: ':memory:',
-    runner: { mode: 'mock', bridgeUrl: '', bridgeToken: '', timeoutMinutes: 45, stallMinutes: 30, maxActiveJobs: 2, queueDispatch: false, maxQueueDepth: 100, maxUserQueue: 20 },
+    runner: { mode: 'mock', bridgeUrl: '', bridgeToken: '', timeoutMinutes: 45, stallMinutes: 30, maxActiveJobs: 2, workCooldownMinutes: 15, queueDispatch: false, maxQueueDepth: 100, maxUserQueue: 20 },
     allowTokenLoginOnly: true,
     mail: {
       transport: 'console',
@@ -45,7 +45,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     metrics: { token: '' },
     otel: { endpoint: '', serviceName: 'fledge' },
     shutdown: { graceSeconds: 0 },
-    autoMerge: { reconcileMinutes: 5 },
+    autoMerge: { reconcileMinutes: 5, minReviewScore: 80 },
     ops: { alertCooldownMinutes: 360 },
   })
   return {
@@ -61,6 +61,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     shutdown: { ...base.shutdown, ...overrides.shutdown },
     autoMerge: { ...base.autoMerge, ...overrides.autoMerge },
     ops: { ...base.ops, ...overrides.ops },
+    limits: { ...base.limits, ...overrides.limits },
     plan: { ...base.plan, ...overrides.plan },
     backup: { ...base.backup, ...overrides.backup },
   }

@@ -136,9 +136,10 @@ Rules, in order:
    stale issues; no new feature work).
 4. Else if `state.zeroOutputStreak >= 2` or `state.failures >= 2` → `none` with
    exponential backoff (do not burn quota).
-5. Else → `iterate`. Phase 2 narrows this to a **specific** backlog item (the
-   highest-priority issue without an open PR); Phase 1 still uses the repo goal
-   plus the carry-over block.
+5. Else → `none` with reason `idle`. No open work is a valid state: the scheduler
+   creates no issue or PR. Phase 2 may add a separate, slower planning session
+   that proposes a concrete backlog item; it must not turn the idle tick into a
+   generic `iterate`.
 
 The scheduler still respects `activeJobForRepo`, quotas, and the repo role. A
 work item that is carried forever is bounded in Phase 2 by `attempts` plus an
@@ -241,9 +242,11 @@ Phase 1 (implemented in #238):
 - Inject the last 3 run digests and open work items into the scheduled goal
   (reusing the existing `jobs` and `work_items` tables; no GitHub list call).
 - If open work exists, enqueue `followup`/`review` instead of a fresh `iterate`;
-  a review that is not due falls back to `followup`, never to `none`.
-- Stretch the interval to `max(interval, last duration * 1.5 + cooldown)` and
-  back off after two unproductive runs.
+  a review that is not due falls back to `followup`. With no open work, return
+  `idle` and create no job/issue/PR.
+- Use the short global work cooldown (`WORK_SESSION_COOLDOWN_MINUTES`, default
+  15 minutes); the per-repository interval is only an upper bound on the idle
+  check. Back off after two unproductive runs.
 - Persist `jobs.continuity_json`, `jobs.output_kind` and `jobs.continuity_used`;
   add the "no meta issue" prompt rule and the result-based backstop.
 
@@ -255,6 +258,8 @@ Phase 2 (1–2 weeks):
 
 - Extend the existing `work_items` table; carry `work_item_id` and `attempts`
   across jobs; add `abandoned`; implement the full `decide()` policy with tests.
+- Add the idle `discover` session: at the repository interval it may create one
+  concrete issue and no PR; an empty result is zero output.
 
 Phase 3:
 

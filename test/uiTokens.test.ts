@@ -72,10 +72,12 @@ test('the token block carries the spacing, type, radius, motion and touch scales
   assert.deepEqual(missing, [], `missing design tokens: ${missing.join(', ')}`)
 })
 
-// 2. Colour lives in the token block only. rgba() stays legal outside it: an
-//    alpha tint cannot name a solid token without losing the transparency.
+// 2. Colour lives in the token blocks only: the dark :root palette and the two
+//    light ones (`:root:not([data-theme="dark"])` under prefers-color-scheme and
+//    `:root[data-theme="light"]`). rgba() stays legal outside them: an alpha tint
+//    cannot name a solid token without losing the transparency.
 test('no colour literal escapes the token block', () => {
-  const withoutRoot = cssSource.replace(/:root\s*\{[^}]*\}/g, '')
+  const withoutRoot = cssSource.replace(/:root[^{]*\{[^}]*\}/g, '')
   const offenders: string[] = []
   withoutRoot.split('\n').forEach((line, index) => {
     const selectorEnd = line.indexOf('{')

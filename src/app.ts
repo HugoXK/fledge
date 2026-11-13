@@ -9,7 +9,8 @@ import { assertProductionConfig } from './config.js'
 import { openStore, type JobRow, type RepoRow, type Store, type UserRow } from './db.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
-import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions } from './auth/session.js'
+import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions, type Viewer } from './auth/session.js'
+import { dedupeRepoNames, instanceLimitRefusal, repoLimitRefusal, type LimitRefusal } from './lib/limits.js'
 import { isTrialFilter } from './lib/trials.js'
 import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
@@ -22,6 +23,7 @@ import { failureBreakdown } from './lib/failure.js'
 import { Jobs } from './jobs/service.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
+import fastifyRateLimit from '@fastify/rate-limit'
 import { rateLimitKey, RateLimiter } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
 import { expiryFromDays, GATEWAY_SCOPE, isTokenScope, patExpiryDays } from './lib/tokens.js'
@@ -61,12 +63,15 @@ import {
   metricsPage,
   appReposPage,
   workspacePage,
+  searchPage,
   agentWorkspacePage,
   settingsPage,
   inboxSection,
   errorPage,
   type InboxQuestion,
 } from './views/pages.js'
+import { withDensity } from './views/layout.js'
+import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
 import { GithubClient, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
 import { GithubApp } from './repos/app.js'
 import { repoGithubToken } from './repos/token.js'
@@ -79,6 +84,9 @@ export interface BuildOptions {
   mailer?: Mailer
   runner?: Runner
   startScheduler?: boolean
+  // Injected by tests that drive the route with a fake live-session controller;
+  // production always builds its own.
+  instances?: InstanceManager
 }
 
 export interface BuiltApp {
@@ -109,6 +117,21 @@ function refusalValue(result: { code?: string; detail?: string; error?: string }
   if (code === '') return text
   const detail = result.detail ?? ''
   return `${code}:${detail !== '' ? detail : text}`
+}
+
+// #360 review: the pause/cancel reply is built from the stop's own outcome, so it
+// never claims a send that did not happen. `sent` absent means no attempt was made
+// (a queued job, or no live-session controller in queue-dispatch mode), `false`
+// means the bridge call failed, and the counts are what `stopSessions` reported.
+function describeJobStop(result: { sent?: boolean; stopped?: number; requested?: number }): string {
+  if (result.sent === undefined) return 'no live session was reachable to stop'
+  if (result.sent !== true) return 'the stop could not be delivered'
+  const stopped = result.stopped ?? 0
+  const requested = result.requested ?? 0
+  if (stopped > 0 && requested > 0) return `stopped ${stopped} session(s) and requested a stop for ${requested} at the next safe point`
+  if (stopped > 0) return `stopped ${stopped} session(s)`
+  if (requested > 0) return `requested a stop for ${requested} session(s) at the next safe point`
+  return 'no live session was reachable to stop'
 }
 
 function queryText(request: FastifyRequest, name: string): string | undefined {
@@ -211,14 +234,26 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const oauth = new GithubOAuth(config)
   const sessions = new Sessions(store, config)
   const approvals = new Approvals(store, config, mailer)
-  const instances = new InstanceManager(store, config)
-  if (options.startScheduler !== false && config.env !== 'test' && config.flybot.instanceImage !== '') {
+  const instances = options.instances ?? new InstanceManager(store, config)
+  if (options.instances === undefined && options.startScheduler !== false && config.env !== 'test' && config.flybot.instanceImage !== '') {
     void instances.healthSweep().catch((error) => log.warn('startup instance health sweep failed', { error: String(error) }))
   }
   const githubApp = new GithubApp(config)
   const jobs = new Jobs(store, config, runner, mailer, instances, githubApp)
   const loginLimiter = new RateLimiter(30, 60_000)
   const apiLimiter = new RateLimiter(120, 60_000)
+  // #460 review: the destructive actions below are rate-limited as well as
+  // re-authenticated, through `@fastify/rate-limit` (registered `global: false`
+  // below) so the limit is visible to callers and to CodeQL's Fastify model
+  // rather than hidden in a helper no analyzer follows. The key stays the client
+  // address through rateLimitKey, never a value the caller can mint; 60 a minute
+  // leaves room for an admin working through a batch of approvals while still
+  // stopping a loop, a resubmitting page or a stolen cookie.
+  const destructiveLimit = {
+    max: 60,
+    timeWindow: 60_000,
+    keyGenerator: (request: FastifyRequest): string => rateLimitKey(request),
+  }
 
   const app = Fastify({
     logger: false,
@@ -244,6 +279,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   await app.register(fastifyCookie)
   await app.register(fastifyFormbody)
   await app.register(fastifyStatic, { root: join(process.cwd(), 'public'), prefix: '/assets/', decorateReply: false })
+  // `global: false`: only the routes that name `config.rateLimit` are limited.
+  await app.register(fastifyRateLimit, { global: false })
 
   app.addHook('onRequest', async (request) => {
     request.viewer = sessions.read(request) ?? undefined
@@ -273,6 +310,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       )
     }
     if (config.baseUrl.startsWith('https://')) reply.header('strict-transport-security', 'max-age=31536000; includeSubDomains')
+    // #473: the density is request state, so the rendered document is completed
+    // here rather than in a page builder that has no request. Only an HTML body
+    // is touched; every JSON, CSS and text response passes through unchanged.
+    if (typeof payload === 'string' && String(reply.getHeader('content-type') ?? '').startsWith('text/html')) {
+      return withDensity(payload, resolveDensity(request))
+    }
     return payload
   })
 
@@ -286,6 +329,91 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const viewer = csrfGuard(request)
     if (viewer.user.status !== 'approved') throw httpError(403, '账号正在等待审批。', 'NOT_APPROVED')
     return viewer
+  }
+
+  // #457: a user may not create repositories or FlyBot instances without a
+  // ceiling; the refusal carries a stable code and is audited, and it happens
+  // before anything is created so no half-built repo or container is left.
+  const refuseLimit = (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    viewer: Viewer,
+    refusal: LimitRefusal,
+    back: string,
+  ): FastifyReply => {
+    const t = translator(request.locale ?? 'zh')
+    store.audit(viewer.user.id, 'limit.refused', `${refusal.code} used=${refusal.used} cap=${refusal.cap}`)
+    const message = refusal.code === 'REPO_LIMIT'
+      ? t(
+        `仓库数量已达上限（${refusal.used}/${refusal.cap}）。请先移除一个仓库，或请管理员调整上限。`,
+        `Repository limit reached (${refusal.used}/${refusal.cap}). Remove a repository or ask an admin to raise the limit.`,
+      )
+      : t(
+        `FlyBot 实例数量已达上限（${refusal.used}/${refusal.cap}）。请先停止或移除一个实例，或请管理员调整上限。`,
+        `FlyBot instance limit reached (${refusal.used}/${refusal.cap}). Stop or remove an instance, or ask an admin to raise the limit.`,
+      )
+    const joiner = back.includes('?') ? '&' : '?'
+    return reply.redirect(`${back}${joiner}error=${encodeURIComponent(message)}&code=${refusal.code}`)
+  }
+
+  const repoCapRefusal = (viewer: Viewer): LimitRefusal | null => repoLimitRefusal({
+    used: store.countReposForUser(viewer.user.id),
+    cap: config.limits.reposPerUser,
+    admin: isAdminRole(viewer.user.role),
+  })
+
+  // #457 review: the instance ceiling has to see an add that will provision, not
+  // only the explicit provision route. `extra` is how many instances the caller
+  // is about to create; `excludeRepoId` is the repository whose own row (stopped
+  // or not) must not count against its restart.
+  const instanceCapRefusal = (viewer: Viewer, extra = 1, excludeRepoId = ''): LimitRefusal | null => instanceLimitRefusal({
+    usedForUser: store.countRepoInstancesForUser(viewer.user.id, excludeRepoId),
+    capForUser: config.limits.instancesPerUser,
+    usedGlobal: store.countRepoInstances(excludeRepoId),
+    capGlobal: config.limits.instancesGlobal,
+    admin: isAdminRole(viewer.user.role),
+    extra,
+  })
+
+
+  // A stolen session cookie must not be enough for a destructive write: those
+  // ask for a GitHub confirmation inside the configured window. On refusal the
+  // action is audited and the browser is sent through /auth/github/reauthorize,
+  // which refreshes this session in place so the form keeps its CSRF token.
+  const recentAuthFresh = (viewer: { recentAuthAt: string | null }): boolean => {
+    if (viewer.recentAuthAt === null) return false
+    const at = Date.parse(viewer.recentAuthAt)
+    return !Number.isNaN(at) && Date.now() - at <= config.recentAuthMinutes * 60_000
+  }
+
+  const requireRecentAuth = (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    viewer: Viewer,
+    action: string,
+  ): boolean => {
+    if (recentAuthFresh(viewer)) return false
+    const path = request.url.split('?')[0] ?? ''
+    store.audit(viewer.user.id, 'recent_auth_required', `${action} ${path}`)
+    const referer = String(request.headers.referer ?? '')
+    let back = referer.startsWith('/') ? referer : ''
+    if (back === '' && referer !== '') {
+      try {
+        const url = new URL(referer)
+        back = `${url.pathname}${url.search}`
+      } catch {
+        back = ''
+      }
+    }
+    const t = translator(request.locale ?? 'zh')
+    const notice = t(
+      `这个操作需要重新用 GitHub 确认身份（${config.recentAuthMinutes} 分钟内有效），确认后请再次提交。`,
+      `This action needs a fresh GitHub confirmation (valid for ${config.recentAuthMinutes} minutes). Submit it again after confirming.`,
+    )
+    const page = safeLocalPath(back, '/dashboard')
+    const target = `${page}${page.includes('?') ? '&' : '?'}notice=${encodeURIComponent(notice)}`
+    reply.redirect(`/auth/github/reauthorize?next=${encodeURIComponent(target)}`)
+    return true
   }
 
   const ownedRepo = (request: FastifyRequest, id: string, mutating = false) => {
@@ -328,7 +456,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (user.status === 'approved') instances.ensureUserDir(user.id)
     const raw = sessions.start(user.id, request)
     const sessionHash = sha256Hex(raw)
-    sessions.setCookies(reply, raw, { sessionHash, user, csrfToken: sessions.csrfFor(sessionHash) })
+    sessions.setCookies(reply, raw, { sessionHash, user, csrfToken: sessions.csrfFor(sessionHash), recentAuthAt: new Date().toISOString() })
     sessions.setPreview(reply, false)
   }
 
@@ -432,6 +560,23 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       maxAge: 365 * 86_400,
     })
     return reply.redirect(safeNext)
+  })
+
+  // #473: the table density is saved the way the language is, because the rows
+  // are rendered on the server — a client-side flip would paint the comfortable
+  // layout first and then collapse it. An unknown mode is a 404, never a silent
+  // default, and `next` goes through the same same-origin contract as `/lang`.
+  app.get('/density/:mode', async (request, reply) => {
+    const requested = String((request.params as Record<string, string>).mode)
+    if (!isDensity(requested)) return htmlPage(reply, 404, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。', request.locale))
+    reply.setCookie(DENSITY_COOKIE, requested, {
+      path: '/',
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: config.baseUrl.startsWith('https://'),
+      maxAge: 365 * 86_400,
+    })
+    return reply.redirect(safeLocalPath(queryText(request, 'next'), '/'))
   })
 
   app.get('/', async (request, reply) => {
@@ -569,7 +714,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.setUserGithubToken(user.id, encryptSecret(token, config.tokenEncryptionKey), oauthScopes)
     store.audit(user.id, 'login.github', `@${profile.login}`)
     store.event('login', { userId: user.id, meta: 'github' })
-    startSession(user, request, reply)
+    // A re-authentication from /auth/github/reauthorize arrives with the session
+    // it is refreshing; keeping that session keeps the form's CSRF token valid.
+    const refreshing = request.viewer !== undefined && request.viewer.user.id === user.id
+    if (refreshing) sessions.markRecentAuth(request)
+    else startSession(user, request, reply)
     if (user.status === 'approved') return reply.redirect(oauthState.redirect_to === null ? '/dashboard' : safeLocalPath(oauthState.redirect_to, '/dashboard'))
     if (user.status === 'onboarding') return reply.redirect('/apply')
     return reply.redirect('/apply/status')
@@ -787,6 +936,39 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     )
   })
 
+  // #362: every filter is validated here and the query is anchored on
+  // `viewer.user.id`, so an unknown `repo` value is dropped, not answered.
+  app.get('/search', async (request, reply) => {
+    const viewer = requireApproved(request)
+    const repos = store.listRepos(viewer.user.id)
+    const clip = (name: string, max: number): string => (queryText(request, name) ?? '').trim().slice(0, max)
+    const day = (name: string): string => {
+      const value = clip(name, 10)
+      return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ''
+    }
+    const [status, kind, repo] = [clip('status', 30), clip('kind', 30), clip('repo', 64)]
+    const [from, to] = [day('from'), day('to')]
+    const filters = {
+      q: clip('q', 200),
+      repo: repos.some((row) => row.id === repo) ? repo : '',
+      status: ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted'].includes(status) ? status : '',
+      kind: ['iterate', 'review', 'plan'].includes(kind) ? kind : '',
+      from: from === '' ? '' : `${from}T00:00:00.000Z`, to: to === '' ? '' : `${to}T23:59:59.999Z`,
+    }
+    return reply.type('text/html').send(searchPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      repos,
+      filters: { q: filters.q, repo: filters.repo, status: filters.status, kind: filters.kind, from, to },
+      // An empty query is not a listing: it is the same empty state with a next step.
+      results: filters.q === '' ? null : store.searchOwned(viewer.user.id, filters, 20),
+      cap: 20,
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
+  })
+
   app.get('/repos', async (_request, reply) => {
     return reply.redirect('/dashboard#add-repo')
   })
@@ -934,9 +1116,35 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`)
     }
     const byName = new Map(available.map((repo) => [repo.fullName.toLowerCase(), repo]))
+    // #457 review: the selection is counted once per repository. A repeated
+    // value ("o/a" and "O/A") would otherwise inflate both the repository
+    // arithmetic below and the instance count those additions would provision.
+    const chosen = dedupeRepoNames(selected)
+    const fresh = chosen.filter((fullName) => {
+      const info = byName.get(fullName)
+      return info !== undefined && store.getRepoByOwnerName(viewer.user.id, info.owner, info.name) === undefined
+    })
+    // `extra` is what this request would add: a selection that exactly fills the
+    // last free slots is allowed, and one with nothing fresh to create
+    // (extra 0) is never refused because it would create nothing.
+    const refusal = repoLimitRefusal({
+      used: store.countReposForUser(viewer.user.id),
+      cap: config.limits.reposPerUser,
+      admin: isAdminRole(viewer.user.role),
+      extra: fresh.length,
+    })
+    if (refusal !== null) return refuseLimit(request, reply, viewer, refusal, `/repos/new?installation=${installationId}`)
+    // Every fresh repository is provisioned below, so the instance ceiling has
+    // to be consulted for all of them before the first create: refusing later
+    // would leave repositories added with no instance, or a running instance
+    // past the ceiling.
+    if (config.flybot.instanceImage !== '') {
+      const instanceRefusal = instanceCapRefusal(viewer, fresh.length)
+      if (instanceRefusal !== null) return refuseLimit(request, reply, viewer, instanceRefusal, `/repos/new?installation=${installationId}`)
+    }
     const added: string[] = []
-    for (const fullName of selected) {
-      const repoInfo = byName.get(fullName.toLowerCase())
+    for (const fullName of chosen) {
+      const repoInfo = byName.get(fullName)
       if (repoInfo === undefined) continue
       if (store.getRepoByOwnerName(viewer.user.id, repoInfo.owner, repoInfo.name) !== undefined) continue
       try {
@@ -1002,6 +1210,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const existing = store.getRepoByOwnerName(viewer.user.id, owner, name)
       if (existing !== undefined) {
         return reply.redirect(`/repos/${existing.id}?notice=${encodeURIComponent('这个仓库已经添加过了。')}`)
+      }
+      const refusal = repoCapRefusal(viewer)
+      if (refusal !== null) return refuseLimit(request, reply, viewer, refusal, '/repos/new')
+      // This add provisions an instance below when FlyBot is configured, so it
+      // has to answer to the instance ceiling too — before anything is created.
+      if (config.flybot.instanceImage !== '') {
+        const instanceRefusal = instanceCapRefusal(viewer)
+        if (instanceRefusal !== null) return refuseLimit(request, reply, viewer, instanceRefusal, '/repos/new')
       }
       store.event('repo_connect_start', { userId: viewer.user.id, meta: `${owner}/${name}` })
       const token = (body.token ?? '').trim()
@@ -1087,6 +1303,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         viewer: viewOf(viewer),
         repo,
         instance,
+        usage: {
+          repos: store.countReposForUser(viewer.user.id),
+          reposCap: config.limits.reposPerUser,
+          instances: store.countRepoInstancesForUser(viewer.user.id),
+          instancesCap: config.limits.instancesPerUser,
+        },
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
         prJobs: store.listPrJobsForRepo(repo.id, 10),
         workItems: store.listWorkItems(repo.id),
@@ -1554,13 +1776,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const active = store.activeJobForRepo(repo.id)
     if (active !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}`)
-    const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : 'iterate'
-    const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
-    const resumePr = kind === 'iterate' && job.pr_url !== null
-    // #353: this route is a person pressing a button, so the run is theirs. The
-    // trigger alone cannot say that — `followup` is also what `tick()` enqueues.
-    const result = await jobs.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, { ownerStarted: true, ...(resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {}) })
-    store.audit(viewer.user.id, 'job.retried', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
+    const result = await jobs.retryJob(job.id, viewer.user.id)
     if (!result.ok || result.job === undefined) {
       return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(refusalValue(result, '重试失败。'))}`)
     }
@@ -1899,15 +2115,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/instance', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     if (config.flybot.instanceImage === '') throw httpError(400, 'FlyBot 实例未配置', 'INSTANCE_DISABLED')
-    instances.ensureUserDir(viewer.user.id)
+    // #457 review: the guard used to run before this route knew the repository
+    // already had a row, so a stopped instance counted against its own restart
+    // and the only way out was deleting it. Exclude the row being provisioned
+    // and count only the statuses that hold a slot.
     const existing = store.getRepoInstance(repo.id)
+    const refusal = instanceCapRefusal(viewer, 1, repo.id)
+    if (refusal !== null) return refuseLimit(request, reply, viewer, refusal, `/repos/${repo.id}`)
+    instances.ensureUserDir(viewer.user.id)
     if (existing !== undefined && existing.status !== 'ready' && !instances.isProvisioning(repo.id)) await instances.stop(repo.id)
     void instances.provision(repo).catch((error) => log.error('flybot provisioning failed', { repo: repo.id, error: String(error) }))
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例初始化中。')}`)
   })
 
-  app.post('/repos/:id/instance/stop', async (request, reply) => {
+  app.post('/repos/:id/instance/stop', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (requireRecentAuth(request, reply, viewer, 'flybot.instance.stop')) return reply
     await instances.stop(repo.id)
     await jobs.cancelRepoJobs(repo.id, 'FlyBot 实例已停止', 'BRIDGE_ERROR')
     store.audit(viewer.user.id, 'flybot.instance.stopped', `${repo.owner}/${repo.name}`)
@@ -1939,7 +2162,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(role === 'maintainer' ? t('已选择角色：Maintainer。', 'Role selected: Maintainer.') : t('已选择角色：Developer。', 'Role selected: Developer.'))}`)
   })
 
-  app.post('/repos/:id/settings', async (request, reply) => {
+  app.post('/repos/:id/settings', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const body = form(request)
     const interval = normalizeInterval(body.interval, repo.interval_minutes)
@@ -1955,6 +2178,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('你的 GitHub 权限不允许选择这个角色。', 'Your GitHub permission does not allow this role.'))}#repo-settings`)
     }
     const canMaintain = repoRole === 'maintainer'
+    const autoMergeToggled = canMaintain && (body.autoMerge === '1') !== (repo.auto_merge === 1)
+    if (autoMergeToggled && requireRecentAuth(request, reply, viewer, 'repo.auto_merge')) return reply
     const roleChanged = repoRole !== currentRole
     const goal = (body.goal ?? '').slice(0, 4000)
     const goalChanged = goal !== repo.goal
@@ -2049,8 +2274,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('仓库已停用，任务不会再运行。')}`)
   })
 
-  app.post('/repos/:id/delete', async (request, reply) => {
+  app.post('/repos/:id/delete', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (requireRecentAuth(request, reply, viewer, 'repo.delete')) return reply
     const confirmName = (form(request).confirmName ?? '').trim()
     if (confirmName !== repo.name && confirmName !== `${repo.owner}/${repo.name}`) {
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请输入仓库名确认删除。')}#danger`)
@@ -2073,6 +2299,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'),
+        sessions: store.listSessions(viewer.user.id),
+        currentSessionHash: viewer.sessionHash,
         providers: store.listModelProviders(viewer.user.id).map((provider) => ({ ...provider, models: store.listProviderModels(provider.id) })),
         discoveredProvider: queryText(request, 'discoveredProvider'),
         discovered: (queryText(request, 'discovered') ?? '').split(',').filter((value) => value !== ''),
@@ -2266,8 +2494,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/settings?notice=${encodeURIComponent('通知设置已保存。')}`)
   })
 
-  app.post('/settings/tokens', async (request, reply) => {
+  app.post('/settings/tokens', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
+    if (requireRecentAuth(request, reply, viewer, 'token.create')) return reply
     const body = form(request)
     const name = (body.name ?? '').trim().slice(0, 80) || 'default'
     // #355: a posted `scope` may only name a scope the code enforces, so an
@@ -2299,6 +2528,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         tokens: store.listApiTokens(viewer.user.id).filter((token) => token.kind === 'pat'),
+        sessions: store.listSessions(viewer.user.id),
+        currentSessionHash: viewer.sessionHash,
         providers: store.listModelProviders(viewer.user.id).map((provider) => ({ ...provider, models: store.listProviderModels(provider.id) })),
         newToken: raw,
         notice: '新 token 只显示这一次，请现在复制保存。',
@@ -2306,11 +2537,54 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     )
   })
 
-  app.post('/settings/tokens/:id/revoke', async (request, reply) => {
+  app.post('/settings/tokens/:id/revoke', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
+    if (requireRecentAuth(request, reply, viewer, 'token.revoke')) return reply
     store.revokeApiToken(String((request.params as Record<string, string>).id), viewer.user.id)
     store.audit(viewer.user.id, 'token.revoked')
     return reply.redirect(`/settings?notice=${encodeURIComponent('Token 已撤销。')}`)
+  })
+
+  // #356: a stolen cookie otherwise stays valid for the rest of its 30 days with
+  // no way to see or end it. Every route here is scoped to the viewer's own rows:
+  // a hash that is not theirs deletes nothing and answers the same way a
+  // non-existent one does, so the page cannot be used to probe another account.
+  // Each mutation takes the same limiter window as the other mutating form posts
+  // and answers the same 429 page: CSRF proves the request came from our page, it
+  // does not bound how many a stolen cookie may send.
+  app.post('/settings/sessions/:hash/revoke', async (request, reply) => {
+    if (!loginLimiter.take(`session-revoke:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    const viewer = approvedCsrfGuard(request)
+    const hash = String((request.params as Record<string, string>).hash)
+    if (hash === viewer.sessionHash) {
+      return reply.redirect(`/settings?error=${encodeURIComponent('这是当前会话。请用“轮换当前会话”换一个新 cookie，或用退出登录结束它。')}#sessions`)
+    }
+    if (!store.deleteSessionOfUser(viewer.user.id, hash)) {
+      return reply.redirect(`/settings?error=${encodeURIComponent('这个会话不存在，或不属于你。')}#sessions`)
+    }
+    store.audit(viewer.user.id, 'session.revoked', `one ${hash.slice(0, 8)}…`)
+    return reply.redirect(`/settings?notice=${encodeURIComponent('会话已撤销，那个 cookie 现在就会被拒绝。')}#sessions`)
+  })
+
+  app.post('/settings/sessions/revoke-others', async (request, reply) => {
+    if (!loginLimiter.take(`session-revoke-others:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    const viewer = approvedCsrfGuard(request)
+    const removed = store.deleteOtherSessions(viewer.user.id, viewer.sessionHash)
+    store.audit(viewer.user.id, 'session.revoked', `others=${removed}`)
+    return reply.redirect(`/settings?notice=${encodeURIComponent(removed === 0 ? '没有其他会话需要退出。' : `已退出 ${removed} 个其他会话。`)}#sessions`)
+  })
+
+  app.post('/settings/sessions/rotate', async (request, reply) => {
+    if (!loginLimiter.take(`session-rotate:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    const viewer = approvedCsrfGuard(request)
+    const raw = sessions.start(viewer.user.id, request)
+    const hash = sha256Hex(raw)
+    store.deleteSession(viewer.sessionHash)
+    // The rotated session is a new row, so it starts recent: `sessions.start`
+    // recorded `recent_auth_at` for it and the viewer has to carry the same fact.
+    sessions.setCookies(reply, raw, { sessionHash: hash, user: viewer.user, csrfToken: sessions.csrfFor(hash), recentAuthAt: new Date().toISOString(), preview: viewer.preview })
+    store.audit(viewer.user.id, 'session.rotated')
+    return reply.redirect(`/settings?notice=${encodeURIComponent('已换成新的会话 cookie，旧 cookie 已作废。')}#sessions`)
   })
 
   app.post('/notifications/read', async (request, reply) => {
@@ -2457,13 +2731,37 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
   }
 
+  // #416: a CSV that silently stopped at the row cap read as a complete document.
+  // Both counts already exist (the search page uses them), so the export refuses
+  // before reading rows and names the real count and the cap. The refusal keeps
+  // its audit row, with the matched count instead of a row count.
+  const EXPORT_ROW_CAP = 5000
+  const refuseLargeExport = (request: FastifyRequest, reply: FastifyReply, viewer: ReturnType<typeof requireAdmin>, kind: 'audit' | 'jobs', matched: number): FastifyReply => {
+    const locale = request.locale ?? 'zh'
+    const t = translator(locale)
+    store.audit(viewer.user.id, kind === 'audit' ? 'admin.audit_export' : 'admin.jobs_export', `refused=too_large matched=${matched} cap=${EXPORT_ROW_CAP}`)
+    return htmlPage(reply, 400, errorPage(
+      config,
+      viewOf(viewer),
+      t('导出范围过大', 'Export too large'),
+      t(
+        `这个筛选匹配 ${matched} 行，而单次导出最多 ${EXPORT_ROW_CAP} 行；请缩小日期范围或加一个关键词，再导出一次。`,
+        `This filter matches ${matched} rows, and one export is capped at ${EXPORT_ROW_CAP}; narrow the date range or add a keyword, then export again.`,
+      ),
+      locale,
+      { href: '/admin/search', label: t('返回搜索', 'Back to search') },
+    ))
+  }
+
   app.get('/admin/export/audit.csv', async (request, reply) => {
     const viewer = requireAdmin(request)
     if (viewer.preview === true) return reply.code(403).send({ error: 'preview' })
     const userIds = adminVisibleUserIds(viewer)
     const to = (queryText(request, 'to') ?? '').slice(0, 20)
     const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), action: (queryText(request, 'action') ?? '').slice(0, 80), from: (queryText(request, 'from') ?? '').slice(0, 20), to: to === '' ? '' : (to.length === 10 ? `${to}T23:59:59.999Z` : to) }
-    const rows = store.searchAudit(userIds, filters, 5000, 0)
+    const matched = store.countSearchAudit(userIds, filters)
+    if (matched > EXPORT_ROW_CAP) return refuseLargeExport(request, reply, viewer, 'audit', matched)
+    const rows = store.searchAudit(userIds, filters, EXPORT_ROW_CAP, 0)
     const csv = ['at,user_id,action,detail', ...rows.map((row) => [row.at, row.user_id ?? '', row.action, row.detail ?? ''].map(csvCell).join(','))].join('\n')
     store.audit(viewer.user.id, 'admin.audit_export', `rows=${rows.length}`)
     return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-audit.csv"').send(csv)
@@ -2474,7 +2772,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (viewer.preview === true) return reply.code(403).send({ error: 'preview' })
     const userIds = adminVisibleUserIds(viewer)
     const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), status: (queryText(request, 'status') ?? '').slice(0, 30), kind: (queryText(request, 'kind') ?? '').slice(0, 30) }
-    const rows = store.searchJobs(userIds, filters, 5000, 0)
+    const matched = store.countSearchJobs(userIds, filters)
+    if (matched > EXPORT_ROW_CAP) return refuseLargeExport(request, reply, viewer, 'jobs', matched)
+    const rows = store.searchJobs(userIds, filters, EXPORT_ROW_CAP, 0)
     const csv = ['id,repo_id,user_id,status,kind,trigger,created_at,finished_at,pr_url,issue_url,cost_usd', ...rows.map((row) => [row.id, row.repo_id, row.user_id, row.status, row.kind, row.trigger, row.created_at, row.finished_at ?? '', row.pr_url ?? '', row.issue_url ?? '', row.cost_usd].map(csvCell).join(','))].join('\n')
     store.audit(viewer.user.id, 'admin.jobs_export', `rows=${rows.length}`)
     return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-jobs.csv"').send(csv)
@@ -2622,7 +2922,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/admin?notice=${encodeURIComponent(`${head}${due}`)}`)
   })
 
-  const adminStatus = async (request: FastifyRequest, status: 'approved' | 'rejected') => {
+  const adminStatus = async (request: FastifyRequest, reply: FastifyReply, status: 'approved' | 'rejected'): Promise<'blocked' | UserRow> => {
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
     const id = String((request.params as Record<string, string>).id)
@@ -2630,6 +2930,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (user === undefined) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
     if (user.id === viewer.user.id || user.role === 'superadmin') throw httpError(403, '不能修改这个账号。', 'ROLE_PROTECTED')
     if (viewer.user.role !== 'superadmin' && user.role !== 'user') throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
+    if (requireRecentAuth(request, reply, viewer, `admin.user.${status}`)) return 'blocked'
     store.setUserStatus(user.id, status, `admin:${viewer.user.login}`)
     if (status === 'approved') instances.ensureUserDir(user.id)
     if (status === 'rejected') {
@@ -2663,19 +2964,20 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
   })
 
-  app.post('/admin/users/:id/approve', async (request, reply) => {
-    await adminStatus(request, 'approved')
+  app.post('/admin/users/:id/approve', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
+    if ((await adminStatus(request, reply, 'approved')) === 'blocked') return reply
     return reply.redirect(`/admin?notice=${encodeURIComponent('已批准。')}`)
   })
 
-  app.post('/admin/users/:id/reject', async (request, reply) => {
-    await adminStatus(request, 'rejected')
+  app.post('/admin/users/:id/reject', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
+    if ((await adminStatus(request, reply, 'rejected')) === 'blocked') return reply
     return reply.redirect(`/admin?notice=${encodeURIComponent('已拒绝。')}`)
   })
 
-  app.post('/admin/users/:id/quota', async (request, reply) => {
+  app.post('/admin/users/:id/quota', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可访问。', 'ADMIN_ONLY')
+    if (requireRecentAuth(request, reply, viewer, 'admin.quota')) return reply
     const id = String((request.params as Record<string, string>).id)
     const user = store.userById(id)
     if (user === undefined) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
@@ -2850,16 +3152,70 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const key = `issue_command:${parsed.commentId}`
     if (store.getSetting(key) !== undefined) return
     store.setSetting(key, nowIso())
-    let item = store.findWorkItemByIssueUrl(repo.id, issueUrl)
-    if (item === undefined) {
-      item = store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, detail, issueUrl, state: 'proposed' })
-    }
     const token = await repoGithubToken(repo, config, githubApp, store)
     const client = new GithubClient(token, config.github.apiBase)
     const owner = repo.upstream_owner || repo.owner
     const name = repo.upstream_name || repo.name
     const reply = async (message: string): Promise<void> => {
       await client.comment(owner, name, number, `${message}\n\n<sub>Fledge · issue command</sub>`)
+    }
+    // The four job verbs act on the job attached to the issue's work item. They
+    // never create that item: with no item — or no job on it — the answer is a
+    // refusal, because a control command that starts work is a surprise, not a
+    // retry. Each verb reuses the service action the console already calls, so the
+    // audit rows and the timeline events are the same ones.
+    if (command === 'retry' || command === 'pause' || command === 'resume' || command === 'cancel') {
+      const linked = store.findWorkItemByIssueUrl(repo.id, issueUrl)
+      if (linked === undefined) {
+        await reply(`No work item is linked to this issue; nothing to ${command}.`)
+        return
+      }
+      // #360 review: by the item, not through the repository's newest 20 — an older
+      // work item's job must not be answered "no job is attached".
+      const job = store.latestJobForWorkItem(linked.id)
+      if (job === undefined) {
+        await reply(`No job is attached to work item ${linked.id}; nothing to ${command}.`)
+        return
+      }
+      const active = job.status === 'queued' || job.status === 'running'
+      if (command === 'pause' || command === 'cancel') {
+        if (!active) {
+          await reply(`Job ${job.id} is ${job.status}; there is no queued or running job to ${command}.`)
+          return
+        }
+        const result = command === 'pause' ? await jobs.pauseJob(job.id, 'issue command') : await jobs.cancelJob(job.id, 'issue command')
+        if (!result.ok) {
+          await reply(`Could not ${command} job ${job.id}: ${result.error ?? 'unknown error'}`)
+          return
+        }
+        // The service returns what the stop path actually did, so the sentence
+        // reports a hard stop, a request, no reachable session or a failed call —
+        // never a send that did not happen, and never a claim a process was killed.
+        const verb = command === 'pause' ? 'Paused' : 'Cancelled'
+        const state = command === 'pause' ? 'paused' : 'cancelled'
+        await reply(`${verb} job ${job.id}: ${describeJobStop(result)}; the row is ${state}.`)
+        return
+      }
+      if (command === 'resume') {
+        if (job.status !== 'paused') {
+          await reply(`Job ${job.id} is ${job.status}; only a paused job can be resumed.`)
+          return
+        }
+        const result = await jobs.resumeJob(job.id)
+        await reply(result.ok && result.job !== undefined ? `Resumed job ${job.id} as job ${result.job.id}.` : `Could not resume job ${job.id}: ${result.error ?? 'unknown error'}`)
+        return
+      }
+      if (active) {
+        await reply(`Job ${job.id} is still ${job.status}; pause or cancel it before retrying.`)
+        return
+      }
+      const result = await jobs.retryJob(job.id, repo.user_id, { workItemId: linked.id })
+      await reply(result.ok && result.job !== undefined ? `Queued job ${result.job.id} to retry job ${job.id}.` : `Could not retry job ${job.id}: ${result.error ?? 'unknown error'}`)
+      return
+    }
+    let item = store.findWorkItemByIssueUrl(repo.id, issueUrl)
+    if (item === undefined) {
+      item = store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, detail, issueUrl, state: 'proposed' })
     }
     if (command === 'status') {
       const latest = store.listJobsForRepo(repo.id, 20).find((job) => job.work_item_id === item.id)

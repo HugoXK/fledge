@@ -8,7 +8,8 @@ import { log } from '../lib/log.js'
 import { decryptSecret, sha256Hex } from '../lib/secrets.js'
 import { costUsdFromUsage, headerCost, quotaView } from './quota.js'
 import { modelOrder, retryableModelFailure } from './modelFallback.js'
-import type { ModelAttempt } from '../lib/modelRun.js'
+import { parseModelRun } from '../lib/modelRun.js'
+import type { ModelAttempt, ModelFallback } from '../lib/modelRun.js'
 import { rateLimitKey, RateLimiter } from '../lib/rateLimit.js'
 import { GATEWAY_SCOPE } from '../lib/tokens.js'
 
@@ -182,10 +183,28 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
     if (auth.kind !== 'ok') return refuse(reply, auth)
     // Captured once: a closure below must not lose the narrowing of the union.
     const authed = auth
+    // #481: a job token is a `kind`, never a name. `src/app.ts` lets any approved
+    // user mint a personal token with an arbitrary name, so the `job:` prefix
+    // alone would let that token address another user's job by id — both writes
+    // below are `WHERE id = ?` (`updateJob`, `addJobCost`). The kind is written by
+    // the platform and the row's owner is checked here, before the upstream call,
+    // so a forged name cannot spend quota either. A real job token whose row was
+    // deleted records nothing and still answers: the row is the record, and
+    // `recordModel` already tolerates its absence.
+    const jobClaim = auth.token.name.startsWith('job:') ? auth.token.name.slice(4) : null
+    let jobId: string | null = null
+    if (jobClaim !== null) {
+      const claimedJob = store.getJob(jobClaim)
+      if (auth.token.kind === 'job' && claimedJob !== undefined && claimedJob.user_id === auth.user.id) jobId = jobClaim
+      // A job token whose job has been deleted keeps its old behaviour (no
+      // record); anything else that claims a job it does not own is refused.
+      else if (!(auth.token.kind === 'job' && claimedJob === undefined)) {
+        return reply.code(403).send({ error: { type: 'invalid_job_token', message: 'This Fledge API token does not name a job of its own' } })
+      }
+    }
     const body = (request.body ?? {}) as ChatBody
     const repoModel = auth.token.repo_id === null || typeof body.model !== 'string' ? undefined : store.providerModelForRun(auth.token.repo_id, body.model)
     const stream = body.stream === true
-    const jobId = auth.token.name.startsWith('job:') ? auth.token.name.slice(4) : null
     const started = Date.now()
     const quota = quotaView(auth.user, config)
 
@@ -205,17 +224,21 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
 
     // The job names the model that actually ran and the models it fell through.
     // The row is the record; a call whose job was deleted under it must not fail.
-    const recordModel = (winner: { id: string; label: string } | null): void => {
+    // #407: `attempts` is this call's list, so the fallback is kept beside it —
+    // the first one the job ever made survives every later call, whether that call
+    // answered on the primary or fell back again to a different pair.
+    const recordModel = (winner: { id: string; label: string } | null, fallback: ModelFallback | null): void => {
       if (jobId === null) return
       try {
-        store.updateJob(jobId, { model_json: JSON.stringify({ model: winner, attempts }) })
+        const stored = parseModelRun(store.getJob(jobId)?.model_json ?? null)?.fallback ?? null
+        store.updateJob(jobId, { model_json: JSON.stringify({ model: winner, attempts, fallback: stored ?? fallback }) })
       } catch (error) {
         log.warn('gateway model record failed', { trace: jobId, error: String(error) })
       }
     }
 
     let target: { baseUrl: string; key: string; model: string; platformFunded: boolean } | null = null
-    let targetLabel = ''
+    let targetName: { modelId: string; label: string } | null = null
     let upstream: Awaited<ReturnType<typeof upstreamRequest>> | null = null
     let lastFailure: { status: number; text: string; headers: Record<string, string> } | null = null
 
@@ -254,7 +277,7 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
       }
       if (answer.status >= 200 && answer.status < 300) {
         target = attemptTarget
-        targetLabel = attemptName.label
+        targetName = attemptName
         upstream = answer
         break
       }
@@ -267,13 +290,23 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
       if (!retryable) break
     }
 
-    if (upstream === null || target === null) {
-      recordModel(null)
+    if (upstream === null || target === null || targetName === null) {
+      // No winner means no fallback pair to record; a fallback from an earlier
+      // call is left as it is rather than cleared by a failed call.
+      recordModel(null, null)
       if (lastFailure !== null) return reply.code(lastFailure.status).headers(lastFailure.headers).send(lastFailure.text)
       return reply.code(502).send({ error: { type: 'provider_error', message: 'The model provider could not be reached.' } })
     }
 
-    recordModel({ id: target.model, label: targetLabel })
+    const firstAttempt = attempts[0]
+    const fellBack: ModelFallback | null = firstAttempt === undefined
+      ? null
+      : {
+          from: { modelId: firstAttempt.modelId, label: firstAttempt.label },
+          to: { modelId: targetName.modelId, label: targetName.label },
+          status: firstAttempt.status,
+        }
+    recordModel({ id: target.model, label: targetName.label }, fellBack)
     const funded = target.platformFunded
     const targetModel = target.model
     const costFromHeader = headerCost(upstream.headers)

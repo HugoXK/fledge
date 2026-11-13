@@ -4,7 +4,20 @@
 // assertion deterministic, and the numbers come from the real media query.
 
 export type Declaration = { property: string; value: string }
-export type StyleRule = { selectors: string[]; declarations: Declaration[]; media: string | null }
+export type StyleRule = {
+  selectors: string[]
+  declarations: Declaration[]
+  media: string | null
+  // The `@supports` condition a rule sits under, without the at-rule keyword,
+  // e.g. `(padding: env(safe-area-inset-top))`; null when it is unconditional.
+  supports: string | null
+}
+
+// A browser without `env()` never parses an `@supports (…env(…)…)` block: that
+// is the reader the sheet's fallback has to serve. A modern browser parses it
+// and applies those declarations after the fallback, so the two resolve into
+// one effective rule. `legacy` and `modern` model those two readers.
+export type StylesheetView = 'legacy' | 'modern'
 
 export function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '')
@@ -23,7 +36,12 @@ export function declarationsOf(body: string): Declaration[] {
   return declarations
 }
 
-export function parseRules(source: string, media: string | null = null): StyleRule[] {
+export function parseRules(
+  source: string,
+  view: StylesheetView = 'modern',
+  media: string | null = null,
+  supports: string | null = null,
+): StyleRule[] {
   const css = stripComments(source)
   const rules: StyleRule[] = []
   let index = 0
@@ -42,11 +60,41 @@ export function parseRules(source: string, media: string | null = null): StyleRu
       const head = prelude.trim()
       if (head.startsWith('@')) {
         const atRule = head.slice(1).trim()
-        if (atRule.startsWith('media')) rules.push(...parseRules(body, atRule.slice('media'.length).trim()))
-      } else {
-        const selectors = head.split(',').map((selector) => selector.trim()).filter((selector) => selector !== '')
-        rules.push({ selectors, declarations: declarationsOf(body), media })
+        if (atRule.startsWith('media')) {
+          rules.push(...parseRules(body, view, atRule.slice('media'.length).trim(), supports))
+        } else if (atRule.startsWith('supports')) {
+          if (view === 'modern') {
+            const condition = atRule.slice('supports'.length).trim()
+            for (const nested of parseRules(body, view, media, condition)) {
+              // The block we just parsed follows its fallback in the sheet, so a
+              // modern browser applies it to the same element after it: one
+              // effective rule whose last declaration wins. Keeping that shape
+              // means a per-rule caller reads the winning value, as it did when
+              // both declarations lived in one block.
+              let target: StyleRule | undefined
+              for (let candidate = rules.length - 1; candidate >= 0; candidate -= 1) {
+                const rule = rules[candidate]
+                if (rule === undefined || rule.supports !== null || rule.media !== media) continue
+                if (rule.selectors.join(',') === nested.selectors.join(',')) {
+                  target = rule
+                  break
+                }
+              }
+              if (target === undefined) rules.push(nested)
+              else {
+                target.declarations.push(...nested.declarations)
+                target.supports = condition
+              }
+            }
+          }
+          // A legacy browser drops the whole block; its fallback stays visible.
+        }
+        prelude = ''
+        index = end
+        continue
       }
+      const selectors = head.split(',').map((selector) => selector.trim()).filter((selector) => selector !== '')
+      rules.push({ selectors, declarations: declarationsOf(body), media, supports })
       prelude = ''
       index = end
       continue

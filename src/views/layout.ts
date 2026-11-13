@@ -4,9 +4,20 @@ import type { Config } from '../config.js'
 import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
 import { refusalBanner } from '../lib/failure.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
+import type { Density } from './density.js'
 
 export function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch)
+}
+
+// #473: the `<html>` element is built here, but the saved density is request
+// state (the `fledge_density` cookie) and every page builder calls `layout()`
+// without a request. The rendered default is comfortable, and the response hook
+// rewrites this one attribute from the cookie, so a page cannot forget it and a
+// client-side class flip cannot paint the comfortable rows first.
+export function withDensity(html: string, density: Density): string {
+  if (density === 'comfortable') return html
+  return html.replace(/<html[^>]*>/, (tag) => tag.replace('data-density="comfortable"', `data-density="${density}"`))
 }
 
 export function money(cny: number): string {
@@ -60,6 +71,9 @@ export function quotaPill(user: UserRow, config: Config, locale: Locale = 'zh'):
 export function sectionForPath(path: string): string {
   const clean = path.split('?')[0] ?? '/'
   if (clean === '/console' || clean.startsWith('/console/')) return 'console'
+  // #362: search is the owner's view of their own console data, so the nav keeps
+  // Workspace lit there instead of showing no current section.
+  if (clean === '/search' || clean.startsWith('/search/')) return 'console'
   if (clean === '/dashboard' || clean.startsWith('/dashboard/') || clean === '/repos' || clean.startsWith('/repos/')) return 'dashboard'
   if (clean === '/settings' || clean.startsWith('/settings/')) return 'settings'
   if (clean === '/admin' || clean.startsWith('/admin/')) return 'admin'
@@ -148,7 +162,7 @@ export function layout(options: LayoutOptions): string {
     </nav>
   </footer>`
   return `<!doctype html>
-<html lang="${locale === 'en' ? 'en' : 'zh-CN'}" data-locale="${locale}">
+<html lang="${locale === 'en' ? 'en' : 'zh-CN'}" data-locale="${locale}" data-density="comfortable">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -176,6 +190,17 @@ export function layout(options: LayoutOptions): string {
     ${body}
   </main>
   ${footer}
+  <script src="/assets/section-nav.js" defer></script>
+  <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title">
+    <form method="dialog">
+      <h2 id="confirm-dialog-title">${escapeHtml(t('请确认', 'Please confirm'))}</h2>
+      <p data-confirm-message></p>
+      <div class="row">
+        <button class="btn btn-ghost" value="cancel">${escapeHtml(t('取消', 'Cancel'))}</button>
+        <button class="btn btn-danger" value="confirm">${escapeHtml(t('确认', 'Confirm'))}</button>
+      </div>
+    </form>
+  </dialog>
   <script src="/assets/app.js" defer></script>
   <script src="/assets/questions.js" defer></script>
 </body>

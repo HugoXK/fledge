@@ -62,7 +62,7 @@ export declare function plannerInput(state: ReleaseState): {
   lastTag: string
   packageVersion: string
   prs: Array<{ number: number; title: string; labels: string[]; mergedAt: string }>
-  fragments: string[]
+  fragments: number
   openReleasePr: boolean
   existingTags: string[]
   lastTagCommittedAt: string

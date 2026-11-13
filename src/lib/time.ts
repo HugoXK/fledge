@@ -23,9 +23,13 @@ export function humanTime(iso: string | null | undefined): string {
   return date.toISOString().replace('T', ' ').replace('.000Z', 'Z')
 }
 
+// Every console timestamp goes through here. The value is the UTC wall clock,
+// and the console names `Asia/Shanghai` for the digest on an adjacent screen,
+// so the zone has to travel with the number: an unlabelled `09:33` beside a
+// labelled `9:00 (Asia/Shanghai)` reads as two clocks that disagree.
 export function humanTimeShort(iso: string | null | undefined): string {
   if (iso === null || iso === undefined || iso === '') return '—'
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return '—'
-  return date.toISOString().slice(0, 19).replace('T', ' ')
+  return `${date.toISOString().slice(0, 19).replace('T', ' ')} UTC`
 }

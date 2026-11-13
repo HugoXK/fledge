@@ -124,10 +124,10 @@ function parseDigest(value: string | null): RunDigest | null {
 }
 
 export type NextJob =
-  | { kind: 'iterate' }
+  | { kind: 'discover' }
   | { kind: 'followup'; workItemId: string; prUrl?: string; branch?: string }
   | { kind: 'review'; workItemId: string; prUrl: string; branch?: string }
-  | { kind: 'none'; reason: string }
+  | { kind: 'none'; reason: 'not due' | 'idle' }
 
 export interface SchedulerState {
   repo: RepoRow
@@ -139,22 +139,35 @@ export interface SchedulerState {
   openWork: WorkItemRow[]
   reviewerEnabled: boolean
   reviewDue: boolean
+  /** Last discovery session for this repo, from the `discover:<repo>` setting. */
+  lastDiscoverAt?: string | null
+  /** The repo interval; discovery runs at this cadence, not every work tick. */
+  discoverIntervalMinutes?: number
 }
 
 export const DEFAULT_COOLDOWN_MS = 10 * 60_000
+// Discovery may create an issue, so it must not inherit a 15/30-minute work
+// cadence. A user with no backlog would otherwise get an issue every tick.
+export const MIN_DISCOVERY_INTERVAL_MINUTES = 60
 
 //: Pick the next scheduled job kind. This never blocks a due repo (the #219
 //: lesson): when work is open it changes *what* runs, not whether a run happens.
 export function decideNextJob(state: SchedulerState, options: { cooldownMs?: number } = {}): NextJob {
-  if (!isDue(state, options.cooldownMs ?? DEFAULT_COOLDOWN_MS)) {
-    return { kind: 'none', reason: 'not due' }
-  }
   const work = state.openWork
     .filter((item) => item.state !== 'merged' && item.state !== 'closed')
     .sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at))
-  if (work.length === 0) return { kind: 'iterate' }
+  // #478/#503: no open work is a valid state. The team may run one low-frequency
+  // discovery session, but it never invents a PR. The work cooldown only gates
+  // work items, not discovery.
+  if (work.length === 0) {
+    if (isDiscoverDue(state)) return { kind: 'discover' }
+    return { kind: 'none', reason: 'idle' }
+  }
+  if (!isDue(state, options.cooldownMs ?? DEFAULT_COOLDOWN_MS)) {
+    return { kind: 'none', reason: 'not due' }
+  }
   const item = work[0]
-  if (item === undefined) return { kind: 'iterate' }
+  if (item === undefined) return { kind: 'none', reason: 'idle' }
   if (item.pr_url) {
     const canReview = state.reviewerEnabled && state.repo.repo_role === 'maintainer'
     // A review that is not due never skips a due repo (#219). Continue the same
@@ -166,12 +179,23 @@ export function decideNextJob(state: SchedulerState, options: { cooldownMs?: num
   return { kind: 'followup', workItemId: item.id }
 }
 
+export function isDiscoverDue(state: SchedulerState, now: number = state.now): boolean {
+  if (state.lastDiscoverAt === null || state.lastDiscoverAt === undefined || state.lastDiscoverAt === '') return true
+  const last = Date.parse(state.lastDiscoverAt)
+  if (!Number.isFinite(last)) return true
+  const interval = Math.max(MIN_DISCOVERY_INTERVAL_MINUTES, state.discoverIntervalMinutes ?? state.intervalMinutes) * 60_000
+  return now - last >= interval
+}
+
 export function isDue(state: SchedulerState, cooldownMs: number = DEFAULT_COOLDOWN_MS): boolean {
   if (state.lastRunAt === null) return true
   const last = Date.parse(state.lastRunAt)
   if (!Number.isFinite(last)) return true
-  const duration = state.lastDurationMs === null || state.lastDurationMs < 0 ? 0 : state.lastDurationMs
-  const base = Math.max(state.intervalMinutes * 60_000, duration * 1.5 + cooldownMs)
+  // #478: this is the work-session cooldown, already capped by the caller at
+  // WORK_SESSION_COOLDOWN_MINUTES. The last job's duration no longer pushes the
+  // next work item out by another 1.5x; a finished job may be followed as soon
+  // as the cooldown has passed.
+  const base = Math.max(Math.max(1, state.intervalMinutes) * 60_000, cooldownMs)
   const backoff = state.failureStreak >= 2
     ? Math.min(2 ** (state.failureStreak - 1), 4)
     : 1

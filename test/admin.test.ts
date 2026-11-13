@@ -295,3 +295,54 @@ test('the admin job filter offers every kind and status under its console label,
     await built.close()
   }
 })
+
+test('a CSV export refuses instead of silently stopping at 5000 rows', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'export-cap-admin', admin: true })
+    const user = makeUser(store, { login: 'export-cap-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_export_cap', userId: user.id, owner: 'o', name: 'cap', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'fix', autoIterate: false, intervalMinutes: 1440 })
+    const { cookie } = sessionFor(built, admin)
+
+    // Exactly at the cap the file is still served whole: header plus 5000 rows.
+    store.db.exec('BEGIN')
+    for (let i = 0; i < 5000; i += 1) store.audit(user.id, 'bulk.export', `row ${String(i)}`)
+    store.db.exec('COMMIT')
+    const auditAtCap = await built.app.inject({ method: 'GET', url: '/admin/export/audit.csv?action=bulk', headers: { cookie } })
+    assert.equal(auditAtCap.statusCode, 200)
+    assert.equal(auditAtCap.body.trimEnd().split('\n').length, 5001, 'one header plus every row at the cap')
+
+    // One more matching row and the file would be short, so the route says so.
+    store.audit(user.id, 'bulk.export', 'row 5000')
+    const auditOverCap = await built.app.inject({ method: 'GET', url: '/admin/export/audit.csv?action=bulk', headers: { cookie } })
+    assert.equal(auditOverCap.statusCode, 400)
+    assert.match(auditOverCap.body, /5001/, 'the refusal names the real matched count')
+    assert.match(auditOverCap.body, /5000/, 'the refusal names the cap')
+    assert.doesNotMatch(String(auditOverCap.headers['content-type']), /text\/csv/, 'no truncated CSV is sent')
+    const refusedAudit = store.searchAudit(null, { action: 'admin.audit_export' }, 10, 0)
+    assert.match(refusedAudit[0]?.detail ?? '', /5001/, 'the refusal is audited with the real count')
+
+    // The job export has the same contract.
+    // One queued job per repo is the schema's rule, so each bulk job is settled
+    // before the next one is inserted.
+    const settleJob = store.db.prepare("UPDATE jobs SET status = 'succeeded' WHERE id = ?")
+    store.db.exec('BEGIN')
+    for (let i = 0; i < 5000; i += 1) {
+      store.createJob({ id: `job_bulk_${String(i)}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: `bulk job ${String(i)}`, callbackHash: 'cb', platformTokenHash: '', kind: 'iterate' })
+      settleJob.run(`job_bulk_${String(i)}`)
+    }
+    store.db.exec('COMMIT')
+    const jobsAtCap = await built.app.inject({ method: 'GET', url: '/admin/export/jobs.csv', headers: { cookie } })
+    assert.equal(jobsAtCap.statusCode, 200)
+    assert.equal(jobsAtCap.body.trimEnd().split('\n').length, 5001)
+    store.createJob({ id: 'job_bulk_5000', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'bulk job 5000', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate' })
+    settleJob.run('job_bulk_5000')
+    const jobsOverCap = await built.app.inject({ method: 'GET', url: '/admin/export/jobs.csv', headers: { cookie } })
+    assert.equal(jobsOverCap.statusCode, 400)
+    assert.match(jobsOverCap.body, /5001/)
+  } finally {
+    await built.close()
+  }
+})

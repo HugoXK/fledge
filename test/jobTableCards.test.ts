@@ -104,7 +104,9 @@ test('every job cell is emitted with its column label, in both languages', () =>
     // One label per column of the one populated row, and the empty-state row
     // stays a plain colspan cell rather than a card with four bare labels. The
     // dashboard now carries other carded tables, so count inside this one.
-    const jobTableMarkup = /<table class="job-table[^"]*">[\s\S]*?<\/table>/.exec(en)?.[0] ?? ''
+    // A priority table now also carries an id and an accessible name (#452),
+    // so the tag may hold attributes after the class.
+    const jobTableMarkup = /<table class="job-table[^"]*"[^>]*>[\s\S]*?<\/table>/.exec(en)?.[0] ?? ''
     assert.notEqual(jobTableMarkup, '', 'the dashboard must still render its job table')
     assert.equal(jobTableMarkup.match(/data-label="/g)?.length, 4)
   } finally {

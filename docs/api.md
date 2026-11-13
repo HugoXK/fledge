@@ -408,11 +408,17 @@ Every gateway route answers three stable failure shapes before it does any work:
 |---|---|---|
 | `401` | `invalid_api_key` | no `flg_` token, an unknown hash, a revoked token, an expired `expires_at`, or a token whose user is not approved |
 | `403` | `insufficient_scope` | a live token whose `scope` is not `gateway`; `last_used_at` is not written, so a refused token leaves no trace |
+| `403` | `invalid_job_token` | a token whose name claims `job:<id>` but whose `kind` is not `job`, or whose job belongs to another user; decided before the upstream call, so a forged name spends no quota |
 | `429` | `rate_limited` | the per-token or per-IP limiter refused the request |
 
 Neither refusal echoes the token. A personal token always carries an `expires_at`
 (#355); only an operator token created by an admin may be minted without one, and
 `PAT_EXPIRY_DAYS` (default 90) sets the default lifetime.
+
+A chat call records its model and its cost on a job only when the token's `kind`
+is `job` and the job belongs to the token's user (#481). The `job:` prefix in the
+name is a label, not the binding; a token that claims a job it does not own is
+refused with `invalid_job_token` before the provider is called.
 
 ### `GET /v1/models`
 
@@ -494,6 +500,21 @@ read the real ones from the running service.
 | POST | `/admin/users/:id/private-models` | superadmin + CSRF | Grant or revoke the private/HTTP model permission for a user |
 
 Issue comments from `OWNER`, `MEMBER` or `COLLABORATOR` accounts can run
-`/fledge status`, `/fledge plan`, `/fledge approve` or `/fledge fix`. Commands are
-deduped by comment id and reply on the issue. `/fledge approve` is maintainer-only.
+`/fledge status`, `/fledge plan`, `/fledge approve` or `/fledge fix`, plus the four
+job verbs `/fledge retry`, `/fledge pause`, `/fledge resume` and `/fledge cancel`.
+Commands are deduped by comment id and reply on the issue. `/fledge approve` is
+maintainer-only.
+
+The job verbs act on the job attached to the issue's work item and never create a
+work item: `retry` re-queues the latest finished job (resuming its pull request
+when it has one), `pause` and `cancel` act on the queued or running job, and
+`resume` creates the resumed job from the paused one. A verb with no matching job
+refuses in the thread instead of starting one. Each one calls the same service
+action as the console, so it writes the existing audit action (`job.retried`,
+`job.paused`, `job.resumed`, `job.cancelled`) and the same job-timeline event; the
+pause and cancel replies report what the stop path actually did — how many live
+sessions were stopped, how many were asked to stop at the next safe point, that no
+live session was reachable, or that the stop could not be delivered — so they never
+claim a send that did not happen. The job is looked up by its work item, so an item
+whose job is older than the repository's newest twenty is still found.
 

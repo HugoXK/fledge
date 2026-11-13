@@ -227,7 +227,7 @@ test('the workspace stays focused and the UI switches language', async () => {
 
     const en = await built.app.inject({ method: 'GET', url: '/console', headers: { cookie: `${cookie}; fledge_lang=en` } })
     assert.equal(en.statusCode, 200)
-    assert.match(en.body, /<html lang="en" data-locale="en">/)
+    assert.match(en.body, /<html lang="en" data-locale="en" data-density="comfortable">/)
     assert.match(en.body, /Workspace/)
     assert.match(en.body, /Recent jobs/)
     assert.match(en.body, /Sign out/)
@@ -1218,7 +1218,7 @@ test('every empty data region uses the shared state component and points at its 
     assert.doesNotMatch(consoleRecent, /<p class="muted">No jobs yet\.<\/p>/, 'the console no longer falls back to a bare grey sentence')
     assert.match(consoleRecent, /class="actions"/, 'the console empty state carries an action')
 
-    const settingsHtml = settingsPage({ config, locale: 'en', viewer, tokens: [], providers: [] })
+    const settingsHtml = settingsPage({ config, locale: 'en', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] })
     const providerCard = cardWithId(settingsHtml, 'model-providers')
     assert.match(providerCard, /data-state="empty"/, 'settings renders the shared empty state when there is no provider')
     assert.doesNotMatch(providerCard, /<p class="muted">No model providers yet\.<\/p>/, 'settings no longer falls back to a bare grey sentence')
@@ -1253,7 +1253,7 @@ test('non-empty data regions render exactly as before, with no state wrapper', (
     assert.doesNotMatch(consoleRecent, /data-state=/, 'a non-empty recent-jobs list gains no state wrapper')
 
     const provider = store.createModelProvider({ id: 'prov_filled', userId: user.id, label: 'Filled provider', baseUrl: 'https://api.example.com/v1', keyEnc: 'x', allowPrivate: false })
-    const settingsHtml = settingsPage({ config, locale: 'en', viewer, tokens: [], providers: [{ ...provider, models: [] }] })
+    const settingsHtml = settingsPage({ config, locale: 'en', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [{ ...provider, models: [] }] })
     const providerCard = cardWithId(settingsHtml, 'model-providers')
     assert.match(providerCard, /Filled provider/)
     assert.doesNotMatch(providerCard, /data-state=/, 'a configured settings page gains no state wrapper')
@@ -1735,6 +1735,28 @@ test('admin search links every later page and keeps the filters per section', ()
     const short = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map(), filters, jobsPage: 1, jobsTotal: 20, auditPage: 1, auditTotal: 20, perPage: 20 })
     assert.doesNotMatch(short, /jobsPage=2/, 'a section that fits one page renders no jobs pager')
     assert.doesNotMatch(short, /auditPage=2/, 'a section that fits one page renders no audit pager')
+  } finally {
+    store.close()
+  }
+})
+
+// #453 review: the settings page linked its zero-token empty state at `#tokens`
+// while the card carrying that anchor did not exist, so the visual matrix's
+// `getElementById('tokens')` returned null and its "section clears the sticky
+// header" assertion was skipped rather than failed. One test now covers the
+// class: every in-page link on the page that renders that empty state has to
+// point at an element that exists.
+test('every in-page anchor on the settings page has a matching target', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'anchor-user', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const html = settingsPage({ config, locale: 'en', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] })
+    const targets = [...html.matchAll(/href="#([A-Za-z][\w:-]*)"/g)].map((match) => match[1] ?? '')
+    assert.ok(targets.includes('tokens'), 'the empty token list still links to the token form')
+    const missing = [...new Set(targets)].filter((id) => !html.includes(`id="${id}"`))
+    assert.deepEqual(missing, [], `in-page links without a target: ${missing.join(', ')}`)
   } finally {
     store.close()
   }

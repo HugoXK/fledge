@@ -1,6 +1,6 @@
 {
   "name": "fledge",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "description": "Hosted repositories that grow themselves, powered by FlyBot.",
   "license": "Apache-2.0",
@@ -29,11 +29,13 @@
     "artifacts:prune": "node scripts/artifact-retention.mjs",
     "secret:scan": "node scripts/secret-scan.mjs",
     "slo:report": "node scripts/slo-report.mjs",
-    "trial:sweep": "tsx scripts/trial-sweep.ts"
+    "trial:sweep": "tsx scripts/trial-sweep.ts",
+    "visual:matrix": "tsx scripts/visual-matrix.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.5",
     "@fastify/formbody": "^9.0.1",
+    "@fastify/rate-limit": "10.3.0",
     "@fastify/static": "^10.1.10",
     "fastify": "^5.12.8",
     "nodemailer": "^10.4.0"
@@ -41,6 +43,7 @@
   "devDependencies": {
     "@types/node": "^26.6.6",
     "oxlint": "^1.92.0",
+    "playwright": "^1.65.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },

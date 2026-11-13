@@ -19,6 +19,7 @@ import { duplicateOutcome, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
+import { reviewMergeBlock } from '../lib/mergeReview.js'
 import { evaluateTestEvidence, type VerificationResult } from '../lib/verification.js'
 import { observedAttribution } from '../lib/teamStats.js'
 import { reviewInstructionLine } from '../lib/followUpInstruction.js'
@@ -28,7 +29,7 @@ import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
 import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
-import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs } from './continuity.js'
+import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES } from './continuity.js'
 import { repoGithubToken } from '../repos/token.js'
 import { parseTeam } from '../flybot/instances.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
@@ -42,6 +43,9 @@ export const DEFAULT_SCOPE_GOAL =
 
 export const DEFAULT_VERIFY_GOAL =
   'Verify the existing pull request and branch with the Test role: run the relevant tests, report the failing evidence and the passing evidence after the fix, plus CI/check status. Do not write code, push, open a PR or merge.'
+
+export const DEFAULT_DISCOVER_GOAL =
+  'Discovery only: inspect the repository, open issues/PRs, tests and recent CI. Do not write code, create a branch, push, open a PR or change settings. If you find one concrete, reproducible defect or high-value improvement not already covered, create exactly one focused issue on the upstream with evidence and a failing-test idea, then report issueUrl. If there is nothing concrete, report zero output and create nothing. Never create an inventory/backlog/盘点/清账/reconcile issue.'
 
 export const DEFAULT_REVIEW_GOAL =
   'Review every open pull request on the upstream repository. For each PR, inspect the diff, tests and risk, give a score from 0 to 100 with a short rationale, and post a COMMENT review. Do not request changes, approve, merge, push or change repository settings. Return followUps for every Fledge PR that needs a same-branch fix. Summarize the scores and the most important issues.'
@@ -210,19 +214,30 @@ export class Jobs {
     }
   }
 
-  async cancelJob(jobId: string, reason: string): Promise<{ ok: boolean; error?: string }> {
+  // The stop outcome travels back to the caller so a reply can say what happened
+  // instead of claiming a send: `instances` is undefined in queue-dispatch mode and
+  // the bridge call can fail, and both mean no stop was delivered. `sent` is absent
+  // when no attempt was made (a queued job or no controller), `false` when the
+  // attempt failed, and the counts are the stop's own answer.
+  private async stopLiveSessions(repoId: string, jobId: string): Promise<{ sent?: boolean; stopped?: number; requested?: number }> {
+    if (this.instances === undefined) return {}
+    try {
+      const state = await this.instances.teamState(repoId, 5_000)
+      const sessions = state.bots.filter((bot) => bot.activity === 'thinking' || bot.activity === 'working').map((bot) => bot.sessionId)
+      if (sessions.length === 0) return { sent: true, stopped: 0, requested: 0 }
+      const result = await this.instances.stopSessions(repoId, sessions)
+      return { sent: true, stopped: result.stopped.length, requested: result.requested.length }
+    } catch (error) {
+      log.warn('job stop failed', { trace: jobId, error: String(error) })
+      return { sent: false }
+    }
+  }
+
+  async cancelJob(jobId: string, reason: string): Promise<{ ok: boolean; error?: string; sent?: boolean; stopped?: number; requested?: number }> {
     const job = this.store.getJob(jobId)
     if (job === undefined) return { ok: false, error: '任务不存在。' }
     if (job.status !== 'queued' && job.status !== 'running') return { ok: false, error: '这个任务已经结束。' }
-    if (job.status === 'running' && this.instances !== undefined) {
-      try {
-        const state = await this.instances.teamState(job.repo_id, 5_000)
-        const sessions = state.bots.filter((bot) => bot.activity === 'thinking' || bot.activity === 'working').map((bot) => bot.sessionId)
-        if (sessions.length > 0) await this.instances.stopSessions(job.repo_id, sessions)
-      } catch (error) {
-        log.warn('cancel job stop failed', { trace: jobId, error: String(error) })
-      }
-    }
+    const stop = job.status === 'running' ? await this.stopLiveSessions(job.repo_id, jobId) : {}
     const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
     if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { trace: jobId, error: String(error) }))
@@ -236,22 +251,14 @@ export class Jobs {
     this.store.audit(job.user_id, 'job.cancelled', `${jobId}: ${reason.slice(0, 300)}`)
     this.store.event('job_cancelled', { userId: job.user_id, repoId: job.repo_id, jobId })
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.cancelled', meta: reason })
-    return { ok: true }
+    return { ok: true, ...stop }
   }
 
-  async pauseJob(jobId: string, reason = '任务已暂停'): Promise<{ ok: boolean; error?: string }> {
+  async pauseJob(jobId: string, reason = '任务已暂停'): Promise<{ ok: boolean; error?: string; sent?: boolean; stopped?: number; requested?: number }> {
     const job = this.store.getJob(jobId)
     if (job === undefined) return { ok: false, error: '任务不存在。' }
     if (job.status !== 'queued' && job.status !== 'running') return { ok: false, error: '这个任务已经结束。' }
-    if (job.status === 'running' && this.instances !== undefined) {
-      try {
-        const state = await this.instances.teamState(job.repo_id, 5_000)
-        const sessions = state.bots.filter((bot) => bot.activity === 'thinking' || bot.activity === 'working').map((bot) => bot.sessionId)
-        if (sessions.length > 0) await this.instances.stopSessions(job.repo_id, sessions)
-      } catch (error) {
-        log.warn('pause job stop failed', { trace: jobId, error: String(error) })
-      }
-    }
+    const stop = job.status === 'running' ? await this.stopLiveSessions(job.repo_id, jobId) : {}
     const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
     if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { trace: jobId, error: String(error) }))
@@ -260,7 +267,7 @@ export class Jobs {
     this.store.audit(job.user_id, 'job.paused', jobId)
     this.store.event('job_paused', { userId: job.user_id, repoId: job.repo_id, jobId })
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.paused', meta: reason })
-    return { ok: true }
+    return { ok: true, ...stop }
   }
 
   async resumeJob(jobId: string): Promise<{ ok: boolean; job?: JobRow; error?: string }> {
@@ -282,6 +289,36 @@ export class Jobs {
     this.store.audit(job.user_id, 'job.resumed', `${jobId} -> ${result.job.id}`)
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.resumed', meta: `resumed as ${result.job.id}` })
     this.store.recordJobEvent({ jobId: result.job.id, repoId: job.repo_id, userId: job.user_id, kind: 'job.resumed_from', meta: jobId })
+    return { ok: true, job: result.job }
+  }
+
+  // One retry path for the console route and the issue command: the checkpoint,
+  // the kind and the "resume the same pull request" rule were copied in the route
+  // until #360, which is exactly the second-place-to-disagree shape this codebase
+  // keeps paying for. The caller names the actor so the audit row is the same
+  // `job.retried` action either way.
+  async retryJob(jobId: string, actorUserId: string, options: { workItemId?: string } = {}): Promise<{ ok: boolean; job?: JobRow; error?: string; code?: string; detail?: string }> {
+    const job = this.store.getJob(jobId)
+    if (job === undefined) return { ok: false, error: '任务不存在。' }
+    if (job.status === 'queued' || job.status === 'running') return { ok: false, error: '这个任务还在运行；请先暂停或取消。' }
+    const repo = this.store.getRepo(job.repo_id)
+    if (repo === undefined) return { ok: false, error: '仓库不存在。' }
+    const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : 'iterate'
+    const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
+    const resumePr = kind === 'iterate' && job.pr_url !== null
+    const result = await this.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, {
+      // #353: both callers are a person — the console's retry button and an
+      // issue-thread `/fledge retry` — so the run is theirs. The trigger alone
+      // cannot say that: `followup` is also what `tick()` enqueues.
+      ownerStarted: true,
+      ...(resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {}),
+      ...(options.workItemId === undefined ? {} : { workItemId: options.workItemId }),
+    })
+    this.store.audit(actorUserId, 'job.retried', `${jobId} -> ${result.job?.id ?? result.error ?? 'failed'}`)
+    // The console banner builds its sentence from the enqueue code, so the
+    // refusal has to travel with it rather than being flattened to one string.
+    if (!result.ok || result.job === undefined) return { ok: false, error: result.error ?? '重试失败。', code: result.code, detail: result.detail }
+    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: actorUserId, kind: 'job.retry_started', step: kind, meta: result.job.id })
     return { ok: true, job: result.job }
   }
 
@@ -399,7 +436,10 @@ export class Jobs {
       if (!this.userReadyForScheduling(repo.user_id)) continue
       if (!this.instanceReady(repo.id)) continue
       if (this.store.activeJobForRepo(repo.id) !== undefined) continue
-      if (this.due(repo)) due.add(`${repo.owner}/${repo.name}`)
+      // #478/#503: work items drive work sessions; an empty backlog may still
+      // produce one low-frequency discovery session. Review due is its own lane.
+      const work = this.store.listOpenWorkItems(repo.id)
+      if (work.length > 0 ? this.workDue(repo) : this.discoverDue(repo)) due.add(`${repo.owner}/${repo.name}`)
     }
     return [...due].sort()
   }
@@ -561,6 +601,7 @@ export class Jobs {
     if (active !== undefined) return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
     const user = this.store.userById(repo.user_id)
     if (user === undefined || user.status !== 'approved') return { ok: false, error: '用户不可用', code: 'USER_UNAVAILABLE' }
+    if (kind === 'discover') this.store.setSetting(`discover:${repo.id}`, nowIso())
     if (this.config.runner.queueDispatch) {
       if (this.store.countQueuedJobs() >= this.config.runner.maxQueueDepth) {
         incCounter('fledge_admission_rejected_total', { reason: 'queue_full' }, 1, 'Queue admission rejections')
@@ -598,7 +639,7 @@ export class Jobs {
       preflightSha = preflight.baseSha ?? null
       preflightWarning = preflight.warning ?? ''
     }
-    const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : kind === 'scope' ? DEFAULT_SCOPE_GOAL : kind === 'verify' ? DEFAULT_VERIFY_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
+    const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : kind === 'discover' ? DEFAULT_DISCOVER_GOAL : kind === 'scope' ? DEFAULT_SCOPE_GOAL : kind === 'verify' ? DEFAULT_VERIFY_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
     const rawGoal = goalOverride ?? baseGoal
     const carryOver = trigger === 'schedule' || trigger === 'followup'
       ? buildCarryOver({ recent: this.store.listJobsForRepo(repo.id, 3), openWork: this.store.listOpenWorkItems(repo.id) })
@@ -1246,6 +1287,35 @@ export class Jobs {
     if (repo === undefined) return { ok: false, message: '仓库不存在。' }
     if (repo.repo_role !== 'maintainer') return { ok: false, message: '只有 maintainer 可以合并。' }
     if (!manual && repo.auto_merge !== 1) return { ok: false, message: '自动合并未开启。' }
+    // #507: the reviewer's signal has to reach the merge path. A low score or a
+    // changes_requested work item blocks the automatic merge; a maintainer can
+    // override it explicitly, and that override is audited.
+    const linkedItem = job.work_item_id === null ? this.store.findWorkItemByPrUrl(repo.id, prUrl) : this.store.getWorkItem(job.work_item_id)
+    const review = linkedItem === undefined
+      ? undefined
+      : this.store.listJobsForRepo(repo.id, 50).find((entry) =>
+          entry.kind === 'review' && entry.status === 'succeeded' && entry.work_item_id === linkedItem.id && entry.review_score !== null,
+        )
+    const reviewBlock = reviewMergeBlock({
+      state: linkedItem?.state,
+      score: review?.review_score ?? null,
+      minScore: this.config.autoMerge.minReviewScore,
+    })
+    if (reviewBlock !== null) {
+      const detail = reviewBlock.kind === 'changes_requested'
+        ? 'work item changes_requested'
+        : `review ${reviewBlock.score} < ${reviewBlock.minScore}`
+      if (!manual) {
+        this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: review gate ${detail}`)
+        return {
+          ok: false,
+          message: reviewBlock.kind === 'changes_requested'
+            ? '审核要求修改，自动合并已阻止。'
+            : `最新审核分 ${reviewBlock.score} 低于 ${reviewBlock.minScore}，自动合并已阻止。`,
+        }
+      }
+      this.store.audit(job.user_id, 'job.merge_review_override', `${job.id}: ${detail}`)
+    }
     if (!manual) {
       // Defence in depth for the automatic path: the job must be the newest
       // iterate job for this PR and it must have succeeded. A caller that
@@ -1891,7 +1961,7 @@ export class Jobs {
       teamLinks.push({ repo: label, url: `${this.config.baseUrl}/repos/${repo.id}#inbox` })
       if (repo.auto_iterate === 1) {
         const last = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
-        const next = Number.isFinite(last) ? new Date(last + repo.interval_minutes * 60_000) : new Date()
+        const next = Number.isFinite(last) ? new Date(last + Math.min(repo.interval_minutes, this.config.runner.workCooldownMinutes) * 60_000) : new Date()
         nextRuns.push({ repo: label, when: next.getTime() <= Date.now() ? '等待调度' : this.digestTime(next) })
       }
       if (this.instances === undefined || this.config.flybot.instanceImage === '') continue
@@ -2074,6 +2144,19 @@ export class Jobs {
     if (status !== 'running' && this.pastHardTimeout(job)) return { ok: false, status: 409, error: 'job timed out' }
     // A queued job has no dispatched worker yet, so a heartbeat may not promote it.
     if (status === 'running' && job.status !== 'running') return { ok: false, status: 409, error: 'job not dispatched' }
+    const revoke = (): void => {
+      const row = this.store.findApiToken(job.platform_token_hash ?? '')
+      if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
+    }
+    // #513: discovery is issue-only. The prompt says so, but the callback is the
+    // boundary that actually protects the repository from a timer-produced PR.
+    if (job.kind === 'discover' && (branch !== undefined || (prUrl !== undefined && prUrl !== null))) {
+      const message = 'DISCOVERY_PR_FORBIDDEN: discovery may create one issue, not a branch or PR.'
+      this.store.audit(job.user_id, 'job.discovery_pr_forbidden', `${jobId}: branch=${branch ?? '-'} pr=${prUrl ?? '-'}`)
+      if (status === 'running') return { ok: false, status: 400, error: message }
+      this.finish(jobId, { status: 'failed', error: message, issueUrl }, revoke, attribution, evidence, fingerprint)
+      return { ok: false, status: 422, error: message }
+    }
     // Only a callback that will be acted on may refresh the stall window.
     this.store.touchJobCallback(jobId)
     if (status === 'running') {
@@ -2101,10 +2184,6 @@ export class Jobs {
       // a second model call, so it is where a pause/cancel budget acts.
       await this.enforceJobBudget(job, repoRow)
       return { ok: true }
-    }
-    const revoke = (): void => {
-      const row = this.store.findApiToken(job.platform_token_hash ?? '')
-      if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     }
     if (status === 'succeeded') {
       const stageMode = parseStageMode(repoRow?.stage_mode) ?? 'off'
@@ -2590,23 +2669,36 @@ export class Jobs {
         repo,
         now: Date.now(),
         lastRunAt: repo.last_run_at,
-        intervalMinutes: repo.interval_minutes,
+        // #478: a work item may start after the short cooldown, not after the
+        // repository's legacy interval. The interval is only an upper bound.
+        intervalMinutes: Math.min(repo.interval_minutes, this.config.runner.workCooldownMinutes),
         lastDurationMs: lastDurationMs(recent),
         failureStreak: failureStreak(recent),
         openWork: this.store.listOpenWorkItems(repo.id),
         reviewerEnabled: repo.reviewer_enabled === 1,
         reviewDue: this.dueReview(repo),
+        lastDiscoverAt: this.store.getSetting(`discover:${repo.id}`),
+        discoverIntervalMinutes: Math.max(MIN_DISCOVERY_INTERVAL_MINUTES, repo.interval_minutes),
       })
-      if (next.kind === 'none') continue
+      if (next.kind === 'none') {
+        // #478: an empty backlog is not a reason to create a job. Keep the
+        // repository idle and do not advance last_run_at, so a newly created
+        // work item is picked up after the short cooldown.
+        if (next.reason === 'idle' && repo.last_status !== 'idle') {
+          this.store.updateRepo(repo.id, { last_status: 'idle' })
+          log.info('scheduled idle', { repo: `${repo.owner}/${repo.name}` })
+        }
+        continue
+      }
       const result = next.kind === 'review'
         ? await this.enqueue(repo, 'schedule', undefined, 'review', { workItemId: next.workItemId, prUrl: next.prUrl })
-        : next.kind === 'followup'
-          ? await this.enqueue(repo, 'followup', undefined, 'iterate', {
+        : next.kind === 'discover'
+          ? await this.enqueue(repo, 'schedule', undefined, 'discover')
+          : await this.enqueue(repo, 'followup', undefined, 'iterate', {
               workItemId: next.workItemId,
               ...(next.prUrl === undefined ? {} : { prUrl: next.prUrl }),
               ...(next.branch === undefined ? {} : { branch: next.branch }),
             })
-          : await this.enqueue(repo, 'schedule', undefined, 'iterate')
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
       log.info('scheduled job', {
         repo: `${repo.owner}/${repo.name}`,
@@ -2627,11 +2719,20 @@ export class Jobs {
     return this.store.getRepoInstance(repoId)?.status === 'ready'
   }
 
-  private due(repo: RepoRow): boolean {
+  private workDue(repo: RepoRow): boolean {
     if (repo.last_run_at === null) return true
     const last = Date.parse(repo.last_run_at)
     if (!Number.isFinite(last)) return true
-    return Date.now() - last >= Math.max(15, repo.interval_minutes) * 60_000
+    const cooldown = Math.min(repo.interval_minutes, this.config.runner.workCooldownMinutes)
+    return Date.now() - last >= Math.max(15, cooldown) * 60_000
+  }
+
+  private discoverDue(repo: RepoRow): boolean {
+    const at = this.store.getSetting(`discover:${repo.id}`)
+    if (at === undefined || at === null || at === '') return true
+    const last = Date.parse(at)
+    if (!Number.isFinite(last)) return true
+    return Date.now() - last >= Math.max(MIN_DISCOVERY_INTERVAL_MINUTES, repo.interval_minutes) * 60_000
   }
 
   private dueReview(repo: RepoRow): boolean {

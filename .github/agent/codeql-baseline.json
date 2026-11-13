@@ -1,53 +1,53 @@
 {
   "recordedAtSha": "b85777cc68a5b4ca4bced910baf2414c5a9b2ea9",
-  "note": "Every high/critical CodeQL result the analysis at the recorded sha emits, by rule id, path and line. Nothing is dismissed by this file: the four open alerts (issues #62-#65) stay open, and the three below them are results GitHub already carries as dismissed false positive, recorded so the line-keyed gate does not re-fail a decision that was reviewed in the alert UI. Changing this file is a reviewed commit; an entry added here says in the PR why the result is accepted. The five src/app.ts positions follow the tree that ships this file: a reviewed PR that inserts above those route registrations refreshes the lines it moves (#279, #231 and #280 all do), because the gate compares against the pull request's own tree. #359 raised the webhook registration to 2979 on main, #353 and #341 moved it again to 2983, and #355's token route sits above it once more, so the merged tree reads 2996; #355's first import line also sits above the four top-of-file route registrations, which read 470/505/515/525 on that tree rather than main's 469/504/514/524. This branch's review-trend read model sits six lines above the webhook registration, so the merged tree reads 3002 there; the four top-of-file registrations read 470/505/515/525 on the same tree, main's values, because nothing this branch adds sits above them. The two src/gateway/gateway.ts positions (alerts #41 and #42, both dismissed false positive) move the same way when a PR inserts above the two gateway route registrations; #358 moved both by 19 lines with two imports and a helper, and neither route registration nor the limiter call at the top of each handler changed. The alerts and their reasons are unchanged.",
+  "note": "Every high/critical CodeQL result the analysis at the recorded sha emits, by rule id, path and line. Nothing is dismissed by this file: the four open alerts (issues #62-#65) stay open, and the three below them are results GitHub already carries as dismissed false positive, recorded so the line-keyed gate does not re-fail a decision that was reviewed in the alert UI. Changing this file is a reviewed commit; an entry added here says in the PR why the result is accepted. The five src/app.ts positions follow the tree that ships this file: a reviewed PR that inserts above those route registrations refreshes the lines it moves (#279, #231, #280, #355, #418 and #356 all do), because the gate compares against the pull request's own tree. #359 raised the webhook registration to 2979 on main, #353 and #341 moved it to 2983, and #355 (#404, merged) then inserted its import line and its token-route checks, so that tree read 2996 while the four top-of-file registrations read 471/506/516/526. #418 (#361, merged after it) put its review-trend read model six lines above the webhook registration, so main now reads 3002 there; #441, #442, #444 and #447 changed console surfaces, type scale, viewport rules and table layout without touching a route, so this branch merges them without moving a number. #362 added its search import and route above the webhook registration and #416 added its export-cap refusal above it, so main read 3062 before this branch added its 44 lines; the four top-of-file registrations read 471/506/516/526 on the merged tree, moved by #362's import line, and the two gateway registrations stay at 155/180. The two src/gateway/gateway.ts positions (alerts #41 and #42, both dismissed false positive) move the same way when a PR inserts above the two gateway route registrations; #358 moved both by 19 lines, #355's gateway rewrite added 10 more, and neither route registration nor the limiter call at the top of each handler changed, so they read 154/179 here. #356 moves the webhook registration once more: its three settings session routes, their rate-limit calls and their guards insert 44 lines above it, so the merged tree measures 3106, while the four top-of-file registrations and the two gateway registrations do not move because the insert sits below them. Every number here was read off the merged tree; nothing was added or dismissed, and the alerts and their reasons are unchanged. #457 then adds its limit guard, its two refusal helpers and its two add-path call sites: the four top-of-file registrations read 516/551/561/571 on the merged tree and the webhook registration 3189, while the two gateway registrations stay 155/180. Nothing is added or dismissed by this re-key. #488 (test/pages.test.ts only) and #489 (public/app.css and two layout tests) then merged without touching src/app.ts; the refresh onto main@fd76f696 re-read all seven route lines on the merged tree and moved none of them; the rework after review 901ad95 adds eight lines to the bulk add path below the four top-of-file registrations, so the webhook registration reads 3197 there and nothing else moves. #460 rebases onto a main that already carries #499 and #457: its re-authentication helper, the route-level limit it hands to `@fastify/rate-limit` and the plugin registration add 56 lines above the four top-of-file registrations, which read 572/607/617/627 on this tree, while the eight destructive registrations, the rotated-session comment and the plugin's bookkeeping leave the webhook registration at 3267. The two gateway registrations do not move and stay 155/180, because the #497 change to that file lands below both. Nothing is added or dismissed here: the same seven results are re-keyed to the tree this pull request ships. #473 then inserts the `/density/:mode` route, its response-hook branch and its import above the four top-of-file registrations, so this tree reads 597/632/642/652 and the webhook registration 3292; the gateway pair stays 155/180 because the insert sits below it. Nothing is added or dismissed by this re-key. This branch then adds an 18-line reply helper above the four top-of-file registrations and its 48-line issue-verb block above the webhook registration, and the refresh onto main@5d848df re-read all seven lines on the merged tree rather than summing them: the four top-of-file registrations read 615/650/660/670 (this branch's own tree before #473 read 590/625/635/645 there) and the webhook registration 3358 (3333 before #473), while the two gateway registrations stay 155/180 because #473's density route lands above the four but below both. No alert is added, removed or dismissed, and the reason, severity and recordedAtSha fields are untouched.",
   "alerts": [
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 470,
+      "line": 615,
       "severity": "high",
       "reason": "alert #62, open"
     },
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 505,
+      "line": 650,
       "severity": "high",
       "reason": "alert #63, open"
     },
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 515,
+      "line": 660,
       "severity": "high",
       "reason": "alert #36, dismissed false positive"
     },
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 525,
+      "line": 670,
       "severity": "high",
       "reason": "alert #64, open"
     },
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/app.ts",
-      "line": 3002,
+      "line": 3358,
       "severity": "high",
       "reason": "alert #65, open"
     },
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/gateway/gateway.ts",
-      "line": 154,
+      "line": 155,
       "severity": "high",
       "reason": "alert #41, dismissed false positive"
     },
     {
       "ruleId": "js/missing-rate-limiting",
       "path": "src/gateway/gateway.ts",
-      "line": 179,
+      "line": 180,
       "severity": "high",
       "reason": "alert #42, dismissed false positive"
     }
