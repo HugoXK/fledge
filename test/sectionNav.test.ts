@@ -40,11 +40,18 @@ const scrollBandTop = page.SectionNav?.scrollBandTop as (viewportHeight: number,
 assert.equal(typeof currentSection, 'function', 'public/section-nav.js must publish currentSection on window.SectionNav')
 assert.equal(typeof scrollBandTop, 'function', 'public/section-nav.js must publish scrollBandTop on window.SectionNav')
 
-// The anchor offset as the browser computes it: the sticky header plus the nav
-// (65/69 header + 61px nav at 390/844-wide and desktop). scroll-margin-top is
-// the single source of that number, so the tests read it back instead of
-// writing a second copy of it.
-const scrollMargin = { mobile: 65 + 61, desktop: 69 + 61 }
+// The anchor offset as the browser computes it: the sticky header plus the nav.
+// scroll-margin-top is `calc(var(--header-h) + var(--nav-h))`, so both numbers
+// are read back from the stylesheet instead of being written a second time
+// here -- a literal 65/69 kept passing after the header moved to one token and
+// the tests would have gone on asserting a bar the page no longer drew.
+const pixelToken = (name: string): number => {
+  const values = [...css.matchAll(new RegExp(`${name}:\\s*(\\d+)px`, 'g'))].map((match) => Number(match[1]))
+  assert.ok(values.length > 0, `public/app.css must declare ${name} in px`)
+  assert.equal(new Set(values).size, 1, `${name} must not disagree between breakpoints: ${values.join(', ')}px`)
+  return values[0] ?? 0
+}
+const scrollMargin = pixelToken('--header-h') + pixelToken('--nav-h')
 
 function render(picker: 'settings' | 'admin'): string {
   const store = new Store(':memory:')
@@ -85,9 +92,27 @@ function idCounts(html: string): Map<string, number> {
   return counts
 }
 
+// The other direction: a card can exist in the page with no chip naming it,
+// which no chip->card assertion can see. main's #423 added `#sessions` that way
+// and the marker went on saying "API tokens" while the reader was in Sessions.
+function cardIds(html: string): string[] {
+  return [...html.matchAll(/<section class="card" id="([^"]+)"/g)].map((match) => match[1] ?? '')
+}
+
+test('every card with an id is named by exactly one chip, in document order', () => {
+  for (const picker of ['settings' as const, 'admin' as const]) {
+    const html = render(picker)
+    const cards = cardIds(html)
+    const chips = navTargets(html)
+    assert.ok(cards.length > 0, `the ${picker} page has no section.card with an id`)
+    assert.deepEqual(chips, cards, `every ${picker} card must have one chip, in the order the page draws them`)
+    assert.equal(new Set(chips).size, chips.length, `the ${picker} nav must not repeat a chip`)
+  }
+})
+
 test('every nav chip resolves to exactly one section in the same rendered page', () => {
   const pages = [
-    { picker: 'settings' as const, ids: ['account', 'model-providers', 'notifications', 'tokens'] },
+    { picker: 'settings' as const, ids: ['account', 'model-providers', 'notifications', 'tokens', 'sessions'] },
     { picker: 'admin' as const, ids: ['release', 'release-chain', 'backups', 'pending', 'users', 'jobs', 'audit'] },
   ]
   for (const page of pages) {
@@ -106,14 +131,11 @@ test('the section nav sticks under the header and offsets its targets by its own
   assert.match(rule[1] ?? '', /position:\s*sticky/)
   assert.match(rule[1] ?? '', /top:\s*var\(--header-h\)/)
   // 8px + 8px padding, the 44px touch target and the 1px bottom rule make the
-  // bar 61px tall; a hardcoded 56px left an anchored section 4px under the bar
-  // in Chromium, so the offset reads the same token the bar is built from.
-  assert.match(css, /--nav-h:\s*61px/)
+  // bar; a hardcoded 56px left an anchored section 4px under the bar in
+  // Chromium, so the offset and the bar read the same token, and the arithmetic
+  // below reads it from the stylesheet rather than repeating the number.
   assert.match(css, /\.section-nav ~ \.card\[id\]\s*\{[^}]*scroll-margin-top:\s*calc\(var\(--header-h\)\s*\+\s*var\(--nav-h\)\)/)
-  // The bar is 8+8 padding, the 44px target and the 1px bottom rule; the offset
-  // and the bar read the same token, so the two numbers cannot drift apart again.
-  const token = (name: string): number => Number(new RegExp(`${name}:\\s*(\\d+)px`).exec(css)?.[1])
-  assert.equal(token('--nav-h'), token('--space-2') * 2 + token('--touch') + 1)
+  assert.equal(pixelToken('--nav-h'), pixelToken('--space-2') * 2 + pixelToken('--touch') + 1, 'the bar token must equal its parts')
 })
 
 test('at the document end the last section is current, at every height it was measured', () => {
@@ -124,7 +146,7 @@ test('at the document end the last section is current, at every height it was me
   const maxScroll = 1800
   for (const [rawHeight, top] of Object.entries(auditTop)) {
     const height = Number(rawHeight)
-    const band = scrollBandTop(height, scrollMargin.mobile)
+    const band = scrollBandTop(height, scrollMargin)
     const id = currentSection({
       tops: [{ id: 'jobs', top: -60 }, { id: 'audit', top }],
       bandTop: band,
@@ -138,10 +160,10 @@ test('at the document end the last section is current, at every height it was me
 
 test('at 844x390 the document end still marks the last section', () => {
   // The review's landscape case: 390px tall, 20% of the viewport is 78px while
-  // the last card parks under a 126px bar, so only the document-end branch can
-  // name it.
-  const band = scrollBandTop(390, scrollMargin.mobile)
-  assert.equal(band, 127, 'the bar (126px offset) sits below 20% of a 390px viewport')
+  // the last card parks under the sticky bar -- header + nav, read from the
+  // stylesheet -- so only the document-end branch can name it.
+  const band = scrollBandTop(390, scrollMargin)
+  assert.equal(band, scrollMargin + 1, 'the bar sits below 20% of a 390px viewport')
   assert.equal(
     currentSection({
       tops: [{ id: 'jobs', top: -300 }, { id: 'audit', top: 60 }],
@@ -155,24 +177,25 @@ test('at 844x390 the document end still marks the last section', () => {
 })
 
 test('a chip tapped at 844x390 keeps the marker on its section', () => {
-  // The verdict's live measurement: after a tap the target parks at 126px
-  // (header 65 + nav 61), while a raw 20% band starts at 78px, so the scroll
-  // handler put the previous chip back. The band is the bar's bottom edge.
-  const band = scrollBandTop(390, scrollMargin.mobile)
-  assert.equal(band, 127, 'at 390 tall the bar, not 20% of the viewport, sets the band')
+  // The verdict's live case: after a tap the target parks at the anchor offset
+  // (header + nav, read from the stylesheet) while a raw 20% band starts at
+  // 78px, so the scroll handler put the previous chip back. The band is the
+  // bar's bottom edge.
+  const band = scrollBandTop(390, scrollMargin)
+  assert.equal(band, scrollMargin + 1, 'at 390 tall the bar, not 20% of the viewport, sets the band')
   const state = { scrollY: 900, scrollHeight: 2600, viewportHeight: 390 }
   assert.equal(
-    currentSection({ ...state, bandTop: band, tops: [{ id: 'users', top: -948 }, { id: 'jobs', top: 126 }] }),
+    currentSection({ ...state, bandTop: band, tops: [{ id: 'users', top: -948 }, { id: 'jobs', top: scrollMargin }] }),
     'jobs',
     "the tapped section parked on the bar's bottom edge is the current one",
   )
   assert.equal(
-    currentSection({ ...state, bandTop: 390 * 0.2, tops: [{ id: 'users', top: -948 }, { id: 'jobs', top: 126 }] }),
+    currentSection({ ...state, bandTop: 390 * 0.2, tops: [{ id: 'users', top: -948 }, { id: 'jobs', top: scrollMargin }] }),
     'users',
     'the old 20% band is what put the previous chip back, so it must fail here',
   )
   assert.equal(
-    currentSection({ ...state, bandTop: band, tops: [{ id: 'users', top: -948 }, { id: 'jobs', top: 130 }] }),
+    currentSection({ ...state, bandTop: band, tops: [{ id: 'users', top: -948 }, { id: 'jobs', top: scrollMargin + 3 }] }),
     'users',
     'a section still below the bar has not become current',
   )
@@ -196,7 +219,7 @@ test('390 tall with a 121px anchor offset still marks the tapped section', () =>
 })
 
 test('a section taller than the band stays current until the next one takes its place', () => {
-  const state = { bandTop: scrollBandTop(800, scrollMargin.desktop), scrollY: 640, scrollHeight: 3000, viewportHeight: 800 }
+  const state = { bandTop: scrollBandTop(800, scrollMargin), scrollY: 640, scrollHeight: 3000, viewportHeight: 800 }
   assert.equal(
     currentSection({ ...state, tops: [{ id: 'account', top: -420 }, { id: 'tokens', top: 1500 }] }),
     'account',

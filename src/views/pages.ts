@@ -1592,6 +1592,7 @@ export function settingsPage(input: {
     <a href="#model-providers" data-allow-overflow>${escapeHtml(t('模型', 'Models'))}</a>
     <a href="#notifications" data-allow-overflow>${escapeHtml(t('通知', 'Notifications'))}</a>
     <a href="#tokens" data-allow-overflow>${escapeHtml(t('API token', 'API tokens'))}</a>
+    <a href="#sessions" data-allow-overflow>${escapeHtml(t('登录设备', 'Sessions'))}</a>
   </nav>
   <section class="card" id="account">
     <div class="eyebrow">${escapeHtml(t('账户', 'ACCOUNT'))}</div>
