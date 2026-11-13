@@ -258,6 +258,8 @@ Phase 2 (1–2 weeks):
 
 - Extend the existing `work_items` table; carry `work_item_id` and `attempts`
   across jobs; add `abandoned`; implement the full `decide()` policy with tests.
+- Add the idle `discover` session: at the repository interval it may create one
+  concrete issue and no PR; an empty result is zero output.
 
 Phase 3:
 
