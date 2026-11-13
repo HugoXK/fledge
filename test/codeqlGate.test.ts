@@ -142,20 +142,22 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // lines on the merged tree and moved none of them. The rework after review
   // `901ad95` adds eight lines to the bulk add path below the four top-of-file
   // registrations, so the webhook anchor reads `:3197` and the rest stay.
-  // #473 inserts one `/density/:mode` route above the four top-of-file
-  // registrations, so those read `:541`/`:576`/`:586`/`:596` and the webhook
-  // registration reads `:3222`; the gateway pair stays `:155`/`:180`. The shift
-  // is uniform (+25 lines, an import, the response-hook branch and the route),
-  // and each moved line was read on this tree and carries the same
-  // registration it did on main: no result was added and none was dismissed.
+  // The merge that puts #473 onto main@6271f9ec re-reads all five lines on the
+  // merged tree: main carries #460's 56 lines above the four top-of-file
+  // registrations, and #473 adds 25 more (the `densityMode` import, the
+  // response-hook branch and the `/density/:mode` route) above them, so those
+  // read `:597`/`:632`/`:642`/`:652` and the webhook registration `:3292`. The
+  // gateway pair does not move and stays `:155`/`:180`, because the insert lands
+  // below both. No result is added or dismissed.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3222',
-    'js/missing-rate-limiting|src/app.ts|541',
-    'js/missing-rate-limiting|src/app.ts|576',
-    'js/missing-rate-limiting|src/app.ts|586',
-    'js/missing-rate-limiting|src/app.ts|596',
+    'js/missing-rate-limiting|src/app.ts|3292',
+    'js/missing-rate-limiting|src/app.ts|597',
+    'js/missing-rate-limiting|src/app.ts|632',
+    'js/missing-rate-limiting|src/app.ts|642',
+    'js/missing-rate-limiting|src/app.ts|652',
     'js/missing-rate-limiting|src/gateway/gateway.ts|155',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|180',  ])
+    'js/missing-rate-limiting|src/gateway/gateway.ts|180',
+  ])
   const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
   assert.equal(dismissed.length, 3, 'the three dismissed false-positive results are recorded with their reason')
   assert.deepEqual(addedAlerts(keys, baseline.alerts).map((alert) => alertKey(alert)), [], 'the baseline must not fail its own alerts')

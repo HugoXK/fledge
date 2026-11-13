@@ -212,8 +212,10 @@ a second clock that disagrees.
   lease and queue columns are schema version 33.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
-  a maintainer reviewer is due); with no open work it **stays idle** and creates
-  no issue or PR. The latest three run digests and open work items are carried
+  a maintainer reviewer is due); with no open work it **stays idle** unless the
+  discovery interval is due, in which case it may run one `discover` job that
+  creates at most one concrete issue and never a PR. The latest three run digests
+  and open work items are carried
   into the goal as bounded data. Work sessions use a short global cooldown
   (`WORK_SESSION_COOLDOWN_MINUTES`, default 15 minutes); the per-repository
   interval is only an upper bound on the idle check, not a reason to produce.
@@ -710,7 +712,10 @@ A due repository with open work is never skipped because the item exists.
 `decideNextJob()` carries the highest-priority open item into a `followup` job,
 or a `review` when the item has a PR and a maintainer reviewer is due. With no
 open work it returns `none` with reason `idle`: the scheduler writes
-`last_status='idle'` and creates no job, issue or PR. The job goal gets a bounded
+`last_status='idle'` and creates no job, issue or PR. When the repository's
+discovery interval is due, it may instead run one `discover` job; that job may
+create at most one concrete issue (never a PR/branch), and if it finds nothing
+concrete it creates nothing. The job goal gets a bounded
 `Carry-over` block with the last three run digests and up to four open items; the
 block is data, not an instruction, and is capped well below the 4000-character
 goal limit. Each finished run is classified as `pr`, `issue`, `review`, `zero`,
@@ -1184,7 +1189,7 @@ callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
 
 | Boundary | Control |
 |---|---|
-| Browser → Fledge | session cookie, CSRF token on every form, rate limits |
+| Browser → Fledge | session cookie, CSRF token on every form, rate limits; destructive writes also need a GitHub re-authentication inside `RECENT_AUTH_MINUTES` (`sessions.recent_auth_at`, audited as `recent_auth_required`) |
 | Fledge → GitHub | user's fine-grained token; platform OAuth only for identity |
 | Fledge → SMTP | credentials in env, never logged |
 | FlyBot bridge → Fledge | job callback secret; credential URL; job token |
