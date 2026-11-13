@@ -96,8 +96,28 @@ function idCounts(html: string): Map<string, number> {
 // which no chip->card assertion can see. main's #423 added `#sessions` that way
 // and the marker went on saying "API tokens" while the reader was in Sessions.
 function cardIds(html: string): string[] {
-  return [...html.matchAll(/<section class="card" id="([^"]+)"/g)].map((match) => match[1] ?? '')
+  const ids: string[] = []
+  for (const tag of html.matchAll(/<([a-zA-Z][\w:-]*)([^<>]*)>/g)) {
+    const attrs = tag[2] ?? ''
+    const classes = (/\sclass="([^"]*)"/.exec(attrs)?.[1] ?? '').split(/\s+/)
+    if (!classes.includes('card')) continue
+    const id = /\sid="([^"]*)"/.exec(attrs)?.[1]
+    if (id !== undefined) ids.push(id)
+  }
+  return ids
 }
+
+test('a card is any element whose class list contains card, in document order', () => {
+  assert.deepEqual(cardIds('<section class="card wide" id="wide"></section>'), ['wide'])
+  assert.deepEqual(cardIds('<details class="card narrow mt-24" id="t"></details>'), ['t'])
+  assert.deepEqual(cardIds('<div class="card" id="d"></div>'), ['d'])
+  assert.deepEqual(cardIds('<div id="first" class="card"></div>'), ['first'])
+  assert.deepEqual(
+    cardIds('<div class="wide card" data-x="1" id="second"></div><section id="third" class="card narrow"></section>'),
+    ['second', 'third'],
+  )
+  assert.deepEqual(cardIds('<div class="cardinal" id="no"></div><div class="card"><span id="nested"></span></div>'), [])
+})
 
 test('every card with an id is named by exactly one chip, in document order', () => {
   for (const picker of ['settings' as const, 'admin' as const]) {
