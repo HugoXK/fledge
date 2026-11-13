@@ -492,8 +492,9 @@ git tag v0.1.1
 The nightly release is planned by `scripts/release-plan.mjs`, a pure function
 with no I/O, no clock and no environment. It takes the latest tag, the package
 version, the tagged commit time, the workflow's run time, the merged pull
-requests since that tag (number, title, labels, `mergedAt`), the `changelog.d/`
-fragments, whether a release pull request is open and the existing tags; it
+requests since that tag (number, title, labels, `mergedAt`), how many
+`changelog.d/` fragments are pending — a count, and the number the release body
+prints — whether a release pull request is open and the existing tags; it
 returns the counts, the next version, a `bump` of `minor` or `patch`, a named
 reason and `shouldRelease`. The first release of an ISO week bumps the minor;
 later releases in that same week bump the patch. If either timestamp is

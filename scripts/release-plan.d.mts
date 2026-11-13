@@ -12,7 +12,9 @@ export interface ReleasePlanInput {
   lastTag: string
   packageVersion: string
   prs: ReleasePlanPr[]
-  fragments: string[]
+  /** How many `changelog.d/` fragments are pending. The array shape is the
+   * legacy contract and still counts by its length. */
+  fragments: number | string[]
   openReleasePr: boolean
   existingTags: string[]
   crossCheck?: { logPrNumbers: number[] }

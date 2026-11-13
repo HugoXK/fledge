@@ -20,7 +20,7 @@ function input(over: Partial<ReleasePlanInput> = {}): ReleasePlanInput {
     lastTag: 'v0.2.4',
     packageVersion: '0.2.4',
     prs: [],
-    fragments: ['changelog.d/80-daily-release.added.md'],
+    fragments: 1,
     openReleasePr: false,
     existingTags: ['v0.2.4'],
     crossCheck: { logPrNumbers: [] },
@@ -75,12 +75,20 @@ test('scoped feature titles and the enhancement label both count as features', (
 })
 
 test('no changelog fragment blocks the release and the count is still reported', () => {
-  const plan = planRelease(input({ prs: [feat(1), feat(2), feat(3), feat(4), feat(5), fix(6), fix(7), fix(8), fix(9), fix(10)], fragments: [] }))
+  const plan = planRelease(input({ prs: [feat(1), feat(2), feat(3), feat(4), feat(5), fix(6), fix(7), fix(8), fix(9), fix(10)], fragments: 0 }))
   assert.equal(plan.fragments, 0)
   assert.equal(plan.total, 10)
   assert.equal(plan.features, 5)
   assert.equal(plan.shouldRelease, false)
   assert.equal(plan.reason, 'no-fragments')
+})
+
+test('the legacy list shape still counts by its length', () => {
+  // A caller that has not moved to the count keeps working, and the plan reports
+  // the same number either way.
+  const plan = planRelease(input({ prs: [feat(1), feat(2), feat(3), feat(4), feat(5), fix(6), fix(7), fix(8), fix(9), fix(10)], fragments: ['a.fixed.md', 'b.fixed.md'] }))
+  assert.equal(plan.fragments, 2)
+  assert.equal(plan.shouldRelease, true)
 })
 
 test('an open release PR blocks a second one', () => {
