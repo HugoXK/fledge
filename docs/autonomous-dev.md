@@ -478,6 +478,13 @@ write` must test `author_association` on every event a stranger can trigger, and
 `github.event.review.author_association`). `scripts/action-pins.mjs` enforces the
 rule for the whole tree — a job with `actions: write` on a stranger-reachable
 event without the matching association test reds the required `action-pins` job.
+The scan counts the permission in each form it takes: a block mapping, an inline
+`{ actions: write }`, `write-all`, and a workflow-level block that a job without
+its own inherits. A `permissions:` value or a `jobs:` header the parser cannot
+read is a finding rather than a skip, so a form it does not know fails closed —
+and a header with a trailing comment is still a header. The association list must
+be exactly `OWNER`, `MEMBER` and `COLLABORATOR`: an extra role, a missing role or
+a role-name substring is a finding.
 A PASS that arrives after a rejection at the same SHA keeps the
 check red until the repair step re-runs the failed run at that SHA; that now
 happens without a hand step. A run above the attempt cap (attempt 3, after

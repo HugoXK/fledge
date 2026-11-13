@@ -145,3 +145,108 @@ test('every workflow in this repository gates its actions: write jobs on the act
   )
   assert.ok(report.checked >= 2, `only ${report.checked} actions: write jobs were checked`)
 })
+
+function jobWith(header: string, lines: string[]): string {
+  return [`  ${header}:`, ...lines, ''].join('\n')
+}
+
+test('write-all, an inline mapping and an unparsed permissions value all count as actions: write', () => {
+  const shape = (permissions: string, name = 'repair') => workflow('  pull_request_review:', jobWith(name, [
+    "    if: always() && github.event_name == 'pull_request_review'",
+    `    permissions: ${permissions}`,
+    '    runs-on: ubuntu-latest',
+    '    steps:',
+    RUNNER,
+  ]))
+
+  for (const permissions of ['write-all', '{ actions: write }', '{contents: read, actions: write}']) {
+    assert.deepEqual(
+      checkActorGates(shape(permissions), 'fixture.yml').map((finding) => finding.problem),
+      ['missing-association-gate'],
+      `${permissions} grants actions: write and must be counted`,
+    )
+  }
+
+  for (const permissions of ['read-all', 'none', '{}', '{ actions: read }']) {
+    assert.deepEqual(checkActorGates(shape(permissions), 'fixture.yml'), [], `${permissions} grants no write scope`)
+  }
+
+  // The invariant: a value the parser does not understand reds the gate instead
+  // of skipping the job, so the next YAML form someone writes cannot exempt it.
+  const unknown = checkActorGates(shape('some-future-form'), 'fixture.yml')
+  assert.deepEqual(unknown.map((finding) => finding.problem).sort(), [
+    'missing-association-gate',
+    'unparsed permissions value "some-future-form"',
+  ])
+})
+
+test('a job header with a trailing comment is still a job, and a header the parser cannot read fails closed', () => {
+  const commented = workflow('  pull_request_review:', jobWith('repair: # review-triggered', [
+    "    if: always() && github.event_name == 'pull_request_review'",
+    '    runs-on: ubuntu-latest',
+    '    permissions:',
+    '      actions: write',
+    '    steps:',
+    RUNNER,
+  ]))
+  assert.deepEqual(checkActorGates(commented, 'fixture.yml').map((finding) => `${finding.job}:${finding.problem}`), ['repair:missing-association-gate'])
+
+  const quoted = workflow('  pull_request_review:', jobWith('"quoted repair"', [
+    '    runs-on: ubuntu-latest',
+    '    permissions:',
+    '      actions: write',
+    '    steps:',
+    RUNNER,
+  ]))
+  assert.deepEqual(checkActorGates(quoted, 'fixture.yml').map((finding) => finding.problem), ['unparsed-job-header'])
+})
+
+test('a workflow-level actions: write applies to every job that does not declare its own block', () => {
+  const withScope = (jobBlock: string, scope = ['permissions:', '  contents: read', '  actions: write']) => [
+    'on:',
+    '  pull_request_review:',
+    ...scope,
+    'jobs:',
+    ...jobBlock.split('\n'),
+    '',
+  ].join('\n')
+
+  const inherited = withScope(jobWith('repair', [
+    '    runs-on: ubuntu-latest',
+    '    steps:',
+    RUNNER,
+  ]))
+  assert.deepEqual(checkActorGates(inherited, 'fixture.yml').map((finding) => `${finding.job}:${finding.event}:${finding.problem}`), [
+    'repair:pull_request_review:missing-association-gate',
+  ])
+
+  const gated = withScope(jobWith('repair', [
+    `    if: ${GATE}github.event.review.author_association)`,
+    '    runs-on: ubuntu-latest',
+    '    steps:',
+    RUNNER,
+  ]))
+  assert.deepEqual(checkActorGates(gated, 'fixture.yml'), [], 'a gated job under the workflow block passes')
+
+  const ownBlock = withScope(jobWith('repair', [
+    '    permissions:',
+    '      actions: read',
+    '    runs-on: ubuntu-latest',
+    '    steps:',
+    RUNNER,
+  ]))
+  assert.deepEqual(checkActorGates(ownBlock, 'fixture.yml'), [], 'a job with its own read-only block is not widened by the workflow block')
+})
+
+test('the association list must be exactly the three roles, not merely contain them', () => {
+  const withRoles = (roles: string) => workflow('  pull_request_review:', privilegedJob('repair', `contains(fromJSON('${roles}'), github.event.review.author_association)`))
+
+  const extras = withRoles('["OWNER","MEMBER","COLLABORATOR","FIRST_TIME_CONTRIBUTOR"]')
+  assert.deepEqual(checkActorGates(extras, 'fixture.yml').map((finding) => finding.problem), ['missing-association-gate'], 'an extra role admits the strangers the rule bans')
+
+  const substring = withRoles('["OWNER","MEMBER","COLLABORATOR_X"]')
+  assert.deepEqual(checkActorGates(substring, 'fixture.yml').map((finding) => finding.problem), ['missing-association-gate'], 'a role name is not a substring match')
+
+  const exactOtherOrder = withRoles('["collaborator","owner","member"]')
+  assert.deepEqual(checkActorGates(exactOtherOrder, 'fixture.yml'), [], 'the same three roles in another order and case still gate the actor')
+})

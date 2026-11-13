@@ -118,24 +118,35 @@ function workflowEvents(text) {
 
 // Splits the file into `jobs:` entries, keeping each job's own lines so a
 // permission or an `if:` is read against the job it belongs to, never the file.
+// A header with a trailing comment is still a header, and a line at the jobs'
+// own indentation that does not parse is reported: a quoted key or a shape this
+// regex does not cover must red the gate rather than exempt the job it names.
+const JOB_HEADER = /^ {2}([A-Za-z0-9_-]+)\s*:\s*(?:#.*)?$/
+
 function jobBlocks(text) {
   const lines = text.split(/\r?\n/)
   const start = lines.findIndex((line) => /^jobs\s*:/.test(line))
-  if (start === -1) return []
+  if (start === -1) return { jobs: [], problems: [] }
   const jobs = []
+  const problems = []
   let current = null
   for (let index = start + 1; index < lines.length; index += 1) {
     const line = lines[index] ?? ''
     if (/^\S/.test(line) && line.trim() !== '' && !line.trim().startsWith('#')) break
-    const header = /^ {2}([A-Za-z0-9_-]+)\s*:\s*$/.exec(line)
-    if (header !== null) {
-      current = { name: header[1], line: index + 1, lines: [] }
-      jobs.push(current)
+    if (/^ {2}\S/.test(line) && line.trim() !== '' && !line.trim().startsWith('#')) {
+      const header = JOB_HEADER.exec(line)
+      if (header !== null) {
+        current = { name: header[1], line: index + 1, lines: [] }
+        jobs.push(current)
+        continue
+      }
+      problems.push({ line: index + 1, text: line.trim(), problem: 'unparsed-job-header' })
+      current = null
       continue
     }
     if (current !== null) current.lines.push(line)
   }
-  return jobs
+  return { jobs, problems }
 }
 
 // Reads a block value that starts at `if:` and may continue on folded lines.
@@ -153,27 +164,90 @@ function foldedValue(lines, index) {
   return parts.join(' ')
 }
 
+// One `permissions:` value, in any of the forms YAML allows. The rule the gate
+// enforces is "fails closed": a form the parser does not understand counts as
+// holding `actions: write` and is reported, because skipping it would exempt the
+// job (or the whole file) from the check it exists for. `write-all` grants every
+// scope; an inline `{ actions: write }` and the usual block mapping are parsed;
+// `read-all`, `none` and `{}` grant nothing.
+const PERMISSIONS_LINE = /^\s*permissions\s*:\s*(.*)$/
+const PERMISSIONS_ENTRY = /^([A-Za-z0-9_-]+)\s*:\s*(.+)$/
+
+function permissionsFacts(lines, index) {
+  const line = lines[index] ?? ''
+  const match = PERMISSIONS_LINE.exec(line)
+  const rest = (match?.[1] ?? '').replace(/\s+#.*$/, '').trim()
+  const baseIndent = /^(\s*)/.exec(line)?.[1]?.length ?? 0
+  const facts = { grantsActions: false, problem: null }
+  const unparsed = (value) => {
+    facts.grantsActions = true
+    facts.problem = `unparsed permissions value "${value}"`
+    return facts
+  }
+  if (rest !== '') {
+    const value = unquote(rest)
+    if (value === 'write-all') {
+      facts.grantsActions = true
+      return facts
+    }
+    if (value === 'read-all' || value === 'none' || value === '{}') return facts
+    if (value.startsWith('{') && value.endsWith('}')) {
+      const entries = value.slice(1, -1).split(',').map((entry) => entry.trim()).filter((entry) => entry !== '')
+      for (const entry of entries) {
+        const pair = PERMISSIONS_ENTRY.exec(entry)
+        if (pair === null) return unparsed(entry)
+        if (pair[1] === 'actions' && unquote(pair[2].trim()) === 'write') facts.grantsActions = true
+      }
+      return facts
+    }
+    return unparsed(value)
+  }
+  for (let next = index + 1; next < lines.length; next += 1) {
+    const entry = lines[next] ?? ''
+    const indent = /^(\s*)/.exec(entry)?.[1]?.length ?? 0
+    if (entry.trim() !== '' && indent <= baseIndent) break
+    const text = entry.replace(/\s+#.*$/, '').trim()
+    if (text === '') continue
+    const pair = PERMISSIONS_ENTRY.exec(text)
+    if (pair === null) return unparsed(text)
+    if (pair[1] === 'actions' && unquote(pair[2].trim()) === 'write') facts.grantsActions = true
+  }
+  return facts
+}
+
+// A workflow-level `permissions:` block applies to every job that does not
+// declare its own, so it widens the whole file in one line and the scan must
+// read it before deciding a job is unprivileged.
+function workflowPermissionsFacts(text) {
+  const lines = text.split(/\r?\n/)
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ''
+    if (!/^permissions\s*:/.test(line)) continue
+    return { ...permissionsFacts(lines, index), line: index + 1 }
+  }
+  return { grantsActions: false, problem: null, line: 0 }
+}
+
 function jobFacts(job) {
   let condition = null
   let actionsWrite = false
   let permissionsLine = 0
+  let declaresPermissions = false
+  let problem = null
   for (let index = 0; index < job.lines.length; index += 1) {
     const line = job.lines[index] ?? ''
     if (condition === null && /^\s*if\s*:/.test(line)) condition = foldedValue(job.lines, index)
-    if (/^\s*permissions\s*:\s*$/.test(line)) {
-      const baseIndent = /^(\s*)/.exec(line)?.[1]?.length ?? 0
-      for (let next = index + 1; next < job.lines.length; next += 1) {
-        const entry = job.lines[next] ?? ''
-        const indent = /^(\s*)/.exec(entry)?.[1]?.length ?? 0
-        if (entry.trim() !== '' && indent <= baseIndent) break
-        if (/^\s*actions\s*:\s*write\b/.test(entry)) {
-          actionsWrite = true
-          permissionsLine = job.line + next + 1
-        }
+    if (/^\s*permissions\s*:/.test(line)) {
+      declaresPermissions = true
+      const parsed = permissionsFacts(job.lines, index)
+      if (parsed.grantsActions) actionsWrite = true
+      if (parsed.problem !== null && problem === null) {
+        problem = parsed.problem
+        permissionsLine = job.line + index + 1
       }
     }
   }
-  return { condition: condition ?? '', actionsWrite, permissionsLine }
+  return { condition: condition ?? '', actionsWrite, declaresPermissions, permissionsLine, problem }
 }
 
 function associationGate(condition, expression) {
@@ -182,19 +256,40 @@ function associationGate(condition, expression) {
   const call = new RegExp(`contains\\(\\s*fromJSON\\(\\s*'([^']*)'\\s*\\)\\s*,\\s*${escaped}\\s*\\)`)
   const match = call.exec(condition)
   if (match === null) return false
-  const roles = String(match[1] ?? '').toUpperCase()
-  return ASSOCIATION_ROLES.every((role) => roles.includes(role))
+  // The list must be exactly the three roles: containing them somewhere admits
+  // every extra role the list also names (`FIRST_TIME_CONTRIBUTOR`), and a
+  // substring test lets `COLLABORATOR_X` pass as `COLLABORATOR`.
+  const roles = new Set(
+    String(match[1] ?? '')
+      .split(',')
+      // Each entry arrives as `["OWNER"` / `"MEMBER"` / `"COLLABORATOR"]`; strip
+      // the JSON brackets and quotes, then compare the whole name.
+      .map((role) => role.replace(/^[\s["']+|[\s\]"']+$/g, '').toUpperCase())
+      .filter((role) => role !== ''),
+  )
+  return roles.size === ASSOCIATION_ROLES.length && ASSOCIATION_ROLES.every((role) => roles.has(role))
 }
 
 // Returns one finding per privileged job that a stranger could start on an event
-// whose association it never tests. A job whose `if:` names its events is judged
-// on those; one that names none can run on every trigger the workflow has.
+// whose association it never tests, plus one per job or `permissions:` value the
+// parser could not read. A job whose `if:` names its events is judged on those;
+// one that names none can run on every trigger the workflow has. A job inherits
+// a workflow-level block it does not override.
 export function checkActorGates(text, file) {
   const triggers = workflowEvents(text)
-  const findings = []
-  for (const job of jobBlocks(text)) {
+  const workflowScope = workflowPermissionsFacts(text)
+  const { jobs, problems } = jobBlocks(text)
+  const findings = problems.map((problem) => ({ file, line: problem.line, job: '', event: '', problem: problem.problem }))
+  if (workflowScope.problem !== null) {
+    findings.push({ file, line: workflowScope.line, job: '(workflow)', event: '', problem: workflowScope.problem })
+  }
+  for (const job of jobs) {
     const facts = jobFacts(job)
-    if (!facts.actionsWrite) continue
+    if (facts.problem !== null) {
+      findings.push({ file, line: facts.permissionsLine, job: String(job.name), event: '', problem: facts.problem })
+    }
+    const privileged = facts.actionsWrite || (!facts.declaresPermissions && workflowScope.grantsActions)
+    if (!privileged) continue
     const named = triggers.filter((event) => facts.condition.includes(`'${event}'`) || facts.condition.includes(`"${event}"`))
     const reachable = named.length > 0 ? named : triggers
     for (const event of reachable) {
@@ -226,8 +321,10 @@ export function scanActorGates(dir) {
     files.push(file)
     const text = readFileSync(file, 'utf8')
     findings.push(...checkActorGates(text, file))
-    for (const job of jobBlocks(text)) {
-      if (jobFacts(job).actionsWrite) checked += 1
+    const workflowScope = workflowPermissionsFacts(text)
+    for (const job of jobBlocks(text).jobs) {
+      const facts = jobFacts(job)
+      if (facts.actionsWrite || (!facts.declaresPermissions && workflowScope.grantsActions)) checked += 1
     }
   }
   return { findings, checked, files }
