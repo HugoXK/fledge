@@ -150,14 +150,33 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // webhook registration at `:3267`. The gateway pair does not move and stays
   // `:155`/`:180`, because #497's change to that file lands below both
   // registrations; no result is added or dismissed.
+  // #360's refresh onto `main@15c336e9` re-read all seven lines on the merged
+  // tree rather than summing them: this branch adds an 18-line reply helper above
+  // the four top-of-file registrations and its 48-line issue-verb block above the
+  // webhook registration, so those read `:590`/`:625`/`:635`/`:645` and the
+  // webhook registration `:3333`. The gateway pair does not move and stays
+  // `:155`/`:180`. No result is added or dismissed: the two gateway alerts (#41,
+  // #42) stay the two dismissed false positives.
+  // The tip then merges `main@f20c8de`: #517 floors discovery at 60 minutes in
+  // `src/jobs/service.ts` and #514 rewrites the daily-release header, and neither
+  // touches `src/app.ts`, so that merge re-read all seven anchors and moved none
+  // (`:590`/`:625`/`:635`/`:645`/`:3333` and `:155`/`:180` then).
+  // #473 then lands on main (the `densityMode` import, the response-hook branch
+  // and the `/density/:mode` route, 25 lines) above the four top-of-file
+  // registrations, so the refresh onto `main@5d848df` re-reads all seven anchors
+  // on the merged tree: those read `:615`/`:650`/`:660`/`:670` and the webhook
+  // registration `:3358`, while the gateway pair stays `:155`/`:180` because the
+  // insert lands below both. No result is added or dismissed.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3267',
-    'js/missing-rate-limiting|src/app.ts|572',
-    'js/missing-rate-limiting|src/app.ts|607',
-    'js/missing-rate-limiting|src/app.ts|617',
-    'js/missing-rate-limiting|src/app.ts|627',
+    'js/missing-rate-limiting|src/app.ts|3358',
+    'js/missing-rate-limiting|src/app.ts|615',
+    'js/missing-rate-limiting|src/app.ts|650',
+    'js/missing-rate-limiting|src/app.ts|660',
+    'js/missing-rate-limiting|src/app.ts|670',
+
     'js/missing-rate-limiting|src/gateway/gateway.ts|155',
-    'js/missing-rate-limiting|src/gateway/gateway.ts|180',  ])
+    'js/missing-rate-limiting|src/gateway/gateway.ts|180',
+  ])
   const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
   assert.equal(dismissed.length, 3, 'the three dismissed false-positive results are recorded with their reason')
   assert.deepEqual(addedAlerts(keys, baseline.alerts).map((alert) => alertKey(alert)), [], 'the baseline must not fail its own alerts')

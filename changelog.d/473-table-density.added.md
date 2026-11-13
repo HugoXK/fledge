@@ -1,0 +1,1 @@
+Long tables keep their column names while the rows scroll: the table's own scroll area is bounded and its header sticks to the top of it. A new compact density (`/density/compact`, saved in the `fledge_density` cookie) fits roughly twice as many rows on a desktop screen without shrinking any control, and the phone card layout keeps its 44px touch floor.

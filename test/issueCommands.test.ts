@@ -16,4 +16,11 @@ test('issue commands parse only from allowed collaborators and known commands', 
   assert.equal(parseIssueCommand({ ...base, comment: { id: 6, body: '/fledge status', author_association: 'CONTRIBUTOR' } }), null)
   assert.equal(parseIssueCommand({ ...base, comment: { id: 7, body: '/fledge nope', author_association: 'OWNER' } }), null)
   assert.equal(parseIssueCommand({ ...base, action: 'edited', comment: { id: 8, body: '/fledge status', author_association: 'OWNER' } }), null)
+  // The four job verbs are part of the same vocabulary as the verbs that create
+  // work: one parser, one place a command can be recognised.
+  assert.equal(parseIssueCommand({ ...base, comment: { id: 9, body: '/fledge retry', author_association: 'MEMBER' } })?.command, 'retry')
+  assert.equal(parseIssueCommand({ ...base, comment: { id: 10, body: '/fledge pause', author_association: 'MEMBER' } })?.command, 'pause')
+  assert.equal(parseIssueCommand({ ...base, comment: { id: 11, body: '/fledge resume', author_association: 'COLLABORATOR' } })?.command, 'resume')
+  assert.equal(parseIssueCommand({ ...base, comment: { id: 12, body: '/fledge cancel', author_association: 'OWNER' } })?.command, 'cancel')
+  assert.equal(parseIssueCommand({ ...base, comment: { id: 13, body: '/fledge CANCEL', author_association: 'OWNER' } })?.command, 'cancel')
 })
