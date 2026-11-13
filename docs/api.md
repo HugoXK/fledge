@@ -196,7 +196,9 @@ Query parameters:
 
 A bare date and time without an offset is refused: it names a different instant
 in each zone. A refusal is HTTP 400 with `{ "error": "<reason naming the
-field>" }`. Success is `{ schedule, from, count, times, truncated }`, where each
+field>" }`; the sentence follows the request locale (`fledge_lang` or
+`Accept-Language`) because the planner authors it in both languages. Success is
+`{ schedule, from, count, times, truncated }`, where each
 entry carries `at` (ISO), `atMs`, `local`, `offset`, `timezone` and `skipped` —
 the wall times that did not exist on the way there, which the planner skipped
 rather than shifted. `local`, `offset` and `timezone` are `null` for an interval,

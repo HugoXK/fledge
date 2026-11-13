@@ -109,31 +109,32 @@ test('a window that ends before the count is reported as truncated', async () =>
 
 test('each refusal names the operation that is wrong', async () => {
   const { built, cookie } = await fixture()
+  const headers = { cookie: `${cookie}; fledge_lang=en` }
   try {
-    const zone = await built.app.inject({ method: 'GET', url: previewUrl({ cron: '0 9 * * *', timezone: '+05:00' }), headers: { cookie } })
+    const zone = await built.app.inject({ method: 'GET', url: previewUrl({ cron: '0 9 * * *', timezone: '+05:00' }), headers })
     assert.equal(zone.statusCode, 400)
     const zoneBody = zone.json() as { error: string }
     assert.ok(zoneBody.error.includes('+05:00'))
     assert.ok(zoneBody.error.includes('fixed UTC offset'))
     assert.ok(zoneBody.error.includes('IANA'))
 
-    const expression = await built.app.inject({ method: 'GET', url: previewUrl({ cron: '0 9 * *', timezone: 'UTC' }), headers: { cookie } })
+    const expression = await built.app.inject({ method: 'GET', url: previewUrl({ cron: '0 9 * *', timezone: 'UTC' }), headers })
     assert.equal(expression.statusCode, 400)
     const expressionBody = expression.json() as { error: string }
     assert.ok(expressionBody.error.includes('five fields'))
     assert.ok(expressionBody.error.includes('0 9 * *'))
 
-    const range = await built.app.inject({ method: 'GET', url: previewUrl({ cron: '0 9 * * *', timezone: 'UTC', count: '0' }), headers: { cookie } })
+    const range = await built.app.inject({ method: 'GET', url: previewUrl({ cron: '0 9 * * *', timezone: 'UTC', count: '0' }), headers })
     assert.equal(range.statusCode, 400)
     const rangeBody = range.json() as { error: string }
     assert.ok(rangeBody.error.includes('count'))
     assert.ok(rangeBody.error.includes('between 1 and 20'))
 
-    const both = await built.app.inject({ method: 'GET', url: previewUrl({ cron: '0 9 * * *', every: '1h', timezone: 'UTC' }), headers: { cookie } })
+    const both = await built.app.inject({ method: 'GET', url: previewUrl({ cron: '0 9 * * *', every: '1h', timezone: 'UTC' }), headers })
     assert.equal(both.statusCode, 400)
     assert.ok((both.json() as { error: string }).error.includes('not both'))
 
-    const neither = await built.app.inject({ method: 'GET', url: previewUrl({ timezone: 'UTC' }), headers: { cookie } })
+    const neither = await built.app.inject({ method: 'GET', url: previewUrl({ timezone: 'UTC' }), headers })
     assert.equal(neither.statusCode, 400)
     assert.ok((neither.json() as { error: string }).error.includes('give "cron"'))
     assert.ok((neither.json() as { error: string }).error.includes('"every"'))
@@ -167,12 +168,65 @@ test('the console page explains a bad expression instead of returning a bare 400
     const page = await built.app.inject({
       method: 'GET',
       url: `/schedule?${new URLSearchParams({ cron: '0 9 * *', timezone: 'UTC' }).toString()}`,
-      headers: { cookie },
+      headers: { cookie: `${cookie}; fledge_lang=en` },
     })
     assert.equal(page.statusCode, 400)
     assert.ok(page.body.includes('five fields'))
     assert.ok(page.body.includes('name="cron"'))
     assert.ok(page.body.includes('value="0 9 * *"'))
+  } finally {
+    await built.close()
+  }
+})
+
+// #615: the refusal is authored by the planner, and the alert banner prints it
+// verbatim, so both languages have to be produced at the point the reason is
+// raised. Six sampled refusals cover the six builders in this surface.
+test('every preview refusal reaches the alert banner in the reader language', async () => {
+  const { built, cookie } = await fixture()
+  const cases: Array<{ params: Record<string, string>; zh: string; en: string }> = [
+    { params: { cron: '* * *', timezone: 'UTC' }, zh: 'cron 表达式有五个字段', en: 'a cron expression is five fields' },
+    { params: { every: '15x' }, zh: '没有支持的单位', en: 'has no supported unit' },
+    { params: { cron: '0 9 * * *', timezone: 'UTC', from: '2026-11-16T09:00' }, zh: '必须是带偏移的 ISO 8601 时间点', en: 'must be an ISO 8601 instant with an offset' },
+    { params: { cron: '0 9 * * *', every: '1h', timezone: 'UTC' }, zh: '不能同时给', en: 'not both' },
+    { params: { every: '1d', timezone: 'Asia/Shanghai' }, zh: '间隔没有时区', en: 'an interval has no timezone' },
+    { params: { cron: '0 9 * * *', timezone: 'UTC', count: '99' }, zh: '必须是 1 到 20 之间的整数', en: 'must be a whole number between 1 and 20' },
+  ]
+  try {
+    for (const sample of cases) {
+      const query = new URLSearchParams(sample.params).toString()
+      for (const locale of ['zh', 'en'] as const) {
+        const page = await built.app.inject({
+          method: 'GET',
+          url: `/schedule?${query}`,
+          headers: { cookie: `${cookie}; fledge_lang=${locale}` },
+        })
+        assert.equal(page.statusCode, 400)
+        const expected = sample[locale]
+        const other = locale === 'zh' ? sample.en : sample.zh
+        assert.ok(page.body.includes(expected), `${locale} banner for ${query} should include ${expected}`)
+        assert.ok(!page.body.includes(other), `${locale} banner for ${query} should not include ${other}`)
+      }
+    }
+  } finally {
+    await built.close()
+  }
+})
+
+test('the JSON preview authors its refusal in the same reader locale', async () => {
+  const { built, cookie } = await fixture()
+  try {
+    for (const locale of ['zh', 'en'] as const) {
+      const response = await built.app.inject({
+        method: 'GET',
+        url: previewUrl({ every: '15x' }),
+        headers: { cookie: `${cookie}; fledge_lang=${locale}` },
+      })
+      assert.equal(response.statusCode, 400)
+      const { error } = response.json() as { error: string }
+      assert.ok(error.includes(locale === 'zh' ? '没有支持的单位' : 'has no supported unit'))
+      assert.ok(!error.includes(locale === 'zh' ? 'has no supported unit' : '没有支持的单位'))
+    }
   } finally {
     await built.close()
   }

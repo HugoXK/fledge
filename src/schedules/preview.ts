@@ -11,8 +11,10 @@
 // builds a schedule itself, but this module is where a person can hand in both
 // and would otherwise be shown a local-looking time that is not bound to a zone.
 
+import type { Translate } from '../i18n.js'
 import { nextOccurrence, parseSchedule, type Schedule, type WallTime } from './next.js'
 
+const ENGLISH: Translate = (_zh, en) => en
 const MAX_COUNT = 20
 const DEFAULT_COUNT = 5
 const UNIT_MS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }
@@ -62,38 +64,69 @@ function wallText(wall: WallTime): string {
 
 // `15m`, `2h`, `90s`, `1d`. The planner takes milliseconds, so the unit is
 // resolved here and the planner's own range refusal still applies afterwards.
-function parseEvery(text: string): { ok: true; everyMs: number } | { ok: false; reason: string } {
+function parseEvery(text: string, t: Translate): { ok: true; everyMs: number } | { ok: false; reason: string } {
   const unit = text.slice(-1).toLowerCase()
   const amountText = text.slice(0, -1)
   if (!Object.hasOwn(UNIT_MS, unit)) {
-    return refuse(`every "${text}" has no supported unit; write a whole number followed by s, m, h or d, such as 15m`)
+    return refuse(t(
+      `every "${text}" 没有支持的单位；请写整数加 s、m、h 或 d，例如 15m`,
+      `every "${text}" has no supported unit; write a whole number followed by s, m, h or d, such as 15m`,
+    ))
   }
-  if (!digitsOnly(amountText)) return refuse(`every "${text}" must be a whole number with a unit, such as 15m`)
+  if (!digitsOnly(amountText)) {
+    return refuse(t(
+      `every "${text}" 必须是带单位的整数，例如 15m`,
+      `every "${text}" must be a whole number with a unit, such as 15m`,
+    ))
+  }
   const amount = Number(amountText)
-  if (amount < 1) return refuse(`every "${text}" must be at least one unit`)
+  if (amount < 1) {
+    return refuse(t(
+      `every "${text}" 至少是一个单位`,
+      `every "${text}" must be at least one unit`,
+    ))
+  }
   return { ok: true, everyMs: amount * (UNIT_MS[unit] ?? 0) }
 }
 
 // A date and time without an offset is ambiguous: `2026-11-16T09:00` means
 // different instants in Shanghai and New York. The form asks for an offset so the
 // preview never guesses which one the person meant.
-function parseInstant(text: string, label: string): { ok: true; value: number } | { ok: false; reason: string } {
+function parseInstant(text: string, label: string, t: Translate): { ok: true; value: number } | { ok: false; reason: string } {
   const separator = text.indexOf('T')
   const afterDate = separator === -1 ? '' : text.slice(separator + 1)
   const hasOffset =
     afterDate.endsWith('Z') || afterDate.endsWith('z') || afterDate.includes('+') || afterDate.includes('-')
   if (!hasOffset) {
-    return refuse(`${label} "${text}" must be an ISO 8601 instant with an offset, such as 2026-11-16T09:00:00+08:00`)
+    return refuse(t(
+      `${label} "${text}" 必须是带偏移的 ISO 8601 时间点，例如 2026-11-16T09:00:00+08:00`,
+      `${label} "${text}" must be an ISO 8601 instant with an offset, such as 2026-11-16T09:00:00+08:00`,
+    ))
   }
   const value = Date.parse(text)
-  if (!Number.isFinite(value)) return refuse(`${label} "${text}" is not a valid instant`)
+  if (!Number.isFinite(value)) {
+    return refuse(t(
+      `${label} "${text}" 不是有效的时间点`,
+      `${label} "${text}" is not a valid instant`,
+    ))
+  }
   return { ok: true, value }
 }
 
-function parseCount(text: string): { ok: true; count: number } | { ok: false; reason: string } {
-  if (!digitsOnly(text)) return refuse(`count "${text}" must be a whole number between 1 and ${MAX_COUNT}`)
+function parseCount(text: string, t: Translate): { ok: true; count: number } | { ok: false; reason: string } {
+  if (!digitsOnly(text)) {
+    return refuse(t(
+      `count "${text}" 必须是 1 到 ${MAX_COUNT} 之间的整数`,
+      `count "${text}" must be a whole number between 1 and ${MAX_COUNT}`,
+    ))
+  }
   const count = Number(text)
-  if (count < 1 || count > MAX_COUNT) return refuse(`count "${text}" must be a whole number between 1 and ${MAX_COUNT}`)
+  if (count < 1 || count > MAX_COUNT) {
+    return refuse(t(
+      `count "${text}" 必须是 1 到 ${MAX_COUNT} 之间的整数`,
+      `count "${text}" must be a whole number between 1 and ${MAX_COUNT}`,
+    ))
+  }
   return { ok: true, count }
 }
 
@@ -103,7 +136,7 @@ function parseCount(text: string): { ok: true; count: number } | { ok: false; re
  * `from` with an offset, and `count` in 1..20. `now` is the default `from`, so
  * the result is a pure function of its arguments.
  */
-export function parsePreviewQuery(query: Record<string, string | undefined>, now: number): PreviewQuery {
+export function parsePreviewQuery(query: Record<string, string | undefined>, now: number, t: Translate = ENGLISH): PreviewQuery {
   const cron = (query.cron ?? '').trim()
   const every = (query.every ?? '').trim()
   const timezone = (query.timezone ?? '').trim()
@@ -113,33 +146,39 @@ export function parsePreviewQuery(query: Record<string, string | undefined>, now
   const countText = (query.count ?? '').trim()
 
   if (cron !== '' && every !== '') {
-    return refuse('give either "cron" or "every", not both: two schedules make the preview ambiguous')
+    return refuse(t(
+      `请只给 "cron" 或 "every" 中的一个，不能同时给：两个排期会让预览有歧义`,
+      `give either "cron" or "every", not both: two schedules make the preview ambiguous`,
+    ))
   }
   if (cron === '' && every === '') {
-    return refuse('give "cron" (a five-field expression) or "every" (an interval such as 15m)')
+    return refuse(t(
+      `请给出 "cron"（五字段表达式）或 "every"（例如 15m 的间隔）`,
+      `give "cron" (a five-field expression) or "every" (an interval such as 15m)`,
+    ))
   }
 
   let startAt: number | null = null
   if (startAtText !== '') {
-    const parsed = parseInstant(startAtText, 'start_at')
+    const parsed = parseInstant(startAtText, 'start_at', t)
     if (!parsed.ok) return parsed
     startAt = parsed.value
   }
   let endAt: number | null = null
   if (endAtText !== '') {
-    const parsed = parseInstant(endAtText, 'end_at')
+    const parsed = parseInstant(endAtText, 'end_at', t)
     if (!parsed.ok) return parsed
     endAt = parsed.value
   }
   let from = now
   if (fromText !== '') {
-    const parsed = parseInstant(fromText, 'from')
+    const parsed = parseInstant(fromText, 'from', t)
     if (!parsed.ok) return parsed
     from = parsed.value
   }
   let count = DEFAULT_COUNT
   if (countText !== '') {
-    const parsed = parseCount(countText)
+    const parsed = parseCount(countText, t)
     if (!parsed.ok) return parsed
     count = parsed.count
   }
@@ -148,16 +187,19 @@ export function parsePreviewQuery(query: Record<string, string | undefined>, now
     // An interval is absolute time; it has no zone. Accepting one silently is how
     // a maintainer comes to believe a 24-hour interval follows Asia/Shanghai.
     if (timezone !== '') {
-      return refuse(`an interval has no timezone; remove "timezone" or give a cron expression instead`)
+      return refuse(t(
+        `间隔没有时区；请去掉 "timezone" 或改用 cron 表达式`,
+        `an interval has no timezone; remove "timezone" or give a cron expression instead`,
+      ))
     }
-    const parsedEvery = parseEvery(every)
+    const parsedEvery = parseEvery(every, t)
     if (!parsedEvery.ok) return parsedEvery
-    const parsed = parseSchedule({ everyMs: parsedEvery.everyMs, startAt, endAt })
+    const parsed = parseSchedule({ everyMs: parsedEvery.everyMs, startAt, endAt }, t)
     if (!parsed.ok) return refuse(parsed.reason)
     return { ok: true, request: { schedule: parsed.schedule, from, count } }
   }
 
-  const parsed = parseSchedule({ cron, timezone, startAt, endAt })
+  const parsed = parseSchedule({ cron, timezone, startAt, endAt }, t)
   if (!parsed.ok) return refuse(parsed.reason)
   return { ok: true, request: { schedule: parsed.schedule, from, count } }
 }
@@ -193,11 +235,16 @@ function wallAt(timezone: string, instant: number): { local: string; offset: str
  * in its zone (the interval form has none) and the wall times that were skipped
  * on the way there. `truncated` means the window ended before `count`.
  */
-export function previewSchedule(request: PreviewRequest): PreviewResult {
+export function previewSchedule(request: PreviewRequest, t: Translate = ENGLISH): PreviewResult {
   const { schedule, count } = request
-  if (!Number.isFinite(request.from)) return refuse('from must be a finite instant')
+  if (!Number.isFinite(request.from)) {
+    return refuse(t('from 必须是有限的时间点', 'from must be a finite instant'))
+  }
   if (!Number.isInteger(count) || count < 1 || count > MAX_COUNT) {
-    return refuse(`count ${String(count)} must be a whole number between 1 and ${MAX_COUNT}`)
+    return refuse(t(
+      `count ${String(count)} 必须是 1 到 ${MAX_COUNT} 之间的整数`,
+      `count ${String(count)} must be a whole number between 1 and ${MAX_COUNT}`,
+    ))
   }
   const times: PreviewTime[] = []
   let cursor = request.from

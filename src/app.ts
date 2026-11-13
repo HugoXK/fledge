@@ -1225,27 +1225,30 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // what a maintainer reads on the page is what an integration would get.
   app.get('/api/schedule/preview', async (request, reply) => {
     requireApproved(request)
-    const parsed = parsePreviewQuery(previewQuery(request), Date.now())
+    const t = translator(request.locale ?? 'zh')
+    const parsed = parsePreviewQuery(previewQuery(request), Date.now(), t)
     if (!parsed.ok) return reply.code(400).send({ error: parsed.reason })
-    const preview = previewSchedule(parsed.request)
+    const preview = previewSchedule(parsed.request, t)
     if (!preview.ok) return reply.code(400).send({ error: preview.reason })
     return preview
   })
 
   app.get('/schedule', async (request, reply) => {
     const viewer = requireApproved(request)
+    const locale = request.locale ?? 'zh'
+    const t = translator(locale)
     const query = previewQuery(request)
     // No query at all is the empty form, not a refusal: opening the page should
     // not look like an error.
     const asked = Object.values(query).some((value) => value !== undefined)
-    const parsed = asked ? parsePreviewQuery(query, Date.now()) : null
+    const parsed = asked ? parsePreviewQuery(query, Date.now(), t) : null
     let preview: Extract<PreviewResult, { ok: true }> | null = null
     let error: string | undefined
     if (parsed !== null) {
       if (!parsed.ok) {
         error = parsed.reason
       } else {
-        const result = previewSchedule(parsed.request)
+        const result = previewSchedule(parsed.request, t)
         if (result.ok) preview = result
         else error = result.reason
       }
