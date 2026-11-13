@@ -164,7 +164,13 @@ that is the accepted state, not a defect.
   rebuilds that URL keeps the state it is not changing: the 7/30-day window,
   both "Clear filters" links and both pagers read the keys from one helper, so
   the filter survives a window switch and a page click, and the window survives
-  a filter and a clear.
+  a filter and a clear. The admin search page (`/admin/search`) builds its two
+  job filters from those same `JOB_FILTER_STATUSES` and `JOB_FILTER_KINDS` lists
+  and the same label helpers, so every kind a job can have is selectable there
+  and both locales read the console's words rather than the stored code; the
+  option values stay the codes, so the query, the totals and the CSV export are
+  unchanged. A second hand-written list in a view is how `scope` and `verify`
+  went missing from a form once already.
 - **Redirect targets**: every `next=` / `returnTo` value goes through one helper
   that returns a path on this site or the fallback. It validates the parsed
   result, not the input, so a value that is a plain path before parsing and
