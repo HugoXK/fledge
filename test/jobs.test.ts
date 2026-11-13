@@ -2843,3 +2843,91 @@ test('a concrete adversarial risk blocks auto-merge, while a bare score is not e
     await github.close()
   }
 })
+
+test('one blocked tip keeps one audit row and one notification, however often reconciliation runs', async () => {
+  const merges: string[] = []
+  const github = await startFakeServer((request, response) => {
+    const method = request.method ?? 'GET'
+    const url = request.url ?? ''
+    if (method === 'GET' && url === '/repos/o/r/pulls/1') {
+      json(response, 200, { number: 1, html_url: 'https://github.com/o/r/pull/1', title: 'fix', state: 'open', head: { ref: 'fledge/fix', sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false, changed_files: 1 })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/check-runs?per_page=100') {
+      json(response, 200, { check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/status') {
+      json(response, 200, { state: 'success', statuses: [] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/pulls/1/reviews?per_page=100') {
+      json(response, 200, [])
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/branches/main') {
+      json(response, 200, { name: 'main', commit: { sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' } })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/pulls/1/files?per_page=100&page=1') {
+      json(response, 200, [{ filename: 'src/x.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-const a = 0\n+const a = 1' }])
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/branches/main/protection') {
+      json(response, 200, { required_status_checks: { contexts: ['ci'] }, required_pull_request_reviews: { required_approving_review_count: 0 } })
+      return
+    }
+    if (method === 'PUT' && url === '/repos/o/r/pulls/1/merge') {
+      merges.push('merge')
+      json(response, 200, { merged: true, sha: 'def' })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url }, autoMerge: { ...base.autoMerge, reconcileMinutes: 0 } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'adversarial-repeat-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_adversarial_repeat', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, upstreamHtmlUrl: 'https://github.com/o/r', forkHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const secret = 'adversarial-repeat-secret'
+    const jobId = 'job_adversarial_repeat'
+    store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(jobId, { status: 'running', branch: 'fledge/fix', started_at: new Date().toISOString() })
+    let calls = 0
+    jobs.adversarialModel = async () => {
+      calls += 1
+      return [
+        'Concrete risk: src/x.ts:1',
+        'Failure mode: the constant flips every read, so the page renders a stale value',
+        'Repro: open the page twice with the patch applied',
+        'Checks: read the diff',
+      ].join('\n')
+    }
+    const blocked = await jobs.handleCallback(jobId, secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/1', summary: 'done' })
+    assert.equal(blocked.ok, true)
+    assert.equal(merges.length, 0, 'a concrete risk must block the automatic merge')
+    // One tip, one record. The verdict is reused on every later pass of the same
+    // head sha, so its consequences must be recorded once too: a blocked PR that
+    // pages the maintainer once per pass is a blocked PR that trains them to
+    // ignore the page, and the audit trail stops saying "one review, one refusal".
+    const counts = () => ({
+      risk: store.listAudit(200).filter((row) => row.action === 'job.adversarial_risk').length,
+      blocked: store.listAudit(200).filter((row) => row.action === 'job.merge_adversarial_blocked').length,
+      notified: store.listNotifications(user.id, 100).filter((row) => row.message.includes('独立对抗式审核')).length,
+      verdicts: store.listJobEvents(jobId).filter((event) => event.kind === 'job.adversarial').length,
+    })
+    const first = counts()
+    assert.deepEqual(first, { risk: 1, blocked: 1, notified: 1, verdicts: 1 })
+    for (let pass = 1; pass <= 4; pass += 1) {
+      await jobs.reconcileAutoMerge()
+      assert.deepEqual(counts(), first, `reconcile pass ${String(pass)} changed the record for one unchanged tip`)
+      assert.equal(merges.length, 0, 'the reused verdict still blocks')
+    }
+    assert.equal(calls, 1, 'a stored verdict for this tip is reused instead of re-reviewed')
+  } finally {
+    store.close()
+    await github.close()
+  }
+})

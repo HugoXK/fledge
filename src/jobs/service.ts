@@ -1306,7 +1306,7 @@ export class Jobs {
     name: string,
     pr: { number: number; headSha: string; base: string; changedFiles: number },
     checks: Array<{ name: string; status: string; conclusion: string | null }>,
-  ): Promise<{ block: { file: string; line: number } | null }> {
+  ): Promise<{ block: { file: string; line: number } | null; reused: boolean }> {
     const record = (status: string, detail: Record<string, unknown>): void => {
       this.store.recordJobEvent({
         jobId: job.id,
@@ -1320,35 +1320,37 @@ export class Jobs {
     // One pass per tip. Auto-merge reconciliation re-reads a blocked PR every
     // few minutes, so a stored verdict for this same head sha is reused instead
     // of paying for the same review again; a new commit is what asks for a new
-    // one, and that is exactly the "until resolved" the gate means.
+    // one, and that is exactly the "until resolved" the gate means. `reused` is
+    // returned so the caller records the refusal once per tip: the audit row and
+    // the notification belong to the first sighting, not to every pass.
     const previous = [...this.store.listJobEvents(job.id)].reverse().find((event) => event.kind === 'job.adversarial' && event.step !== 'skipped' && event.step !== 'unavailable')
     if (previous !== undefined) {
       try {
         const stored = JSON.parse(previous.meta ?? '') as { tipSha?: unknown; verdict?: unknown }
         if (stored.tipSha === pr.headSha && stored.verdict !== null && typeof stored.verdict === 'object') {
-          return { block: adversarialMergeBlock({ verdict: stored.verdict as AdversarialVerdict }) }
+          return { block: adversarialMergeBlock({ verdict: stored.verdict as AdversarialVerdict }), reused: true }
         }
       } catch {}
     }
     const model = this.adversarialModel
     if (model === null && this.config.llm.key === '') {
       record('skipped', { status: 'skipped', reason: 'platform model is not configured' })
-      return { block: null }
+      return { block: null, reused: false }
     }
     const branch = await client.getBranch(owner, name, pr.base).catch(() => null)
     const baseSha = job.base_sha ?? branch?.sha ?? ''
     if (baseSha === '') {
       record('skipped', { status: 'skipped', reason: 'base sha is unknown' })
-      return { block: null }
+      return { block: null, reused: false }
     }
     const listed = await client.listPullRequestFiles(owner, name, pr.number, pr.changedFiles).catch((error) => {
       record('unavailable', { status: 'unavailable', reason: String(error).slice(0, 300) })
       return null
     })
-    if (listed === null) return { block: null }
+    if (listed === null) return { block: null, reused: false }
     if (!listed.complete) {
       record('skipped', { status: 'skipped', reason: 'the changed-file list is truncated' })
-      return { block: null }
+      return { block: null, reused: false }
     }
     const diff = listed.files
       .filter((file) => typeof file.patch === 'string' && file.patch !== '')
@@ -1356,7 +1358,7 @@ export class Jobs {
       .join('\n')
     if (diff === '') {
       record('skipped', { status: 'skipped', reason: 'no patch in the changed-file list' })
-      return { block: null }
+      return { block: null, reused: false }
     }
     const packet = assembleAdversarialPacket({
       baseSha,
@@ -1382,7 +1384,7 @@ export class Jobs {
       })
     } catch (error) {
       record('unavailable', { status: 'unavailable', reason: String(error).slice(0, 300) })
-      return { block: null }
+      return { block: null, reused: false }
     }
     const block = adversarialMergeBlock(review)
     record(review.verdict.kind, {
@@ -1394,7 +1396,7 @@ export class Jobs {
     } else if (review.verdict.kind === 'invalid') {
       this.store.audit(job.user_id, 'job.adversarial_rejected', `${job.id}: ${review.verdict.reason}`)
     }
-    return { block }
+    return { block, reused: false }
   }
 
   private async tryMerge(job: JobRow, prUrl: string, manual: boolean): Promise<{ ok: boolean; message?: string }> {
@@ -1556,8 +1558,14 @@ export class Jobs {
       if (!manual) {
         const adversarial = await this.adversarialPass(job, client, owner, name, pr, checks)
         if (adversarial.block !== null) {
-          this.store.audit(job.user_id, 'job.merge_adversarial_blocked', `${job.id}: ${adversarial.block.file}:${adversarial.block.line}`)
-          this.store.notify(job.user_id, 'job', `任务 ${job.id} 的独立对抗式审核指出了具体风险 ${adversarial.block.file}:${adversarial.block.line}，自动合并已阻止。`)
+          // One tip, one refusal. A reused verdict means this refusal was recorded
+          // and announced when the pass first ran; recording it again on every
+          // reconcile pass would grow the audit trail 1,2,3,4 and notify the same
+          // maintainer about the same commit every few minutes.
+          if (!adversarial.reused) {
+            this.store.audit(job.user_id, 'job.merge_adversarial_blocked', `${job.id}: ${adversarial.block.file}:${adversarial.block.line}`)
+            this.store.notify(job.user_id, 'job', `任务 ${job.id} 的独立对抗式审核指出了具体风险 ${adversarial.block.file}:${adversarial.block.line}，自动合并已阻止。`)
+          }
           return {
             ok: false,
             message: `独立对抗式审核指出具体风险：${adversarial.block.file}:${adversarial.block.line}，自动合并已阻止。`,
