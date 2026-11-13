@@ -191,7 +191,7 @@ test('a triage job opens no branch or PR and stores a ranked proposal with dupli
     assert.match(page, /Work type contract/)
     assert.match(page, /Triage output/)
     assert.match(page, /data-triage-next/)
-    assert.ok(page.includes('https://github.com/o/r/issues/2'))
+    assert.match(page, /Document the retry policy/)
   } finally {
     store.close()
   }
