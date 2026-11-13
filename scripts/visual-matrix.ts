@@ -76,22 +76,50 @@ async function stopServer(child: ReturnType<typeof spawn>): Promise<void> {
 async function checkPage(page: import('playwright').Page, locale: string, width: number, path: string): Promise<void> {
   await page.goto(`${base}${path}`, { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(150)
+  // No helper functions inside `evaluate`: the runner's esbuild pass injects a
+  // `__name` helper into named functions, and the browser context has no such
+  // binding, so a function here fails with "ReferenceError: __name".
   const result = await page.evaluate(() => {
     const clientWidth = document.documentElement.clientWidth
-    const bad: string[] = []
+    const bad: {
+      name: string
+      waiver: boolean
+      clipped: boolean
+      scrollerAncestor: boolean
+      isScroller: boolean
+    }[] = []
     for (const element of document.querySelectorAll('body *')) {
       const rect = element.getBoundingClientRect()
       if (rect.width <= 0 || rect.right <= clientWidth + 1) continue
+      const style = getComputedStyle(element)
+      if (style.position === 'fixed') continue
       const scroll = element.closest('.table-scroll')
-      if (scroll !== null && scroll !== element) continue
-      if (getComputedStyle(element).position === 'fixed') continue
-      if (element.getAttribute('data-allow-overflow') !== null) continue
+      // `data-allow-overflow` is a request, not a verdict: the ancestor walk
+      // decides whether a scroller can bring the element into view, and an
+      // element that is itself the overflowing scroller stays a failure. A
+      // scroller only hides content when it has somewhere to scroll to, so
+      // `scrollWidth > clientWidth` is part of the test, not just overflow-x.
+      let scrollerAncestor = false
+      for (let parent = element.parentElement; parent !== null; parent = parent.parentElement) {
+        const parentStyle = getComputedStyle(parent)
+        if (parentStyle.overflowX !== 'auto' && parentStyle.overflowX !== 'scroll') continue
+        if (parent.scrollWidth > parent.clientWidth + 1) {
+          scrollerAncestor = true
+          break
+        }
+      }
       const name = element.tagName.toLowerCase()
       const classes = typeof element.className === 'string'
         ? element.className.split(/\s+/).filter((value) => value !== '').slice(0, 2).join('.')
         : ''
-      bad.push(classes === '' ? name : `${name}.${classes}`)
-      if (bad.length >= 3) break
+      bad.push({
+        name: classes === '' ? name : `${name}.${classes}`,
+        waiver: element.hasAttribute('data-allow-overflow'),
+        clipped: scroll !== null && scroll !== element,
+        scrollerAncestor,
+        isScroller: (style.overflowX === 'auto' || style.overflowX === 'scroll')
+          && element.scrollWidth > element.clientWidth + 1,
+      })
     }
     return { scrollWidth: document.documentElement.scrollWidth, clientWidth, bad }
   })
