@@ -764,7 +764,9 @@ once per failed review, with the same 1-minute cooldown and 30-minute cap and th
 same pull request and work item; a review that already recorded a
 `review_score` is never retried automatically, because its verdict is already
 posted. `summary` is the job's progress line, written on every running heartbeat,
-not a post marker, so it does not block a retry. If a review posted its comments
+not a post marker, so it does not block a retry; it and `error` pass through
+`src/lib/secrets.ts` before the row is written and again when the page renders
+them (`docs/decisions/0015`). If a review posted its comments
 and then lost the terminal callback, nothing stored tells that apart from a
 review that never posted; that residual case is manual. `github`, `quota`,
 `credential` and `review` failures stay manual.

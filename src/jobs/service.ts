@@ -8,6 +8,7 @@ import { dailyDigestEmail, jobAttentionEmail, jobFailedEmail, jobSucceededEmail,
 import { notifyEmail, replyAddressFor } from '../email/recipient.js'
 import { sendNotificationWebhook } from '../lib/webhook.js'
 import { log } from '../lib/log.js'
+import { redact } from '../lib/secrets.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
@@ -143,10 +144,10 @@ function progressSummary(value: unknown): string | undefined {
   if (text.startsWith('{')) {
     try {
       const parsed = JSON.parse(text) as { summary?: unknown }
-      if (typeof parsed.summary === 'string' && parsed.summary.trim() !== '') return parsed.summary.slice(0, 4000)
+      if (typeof parsed.summary === 'string' && parsed.summary.trim() !== '') return redact(parsed.summary).slice(0, 4000)
     } catch {}
   }
-  return value.slice(0, 4000)
+  return redact(value).slice(0, 4000)
 }
 
 // #251: the follow-up's duplicate key and parked key are both built from this,
@@ -297,16 +298,17 @@ export class Jobs {
     const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
     if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { trace: jobId, error: String(error) }))
-    this.store.updateJob(jobId, { status: 'cancelled', error: reason.slice(0, 1000), finished_at: nowIso() })
+    const cleanReason = redact(reason).slice(0, 1000)
+    this.store.updateJob(jobId, { status: 'cancelled', error: cleanReason, finished_at: nowIso() })
     if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_status: 'cancelled' })
     else this.store.updateRepo(job.repo_id, { last_status: 'cancelled' })
     if (job.work_item_id !== null) {
       const item = this.store.getWorkItem(job.work_item_id)
       if (item !== undefined) this.store.updateWorkItem(item.id, { state: 'closed' })
     }
-    this.store.audit(job.user_id, 'job.cancelled', `${jobId}: ${reason.slice(0, 300)}`)
+    this.store.audit(job.user_id, 'job.cancelled', `${jobId}: ${cleanReason.slice(0, 300)}`)
     this.store.event('job_cancelled', { userId: job.user_id, repoId: job.repo_id, jobId })
-    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.cancelled', meta: reason })
+    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.cancelled', meta: cleanReason })
     return { ok: true, ...stop }
   }
 
@@ -318,11 +320,12 @@ export class Jobs {
     const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
     if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { trace: jobId, error: String(error) }))
-    this.store.updateJob(jobId, { status: 'paused', error: reason.slice(0, 1000) })
+    const cleanReason = redact(reason).slice(0, 1000)
+    this.store.updateJob(jobId, { status: 'paused', error: cleanReason })
     this.store.updateRepo(job.repo_id, { last_status: 'paused', ...(job.kind === 'review' ? { last_review_status: 'paused' } : {}) })
     this.store.audit(job.user_id, 'job.paused', jobId)
     this.store.event('job_paused', { userId: job.user_id, repoId: job.repo_id, jobId })
-    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.paused', meta: reason })
+    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.paused', meta: cleanReason })
     return { ok: true, ...stop }
   }
 
@@ -378,7 +381,7 @@ export class Jobs {
       ...(resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {}),
       ...(options.workItemId === undefined ? {} : { workItemId: options.workItemId }),
     })
-    this.store.audit(actorUserId, 'job.retried', `${jobId} -> ${result.job?.id ?? result.error ?? 'failed'}`)
+    this.store.audit(actorUserId, 'job.retried', `${jobId} -> ${result.job?.id ?? (result.error === undefined ? 'failed' : redact(result.error))}`)
     // The console banner builds its sentence from the enqueue code, so the
     // refusal has to travel with it rather than being flattened to one string.
     if (!result.ok || result.job === undefined) return { ok: false, error: result.error ?? '重试失败。', code: result.code, detail: result.detail }
@@ -624,9 +627,9 @@ export class Jobs {
     const current = this.store.getRepo(repo.id)
     if (current !== undefined && current.auto_iterate === 1) this.store.updateRepo(repo.id, { auto_iterate: 0 })
     const message = error instanceof Error ? error.message : String(error)
-    this.store.audit(repo.user_id, 'repo.credential_invalid', `${repo.owner}/${repo.name}: ${message.slice(0, 200)}`)
+    this.store.audit(repo.user_id, 'repo.credential_invalid', `${repo.owner}/${repo.name}: ${redact(message).slice(0, 200)}`)
     this.store.notify(repo.user_id, 'job', `${repo.owner}/${repo.name} 的 GitHub token 权限不足，自动迭代已暂停；请重新授权后手动开启。`)
-    void sendNotificationWebhook(this.config, 'repo.credential_invalid', { text: `${repo.owner}/${repo.name}: GitHub token is invalid`, repoId: repo.id, error: message.slice(0, 300) })
+    void sendNotificationWebhook(this.config, 'repo.credential_invalid', { text: `${repo.owner}/${repo.name}: GitHub token is invalid`, repoId: repo.id, error: redact(message).slice(0, 300) })
   }
 
   /**
@@ -915,13 +918,13 @@ export class Jobs {
       // retried twice as if the instance had been down. The refusal has its own
       // code; only a failure that names neither keeps the bridge category.
       const startCode: FailureCode = providerRefusalCode(message) ?? 'BRIDGE_ERROR'
-      this.store.updateJob(job.id, { status: 'failed', error: message.slice(0, 1000), error_code: startCode, finished_at: nowIso() })
+      this.store.updateJob(job.id, { status: 'failed', error: redact(message).slice(0, 1000), error_code: startCode, finished_at: nowIso() })
       this.store.releaseJobLease(job.id)
       this.clearLeaseHeartbeat(job.id)
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
       else this.store.updateRepo(repo.id, { last_status: 'failed' })
-      this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${message}`, startCode)
-      this.store.audit(user.id, 'job.failed', `${job.id}: ${message.slice(0, 300)}`)
+      this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${redact(message)}`, startCode)
+      this.store.audit(user.id, 'job.failed', `${job.id}: ${redact(message).slice(0, 300)}`)
       jobLog.error('job start failed', { error: message })
       return { ok: false, job: this.store.getJob(job.id), error: message, code: 'RUNNER_ERROR' }
     }
@@ -977,6 +980,11 @@ export class Jobs {
     const prUrl = result.prUrl === undefined ? job.pr_url : result.prUrl
     const issueUrl = result.issueUrl === undefined ? job.issue_url : result.issueUrl
     const reviewScore = result.reviewScore ?? job.review_score
+    // #458: redact before either cut. The same clean values go to the row, the
+    // digest and the notices; a secret cut in half is a fragment no later pass
+    // can recognise.
+    const summary = redact(result.summary ?? job.summary ?? '').slice(0, 4000)
+    const error = redact(result.error ?? job.error ?? '').slice(0, 2000)
     // The guarded transition is the idempotency key: a lost update means another
     // delivery already finalised the job and must own the side effects.
     const claimed = this.store.claimJobTerminal(jobId, result.status, fingerprint, {
@@ -986,8 +994,8 @@ export class Jobs {
       review_score: reviewScore,
       attribution_json: attribution === null ? job.attribution_json : JSON.stringify(attribution),
       evidence_json: evidence === null ? job.evidence_json : JSON.stringify(evidence),
-      summary: (result.summary ?? job.summary ?? '').slice(0, 4000),
-      error: (result.error ?? job.error ?? '').slice(0, 2000),
+      summary,
+      error,
       error_code: result.errorCode ?? job.error_code ?? null,
       finished_at: nowIso(),
     })
@@ -1000,7 +1008,7 @@ export class Jobs {
     if (Number.isFinite(started) && Number.isFinite(ended)) observeHistogram('fledge_job_seconds', Math.max(0, (ended - started) / 1000), { kind: job.kind, status: result.status }, 'Job duration')
     this.syncWorkItemForJob(job, { status: result.status, prUrl, issueUrl })
     const finalJob = this.store.getJob(jobId) ?? job
-    const digest = buildRunDigest(finalJob, { status: result.status, summary: result.summary, issueUrl, prUrl })
+    const digest = buildRunDigest(finalJob, { status: result.status, summary, issueUrl, prUrl })
     this.store.updateJob(jobId, { continuity_json: JSON.stringify(digest), output_kind: digest.output_kind })
     incCounter('fledge_job_output_total', { kind: job.kind, output: digest.output_kind }, 1, 'Scheduled output classification')
     if (digest.output_kind === 'meta') {
@@ -1021,9 +1029,13 @@ export class Jobs {
     revoke()
     this.store.audit(job.user_id, `job.${result.status}`, jobId)
     this.store.event(`job_${result.status}`, { userId: job.user_id, repoId: job.repo_id, jobId })
-    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: `job.${result.status}`, step: job.kind, meta: result.error ?? result.summary ?? null })
+    // The event meta keeps its original choice of value (the payload's error,
+    // else its summary), redacted; the fallback to `job.error` stays local to the
+    // row and the notice.
+    const eventMeta = result.error ?? result.summary ?? null
+    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: `job.${result.status}`, step: job.kind, meta: eventMeta === null ? null : redact(eventMeta) })
     if (result.status === 'succeeded' && prUrl !== null) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
-    if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? job.error ?? '未知原因'}`, this.store.getJob(jobId)?.error_code ?? null)
+    if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${redact(result.error ?? job.error ?? '未知原因')}`, this.store.getJob(jobId)?.error_code ?? null)
     if (result.status === 'succeeded' || result.status === 'failed') {
       // #353: a success has no retry behind it, so its mail is decided here; a
       // failure waits for the retry decision below.
@@ -1037,8 +1049,8 @@ export class Jobs {
         status: result.status,
         prUrl: prUrl,
         issueUrl: issueUrl,
-        summary: result.summary ?? job.summary ?? '',
-        error: result.error ?? job.error ?? '',
+        summary: redact(result.summary ?? job.summary ?? ''),
+        error: redact(result.error ?? job.error ?? ''),
       })
     }
     const repo = this.store.getRepo(job.repo_id)
@@ -1154,7 +1166,7 @@ export class Jobs {
         log.info('retry started', { trace: original.id, retry: result.job?.id })
       } else if (result.code !== 'JOB_ACTIVE' && result.code !== 'INSTANCE_NOT_READY') {
         this.store.deleteSetting(row.key)
-        this.store.audit(repo.user_id, 'job.retry_dropped', `${original.id}: ${result.code ?? result.error ?? 'unknown'}`)
+        this.store.audit(repo.user_id, 'job.retry_dropped', `${original.id}: ${result.code ?? (result.error === undefined ? 'unknown' : redact(result.error))}`)
       }
     }
   }
@@ -2139,8 +2151,8 @@ export class Jobs {
       teamUrl: `${this.config.baseUrl}/repos/${repo.id}/jobs/${job.id}`,
       issueUrl: result.issueUrl === undefined ? job.issue_url : result.issueUrl,
       prUrl: result.prUrl === undefined ? job.pr_url : result.prUrl,
-      summary: result.summary ?? job.summary ?? '',
-      error: result.error ?? job.error ?? '',
+      summary: redact(result.summary ?? job.summary ?? ''),
+      error: redact(result.error ?? job.error ?? ''),
       reviewScore: result.reviewScore ?? job.review_score,
     }
     try {
@@ -2461,10 +2473,10 @@ export class Jobs {
     const issueUrl = repoLink(payload.issueUrl, 'issues')
     const reviewScore = typeof payload.reviewScore === 'number' && Number.isFinite(payload.reviewScore) ? Math.max(0, Math.min(100, Math.round(payload.reviewScore))) : undefined
     const summary = progressSummary(payload.summary)
-    const error = typeof payload.error === 'string' ? payload.error.slice(0, 2000) : undefined
+    const error = typeof payload.error === 'string' ? redact(payload.error).slice(0, 2000) : undefined
     const attribution = parseAttribution(payload.attribution)
     const evidence = parseEvidence(payload.evidence)
-    const checkpoint = typeof payload.checkpoint === 'string' ? payload.checkpoint.trim().slice(0, 4000) : undefined
+    const checkpoint = typeof payload.checkpoint === 'string' ? redact(payload.checkpoint.trim()).slice(0, 4000) : undefined
     if (branch !== undefined && (!isValidBranchName(branch) || branch === job.base_branch)) {
       return { ok: false, status: 400, error: 'invalid branch' }
     }
@@ -2915,13 +2927,13 @@ export class Jobs {
       revoke()
       const message = String(error instanceof Error ? error.message : error)
       const startCode: FailureCode = providerRefusalCode(message) ?? 'BRIDGE_ERROR'
-      this.store.updateJob(job.id, { status: 'failed', error: message.slice(0, 1000), error_code: startCode, finished_at: nowIso() })
+      this.store.updateJob(job.id, { status: 'failed', error: redact(message).slice(0, 1000), error_code: startCode, finished_at: nowIso() })
       this.store.releaseJobLease(job.id)
       this.clearLeaseHeartbeat(job.id)
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
       else this.store.updateRepo(repo.id, { last_status: 'failed' })
-      this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${message}`, startCode)
-      this.store.audit(user.id, 'job.failed', `${job.id}: ${message.slice(0, 300)}`)
+      this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${redact(message)}`, startCode)
+      this.store.audit(user.id, 'job.failed', `${job.id}: ${redact(message).slice(0, 300)}`)
       jobLog.error('queued job start failed', { error: message })
     }
   }

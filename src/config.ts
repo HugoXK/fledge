@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 import { buildIdentity } from './lib/buildIdentity.js'
 import { DEFAULT_EXPECTED_HOURS } from './lib/backupStatus.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
+import { registerRedactionSecrets } from './lib/secrets.js'
 
 export type RunnerMode = 'mock' | 'flybot'
 export type MailTransport = 'console' | 'smtp'
@@ -384,6 +385,18 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
   if (merged.plan.reminderDays >= merged.plan.expiryDays) {
     throw new Error(`PLAN_REMINDER_DAYS (${merged.plan.reminderDays}) must be smaller than PLAN_EXPIRY_DAYS (${merged.plan.expiryDays}); a reminder at or after the deadline is sent immediately.`)
   }
+  // #458: these values have no recognisable shape, so the one redactor is told
+  // them here, once, before anything can log, store or mail them.
+  registerRedactionSecrets([
+    merged.sessionSecret,
+    merged.tokenEncryptionKey,
+    merged.github.clientSecret,
+    merged.githubApp.webhookSecret,
+    merged.mail.smtp.pass,
+    merged.llm.key,
+    merged.runner.bridgeToken,
+    merged.metrics.token,
+  ])
   return merged
 }
 
