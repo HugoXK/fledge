@@ -709,7 +709,8 @@ open work it returns `none` with reason `idle`: the scheduler writes
 `last_status='idle'` and creates no job, issue or PR. When the repository's
 discovery interval is due, it may instead run one `discover` job; that job may
 create at most one concrete issue (never a PR/branch), and if it finds nothing
-concrete it creates nothing. The job goal gets a bounded
+concrete it creates nothing. The callback refuses a discovery result that carries
+a branch or pull request (`DISCOVERY_PR_FORBIDDEN`). The job goal gets a bounded
 `Carry-over` block with the last three run digests and up to four open items; the
 block is data, not an instruction, and is capped well below the 4000-character
 goal limit. Each finished run is classified as `pr`, `issue`, `review`, `zero`,
