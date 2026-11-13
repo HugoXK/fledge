@@ -1,4 +1,5 @@
 import type { JobRow, RepoRow, WorkItemRow } from '../db.js'
+import { redact } from '../lib/secrets.js'
 
 //: A scheduled run's product, so a zero-output or meta run cannot look like a
 //: productive one in the aggregate.
@@ -44,6 +45,12 @@ export interface RunDigest {
   work_item_id: string | null
 }
 
+// #458: a link can carry a credential in its userinfo or query; it is stored and
+// carried into the next prompt, so it goes through the same redactor.
+function cleanLink(value: string | null): string | null {
+  return value === null ? null : redact(value)
+}
+
 export function buildRunDigest(
   job: JobRow,
   result: { status: string; summary?: string | null; issueUrl?: string | null; prUrl?: string | null },
@@ -63,9 +70,11 @@ export function buildRunDigest(
     output_kind: outputKind,
     started_at: job.started_at,
     finished_at: job.finished_at,
-    summary: (result.summary ?? job.summary ?? '').slice(0, 1200),
-    issue_url: result.issueUrl ?? job.issue_url,
-    pr_url: result.prUrl ?? job.pr_url,
+    // #458: redact before the slice. A secret cut in half is a fragment no
+    // pattern can match, so the cut must see the clean value.
+    summary: redact(result.summary ?? job.summary ?? '').slice(0, 1200),
+    issue_url: cleanLink(result.issueUrl ?? job.issue_url),
+    pr_url: cleanLink(result.prUrl ?? job.pr_url),
     work_item_id: job.work_item_id,
   }
 }
@@ -89,8 +98,10 @@ export function buildCarryOver(input: {
     lines.push('Recent runs:')
     for (const job of recent) {
       const digest = parseDigest(job.continuity_json)
-      const summary = (digest?.summary ?? job.summary ?? job.error ?? '').replace(/\s+/g, ' ').slice(0, 220)
-      const links = [digest?.issue_url ?? job.issue_url, digest?.pr_url ?? job.pr_url].filter(Boolean) as string[]
+      const summary = redact(digest?.summary ?? job.summary ?? job.error ?? '').replace(/\s+/g, ' ').slice(0, 220)
+      const links = [digest?.issue_url ?? job.issue_url, digest?.pr_url ?? job.pr_url]
+        .filter(Boolean)
+        .map((link) => redact(link as string))
       lines.push(
         `- ${job.created_at.slice(0, 16)} ${job.kind} ${job.status}: ${summary || '(no summary)'}` +
         (links.length > 0 ? ` [${[...new Set(links)].join(' ')}]` : ''),

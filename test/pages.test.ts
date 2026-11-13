@@ -1865,7 +1865,7 @@ test('admin search links every later page and keeps the filters per section', ()
     const user = makeUser(store, { login: 'search-pager', status: 'approved' })
     const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
     const filters = { q: 'x', status: 'failed', kind: 'iterate', action: 'repo.settings', from: '2026-01-01', to: '2026-01-31' }
-    const page = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map([[user.id, user.login]]), filters, jobsPage: 1, jobsTotal: 45, auditPage: 2, auditTotal: 60, perPage: 20 })
+    const page = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map([[user.id, user.login]]), filters, jobsPage: 1, jobsTotal: 45, auditPage: 2, auditTotal: 60, perPage: 20, lastJobsExport: null, lastAuditExport: null })
 
     const jobsNext = page.match(/href="([^"]*jobsPage=2[^"]*)"/)?.at(1)
     assert.ok(jobsNext, 'the jobs section links to its own second page')
@@ -1883,7 +1883,7 @@ test('admin search links every later page and keeps the filters per section', ()
     assert.match(auditNext, /jobsPage=1/, 'the audit link keeps the jobs section on its page')
     assert.doesNotMatch(auditNext, /status=/, 'the audit link carries no jobs-only filter')
 
-    const short = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map(), filters, jobsPage: 1, jobsTotal: 20, auditPage: 1, auditTotal: 20, perPage: 20 })
+    const short = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map(), filters, jobsPage: 1, jobsTotal: 20, auditPage: 1, auditTotal: 20, perPage: 20, lastJobsExport: null, lastAuditExport: null })
     assert.doesNotMatch(short, /jobsPage=2/, 'a section that fits one page renders no jobs pager')
     assert.doesNotMatch(short, /auditPage=2/, 'a section that fits one page renders no audit pager')
   } finally {

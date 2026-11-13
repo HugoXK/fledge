@@ -219,6 +219,26 @@ full answers. Evidence strings (`tests`, `checks`, `rollback`) are written by
 the agent and rendered on an super-admin-only job page; they must not contain
 secrets. `/admin/metrics` is admin-only and read-only.
 
+### Job summaries, errors and digests
+
+A runner's `summary`, `error` and callback `checkpoint` are free text, and so are
+the issue/PR links a run reports: a model or a bridge script can echo a token into
+any of them, and the job page, the notification mail and the next run's prompt
+then repeat it. Three layers apply to that text:
+
+- `redact()` (`src/lib/secrets.ts`) runs **before** every slice, so a truncation
+  cannot leave a fragment (`ghp_…` with the body cut off) that no pattern matches.
+  It recognises the token shapes (GitHub, `sk-`, `flg_`, AWS, PEM, bearer,
+  `api_key:`) and the literal values of secrets that have no shape — the SMTP
+  password, model key, session secret, webhook secret, bridge token — which
+  `loadConfig()` registers through `registerRedactionSecrets()`.
+- Both writers, `updateJob()` and `claimJobTerminal()`, send `summary` and `error`
+  through one helper, so a caller that skips the job service (a retry, an admin
+  action, a future runner) cannot store a raw value either.
+- The render pass redacts again: the summary cell, the job page's technical-detail
+  block and the admin jobs table. Rows written before this control still hold the
+  raw text, and a stored value is not proof that the page is clean.
+
 ### Job email notifications
 
 Job and digest mail is sent from `MAIL_FROM` only to the super admin's configured
@@ -242,6 +262,15 @@ per day. Test mail is rate-limited to one per minute.
   another admin or the super admin. Admin jobs and audit rows are filtered to that
   visible set and actor names are masked in the admin audit view. The owner sees
   all users and actions.
+- The two admin CSV exports (`/admin/export/jobs.csv`, `/admin/export/audit.csv`)
+  leave one `admin.jobs_export` / `admin.audit_export` row per file recording
+  `filters=` (the allow-listed codes and ISO dates verbatim), `rows=`, `scope=`
+  (`all` for the owner, `users:<n>` for a scoped admin), and `sha256=` over the
+  exact bytes sent, so a file found elsewhere can be matched to its row. Free-text
+  filters (`q`, `action`) are recorded only as `<length>ch#<8 hex>`, because an
+  admin may search by an address; no trail field carries an address or a fragment
+  of an exported row. The search page shows the newest export for the viewer's
+  scope, and the read is paged so one query never materialises the 5000-row cap.
 - The super-admin-only preview cookie renders the normal-user UI while leaving the
   actual session owner-scoped behind the scenes. The owner workspace is available
   in preview like a normal-user page; advanced team routes remain blocked.

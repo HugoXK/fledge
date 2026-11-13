@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import fastifyCookie from '@fastify/cookie'
 import fastifyFormbody from '@fastify/formbody'
 import fastifyStatic from '@fastify/static'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { Config } from './config.js'
@@ -21,7 +22,8 @@ import { assertSafeNotificationWebhook } from './lib/webhook.js'
 import { quotaView } from './gateway/quota.js'
 import { parseAttributionJson } from './lib/attribution.js'
 import { failureBreakdown } from './lib/failure.js'
-import { Jobs } from './jobs/service.js'
+import { DEFAULT_TRIAGE_GOAL, Jobs } from './jobs/service.js'
+import { parseIssueUrl } from './jobs/prUrl.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
 import fastifyRateLimit from '@fastify/rate-limit'
@@ -1358,6 +1360,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         }),
         ...(workState !== undefined && isWorkItemState(workState) ? { workState } : {}),
         reviewTrend,
+        postmortems: store.listPostmortemsForRepo(repo.id, { openOnly: true }),
+        recurrences: store.listPostmortemRecurrences(repo.id),
         models: store.listUserProviderModels(repo.user_id),
         repoModelIds: repoModels.map((model) => model.id),
         repoBotModels: store.listRepoBotModels(repo.id),
@@ -1782,6 +1786,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewerActive: store.listActiveJobsForUser(viewer.user.id),
       repoLabels,
       events: store.listJobEvents(job.id, 200),
+      postmortem: store.getPostmortemForJob(job.id) ?? null,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
@@ -2083,6 +2088,34 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const key = result.ok ? 'notice' : 'error'
     const message = result.ok ? '计划任务已排队，不会写代码或开 PR。' : refusalValue(result, '计划任务启动失败。')
     return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
+  })
+
+  // #523: triage is repository-scoped, so its start belongs on the repository
+  // page behind `ownedRepo`, not on the admin console: an operator-only start
+  // would leave the repository's own owner unable to triage it. The one input the
+  // control accepts is an issue URL that focuses the board, and it is bound to
+  // this repository here, on the input side, with the same rule the callback
+  // applies — a foreign host or a foreign repository never reaches `enqueue`.
+  app.post('/repos/:id/triage', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const t = translator(request.locale ?? 'zh')
+    const issueUrl = (form(request).issueUrl ?? '').trim()
+    if (issueUrl !== '' && !parseIssueUrl(repo, issueUrl, config.github.apiBase).ok) {
+      store.audit(viewer.user.id, 'triage.refused', `${repo.owner}/${repo.name}: ${issueUrl.slice(0, 200)}`)
+      const message = t('这个 Issue 链接不属于当前仓库，分诊没有开始。', 'That issue link does not belong to this repository, so no triage job started.')
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(message)}#triage`)
+    }
+    const goal = issueUrl === '' ? undefined : `${DEFAULT_TRIAGE_GOAL}\n\nStart the board with the issue at ${issueUrl}.`
+    const result = await jobs.enqueue(repo, 'manual', goal, 'triage')
+    store.audit(viewer.user.id, 'triage.enqueued', `${repo.owner}/${repo.name} ${result.ok ? 'ok' : result.error ?? 'failed'}`)
+    const key = result.ok ? 'notice' : 'error'
+    const message = result.ok
+      ? t('分诊任务已排队；只读，不会创建分支或 PR。', 'Triage job queued; it is read-only and opens no branch or pull request.')
+      : refusalValue(result, t('分诊任务启动失败。', 'The triage job did not start.'))
+    // A queued triage lands on its own job page, where the work-type contract and
+    // the empty board are visible without a second click.
+    if (result.ok && result.job !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?${key}=${encodeURIComponent(message)}`)
+    return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}#triage`)
   })
 
   app.post('/repos/:id/refresh', async (request, reply) => {
@@ -2723,6 +2756,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repo,
       job,
       events: store.listJobEvents(job.id, 200),
+      postmortem: store.getPostmortemForJob(job.id) ?? null,
       supportMode: true,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
@@ -2763,6 +2797,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       jobsTotal,
       auditPage, auditTotal,
       perPage,
+      lastJobsExport: lastExportOf(userIds, 'admin.jobs_export'),
+      lastAuditExport: lastExportOf(userIds, 'admin.audit_export'),
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
@@ -2795,6 +2831,58 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     ))
   }
 
+  // #459: the trail has to tie a file to its row and say how far the export
+  // reached. Allow-listed filters are codes and ISO dates, so they are echoed
+  // verbatim; `q` and `action` are free text (an admin may search by an address),
+  // so they are recorded lossily as length plus a digest prefix and never
+  // verbatim. No field may carry an address or a fragment of an exported row.
+  const lossyFilter = (name: string, value: string): string => {
+    const digest = createHash('sha256').update(value).digest('hex').slice(0, 8)
+    return `${name}=${String(value.length)}ch#${digest}`
+  }
+
+  const exportScope = (userIds: string[] | null): string => userIds === null ? 'scope=all' : `scope=users:${String(userIds.length)}`
+
+  const exportTrailDetail = (input: { filters: string[]; q: string; action?: string; rows: number; scope: string; sha256: string }): string => {
+    const parts: string[] = []
+    const echoed = input.filters.filter((value) => value !== '')
+    if (echoed.length > 0) parts.push(`filters=${echoed.join(',')}`)
+    if (input.q !== '') parts.push(lossyFilter('q', input.q))
+    if (input.action !== undefined && input.action !== '') parts.push(lossyFilter('action', input.action))
+    parts.push(`rows=${String(input.rows)}`, input.scope, `sha256=${input.sha256}`)
+    return parts.join(' ')
+  }
+
+  // The cap test asserts whole bodies, so the read is paged but the document is
+  // still assembled before sending: no single store call materialises the cap.
+  const EXPORT_PAGE_ROWS = 500
+  const assembleCsv = <T>(header: string, total: number, read: (limit: number, offset: number) => T[], line: (row: T) => string): { csv: string; rows: number } => {
+    const parts: string[] = [header]
+    let seen = 0
+    while (seen < total) {
+      const page = read(Math.min(EXPORT_PAGE_ROWS, total - seen), seen)
+      if (page.length === 0) break
+      for (const row of page) {
+        parts.push(line(row))
+        seen += 1
+      }
+    }
+    return { csv: parts.join('\n'), rows: seen }
+  }
+
+  // The newest completed export for the viewer's scope. A refused export keeps
+  // the pre-#459 `refused=too_large …` detail, so it is skipped: it has no file.
+  const lastExportOf = (userIds: string[] | null, action: 'admin.audit_export' | 'admin.jobs_export'): { at: string; rows: number; scope: string; sha256: string } | null => {
+    for (const row of store.searchAudit(userIds, { action }, 20, 0)) {
+      const detail = row.detail ?? ''
+      const rows = /(?:^|\s)rows=(\d+)(?:\s|$)/.exec(detail)
+      const scope = /(?:^|\s)(scope=all|scope=users:\d+)(?:\s|$)/.exec(detail)
+      const sha256 = /(?:^|\s)sha256=([0-9a-f]{64})(?:\s|$)/.exec(detail)
+      if (rows !== null && scope !== null && sha256 !== null) return { at: row.at, rows: Number(rows[1]), scope: scope[1] ?? '', sha256: sha256[1] ?? '' }
+    }
+    return null
+  }
+
   app.get('/admin/export/audit.csv', async (request, reply) => {
     const viewer = requireAdmin(request)
     if (viewer.preview === true) return reply.code(403).send({ error: 'preview' })
@@ -2803,10 +2891,21 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), action: (queryText(request, 'action') ?? '').slice(0, 80), from: (queryText(request, 'from') ?? '').slice(0, 20), to: to === '' ? '' : (to.length === 10 ? `${to}T23:59:59.999Z` : to) }
     const matched = store.countSearchAudit(userIds, filters)
     if (matched > EXPORT_ROW_CAP) return refuseLargeExport(request, reply, viewer, 'audit', matched)
-    const rows = store.searchAudit(userIds, filters, EXPORT_ROW_CAP, 0)
-    const csv = ['at,user_id,action,detail', ...rows.map((row) => [row.at, row.user_id ?? '', row.action, row.detail ?? ''].map(csvCell).join(','))].join('\n')
-    store.audit(viewer.user.id, 'admin.audit_export', `rows=${rows.length}`)
-    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-audit.csv"').send(csv)
+    const built = assembleCsv(
+      'at,user_id,action,detail',
+      matched,
+      (limit, offset) => store.searchAudit(userIds, filters, limit, offset),
+      (row) => [row.at, row.user_id ?? '', row.action, row.detail ?? ''].map(csvCell).join(','),
+    )
+    store.audit(viewer.user.id, 'admin.audit_export', exportTrailDetail({
+      filters: [filters.from === '' ? '' : `from=${filters.from}`, filters.to === '' ? '' : `to=${filters.to}`],
+      q: filters.q,
+      action: filters.action,
+      rows: built.rows,
+      scope: exportScope(userIds),
+      sha256: createHash('sha256').update(built.csv).digest('hex'),
+    }))
+    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-audit.csv"').send(built.csv)
   })
 
   app.get('/admin/export/jobs.csv', async (request, reply) => {
@@ -2816,10 +2915,20 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), status: (queryText(request, 'status') ?? '').slice(0, 30), kind: (queryText(request, 'kind') ?? '').slice(0, 30) }
     const matched = store.countSearchJobs(userIds, filters)
     if (matched > EXPORT_ROW_CAP) return refuseLargeExport(request, reply, viewer, 'jobs', matched)
-    const rows = store.searchJobs(userIds, filters, EXPORT_ROW_CAP, 0)
-    const csv = ['id,repo_id,user_id,status,kind,trigger,created_at,finished_at,pr_url,issue_url,cost_usd', ...rows.map((row) => [row.id, row.repo_id, row.user_id, row.status, row.kind, row.trigger, row.created_at, row.finished_at ?? '', row.pr_url ?? '', row.issue_url ?? '', row.cost_usd].map(csvCell).join(','))].join('\n')
-    store.audit(viewer.user.id, 'admin.jobs_export', `rows=${rows.length}`)
-    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-jobs.csv"').send(csv)
+    const built = assembleCsv(
+      'id,repo_id,user_id,status,kind,trigger,created_at,finished_at,pr_url,issue_url,cost_usd',
+      matched,
+      (limit, offset) => store.searchJobs(userIds, filters, limit, offset),
+      (row) => [row.id, row.repo_id, row.user_id, row.status, row.kind, row.trigger, row.created_at, row.finished_at ?? '', row.pr_url ?? '', row.issue_url ?? '', row.cost_usd].map(csvCell).join(','),
+    )
+    store.audit(viewer.user.id, 'admin.jobs_export', exportTrailDetail({
+      filters: [filters.status === '' ? '' : `status=${filters.status}`, filters.kind === '' ? '' : `kind=${filters.kind}`],
+      q: filters.q,
+      rows: built.rows,
+      scope: exportScope(userIds),
+      sha256: createHash('sha256').update(built.csv).digest('hex'),
+    }))
+    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-jobs.csv"').send(built.csv)
   })
 
   app.get('/admin/webhooks', async (request, reply) => {
