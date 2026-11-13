@@ -142,12 +142,20 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // lines on the merged tree and moved none of them. The rework after review
   // `901ad95` adds eight lines to the bulk add path below the four top-of-file
   // registrations, so the webhook anchor reads `:3197` and the rest stay.
+  // #460 rebases onto a main carrying #499 and re-reads all seven lines on its
+  // own tree: the re-authentication helper and the destructive-action limiter
+  // add 49 lines above the four top-of-file registrations, which read
+  // `:565`/`:600`/`:610`/`:620`, and the eight per-route rate-limit calls sit
+  // above the webhook registration, and the rotated-session comment added with
+  // them sits there too, so it reads `:3268`. The gateway pair does not move and
+  // stays `:155`/`:180`, because #497's change to that file lands below both
+  // registrations; no result is added or dismissed.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3197',
-    'js/missing-rate-limiting|src/app.ts|516',
-    'js/missing-rate-limiting|src/app.ts|551',
-    'js/missing-rate-limiting|src/app.ts|561',
-    'js/missing-rate-limiting|src/app.ts|571',
+    'js/missing-rate-limiting|src/app.ts|3268',
+    'js/missing-rate-limiting|src/app.ts|565',
+    'js/missing-rate-limiting|src/app.ts|600',
+    'js/missing-rate-limiting|src/app.ts|610',
+    'js/missing-rate-limiting|src/app.ts|620',
     'js/missing-rate-limiting|src/gateway/gateway.ts|155',
     'js/missing-rate-limiting|src/gateway/gateway.ts|180',  ])
   const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
