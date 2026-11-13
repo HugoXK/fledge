@@ -4,6 +4,7 @@ import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
 import { nextRun, type NextRun } from '../lib/nextRun.js'
+import { aheadOfViewer, queueRanks, rankQueued, type QueueRank } from '../lib/queueRank.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { renderState, stateCell, type StateAction } from './states.js'
@@ -352,17 +353,18 @@ interface EmptyJobs {
   action?: StateAction
 }
 
-function jobRows(locale: Locale, jobs: JobRow[], empty?: EmptyJobs): string {
+function jobRows(locale: Locale, jobs: JobRow[], empty?: EmptyJobs, ranks?: Map<string, QueueRank>): string {
   const t = translator(locale)
   if (jobs.length === 0) return stateCell(4, { kind: 'empty', title: empty?.title ?? t('还没有任务。', 'No jobs yet.'), body: empty === undefined ? t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.') : empty.body, action: empty?.action ?? { href: '/dashboard#add-repo', label: t('添加仓库', 'Add repository') } })
   return jobs
     .map((job) => {
       const summary = jobPlainSummary(locale, t, job)
       const attribution = jobAttribution(t, job)
+      const rank = job.status === 'queued' ? ranks?.get(job.id) : undefined
       return `<tr data-job-id="${escapeHtml(job.id)}">
         <td class="job-cell" data-label="${escapeHtml(t('任务', 'Job'))}">
           <a href="/repos/${escapeHtml(job.repo_id)}/jobs/${escapeHtml(job.id)}"><code>${escapeHtml(job.id)}</code></a> <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span>
-          <small class="job-meta">${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(humanTimeShort(job.created_at))}</small>
+          <small class="job-meta">${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(humanTimeShort(job.created_at))}</small>${rank === undefined ? '' : `<small class="job-meta" title="${escapeHtml(t('队列位置按优先级、再按到达顺序', 'queue position by priority, then arrival'))}" data-queue-rank>#${rank.position}/${rank.total} · P${job.priority}</small>`}
         </td>
         <td data-job-status data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, job.status)}${classifyFailure(job) === null ? '' : `<br /><small class="muted">${escapeHtml(failureLabel(t, classifyFailure(job)!.kind))}</small>`}</td>
         <td class="job-links" data-label="${escapeHtml(t('PR / Issue', 'PR / Issue'))}">${jobLinks(job)}</td>
@@ -372,10 +374,10 @@ function jobRows(locale: Locale, jobs: JobRow[], empty?: EmptyJobs): string {
     .join('')
 }
 
-function jobTable(locale: Locale, jobs: JobRow[], empty: EmptyJobs | undefined, table: { id: string; name?: string }): string {
+function jobTable(locale: Locale, jobs: JobRow[], empty: EmptyJobs | undefined, table: { id: string; name?: string; ranks?: Map<string, QueueRank> }): string {
   const t = translator(locale)
   const name = escapeHtml(table.name ?? t('任务', 'Jobs'))
-  return `<div class="table-scroll"><table class="job-table table-priority" id="${escapeHtml(table.id)}" aria-label="${name}"><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('PR / Issue', 'PR / Issue'))}</th><th data-priority="low">${escapeHtml(t('摘要', 'Summary'))}</th></tr></thead><tbody>${jobRows(locale, jobs, empty)}</tbody></table></div>`
+  return `<div class="table-scroll"><table class="job-table table-priority" id="${escapeHtml(table.id)}" aria-label="${name}"><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('PR / Issue', 'PR / Issue'))}</th><th data-priority="low">${escapeHtml(t('摘要', 'Summary'))}</th></tr></thead><tbody>${jobRows(locale, jobs, empty, table.ranks)}</tbody></table></div>`
 }
 
 function jobList(locale: Locale, jobs: JobRow[], repoLabels: Map<string, string> = new Map(), empty?: EmptyJobs): string {
@@ -878,11 +880,16 @@ export function dashboardPage(input: {
   // they live outside RepoRow, so the route reads them for every repository. A
   // caller that omits them still gets the shared formula, not a second one.
   nextRunFacts?: NextRunFact[]
+  // #565: the instance queue is wider than the visible table slice, so a queued
+  // row's position and total come from the route's queue read, not the page. A
+  // caller that omits the queue renders the list exactly as before.
+  queued?: JobRow[]
   setup?: SetupState
   notice?: string
   error?: string
 }): string {
   const { config, locale, viewer, repos, jobs, notifications, notice, error } = input
+  const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const questions = input.questions ?? []
   const personal = input.personal
   const windowDays = input.windowDays ?? 7
@@ -1028,7 +1035,7 @@ export function dashboardPage(input: {
           body: jobFilterLabels(jobFilter, repoOptions, t).join(t('、', ', ')),
           action: { href: dashboardHref(NO_JOB_FILTER, windowDays), label: t('清除筛选', 'Clear filters') },
         })
-      : jobTable(locale, jobs, { body: t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } }, { id: 'dashboard-jobs-table' })}
+      : jobTable(locale, jobs, { body: t('添加仓库并选择角色后运行一次；每个任务只开一个 PR。', 'Add a repository, choose a role and run one job; each job opens at most one pull request.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } }, { id: 'dashboard-jobs-table', ranks })}
     ${pager('/dashboard', 'jobsPage', jobsPage, jobsTotal, 10, t, { reposPage, ...(windowDays === 30 ? { window: 30 } : {}), ...jobFilterParams(jobFilter) }, '#jobs')}
   </section>
     </div>
@@ -1036,8 +1043,9 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; notice?: string; error?: string; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number } }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number } }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
+  const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const workItems = input.workItems ?? []
   const workState = input.workState
   const prJobs = input.prJobs ?? []
@@ -1334,7 +1342,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const repoSection = (id: string, content: string): string => `<section class="repo-section" id="${id}" data-repo-section="${id}" aria-labelledby="repo-tab-${id}">${content}</section>`
   const jobsCard = `  <section class="card" id="jobs">
     <h2>${escapeHtml(t('任务', 'Jobs'))}</h2>
-    ${jobTable(locale, jobs, emptyJobs, { id: 'repo-jobs-table' })}
+    ${jobTable(locale, jobs, emptyJobs, { id: 'repo-jobs-table', ranks })}
     ${pager(`/repos/${repo.id}`, 'jobsPage', jobsPage, jobsTotal, 10, t, {}, '#jobs')}
   </section>`
   const usage = input.usage
@@ -1497,12 +1505,14 @@ export function teamPage(input: {
   jobs: JobRow[]
   jobsPage?: number
   jobsTotal?: number
+  queued?: JobRow[]
   notice?: string
   error?: string
 }): string {
   const { config, locale, viewer, repo, instance, state, stateError, jobs, notice, error } = input
   const jobsPage = input.jobsPage ?? 1
   const jobsTotal = input.jobsTotal ?? jobs.length
+  const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const t = translator(locale)
   const team = instance === undefined ? null : parseTeam(instance.team_json)
   const ready = instance?.status === 'ready' && team !== null
@@ -1591,7 +1601,7 @@ export function teamPage(input: {
   </section>
   <section class="card" id="jobs">
     <h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2>
-    ${jobTable(locale, jobs, { body: t('去这个仓库的页面运行第一个任务；每次运行最多开一个 PR。', 'Run the first job from this repository page; each run opens at most one pull request.'), action: { href: `/repos/${escapeHtml(repo.id)}`, label: t('去仓库运行', 'Run from the repository') } }, { id: 'team-jobs-table' })}
+    ${jobTable(locale, jobs, { body: t('去这个仓库的页面运行第一个任务；每次运行最多开一个 PR。', 'Run the first job from this repository page; each run opens at most one pull request.'), action: { href: `/repos/${escapeHtml(repo.id)}`, label: t('去仓库运行', 'Run from the repository') } }, { id: 'team-jobs-table', ranks })}
     ${pager(`/repos/${repo.id}`, 'jobsPage', jobsPage, jobsTotal, 10, t, {}, '#jobs')}
   </section>
   <script src="/assets/team.js" defer></script>`
@@ -2364,13 +2374,18 @@ export function jobPage(input: {
   viewer: Viewer
   repo: RepoRow
   job: JobRow
-  queuePosition?: number
+  // #565: position and total are instance-wide counts, so the route hands over
+  // the queue rather than a bare index. The ahead-list is the viewer's own
+  // queued jobs only; a job owned by anybody else stays a count.
+  queued?: JobRow[]
+  viewerActive?: JobRow[]
+  repoLabels?: Map<string, string>
   events?: JobEventRow[]
   supportMode?: boolean
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, repo, job, queuePosition, notice, error } = input
+  const { config, locale, viewer, repo, job, notice, error } = input
   const events = input.events ?? []
   const supportMode = input.supportMode === true
   const t = translator(locale)
@@ -2514,12 +2529,36 @@ export function jobPage(input: {
   const jobLoading = job.status === 'queued' || job.status === 'running'
     ? renderState({ kind: 'loading', title: job.status === 'queued' ? t('任务已排队。', 'This job is queued.') : t('任务正在运行。', 'This job is running.'), body: job.status === 'queued' ? t('前面的任务结束后自动开始；这个页面会自己更新。', 'It starts as soon as the jobs ahead finish; this page updates by itself.') : t('团队进度会写进下面的时间线，不需要手动刷新。', 'Team progress lands in the timeline below; no manual refresh needed.'), skeletonLines: 2 })
     : ''
+  // #565: a queued job shows its place in the real (instance-wide) line as a
+  // count, the priority it competes on, the viewer's own jobs ahead of it, and —
+  // when other accounts are ahead — only how many. No identifier of another
+  // tenant's job is interpolated here; the order is the claimer's two keys.
+  const rank = job.status === 'queued' ? rankQueued(input.queued ?? [], job.id) : null
+  const queueBlock = rank === null ? '' : (() => {
+    const ahead = aheadOfViewer({ queued: input.queued ?? [], viewerActive: input.viewerActive ?? [], viewerId: viewer.user.id, jobId: job.id })
+    const labels = input.repoLabels ?? new Map<string, string>()
+    const ownedRows = ahead.owned.map((entry) => `<div class="list-row" data-queue-owned-job="${escapeHtml(entry.id)}">
+        <div class="list-main"><a href="/repos/${escapeHtml(entry.repo_id)}/jobs/${escapeHtml(entry.id)}">${escapeHtml(labels.get(entry.repo_id) ?? entry.repo_id)}</a>
+          <small>${escapeHtml(t(`优先级 ${entry.priority}（${triggerLabel(t, entry.trigger)}）`, `priority ${entry.priority} (${triggerLabel(t, entry.trigger).toLowerCase()})`))} · ${escapeHtml(humanTimeShort(entry.created_at))}</small></div>
+      </div>`).join('')
+    const others = ahead.othersAhead === 0
+      ? ''
+      : `<p class="fine" data-queue-others>${escapeHtml(ahead.othersAhead === 1
+        ? t('另有 1 个排队任务在前，不显示详情。', '1 other queued job is ahead; its details are not shown.')
+        : t(`另有 ${ahead.othersAhead} 个排队任务在前，不显示详情。`, `${ahead.othersAhead} other queued jobs are ahead; their details are not shown.`))}</p>`
+    return `<div data-queue>
+      <p class="fine" data-job-queue-position>${escapeHtml(t(`队列位置 ${rank.position} / 共 ${rank.total} · 优先级 ${job.priority}（${triggerLabel(t, job.trigger)}）`, `Queue position ${rank.position} of ${rank.total} · priority ${job.priority} (${triggerLabel(t, job.trigger).toLowerCase()})`))}</p>
+      <p class="fine" data-queue-rule>${escapeHtml(t('按优先级、再按进入顺序排队；同一位置可能有多个任务。仓库里已有运行中或更早的排队任务时，这个位置不会立即开始。', 'Position is by priority, then arrival; jobs equal on both share a position. A repository with a running or earlier queued job delays its own next job, so this is the order, not a promise that it starts next.'))}</p>
+      ${ahead.owned.length === 0 ? '' : `<p class="fine">${escapeHtml(t('你的排队任务，按优先级、再按进入顺序：', 'Your queued jobs, by priority, then arrival:'))}</p><div class="list" data-queue-owned>${ownedRows}</div>`}
+      ${others}
+    </div>`
+  })()
   const body = `<section class="card">
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('任务', 'JOB'))}</div>
         <h1><code>${escapeHtml(job.id)}</code></h1>
-        <p class="muted">${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)} · ${badge(t, job.status)} · ${escapeHtml(jobKindLabel(t, job))} · ${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(t('目标分支', 'Base branch'))} <code>${escapeHtml(job.base_branch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)))}</code>${job.base_sha === null ? '' : ` · ${escapeHtml(t('基于', 'Based on'))} <code>${escapeHtml(job.base_sha.slice(0, 12))}</code>`}${job.last_callback_at === null ? '' : ` · ${escapeHtml(t('最后心跳', 'Last heartbeat'))} ${escapeHtml(humanTimeShort(job.last_callback_at))}`}${queuePosition === undefined ? '' : ` · ${escapeHtml(t('队列位置', 'Queue position'))} ${queuePosition}`}</p>
+        <p class="muted">${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)} · ${badge(t, job.status)} · ${escapeHtml(jobKindLabel(t, job))} · ${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(t('目标分支', 'Base branch'))} <code>${escapeHtml(job.base_branch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)))}</code>${job.base_sha === null ? '' : ` · ${escapeHtml(t('基于', 'Based on'))} <code>${escapeHtml(job.base_sha.slice(0, 12))}</code>`}${job.last_callback_at === null ? '' : ` · ${escapeHtml(t('最后心跳', 'Last heartbeat'))} ${escapeHtml(humanTimeShort(job.last_callback_at))}`}</p>
       </div>
       <div class="row">
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a>
@@ -2531,6 +2570,7 @@ export function jobPage(input: {
         ${supportMode ? '' : retry}
       </div>
     </div>
+    ${queueBlock}
   </section>
   ${jobLoading}
   ${supportMode ? '' : planCard}
