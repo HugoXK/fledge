@@ -472,6 +472,31 @@ land on the default branch, and a skipped job would still publish a check run
 under the required name. Its `if:` tests the event first and reaches the
 association test only for `issue_comment`, so a stranger cannot start the
 `actions: write` job and the other three events never evaluate the association.
+The association gate is per job, not per workflow: any job holding `actions:
+write` must test `author_association` on every event a stranger can trigger, and
+`review-gate-repair` does the same for `pull_request_review` (reading
+`github.event.review.author_association`). `scripts/action-pins.mjs` enforces the
+rule for the whole tree — a job with `actions: write` on a stranger-reachable
+event without the matching association test reds the required `action-pins` job.
+The scan counts the permission in each form it takes: a block mapping, an inline
+`{ actions: write }`, `write-all`, and a workflow-level block that a job without
+its own inherits. Block indentation is not assumed: the jobs' width is taken from
+the first key after `jobs:`, and the events' width from the first key after
+`on:`, so a block indented three or four spaces is scanned like any other and a
+header with a trailing comment is still a header. A shape the parser cannot read
+is a finding rather than a skip — an unreadable `permissions:` value, an empty or
+unreadable `jobs:` block, an `on:` value that is neither a list, a block mapping
+nor a flow mapping, an entry under `jobs:` or `on:` that does not parse. The same
+holds per job: a job holding `actions: write` whose triggers are empty or
+unreadable is refused, and so is one on an event this gate cannot classify. The
+classifiable events are the association map plus an explicit `SAFE_EVENTS` list of
+triggers an outside account cannot start (`push`, `schedule`,
+`workflow_dispatch`, `workflow_call`, `workflow_run`, `merge_group`, `release`,
+`create`, `delete`, `repository_dispatch`, `deployment`, `deployment_status`,
+`page_build`, `status`, `registry_package`, `branch_protection_rule`, `public`) —
+any other event name reds until someone classifies it. The association list must
+be exactly `OWNER`, `MEMBER` and `COLLABORATOR`: an extra role, a missing role or
+a role-name substring is a finding.
 A PASS that arrives after a rejection at the same SHA keeps the
 check red until the repair step re-runs the failed run at that SHA; that now
 happens without a hand step. A run above the attempt cap (attempt 3, after
