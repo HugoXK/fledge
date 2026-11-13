@@ -276,6 +276,15 @@ user selected for this repository; `autoMerge` is true only for an iterate job
 when that role is `maintainer` and the repository auto-merge switch is on. Only
 while the job is `queued` or `running`.
 
+A `triage` job is a read-only workflow, and this response is where that is
+enforced rather than described: its `token` is a GitHub App installation token
+narrowed to `contents`, `issues` and `pull_requests` **read**, never the user's
+`repo`-scoped OAuth token, which cannot be narrowed. When the repository has no
+installation — so no narrower token can be minted — the read is refused with
+`403` and a `TRIAGE_READ_ONLY_TOKEN` error instead of returning a write
+credential, and the refusal is audited as `job.triage_token_unavailable`. `autoMerge`
+is always false for triage.
+
 Auto-merge only ever targets the pull request **this job produced**: the
 callback's `prUrl` must be this repository's own pull request — scheme and host
 equal to the recorded `upstream_html_url`/`fork_html_url` origin, or, when no
