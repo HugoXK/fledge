@@ -150,6 +150,37 @@ rules replace them:
 `test/uiSurfaces.test.ts` pins all three, including the count (`pages.ts` may
 carry exactly one `style="`).
 
+## Email shell (#468)
+
+Every transactional email is rendered through `emailShell()` in
+`src/email/templates.ts`, so job, digest, approval, quota, trial and test mail
+share one frame instead of each builder carrying its own markup:
+
+- **One table measure.** The card is a `role="presentation"` table at
+  `width:100%;max-width:640px;box-sizing:border-box`, inside a fluid outer table
+  with `width="100%"`. Outlook drops `max-width` from a `<div>`, so the 640px
+  measure lives on the table; a 360px client narrows it instead of scrolling
+  horizontally.
+- **Inline styles only.** There is no `<style>` block, `<link>`, `@import`, web
+  font or remote image. The head carries the dark-mode pair
+  `<meta name="color-scheme" content="light dark">` and
+  `<meta name="supported-color-schemes" content="light dark">`; the shell does
+  not add a `prefers-color-scheme` media query, because that would need the
+  forbidden `<style>` block.
+- **One wordmark and footer.** The card opens with the `Fledge` wordmark and
+  closes with the FlyBot line plus docs (`https://fledge-docs.hugoxk.online/docs/`)
+  and status (`https://hugoxk.online/status/`) links.
+- **Text parity.** Every builder returns a `text` part beside the HTML; it keeps
+  the same job, repository, PR, issue, score and link facts in a plain readable
+  form rather than a stripped summary.
+- **Failure stays loud.** The job-failure and digest failure headings keep the
+  `#b42318` red banner, and the subject lines keep their `[Fledge] 任务失败` /
+  `[失败 N]` marker. The shell never owns the subject, so the marker cannot drift.
+- **Escaped values.** Every interpolated user, repository, URL, summary and error
+  value passes through `escapeHtml` before it enters the shell; `test/emailShell.test.ts`
+  pins the shell contract, the mobile width discipline, text parity, the failure
+  banner and that escaping.
+
 ## Contrast (对比度)
 
 Text must reach WCAG 2.1 AA — 4.5:1 — on every surface it can be painted on,
