@@ -2414,7 +2414,6 @@ export function jobPage(input: {
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('可用阶段', 'Stages'))}</strong><small>${escapeHtml(workType.stages.length === 0 ? t('无（只读）', 'none (read-only)') : workType.stages.join(', '))}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('必需证据', 'Required evidence'))}</strong><small>${escapeHtml(workType.evidence.length === 0 ? t('无', 'none') : workType.evidence.map((key) => `evidence.${key}`).join(', '))}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('风险等级', 'Risk tier'))}</strong><small>${escapeHtml(workType.risk)}</small></div></div>
-      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('单任务预算', 'Per-job budget'))}</strong><small>$${workType.budgetUsd}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('可创建分支/PR', 'May open a branch/PR'))}</strong><small>${escapeHtml(workType.branch ? t('是', 'yes') : t('否', 'no'))}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('可自动合并', 'May auto-merge'))}</strong><small>${escapeHtml(workType.autoMerge ? t('是', 'yes') : t('否', 'no'))}</small></div></div>
     </div>

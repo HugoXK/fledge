@@ -753,8 +753,10 @@ is the contract the work is held to and is stored on the row. The registry in
 `src/lib/workTypes.ts` is the only list of work types — `iterate`, `triage`,
 `dependency`, `security`, `docs`, `performance`, `accessibility`, `migration` —
 and each entry declares its allowed stages, the evidence keys it requires, a
-declared risk tier, a per-job budget ceiling, whether it may open a branch and
-whether its pull request may auto-merge. Only `iterate` and `triage` have a
+declared risk tier, whether it may open a branch and whether its pull request
+may auto-merge. A work type declares no budget of its own: the per-job cap is the
+repository's `repos.job_budget_cny`, enforced once at the checkpoint described in
+`docs/quota.md`, and a second number shown on the work-type card could not bind. Only `iterate` and `triage` have a
 handler in this slice; a declared type with no handler is refused at enqueue
 exactly like an unknown one (`UNKNOWN_WORK_TYPE` / `WORK_TYPE_UNSUPPORTED`),
 because nothing may run under a contract that is not enforced.
@@ -797,7 +799,11 @@ reads like the issue's real one. `triage` is also a filterable kind: it is in th
 dashboard's `JOB_FILTER_KINDS`, offered by the dashboard, the search and the admin
 search forms, and applied by `/search` as a value the user chose — a kind that
 matches no job returns nothing rather than dropping the filter and answering with
-every job. `discover` stays out of it because an account never starts a discovery
+every job. The dashboard applies the opposite rule to a kind no job can carry:
+`parseJobFilters` drops the value, so `/dashboard?kind=<unknown>` answers with
+every job. Both are intended, both are pinned end to end, and the difference is
+the page's job: a search asks a question and may answer "nothing", while a
+dashboard filter narrows a list that exists without the filter. `discover` stays out of it because an account never starts a discovery
 run by hand.
 
 ### Platform emergency stop
@@ -805,8 +811,9 @@ run by hand.
 The stop is one `settings` row (`platform.stop`: when, who, why), not a field on
 the `Jobs` object, so a restart cannot resume scheduling from a stale in-memory
 "open" and a second process reads the same answer. `enqueue()` reads the row on
-every call and refuses `PLATFORM_PAUSED` before the per-repository and per-role
-gates; `tickOnce()` reads it once per tick, after its cleanup (stale jobs,
+every call and refuses `PLATFORM_PAUSED` before the work-type resolution and the
+per-repository and per-role gates, so a stopped platform never answers with a
+work-type refusal; `tickOnce()` reads it once per tick, after its cleanup (stale jobs,
 expired leases, token pruning, instance health) and before anything that creates,
 dispatches or merges work — the follow-up release, the due retries, the auto-merge
 reconcile, the queue dispatch and both scheduling loops. The admission check is
