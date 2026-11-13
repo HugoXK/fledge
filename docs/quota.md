@@ -32,6 +32,9 @@ stream ends. A request that is already in flight is allowed to finish; the
 - Before a platform-funded request: if `remaining_cny <= 0`, return HTTP 402
   immediately and mark that user's active jobs `quota_exhausted` (their job
   tokens are revoked) so the UI does not wait for the job timeout.
+- Before the upstream call: a token that claims a `job:` id it does not own is
+  refused with `403 invalid_job_token` (#481), so a forged name spends no quota
+  and writes no ledger row, no `jobs.cost_usd` and no `users.quota_used_usd`.
 - After a platform-funded request: record a `quota_ledger` row and increment
   `users.quota_used_usd`. While a job is running the bridge injects the
   job-scoped `flg_` token into the model proxy, so the row also carries
