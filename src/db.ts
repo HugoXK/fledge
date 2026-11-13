@@ -6,6 +6,7 @@ import { log } from './lib/log.js'
 import { nowIso } from './lib/time.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 import { parseModelRun } from './lib/modelRun.js'
+import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
 import { redact } from './lib/secrets.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 import { buildPostmortem, isPreventiveActionKind, type PreventiveActionKind } from './lib/postmortem.js'
@@ -148,6 +149,8 @@ export interface RepoRow {
   last_review_status: string | null
   upstream_html_url: string | null
   fork_html_url: string | null
+  provider_allowlist: string
+  required_region: string
 }
 
 export interface UserModelRow {
@@ -176,6 +179,9 @@ export interface ModelProviderRow {
   base_url: string
   key_enc: string
   allow_private: number
+  region: string
+  data_policy_url: string
+  allowed: number
   created_at: string
   updated_at: string
 }
@@ -190,6 +196,9 @@ export interface ProviderModelRow {
 
 export interface RepoProviderModelRow extends ProviderModelRow {
   provider_label: string
+  provider_region: string
+  provider_data_policy_url: string
+  provider_allowed: number
   base_url: string
   key_enc: string
   allow_private: number
@@ -267,6 +276,10 @@ export interface JobRow {
   verification_json: string | null
   continuity_json: string | null
   model_json: string | null
+  provider_id: string | null
+  provider_label: string | null
+  provider_region: string | null
+  provider_model: string | null
   output_kind: string | null
   continuity_used: number
   owner_started: number
@@ -810,6 +823,8 @@ CREATE TABLE IF NOT EXISTS repos (
   last_review_status TEXT,
   upstream_html_url TEXT,
   fork_html_url TEXT,
+  provider_allowlist TEXT NOT NULL DEFAULT '',
+  required_region TEXT NOT NULL DEFAULT '',
   UNIQUE(user_id, owner, name)
 );
 CREATE INDEX IF NOT EXISTS repos_user_idx ON repos(user_id);
@@ -882,6 +897,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   verification_json TEXT,
   continuity_json TEXT,
   model_json TEXT,
+  provider_id TEXT,
+  provider_label TEXT,
+  provider_region TEXT,
+  provider_model TEXT,
   output_kind TEXT,
   continuity_used INTEGER NOT NULL DEFAULT 0,
   owner_started INTEGER NOT NULL DEFAULT 0,
@@ -1019,6 +1038,9 @@ CREATE TABLE IF NOT EXISTS model_providers (
   base_url TEXT NOT NULL,
   key_enc TEXT NOT NULL,
   allow_private INTEGER NOT NULL DEFAULT 0,
+  region TEXT NOT NULL DEFAULT '',
+  data_policy_url TEXT NOT NULL DEFAULT '',
+  allowed INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -1326,6 +1348,7 @@ export class Store {
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
+    this.migrateProviderColumns()
     this.migrateWebhookColumns()
     this.migrateArtifactColumns()
     this.migrateIndexes()
@@ -1559,6 +1582,8 @@ export class Store {
       ['last_review_status', 'TEXT'],
       ['upstream_html_url', 'TEXT'],
       ['fork_html_url', 'TEXT'],
+      ['provider_allowlist', "TEXT NOT NULL DEFAULT ''"],
+      ['required_region', "TEXT NOT NULL DEFAULT ''"],
     ]
     for (const [name, type] of repoAdditions) {
       if (!repoColumns.has(name)) this.run(`ALTER TABLE repos ADD COLUMN ${name} ${type}`)
@@ -1610,6 +1635,10 @@ export class Store {
     if (!jobColumns.has('continuity_used')) this.run('ALTER TABLE jobs ADD COLUMN continuity_used INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('owner_started')) this.run('ALTER TABLE jobs ADD COLUMN owner_started INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('model_json')) this.run('ALTER TABLE jobs ADD COLUMN model_json TEXT')
+    if (!jobColumns.has('provider_id')) this.run('ALTER TABLE jobs ADD COLUMN provider_id TEXT')
+    if (!jobColumns.has('provider_label')) this.run('ALTER TABLE jobs ADD COLUMN provider_label TEXT')
+    if (!jobColumns.has('provider_region')) this.run('ALTER TABLE jobs ADD COLUMN provider_region TEXT')
+    if (!jobColumns.has('provider_model')) this.run('ALTER TABLE jobs ADD COLUMN provider_model TEXT')
     if (!jobColumns.has('retry_attempt')) this.run('ALTER TABLE jobs ADD COLUMN retry_attempt INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('retry_of')) this.run('ALTER TABLE jobs ADD COLUMN retry_of TEXT')
     if (!jobColumns.has('last_callback_at')) this.run('ALTER TABLE jobs ADD COLUMN last_callback_at TEXT')
@@ -1648,6 +1677,18 @@ export class Store {
     if (!ledgerColumns.has('repo_id')) this.run('ALTER TABLE quota_ledger ADD COLUMN repo_id TEXT')
     if (!jobColumns.has('base_branch')) this.run('ALTER TABLE jobs ADD COLUMN base_branch TEXT')
     this.run("UPDATE jobs SET base_branch = (SELECT upstream_default_branch FROM repos WHERE repos.id = jobs.repo_id) WHERE base_branch IS NULL")
+  }
+
+  private migrateProviderColumns(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(model_providers)').map((row) => row.name))
+    const additions: Array<[string, string]> = [
+      ['region', "TEXT NOT NULL DEFAULT ''"],
+      ['data_policy_url', "TEXT NOT NULL DEFAULT ''"],
+      ['allowed', 'INTEGER NOT NULL DEFAULT 1'],
+    ]
+    for (const [name, type] of additions) {
+      if (!columns.has(name)) this.run(`ALTER TABLE model_providers ADD COLUMN ${name} ${type}`)
+    }
   }
 
   close(): void {
@@ -2960,15 +3001,15 @@ export class Store {
     return this.get<ModelProviderRow>('SELECT * FROM model_providers WHERE id = ? AND user_id = ?', id, userId)
   }
 
-  createModelProvider(input: { id: string; userId: string; label: string; baseUrl: string; keyEnc: string; allowPrivate: boolean }): ModelProviderRow {
+  createModelProvider(input: { id: string; userId: string; label: string; baseUrl: string; keyEnc: string; allowPrivate: boolean; region?: string; dataPolicyUrl?: string; allowed?: boolean }): ModelProviderRow {
     this.run(
-      'INSERT INTO model_providers (id, user_id, label, base_url, key_enc, allow_private, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      input.id, input.userId, input.label, input.baseUrl, input.keyEnc, input.allowPrivate ? 1 : 0, nowIso(), nowIso(),
+      'INSERT INTO model_providers (id, user_id, label, base_url, key_enc, allow_private, region, data_policy_url, allowed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      input.id, input.userId, input.label, input.baseUrl, input.keyEnc, input.allowPrivate ? 1 : 0, input.region ?? '', input.dataPolicyUrl ?? '', input.allowed === false ? 0 : 1, nowIso(), nowIso(),
     )
     return this.get<ModelProviderRow>('SELECT * FROM model_providers WHERE id = ?', input.id)!
   }
 
-  updateModelProvider(id: string, userId: string, patch: Partial<Pick<ModelProviderRow, 'label' | 'base_url' | 'key_enc' | 'allow_private'>>): void {
+  updateModelProvider(id: string, userId: string, patch: Partial<Pick<ModelProviderRow, 'label' | 'base_url' | 'key_enc' | 'allow_private' | 'region' | 'data_policy_url' | 'allowed'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -2983,9 +3024,9 @@ export class Store {
     return this.all<ProviderModelRow>('SELECT * FROM provider_models WHERE provider_id = ? ORDER BY created_at ASC', providerId)
   }
 
-  listUserProviderModels(userId: string): Array<ProviderModelRow & { provider_label: string }> {
-    return this.all<ProviderModelRow & { provider_label: string }>(
-      'SELECT pm.*, mp.label AS provider_label FROM provider_models pm JOIN model_providers mp ON mp.id = pm.provider_id WHERE mp.user_id = ? ORDER BY mp.created_at ASC, pm.created_at ASC',
+  listUserProviderModels(userId: string): Array<ProviderModelRow & { provider_label: string; provider_region: string; provider_data_policy_url: string; provider_allowed: number }> {
+    return this.all<ProviderModelRow & { provider_label: string; provider_region: string; provider_data_policy_url: string; provider_allowed: number }>(
+      'SELECT pm.*, mp.label AS provider_label, mp.region AS provider_region, mp.data_policy_url AS provider_data_policy_url, mp.allowed AS provider_allowed FROM provider_models pm JOIN model_providers mp ON mp.id = pm.provider_id WHERE mp.user_id = ? ORDER BY mp.created_at ASC, pm.created_at ASC',
       userId,
     )
   }
@@ -3002,16 +3043,32 @@ export class Store {
     return true
   }
 
+  repoProviderPolicy(repoId: string): { allowlist: string[]; requiredRegion: string } {
+    const repo = this.getRepo(repoId)
+    return {
+      allowlist: parseProviderAllowlist(repo?.provider_allowlist),
+      requiredRegion: normalizeProviderRegion(repo?.required_region),
+    }
+  }
+
+  setRepoProviderPolicy(repoId: string, providerIds: string[], requiredRegion: string): void {
+    const allowlist = [...new Set(parseProviderAllowlist(providerIds.join(',')))]
+    this.updateRepo(repoId, {
+      provider_allowlist: allowlist.join(','),
+      required_region: normalizeProviderRegion(requiredRegion),
+    })
+  }
+
   listRepoModelSelection(repoId: string): RepoProviderModelRow[] {
     return this.all<RepoProviderModelRow>(
-      'SELECT pm.*, mp.label AS provider_label, mp.base_url, mp.key_enc, mp.allow_private, rms.is_default FROM repo_model_selection rms JOIN provider_models pm ON pm.id = rms.provider_model_id JOIN model_providers mp ON mp.id = pm.provider_id WHERE rms.repo_id = ? ORDER BY mp.created_at ASC, pm.created_at ASC',
+      'SELECT pm.*, mp.label AS provider_label, mp.region AS provider_region, mp.data_policy_url AS provider_data_policy_url, mp.allowed AS provider_allowed, mp.base_url, mp.key_enc, mp.allow_private, rms.is_default FROM repo_model_selection rms JOIN provider_models pm ON pm.id = rms.provider_model_id JOIN model_providers mp ON mp.id = pm.provider_id WHERE rms.repo_id = ? ORDER BY mp.created_at ASC, pm.created_at ASC',
       repoId,
     )
   }
 
   providerModelForRun(repoId: string, alias: string): RepoProviderModelRow | undefined {
     return this.get<RepoProviderModelRow>(
-      'SELECT pm.*, mp.label AS provider_label, mp.base_url, mp.key_enc, mp.allow_private, rms.is_default FROM repo_model_selection rms JOIN provider_models pm ON pm.id = rms.provider_model_id JOIN model_providers mp ON mp.id = pm.provider_id WHERE rms.repo_id = ? AND pm.id = ?',
+      'SELECT pm.*, mp.label AS provider_label, mp.region AS provider_region, mp.data_policy_url AS provider_data_policy_url, mp.allowed AS provider_allowed, mp.base_url, mp.key_enc, mp.allow_private, rms.is_default FROM repo_model_selection rms JOIN provider_models pm ON pm.id = rms.provider_model_id JOIN model_providers mp ON mp.id = pm.provider_id WHERE rms.repo_id = ? AND pm.id = ?',
       repoId, alias,
     )
   }
@@ -3237,7 +3294,7 @@ export class Store {
     return this.get<RepoRow>('SELECT * FROM repos WHERE user_id = ? AND lower(owner) = lower(?) AND lower(name) = lower(?)', userId, owner, name)
   }
 
-  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'plan_required' | 'allow_paths' | 'deny_paths' | 'merge_method' | 'require_protection' | 'stage_mode' | 'models_dirty' | 'credential_state' | 'consecutive_failures' | 'monthly_budget_cny' | 'job_budget_cny' | 'job_budget_action' | 'protection_state' | 'protection_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
+  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'plan_required' | 'allow_paths' | 'deny_paths' | 'merge_method' | 'require_protection' | 'stage_mode' | 'models_dirty' | 'credential_state' | 'consecutive_failures' | 'monthly_budget_cny' | 'job_budget_cny' | 'job_budget_action' | 'protection_state' | 'protection_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url' | 'provider_allowlist' | 'required_region'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -3636,7 +3693,8 @@ export class Store {
     )
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'model_json' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
+
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
     const entries = Object.entries(redactJobText(patch as Record<string, unknown>)).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets: string[] = []
