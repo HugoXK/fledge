@@ -65,19 +65,20 @@ async function api(path) {
   return response.json()
 }
 
-async function loadPolicy() {
+async function loadPolicy(baseRef) {
   if (EVENT === '') return LOCAL_POLICY
-  const baseRef = String(ev.pull_request?.base?.ref ?? ev.merge_group?.base_ref ?? 'main').replace(/^refs\/heads\//, '')
+  const ref = String(baseRef ?? 'main').replace(/^refs\/heads\//, '')
   try {
-    const file = await api(`/repos/${REPO}/contents/.github/agent/review-policy.json?ref=${encodeURIComponent(baseRef)}`)
+    const file = await api(`/repos/${REPO}/contents/.github/agent/review-policy.json?ref=${encodeURIComponent(ref)}`)
     if (file.encoding !== 'base64' || typeof file.content !== 'string') throw new Error('unexpected policy response')
     return JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'))
   } catch (error) {
-    fail(`cannot read the review policy from ${baseRef}: ${error.message}`)
+    fail(`cannot read the review policy from ${ref}: ${error.message}`)
   }
 }
 
-const POLICY = await loadPolicy()
+const pr = await api(`/repos/${REPO}/pulls/${prNumber}`).catch((error) => fail(error.message))
+const POLICY = await loadPolicy(String(pr.base?.ref ?? 'main'))
 
 async function paginate(path, maxPages = 6) {
   const out = []
@@ -106,7 +107,6 @@ function covers(path, doc) {
   return path.startsWith(doc.endsWith('/') ? doc : `${doc}/`)
 }
 
-const pr = await api(`/repos/${REPO}/pulls/${prNumber}`).catch((error) => fail(error.message))
 const files = await paginate(`/repos/${REPO}/pulls/${prNumber}/files`).catch((error) => fail(error.message))
 const body = String(pr.body ?? '')
 const paths = files.map((file) => file.filename)
