@@ -6,7 +6,7 @@
 // passphrase that means the scrypt-stretched key, so the published id cannot be
 // used as an offline verifier that skips the stretching cost.
 import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
-import { chmodSync, closeSync, createReadStream, createWriteStream, openSync, readFileSync, readSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, createReadStream, createWriteStream, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { pipeline } from 'node:stream/promises'
 
 export const BACKUP_ENVELOPE_FORMAT = 'fledge-backup'
@@ -30,13 +30,31 @@ function stripTrailingNewlines(value) {
   return value.replace(/[\r\n]+$/, '')
 }
 
-function base64Key(value) {
+// A value that is base64-shaped decodes to a predictable number of bytes. That
+// matters because a 32-byte base64 key is 44 characters: cut to 24-42 it still
+// looks like base64 and decodes to 16-31 bytes, and falling through to the
+// passphrase path would encrypt the copy under a key the operator does not think
+// it set, with an id that looks normal. The window is the truncated-key window on
+// purpose: refusing every non-32-byte base64 shape would refuse ordinary
+// alphanumeric passphrases and turn a hygiene fix into a backup outage.
+const TRUNCATED_KEY_MIN_BYTES = 16
+const TRUNCATED_KEY_MAX_BYTES = KEY_BYTES - 1
+
+function decodeBase64(value) {
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value) || value.length % 4 === 1) return null
-  const key = Buffer.from(value.padEnd(Math.ceil(value.length / 4) * 4, '='), 'base64')
-  return key.length === KEY_BYTES ? key : null
+  return Buffer.from(value.padEnd(Math.ceil(value.length / 4) * 4, '='), 'base64')
 }
 
-export function loadBackupKey(env = process.env) {
+function base64Key(value) {
+  const key = decodeBase64(value)
+  return key !== null && key.length === KEY_BYTES ? key : null
+}
+
+function warnKeyFileMode(path, mode) {
+  process.stderr.write(`warning: BACKUP_ENCRYPTION_KEY_FILE ${path} is mode 0${mode.toString(8)}; the runbook expects 0600 so only the operator can read it. The backup continues, but fix the mode with: chmod 600 ${path}\n`)
+}
+
+export function loadBackupKey(env = process.env, { rejectTruncatedBase64Key = true } = {}) {
   // Presence decides whether a source is configured, not non-emptiness: a
   // variable that exists but is empty is a broken expansion (a secret that
   // resolved to ""), and treating it as "unset" would silently write a
@@ -56,6 +74,15 @@ export function loadBackupKey(env = process.env) {
     } catch (error) {
       throw new BackupKeyError(`cannot read BACKUP_ENCRYPTION_KEY_FILE ${file}: ${error instanceof Error ? error.message : String(error)}`)
     }
+    // Warn, never refuse: the operator can fix the mode, and a backup that stops
+    // at 03:00 over a mode bit is an outage. The value is never printed.
+    let mode
+    try {
+      mode = statSync(file).mode & 0o777
+    } catch {
+      mode = undefined
+    }
+    if (mode !== undefined && (mode & 0o077) !== 0) warnKeyFileMode(file, mode)
     source = 'BACKUP_ENCRYPTION_KEY_FILE'
   } else if (hasInline) {
     secret = inline
@@ -67,6 +94,16 @@ export function loadBackupKey(env = process.env) {
   if (secret === '') throw new BackupKeyError(`the backup encryption key from ${source} is empty`)
   const raw = base64Key(secret)
   if (raw !== null) return { kind: 'raw', key: raw, id: keyId(raw), source }
+  const decoded = decodeBase64(secret)
+  // The window is a *write*-side guard. On restore the value only has to reproduce
+  // the derivation the envelope names, and GCM authentication proves whether it
+  // did, so refusing there would strand a copy written under a base64-shaped
+  // passphrase with a message telling the operator to supply a key that cannot
+  // exist for a copy that already does. `restore-drill.mjs` therefore loads the
+  // key with `rejectTruncatedBase64Key: false`.
+  if (rejectTruncatedBase64Key && decoded !== null && decoded.length >= TRUNCATED_KEY_MIN_BYTES && decoded.length <= TRUNCATED_KEY_MAX_BYTES) {
+    throw new BackupKeyError(`the backup encryption key from ${source} looks like base64 but decodes to ${decoded.length} bytes, not ${KEY_BYTES}: a truncated key would silently become a passphrase and encrypt the copy under a key you did not set. Use a full ${KEY_BYTES}-byte base64 key, or a passphrase that is not base64-shaped`)
+  }
   // No id yet: the fingerprint is over the stretched key, and the salt that
   // stretches it is random per copy, so it is computed where the copy is written.
   return { kind: 'passphrase', secret, source }
@@ -77,6 +114,11 @@ function encryptionMetadata(header) {
     format: header.format,
     version: header.version,
     algorithm: header.algorithm,
+    // The envelope already says which derivation produced the key; the manifest
+    // and the printed line carry it too, so a restore knows whether to expect a
+    // 32-byte key or a passphrase without re-deriving the id by hand. Undefined
+    // for a header written before this was recorded, and JSON drops the key then.
+    kdf: header.kdf,
     keyId: header.keyId,
     keyVersion: header.keyVersion,
   }

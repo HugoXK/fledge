@@ -139,7 +139,7 @@ process.stdout.write(`backup=${target}\n`)
 process.stdout.write(`manifest=${manifest}\n`)
 process.stdout.write('integrity=ok\n')
 if (encrypt) {
-  process.stdout.write(`encryption=${encryption.algorithm} key_id=${encryption.keyId} key_version=${encryption.keyVersion}\n`)
+  process.stdout.write(`encryption=${encryption.algorithm} kdf=${String(encryption.kdf)} key_id=${encryption.keyId} key_version=${encryption.keyVersion}\n`)
 } else {
   process.stdout.write('encryption=none\n')
 }
