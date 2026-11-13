@@ -7,6 +7,7 @@ import { nowIso } from './lib/time.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 import { parseModelRun } from './lib/modelRun.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
+import { artifactKey, candidateRefusal, type CandidateRefusal } from './lib/evolution/artifacts.js'
 
 // #355: one settings row marks the PAT expiry backfill as done, so a later
 // operator token (explicitly minted without an expiry) is never given one by a
@@ -415,7 +416,28 @@ export interface ArtifactVersionRow {
   evidence_json: string | null
   created_at: string
   promoted_at: string | null
+  /** `unspecified` on rows written before ADR 0003's ledger columns existed. */
+  kind: string
+  scope: string
+  repo_id: string | null
+  /** The version this candidate was built on; null for a lineage root. */
+  parent_id: string | null
+  base_version: number | null
+  frozen: number
+  paths_json: string | null
 }
+
+export interface ArtifactPointerRow {
+  artifact: string
+  channel: string
+  version_id: string
+  updated_at: string
+}
+
+// A candidate write either lands or carries the reason it did not. Refusals are
+// values, not exceptions: the caller writes the audit reason and answers the
+// user, and a test can assert the pair without catching.
+export type ArtifactWriteResult = { ok: true; row: ArtifactVersionRow } | { ok: false; refusal: CandidateRefusal }
 
 export interface EvaluationRow {
   id: string
@@ -874,9 +896,27 @@ CREATE TABLE IF NOT EXISTS artifact_versions (
   evidence_json TEXT,
   created_at TEXT NOT NULL,
   promoted_at TEXT,
+  kind TEXT NOT NULL DEFAULT 'unspecified',
+  scope TEXT NOT NULL DEFAULT 'global',
+  repo_id TEXT,
+  parent_id TEXT,
+  base_version INTEGER,
+  frozen INTEGER NOT NULL DEFAULT 0,
+  paths_json TEXT,
   UNIQUE(artifact, version)
 );
 CREATE INDEX IF NOT EXISTS artifact_versions_artifact_idx ON artifact_versions(artifact, version DESC);
+
+-- ADR 0003's ledger pointers: one row per artifact and channel, so "what is dev
+-- right now" is a row rather than a scan, and a compare-and-swap has something
+-- concrete to compare against. A version row is immutable; a pointer moves.
+CREATE TABLE IF NOT EXISTS artifact_pointers (
+  artifact TEXT NOT NULL,
+  channel TEXT NOT NULL CHECK (channel IN ('dev', 'stable')),
+  version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE CASCADE,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (artifact, channel)
+);
 
 CREATE TABLE IF NOT EXISTS evaluations (
   id TEXT PRIMARY KEY,
@@ -958,6 +998,7 @@ export class Store {
     this.migrateColumns()
     this.migrateRepoColumns()
     this.migrateWebhookColumns()
+    this.migrateArtifactColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
     this.migrateModelsV2()
@@ -1065,6 +1106,61 @@ export class Store {
     ]
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE webhook_deliveries ADD COLUMN ${name} ${type}`)
+    }
+  }
+
+  // ADR 0003 (`#424`): the ledger columns are added to the table that already
+  // holds versions, so existing rows keep their evidence and their foreign keys.
+  // `kind = 'unspecified'` is the honest value for a row written before the
+  // evolvable set existed; it is not silently claimed to be an evolvable kind.
+  private migrateArtifactColumns(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(artifact_versions)').map((row) => row.name))
+    const additions: Array<[string, string]> = [
+      ['kind', "TEXT NOT NULL DEFAULT 'unspecified'"],
+      ['scope', "TEXT NOT NULL DEFAULT 'global'"],
+      ['repo_id', 'TEXT'],
+      ['parent_id', 'TEXT'],
+      ['base_version', 'INTEGER'],
+      ['frozen', 'INTEGER NOT NULL DEFAULT 0'],
+      ['paths_json', 'TEXT'],
+    ]
+    for (const [name, type] of additions) {
+      if (!columns.has(name)) this.run(`ALTER TABLE artifact_versions ADD COLUMN ${name} ${type}`)
+    }
+    // A promoted row written before the pointer table existed becomes the
+    // `stable` pointer, so "what is stable now" has one answer after boot.
+    // One row per artifact, not one row for the table: a table with two
+    // promoted artifacts has two stable pointers to fill, and a migration is
+    // write-once, so a second boot must not be the thing that would have fixed
+    // it (#494 finding 3).
+    const promoted = this.all<{ id: string; artifact: string; promoted_at: string | null }>(
+      `SELECT v.id, v.artifact, v.promoted_at
+         FROM artifact_versions v
+        WHERE v.status = 'promoted'
+          AND v.rowid = (
+            SELECT v2.rowid
+              FROM artifact_versions v2
+             WHERE v2.artifact = v.artifact AND v2.status = 'promoted'
+             ORDER BY v2.version DESC, v2.rowid DESC
+             LIMIT 1
+          )
+        ORDER BY v.artifact`,
+    )
+    for (const row of promoted) {
+      const pointer = this.get<{ version_id: string }>(
+        "SELECT version_id FROM artifact_pointers WHERE artifact = ? AND channel = 'stable'",
+        row.artifact,
+      )
+      if (pointer !== undefined) continue
+      this.run(
+        "INSERT OR REPLACE INTO artifact_pointers (artifact, channel, version_id, updated_at) VALUES (?, 'stable', ?, ?)",
+        row.artifact,
+        row.id,
+        // A row can carry status `promoted` without a timestamp: `promoted_at`
+        // is only written by `promoteArtifactVersion`. The pointer needs a
+        // value, and the honest one is the moment this migration ran.
+        row.promoted_at ?? nowIso(),
+      )
     }
   }
 
@@ -1563,6 +1659,159 @@ export class Store {
 
   promoteArtifactVersion(id: string, status = 'promoted'): void {
     this.run('UPDATE artifact_versions SET status = ?, promoted_at = ? WHERE id = ?', status, nowIso(), id)
+  }
+
+  // --- ADR 0003 ledger (#424) ------------------------------------------------
+  //
+  // A version row is immutable once written; the pointer is what moves. The
+  // compare-and-swap compares the candidate's declared base against the head of
+  // its own lineage, so a candidate built on a stale version is refused instead
+  // of being silently re-based and evaluated as a diff nobody reviewed.
+
+  artifactHead(artifact: string): number {
+    const row = this.get<{ version: number | null }>('SELECT MAX(version) AS version FROM artifact_versions WHERE artifact = ?', artifact)
+    return row?.version ?? 0
+  }
+
+  artifactPointer(artifact: string, channel: 'dev' | 'stable' = 'dev'): ArtifactVersionRow | null {
+    const pointer = this.get<ArtifactPointerRow>('SELECT * FROM artifact_pointers WHERE artifact = ? AND channel = ?', artifact, channel)
+    if (pointer === undefined) return null
+    return this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', pointer.version_id) ?? null
+  }
+
+  createArtifactCandidate(input: {
+    id: string
+    kind: string
+    scope: 'global' | 'repository'
+    repoId?: string | null
+    content: string
+    hash: string
+    baseVersion: number
+    paths: readonly string[]
+    evidenceJson?: string | null
+  }): ArtifactWriteResult {
+    const repoId = input.repoId ?? null
+    // Decide the refusal before building the key: `artifactKey()` throws when a
+    // repository-scoped candidate carries no repository, and a refusal is a
+    // value here, not an exception (#494 finding 4). The head is only needed
+    // for the compare-and-swap, so the pre-check passes the declared base as
+    // the head and the CAS runs on its own afterwards.
+    const label = input.scope === 'repository' && (repoId === null || repoId === '') ? `${input.kind}@?` : input.kind
+    const preRefusal = candidateRefusal({
+      kind: input.kind,
+      scope: input.scope,
+      repoId,
+      paths: input.paths,
+      baseVersion: input.baseVersion,
+      headVersion: input.baseVersion,
+    })
+    if (preRefusal !== null) {
+      this.audit(null, 'evolution.candidate.refused', `${label}: ${preRefusal.code} — ${preRefusal.detail}`)
+      return { ok: false, refusal: preRefusal }
+    }
+    const artifact = artifactKey({ kind: input.kind, scope: input.scope, repoId })
+    const head = this.artifactHead(artifact)
+    if (input.baseVersion !== head) {
+      // Compare-and-swap: the candidate declares the version it was built
+      // against; a stale candidate is refused rather than re-based.
+      const refusal: CandidateRefusal = {
+        code: 'STALE_BASE',
+        detail: `declared base ${String(input.baseVersion)} but the head is ${String(head)}`,
+      }
+      this.audit(null, 'evolution.candidate.refused', `${artifact}: ${refusal.code} — ${refusal.detail}`)
+      return { ok: false, refusal }
+    }
+    const parent = head === 0
+      ? null
+      : this.get<{ id: string }>('SELECT id FROM artifact_versions WHERE artifact = ? AND version = ?', artifact, input.baseVersion) ?? null
+    return this.transaction(() => {
+      this.run(
+        'INSERT INTO artifact_versions (id, artifact, version, hash, content, status, evidence_json, created_at, promoted_at, kind, scope, repo_id, parent_id, base_version, frozen, paths_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 0, ?)',
+        input.id,
+        artifact,
+        head + 1,
+        input.hash,
+        input.content,
+        'candidate',
+        input.evidenceJson ?? null,
+        nowIso(),
+        input.kind,
+        input.scope,
+        repoId,
+        parent?.id ?? null,
+        head,
+        JSON.stringify(input.paths),
+      )
+      return { ok: true as const, row: this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', input.id)! }
+    })
+  }
+
+  /**
+   * Move a candidate onto a channel. `repoId` is the caller's own repository:
+   * a repository-scoped artifact may only be accepted by that repository, and a
+   * global artifact carries no repository at all.
+   */
+  acceptArtifactCandidate(input: { id: string; repoId?: string | null; channel?: 'dev' | 'stable' }): ArtifactWriteResult {
+    const row = this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', input.id)
+    if (row === undefined) return { ok: false, refusal: { code: 'NOT_FOUND', detail: `no artifact version ${input.id}` } }
+    const repoId = input.repoId ?? null
+    if (row.scope === 'repository' && row.repo_id !== repoId) {
+      return { ok: false, refusal: { code: 'SCOPE_MISMATCH', detail: `artifact ${row.artifact} belongs to another repository` } }
+    }
+    if (row.scope === 'global' && repoId !== null) {
+      return { ok: false, refusal: { code: 'SCOPE_MISMATCH', detail: `artifact ${row.artifact} is global` } }
+    }
+    const channel = input.channel ?? 'dev'
+    return this.transaction(() => {
+      this.run('UPDATE artifact_versions SET status = ?, promoted_at = ? WHERE id = ?', channel === 'stable' ? 'promoted' : 'accepted', nowIso(), row.id)
+      this.run(
+        'INSERT INTO artifact_pointers (artifact, channel, version_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(artifact, channel) DO UPDATE SET version_id = excluded.version_id, updated_at = excluded.updated_at',
+        row.artifact,
+        channel,
+        row.id,
+        nowIso(),
+      )
+      return { ok: true as const, row: this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', row.id)! }
+    })
+  }
+
+  /**
+   * Point a channel back at an earlier version of the same artifact. The rows
+   * in between stay readable: a rollback is a pointer move, not a delete, which
+   * is what makes "both versions readable" true after one.
+   */
+  rollbackArtifact(input: { artifact: string; toVersionId: string; channel?: 'dev' | 'stable' }): ArtifactWriteResult {
+    const target = this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', input.toVersionId)
+    if (target === undefined) return { ok: false, refusal: { code: 'NOT_FOUND', detail: `no artifact version ${input.toVersionId}` } }
+    if (target.artifact !== input.artifact) {
+      return { ok: false, refusal: { code: 'SCOPE_MISMATCH', detail: `artifact ${input.toVersionId} belongs to ${target.artifact}, not ${input.artifact}` } }
+    }
+    const channel = input.channel ?? 'dev'
+    return this.transaction(() => {
+      this.run(
+        'INSERT INTO artifact_pointers (artifact, channel, version_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(artifact, channel) DO UPDATE SET version_id = excluded.version_id, updated_at = excluded.updated_at',
+        input.artifact,
+        channel,
+        target.id,
+        nowIso(),
+      )
+      return { ok: true as const, row: this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', target.id)! }
+    })
+  }
+
+  /** The lineage from a version back to its root, newest first. */
+  artifactLineage(id: string): ArtifactVersionRow[] {
+    const lineage: ArtifactVersionRow[] = []
+    let current = this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', id)
+    const seen = new Set<string>()
+    while (current !== undefined && !seen.has(current.id)) {
+      seen.add(current.id)
+      lineage.push(current)
+      current = current.parent_id === null
+        ? undefined
+        : this.get<ArtifactVersionRow>('SELECT * FROM artifact_versions WHERE id = ?', current.parent_id)
+    }
+    return lineage
   }
 
   createEvaluation(input: {
