@@ -93,3 +93,29 @@ test('the matrix walk reports ancestry instead of trusting the attribute', () =>
   assert.match(script, /waiver: element\.hasAttribute\('data-allow-overflow'\)/)
   assert.match(script, /let scrollerAncestor = false/)
 })
+
+// #557: `clipped: scroll !== null && scroll !== element` waived every descendant of
+// any `.table-scroll` div, so an inert box that merely carried the class name hid
+// real overflow inside it. The ancestor now has to prove it scrolls.
+test('a .table-scroll ancestor waives only when it can actually scroll', () => {
+  const script = readFileSync(new URL('../scripts/visual-matrix.ts', import.meta.url), 'utf8')
+  const start = script.indexOf('for (const element of document.querySelectorAll')
+  const end = script.indexOf('return { scrollWidth', start)
+  assert.ok(start > 0 && end > start, 'the walk must still measure the page')
+  const walk = script.slice(start, end)
+  assert.doesNotMatch(
+    walk,
+    /clipped:\s*scroll !== null && scroll !== element/,
+    'the class name alone must not waive: the ancestor has to prove it scrolls',
+  )
+  assert.match(
+    walk,
+    /scroll\.scrollWidth\s*>\s*scroll\.clientWidth/,
+    'the clipping ancestor must overflow its own box before it can hide anything',
+  )
+  assert.match(
+    walk,
+    /overflowX === 'auto'|overflowX === 'scroll'/,
+    'and it must be a real scroller, not an inert box carrying the class',
+  )
+})

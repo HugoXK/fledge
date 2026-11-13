@@ -94,6 +94,13 @@ async function checkPage(page: import('playwright').Page, locale: string, width:
       const style = getComputedStyle(element)
       if (style.position === 'fixed') continue
       const scroll = element.closest('.table-scroll')
+      // #557: the class name says where a scrollbar would live, not that there is
+      // content to scroll to. An inert `overflow: visible` box carrying the class
+      // waived every descendant, so the ancestor has to prove it scrolls.
+      const scrollStyle = scroll === null ? null : getComputedStyle(scroll)
+      const clippedByScroller = scroll !== null && scroll !== element && scrollStyle !== null
+        && (scrollStyle.overflowX === 'auto' || scrollStyle.overflowX === 'scroll')
+        && scroll.scrollWidth > scroll.clientWidth + 1
       // `data-allow-overflow` is a request, not a verdict: the ancestor walk
       // decides whether a scroller can bring the element into view, and an
       // element that is itself the overflowing scroller stays a failure. A
@@ -115,7 +122,7 @@ async function checkPage(page: import('playwright').Page, locale: string, width:
       bad.push({
         name: classes === '' ? name : `${name}.${classes}`,
         waiver: element.hasAttribute('data-allow-overflow'),
-        clipped: scroll !== null && scroll !== element,
+        clipped: clippedByScroller,
         scrollerAncestor,
         isScroller: (style.overflowX === 'auto' || style.overflowX === 'scroll')
           && element.scrollWidth > element.clientWidth + 1,
