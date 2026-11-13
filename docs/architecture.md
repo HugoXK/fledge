@@ -761,9 +761,15 @@ Auto-merge reads the registry. The gate is still the repository's `repo_role`,
 so a dependency, security or docs job cannot inherit iterate's eligibility. The
 registry can only remove eligibility, never grant it.
 
-`triage` is read-only: the callback refuses a result that carries a branch or a
-pull request (`TRIAGE_PR_FORBIDDEN`), and a success without a valid report fails
-as `TRIAGE_UNVERIFIED`. The report is a ranked list of open issues with
+`triage` is read-only, and that property is in the credential as well as in the
+callback: a triage job's `/credential` read mints a GitHub App installation token
+scoped to `contents`, `issues` and `pull_requests` **read** (`TRIAGE_TOKEN_PERMISSIONS`),
+and refuses with `TRIAGE_READ_ONLY_TOKEN` when only a user token exists, because
+that token cannot be narrowed. The callback refuses a result that carries a branch
+or a pull request (`TRIAGE_PR_FORBIDDEN`), and a success without a valid report
+fails as `TRIAGE_UNVERIFIED`. Every link on the report is checked against the
+repository's own issue URL parser before anything is stored, so a board cannot
+point a reader at another host. The report is a ranked list of open issues with
 `duplicateOf` links, stored as `triage_json` and rendered on the job page
 together with the work type's contract. Its first row is written as a work item,
 which is the same path the next scheduled work session already consumes, so a
@@ -785,8 +791,11 @@ only; the console control that starts one is tracked in #523. The report itself 
 strict: an issue URL must carry a host (`https://` alone is refused) and a title
 over `TRIAGE_TITLE_MAX` is refused rather than shortened, because a cut title
 reads like the issue's real one. `triage` is also a filterable kind: it is in the
-dashboard's `JOB_FILTER_KINDS`, while `discover` stays out of it because an
-account never starts a discovery run by hand.
+dashboard's `JOB_FILTER_KINDS`, offered by the dashboard, the search and the admin
+search forms, and applied by `/search` as a value the user chose — a kind that
+matches no job returns nothing rather than dropping the filter and answering with
+every job. `discover` stays out of it because an account never starts a discovery
+run by hand.
 
 ### Platform emergency stop
 

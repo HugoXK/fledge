@@ -345,6 +345,17 @@ test('the kind filter offers every job kind a user can start, and nothing else',
     assert.equal((triage.body.match(/data-job-id="job_triage_a"/g) ?? []).length, 1, 'a triage job is filterable')
     assert.doesNotMatch(triage.body, /data-job-id="job_iter0"/, 'and no other kind leaks into the triage page')
 
+    const search = await built.app.inject({ method: 'GET', url: '/search?q=k', headers: { cookie } })
+    assert.match(search.body, /<option value="triage"/, 'the search form offers triage too')
+
+    // The search page obeys the same rule as the dashboard: a kind is a filter,
+    // so a kind that matches nothing is an empty answer. Dropping the value and
+    // answering with every job is a different question, answered silently.
+    const triaged = await built.app.inject({ method: 'GET', url: '/search?q=e&kind=triage', headers: { cookie } })
+    assert.match(triaged.body, /job_triage_a/, 'the search filter applies triage')
+    assert.doesNotMatch(triaged.body, /job_iter0/, 'and no iterate job leaks into a triage search')
+    const noSuchKind = await built.app.inject({ method: 'GET', url: '/search?q=e&kind=research', headers: { cookie } })
+    assert.doesNotMatch(noSuchKind.body, /job_iter0|job_triage_a|job_scope|job_verify/, 'a kind no job has matches nothing rather than everything')
 
     assert.deepEqual(parseJobFilters({ kind: 'scope' }, [repo.id]), { repo: '', status: '', kind: 'scope' }, 'the parser keeps scope')
     assert.deepEqual(parseJobFilters({ kind: 'triage' }, [repo.id]), { repo: '', status: '', kind: 'triage' }, 'the parser keeps triage')

@@ -32,7 +32,7 @@ import { parseIssueUrl, parsePrUrl } from './prUrl.js'
 import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES } from './continuity.js'
 import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTypeForKind, workTypeMayAutoMerge } from '../lib/workTypes.js'
 import { parseTriage } from '../lib/triage.js'
-import { repoGithubToken } from '../repos/token.js'
+import { repoGithubToken, ReadOnlyTokenUnavailable, triageReadOnlyToken } from '../repos/token.js'
 import { parseTeam } from '../flybot/instances.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
 import type { InstanceManager } from '../flybot/instances.js'
@@ -2239,6 +2239,18 @@ export class Jobs {
       this.finish(jobId, { status: 'failed', error: message, errorCode: 'TRIAGE_UNVERIFIED' }, revoke, attribution, evidence, fingerprint)
       return { ok: false, status: 422, error: message }
     }
+    // #390 review: the board is rendered as live links on the job page, so every
+    // link in it has to name an issue of this repository. `parseTriage` can only
+    // check the scheme; the repository's own parser is what knows the origin, and
+    // a board that points a reader at any host is a phishing surface, not a report.
+    const triageLinks = triage === null ? [] : [...triage.items.map((item) => item.url), ...(triage.next === null ? [] : [triage.next.url])]
+    if (job.kind === 'triage' && status === 'succeeded' && triageLinks.some((url) => repoLink(url, 'issues') === null)) {
+      const message = 'TRIAGE_UNVERIFIED: the triage board links an issue that is not in this repository.'
+      this.store.event('job_triage_unverified', { userId: job.user_id, repoId: job.repo_id, jobId })
+      this.store.audit(job.user_id, 'job.triage_unverified', `${jobId}: foreign link`)
+      this.finish(jobId, { status: 'failed', error: message, errorCode: 'TRIAGE_UNVERIFIED' }, revoke, attribution, evidence, fingerprint)
+      return { ok: false, status: 422, error: message }
+    }
     // Only a callback that will be acted on may refresh the stall window.
     this.store.touchJobCallback(jobId)
     if (status === 'running') {
@@ -2411,7 +2423,12 @@ export class Jobs {
     const repo = this.store.getRepo(job.repo_id)
     if (repo === undefined) return { ok: false, status: 404, error: 'repo not found' }
     try {
-      const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
+      // #390 review: the credential is what the model holds, so the read-only
+      // property of triage has to be in the token, not only in the callback. A
+      // triage run is refused rather than given a token that can write.
+      const token = job.kind === 'triage'
+        ? await triageReadOnlyToken(repo, this.githubApp)
+        : await repoGithubToken(repo, this.config, this.githubApp, this.store)
       const baseBranch = job.base_branch ?? repo.upstream_default_branch ?? repo.default_branch
       const upstream: RepoRef = {
         owner: repo.upstream_owner || repo.owner,
@@ -2440,7 +2457,12 @@ export class Jobs {
         canReview: repo.can_review === 1,
         canCreateIssue: repo.can_create_issue === 1,
       }
-    } catch {
+    } catch (error) {
+      // A triage run that cannot be narrowed does not run at all, and says why.
+      if (error instanceof ReadOnlyTokenUnavailable) {
+        this.store.audit(job.user_id, 'job.triage_token_unavailable', jobId)
+        return { ok: false, status: 403, error: error.message }
+      }
       return { ok: false, status: 500, error: 'credential unavailable' }
     }
   }

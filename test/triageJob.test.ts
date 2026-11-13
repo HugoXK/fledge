@@ -22,7 +22,9 @@ const BOARD = {
 
 function triageRepo(store: Store, suffix: string) {
   const user = makeUser(store, { login: `triage-${suffix}`, status: 'approved' })
-  const repo = store.createRepo({ id: `repo_triage_${suffix}`, userId: user.id, owner: 'o', name: `r-${suffix}`, defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', upstreamHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: true, intervalMinutes: 60, autoMerge: true })
+  // The row is the fork the platform writes to; the board's issues live on the
+  // upstream `o/r`, and the link gate compares against the upstream's owner/name.
+  const repo = store.createRepo({ id: `repo_triage_${suffix}`, userId: user.id, owner: 'o', name: `r-${suffix}`, upstreamOwner: 'o', upstreamName: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', upstreamHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: true, intervalMinutes: 60, autoMerge: true })
   return { user, repo }
 }
 
@@ -125,6 +127,61 @@ test('a triage success without a report fails as unverified', async () => {
     assert.equal(job?.error_code, 'TRIAGE_UNVERIFIED')
     assert.equal(job?.triage_json, null)
     assert.equal(store.listOpenWorkItems(repo.id).length, 0, 'a failed triage proposes nothing')
+  } finally {
+    store.close()
+  }
+})
+
+test('a triage board may only link issues of its own repository', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), captureRunner([]), new MemoryMailer())
+  try {
+    const { user, repo } = triageRepo(store, 'foreign')
+    const secret = 'triage-foreign-secret'
+    // The proposed item is rendered as a live link on the job page, so a foreign
+    // host there is a phishing surface, not a report.
+    triageJob(store, repo.id, user.id, 'job_triage_foreign_next', secret)
+    const foreignNext = {
+      ...BOARD,
+      items: [{ issue: 12, url: 'https://evil.example/o/r/issues/12', title: 'the real one', priority: 30, duplicateOf: null }],
+      next: { issue: 12, url: 'https://evil.example/o/r/issues/12', title: 'the real one' },
+    }
+    const refusedNext = await jobs.handleCallback('job_triage_foreign_next', secret, { status: 'succeeded', triage: foreignNext })
+    assert.equal(refusedNext.status, 422)
+    assert.match(String(refusedNext.error), /TRIAGE_UNVERIFIED/)
+    const failed = store.getJob('job_triage_foreign_next')
+    assert.equal(failed?.status, 'failed')
+    assert.equal(failed?.error_code, 'TRIAGE_UNVERIFIED')
+    assert.equal(failed?.triage_json, null, 'the foreign board is not stored')
+    assert.equal(store.listOpenWorkItems(repo.id).length, 0, 'a foreign link proposes nothing')
+
+    // A duplicate row is on the board too, so it is held to the same origin even
+    // when the proposal itself is a link this repository owns.
+    triageJob(store, repo.id, user.id, 'job_triage_foreign_item', secret)
+    const foreignItem = { ...BOARD, items: [{ issue: 9, url: 'https://evil.example/o/r/issues/9', title: 'second', priority: 20, duplicateOf: null }, ...BOARD.items.slice(0, 1)] }
+    const refusedItem = await jobs.handleCallback('job_triage_foreign_item', secret, { status: 'succeeded', triage: foreignItem })
+    assert.equal(refusedItem.status, 422)
+    assert.match(String(refusedItem.error), /TRIAGE_UNVERIFIED/)
+  } finally {
+    store.close()
+  }
+})
+
+test('a triage credential is refused when it cannot be narrowed', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), captureRunner([]), new MemoryMailer())
+  try {
+    const { user, repo } = triageRepo(store, 'credential')
+    const secret = 'triage-credential-secret'
+    // This repository has no installation, so only a user token exists and it
+    // cannot be downscoped: no credential is handed to the run at all.
+    store.createJob({ id: 'job_triage_credential', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'triage', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'triage', workType: 'triage' })
+    const refused = await jobs.credential('job_triage_credential', secret)
+    assert.equal(refused.ok, false)
+    assert.equal(refused.status, 403)
+    assert.match(String(refused.error), /TRIAGE_READ_ONLY_TOKEN/)
+    assert.equal(refused.token, undefined, 'a run that cannot be narrowed gets no token')
+    assert.ok(store.listAudit().some((entry) => entry.action === 'job.triage_token_unavailable'))
   } finally {
     store.close()
   }
