@@ -303,11 +303,14 @@ the landing page first, in a signed-out context, because `/` answers 302 to
 `/dashboard` for a visitor with a session: capturing it after the development
 login photographed the dashboard twice. It then signs in and renders the
 dashboard, settings, admin, add-repository and workspace surfaces at
-360/390/430/640/768/1024/1280/1440/1920 in both languages, fails when the
-document or an element leaves the viewport, and writes full-page screenshots
-under `visual-matrix/` (ignored by git). CI uploads that directory as the
-`visual-matrix` artifact. The matrix does not contact GitHub, SMTP or a FlyBot
-instance.
+360/390/430/640/768/1024/1280/1440/1920 in both languages. It fails when the
+document leaves the viewport, or when an element does and nothing can scroll it
+into view: an element clipped by a `.table-scroll` ancestor, or by an ancestor
+whose computed `overflow-x` is `auto`/`scroll` and which itself overflows, needs
+`data-allow-overflow` to be waived, and a scroller that overflows itself is never
+waived. It writes full-page screenshots under `visual-matrix/` (ignored by git).
+CI uploads that directory as the `visual-matrix` artifact. The matrix does not
+contact GitHub, SMTP or a FlyBot instance.
 
 On `/settings` it also checks the `#tokens` anchor — the target the zero-token
 empty state links to. A page without that element is a failure
