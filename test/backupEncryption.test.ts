@@ -248,12 +248,29 @@ test('a passphrase copy records an id derived from the stretched key, not a fast
   const envelope = readEnvelope(copy)
   assert.equal(envelope.kdf, 'scrypt')
 
-  const fastHash = createHash('sha256').update(TEST_PASSPHRASE).digest('hex').slice(0, 16)
-  assert.notEqual(envelope.keyId, fastHash, 'the published key id must not be an offline verifier for the passphrase')
+  // sha256(TEST_PASSPHRASE) cut to 16 hex, which is exactly the id the old code
+  // published. It is a literal on purpose: computing it here would put a fast
+  // hash of a password in the suite, which is the shape
+  // `js/insufficient-password-hash` exists to catch, and this test proves the
+  // opposite of that finding. It moves only if TEST_PASSPHRASE moves.
+  const oldFastId = 'f2a39432a180e70c'
+  assert.notEqual(envelope.keyId, oldFastId, 'the published key id must not be an offline verifier for the passphrase')
   const stretched = scryptSync(TEST_PASSPHRASE, Buffer.from(String(envelope.salt), 'base64'), 32)
   assert.equal(envelope.keyId, expectedKeyId(stretched), 'the id must fingerprint the stretched key')
   assert.equal((readManifest(copy).encryption as Record<string, unknown>).keyId, envelope.keyId, 'the manifest must name the same key as the envelope')
   assert.doesNotMatch(backup.stdout, new RegExp(TEST_PASSPHRASE))
+
+  // A second copy from the same passphrase must carry a different id: the old
+  // published value was salt-independent and therefore stable across every copy
+  // the passphrase ever wrote, so one id could be used to test guesses against
+  // all of them.
+  const secondDir = join(root, 'backups-2')
+  const second = run(backupScript, ['--db', dbPath, '--backup-dir', secondDir], { BACKUP_ENCRYPTION_KEY: TEST_PASSPHRASE })
+  assert.equal(second.code, 0, second.stderr)
+  const secondEnvelope = readEnvelope(onlyBackup(secondDir))
+  assert.notEqual(secondEnvelope.keyId, envelope.keyId, 'a per-copy id must not repeat across copies of the same passphrase')
+  assert.notEqual(secondEnvelope.salt, envelope.salt, 'the salt must be fresh per copy')
+  assert.equal(secondEnvelope.keyId, expectedKeyId(scryptSync(TEST_PASSPHRASE, Buffer.from(String(secondEnvelope.salt), 'base64'), 32)))
 
   // The copy the id names must still open with the passphrase that wrote it.
   const drill = run(drillScript, ['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir], { BACKUP_ENCRYPTION_KEY: TEST_PASSPHRASE })
