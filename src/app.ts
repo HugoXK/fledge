@@ -17,10 +17,12 @@ import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
 import { notifyEmail } from './email/recipient.js'
 import { registerGateway } from './gateway/gateway.js'
 import { assertSafeModelUrl } from './gateway/modelUrl.js'
+import { assertSafeNotificationWebhook } from './lib/webhook.js'
 import { quotaView } from './gateway/quota.js'
 import { parseAttributionJson } from './lib/attribution.js'
 import { failureBreakdown } from './lib/failure.js'
-import { Jobs } from './jobs/service.js'
+import { DEFAULT_TRIAGE_GOAL, Jobs } from './jobs/service.js'
+import { parseIssueUrl } from './jobs/prUrl.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
 import fastifyRateLimit from '@fastify/rate-limit'
@@ -234,6 +236,7 @@ function approvalMailFailed(user: UserRow, failures: Map<string, string>): boole
 export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const { config } = options
   assertProductionConfig(config)
+  await assertSafeNotificationWebhook(config)
   const store = options.store ?? openStore(config.dbPath)
   store.ensureSuperadmin(config.github.adminLogin)
   const orphans = store.cleanupOrphans()
@@ -1344,6 +1347,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         }),
         ...(workState !== undefined && isWorkItemState(workState) ? { workState } : {}),
         reviewTrend,
+        postmortems: store.listPostmortemsForRepo(repo.id, { openOnly: true }),
+        recurrences: store.listPostmortemRecurrences(repo.id),
         models: store.listUserProviderModels(repo.user_id),
         repoModelIds: repoModels.map((model) => model.id),
         repoBotModels: store.listRepoBotModels(repo.id),
@@ -1768,6 +1773,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewerActive: store.listActiveJobsForUser(viewer.user.id),
       repoLabels,
       events: store.listJobEvents(job.id, 200),
+      postmortem: store.getPostmortemForJob(job.id) ?? null,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
@@ -2069,6 +2075,34 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const key = result.ok ? 'notice' : 'error'
     const message = result.ok ? '计划任务已排队，不会写代码或开 PR。' : refusalValue(result, '计划任务启动失败。')
     return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
+  })
+
+  // #523: triage is repository-scoped, so its start belongs on the repository
+  // page behind `ownedRepo`, not on the admin console: an operator-only start
+  // would leave the repository's own owner unable to triage it. The one input the
+  // control accepts is an issue URL that focuses the board, and it is bound to
+  // this repository here, on the input side, with the same rule the callback
+  // applies — a foreign host or a foreign repository never reaches `enqueue`.
+  app.post('/repos/:id/triage', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const t = translator(request.locale ?? 'zh')
+    const issueUrl = (form(request).issueUrl ?? '').trim()
+    if (issueUrl !== '' && !parseIssueUrl(repo, issueUrl, config.github.apiBase).ok) {
+      store.audit(viewer.user.id, 'triage.refused', `${repo.owner}/${repo.name}: ${issueUrl.slice(0, 200)}`)
+      const message = t('这个 Issue 链接不属于当前仓库，分诊没有开始。', 'That issue link does not belong to this repository, so no triage job started.')
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(message)}#triage`)
+    }
+    const goal = issueUrl === '' ? undefined : `${DEFAULT_TRIAGE_GOAL}\n\nStart the board with the issue at ${issueUrl}.`
+    const result = await jobs.enqueue(repo, 'manual', goal, 'triage')
+    store.audit(viewer.user.id, 'triage.enqueued', `${repo.owner}/${repo.name} ${result.ok ? 'ok' : result.error ?? 'failed'}`)
+    const key = result.ok ? 'notice' : 'error'
+    const message = result.ok
+      ? t('分诊任务已排队；只读，不会创建分支或 PR。', 'Triage job queued; it is read-only and opens no branch or pull request.')
+      : refusalValue(result, t('分诊任务启动失败。', 'The triage job did not start.'))
+    // A queued triage lands on its own job page, where the work-type contract and
+    // the empty board are visible without a second click.
+    if (result.ok && result.job !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?${key}=${encodeURIComponent(message)}`)
+    return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}#triage`)
   })
 
   app.post('/repos/:id/refresh', async (request, reply) => {
@@ -2709,6 +2743,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repo,
       job,
       events: store.listJobEvents(job.id, 200),
+      postmortem: store.getPostmortemForJob(job.id) ?? null,
       supportMode: true,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),

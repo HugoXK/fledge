@@ -307,6 +307,18 @@ defect.
   upstream can enable a scheduled reviewer. Review jobs list every open upstream
   PR, score each one, and post a COMMENT review; they never merge or modify
   code. A developer cannot run review jobs even when GitHub grants write access.
+- **Starting a triage job**: triage is repository-scoped, not issue-scoped, so a
+  person starts one from the repository page (`POST /repos/:id/triage`, behind
+  `ownedRepo` and the CSRF guard) rather than from `/admin`: an operator-only
+  start would leave the repository's own owner unable to triage it, and a
+  maintainer or developer role is enough. The control accepts one optional input,
+  an issue URL that focuses the board, and the route binds it to the repository
+  with `parseIssueUrl` before anything is enqueued, so a foreign host or a
+  foreign repository is refused with a visible error and no job row instead of
+  being caught only when the callback's board comes back. The duplicate rule is
+  the existing `jobs_one_active_per_repo` index: a start while a job is queued or
+  running is refused with `JOB_ACTIVE`, while a start after the previous one
+  finished is allowed because triage only reads.
 - **Work items and gates**: each repository has work items with a
   triage-to-merge state machine (`proposed → triaged → assigned → in_progress →
   pr_ready → in_review → changes_requested → approved → merged/closed`, plus the
@@ -677,6 +689,34 @@ value cannot leak. The raw text stays in `jobs.error`, under "Technical detail"
 and in the notification row, for operators and for the API, and "Technical
 detail" prints it as written rather than translating it. The choice is
 recorded in `docs/decisions/0009-job-failure-codes.md`.
+
+### Postmortems and recurrence
+
+A failed, stalled (a failed job with `JOB_STALLED`) or cancelled job writes one
+`postmortems` row from the same guarded terminal transition that writes its
+`job.*` event, so a replayed callback cannot create a second write-up and a
+succeeded, queued, running or paused job writes none. `src/lib/postmortem.ts`
+derives the category from the existing failure classifier and records evidence
+from fields that already exist: the error and code, the last heartbeat, the job
+stage, the repository instance's status and last error, and the `job_events`
+timeline. A suspected cause is stated only when an error or code exists. A row
+with neither is `unverified` with a null cause; it is not guessed.
+
+The recurrence key is a hash of the category and the stable error code, or of a
+normalised error sentence when no code exists (job ids, URLs and numbers are
+removed so two sightings of one cause land on one key). `postmortem_recurrences`
+holds one ledger row per key with the count, first/last seen and the affected
+repositories. A second sighting increments the count and emits one `ops`
+notification plus a `postmortem_escalated` event; later sightings keep counting
+without escalating again.
+
+A preventive action is `test`, `guard`, `doc` or `config` plus a reference to the
+PR, issue or test that prevents the cause. `Store.linkPreventiveAction` records
+it without closing the postmortem; `Store.verifyPreventiveAction` refuses unless
+a linked action exists and, when the action lands, marks it verified, sets
+`status = 'closed'` and stamps `closed_at`. The repository page lists open
+postmortems and the recurrence ledger; the job page links the one postmortem for
+that job (`#postmortems`), never a duplicate.
 
 ### Enforcement: path guard, evidence verification and merge readiness
 
@@ -1357,6 +1397,8 @@ listing, and every row links to the page that already owns it.
 | `api_tokens` | `flg_` tokens (PAT, job or instance), hashed, with `scope` (only `gateway` today) and `expires_at`; a PAT always carries an expiry |
 | `quota_ledger` | per-request cost records |
 | `notifications` | in-app messages (quota, job failure), stored as written and localized at render |
+| `postmortems` | one evidence-backed write-up per failed/stalled/cancelled job, with category, recurrence key, owner and preventive action |
+| `postmortem_recurrences` | one ledger row per recurrence key: count, first/last seen, affected repositories and the single escalation marker |
 | `audit_log` | who changed what |
 | `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
 
@@ -1380,6 +1422,17 @@ queued ──► running ──► succeeded
 
 The claim/worker dispatch model, the `queued` meaning and the idempotent
 callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
+
+## Notification webhook egress
+
+`buildApp()` checks `NOTIFY_WEBHOOK_URL` before it opens the store. In production
+an unsafe target stops the process instead of starting with an alert path that
+would POST into the internal network. The same guard runs on every send and on
+every redirect hop, so a runtime change or a redirect fails closed. The guard
+resolves the host and refuses loopback, RFC1918, carrier-grade NAT, link-local,
+multicast, ULA, IPv6 loopback and IPv4-mapped private addresses; an exact
+`NOTIFY_WEBHOOK_ALLOWED_HOSTS` entry is the only way an operator may name a
+private self-hosted target. Errors name the host but never the secret or payload.
 
 ## Trust boundaries
 

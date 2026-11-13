@@ -151,6 +151,9 @@ export interface Config {
   inboundEmailSecret: string
   notifyWebhookUrl: string
   notifyWebhookSecret: string
+  // Exact webhook hosts the operator trusts for self-hosted targets. Empty means
+  // only public https targets are allowed; a listed host may be private or http.
+  notifyWebhookAllowedHosts: string[]
   allowTokenLoginOnly: boolean
   devLogin: {
     login: string
@@ -195,6 +198,14 @@ function bool(name: string, fallback: boolean): boolean {
   const value = text(name).toLowerCase()
   if (value === '') return fallback
   return value === '1' || value === 'true' || value === 'yes' || value === 'on'
+}
+
+export function parseHostAllowlist(raw: string): string[] {
+  const hosts = raw
+    .split(',')
+    .map((host) => host.trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, ''))
+    .filter((host) => host !== '')
+  return [...new Set(hosts)]
 }
 
 function secret(name: string, bytes: number): string {
@@ -366,6 +377,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     inboundEmailSecret: text('INBOUND_EMAIL_SECRET'),
     notifyWebhookUrl: text('NOTIFY_WEBHOOK_URL'),
     notifyWebhookSecret: text('NOTIFY_WEBHOOK_SECRET'),
+    notifyWebhookAllowedHosts: parseHostAllowlist(text('NOTIFY_WEBHOOK_ALLOWED_HOSTS')),
     allowTokenLoginOnly: bool('ALLOW_TOKEN_LOGIN_ONLY', false),
     devLogin: {
       login: text('DEV_LOGIN_LOGIN'),

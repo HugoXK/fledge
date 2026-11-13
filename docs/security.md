@@ -166,6 +166,15 @@ admin panel still shows the contact email to administrators for account
 management, and approval mail includes it as required. The address is used only
 for job/digest mail and is never shown on a public page.
 
+### Transactional email rendering
+
+Every transactional mail now renders through one shared HTML shell beside its
+plain-text part. The shell uses inline styles only, no `<style>` block, external
+stylesheet, web font or remote image, and a 640px measure that stays inside a
+360px client. User-controlled values are escaped before interpolation, and the
+footer links are fixed docs/status URLs rather than request input. A failure or
+urgent mail keeps its red banner and subject marker in both parts.
+
 ### Inbound email
 
 `POST /api/inbound/email` is disabled unless `INBOUND_EMAIL_SECRET` is set. The
@@ -425,6 +434,34 @@ managed by those products.
   timestamps, IP and queue number, and is the fallback if SMTP fails.
 - The administrator login (`ADMIN_GITHUB_LOGIN`) is auto-approved. Keep it
   correct; it is the bootstrap identity.
+
+### Notification webhook egress
+
+`NOTIFY_WEBHOOK_URL` is an operator-configured outbound POST target, so it is
+checked like any other server-side request:
+
+- In production the URL must be an absolute `https:` URL; a `http:` URL is
+  refused at startup even when its host is allowlisted.
+- The host is resolved and every address is checked before the body is sent:
+  loopback, RFC1918 and shared (100.64/10) ranges, link-local (including
+  `169.254.169.254`), multicast/reserved, IPv6 `::1`, ULA (`fc00::/7`),
+  link-local (`fe80::/10`) and IPv4-mapped private addresses are refused.
+- Redirects are followed manually, at most five, and every target is resolved
+  and checked again before the next request. A redirect from one origin to
+  another drops the bearer secret, so a public target cannot forward it onward.
+- `NOTIFY_WEBHOOK_ALLOWED_HOSTS` is an optional comma-separated list of exact
+  hostnames for a self-hosted deployment that must notify an internal service.
+  When the list is non-empty only those hosts are accepted; a listed host is
+  trusted and therefore skips the private-address refusal. Empty (the default)
+  means public https targets only.
+- `buildApp()` refuses an unsafe webhook in production, so the process does not
+  start. The send path resolves and checks again at delivery time and fails
+  closed, because DNS can change after startup.
+- A refusal names the host in the log but never the URL, the bearer secret or
+  the payload.
+
+DNS rebinding is not fully mitigated: the address can change between the check
+and the connection. Deploy behind an egress policy when the network is hostile.
 
 ### SSRF guard
 
