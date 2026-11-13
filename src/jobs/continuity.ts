@@ -146,6 +146,9 @@ export interface SchedulerState {
 }
 
 export const DEFAULT_COOLDOWN_MS = 10 * 60_000
+// Discovery may create an issue, so it must not inherit a 15/30-minute work
+// cadence. A user with no backlog would otherwise get an issue every tick.
+export const MIN_DISCOVERY_INTERVAL_MINUTES = 60
 
 //: Pick the next scheduled job kind. This never blocks a due repo (the #219
 //: lesson): when work is open it changes *what* runs, not whether a run happens.
@@ -180,7 +183,7 @@ export function isDiscoverDue(state: SchedulerState, now: number = state.now): b
   if (state.lastDiscoverAt === null || state.lastDiscoverAt === undefined || state.lastDiscoverAt === '') return true
   const last = Date.parse(state.lastDiscoverAt)
   if (!Number.isFinite(last)) return true
-  const interval = Math.max(15, state.discoverIntervalMinutes ?? state.intervalMinutes) * 60_000
+  const interval = Math.max(MIN_DISCOVERY_INTERVAL_MINUTES, state.discoverIntervalMinutes ?? state.intervalMinutes) * 60_000
   return now - last >= interval
 }
 

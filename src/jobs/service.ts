@@ -29,7 +29,7 @@ import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
 import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
-import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs } from './continuity.js'
+import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES } from './continuity.js'
 import { repoGithubToken } from '../repos/token.js'
 import { parseTeam } from '../flybot/instances.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
@@ -2645,7 +2645,7 @@ export class Jobs {
         reviewerEnabled: repo.reviewer_enabled === 1,
         reviewDue: this.dueReview(repo),
         lastDiscoverAt: this.store.getSetting(`discover:${repo.id}`),
-        discoverIntervalMinutes: repo.interval_minutes,
+        discoverIntervalMinutes: Math.max(MIN_DISCOVERY_INTERVAL_MINUTES, repo.interval_minutes),
       })
       if (next.kind === 'none') {
         // #478: an empty backlog is not a reason to create a job. Keep the
@@ -2699,7 +2699,7 @@ export class Jobs {
     if (at === undefined || at === null || at === '') return true
     const last = Date.parse(at)
     if (!Number.isFinite(last)) return true
-    return Date.now() - last >= Math.max(15, repo.interval_minutes) * 60_000
+    return Date.now() - last >= Math.max(MIN_DISCOVERY_INTERVAL_MINUTES, repo.interval_minutes) * 60_000
   }
 
   private dueReview(repo: RepoRow): boolean {
