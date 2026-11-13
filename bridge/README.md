@@ -97,15 +97,19 @@ The agent prompt includes:
    state, not a new goal. Never create an inventory, backlog, or
    `存量/盘点/清账/reconcile` issue; work on one concrete issue or PR, and report
    zero output when there is no concrete defect;
-4. for `kind=scope`: use the Product session to produce scope, non-goals,
+4. for `kind=discover`: inspect the repository, open issues/PRs, tests and
+   recent CI; if one concrete defect or improvement is found, create at most one
+   focused issue and report its URL; never open a branch or PR, and never create
+   an inventory/backlog/盘点/清账/reconcile issue;
+5. for `kind=scope`: use the Product session to produce scope, non-goals,
    acceptance criteria and a test plan; do not create a branch or PR;
-5. for `kind=verify`: use the Test session to run the relevant tests against the
+6. for `kind=verify`: use the Test session to run the relevant tests against the
    existing PR/branch and report `testRed`/`testGreen`; do not create a branch
    or PR;
-6. for `kind=review`: review every open PR, score each 0–100; post a COMMENT
+7. for `kind=review`: review every open PR, score each 0–100; post a COMMENT
    review, never request changes or approve/merge, and report `reviewScore` plus
    a `followUps` array for each Fledge PR that needs a same-branch fix;
-7. POST the result to `callbackUrl` with
+8. POST the result to `callbackUrl` with
    `{status, branch, prUrl, issueUrl, reviewScore, summary, error}`.
 
 The callback answers:
