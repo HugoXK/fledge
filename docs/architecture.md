@@ -50,9 +50,12 @@ a second clock that disagrees.
 the order the page draws the cards, so the marker can always name the section on
 screen. `test/sectionNav.test.ts` asserts that mapping in both directions, which
 is how a card added without a chip fails the suite instead of quietly leaving
-the previous chip marked. `/admin`'s top card has no `id` on purpose — it is the
-page header, not a section — so nothing is marked at the very top of that page;
-that is the accepted state, not a defect.
+the previous chip marked. The marker seeds with the first chip, then takes the
+last target whose top has passed the reading band; between cards it stays on the
+last one that passed. `/admin`'s top card has no `id` on purpose — it is the page
+header, not a section — so at the top of that page nothing has passed and
+`#release`, the first chip, is marked. That fallback is the accepted state, not a
+defect.
 
 ## Components
 
