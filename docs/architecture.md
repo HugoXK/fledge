@@ -1147,7 +1147,7 @@ listing, and every row links to the page that already owns it.
 | `quota_ledger` | per-request cost records |
 | `notifications` | in-app messages (quota, job failure), stored as written and localized at render |
 | `audit_log` | who changed what |
-| `settings` | small key/value flags (e.g. quota notice dedupe) |
+| `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
 
 ## Job lifecycle
 
