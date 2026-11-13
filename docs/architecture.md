@@ -709,9 +709,11 @@ binary-asset allowlist (`png`, `jpg`, `jpeg`, `gif`, `webp`, `ico`, `woff`,
 merge, because a screenshot cannot be read by a text model and refusing it would
 block a class of change this gate never judged. An unconfigured platform model or
 a model error stays fail-open with a recorded reason, because a change cannot
-cause it. Fledge does not invent a risk, and it does not treat a number as proof:
-the job page says which of the outcomes happened, with the model and the prompt
-hash.
+cause it, unless the pass already knows it could not read the change: a cut diff
+is refused whether or not the model answered. Fledge does not invent a risk, and
+it does not treat a number as proof: the job page says which of the outcomes
+happened — a refusal is reported as `incomplete` with the omission it found, not
+as a risk at a file and line — with the model and the prompt hash.
 A review job still runs in its own Reviewer session for the normal score; this
 pass is deliberately a separate context, not a second report from the same one.
 

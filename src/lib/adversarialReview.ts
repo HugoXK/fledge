@@ -266,7 +266,11 @@ export function openAiAdversarialModel(options: {
 // keeps the model and the prompt hash so a reader can tell which model answered
 // and whether the packet was the same one the verdict names.
 export interface AdversarialRecord {
-  status: 'risk' | 'none' | 'invalid' | 'skipped' | 'unavailable'
+  // `incomplete` is the pass refusing because it could not read the whole change
+  // (#556). It carries a risk-shaped verdict so the reuse path blocks the same
+  // tip again, but the page must not report it as a concrete risk the model
+  // named: the status field is what says which of the outcomes happened.
+  status: 'risk' | 'none' | 'invalid' | 'incomplete' | 'skipped' | 'unavailable'
   target: string | null
   reason: string | null
   model: string | null
@@ -285,8 +289,15 @@ export function parseAdversarialRecord(meta: string | null | undefined): Adversa
     return null
   }
   const verdict = (value.verdict !== null && typeof value.verdict === 'object' ? value.verdict : {}) as Record<string, unknown>
-  const raw = typeof verdict.kind === 'string' ? verdict.kind : typeof value.status === 'string' ? value.status : ''
-  const status = raw === 'risk' || raw === 'none' || raw === 'invalid' || raw === 'skipped' || raw === 'unavailable' ? raw : null
+  // The record's own `status` wins over `verdict.kind`: an incomplete pass stores
+  // a risk-shaped verdict only so the merge path re-blocks the same tip, and
+  // reading the kind first would tell the reader the model named a risk it never
+  // named. Records written before this field existed carry no status and still
+  // fall back to the verdict.
+  const known = (candidate: unknown): candidate is AdversarialRecord['status'] =>
+    candidate === 'risk' || candidate === 'none' || candidate === 'invalid' || candidate === 'incomplete' || candidate === 'skipped' || candidate === 'unavailable'
+  const raw = known(value.status) ? value.status : typeof verdict.kind === 'string' ? verdict.kind : ''
+  const status = known(raw) ? raw : null
   if (status === null) return null
   const text = (input: unknown): string | null => (typeof input === 'string' && input.trim() !== '' ? input.trim() : null)
   return {

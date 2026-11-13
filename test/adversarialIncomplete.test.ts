@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
+import { parseAdversarialRecord } from '../src/lib/adversarialReview.js'
 import { Jobs } from '../src/jobs/service.js'
 import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
 import { json, makeUser, MemoryMailer, startFakeServer, testConfig } from './helpers.js'
@@ -21,7 +22,7 @@ async function runPass(input: {
   secondPageEmpty?: boolean
   model?: () => Promise<string>
   modelMode?: 'throw' | 'unconfigured'
-}): Promise<{ merges: number; events: Array<{ step: string | null; meta: string | null }> }> {
+}): Promise<{ merges: number; events: Array<{ step: string | null; meta: string | null }>; notifications: string[] }> {
   const merges: number[] = []
   const github = await startFakeServer((request, response) => {
     const method = request.method ?? 'GET'
@@ -96,7 +97,8 @@ async function runPass(input: {
     const events = store.listJobEvents('job_incomplete')
       .filter((event) => event.kind === 'job.adversarial')
       .map((event) => ({ step: event.step, meta: event.meta }))
-    return { merges: merges.length, events }
+    const notifications = store.listNotifications(user.id).map((row) => row.message)
+    return { merges: merges.length, events, notifications }
   } finally {
     store.close()
     await github.close()
@@ -115,6 +117,29 @@ test('a diff cut at the character limit refuses the merge and names what it did 
   assert.equal(meta.truncated, true)
   assert.ok((meta.omittedBytes ?? 0) > 0, 'the record says how many bytes were not read')
   assert.ok((meta.omittedFiles ?? []).includes('src/decoy.ts'), 'the record names the file that was cut')
+  // The page reads the record back: an incomplete pass stores a risk-shaped
+  // verdict so the same tip re-blocks, but reporting that as a concrete risk
+  // would claim the model named one it never named.
+  assert.equal(parseAdversarialRecord(event?.meta)?.status, 'incomplete')
+  // The notification and the merge message are the same report: a refusal must
+  // not be announced as a concrete risk at a `:0` locator the model never named.
+  assert.ok(result.notifications.some((row) => /未能读完整改动/.test(row)), 'the owner is told the pass could not read the change')
+  assert.ok(result.notifications.every((row) => !/具体风险/.test(row)), 'a refusal is never announced as a concrete risk')
+})
+
+test('a cut diff refuses even when the model errors, because the cut is not the outage', async () => {
+  // The cut is determinable from the change alone. Asking the model first and
+  // letting its outage decide is the fail-open this card closes, reached through
+  // the one carve-out that stays: an outage is not the author's fault, but an
+  // unread diff is still unread, and its refusal cannot depend on the model.
+  const decoy = 'diff --git a/src/decoy.ts b/src/decoy.ts\n@@ -0,0 +1 @@\n+' + 'x'.repeat(70_000)
+  const result = await runPass({ changedFiles: 1, files: [{ filename: 'src/decoy.ts', patch: decoy }], modelMode: 'throw' })
+  assert.equal(result.merges, 0, 'an outage must not convert a determinate refusal into a merge')
+  const event = result.events.find((entry) => entry.step === 'incomplete')
+  assert.ok(event !== undefined, 'the refusal is recorded as incomplete, not as an unavailable skip')
+  const meta = JSON.parse(String(event?.meta ?? '{}')) as { truncated?: boolean; outage?: string }
+  assert.equal(meta.truncated, true)
+  assert.match(String(meta.outage ?? ''), /502/, 'the record keeps the outage that could not be asked')
 })
 
 test('an incomplete changed-file listing refuses instead of skipping', async () => {

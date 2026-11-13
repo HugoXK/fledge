@@ -2339,11 +2339,13 @@ export function jobPage(input: {
   const adversarial = parseAdversarialRecord(events.find((event) => event.kind === 'job.adversarial')?.meta)
   const adversarialText = (record: AdversarialRecord): string => record.status === 'risk'
     ? t(`具体风险 ${record.target ?? ''} — 自动合并已阻止`, `concrete risk ${record.target ?? ''} — the automatic merge was blocked`)
-    : record.status === 'none'
-      ? t(`未发现具体风险${record.checks.length === 0 ? '' : `（检查：${record.checks.join('、')}）`}`, `no concrete risk${record.checks.length === 0 ? '' : ` (checks: ${record.checks.join(', ')})`}`)
-      : record.status === 'invalid'
-        ? t(`回答被拒绝，不算一次审核：${record.reason ?? ''}`, `answer rejected as not a review: ${record.reason ?? ''}`)
-        : t(`未运行：${record.reason ?? ''}`, `not run: ${record.reason ?? ''}`)
+    : record.status === 'incomplete'
+      ? t(`审核未能读完整改动，自动合并已阻止：${record.reason ?? ''}`, `the review could not read the whole change, so the automatic merge was blocked: ${record.reason ?? ''}`)
+      : record.status === 'none'
+        ? t(`未发现具体风险${record.checks.length === 0 ? '' : `（检查：${record.checks.join('、')}）`}`, `no concrete risk${record.checks.length === 0 ? '' : ` (checks: ${record.checks.join(', ')})`}`)
+        : record.status === 'invalid'
+          ? t(`回答被拒绝，不算一次审核：${record.reason ?? ''}`, `answer rejected as not a review: ${record.reason ?? ''}`)
+          : t(`未运行：${record.reason ?? ''}`, `not run: ${record.reason ?? ''}`)
   const readiness = mergeReadiness(job)
   // The badge above combines the path guard with the PR evidence; the evidence
   // row used to read verification.ok alone, so a PR the guard blocked still
