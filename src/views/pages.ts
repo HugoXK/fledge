@@ -3,6 +3,7 @@ import type { AlertView, AuditRow, JobEventRow, JobRow, ModelProviderRow, Notifi
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
+import { nextRun, type NextRun } from '../lib/nextRun.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { renderState, stateCell, type StateAction } from './states.js'
@@ -665,24 +666,64 @@ export interface NextActionView {
   // A step of the first-run checklist: the block carries that step's own
   // primary button so the checklist below renders the detail without a second.
   setupStep: SetupStepKey | null
+  // The same next-run sentence the repository page prints (#564), carried
+  // apart from the prose so both surfaces can be asserted against one string.
+  nextRunLine?: string
 }
 
-function nextScheduledRun(repos: RepoRow[], t: Translate): string {
-  const automatic = repos.filter((repo) => repo.auto_iterate === 1)
-  if (automatic.length === 0) return t('没有仓库开启自动迭代。', 'No repository runs automatically.')
-  let soonest: { label: string; at: number } | null = null
-  for (const repo of automatic) {
-    const last = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
-    const at = Number.isFinite(last) ? last + repo.interval_minutes * 60_000 : Number.NaN
-    // A repository the scheduler has never run has no next run to report; it
-    // must not shadow one that does, so a known time always beats an unknown.
-    if (soonest === null || (Number.isFinite(at) && (!Number.isFinite(soonest.at) || at < soonest.at))) {
-      soonest = { label: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`, at }
-    }
+// The scheduler's inputs are not all on RepoRow: whether there is open work, an
+// active job and a ready instance come from other tables the route reads.
+export interface NextRunFact {
+  repoId: string
+  openWork: boolean
+  activeJob: boolean
+  instanceReady: boolean
+}
+
+function nextRunLine(next: NextRun, t: Translate): string {
+  switch (next.state) {
+    case 'disabled': return t('仓库已停用，自动运行不会开始', 'Repository disabled; no automatic run starts')
+    case 'not-ready': return t('FlyBot 实例未就绪，自动运行不会开始', 'FlyBot instance not ready; no automatic run starts')
+    case 'auto-off': return t('自动工作已关闭', 'Auto work off')
+    case 'active-job': return t('当前任务结束后再排', 'After the active job finishes')
+    case 'idle': return t('空闲：没有开放工作项；会按发现间隔检查', 'Idle: no open work; the discovery interval still runs')
+    case 'waiting-first-run': return t('等待首次运行', 'Waiting for first run')
+    case 'due': return t('等待调度', 'Waiting for the scheduler')
+    case 'scheduled': return humanTimeShort(new Date(next.at ?? 0).toISOString())
   }
-  if (soonest === null) return t('没有仓库开启自动迭代。', 'No repository runs automatically.')
-  const when = Number.isFinite(soonest.at) && soonest.at > Date.now() ? humanTimeShort(new Date(soonest.at).toISOString()) : t('等待调度', 'waiting for the scheduler')
-  return t(`下次自动运行：${soonest.label} · ${when}`, `Next automatic run: ${soonest.label} · ${when}`)
+}
+
+// One sentence per repository, computed by the rule the worker uses (#564). The
+// old dashboard answered `last_run_at + interval_minutes`, which for a default
+// 1440-minute repository with open work was 23h45m away from the truth.
+function nextScheduledRun(input: { repos: RepoRow[]; facts: NextRunFact[]; config: Config; t: Translate }): { text: string; line: string } {
+  const { repos, facts, config, t } = input
+  const automatic = repos.filter((repo) => repo.auto_iterate === 1)
+  if (automatic.length === 0) return { text: t('没有仓库开启自动迭代。', 'No repository runs automatically.'), line: '' }
+  const flybotAvailable = config.flybot.instanceImage !== ''
+  const rows = automatic.map((repo) => {
+    const fact = facts.find((entry) => entry.repoId === repo.id)
+    const state = nextRun({
+      lastRunAt: repo.last_run_at,
+      intervalMinutes: repo.interval_minutes,
+      workCooldownMinutes: config.runner.workCooldownMinutes,
+      autoIterate: repo.auto_iterate === 1,
+      hasOpenWork: fact === undefined ? true : fact.openWork,
+      hasActiveJob: fact?.activeJob ?? false,
+      repoEnabled: repo.enabled === 1,
+      instanceReady: flybotAvailable && fact !== undefined ? fact.instanceReady : true,
+    })
+    return { repo, state }
+  })
+  const runnable = rows.filter((row) => row.state.state === 'scheduled' || row.state.state === 'due')
+  // A repository the scheduler knows nothing about must not shadow one it does.
+  const chosen = runnable.length === 0 ? rows[0]! : runnable.reduce((a, b) => ((b.state.at ?? 0) < (a.state.at ?? 0) ? b : a))
+  const label = `${chosen.repo.upstream_owner || chosen.repo.owner}/${chosen.repo.upstream_name || chosen.repo.name}`
+  const line = nextRunLine(chosen.state, t)
+  const text = chosen.state.state === 'scheduled' || chosen.state.state === 'due'
+    ? t(`下次自动运行：${label} · ${line}`, `Next automatic run: ${label} · ${line}`)
+    : t(`自动运行暂停：${label} · ${line}`, `Automatic run paused: ${label} · ${line}`)
+  return { text, line }
 }
 
 // An English page must not lead with a sentence only the platform writes in
@@ -701,8 +742,10 @@ function nextActionFor(input: {
   quota: ReturnType<typeof quotaView>
   setup: SetupState | undefined
   repos: RepoRow[]
+  nextRunFacts: NextRunFact[]
+  config: Config
 }): NextActionView {
-  const { t, locale, questions, alerts, latestJob, quota, setup, repos } = input
+  const { t, locale, questions, alerts, latestJob, quota, setup, repos, nextRunFacts, config } = input
   if (questions.length > 0) {
     return {
       kind: 'questions',
@@ -774,10 +817,12 @@ function nextActionFor(input: {
       setupStep: step.key,
     }
   }
+  const nextRunView = nextScheduledRun({ repos, facts: nextRunFacts, config, t })
   return {
     kind: 'clear',
     title: t('现在没有需要你处理的事情。', 'Nothing needs you right now.'),
-    body: nextScheduledRun(repos, t),
+    body: nextRunView.text,
+    nextRunLine: nextRunView.line,
     href: '',
     label: '',
     setupStep: null,
@@ -791,7 +836,7 @@ function nextActionSection(action: NextActionView, t: Translate): string {
   return `<section class="card" id="next-action" data-next-action="${action.kind}" aria-labelledby="next-action-title">
     <div class="eyebrow">${escapeHtml(t('下一步', 'NEXT ACTION'))}</div>
     <h2 id="next-action-title">${escapeHtml(action.title)}</h2>
-    <p class="muted">${escapeHtml(action.body)}</p>
+    <p class="muted"${action.nextRunLine === undefined ? '' : ` data-next-run="${escapeHtml(action.nextRunLine)}"`}>${escapeHtml(action.body)}</p>
     ${action.kind === 'clear' ? '' : primary}
   </section>`
 }
@@ -829,6 +874,10 @@ export function dashboardPage(input: {
   // #230: the page slice is enough for the table, but the next scheduled run
   // must consider every repository, not only the visible page of ten.
   allRepos?: RepoRow[]
+  // #564: open work, an active job and a ready instance decide the next run, and
+  // they live outside RepoRow, so the route reads them for every repository. A
+  // caller that omits them still gets the shared formula, not a second one.
+  nextRunFacts?: NextRunFact[]
   setup?: SetupState
   notice?: string
   error?: string
@@ -855,6 +904,8 @@ export function dashboardPage(input: {
     quota,
     setup: input.setup,
     repos: input.allRepos ?? repos,
+    nextRunFacts: input.nextRunFacts ?? [],
+    config,
   })
   // The add-repository form, the inbox, the attention table and the job table
   // all live inside the disclosure. A browser does not open <details> for an
@@ -1055,21 +1106,20 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const roleMissing = repoRole === null
   const reviewStatus = repo.last_review_status === null ? '' : ` · ${badge(t, repo.last_review_status)}`
   const activeJob = input.activeJob ?? jobs.some((job) => job.status === 'queued' || job.status === 'running')
-  const lastRun = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
-  const workCooldown = Math.min(repo.interval_minutes, config.runner.workCooldownMinutes)
   const openWork = workItems.some((item) => item.state !== 'merged' && item.state !== 'closed')
-  const nextRun = repo.auto_iterate === 1 && openWork && Number.isFinite(lastRun) ? new Date(lastRun + workCooldown * 60_000) : null
-  const nextRunText = repo.auto_iterate !== 1
-    ? t('自动工作已关闭', 'Auto work off')
-    : !openWork
-      ? t('空闲：没有开放工作项；会按发现间隔检查', 'Idle: no open work; the discovery interval still runs')
-      : activeJob
-        ? t('当前任务结束后再排', 'After the active job finishes')
-        : nextRun === null
-          ? t('等待首次运行', 'Waiting for first run')
-        : nextRun.getTime() <= Date.now()
-          ? t('等待调度', 'Waiting for the scheduler')
-          : humanTimeShort(nextRun.toISOString())
+  // #564: the same rule the worker applies, so this page and the dashboard
+  // cannot disagree about when the repository runs again.
+  const nextRunState = nextRun({
+    lastRunAt: repo.last_run_at,
+    intervalMinutes: repo.interval_minutes,
+    workCooldownMinutes: config.runner.workCooldownMinutes,
+    autoIterate: repo.auto_iterate === 1,
+    hasOpenWork: openWork,
+    hasActiveJob: activeJob,
+    repoEnabled: repo.enabled === 1,
+    instanceReady: config.flybot.instanceImage === '' ? true : instance?.status === 'ready',
+  })
+  const nextRunText = nextRunLine(nextRunState, t)
   const instanceTeam = instance === undefined ? null : parseTeam(instance.team_json)
   const instanceReady = instance?.status === 'ready' && instanceTeam !== null
   const flybotAvailable = config.flybot.instanceImage !== ''
@@ -1122,7 +1172,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <div>
         <div class="eyebrow">${escapeHtml(t('仓库', 'REPOSITORY'))}</div>
         <h1>${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</h1>
-        <p class="muted">${escapeHtml(t('目标分支', 'Target branch'))} <code>${escapeHtml(targetBranch)}</code>${targetBranch === defaultBranch ? '' : ` · ${escapeHtml(t('默认分支', 'Default branch'))} <code>${escapeHtml(defaultBranch)}</code>`} · ${escapeHtml(repo.auto_iterate === 1 ? t('自动迭代已开启', 'Auto-iteration on') : t('仅手动运行', 'Manual runs only'))} · ${escapeHtml(t('自动间隔', 'Auto every'))} <b>${escapeHtml(intervalLabel(repo.interval_minutes, t))}</b> · ${escapeHtml(t('下次约', 'Next'))} ${escapeHtml(nextRunText)} · ${badge(t, repo.last_status ?? 'idle')}</p>
+        <p class="muted">${escapeHtml(t('目标分支', 'Target branch'))} <code>${escapeHtml(targetBranch)}</code>${targetBranch === defaultBranch ? '' : ` · ${escapeHtml(t('默认分支', 'Default branch'))} <code>${escapeHtml(defaultBranch)}</code>`} · ${escapeHtml(repo.auto_iterate === 1 ? t('自动迭代已开启', 'Auto-iteration on') : t('仅手动运行', 'Manual runs only'))} · ${escapeHtml(t('自动间隔', 'Auto every'))} <b>${escapeHtml(intervalLabel(repo.interval_minutes, t))}</b> · ${escapeHtml(t('下次约', 'Next'))} <span data-next-run>${escapeHtml(nextRunText)}</span> · ${badge(t, repo.last_status ?? 'idle')}</p>
         <p class="fine">${escapeHtml(t('上游', 'Upstream'))} <a href="${escapeHtml(upstreamUrl)}" target="_blank" rel="noreferrer">${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</a> · ${repo.is_fork === 1 ? `${escapeHtml(t('Fork', 'Fork'))} <a href="${escapeHtml(forkUrl)}" target="_blank" rel="noreferrer">${escapeHtml(forkOwner)}/${escapeHtml(forkName)}</a>` : escapeHtml(t('自有仓库，无需 fork', 'Own repository, no fork'))} · ${escapeHtml(t('GitHub 权限', 'GitHub permission'))} <code>${escapeHtml(permission)}</code> · ${escapeHtml(t('你的角色', 'Your role'))} <code>${escapeHtml(repoRoleLabel(t, repoRole))}</code> · ${escapeHtml(reviewerLabel)}</p>
       </div>
       <div class="row">
