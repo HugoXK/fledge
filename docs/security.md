@@ -166,6 +166,15 @@ admin panel still shows the contact email to administrators for account
 management, and approval mail includes it as required. The address is used only
 for job/digest mail and is never shown on a public page.
 
+### Transactional email rendering
+
+Every transactional mail now renders through one shared HTML shell beside its
+plain-text part. The shell uses inline styles only, no `<style>` block, external
+stylesheet, web font or remote image, and a 640px measure that stays inside a
+360px client. User-controlled values are escaped before interpolation, and the
+footer links are fixed docs/status URLs rather than request input. A failure or
+urgent mail keeps its red banner and subject marker in both parts.
+
 ### Inbound email
 
 `POST /api/inbound/email` is disabled unless `INBOUND_EMAIL_SECRET` is set. The
