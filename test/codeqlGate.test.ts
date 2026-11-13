@@ -157,6 +157,11 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // webhook registration `:3333`. The gateway pair does not move and stays
   // `:155`/`:180`. No result is added or dismissed: the two gateway alerts (#41,
   // #42) stay the two dismissed false positives.
+  // The tip then merges `main@f20c8de`: #517 floors discovery at 60 minutes in
+  // `src/jobs/service.ts` and #514 rewrites the daily-release header, and neither
+  // touches `src/app.ts`, so re-reading all seven anchors on the merged tree moved
+  // none and the pins below stay `:590`/`:625`/`:635`/`:645`/`:3333` and
+  // `:155`/`:180`.
   assert.deepEqual([...keys].sort(), [
     'js/missing-rate-limiting|src/app.ts|3333',
     'js/missing-rate-limiting|src/app.ts|590',
