@@ -1455,8 +1455,17 @@ export class Jobs {
     // A file that arrives without a patch is unread, and an unread file outside
     // the asset allowlist is a refusal. This runs before the empty-diff branch:
     // a pull request whose every file is patch-less used to reach that branch and
-    // skip with no block at all.
-    const unread = listed.files.filter((file) => typeof file.patch !== 'string' || file.patch === '').map((file) => file.filename)
+    // skip with no block at all. A 100 %-similarity rename is the one patch-less
+    // shape that is not unread — the API sends no hunks for it because there are
+    // none — but a pure path move is also how a change is disabled without a diff
+    // to read, so it keeps its own list and the nothing-readable branch refuses
+    // while it is non-empty. Otherwise the asset skip below would release it.
+    const isHunklessRename = (file: { status: string; additions: number; deletions: number }): boolean =>
+      file.status === 'renamed' && file.additions === 0 && file.deletions === 0
+    const renames = listed.files.filter(isHunklessRename).map((file) => file.filename)
+    const unread = listed.files
+      .filter((file) => (typeof file.patch !== 'string' || file.patch === '') && !isHunklessRename(file))
+      .map((file) => file.filename)
     const unreadBeyondAssets = unread.filter((filename) => !adversarialAssetExempt(filename))
     if (unreadBeyondAssets.length > 0) {
       const named = unreadBeyondAssets.slice(0, 10).join(', ')
@@ -1468,7 +1477,7 @@ export class Jobs {
     }
     const readable = listed.files.filter((file) => typeof file.patch === 'string' && file.patch !== '')
     if (readable.length === 0) {
-      if (unread.length === 0) {
+      if (renames.length > 0 || unread.length === 0) {
         return refuse('the changed-file list reports no readable file, so there was nothing to review', '(changed-file list)', {})
       }
       // The one skip that survives: every unread file is an asset inside the

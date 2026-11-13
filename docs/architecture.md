@@ -703,7 +703,14 @@ The pass is granted only when it read the whole change. A diff cut at
 `MAX_DIFF_CHARS`, a changed-file listing the client reports incomplete, or a
 changed file that arrives without a patch is a refusal that names the omission
 and is recorded as `incomplete` — never a `skipped` pass with no block, and never
-a `partial` outcome that still merges (#556). A patch-less file inside the
+a `partial` outcome that still merges (#556). A 100 %-similarity rename is the
+one patch-less shape that is not an omission: it has no hunks to read, so it is
+not withheld text, and a change that renames a file beside readable ones is
+reviewed on its readable half and merges (#566). It is still not a way past the
+gate: a change whose every file is a hunkless rename, or one that pairs a rename
+with nothing but allowlisted assets, refuses through the nothing-readable branch
+below, because a pure path move is how a change can be disabled without a diff to
+read. A patch-less file inside the
 binary-asset allowlist (`png`, `jpg`, `jpeg`, `gif`, `webp`, `ico`, `woff`,
 `woff2`, `ttf`, `eot` under `public/` or `docs/`) is recorded as unread and may
 merge, because a screenshot cannot be read by a text model and refusing it would
