@@ -43,6 +43,9 @@ Key settings:
 | `JOB_TIMEOUT_MINUTES` / `JOB_STALL_MINUTES` | Hard timeout (default 90) and no-heartbeat stall timeout (default 30) |
 | `FLYBOT_BRIDGE_URL` / `FLYBOT_BRIDGE_TOKEN` | Bridge endpoint and shared secret |
 | `DATA_DIR` / `DB_PATH` | Defaults `./data`, `./data/fledge.db` |
+| `BACKUP_ENCRYPTION_KEY` | Optional backup key: base64 32 bytes, or any other value treated as a passphrase and stretched with scrypt. Environment only, never argv or git |
+| `BACKUP_ENCRYPTION_KEY_FILE` | Optional 0600 file holding the same key value; set exactly one of this and `BACKUP_ENCRYPTION_KEY` |
+| `BACKUP_ENCRYPTION_REQUIRED` | `true` makes `npm run db:backup` refuse to run without a key; default `false` keeps plaintext backups |
 | `ALLOW_PRIVATE_MODEL_URLS` | Keep `false` for untrusted users |
 | `PAT_EXPIRY_DAYS` | Default lifetime of a new personal `flg_` gateway token, in days (default 90); only an admin may create one without an expiry |
 | `METRICS_TOKEN` | Required in production: `/metrics`, and the `commit`/`builtAt` fields of `/healthz`, answer only `Authorization: Bearer <token>` |
@@ -403,7 +406,48 @@ npm run db:backup
 # exits non-zero, so a failed backup never leaves a usable-looking file
 # each copy gets a <copy>.json manifest: size, sha256, schema version and
 # per-table row counts, written 0600 and deleted together with its copy
+# plaintext is the default; with a backup key this writes fledge-<timestamp>.db.enc
+# and the manifest records the ciphertext checksum plus the non-secret key id/version
+# BACKUP_ENCRYPTION_REQUIRED=true refuses the run when no key is configured
 ```
+
+### Backup encryption
+
+Backups stay plaintext by default, so existing schedules keep working. Set one
+of `BACKUP_ENCRYPTION_KEY` (inline) or `BACKUP_ENCRYPTION_KEY_FILE` (a path to a
+`0600` file; a trailing newline is ignored) to encrypt every new copy:
+
+```sh
+# generate once, store it 0600 and outside the repository
+openssl rand -base64 32 > /etc/fledge/backup.key
+chmod 600 /etc/fledge/backup.key
+BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key npm run db:backup
+```
+
+The key is read only from the environment or the key file: never pass it on the
+command line, and never commit it. A value that is not a base64-encoded 32-byte
+key is treated as a passphrase and stretched with scrypt using a random salt per
+copy. The encrypted file is a JSON envelope header (format version, key id and
+key version, scrypt salt when used, IV, GCM authentication tag) followed by the
+ciphertext. The key itself is never in the envelope or the manifest. Set exactly
+one key source; setting both is refused instead of guessing.
+
+For production, require encryption so a misconfigured schedule cannot silently
+write plaintext:
+
+```sh
+BACKUP_ENCRYPTION_REQUIRED=true BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key npm run db:backup
+```
+
+Required mode exits non-zero before creating the backup directory when no key is
+configured. Copies written before the switch stay plaintext and remain
+restorable; only new copies are encrypted.
+
+**Key custody.** Keep the backup key separate from the copies: a different
+machine or a different medium, readable only by the operator (`0600`). A copy
+held with its key hands both halves to anyone who finds the disk. Rotation means
+starting a new key and keeping the old one for as long as its copies are
+retained; the manifest names the key id each copy needs.
 
 `/admin` shows what is in that directory, read-only: the newest copy with its
 size and age, whether that copy's manifest still matches (size and `sha256`),
@@ -437,6 +481,7 @@ Prove that the newest copy still restores, without touching the live database:
 
 ```sh
 npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR"
+# encrypted copy: prefix with BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key
 # manifest=/var/lib/fledge/backups/fledge-2026-11-06T09-44-53-448Z.db.json
 # table=jobs expected=5000 actual=5000        one line per table: copy vs manifest
 # schema_version expected=28 actual=28
@@ -452,20 +497,32 @@ npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR"
 
 How it works and how to read it:
 
-- It takes the newest `fledge-*.db` in the backup directory (write a fresh copy
-  first with `--fresh`). Nothing is created if a copy already exists, so the RPO
-  you see is the age of your real backup schedule.
+- It takes the newest `fledge-*.db` or `fledge-*.db.enc` in the backup
+  directory (write a fresh copy first with `--fresh`; with a key configured that
+  fresh copy is encrypted too). Nothing is created if a copy already exists, so
+  the RPO you see is the age of your real backup schedule.
+- **An encrypted copy is decrypted with the configured key before the database
+  checks.** The `.db.enc` extension selects the encrypted path; the ciphertext is
+  checked against the manifest first, then decrypted with
+  `BACKUP_ENCRYPTION_KEY` or `BACKUP_ENCRYPTION_KEY_FILE` into
+  `<work-dir>/restored.db`. AES-256-GCM authenticates the ciphertext, so a wrong
+  key or an altered copy fails closed instead of producing a database. A missing
+  key exits non-zero with a lost-key message and leaves no restore result: the
+  copy cannot be recovered without the key, and the printed `key_id` (a
+  fingerprint, never the key) names the key it needs. Plaintext copies keep
+  restoring without a key.
 - **The copy is judged against the file it is, not against the live database.**
-  The restored file must be byte-for-byte the copy it came from; then, when that
-  copy has a `<copy>.json` manifest (every copy `npm run db:backup` writes does),
-  its size, `sha256`, `PRAGMA user_version` and per-table row counts must match
-  the manifest, which is what catches a copy that was truncated or interrupted
-  at backup time. A copy written before manifests existed still passes the byte
-  comparison and prints `manifest=missing`, but only after it passes the same
-  schema check as every other copy: a restore must hold the application tables
-  `users`, `repos`, `jobs` and a positive `PRAGMA user_version`, so a copy that
-  does not hold the application schema is refused — a 0-byte file compares equal
-  to itself and `PRAGMA integrity_check` answers `ok` on it.
+  For a plaintext copy the restored file must be byte-for-byte the copy it came
+  from; then, when that copy has a `<copy>.json` manifest (every copy
+  `npm run db:backup` writes does), its size, `sha256`, `PRAGMA user_version` and
+  per-table row counts must match the manifest, which is what catches a copy that
+  was truncated or interrupted at backup time. A copy written before manifests
+  existed still passes the byte comparison and prints `manifest=missing`, but
+  only after it passes the same schema check as every other copy: a restore must
+  hold the application tables `users`, `repos`, `jobs` and a positive `PRAGMA
+  user_version`, so a copy that does not hold the application schema is refused —
+  a 0-byte file compares equal to itself and `PRAGMA integrity_check` answers `ok`
+  on it.
 - **The live source is reported, never required to match or even to be
   readable.** Each shared table prints `source_table=<table> source=<n>
   restored=<n>`, `schema_drift` names a table the source has and the copy does
@@ -519,12 +576,14 @@ copies, and appends a row here with the numbers it printed. Do not paste table
 contents or query results into this file.
 
 Restore for real, on a stopped instance. The work directory must be outside
-`DATA_DIR` (the drill refuses a target inside it), so use a scratch path:
+`DATA_DIR` (the drill refuses a target inside it), so use a scratch path. For an
+encrypted copy, set the same key source the backup used; a missing or wrong key
+stops the drill before it can produce a `restored.db`:
 
 ```sh
 sudo systemctl stop fledge
 sudo install -d -m 700 /var/tmp/fledge-restore
-if npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --work-dir /var/tmp/fledge-restore; then
+if BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --work-dir /var/tmp/fledge-restore; then
   echo "restore-drill: OK"
 else
   echo "drill failed; do not restore from this copy" >&2
