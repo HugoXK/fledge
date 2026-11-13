@@ -136,6 +136,14 @@ provider/model rows at startup. Existing `flybot:<repo>` and `job:<id>` tokens
 are backfilled with their repository id, so new usage is attributed per
 repository. Historical ledger rows without a job id remain unattributed.
 
+### Model URL guard and webhook egress
+
+The model URL guard and the notification-webhook guard share one IP classifier
+(`src/lib/ipAddress.ts`), so loopback, RFC1918, carrier-grade NAT, link-local,
+multicast, ULA and IPv4-mapped private addresses are refused consistently. The
+webhook check runs at send time and after every redirect; it does not change
+quota accounting, and a refused webhook spends no quota and calls no provider.
+
 ## Admin
 
 Admins can set `quota_cny` per user from `/admin` (0–10000), or tick

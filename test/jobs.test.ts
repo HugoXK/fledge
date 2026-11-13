@@ -1078,7 +1078,7 @@ test('job completion and questions can be forwarded to a notification webhook', 
     events.push(body)
     json(response, 200, { ok: true })
   })
-  const config = testConfig({ notifyWebhookUrl: webhook.url, notifyWebhookSecret: 'hook-secret' })
+  const config = testConfig({ notifyWebhookUrl: webhook.url, notifyWebhookSecret: 'hook-secret', notifyWebhookAllowedHosts: ['127.0.0.1'] })
   const store = new Store(':memory:')
   const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
   try {
