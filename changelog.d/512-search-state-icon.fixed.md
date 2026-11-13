@@ -1,0 +1,1 @@
+The `/search` empty state renders through the shared state renderer like the other four console states, so it shows the same inline SVG icon instead of a literal `0`, and the unused glyph styling on `.state-icon` is gone. The states document now attributes its red and green counts to the change that produced them.

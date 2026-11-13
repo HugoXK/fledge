@@ -35,7 +35,10 @@ a dropped stream reports `lost` and `recovered` instead of going quiet. Each
 state's icon is an inline `<svg>` from a literal map in the same file, on one
 `viewBox`, `aria-hidden` and inheriting `currentColor`, so the five states share
 a geometry instead of five font glyphs. The state contract and its evidence are
-in [docs/ui.md](ui.md).
+in [docs/ui.md](ui.md). No page composes a state by hand: `/search` used to, and
+its own empty state carried a text `0` where the icon belongs, so
+`test/uiStates.test.ts` renders that page's two empty branches and asserts the
+shared `<svg>` in the slot with no bare glyph beside it.
 
 The console renders UTC and says so: every timestamp goes through
 `humanTimeShort` in `src/lib/time.ts`, which prints the UTC wall clock with an
