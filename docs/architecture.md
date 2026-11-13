@@ -1504,9 +1504,10 @@ never updated in place). `src/lib/memory.ts` holds the rules that are not SQL.
   A writer may not author an entry for a role it cannot act as.
 - **Lookups are bounded.** Search is a case-insensitive substring match over the
   key, body and scope of the visible entries: the query is capped at 120
-  characters (a longer one is refused by name), results are capped at 50, and a
-  preview is capped at 200 characters. There is no ranking and no embedding, so
-  the same store always answers the same way.
+  characters (a longer one is refused by name) and results are capped at 50. The
+  result table lists the key and its metadata, never the body, so a long entry
+  cannot lengthen the list. There is no ranking and no embedding, so the same
+  store always answers the same way.
 
 The slice is the repository page (`/repos/:id/memory`, `src/views/memory.ts`).
 Not built yet: the bounded index handed to a job prompt and the agent read tool

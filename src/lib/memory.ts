@@ -28,10 +28,9 @@ export const MEMORY_BODY_MAX = 8000
 export const MEMORY_SCOPE_MAX = 200
 export const MEMORY_REASON_MAX = 200
 // The bound the issue asks for is stated here rather than implied by a database
-// page size: a query is capped, a result set is capped and a preview is capped.
+// page size: a query is capped and a result set is capped.
 export const MEMORY_QUERY_MAX = 120
 export const MEMORY_SEARCH_LIMIT = 50
-export const MEMORY_PREVIEW_CHARS = 200
 
 export type MemoryRefusal =
   | 'key_invalid'
@@ -94,11 +93,6 @@ export function audienceVisible(audience: string, role: RepoRole | null): boolea
 
 export function visibleMemories(entries: ProjectMemoryRow[], role: RepoRole | null): ProjectMemoryRow[] {
   return entries.filter((entry) => audienceVisible(entry.audience, role))
-}
-
-export function previewOf(body: string): string {
-  const flat = body.replace(/\s+/g, ' ').trim()
-  return flat.length <= MEMORY_PREVIEW_CHARS ? flat : `${flat.slice(0, MEMORY_PREVIEW_CHARS - 1)}…`
 }
 
 function text(value: unknown): string {

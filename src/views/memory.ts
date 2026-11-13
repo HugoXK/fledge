@@ -12,7 +12,6 @@ import {
   memoryKindLabel,
   memoryStatusLabel,
   memoryVerificationLabel,
-  previewOf,
   type MemorySearch,
 } from '../lib/memory.js'
 import { allowedRepoRoles, type RepoRole } from '../lib/repoRole.js'
