@@ -1,1 +1,0 @@
-Settings now lists the sessions you are signed in with, masks their addresses, and lets you revoke one or sign out every other session; revoking a row ends that cookie on its next request and is recorded in the audit log as `session.revoked`. The current session cannot be revoked by the row action - it is rotated instead, which issues a new cookie and deletes the old row.

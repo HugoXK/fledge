@@ -1,1 +1,0 @@
-On a tablet, the job, admin-user and audit tables keep the identity, status and action columns visible and put the low-priority detail columns behind a "show all columns" control, so the row no longer needs a sideways drag to be understood.

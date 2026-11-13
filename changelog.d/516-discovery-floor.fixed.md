@@ -1,1 +1,0 @@
-Discovery now has a 60-minute minimum interval, so a repository with a 15- or 30-minute work cadence cannot turn into an issue generator. The discovery select starts at 60 minutes; work sessions keep the 15-minute cooldown.

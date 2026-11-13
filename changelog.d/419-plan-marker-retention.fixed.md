@@ -1,1 +1,0 @@
-Retention now reclaims the per-job `plan_expired:` and `plan_reminded:` settings rows, which the plan-expiry pass writes and no cleanup path used to delete. A database no longer grows by one marker per unapproved plan forever.
