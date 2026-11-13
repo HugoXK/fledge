@@ -395,6 +395,34 @@ p { margin: 0 0 12px; }
 .table-scroll { width: 100%; overflow-x: auto; }
 .table-scroll::-webkit-scrollbar { height: 8px; }
 .table-scroll::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: var(--radius-pill); }
+/* issue 473: half way down a long table the reader was looking at cells with no
+   column meaning — the `thead` left the screen with the rows. A sticky header
+   only sticks inside a bounded scrollport, so the scroller and the header are
+   one contract: the scroller gets a vertical bound that leaves the page header
+   (--header-h) and one line of air (--space-7) on screen, and the `thead` sits
+   on its own top edge with an opaque background so rows cannot show through it. On a
+   repository page a second layer (the subnav, --subnav-h) is already stuck
+   above the table, so that bound is subtracted too — otherwise the header parks
+   under the subnav.
+   Scoped to 641px and up on purpose: below that every table is a card stack
+   (#130), the `thead` is already hidden, and the cards keep the 44px touch
+   floor rather than shrinking with the table. */
+@media (min-width: 641px) {
+  .table-scroll { overflow-y: auto; max-height: calc(100dvh - var(--header-h) - var(--space-7)); }
+  .repo-page .table-scroll { max-height: calc(100dvh - var(--header-h) - var(--subnav-h) - var(--space-7)); }
+  .table-scroll thead th {
+    position: sticky; top: 0; z-index: 2;
+    background: var(--panel);
+  }
+  /* issue 473: two densities, one choice for the console. Comfortable is the layout
+     the platform already had; compact trims the cell padding so a desktop reader
+     sees roughly twice as many rows. The control floor inside a cell (a button,
+     a select) is untouched: only the cell box shrinks. */
+  html[data-density="comfortable"] th { padding: 9px 10px; }
+  html[data-density="comfortable"] td { padding: 12px 10px; }
+  html[data-density="compact"] th { padding: 5px 10px; }
+  html[data-density="compact"] td { padding: 6px 10px; }
+}
 /* Above 640px the wide tables are tables again — the delivery board at
    /repos/:id is 952px wide in a 686px window at 768 — so a column can sit
    off-screen with no cue but an 8px thumb in --line-strong, which is 1.5:1 on

@@ -227,7 +227,7 @@ test('the workspace stays focused and the UI switches language', async () => {
 
     const en = await built.app.inject({ method: 'GET', url: '/console', headers: { cookie: `${cookie}; fledge_lang=en` } })
     assert.equal(en.statusCode, 200)
-    assert.match(en.body, /<html lang="en" data-locale="en">/)
+    assert.match(en.body, /<html lang="en" data-locale="en" data-density="comfortable">/)
     assert.match(en.body, /Workspace/)
     assert.match(en.body, /Recent jobs/)
     assert.match(en.body, /Sign out/)
