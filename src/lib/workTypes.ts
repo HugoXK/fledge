@@ -53,8 +53,6 @@ export interface WorkTypeContract {
   evidence: readonly WorkEvidenceKey[]
   /** The risk tier the work type declares; the diff still decides the real one. */
   risk: WorkRisk
-  /** Ceiling for one job of this type, in USD. */
-  budgetUsd: number
   /** Whether a pull request produced by this work type may merge under its rules. */
   autoMerge: boolean
   /** Whether this work type may create a branch and a pull request at all. */
@@ -74,7 +72,6 @@ const ITERATE: WorkTypeContract = {
   stages: ['plan', 'scope', 'verify', 'iterate', 'review'],
   evidence: ['scope', 'testRed', 'testGreen'],
   risk: 'T2',
-  budgetUsd: 5,
   autoMerge: true,
   branch: true,
 }
@@ -86,7 +83,6 @@ const TRIAGE: WorkTypeContract = {
   stages: [],
   evidence: [],
   risk: 'T0',
-  budgetUsd: 1,
   autoMerge: false,
   branch: false,
 }
@@ -98,7 +94,6 @@ const DEPENDENCY: WorkTypeContract = {
   stages: ['iterate', 'verify', 'review'],
   evidence: ['tests', 'checks'],
   risk: 'T2',
-  budgetUsd: 3,
   autoMerge: false,
   branch: true,
 }
@@ -110,7 +105,6 @@ const SECURITY: WorkTypeContract = {
   stages: ['scope', 'iterate', 'verify', 'review'],
   evidence: ['testRed', 'testGreen', 'rollback'],
   risk: 'T3',
-  budgetUsd: 5,
   autoMerge: false,
   branch: true,
 }
@@ -122,7 +116,6 @@ const DOCS: WorkTypeContract = {
   stages: ['iterate', 'review'],
   evidence: ['checks'],
   risk: 'T0',
-  budgetUsd: 2,
   autoMerge: false,
   branch: true,
 }
@@ -134,7 +127,6 @@ const PERFORMANCE: WorkTypeContract = {
   stages: ['scope', 'iterate', 'verify', 'review'],
   evidence: ['testRed', 'testGreen'],
   risk: 'T2',
-  budgetUsd: 3,
   autoMerge: false,
   branch: true,
 }
@@ -146,7 +138,6 @@ const ACCESSIBILITY: WorkTypeContract = {
   stages: ['iterate', 'verify', 'review'],
   evidence: ['testRed', 'testGreen'],
   risk: 'T1',
-  budgetUsd: 2,
   autoMerge: false,
   branch: true,
 }
@@ -158,7 +149,6 @@ const MIGRATION: WorkTypeContract = {
   stages: ['scope', 'plan', 'verify', 'iterate', 'review'],
   evidence: ['rollback', 'checks'],
   risk: 'T3',
-  budgetUsd: 5,
   autoMerge: false,
   branch: true,
 }

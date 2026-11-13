@@ -1643,6 +1643,157 @@ test('every redirect banner value has an English form', () => {
   }
 })
 
+// --- errorPage localization (#449) ------------------------------------------
+//
+// `errorPage(config, viewer, title, message, locale)` runs both sentences through
+// `localizeMessage`, which returns an unmatched literal verbatim, so a title or a
+// message with no `MESSAGES` row ships in Chinese inside the English console.
+// Until this guard only the 404 pair (#444) was pinned, by hand. The walk below
+// reads every `errorPage(` call in `src/app.ts` and takes arguments 3 and 4
+// (title, message); the fifth argument is the action, whose label is bilingual by
+// construction (`t('使用 GitHub 登录', 'Sign in with GitHub')`).
+//
+// An argument is read as the sentences it can be at run time: a literal, both
+// branches of a top-level conditional, or the English side of a `t(zh, en)`
+// call. Anything else is reported in `unreadable` rather than dropped, so a
+// variable that hides a sentence costs one assertion instead of silence.
+
+type ErrorPageArgument = { texts: string[]; unreadable: string[] }
+
+function literalText(expression: string): string | null {
+  const trimmed = expression.trim()
+  if (trimmed === '') return null
+  const quote = trimmed[0]
+  if (quote !== "'" && quote !== '"' && quote !== '`') return null
+  const end = quote === '`' ? skipTemplate(trimmed, 0) : skipQuoted(trimmed, 0)
+  if (end !== trimmed.length - 1) return null
+  let text = ''
+  let index = 1
+  while (index < trimmed.length - 1) {
+    const char = trimmed[index]
+    if (char === '\\') { text += trimmed[index + 1] ?? ''; index += 2; continue }
+    if (char === '$' && trimmed[index + 1] === '{') { index = balanced(trimmed, index + 1).end + 1; continue }
+    text += char
+    index += 1
+  }
+  return text
+}
+
+function ternaryBranches(expression: string): { consequent: string; alternate: string } | null {
+  let depth = 0
+  let question = -1
+  let index = 0
+  while (index < expression.length) {
+    const char = expression[index]
+    if (char === '`') { index = skipTemplate(expression, index) + 1; continue }
+    if (char === '"' || char === "'") { index = skipQuoted(expression, index) + 1; continue }
+    if (char === '(' || char === '[' || char === '{') { depth += 1; index += 1; continue }
+    if (char === ')' || char === ']' || char === '}') { depth -= 1; index += 1; continue }
+    if (depth === 0 && char === '?') {
+      // `?.` and `??` are not conditionals.
+      if (expression[index + 1] === '.' || expression[index + 1] === '?') { index += 2; continue }
+      question = index
+      break
+    }
+    index += 1
+  }
+  if (question === -1) return null
+  let nesting = 0
+  depth = 0
+  index = question + 1
+  while (index < expression.length) {
+    const char = expression[index]
+    if (char === '`') { index = skipTemplate(expression, index) + 1; continue }
+    if (char === '"' || char === "'") { index = skipQuoted(expression, index) + 1; continue }
+    if (char === '(' || char === '[' || char === '{') { depth += 1; index += 1; continue }
+    if (char === ')' || char === ']' || char === '}') { depth -= 1; index += 1; continue }
+    if (depth === 0 && char === '?') { nesting += 1; index += 1; continue }
+    if (depth === 0 && char === ':') {
+      if (nesting === 0) {
+        return { consequent: expression.slice(question + 1, index), alternate: expression.slice(index + 1) }
+      }
+      nesting -= 1
+    }
+    index += 1
+  }
+  return null
+}
+
+function errorPageArgumentTexts(expression: string): ErrorPageArgument {
+  const read: ErrorPageArgument = { texts: [], unreadable: [] }
+
+  const walk = (candidate: string): void => {
+    const trimmed = candidate.trim()
+    const branches = ternaryBranches(trimmed)
+    if (branches !== null) {
+      walk(branches.consequent)
+      walk(branches.alternate)
+      return
+    }
+    const literal = literalText(trimmed)
+    if (literal !== null) {
+      if (literal.trim() !== '') read.texts.push(literal)
+      return
+    }
+    if (trimmed.startsWith('t(')) {
+      const call = balanced(trimmed, 1)
+      if (call.end === trimmed.length - 1) {
+        walk(splitTopLevel(call.body)[1] ?? '')
+        return
+      }
+    }
+    read.unreadable.push(trimmed)
+  }
+
+  walk(expression)
+  return read
+}
+
+function errorPageTexts(source: string): { texts: string[]; unreadable: string[]; calls: number } {
+  const texts: string[] = []
+  const unreadable: string[] = []
+  const seen = new Set<string>()
+  let calls = 0
+  const needle = 'errorPage('
+  let at = source.indexOf(needle)
+  while (at !== -1) {
+    calls += 1
+    const call = balanced(source, at + needle.length - 1)
+    const args = splitTopLevel(call.body)
+    for (const index of [2, 3]) {
+      const read = errorPageArgumentTexts(args[index] ?? '')
+      for (const text of read.texts) {
+        if (seen.has(text)) continue
+        seen.add(text)
+        texts.push(text)
+      }
+      unreadable.push(...read.unreadable)
+    }
+    at = source.indexOf(needle, at + needle.length)
+  }
+  return { texts, unreadable: [...new Set(unreadable)].sort(), calls }
+}
+
+test('every errorPage sentence has an English form', () => {
+  const source = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8')
+  const { texts, unreadable, calls } = errorPageTexts(source)
+  assert.ok(calls >= 20, `walked ${calls} errorPage calls in src/app.ts; the guard is meant to cover every call site`)
+  assert.ok(texts.length >= 16, `read ${texts.length} errorPage sentences; an extraction that reads nothing must not pass`)
+  assert.deepEqual(
+    unreadable,
+    ['message'],
+    'exactly one errorPage argument is not a sentence the walk can read: the 500 handler forwards the caught message at src/app.ts setErrorHandler. A second one is a decision, not a silent skip',
+  )
+  const unresolved = [...new Set(texts)]
+    .filter((text) => CJK.test(localizeMessage('en', text) ?? ''))
+    .sort()
+  assert.deepEqual(
+    unresolved,
+    [],
+    'these errorPage sentences have no English form; add a MESSAGES row in src/i18n.ts for each',
+  )
+})
+
 test('the repository settings can turn the per-job budget into a stop, in both languages', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
@@ -1714,7 +1865,7 @@ test('admin search links every later page and keeps the filters per section', ()
     const user = makeUser(store, { login: 'search-pager', status: 'approved' })
     const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
     const filters = { q: 'x', status: 'failed', kind: 'iterate', action: 'repo.settings', from: '2026-01-01', to: '2026-01-31' }
-    const page = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map([[user.id, user.login]]), filters, jobsPage: 1, jobsTotal: 45, auditPage: 2, auditTotal: 60, perPage: 20 })
+    const page = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map([[user.id, user.login]]), filters, jobsPage: 1, jobsTotal: 45, auditPage: 2, auditTotal: 60, perPage: 20, lastJobsExport: null, lastAuditExport: null })
 
     const jobsNext = page.match(/href="([^"]*jobsPage=2[^"]*)"/)?.at(1)
     assert.ok(jobsNext, 'the jobs section links to its own second page')
@@ -1732,7 +1883,7 @@ test('admin search links every later page and keeps the filters per section', ()
     assert.match(auditNext, /jobsPage=1/, 'the audit link keeps the jobs section on its page')
     assert.doesNotMatch(auditNext, /status=/, 'the audit link carries no jobs-only filter')
 
-    const short = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map(), filters, jobsPage: 1, jobsTotal: 20, auditPage: 1, auditTotal: 20, perPage: 20 })
+    const short = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map(), filters, jobsPage: 1, jobsTotal: 20, auditPage: 1, auditTotal: 20, perPage: 20, lastJobsExport: null, lastAuditExport: null })
     assert.doesNotMatch(short, /jobsPage=2/, 'a section that fits one page renders no jobs pager')
     assert.doesNotMatch(short, /auditPage=2/, 'a section that fits one page renders no audit pager')
   } finally {
@@ -1757,6 +1908,104 @@ test('every in-page anchor on the settings page has a matching target', () => {
     assert.ok(targets.includes('tokens'), 'the empty token list still links to the token form')
     const missing = [...new Set(targets)].filter((id) => !html.includes(`id="${id}"`))
     assert.deepEqual(missing, [], `in-page links without a target: ${missing.join(', ')}`)
+  } finally {
+    store.close()
+  }
+})
+
+test('the job page shows the adversarial verdict and says when the answer was rejected', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'job-adversarial-page', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_job_adversarial', userId: user.id, owner: 'o', name: 'ja', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_page_adversarial', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const eventOf = (meta: string) => [{ id: 1, at: new Date().toISOString(), job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.adversarial', role: null, step: 'risk', meta }]
+
+    const risk = jobPage({
+      config,
+      locale: 'en',
+      viewer,
+      repo,
+      job,
+      events: eventOf(JSON.stringify({
+        status: 'risk',
+        verdict: { kind: 'risk', file: 'src/x.ts', line: 9, failureMode: 'stale read', repro: 'open twice', checks: ['read the diff'] },
+        target: 'src/x.ts:9',
+        model: 'fake/model',
+        promptHash: 'abcdef0123456789',
+      })),
+    })
+    assert.match(risk, /Independent adversarial review/)
+    assert.match(risk, /concrete risk src\/x\.ts:9/)
+    assert.match(risk, /automatic merge was blocked/)
+    assert.match(risk, /fake\/model/)
+    assert.match(risk, /abcdef012345/)
+
+    const rejected = jobPage({
+      config,
+      locale: 'zh',
+      viewer,
+      repo,
+      job,
+      events: eventOf(JSON.stringify({ status: 'invalid', verdict: { kind: 'invalid', reason: 'a score is not an adversarial review' }, model: 'fake/model' })),
+    })
+    assert.match(rejected, /独立对抗式审核/)
+    assert.match(rejected, /回答被拒绝/)
+    assert.match(rejected, /a score is not an adversarial review/)
+
+    const clean = jobPage({
+      config,
+      locale: 'en',
+      viewer,
+      repo,
+      job,
+      events: eventOf(JSON.stringify({ status: 'none', verdict: { kind: 'none', checks: ['read the diff', 'ran npm run check'] }, model: 'fake/model' })),
+    })
+    assert.match(clean, /no concrete risk \(checks: read the diff, ran npm run check\)/)
+
+    // The events arrive newest-first, as `Store.listJobEvents` returns them. The
+    // row must describe the newest verdict: an older risk beside a newer clean
+    // answer is a job whose later tip cleared it, and an older clean answer
+    // beside a newer risk is a job that regressed. Reading the other end of the
+    // list turns both into the first tip's answer.
+    const twoEvents = (newerStep: string, newerMeta: string, olderStep: string, olderMeta: string) => [
+      { id: 2, at: new Date().toISOString(), job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.adversarial', role: null, step: newerStep, meta: newerMeta },
+      { id: 1, at: new Date().toISOString(), job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.adversarial', role: null, step: olderStep, meta: olderMeta },
+    ]
+    const olderRisk = JSON.stringify({
+      status: 'risk',
+      verdict: { kind: 'risk', file: 'src/x.ts', line: 9, failureMode: 'stale read', repro: 'open twice', checks: ['read the diff'] },
+      target: 'src/x.ts:9',
+      model: 'fake/model',
+    })
+    const cleared = jobPage({
+      config,
+      locale: 'en',
+      viewer,
+      repo,
+      job,
+      events: twoEvents('none', JSON.stringify({ status: 'none', verdict: { kind: 'none', checks: ['read the diff'] }, model: 'fake/model' }), 'risk', olderRisk),
+    })
+    assert.match(cleared, /no concrete risk \(checks: read the diff\)/)
+    assert.doesNotMatch(cleared, /concrete risk src\/x\.ts:9/)
+
+    const regressed = jobPage({
+      config,
+      locale: 'en',
+      viewer,
+      repo,
+      job,
+      events: twoEvents(
+        'risk',
+        JSON.stringify({ status: 'risk', verdict: { kind: 'risk', file: 'src/y.ts', line: 3, failureMode: 'stale read', repro: 'open twice', checks: ['read the diff'] }, target: 'src/y.ts:3', model: 'fake/model' }),
+        'none',
+        JSON.stringify({ status: 'none', verdict: { kind: 'none', checks: ['read the diff'] }, model: 'fake/model' }),
+      ),
+    })
+    assert.match(regressed, /concrete risk src\/y\.ts:3/)
+    assert.doesNotMatch(regressed, /no concrete risk \(checks: read the diff\)/)
   } finally {
     store.close()
   }

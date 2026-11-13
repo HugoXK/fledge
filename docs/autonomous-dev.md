@@ -361,7 +361,14 @@ Enforcement is a second question and `#304` answers it: `analyze` runs in
 required context named it — a red analysis blocked only itself. The
 `codeql-required` job reads the completed run of `codeql.yml` for this event's
 commit and fails `ci-ok` when that analysis is red or absent, so the verdict is
-required through the aggregate that already gates every merge. The commit is
+required through the aggregate that already gates every merge. The lookup names
+the commit in its query (`?head_sha=…&status=completed`) instead of scanning the
+workflow's newest runs: on a busy repository a commit's own run falls outside any
+fixed window, so a green analysis reads as absent and the gate reds a mergeable
+pull request (#585). The exact `head_sha === sha` predicate is unchanged — a row
+that merely advertises the commit in `pull_requests[].head.sha` never answers for
+it — and an API that ignores the filter is paged inside the same ten-minute
+bound, capped at ten pages of a hundred runs. The commit is
 chosen per event (`scripts/lib/codeql-required.mjs`): `push` and
 `workflow_dispatch` gate the commit they run on; `pull_request` gates the pull
 request head, which is the commit the analysis run reports, because `GITHUB_SHA`
@@ -540,6 +547,14 @@ the state, asks the planner and the pure `decideDrive()` in
 | the trigger refuses: tag newer than the `14:30Z` boundary, a release branch present, or a release pull request open | no push; the summary names the blocker. Exit 0 only when the Decide step above already cleared the branch: a `release/v<next>` branch with no pull request and no tag is the orphan row, red and named, and no run repairs it |
 | a push before today's boundary with the previous boundary unreleased | plan; the summary says `catch-up` |
 | a dry run | the same summary and artifact, and no push and no comment |
+
+The state collection measures the changelog fragments with
+`scripts/fragment-count.mjs`, the same rule `scripts/changelog.mjs` folds with. A
+directory holding only `README.md`, or no markdown at all, is zero fragments — a
+legitimate answer the planner turns into its own first reason, not a failed step —
+while a directory the process cannot read fails the job (#548). The `Trigger` step
+reads the collected state only when the collect step succeeded, so a missing state
+file is never dereferenced.
 
 A push is a planning trigger, not a tolerated one, and the event name no longer
 decides: the quantity the rule counts — merged pull requests since the tag —

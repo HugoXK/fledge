@@ -7,7 +7,9 @@ import { nowIso } from './lib/time.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 import { parseModelRun } from './lib/modelRun.js'
 import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
+import { redact } from './lib/secrets.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
+import { buildPostmortem, isPreventiveActionKind, type PreventiveActionKind } from './lib/postmortem.js'
 import { artifactKey, candidateRefusal, type CandidateRefusal } from './lib/evolution/artifacts.js'
 
 // #355: one settings row marks the PAT expiry backfill as done, so a later
@@ -262,6 +264,7 @@ export interface JobRow {
   team_stats_json: string | null
   work_item_id: string | null
   priority: number
+  queue_seq: number
   plan_approved_at: string | null
   plan_approved_by: string | null
   plan_rejected_at: string | null
@@ -410,6 +413,15 @@ function likePattern(q: string): string {
   return `%${q.replace(/[\\%_]/g, (char) => `\\${char}`)}%`
 }
 
+function postmortemRepositories(value: string | null | undefined): string[] {
+  try {
+    const parsed: unknown = JSON.parse(value ?? '[]')
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string') : []
+  } catch {
+    return []
+  }
+}
+
 export interface JobEventRow {
   id: number
   at: string
@@ -420,6 +432,50 @@ export interface JobEventRow {
   role: string | null
   step: string | null
   meta: string | null
+}
+
+export interface PostmortemRow {
+  id: string
+  job_id: string
+  repo_id: string
+  user_id: string
+  status: string
+  category: string
+  outcome: string
+  recurrence_key: string
+  evidence_state: string
+  evidence_json: string | null
+  timeline_json: string | null
+  suspected_cause: string | null
+  owner: string
+  preventive_action: string | null
+  preventive_kind: string | null
+  preventive_verified: number
+  preventive_verified_at: string | null
+  first_seen_at: string
+  last_seen_at: string
+  closed_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface PostmortemRecurrenceRow {
+  recurrence_key: string
+  category: string
+  count: number
+  first_seen_at: string
+  last_seen_at: string
+  repositories_json: string
+  escalated_at: string | null
+  representative_id: string | null
+  updated_at: string
+}
+
+export interface PostmortemRecord {
+  postmortem: PostmortemRow
+  recurrence: PostmortemRecurrenceRow
+  created: boolean
+  escalated: boolean
 }
 
 export interface ArtifactVersionRow {
@@ -695,6 +751,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   team_stats_json TEXT,
   work_item_id TEXT,
   priority INTEGER NOT NULL DEFAULT 0,
+  -- The position this job holds in its priority level (#545). Allocated once,
+  -- monotonically, and never reused; 0 means a row that predates the column and
+  -- has not been backfilled yet.
+  queue_seq INTEGER NOT NULL DEFAULT 0,
   plan_approved_at TEXT,
   plan_approved_by TEXT,
   plan_rejected_at TEXT,
@@ -914,6 +974,48 @@ CREATE TABLE IF NOT EXISTS job_events (
 CREATE INDEX IF NOT EXISTS job_events_job_idx ON job_events(job_id, id DESC);
 CREATE INDEX IF NOT EXISTS job_events_at_idx ON job_events(at);
 
+-- #384: one postmortem per failed/stalled/cancelled job, plus a ledger row per
+-- recurrence key. The job_id unique constraint is the idempotency guard: a
+-- replayed terminal transition cannot create a second write-up for the same job.
+CREATE TABLE IF NOT EXISTS postmortems (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'open',
+  category TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  recurrence_key TEXT NOT NULL,
+  evidence_state TEXT NOT NULL DEFAULT 'unverified',
+  evidence_json TEXT,
+  timeline_json TEXT,
+  suspected_cause TEXT,
+  owner TEXT NOT NULL,
+  preventive_action TEXT,
+  preventive_kind TEXT,
+  preventive_verified INTEGER NOT NULL DEFAULT 0,
+  preventive_verified_at TEXT,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  closed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS postmortems_repo_idx ON postmortems(repo_id, status, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS postmortems_recurrence_idx ON postmortems(recurrence_key);
+
+CREATE TABLE IF NOT EXISTS postmortem_recurrences (
+  recurrence_key TEXT PRIMARY KEY,
+  category TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 1,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  repositories_json TEXT NOT NULL DEFAULT '[]',
+  escalated_at TEXT,
+  representative_id TEXT,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS artifact_versions (
   id TEXT PRIMARY KEY,
   artifact TEXT NOT NULL,
@@ -1008,6 +1110,18 @@ function newestJobOrder(alias: string): string {
   return `${alias}.created_at DESC, ${alias}.rowid DESC`
 }
 
+// #458: `summary` and `error` are the two free-text columns a runner can echo a
+// secret into. Both writers pass through this one helper, so a caller that skips
+// the job service (a retry, a test, a future runner) cannot store a raw value.
+function redactJobText(patch: Record<string, unknown>): Record<string, unknown> {
+  if (typeof patch.summary !== 'string' && typeof patch.error !== 'string') return patch
+  return {
+    ...patch,
+    ...(typeof patch.summary === 'string' ? { summary: redact(patch.summary) } : {}),
+    ...(typeof patch.error === 'string' ? { error: redact(patch.error) } : {}),
+  }
+}
+
 export class Store {
   readonly db: Database
 
@@ -1018,9 +1132,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 33) {
+    if (previousVersion > 34) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (33)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (34)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -1038,7 +1152,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 33)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 34)};`)
   }
 
   migrateIndexes(): void {
@@ -1286,6 +1400,18 @@ export class Store {
     if (!jobColumns.has('team_stats_json')) this.run('ALTER TABLE jobs ADD COLUMN team_stats_json TEXT')
     if (!jobColumns.has('work_item_id')) this.run('ALTER TABLE jobs ADD COLUMN work_item_id TEXT')
     if (!jobColumns.has('priority')) this.run('ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0')
+    if (!jobColumns.has('queue_seq')) this.run('ALTER TABLE jobs ADD COLUMN queue_seq INTEGER NOT NULL DEFAULT 0')
+    // Backfill the ticket in arrival order, which is the order those rows were
+    // ranked by before the column existed, so an upgrade does not reshuffle a
+    // queue that is already waiting.
+    const unticketed = this.all<{ id: string }>('SELECT id FROM jobs WHERE queue_seq = 0 ORDER BY created_at ASC, id ASC')
+    if (unticketed.length > 0) {
+      let seq = Number(this.get<{ seq: number }>('SELECT COALESCE(MAX(queue_seq), 0) AS seq FROM jobs')?.seq ?? 0)
+      for (const row of unticketed) {
+        seq += 1
+        this.run('UPDATE jobs SET queue_seq = ? WHERE id = ?', seq, row.id)
+      }
+    }
     if (!jobColumns.has('plan_approved_at')) this.run('ALTER TABLE jobs ADD COLUMN plan_approved_at TEXT')
     if (!jobColumns.has('plan_approved_by')) this.run('ALTER TABLE jobs ADD COLUMN plan_approved_by TEXT')
     if (!jobColumns.has('plan_rejected_at')) this.run('ALTER TABLE jobs ADD COLUMN plan_rejected_at TEXT')
@@ -1677,6 +1803,171 @@ export class Store {
 
   listJobEvents(jobId: string, limit = 200): JobEventRow[] {
     return this.all<JobEventRow>('SELECT * FROM job_events WHERE job_id = ? ORDER BY id DESC LIMIT ?', jobId, limit)
+  }
+
+  getPostmortem(id: string): PostmortemRow | undefined {
+    return this.get<PostmortemRow>('SELECT * FROM postmortems WHERE id = ?', id)
+  }
+
+  getPostmortemForJob(jobId: string): PostmortemRow | undefined {
+    return this.get<PostmortemRow>('SELECT * FROM postmortems WHERE job_id = ?', jobId)
+  }
+
+  getPostmortemRecurrence(recurrenceKey: string): PostmortemRecurrenceRow | undefined {
+    return this.get<PostmortemRecurrenceRow>('SELECT * FROM postmortem_recurrences WHERE recurrence_key = ?', recurrenceKey)
+  }
+
+  listPostmortemsForRepo(repoId: string, options: { openOnly?: boolean } = {}): PostmortemRow[] {
+    const openClause = options.openOnly === true ? " AND status = 'open'" : ''
+    return this.all<PostmortemRow>(`SELECT * FROM postmortems WHERE repo_id = ?${openClause} ORDER BY last_seen_at DESC, rowid DESC`, repoId)
+  }
+
+  listPostmortemRecurrences(repoId?: string): PostmortemRecurrenceRow[] {
+    if (repoId === undefined) {
+      return this.all<PostmortemRecurrenceRow>('SELECT * FROM postmortem_recurrences ORDER BY last_seen_at DESC')
+    }
+    return this.all<PostmortemRecurrenceRow>(
+      `SELECT * FROM postmortem_recurrences
+        WHERE recurrence_key IN (SELECT recurrence_key FROM postmortems WHERE repo_id = ?)
+        ORDER BY last_seen_at DESC`,
+      repoId,
+    )
+  }
+
+  createPostmortemForJob(jobId: string): PostmortemRecord | undefined {
+    const job = this.getJob(jobId)
+    if (job === undefined) return undefined
+    if (job.status !== 'failed' && job.status !== 'cancelled') return undefined
+    const existing = this.getPostmortemForJob(jobId)
+    if (existing !== undefined) {
+      const recurrence = this.getPostmortemRecurrence(existing.recurrence_key)
+      return recurrence === undefined ? undefined : { postmortem: existing, recurrence, created: false, escalated: false }
+    }
+    const analysis = buildPostmortem({
+      job,
+      events: [...this.listJobEvents(jobId, 200)].reverse(),
+      instance: this.getRepoInstance(job.repo_id),
+    })
+    const repo = this.getRepo(job.repo_id)
+    const user = this.userById(job.user_id)
+    const owner = user?.login ?? repo?.owner ?? job.user_id
+    const at = nowIso()
+    return this.transaction(() => {
+      const raced = this.getPostmortemForJob(jobId)
+      if (raced !== undefined) {
+        const recurrence = this.getPostmortemRecurrence(raced.recurrence_key)!
+        return { postmortem: raced, recurrence, created: false, escalated: false }
+      }
+      const id = `pm_${randomBytes(6).toString('hex')}`
+      this.run(
+        `INSERT INTO postmortems (
+           id, job_id, repo_id, user_id, status, category, outcome, recurrence_key,
+           evidence_state, evidence_json, timeline_json, suspected_cause, owner,
+           preventive_action, preventive_kind, preventive_verified, preventive_verified_at,
+           first_seen_at, last_seen_at, closed_at, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, NULL, ?, ?, NULL, ?, ?)`,
+        id,
+        jobId,
+        job.repo_id,
+        job.user_id,
+        analysis.category,
+        analysis.outcome,
+        analysis.recurrenceKey,
+        analysis.evidenceState,
+        JSON.stringify(analysis.evidence),
+        JSON.stringify(analysis.evidence.timeline),
+        analysis.suspectedCause,
+        owner,
+        at,
+        at,
+        at,
+        at,
+      )
+      let recurrence = this.getPostmortemRecurrence(analysis.recurrenceKey)
+      let escalated = false
+      if (recurrence === undefined) {
+        this.run(
+          'INSERT INTO postmortem_recurrences (recurrence_key, category, count, first_seen_at, last_seen_at, repositories_json, escalated_at, representative_id, updated_at) VALUES (?, ?, 1, ?, ?, ?, NULL, ?, ?)',
+          analysis.recurrenceKey,
+          analysis.category,
+          at,
+          at,
+          JSON.stringify([job.repo_id]),
+          id,
+          at,
+        )
+        recurrence = this.getPostmortemRecurrence(analysis.recurrenceKey)!
+      } else {
+        const repositories = new Set(postmortemRepositories(recurrence.repositories_json))
+        repositories.add(job.repo_id)
+        this.run(
+          'UPDATE postmortem_recurrences SET category = ?, count = count + 1, last_seen_at = ?, repositories_json = ?, representative_id = COALESCE(representative_id, ?), updated_at = ? WHERE recurrence_key = ?',
+          analysis.category,
+          at,
+          JSON.stringify([...repositories]),
+          id,
+          at,
+          analysis.recurrenceKey,
+        )
+        recurrence = this.getPostmortemRecurrence(analysis.recurrenceKey)!
+        if (recurrence.count >= 2 && recurrence.escalated_at === null) {
+          this.run(
+            'UPDATE postmortem_recurrences SET escalated_at = ?, updated_at = ? WHERE recurrence_key = ?',
+            at,
+            at,
+            analysis.recurrenceKey,
+          )
+          escalated = true
+          recurrence = this.getPostmortemRecurrence(analysis.recurrenceKey)!
+          this.notify(
+            job.user_id,
+            'ops',
+            `重复故障复发：${analysis.category} 已在 ${recurrence.count} 个任务中复现（${analysis.recurrenceKey}），请先落实预防措施。`,
+            'POSTMORTEM_RECURRING',
+          )
+          this.audit(job.user_id, 'postmortem.escalated', `${analysis.recurrenceKey}: ${recurrence.count} occurrences`)
+          this.event('postmortem_escalated', { userId: job.user_id, repoId: job.repo_id, jobId, meta: analysis.recurrenceKey })
+        }
+      }
+      return { postmortem: this.getPostmortem(id)!, recurrence, created: true, escalated }
+    })
+  }
+
+  linkPreventiveAction(id: string, input: { kind: string; reference: string }): PostmortemRow | undefined {
+    const existing = this.getPostmortem(id)
+    if (existing === undefined) return undefined
+    const reference = input.reference.trim().slice(0, 1000)
+    if (reference === '' || !isPreventiveActionKind(input.kind)) return undefined
+    this.run(
+      'UPDATE postmortems SET preventive_kind = ?, preventive_action = ?, preventive_verified = 0, preventive_verified_at = NULL, updated_at = ? WHERE id = ?',
+      input.kind,
+      reference,
+      nowIso(),
+      id,
+    )
+    return this.getPostmortem(id)
+  }
+
+  verifyPreventiveAction(id: string, verifiedAt = nowIso()): { ok: boolean; error?: string; postmortem?: PostmortemRow } {
+    const existing = this.getPostmortem(id)
+    if (existing === undefined) return { ok: false, error: 'postmortem not found' }
+    if (existing.preventive_action === null || existing.preventive_kind === null) {
+      return { ok: false, error: 'a linked preventive action is required' }
+    }
+    this.run(
+      "UPDATE postmortems SET preventive_verified = 1, preventive_verified_at = ?, status = 'closed', closed_at = ?, updated_at = ? WHERE id = ?",
+      verifiedAt,
+      verifiedAt,
+      verifiedAt,
+      id,
+    )
+    return { ok: true, postmortem: this.getPostmortem(id) }
+  }
+
+  resolvePostmortem(id: string, input: { kind: PreventiveActionKind; reference: string; verifiedAt?: string }): { ok: boolean; error?: string; postmortem?: PostmortemRow } {
+    const linked = this.linkPreventiveAction(id, input)
+    if (linked === undefined) return { ok: false, error: 'a linked preventive action is required' }
+    return this.verifyPreventiveAction(id, input.verifiedAt)
   }
 
   createArtifactVersion(input: {
@@ -2696,9 +2987,11 @@ export class Store {
   }
 
   createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; workType?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string }): JobRow {
+    // The ticket is taken inside the insert, so two jobs created at the same
+    // instant cannot be handed the same one (#545).
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, work_type, base_branch, work_item_id, priority, base_sha, retry_attempt, retry_of, owner_started, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, work_type, base_branch, work_item_id, priority, queue_seq, base_sha, retry_attempt, retry_of, owner_started, created_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs), ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -2916,12 +3209,15 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE user_id = ? AND status IN ('queued','running') ORDER BY created_at DESC", userId)
   }
 
+  // Priority, then ticket, then id: the ticket is the arrival order inside a
+  // level, so two jobs created at the same instant still have a stable order and
+  // a priority change is visible as a move to the tail (#545).
   listActiveJobs(): JobRow[] {
-    return this.all<JobRow>("SELECT * FROM jobs WHERE status IN ('queued','running') ORDER BY priority DESC, created_at ASC")
+    return this.all<JobRow>("SELECT * FROM jobs WHERE status IN ('queued','running') ORDER BY priority DESC, queue_seq ASC, id ASC")
   }
 
   listQueuedJobs(): JobRow[] {
-    return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority DESC, created_at ASC")
+    return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority DESC, queue_seq ASC, id ASC")
   }
 
   // Durable dispatch foundation: one worker claims one queued job. The guarded
@@ -2941,13 +3237,13 @@ export class Store {
                OR (x.status = 'queued' AND (
                  x.priority > j.priority
                  OR (x.priority = j.priority AND (
-                   x.created_at < j.created_at
-                   OR (x.created_at = j.created_at AND x.id < j.id)
+                   x.queue_seq < j.queue_seq
+                   OR (x.queue_seq = j.queue_seq AND x.id < j.id)
                  ))
                ))
              )
            )
-         ORDER BY j.priority DESC, j.created_at ASC LIMIT 1`,
+         ORDER BY j.priority DESC, j.queue_seq ASC, j.id ASC LIMIT 1`,
         now,
       )
       if (row === undefined) return undefined
@@ -2996,11 +3292,26 @@ export class Store {
   }
 
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'model_json' | 'provider_id' | 'provider_label' | 'provider_region' | 'provider_model' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
-    const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
+    const entries = Object.entries(redactJobText(patch as Record<string, unknown>)).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
-    const sets = entries.map(([key]) => `${key} = ?`).join(', ')
-    this.run(`UPDATE jobs SET ${sets} WHERE id = ?`, ...entries.map(([, value]) => value), id)
+    const sets: string[] = []
+    const values: unknown[] = []
+    for (const [key, value] of entries) {
+      // A real priority change is an arrival at the new level, so it takes a
+      // ticket at that level's tail; saving the same value again is not a move
+      // and keeps the ticket the row already holds (#545).
+      if (key === 'priority') {
+        const current = this.get<{ priority: number }>('SELECT priority FROM jobs WHERE id = ?', id)?.priority
+        sets.push('priority = ?')
+        values.push(value)
+        if (current !== undefined && current !== value) sets.push('queue_seq = (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs)')
+        continue
+      }
+      sets.push(`${key} = ?`)
+      values.push(value)
+    }
+    this.run(`UPDATE jobs SET ${sets.join(', ')} WHERE id = ?`, ...values, id)
   }
 
   // Returns the number of rows the statement changed, which is how a guarded
@@ -3012,7 +3323,7 @@ export class Store {
   // The terminal transition is the callback idempotency key: only the delivery
   // that moves the row out of queued/running may run side effects.
   claimJobTerminal(jobId: string, status: string, fingerprint: string | null, patch: Record<string, unknown>): boolean {
-    const entries = Object.entries({ ...patch, status, ...(fingerprint === null ? {} : { callback_fingerprint: fingerprint }) }).filter(([, value]) => value !== undefined)
+    const entries = Object.entries(redactJobText({ ...patch, status, ...(fingerprint === null ? {} : { callback_fingerprint: fingerprint }) })).filter(([, value]) => value !== undefined)
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
     const changes = this.runChanges(
       `UPDATE jobs SET ${sets} WHERE id = ? AND status IN ('queued','running')`,

@@ -125,6 +125,38 @@ export async function paginate(api, path, maxPages = 4) {
   return out
 }
 
+// #144: a tip is only independently reviewed when the reviewer identity did not
+// author it. `#104` and `#112` merged on 2026-11-09 with a `HugoXK-bot` PASS over
+// a tip whose commit was authored by `HugoXK-bot` while the pull request author
+// read `HugoXK` — the old check compared the verdict to `pr.user.login` and never
+// looked at the commits, so the reviewer signed work it had written.
+//
+// The field to pin is `author.login`: the API resolves a linked address to the
+// login (`commit.author` alone carries only `name` and `email`, and on those tips
+// it read "HugoXK"). An address that resolves to no account leaves `author` null,
+// and that is the one case where `commit.author.email` is compared instead.
+// `commit.author.name` is never read: it can never match a login.
+export function reviewerAuthoredCommit(commits, policy) {
+  const names = new Set(
+    [policy?.requiredPass, ...(Array.isArray(policy?.reviewers) ? policy.reviewers : [])]
+      .map((name) => String(name ?? '').trim().toLowerCase())
+      .filter((name) => name !== ''),
+  )
+  const email = String(policy?.requiredPassEmail ?? '').trim().toLowerCase()
+  for (const commit of Array.isArray(commits) ? commits : []) {
+    const sha = String(commit?.sha ?? '')
+    const login = String(commit?.author?.login ?? '').trim().toLowerCase()
+    if (login !== '') {
+      if (names.has(login)) return { sha, identity: login }
+      continue
+    }
+    if (email !== '' && String(commit?.commit?.author?.email ?? '').trim().toLowerCase() === email) {
+      return { sha, identity: email }
+    }
+  }
+  return null
+}
+
 // The mechanical release follows the same cadence as the planner: the first
 // release of an ISO week bumps the minor, later releases in that week bump the
 // patch. The week comes from the last tag's commit time and the head commit's
@@ -348,6 +380,22 @@ export async function evaluateGate({ api, threads, repo, policy, prNumber, tier:
   if (newest.verdict !== 'PASS') return failed(`newest conclusion is ${newest.verdict} at ${newest.sha}`)
   if (!hasRan(newest.body)) return failed('the PASS has no real Ran: command; it is not a conclusion')
   if (!hasNotRun(newest.body)) return failed('the PASS has no Not run: line; it is not a conclusion')
+  // #144: the verdict's identity is checked above; this is the other half — who
+  // authored the commits under it. Read every page: the helper requests 100 per
+  // page, so a reviewer commit can sit past page 1. A failed read fails closed,
+  // the same rule as the review-thread reader: "could not read" is never "no
+  // reviewer commits".
+  let tipCommits
+  try {
+    tipCommits = await paginate(api, `/repos/${repo}/pulls/${prNumber}/commits`)
+  } catch (cause) {
+    return threw(cause, 'cannot read the pull request commits, so the tip cannot be called independently reviewed: ')
+  }
+  const authored = reviewerAuthoredCommit(tipCommits, policy)
+  if (authored !== null) {
+    const at = authored.sha === '' ? '' : ` (${authored.sha.slice(0, 12)})`
+    return failed(`the tip carries a commit authored by reviewer identity ${authored.identity}${at}; a PASS cannot make that work independently reviewed`)
+  }
   const where = newest.source === 'review' ? `a review by ${newest.author}` : `a comment by ${newest.author}`
   // #341: the repair planner compares a standing red's `completed_at` against
   // the newest verdict's own timestamp, and this is where that value already

@@ -166,6 +166,15 @@ admin panel still shows the contact email to administrators for account
 management, and approval mail includes it as required. The address is used only
 for job/digest mail and is never shown on a public page.
 
+### Transactional email rendering
+
+Every transactional mail now renders through one shared HTML shell beside its
+plain-text part. The shell uses inline styles only, no `<style>` block, external
+stylesheet, web font or remote image, and a 640px measure that stays inside a
+360px client. User-controlled values are escaped before interpolation, and the
+footer links are fixed docs/status URLs rather than request input. A failure or
+urgent mail keeps its red banner and subject marker in both parts.
+
 ### Inbound email
 
 `POST /api/inbound/email` is disabled unless `INBOUND_EMAIL_SECRET` is set. The
@@ -210,6 +219,26 @@ full answers. Evidence strings (`tests`, `checks`, `rollback`) are written by
 the agent and rendered on an super-admin-only job page; they must not contain
 secrets. `/admin/metrics` is admin-only and read-only.
 
+### Job summaries, errors and digests
+
+A runner's `summary`, `error` and callback `checkpoint` are free text, and so are
+the issue/PR links a run reports: a model or a bridge script can echo a token into
+any of them, and the job page, the notification mail and the next run's prompt
+then repeat it. Three layers apply to that text:
+
+- `redact()` (`src/lib/secrets.ts`) runs **before** every slice, so a truncation
+  cannot leave a fragment (`ghp_…` with the body cut off) that no pattern matches.
+  It recognises the token shapes (GitHub, `sk-`, `flg_`, AWS, PEM, bearer,
+  `api_key:`) and the literal values of secrets that have no shape — the SMTP
+  password, model key, session secret, webhook secret, bridge token — which
+  `loadConfig()` registers through `registerRedactionSecrets()`.
+- Both writers, `updateJob()` and `claimJobTerminal()`, send `summary` and `error`
+  through one helper, so a caller that skips the job service (a retry, an admin
+  action, a future runner) cannot store a raw value either.
+- The render pass redacts again: the summary cell, the job page's technical-detail
+  block and the admin jobs table. Rows written before this control still hold the
+  raw text, and a stored value is not proof that the page is clean.
+
 ### Job email notifications
 
 Job and digest mail is sent from `MAIL_FROM` only to the super admin's configured
@@ -233,6 +262,15 @@ per day. Test mail is rate-limited to one per minute.
   another admin or the super admin. Admin jobs and audit rows are filtered to that
   visible set and actor names are masked in the admin audit view. The owner sees
   all users and actions.
+- The two admin CSV exports (`/admin/export/jobs.csv`, `/admin/export/audit.csv`)
+  leave one `admin.jobs_export` / `admin.audit_export` row per file recording
+  `filters=` (the allow-listed codes and ISO dates verbatim), `rows=`, `scope=`
+  (`all` for the owner, `users:<n>` for a scoped admin), and `sha256=` over the
+  exact bytes sent, so a file found elsewhere can be matched to its row. Free-text
+  filters (`q`, `action`) are recorded only as `<length>ch#<8 hex>`, because an
+  admin may search by an address; no trail field carries an address or a fragment
+  of an exported row. The search page shows the newest export for the viewer's
+  scope, and the read is paged so one query never materialises the 5000-row cap.
 - The super-admin-only preview cookie renders the normal-user UI while leaving the
   actual session owner-scoped behind the scenes. The owner workspace is available
   in preview like a normal-user page; advanced team routes remain blocked.
@@ -405,6 +443,34 @@ managed by those products.
   timestamps, IP and queue number, and is the fallback if SMTP fails.
 - The administrator login (`ADMIN_GITHUB_LOGIN`) is auto-approved. Keep it
   correct; it is the bootstrap identity.
+
+### Notification webhook egress
+
+`NOTIFY_WEBHOOK_URL` is an operator-configured outbound POST target, so it is
+checked like any other server-side request:
+
+- In production the URL must be an absolute `https:` URL; a `http:` URL is
+  refused at startup even when its host is allowlisted.
+- The host is resolved and every address is checked before the body is sent:
+  loopback, RFC1918 and shared (100.64/10) ranges, link-local (including
+  `169.254.169.254`), multicast/reserved, IPv6 `::1`, ULA (`fc00::/7`),
+  link-local (`fe80::/10`) and IPv4-mapped private addresses are refused.
+- Redirects are followed manually, at most five, and every target is resolved
+  and checked again before the next request. A redirect from one origin to
+  another drops the bearer secret, so a public target cannot forward it onward.
+- `NOTIFY_WEBHOOK_ALLOWED_HOSTS` is an optional comma-separated list of exact
+  hostnames for a self-hosted deployment that must notify an internal service.
+  When the list is non-empty only those hosts are accepted; a listed host is
+  trusted and therefore skips the private-address refusal. Empty (the default)
+  means public https targets only.
+- `buildApp()` refuses an unsafe webhook in production, so the process does not
+  start. The send path resolves and checks again at delivery time and fails
+  closed, because DNS can change after startup.
+- A refusal names the host in the log but never the URL, the bearer secret or
+  the payload.
+
+DNS rebinding is not fully mitigated: the address can change between the check
+and the connection. Deploy behind an egress policy when the network is hostile.
 
 ### SSRF guard
 

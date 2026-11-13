@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
@@ -270,6 +271,41 @@ test('admins can search and export jobs and audit within their visibility scope'
   }
 })
 
+test('the admin job filter offers every kind and status under its console label, not the internal code', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'filter-admin', admin: true })
+    const repo = store.createRepo({ id: 'repo_filter', userId: admin.id, owner: 'o', name: 'filter', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'fix', autoIterate: false, intervalMinutes: 1440 })
+    makeTerminalJob(store, { id: 'job_filter_verify', repoId: repo.id, userId: admin.id, trigger: 'manual', goal: 'verify goal', callbackHash: 'cb-v', platformTokenHash: '', kind: 'verify' })
+    makeTerminalJob(store, { id: 'job_filter_iterate', repoId: repo.id, userId: admin.id, trigger: 'manual', goal: 'iterate goal', callbackHash: 'cb-i', platformTokenHash: '', kind: 'iterate' })
+    const { cookie } = sessionFor(built, admin)
+    const pageFor = async (locale: 'zh' | 'en'): Promise<string> => {
+      const response = await built.app.inject({ method: 'GET', url: '/admin/search', headers: { cookie: `${cookie}; fledge_lang=${locale}` } })
+      assert.equal(response.statusCode, 200)
+      return response.body
+    }
+    // `scope` and `verify` are job kinds the table already badges, so the filter
+    // that sits above it must offer them; the labels come from the same helper.
+    const chinese = await pageFor('zh')
+    assert.match(chinese, /<option value="verify"[^>]*>验证<\/option>/)
+    assert.match(chinese, /<option value="scope"[^>]*>范围<\/option>/)
+    assert.match(chinese, /<option value="quota_exhausted"[^>]*>额度用尽<\/option>/)
+    const english = await pageFor('en')
+    assert.match(english, /<option value="verify"[^>]*>Verify<\/option>/)
+    assert.match(english, /<option value="quota_exhausted"[^>]*>Quota exhausted<\/option>/)
+    // The value stays the code, so the option the form now offers is the filter
+    // that isolates a `verify` job and leaves an `iterate` job out.
+    const byKind = await built.app.inject({ method: 'GET', url: '/admin/search?kind=verify', headers: { cookie } })
+    assert.equal(byKind.statusCode, 200)
+    assert.match(byKind.body, /job_filter_verify/)
+    assert.doesNotMatch(byKind.body, /job_filter_iterate/)
+  } finally {
+    await built.close()
+  }
+})
+
 test('a CSV export refuses instead of silently stopping at 5000 rows', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
@@ -316,6 +352,138 @@ test('a CSV export refuses instead of silently stopping at 5000 rows', async () 
     const jobsOverCap = await built.app.inject({ method: 'GET', url: '/admin/export/jobs.csv', headers: { cookie } })
     assert.equal(jobsOverCap.statusCode, 400)
     assert.match(jobsOverCap.body, /5001/)
+  } finally {
+    await built.close()
+  }
+})
+
+test('an export trail ties the file to its row: filters, row count, scope and body digest', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'trail-admin', admin: true })
+    const user = makeUser(store, { login: 'trail-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_trail', userId: user.id, owner: 'o', name: 'trail', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'fix', autoIterate: false, intervalMinutes: 1440 })
+    const failed = store.createJob({ id: 'job_trail_failed', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'trail goal', callbackHash: 'cb-trail', platformTokenHash: '', kind: 'iterate' })
+    store.updateJob(failed.id, { status: 'failed', finished_at: new Date().toISOString() })
+    const { cookie } = sessionFor(built, admin)
+    const before = store.searchAudit(null, { action: 'admin.jobs_export' }, 10, 0).length
+
+    const first = await built.app.inject({ method: 'GET', url: '/admin/export/jobs.csv?status=failed&kind=iterate', headers: { cookie } })
+    assert.equal(first.statusCode, 200)
+    const after = store.searchAudit(null, { action: 'admin.jobs_export' }, 10, 0)
+    assert.equal(after.length, before + 1, 'exactly one trail row per export')
+
+    const digest = createHash('sha256').update(first.body).digest('hex')
+    const dataLines = first.body.split('\n').length - 1
+    const visible = store.listUsers().filter((row) => row.id === admin.id || row.role === 'user').length
+    const detail = after[0]?.detail ?? ''
+    assert.match(detail, /filters=status=failed,kind=iterate/, 'the allow-listed filters are recorded verbatim')
+    assert.match(detail, new RegExp(`(?:^|\\s)rows=${String(dataLines)}(?:\\s|$)`), 'rows counts the data lines the body carries')
+    assert.match(detail, new RegExp(`(?:^|\\s)scope=users:${String(visible)}(?:\\s|$)`), 'scope records how far the read reached')
+    assert.match(detail, new RegExp(`(?:^|\\s)sha256=${digest}(?:\\s|$)`), 'the digest is the sha256 of the exact body sent')
+
+    // Two identical files share a digest; a different file does not.
+    const again = await built.app.inject({ method: 'GET', url: '/admin/export/jobs.csv?status=failed&kind=iterate', headers: { cookie } })
+    const againDigest = createHash('sha256').update(again.body).digest('hex')
+    assert.equal(again.body, first.body, 'the same filter still produces the same bytes')
+    assert.equal(againDigest, digest, 'and therefore the same digest')
+    const secondRow = store.searchAudit(null, { action: 'admin.jobs_export' }, 1, 0)[0]
+    assert.match(secondRow?.detail ?? '', new RegExp(`(?:^|\\s)sha256=${againDigest}(?:\\s|$)`))
+
+    const more = store.createJob({ id: 'job_trail_failed_2', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'another goal', callbackHash: 'cb-trail-2', platformTokenHash: '', kind: 'iterate' })
+    store.updateJob(more.id, { status: 'failed', finished_at: new Date().toISOString() })
+    const changed = await built.app.inject({ method: 'GET', url: '/admin/export/jobs.csv?status=failed&kind=iterate', headers: { cookie } })
+    assert.notEqual(changed.body, first.body, 'a different result set is a different file')
+    assert.notEqual(createHash('sha256').update(changed.body).digest('hex'), digest, 'so the digest differs too')
+  } finally {
+    await built.close()
+  }
+})
+
+test('the export trail records free text lossily and never copies an exported row', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'lossy-admin', admin: true })
+    const user = makeUser(store, { login: 'lossy-user', status: 'approved' })
+    store.audit(user.id, 'bulk.export', 'alice@example.com secret-detail')
+    const { cookie } = sessionFor(built, admin)
+    const response = await built.app.inject({ method: 'GET', url: '/admin/export/audit.csv?q=alice@example.com', headers: { cookie } })
+    assert.equal(response.statusCode, 200)
+    assert.match(response.body, /secret-detail/, 'the file still carries what was exported')
+    const row = store.searchAudit(null, { action: 'admin.audit_export' }, 1, 0)[0]
+    const detail = row?.detail ?? ''
+    assert.match(detail, /(?:^|\s)q=17ch#[0-9a-f]{8}(?:\s|$)/, 'free text is recorded as its length and a digest prefix')
+    assert.doesNotMatch(detail, /@/, 'the trail carries no address')
+    assert.doesNotMatch(detail, /alice/i, 'and no fragment of the searched value')
+    assert.doesNotMatch(detail, /secret-detail/, 'and no fragment of an exported row')
+  } finally {
+    await built.close()
+  }
+})
+
+test('the export trail records the scope it read, not one inferred later', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'scope-admin', admin: true })
+    const root = makeUser(store, { login: 'scope-root', superadmin: true })
+    const user = makeUser(store, { login: 'scope-user', status: 'approved' })
+    const other = makeUser(store, { login: 'scope-other', admin: true })
+    store.audit(user.id, 'bulk.export', 'visible-row')
+    store.audit(other.id, 'bulk.export', 'other-admin-only')
+    const adminCookie = sessionFor(built, admin).cookie
+    const rootCookie = sessionFor(built, root).cookie
+
+    const scoped = await built.app.inject({ method: 'GET', url: '/admin/export/audit.csv?action=bulk', headers: { cookie: adminCookie } })
+    assert.equal(scoped.statusCode, 200)
+    assert.match(scoped.body, /visible-row/)
+    assert.doesNotMatch(scoped.body, /other-admin-only/, "a normal admin's file holds no other admin's rows")
+    const scopedRow = store.searchAudit(null, { action: 'admin.audit_export' }, 1, 0)[0]
+    const visible = store.listUsers().filter((row) => row.id === admin.id || row.role === 'user').length
+    assert.match(scopedRow?.detail ?? '', new RegExp(`(?:^|\\s)scope=users:${String(visible)}(?:\\s|$)`), 'a normal admin records the list length it used')
+
+    const all = await built.app.inject({ method: 'GET', url: '/admin/export/audit.csv?action=bulk', headers: { cookie: rootCookie } })
+    assert.equal(all.statusCode, 200)
+    assert.match(all.body, /other-admin-only/, 'a super admin sees every row')
+    const allRow = store.searchAudit(null, { action: 'admin.audit_export' }, 1, 0)[0]
+    assert.match(allRow?.detail ?? '', /(?:^|\s)scope=all(?:\s|$)/, 'and records that the read covered the whole platform')
+  } finally {
+    await built.close()
+  }
+})
+
+test('the search page shows the newest export for the viewer: when, rows, scope and hash prefix', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'last-admin', admin: true })
+    const user = makeUser(store, { login: 'last-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_last', userId: user.id, owner: 'o', name: 'last', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'fix', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_last_failed', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'last goal', callbackHash: 'cb-last', platformTokenHash: '', kind: 'iterate' })
+    store.updateJob(job.id, { status: 'failed', finished_at: new Date().toISOString() })
+    const { cookie } = sessionFor(built, admin)
+    const exported = await built.app.inject({ method: 'GET', url: '/admin/export/jobs.csv?status=failed&kind=iterate', headers: { cookie } })
+    assert.equal(exported.statusCode, 200)
+    const trail = store.searchAudit(null, { action: 'admin.jobs_export' }, 1, 0)[0]
+    const detail = trail?.detail ?? ''
+    const rows = /(?:^|\s)rows=(\d+)(?:\s|$)/.exec(detail)?.[1]
+    const scope = /(?:^|\s)scope=(all|users:\d+)(?:\s|$)/.exec(detail)?.[1]
+    const hash = /(?:^|\s)sha256=([0-9a-f]{8})/.exec(detail)?.[1]
+    assert.ok(rows !== undefined && scope !== undefined && hash !== undefined, 'the trail row carries all three fields')
+
+    const page = await built.app.inject({ method: 'GET', url: '/admin/search', headers: { cookie: `${cookie}; fledge_lang=en` } })
+    assert.equal(page.statusCode, 200)
+    const line = /<p class="fine" data-last-export>([\s\S]*?)<\/p>/.exec(page.body)?.[1] ?? ''
+    assert.ok(line !== '', 'the page renders the last export')
+    assert.ok(line.includes(`rows ${rows}`), `the page shows the row count (${String(rows)})`)
+    assert.ok(line.includes(scope), `the page shows the scope (${String(scope)})`)
+    assert.ok(line.includes(`sha256 ${hash}`), `the page shows the first 8 hex of the digest (${String(hash)})`)
   } finally {
     await built.close()
   }

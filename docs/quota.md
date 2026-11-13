@@ -146,6 +146,14 @@ region with `FLEDGE_PROVIDER_DISABLED`, `FLEDGE_PROVIDER_NOT_ALLOWED` or
 `error.type = provider_policy_refused`, so no quota is spent and no upstream call
 is made. An empty allowlist or region means no restriction in this version.
 
+### Model URL guard and webhook egress
+
+The model URL guard and the notification-webhook guard share one IP classifier
+(`src/lib/ipAddress.ts`), so loopback, RFC1918, carrier-grade NAT, link-local,
+multicast, ULA and IPv4-mapped private addresses are refused consistently. The
+webhook check runs at send time and after every redirect; it does not change
+quota accounting, and a refused webhook spends no quota and calls no provider.
+
 ## Admin
 
 Admins can set `quota_cny` per user from `/admin` (0–10000), or tick

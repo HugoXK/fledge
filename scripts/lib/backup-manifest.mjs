@@ -43,8 +43,10 @@ export function databaseFacts(path) {
   }
 }
 
-export async function writeManifest(copyPath) {
-  const facts = databaseFacts(copyPath)
+export async function writeManifest(copyPath, options = {}) {
+  // An encrypted copy cannot be opened as SQLite, so the caller passes the facts
+  // it collected from the verified plaintext before encrypting it.
+  const facts = options.facts ?? databaseFacts(copyPath)
   const manifest = {
     copy: basename(copyPath),
     createdAt: new Date().toISOString(),
@@ -52,6 +54,7 @@ export async function writeManifest(copyPath) {
     sha256: await sha256File(copyPath),
     schemaVersion: facts.schemaVersion,
     tables: facts.tables,
+    ...(options.encryption === undefined ? {} : { encryption: options.encryption }),
   }
   const target = manifestPath(copyPath)
   writeFileSync(target, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })
@@ -71,6 +74,17 @@ export function readManifest(copyPath) {
     && typeof manifest.sha256 === 'string'
     && typeof manifest.schemaVersion === 'number'
     && typeof manifest.tables === 'object' && manifest.tables !== null
+    && (manifest.encryption === undefined || (
+      typeof manifest.encryption === 'object' && manifest.encryption !== null
+      && typeof manifest.encryption.format === 'string'
+      && typeof manifest.encryption.keyId === 'string'
+      && typeof manifest.encryption.keyVersion === 'number'
+      // Optional: copies written before the derivation was recorded have no `kdf`,
+      // and the field is new information, never a requirement to read the copy.
+      // When present it must be one of the two derivations the code implements, so
+      // a manifest cannot vouch for a `kdf` its own type never allows.
+      && (manifest.encryption.kdf === undefined || manifest.encryption.kdf === 'raw' || manifest.encryption.kdf === 'scrypt')
+    ))
   if (!usable) throw new Error(`not a backup manifest: ${path}`)
   // A manifest describes exactly one file: a copy renamed away from its manifest
   // is not the copy that manifest vouches for.

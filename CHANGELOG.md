@@ -5,6 +5,38 @@ All notable changes to Fledge are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-11-13
+
+### Added
+
+- An issue thread now accepts `/fledge retry`, `/fledge pause`, `/fledge resume` and `/fledge cancel` from an owner, member or collaborator: each one runs the same job action as the console and reports the result in the thread, a duplicate comment id is ignored, and a command with no matching job refuses in the thread instead of starting a new one.
+- An automatic merge now gets one independent read of the same diff by a model call that never sees the author's summary: a concrete file:line risk blocks the merge and the job page names it, while a bare score is rejected as not a review.
+- Jobs now carry a work type — `iterate`, `triage`, `dependency`, `security`, `docs`, `performance`, `accessibility` or `migration` — with a declared contract for its stages, required evidence, risk tier and whether its pull request may auto-merge, shown on the job page. The first new workflow is `triage`: it reads the open issues, ranks them by priority, links duplicates and proposes the next item, opens no branch or pull request, and the proposal becomes the work item the next scheduled session starts from. Triage rows are filterable on the dashboard, and a retried or resumed triage run stays a triage run instead of becoming an iterate job.
+- Long tables keep their column names while the rows scroll: the table's own scroll area is bounded and its header sticks to the top of it. A new compact density (`/density/compact`, saved in the `fledge_density` cookie) fits roughly twice as many rows on a desktop screen without shrinking any control, and the phone card layout keeps its 44px touch floor.
+
+### Changed
+
+- Settings and Admin now open with a sticky section navigation that follows the page, so the account, model, notification and token settings (and the admin release, backups, users, jobs and audit sections) are one tap away instead of a long scroll.
+
+### Removed
+
+- The job page no longer shows a per-job budget on the work-type card. That number was never enforced, while the repository's real per-job cap (`job_budget_cny`, with its pause or cancel action) keeps its settings fields, its stop banner and its checkpoint enforcement unchanged.
+
+### Fixed
+
+- The admin search page's job-kind filter offered only `iterate`, `review` and `plan`, so `scope` and `verify` jobs appeared in the table with a badge but could not be isolated by the filter that sits above it, and both filters printed the stored codes (`quota_exhausted`, `verify`) in English and Chinese alike. Both selects now come from the same kind and status lists and label helpers the dashboard and the job table use, so every kind a job can have is selectable and the options read 迭代 / 审核 / 计划 / 范围 / 验证 and 排队中 … 额度用尽, with English words in the English console. The values are still the codes, so the search, the totals and the CSV export filter exactly as before.
+- The admin webhook delivery list printed its three states as the stored codes — `processing`, `processed`, `failed` — in both languages, so a Chinese screen showed three English words in the one place that says whether a delivery failed. The row badge and the status filter now read `处理中 / 已处理 / 失败` in Chinese and `Processing / Processed / Failed` in English, and the filter keeps the codes as its option values, so `/admin/webhooks?status=` links, including an already-selected filter, are unchanged.
+- The nightly release pull request now states how many changelog fragments the release actually folded. The planner input flattened the count to a one-element sentinel, so every release reported `changelog fragments: 1 (need 1)` — the `v0.3.2` release printed `1` while folding 42 entries — and the count now travels from the release state through the plan to the body unchanged, with the `no-fragments` decision still taken on zero.
+- The `/search` empty state renders through the shared state renderer like the other four console states, so it shows the same inline SVG icon instead of a literal `0`, and the unused glyph styling on `.state-icon` is gone. The states document now attributes its red and green counts to the change that produced them.
+- The daily release no longer fails on the push that merges a release pull request. That merge deletes every changelog fragment, and the state step counted the directory with a pipeline that exited non-zero when it matched nothing, so the plan job died before it wrote its state and the run was red every time a release landed. The count now comes from the same helper the changelog tool folds with, and it answers zero for a directory holding only `README.md` or nothing at all while still failing when the directory cannot be read.
+- A destructive action refused for a stale session now comes back with its explanation: when the page the form was on already carried a `notice` from an earlier save, the re-authentication bounce appended a second one, the query parsed as an array, and the console rendered no message at all while the write silently did not happen. The return page now replaces that key instead of stacking another, so exactly one notice is shown and it is the re-auth reason.
+
+### Security
+
+- The independent adversarial review now refuses an automatic merge when it could not read the whole change: a diff cut at the size limit, a changed-file listing GitHub reports incomplete, or a changed file that arrives without a patch is recorded as incomplete and names the omitted files. The job page, the notification and the merge message report that outcome as a refusal that could not read the change, not as a concrete risk at a file and line, and a model outage cannot turn a cut diff into a merge. A pull request whose unreadable files are all images or fonts under `public/` or `docs/` still merges, and the record names the unread files. Previously these shapes were recorded as skipped and the merge proceeded.
+- The remaining open CodeQL alerts are addressed: the SLO status test no longer writes an interpolation in a plain string, the gate-repair summary carries a fixed line instead of an API response body, and the release-policy read uses the pull request object instead of a path read from the event file. The rate-limit and reachable-guard findings are recorded as reviewed false positives, with the custom limiter and the new-account empty list named as the reasons.
+
+
 ## [0.3.3] — 2026-11-13
 
 ### Added

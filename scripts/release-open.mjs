@@ -342,7 +342,6 @@ export async function runReleaseOpen(options) {
       title: `release: v${wanted}`,
       head: branch,
       base: 'main',
-      maintainer_can_modify: true,
       body: renderBody({ repo, version: wanted, plan, mainSha: liveMain, branch }),
     })
     if (created.status !== 201) {
@@ -351,8 +350,14 @@ export async function runReleaseOpen(options) {
     const number = Number(created.payload?.number ?? 0)
     if (number === 0) return refuse('POST /pulls answered no pull request number', { permissions, scopes, checks })
     const readback = await apiCall(api, 'GET', `/pulls/${number}`)
-    if (readback.status !== 200 || readback.payload?.maintainer_can_modify !== true) {
-      return refuse(`pull request #${number} came back with maintainer_can_modify ${String(readback.payload?.maintainer_can_modify)}; it must stay editable by maintainers`, { permissions, scopes, checks, pr: number })
+    if (readback.status !== 200) {
+      return refuse(`GET /pulls/${number} answered ${readback.status}${messageOf(readback.payload) === '' ? '' : `: ${messageOf(readback.payload)}`}`, { permissions, scopes, checks, pr: number })
+    }
+    // The release head is pushed to this repository, and GitHub reports
+    // `maintainer_can_modify: true` only for a fork head, so `true` here means the
+    // pull request heads another repository's branch and the run must not pass.
+    if (readback.payload?.maintainer_can_modify === true) {
+      return refuse(`pull request #${number} came back with maintainer_can_modify true; the release head is pushed to ${repo}, so its head is a fork of another repository`, { permissions, scopes, checks, pr: number })
     }
     return {
       status: 'opened',

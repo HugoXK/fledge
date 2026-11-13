@@ -5,7 +5,8 @@
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
-import { manifestPath, writeManifest } from './lib/backup-manifest.mjs'
+import { encryptBackupFile, loadBackupKey } from './lib/backup-crypto.mjs'
+import { databaseFacts, manifestPath, writeManifest } from './lib/backup-manifest.mjs'
 
 const require = createRequire(import.meta.url)
 const { DatabaseSync, backup } = require('node:sqlite')
@@ -43,7 +44,7 @@ function parseArgs(argv) {
 
 function prune(dir, keep) {
   const copies = readdirSync(dir)
-    .filter((name) => name.startsWith('fledge-') && name.endsWith('.db'))
+    .filter((name) => name.startsWith('fledge-') && (name.endsWith('.db') || name.endsWith('.db.enc')))
     .map((name) => join(dir, name))
     .map((path) => ({ path, mtime: statSync(path).mtimeMs }))
     .sort((left, right) => right.mtime - left.mtime)
@@ -64,48 +65,83 @@ const keep = Number(rawKeep)
 if (!Number.isInteger(keep) || keep < 1) fail(2, `--keep must be a positive whole number, got ${rawKeep}`)
 if (!existsSync(dbPath)) fail(2, `source database not found: ${dbPath}`)
 
+let key
+try {
+  key = loadBackupKey(process.env)
+} catch (error) {
+  fail(2, error instanceof Error ? error.message : String(error))
+}
+const required = /^(1|true)$/i.test(process.env.BACKUP_ENCRYPTION_REQUIRED ?? '')
+if (required && key === null) {
+  fail(2, 'BACKUP_ENCRYPTION_REQUIRED=true but no backup encryption key is configured; set BACKUP_ENCRYPTION_KEY or BACKUP_ENCRYPTION_KEY_FILE')
+}
+const encrypt = key !== null
+
 mkdirSync(outDir, { recursive: true, mode: 0o700 })
 chmodSync(outDir, 0o700)
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-const target = join(outDir, `fledge-${stamp}.db`)
+const target = join(outDir, `fledge-${stamp}.db${encrypt ? '.enc' : ''}`)
+// While encrypting, the plaintext intermediate deliberately does not end in
+// `.db`, so a crash cannot leave a file the drill or /admin calls a backup.
+const plaintextTarget = encrypt ? `${target}.plaintext.tmp` : target
 
 const db = new DatabaseSync(dbPath, { readOnly: true })
 try {
-  await backup(db, target)
+  await backup(db, plaintextTarget)
 } catch (error) {
-  rmSync(target, { force: true })
+  rmSync(plaintextTarget, { force: true })
   fail(1, `backup failed: ${error instanceof Error ? error.message : String(error)}`)
 } finally {
   db.close()
 }
 // A backup carries the same data as the live database; keep it owner-only.
-chmodSync(target, 0o600)
+chmodSync(plaintextTarget, 0o600)
 
 let integrity = []
 try {
-  const copy = new DatabaseSync(target, { readOnly: true })
+  const copy = new DatabaseSync(plaintextTarget, { readOnly: true })
   try {
     integrity = copy.prepare('PRAGMA integrity_check').all().map((row) => String(Object.values(row)[0]))
   } finally {
     copy.close()
   }
 } catch (error) {
-  rmSync(target, { force: true })
+  rmSync(plaintextTarget, { force: true })
   fail(1, `backup is corrupt: ${error instanceof Error ? error.message : String(error)}`)
 }
 if (integrity.length !== 1 || integrity[0] !== 'ok') {
-  rmSync(target, { force: true })
+  rmSync(plaintextTarget, { force: true })
   fail(1, `backup is corrupt: integrity_check reported ${integrity.slice(0, 3).join('; ') || 'no result'}`)
+}
+
+const facts = databaseFacts(plaintextTarget)
+let encryption
+if (encrypt) {
+  try {
+    encryption = await encryptBackupFile(plaintextTarget, target, key)
+  } catch (error) {
+    rmSync(plaintextTarget, { force: true })
+    rmSync(target, { force: true })
+    fail(1, `encryption failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  // The plaintext copy is only an intermediate while encrypting; the encrypted
+  // copy becomes the backup and the only file the manifest describes.
+  rmSync(plaintextTarget, { force: true })
 }
 
 // The manifest is what lets a later drill prove the file on disk is still the
 // database this run wrote, so it is written after the integrity check and
 // before pruning may delete this copy.
-const manifest = await writeManifest(target)
+const manifest = await writeManifest(target, { facts, encryption })
 
 const pruned = prune(outDir, keep)
 process.stdout.write(`backup=${target}\n`)
 process.stdout.write(`manifest=${manifest}\n`)
 process.stdout.write('integrity=ok\n')
+if (encrypt) {
+  process.stdout.write(`encryption=${encryption.algorithm} kdf=${String(encryption.kdf)} key_id=${encryption.keyId} key_version=${encryption.keyVersion}\n`)
+} else {
+  process.stdout.write('encryption=none\n')
+}
 process.stdout.write(`retention=keep:${keep} pruned=${pruned}\n`)
 process.stdout.write('backup: OK\n')

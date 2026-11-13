@@ -132,6 +132,12 @@ async function withFakeGitHub(current: FakeState, run: (env: Record<string, stri
       json(response, 200, current.reviews)
       return
     }
+    if (path === '/repos/o/r/pulls/7/commits') {
+      // #144: the gate reads the tip's commits before it accepts a PASS; every tip
+      // in this suite is Dev-authored, so the reviewer-identity list is empty.
+      json(response, 200, [])
+      return
+    }
     if (path === '/repos/o/r/issues/7/comments') {
       json(response, 200, current.comments)
       return

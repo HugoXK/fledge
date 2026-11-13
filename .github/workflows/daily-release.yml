@@ -87,8 +87,8 @@ jobs:
           # A local listing on this runner is a copy of the checkout, not of the
           # repository, so it must not decide which version is next.
           gh api --paginate "repos/${REPO}/git/matching-refs/tags/v" \
-            | jq -s 'flatten | map(.ref) | map(ltrimstr("refs/tags/")) | map(select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))) | sort_by(ltrimstr("v") | split(".") | map(tonumber))' > /tmp/tags.json
-          TAG="$(jq -r 'last // empty' /tmp/tags.json)"
+            | jq -s 'flatten | map(.ref) | map(ltrimstr("refs/tags/")) | map(select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))) | sort_by(ltrimstr("v") | split(".") | map(tonumber))' > "$RUNNER_TEMP/tags.json"
+          TAG="$(jq -r 'last // empty' "$RUNNER_TEMP/tags.json")"
           TAG_TIME=""
           if [ -n "$TAG" ]; then TAG_TIME="$(gh api "repos/${REPO}/commits/${TAG}" --jq '.commit.committer.date')"; fi
           # With no tag at all the version comes from `package.json`, which is
@@ -96,23 +96,33 @@ jobs:
           VERSION="$(jq -r .version package.json)"
           # `jq -s .` keeps the pages nested; flattening and the newest-run pick
           # live in scripts/lib/release-state.mjs, where a test executes them.
-          gh api --paginate "repos/${REPO}/pulls?state=closed&per_page=100&sort=updated" | jq -s . > /tmp/prs.json
-          gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" | jq -s . > /tmp/open.json
-          gh api "repos/${REPO}/commits/main/check-runs?per_page=100" > /tmp/checks.json
+          gh api --paginate "repos/${REPO}/pulls?state=closed&per_page=100&sort=updated" | jq -s . > "$RUNNER_TEMP/prs.json"
+          gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" | jq -s . > "$RUNNER_TEMP/open.json"
+          # #567: ask for the named check. An unfiltered page holds the newest
+          # 100 runs, and four comment-triggered runs per issue comment push a
+          # green `ci-ok` onto page 2, where the planner reported it missing.
+          # The single-object answer is accepted by `checkRunsOf` in
+          # `scripts/lib/release-state.mjs`.
+          gh api "repos/${REPO}/commits/main/check-runs?per_page=100&check_name=ci-ok" > "$RUNNER_TEMP/checks.json"
           # The release branches, for the orphan classification: a branch the
           # routine pushed has to be distinguishable from one it never made
           # (#333). `GET /branches` answers `{ name, commit: { sha } }`; the sha is
           # what the blocked reason names.
           gh api --paginate "repos/${REPO}/branches?per_page=100" \
-            | jq -s 'flatten | map({ name: .name, commit: { sha: (.commit.sha // "") } })' > /tmp/branches.json
-          FRAGMENTS="$(ls changelog.d/*.md 2>/dev/null | grep -v '/README.md$' | wc -l | tr -d ' ')"
-          TAGS="$(jq -c . /tmp/tags.json)"
+            | jq -s 'flatten | map({ name: .name, commit: { sha: (.commit.sha // "") } })' > "$RUNNER_TEMP/branches.json"
+          # #548: the count comes from the same helper `scripts/changelog.mjs`
+          # folds with, and answers 0 for both empty shapes. The old inline
+          # `grep -v` pipeline exited 1 when a release had consumed every
+          # fragment, so `pipefail` killed this step before `state.json` existed
+          # and the next step died on the missing file.
+          FRAGMENTS="$(node scripts/fragment-count.mjs)"
+          TAGS="$(jq -c . "$RUNNER_TEMP/tags.json")"
           node scripts/release-state.mjs \
-            --prs /tmp/prs.json --open /tmp/open.json --checks /tmp/checks.json \
-            --branches /tmp/branches.json \
+            --prs "$RUNNER_TEMP/prs.json" --open "$RUNNER_TEMP/open.json" --checks "$RUNNER_TEMP/checks.json" \
+            --branches "$RUNNER_TEMP/branches.json" \
             --tag "$TAG" --tag-time "$TAG_TIME" --version "$VERSION" \
-            --fragments "$FRAGMENTS" --tags-json "$TAGS" --dry-run "$DRY_RUN" > /tmp/state.json
-          jq '{lastTag, packageVersion, fragments, ciOk, dryRun, orphanBranches, openPr: (.openPr | {number, title} // null), lastMerged: (.lastMerged | {number, title} // null)}' /tmp/state.json
+            --fragments "$FRAGMENTS" --tags-json "$TAGS" --dry-run "$DRY_RUN" > "$RUNNER_TEMP/state.json"
+          jq '{lastTag, packageVersion, fragments, ciOk, dryRun, orphanBranches, openPr: (.openPr | {number, title} // null), lastMerged: (.lastMerged | {number, title} // null)}' "$RUNNER_TEMP/state.json"
 
       - name: Plan
         id: plan
@@ -127,7 +137,8 @@ jobs:
             import { readFileSync, writeFileSync, appendFileSync } from "node:fs"
             import { planRelease } from "./scripts/release-plan.mjs"
             import { plannerInput } from "./scripts/lib/release-state.mjs"
-            const state = JSON.parse(readFileSync("/tmp/state.json", "utf8"))
+            const TMP = process.env.RUNNER_TEMP ?? "/tmp"
+            const state = JSON.parse(readFileSync(TMP + "/state.json", "utf8"))
             const input = { ...plannerInput(state), releaseAt: new Date().toISOString() }
             const result = planRelease(input)
             const plan = {
@@ -139,7 +150,7 @@ jobs:
               fragments: result.fragments,
               reason: result.reason,
             }
-            writeFileSync("/tmp/plan.json", `${JSON.stringify(plan)}\n`)
+            writeFileSync(TMP + "/plan.json", `${JSON.stringify(plan)}\n`)
             appendFileSync(process.env.GITHUB_OUTPUT, `shouldRelease=${result.shouldRelease}\nnextVersion=${result.nextVersion}\nbump=${result.bump}\ntotal=${result.total}\nfeatures=${result.features}\nfragments=${result.fragments}\nreason=${result.reason}\n`)
             appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Daily minor release\n\n- merged PRs since ${input.lastTag || "(no tag)"}: **${result.total}** (need 10)\n- features: **${result.features}** (need 5)\n- fragments: **${result.fragments}** (need 1)\n- next version: **${result.nextVersion}** (${result.bump})\n- decision: **${result.shouldRelease ? "release" : "no release"}** — ${result.reason}\n\n`)
             const rejected = state.openPrRejected
@@ -159,8 +170,9 @@ jobs:
           node --input-type=module -e '
             import { readFileSync, writeFileSync, appendFileSync } from "node:fs"
             import { decideDrive } from "./scripts/lib/release-drive.mjs"
-            const state = JSON.parse(readFileSync("/tmp/state.json", "utf8"))
-            const plan = JSON.parse(readFileSync("/tmp/plan.json", "utf8"))
+            const TMP = process.env.RUNNER_TEMP ?? "/tmp"
+            const state = JSON.parse(readFileSync(TMP + "/state.json", "utf8"))
+            const plan = JSON.parse(readFileSync(TMP + "/plan.json", "utf8"))
             const open = state.openPr
             const decision = decideDrive({
               plan: { shouldRelease: plan.shouldRelease, nextVersion: plan.nextVersion, reason: plan.reason },
@@ -182,7 +194,7 @@ jobs:
               ciOk: state.ciOk,
               dryRun: state.dryRun,
             })
-            writeFileSync("/tmp/drive.json", `${JSON.stringify(decision)}\n`)
+            writeFileSync(TMP + "/drive.json", `${JSON.stringify(decision)}\n`)
             appendFileSync(process.env.GITHUB_OUTPUT, `action=${decision.action}\nreason=${decision.reason}\nversion=${decision.version ?? ""}\ntag=${decision.tag ?? ""}\n`)
             appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- action: **${decision.action}** — ${decision.reason}\n`)
             console.log(JSON.stringify(decision))
@@ -202,9 +214,12 @@ jobs:
         # and it names the blocker when it does not: the rule's guards, an open
         # release pull request, an existing `release/v<next>` branch, a tag newer
         # than the `14:30Z` boundary, or a catch-up fill of the previous slot.
-        # `always()` keeps the line in the summary of a red run too, so a wedged
-        # or refused night still says what the trigger saw.
-        if: ${{ always() }}
+        # The condition is the collect step's own outcome, not `always()`: this
+        # step reads `$RUNNER_TEMP/state.json`, and #548 showed what a dereference
+        # of a state file the collect step never wrote looks like (ENOENT instead
+        # of the real failure). A red collect step is now the single report, and
+        # the trigger line is the one thing a red night no longer prints.
+        if: ${{ steps.state.outcome == 'success' }}
         env:
           EVENT_NAME: ${{ github.event_name }}
           GUARDS_PASS: ${{ steps.plan.outputs.shouldRelease }}
@@ -215,8 +230,9 @@ jobs:
           node --input-type=module -e '
             import { readFileSync, appendFileSync } from "node:fs"
             import { decideTrigger } from "./scripts/lib/release-trigger.mjs"
-            const state = JSON.parse(readFileSync("/tmp/state.json", "utf8"))
-            const branches = JSON.parse(readFileSync("/tmp/branches.json", "utf8")).map((entry) => entry.name)
+            const TMP = process.env.RUNNER_TEMP ?? "/tmp"
+            const state = JSON.parse(readFileSync(TMP + "/state.json", "utf8"))
+            const branches = JSON.parse(readFileSync(TMP + "/branches.json", "utf8")).map((entry) => entry.name)
             const open = state.openPr
             const event = String(process.env.EVENT_NAME ?? "")
             const decision = decideTrigger({
@@ -319,8 +335,8 @@ jobs:
           set -euo pipefail
           jq -n \
             --arg mainSha "${MAIN_SHA:-unknown}" \
-            --argjson plan "$(cat /tmp/plan.json 2>/dev/null || echo null)" \
-            --argjson drive "$(cat /tmp/drive.json 2>/dev/null || echo null)" \
+            --argjson plan "$(cat "$RUNNER_TEMP/plan.json" 2>/dev/null || echo null)" \
+            --argjson drive "$(cat "$RUNNER_TEMP/drive.json" 2>/dev/null || echo null)" \
             '{ mainSha: $mainSha, plan: $plan, drive: $drive }' > release-plan.json
           cat release-plan.json
 
@@ -347,16 +363,16 @@ jobs:
           STATE=refused
           DETAIL='the opener did not run'
           set +e
-          node scripts/release-open.mjs --artifact release-plan.json --version "$VERSION" --sha "$PUSHED" > /tmp/open.json
+          node scripts/release-open.mjs --artifact release-plan.json --version "$VERSION" --sha "$PUSHED" > "$RUNNER_TEMP/open.json"
           CODE=$?
           set -e
           if [ "$CODE" -eq 0 ]; then
-            STATE="$(jq -r '.status' /tmp/open.json)"
-            DETAIL="$(jq -r 'if (.pr // "") == "" then .reason else "#\(.pr) \(.reason)" end' /tmp/open.json)"
-            OPENED_BY="$(jq -r '.identity // ""' /tmp/open.json)"
+            STATE="$(jq -r '.status' "$RUNNER_TEMP/open.json")"
+            DETAIL="$(jq -r 'if (.pr // "") == "" then .reason else "#\(.pr) \(.reason)" end' "$RUNNER_TEMP/open.json")"
+            OPENED_BY="$(jq -r '.identity // ""' "$RUNNER_TEMP/open.json")"
             if [ -n "$OPENED_BY" ]; then DETAIL="${DETAIL} (opened by ${OPENED_BY})"; fi
           else
-            DETAIL="release-open refused: $(jq -r '.reason // "no reason recorded"' /tmp/open.json 2>/dev/null || echo 'unreadable output')"
+            DETAIL="release-open refused: $(jq -r '.reason // "no reason recorded"' "$RUNNER_TEMP/open.json" 2>/dev/null || echo 'unreadable output')"
           fi
           printf 'state=%s\ndetail=%s\n' "$STATE" "$DETAIL" >> "$GITHUB_OUTPUT"
           echo "- release pull request: **${STATE}** — ${DETAIL}" >> "$GITHUB_STEP_SUMMARY"
@@ -380,12 +396,12 @@ jobs:
             exit 0
           fi
           REPO="$GITHUB_REPOSITORY"
-          PLAN_TOTAL="$(jq -r '.total' /tmp/plan.json)"
-          PLAN_FEATURES="$(jq -r '.features' /tmp/plan.json)"
-          PLAN_FRAGMENTS="$(jq -r '.fragments' /tmp/plan.json)"
-          PLAN_NEXT="$(jq -r '.nextVersion' /tmp/plan.json)"
-          LAST_TAG="$(jq -r '.lastTag' /tmp/state.json)"
-          CI_OK="$(jq -r '.ciOk' /tmp/state.json)"
+          PLAN_TOTAL="$(jq -r '.total' "$RUNNER_TEMP/plan.json")"
+          PLAN_FEATURES="$(jq -r '.features' "$RUNNER_TEMP/plan.json")"
+          PLAN_FRAGMENTS="$(jq -r '.fragments' "$RUNNER_TEMP/plan.json")"
+          PLAN_NEXT="$(jq -r '.nextVersion' "$RUNNER_TEMP/plan.json")"
+          LAST_TAG="$(jq -r '.lastTag' "$RUNNER_TEMP/state.json")"
+          CI_OK="$(jq -r '.ciOk' "$RUNNER_TEMP/state.json")"
           # The marker is version plus pushed sha: a night that pushes nothing new
           # repeats nothing here, so the issue does not get a line every day.
           OPEN_STATE="${OPEN_STATE:-not-run}"
@@ -451,11 +467,11 @@ jobs:
           SHA="$GITHUB_SHA"
           # The pull requests that produced this commit, and the tag list as the
           # API sees it — not the runner's copy, which is one commit deep.
-          gh api "repos/${REPO}/commits/${SHA}/pulls" > /tmp/pulls.json
+          gh api "repos/${REPO}/commits/${SHA}/pulls" > "$RUNNER_TEMP/pulls.json"
           gh api --paginate "repos/${REPO}/git/matching-refs/tags/v" \
-            | jq -s 'flatten | map(.ref) | map(ltrimstr("refs/tags/"))' > /tmp/tags.json
-          gh api "repos/${REPO}/contents/package.json?ref=${SHA}" --jq '.content' | base64 -d | jq -r '.version // empty' > /tmp/version.txt
-          echo "read version $(cat /tmp/version.txt) at ${SHA}" >> "$GITHUB_STEP_SUMMARY"
+            | jq -s 'flatten | map(.ref) | map(ltrimstr("refs/tags/"))' > "$RUNNER_TEMP/tags.json"
+          gh api "repos/${REPO}/contents/package.json?ref=${SHA}" --jq '.content' | base64 -d | jq -r '.version // empty' > "$RUNNER_TEMP/version.txt"
+          echo "read version $(cat "$RUNNER_TEMP/version.txt") at ${SHA}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Decide the tag
         id: decide
@@ -463,16 +479,17 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          VERSION="$(cat /tmp/version.txt)"
+          VERSION="$(cat "$RUNNER_TEMP/version.txt")"
           export VERSION SHA
           # Whether this push is the squash of the mechanical release is a pure
           # decision with a test per refusal, in scripts/lib/release-tag.mjs.
           node --input-type=module -e '
             import { readFileSync, appendFileSync } from "node:fs"
             import { plan } from "./scripts/lib/release-tag.mjs"
+            const TMP = process.env.RUNNER_TEMP ?? "/tmp"
             const result = plan({
-              pulls: JSON.parse(readFileSync("/tmp/pulls.json", "utf8")),
-              tags: JSON.parse(readFileSync("/tmp/tags.json", "utf8")),
+              pulls: JSON.parse(readFileSync(TMP + "/pulls.json", "utf8")),
+              tags: JSON.parse(readFileSync(TMP + "/tags.json", "utf8")),
               packageVersion: process.env.VERSION,
               sha: process.env.SHA,
             })

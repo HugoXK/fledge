@@ -110,7 +110,10 @@ test('the release job runs on a push too, and the trigger predicate decides whet
   assert.match(job('tag'), /if: github\.event_name == 'push'/)
   const step = between('      - name: Trigger', '      - name: Check the opener precondition')
   assert.match(step, /id: trigger/)
-  assert.match(step, /if: \$\{\{ always\(\) \}\}/)
+  // #548: this was `always()`. The step reads the state the collect step wrote,
+  // and a collect step that failed must be the single report rather than an
+  // ENOENT here, so the condition names that step's outcome instead.
+  assert.match(step, /if: \$\{\{ steps\.state\.outcome == 'success' \}\}/)
   assert.match(step, /import \{ decideTrigger \} from "\.\/scripts\/lib\/release-trigger\.mjs"/)
   assert.match(step, /trigger=\$\{event\} plan=\$\{decision\.plan\}/)
   assert.equal(step.includes('gh api'), false, 'the trigger step reads the state the run already collected')
@@ -231,6 +234,18 @@ test('the planner and the state projection are still the tested modules', () => 
   assert.match(daily, /import \{ planRelease \} from "\.\/scripts\/release-plan\.mjs"/)
   assert.match(daily, /import \{ decideDrive \} from "\.\/scripts\/lib\/release-drive\.mjs"/)
   assert.match(readFileSync('scripts/lib/release-state.mjs', 'utf8'), /labels: \(Array\.isArray\(pr\?\.labels\) \? pr\.labels : \[\]\)\.map\(\(label\) => String\(label\?\.name/)
+})
+
+test('the state job names the ci-ok check in the request, so a busy tip cannot page it away', () => {
+  // #567: `GET /commits/{sha}/check-runs?per_page=100` returns the newest 100
+  // runs and `ci-ok` sits behind four comment-triggered runs per comment, so a
+  // tip with more than ~25 comments reports `missing` for a green run. Asking
+  // for the name is the fix; `checkRunsOf` already accepts the single-object
+  // answer. The query literal keeps `per_page=100`, so the assertion is on the
+  // parameter, not on `check-runs?check_name=`.
+  const fetchLine = daily.split('\n').find((line) => line.includes('/commits/main/check-runs'))
+  assert.ok(fetchLine, 'the workflow fetches check runs for the main tip')
+  assert.match(fetchLine, /check_name=ci-ok/, 'the check-runs request names ci-ok instead of trusting the first page')
 })
 
 test('the run writes the counts and the decision to the job summary', () => {

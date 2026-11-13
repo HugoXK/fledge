@@ -260,6 +260,12 @@ test('the job page shows the work type, its contract and the triage board', () =
     assert.match(page, /Triage/)
     assert.match(page, /Required evidence/)
     assert.match(page, /May auto-merge/)
+    // #529: the card no longer shows a per-job budget it cannot bind. The enforced
+    // cap (`repos.job_budget_cny`) lives in the repository settings and the job's
+    // stop banner, so the work-type card is where a number with no meter used to be.
+    const workTypeCard = page.match(/<section class="card" data-work-type="triage">[\s\S]*?<\/section>/)?.[0] ?? ''
+    assert.notEqual(workTypeCard, '', 'the work type card is rendered')
+    assert.doesNotMatch(workTypeCard, /Per-job budget|单任务预算/, 'the work type card shows no budget the platform cannot enforce')
     assert.match(page, /data-triage/)
     assert.match(page, /3 open, 1 duplicate/, 'the board summary is rendered')
     assert.match(page, /issues\/12/, 'the ranked rows link the issues')

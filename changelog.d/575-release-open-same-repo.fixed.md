@@ -1,0 +1,1 @@
+The daily minor release no longer refuses after it has created its pull request: `scripts/release-open.mjs` stopped requiring `maintainer_can_modify: true`, which GitHub never reports for a branch pushed to the same repository, and now refuses only when the readback says the head is a fork.
