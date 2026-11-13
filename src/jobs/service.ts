@@ -219,19 +219,30 @@ export class Jobs {
     }
   }
 
-  async cancelJob(jobId: string, reason: string): Promise<{ ok: boolean; error?: string }> {
+  // The stop outcome travels back to the caller so a reply can say what happened
+  // instead of claiming a send: `instances` is undefined in queue-dispatch mode and
+  // the bridge call can fail, and both mean no stop was delivered. `sent` is absent
+  // when no attempt was made (a queued job or no controller), `false` when the
+  // attempt failed, and the counts are the stop's own answer.
+  private async stopLiveSessions(repoId: string, jobId: string): Promise<{ sent?: boolean; stopped?: number; requested?: number }> {
+    if (this.instances === undefined) return {}
+    try {
+      const state = await this.instances.teamState(repoId, 5_000)
+      const sessions = state.bots.filter((bot) => bot.activity === 'thinking' || bot.activity === 'working').map((bot) => bot.sessionId)
+      if (sessions.length === 0) return { sent: true, stopped: 0, requested: 0 }
+      const result = await this.instances.stopSessions(repoId, sessions)
+      return { sent: true, stopped: result.stopped.length, requested: result.requested.length }
+    } catch (error) {
+      log.warn('job stop failed', { trace: jobId, error: String(error) })
+      return { sent: false }
+    }
+  }
+
+  async cancelJob(jobId: string, reason: string): Promise<{ ok: boolean; error?: string; sent?: boolean; stopped?: number; requested?: number }> {
     const job = this.store.getJob(jobId)
     if (job === undefined) return { ok: false, error: '任务不存在。' }
     if (job.status !== 'queued' && job.status !== 'running') return { ok: false, error: '这个任务已经结束。' }
-    if (job.status === 'running' && this.instances !== undefined) {
-      try {
-        const state = await this.instances.teamState(job.repo_id, 5_000)
-        const sessions = state.bots.filter((bot) => bot.activity === 'thinking' || bot.activity === 'working').map((bot) => bot.sessionId)
-        if (sessions.length > 0) await this.instances.stopSessions(job.repo_id, sessions)
-      } catch (error) {
-        log.warn('cancel job stop failed', { trace: jobId, error: String(error) })
-      }
-    }
+    const stop = job.status === 'running' ? await this.stopLiveSessions(job.repo_id, jobId) : {}
     const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
     if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { trace: jobId, error: String(error) }))
@@ -245,22 +256,14 @@ export class Jobs {
     this.store.audit(job.user_id, 'job.cancelled', `${jobId}: ${reason.slice(0, 300)}`)
     this.store.event('job_cancelled', { userId: job.user_id, repoId: job.repo_id, jobId })
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.cancelled', meta: reason })
-    return { ok: true }
+    return { ok: true, ...stop }
   }
 
-  async pauseJob(jobId: string, reason = '任务已暂停'): Promise<{ ok: boolean; error?: string }> {
+  async pauseJob(jobId: string, reason = '任务已暂停'): Promise<{ ok: boolean; error?: string; sent?: boolean; stopped?: number; requested?: number }> {
     const job = this.store.getJob(jobId)
     if (job === undefined) return { ok: false, error: '任务不存在。' }
     if (job.status !== 'queued' && job.status !== 'running') return { ok: false, error: '这个任务已经结束。' }
-    if (job.status === 'running' && this.instances !== undefined) {
-      try {
-        const state = await this.instances.teamState(job.repo_id, 5_000)
-        const sessions = state.bots.filter((bot) => bot.activity === 'thinking' || bot.activity === 'working').map((bot) => bot.sessionId)
-        if (sessions.length > 0) await this.instances.stopSessions(job.repo_id, sessions)
-      } catch (error) {
-        log.warn('pause job stop failed', { trace: jobId, error: String(error) })
-      }
-    }
+    const stop = job.status === 'running' ? await this.stopLiveSessions(job.repo_id, jobId) : {}
     const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
     if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { trace: jobId, error: String(error) }))
@@ -269,7 +272,7 @@ export class Jobs {
     this.store.audit(job.user_id, 'job.paused', jobId)
     this.store.event('job_paused', { userId: job.user_id, repoId: job.repo_id, jobId })
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.paused', meta: reason })
-    return { ok: true }
+    return { ok: true, ...stop }
   }
 
   async resumeJob(jobId: string): Promise<{ ok: boolean; job?: JobRow; error?: string }> {
@@ -279,7 +282,7 @@ export class Jobs {
     const repo = this.store.getRepo(job.repo_id)
     if (repo === undefined) return { ok: false, error: '仓库不存在。' }
     const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
-    const result = await this.enqueue(repo, 'manual', goal, job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : 'iterate', {
+    const result = await this.enqueue(repo, 'manual', goal, job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : job.kind === 'triage' ? 'triage' : 'iterate', {
       ...(job.branch === null ? {} : { branch: job.branch }),
       ...(job.pr_url === null ? {} : { prUrl: job.pr_url }),
       ...(job.base_branch === null ? {} : { baseBranch: job.base_branch }),
@@ -291,6 +294,36 @@ export class Jobs {
     this.store.audit(job.user_id, 'job.resumed', `${jobId} -> ${result.job.id}`)
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.resumed', meta: `resumed as ${result.job.id}` })
     this.store.recordJobEvent({ jobId: result.job.id, repoId: job.repo_id, userId: job.user_id, kind: 'job.resumed_from', meta: jobId })
+    return { ok: true, job: result.job }
+  }
+
+  // One retry path for the console route and the issue command: the checkpoint,
+  // the kind and the "resume the same pull request" rule were copied in the route
+  // until #360, which is exactly the second-place-to-disagree shape this codebase
+  // keeps paying for. The caller names the actor so the audit row is the same
+  // `job.retried` action either way.
+  async retryJob(jobId: string, actorUserId: string, options: { workItemId?: string } = {}): Promise<{ ok: boolean; job?: JobRow; error?: string; code?: string; detail?: string }> {
+    const job = this.store.getJob(jobId)
+    if (job === undefined) return { ok: false, error: '任务不存在。' }
+    if (job.status === 'queued' || job.status === 'running') return { ok: false, error: '这个任务还在运行；请先暂停或取消。' }
+    const repo = this.store.getRepo(job.repo_id)
+    if (repo === undefined) return { ok: false, error: '仓库不存在。' }
+    const kind = job.kind === 'review' ? 'review' : job.kind === 'plan' ? 'plan' : job.kind === 'triage' ? 'triage' : 'iterate'
+    const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
+    const resumePr = kind === 'iterate' && job.pr_url !== null
+    const result = await this.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, {
+      // #353: both callers are a person — the console's retry button and an
+      // issue-thread `/fledge retry` — so the run is theirs. The trigger alone
+      // cannot say that: `followup` is also what `tick()` enqueues.
+      ownerStarted: true,
+      ...(resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {}),
+      ...(options.workItemId === undefined ? {} : { workItemId: options.workItemId }),
+    })
+    this.store.audit(actorUserId, 'job.retried', `${jobId} -> ${result.job?.id ?? result.error ?? 'failed'}`)
+    // The console banner builds its sentence from the enqueue code, so the
+    // refusal has to travel with it rather than being flattened to one string.
+    if (!result.ok || result.job === undefined) return { ok: false, error: result.error ?? '重试失败。', code: result.code, detail: result.detail }
+    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: actorUserId, kind: 'job.retry_started', step: kind, meta: result.job.id })
     return { ok: true, job: result.job }
   }
 

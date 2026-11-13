@@ -1,4 +1,4 @@
-export type IssueCommandName = 'status' | 'plan' | 'fix' | 'approve'
+export type IssueCommandName = 'status' | 'plan' | 'fix' | 'approve' | 'retry' | 'pause' | 'resume' | 'cancel'
 
 export interface IssueCommandInput {
   command: IssueCommandName
@@ -11,7 +11,10 @@ export interface IssueCommandInput {
 }
 
 const ALLOWED_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
-const COMMANDS = new Set<IssueCommandName>(['status', 'plan', 'fix', 'approve'])
+// `retry`, `pause`, `resume` and `cancel` act on the job attached to the issue's
+// work item; the four older verbs create work. Both sets are parsed here so the
+// webhook has one command vocabulary, not two.
+const COMMANDS = new Set<IssueCommandName>(['status', 'plan', 'fix', 'approve', 'retry', 'pause', 'resume', 'cancel'])
 
 export function parseIssueCommand(body: Record<string, unknown>): IssueCommandInput | null {
   if (body.action !== 'created') return null
