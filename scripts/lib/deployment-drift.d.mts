@@ -59,6 +59,8 @@ export interface ErrorWindowEvidence {
   ok?: boolean | null
   windowMinutes?: number | null
   errors?: number | null
+  // A window that claims ok without a finite threshold is missing evidence and
+  // blocks the gate; the measured count alone is never a pass.
   threshold?: number | null
 }
 
@@ -66,6 +68,7 @@ export interface LatencyWindowEvidence {
   ok?: boolean | null
   windowMinutes?: number | null
   p95Ms?: number | null
+  // Required for the window to pass, for the same reason as `threshold`.
   thresholdMs?: number | null
 }
 

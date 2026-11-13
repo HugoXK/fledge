@@ -181,8 +181,11 @@ export function evaluateCanaryGate(evidence = {}, expected = {}) {
     const errors = Number(evidence.errorWindow.errors)
     const threshold = Number(evidence.errorWindow.threshold)
     if (!Number.isFinite(errors) || errors < 0) checks.push(gateCheck('error window', false, 'the error window has no measured error count'))
-    else if (Number.isFinite(threshold) && errors > threshold) checks.push(gateCheck('error window', false, `${errors} errors exceed ${threshold}`))
-    else checks.push(gateCheck('error window', true, `${errors} errors in ${evidence.errorWindow.windowMinutes} minutes`))
+    // A window that claims `ok` without a limit cannot be judged, so it is
+    // missing evidence rather than a pass: the count alone proves nothing.
+    else if (!Number.isFinite(threshold) || threshold < 0) checks.push(gateCheck('error window', false, 'the error window has no threshold to judge it against'))
+    else if (errors > threshold) checks.push(gateCheck('error window', false, `${errors} errors exceed ${threshold}`))
+    else checks.push(gateCheck('error window', true, `${errors} errors in ${evidence.errorWindow.windowMinutes} minutes, limit ${threshold}`))
   }
 
   const latencyWindow = windowOk(evidence?.latencyWindow ?? null, 'latency window')
@@ -191,8 +194,9 @@ export function evaluateCanaryGate(evidence = {}, expected = {}) {
     const p95 = Number(evidence.latencyWindow.p95Ms)
     const threshold = Number(evidence.latencyWindow.thresholdMs)
     if (!Number.isFinite(p95) || p95 < 0) checks.push(gateCheck('latency window', false, 'the latency window has no measured p95'))
-    else if (Number.isFinite(threshold) && p95 > threshold) checks.push(gateCheck('latency window', false, `p95 ${p95}ms exceeds ${threshold}ms`))
-    else checks.push(gateCheck('latency window', true, `p95 ${p95}ms in ${evidence.latencyWindow.windowMinutes} minutes`))
+    else if (!Number.isFinite(threshold) || threshold < 0) checks.push(gateCheck('latency window', false, 'the latency window has no threshold to judge it against'))
+    else if (p95 > threshold) checks.push(gateCheck('latency window', false, `p95 ${p95}ms exceeds ${threshold}ms`))
+    else checks.push(gateCheck('latency window', true, `p95 ${p95}ms in ${evidence.latencyWindow.windowMinutes} minutes, limit ${threshold}ms`))
   }
 
   const blocked = checks.filter((entry) => !entry.ok).map((entry) => `${entry.id}: ${entry.detail}`)

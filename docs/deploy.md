@@ -368,13 +368,15 @@ A promotion is written only after its canary checklist passes:
 1. `/healthz` returns `2xx` with the promoted commit and version;
 2. `/readyz` returns `2xx`;
 3. a named smoke job passed;
-4. the error window has a measured duration and error count (and threshold, when
-   one is given);
-5. the latency window has a measured duration and p95.
+4. the error window has a measured duration, error count and the error threshold
+   it is judged against;
+5. the latency window has a measured duration, p95 and the p95 threshold it is
+   judged against.
 
 Missing evidence fails the gate; a failed gate writes an audit line and **does
-not** create a deployment record. The admin page states which item blocked the
-promotion.
+not** create a deployment record. A window that claims `ok` without a threshold
+is missing evidence, not a pass: the measured number alone proves nothing. The
+admin page states which item blocked the promotion.
 
 A rollback plan must name a previously recorded digest and commit, the owner and
 the command the host owner will run. Fledge records that decision and checks the

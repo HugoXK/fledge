@@ -2911,7 +2911,7 @@ export function adminDeploymentsPage(input: {
     </section>
     <section class="card">
       <h2>${escapeHtml(t('记录一次通过 canary 的部署', 'Record a deployment after the canary gate'))}</h2>
-      <p class="muted">${escapeHtml(t('所有项都必须通过；缺一项就阻止写入部署记录。', 'Every canary item must pass; a missing item blocks the deployment record.'))}</p>
+      <p class="muted">${escapeHtml(t('所有项都必须通过；缺一项就阻止写入部署记录。两个窗口都填上限，只填数字无法判定，同样阻止写入。', 'Every canary item must pass; a missing item blocks the deployment record. Both windows need the limit they are judged against: a number with no limit cannot be judged and blocks it too.'))}</p>
       <form method="post" action="/admin/deployments/promote" class="form">
         ${csrf(viewer)}
         <div class="row">
@@ -2939,11 +2939,13 @@ export function adminDeploymentsPage(input: {
           <label class="check"><input type="checkbox" name="error_ok" value="1" /> ${escapeHtml(t('错误窗口', 'Error window'))}</label>
           <label>${escapeHtml(t('分钟', 'Minutes'))} <input name="error_window_minutes" placeholder="30" /></label>
           <label>${escapeHtml(t('错误数', 'Errors'))} <input name="error_count" placeholder="0" /></label>
+          <label>${escapeHtml(t('错误上限', 'Error limit'))} <input name="error_threshold" placeholder="5" /></label>
         </div>
         <div class="row">
           <label class="check"><input type="checkbox" name="latency_ok" value="1" /> ${escapeHtml(t('延迟窗口', 'Latency window'))}</label>
           <label>${escapeHtml(t('分钟', 'Minutes'))} <input name="latency_window_minutes" placeholder="30" /></label>
           <label>${escapeHtml(t('p95 毫秒', 'p95 ms'))} <input name="latency_p95_ms" placeholder="120" /></label>
+          <label>${escapeHtml(t('p95 上限（毫秒）', 'p95 limit (ms)'))} <input name="latency_threshold_ms" placeholder="300" /></label>
           <button class="btn" type="submit">${escapeHtml(t('记录部署', 'Record deployment'))}</button>
         </div>
       </form>
