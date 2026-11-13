@@ -190,6 +190,18 @@ function statusLabel(t: Translate, status: string): string {
   return labels[status] ?? status
 }
 
+// A webhook delivery stores its state as an internal code. The console names the
+// three states in the reader's language and keeps the code only as the filter
+// value, so `/admin/webhooks?status=` links keep filtering exactly as before.
+function deliveryStatusLabel(t: Translate, status: string): string {
+  const labels: Record<string, string> = {
+    processing: t('处理中', 'Processing'),
+    processed: t('已处理', 'Processed'),
+    failed: t('失败', 'Failed'),
+  }
+  return labels[status] ?? status
+}
+
 function badge(t: Translate, status: string): string {
   const cls = status === 'succeeded' || status === 'approved' ? 'badge good' : status === 'failed' || status === 'rejected' || status === 'quota_exhausted' ? 'badge bad' : status === 'running' || status === 'queued' || status === 'pending' ? 'badge busy' : 'badge'
   return `<span class="${cls}">${escapeHtml(statusLabel(t, status))}</span>`
@@ -2882,7 +2894,7 @@ export function adminWebhooksPage(input: {
   }
   const statusBadge = (status: string): string => {
     const cls = status === 'processed' ? 'good' : status === 'failed' ? 'bad' : 'busy'
-    return `<span class="badge ${cls}">${escapeHtml(status)}</span>`
+    return `<span class="badge ${cls}">${escapeHtml(deliveryStatusLabel(t, status))}</span>`
   }
   const rows = deliveries.length === 0
     ? stateCell(6, { kind: 'empty', title: t('没有 webhook delivery。', 'No webhook deliveries.'), body: t('GitHub 推送事件后会出现在这里。', 'GitHub events appear here after delivery.'), action: { href: '/admin', label: t('返回管理', 'Back to admin') } })
@@ -2899,7 +2911,7 @@ export function adminWebhooksPage(input: {
     <div class="row between"><div><div class="eyebrow">${escapeHtml(t('WEBHOOK', 'WEBHOOK'))}</div><h1>${escapeHtml(t('Webhook deliveries', 'Webhook deliveries'))}</h1><p class="muted">${escapeHtml(t(`最近 ${total} 条；只显示元数据，不显示 payload。`, `Latest ${total}; metadata only, payload is not shown.`))}</p></div></div>
     <form method="get" action="/admin/webhooks" class="form">
       <div class="row">
-        <label>${escapeHtml(t('状态', 'Status'))} <select name="status"><option value="">${escapeHtml(t('全部', 'All'))}</option>${['processing', 'processed', 'failed'].map((value) => `<option value="${value}"${filters.status === value ? ' selected' : ''}>${value}</option>`).join('')}</select></label>
+        <label>${escapeHtml(t('状态', 'Status'))} <select name="status"><option value="">${escapeHtml(t('全部', 'All'))}</option>${['processing', 'processed', 'failed'].map((value) => `<option value="${value}"${filters.status === value ? ' selected' : ''}>${escapeHtml(deliveryStatusLabel(t, value))}</option>`).join('')}</select></label>
         <label>${escapeHtml(t('事件', 'Event'))} <input name="event" value="${escapeHtml(filters.event)}" placeholder="check_suite" /></label>
         <button class="btn" type="submit">${escapeHtml(t('筛选', 'Filter'))}</button>
       </div>
