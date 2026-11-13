@@ -45,6 +45,27 @@ test('an unknown work type is refused before a job row exists', async () => {
   }
 })
 
+test('the triage kind and the triage work type must agree in both directions', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), captureRunner([]), new MemoryMailer())
+  try {
+    const { repo } = triageRepo(store, 'mismatch')
+    // A job kind cannot borrow the triage contract...
+    const borrowed = await jobs.enqueue(repo, 'manual', undefined, 'iterate', { workType: 'triage' })
+    assert.equal(borrowed.ok, false)
+    assert.equal(borrowed.code, 'UNKNOWN_WORK_TYPE')
+    // ...and a triage run cannot be given another work type, which used to store
+    // `work_type='iterate'` and print the iterate contract for a run that is
+    // forbidden to open a branch.
+    const mislabelled = await jobs.enqueue(repo, 'manual', undefined, 'triage', { workType: 'iterate' })
+    assert.equal(mislabelled.ok, false)
+    assert.equal(mislabelled.code, 'UNKNOWN_WORK_TYPE')
+    assert.equal(store.listJobsForRepo(repo.id).length, 0, 'neither mismatch writes a row')
+  } finally {
+    store.close()
+  }
+})
+
 test('a work type with no handler is refused exactly like an unknown one', async () => {
   const store = new Store(':memory:')
   const jobs = new Jobs(store, testConfig(), captureRunner([]), new MemoryMailer())
