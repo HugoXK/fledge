@@ -17,6 +17,7 @@ import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
 import { notifyEmail } from './email/recipient.js'
 import { registerGateway } from './gateway/gateway.js'
 import { assertSafeModelUrl } from './gateway/modelUrl.js'
+import { assertSafeNotificationWebhook } from './lib/webhook.js'
 import { quotaView } from './gateway/quota.js'
 import { parseAttributionJson } from './lib/attribution.js'
 import { failureBreakdown } from './lib/failure.js'
@@ -31,7 +32,7 @@ import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
 import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale } from './i18n.js'
 import { normalizeInterval } from './lib/intervals.js'
-import { parseJobFilters } from './lib/jobFilters.js'
+import { JOB_FILTER_STATUSES, parseJobFilters } from './lib/jobFilters.js'
 import { isValidBranchName } from './lib/branches.js'
 import { allowedRepoRoles, parseRepoRole, roleAllowed } from './lib/repoRole.js'
 import { isWorkItemState, MAINTAINER_ONLY_STATES, WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
@@ -191,6 +192,17 @@ export function safeLocalPath(value: string | undefined, fallback: string): stri
   return `${url.pathname}${url.search}${url.hash}`
 }
 
+// #555: a page that just came out of a save already carries `notice=`, and a
+// Referer keeps it (only the fragment is dropped). Appending a second key makes
+// the query parse as an array, `queryText()` refuses a non-string, and the
+// console then shows nothing at all. Setting the key replaces the stale message
+// instead of stacking a second one next to it.
+function withMessageParam(page: string, key: 'notice' | 'error', message: string): string {
+  const url = new URL(page, LOCAL_ORIGIN)
+  url.searchParams.set(key, message)
+  return `${url.pathname}${url.search}${url.hash}`
+}
+
 function bearerSecret(request: FastifyRequest): string {
   const header = String(request.headers.authorization ?? '')
   if (header.slice(0, 7).toLowerCase() !== 'bearer ') return ''
@@ -235,6 +247,7 @@ function approvalMailFailed(user: UserRow, failures: Map<string, string>): boole
 export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const { config } = options
   assertProductionConfig(config)
+  await assertSafeNotificationWebhook(config)
   const store = options.store ?? openStore(config.dbPath)
   store.ensureSuperadmin(config.github.adminLogin)
   const orphans = store.cleanupOrphans()
@@ -422,8 +435,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       `这个操作需要重新用 GitHub 确认身份（${config.recentAuthMinutes} 分钟内有效），确认后请再次提交。`,
       `This action needs a fresh GitHub confirmation (valid for ${config.recentAuthMinutes} minutes). Submit it again after confirming.`,
     )
-    const page = safeLocalPath(back, '/dashboard')
-    const target = `${page}${page.includes('?') ? '&' : '?'}notice=${encodeURIComponent(notice)}`
+    const target = withMessageParam(safeLocalPath(back, '/dashboard'), 'notice', notice)
     reply.redirect(`/auth/github/reauthorize?next=${encodeURIComponent(target)}`)
     return true
   }
@@ -881,6 +893,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       firstPrUrl: firstJob?.pr_url ?? null,
       repoHref: allRepos[0] === undefined ? null : `/repos/${allRepos[0].id}`,
     }
+    // #564: open work, an active job and a ready instance decide when a
+    // repository runs again, and none of them is on RepoRow.
+    const nextRunFacts = allRepos.map((repo) => ({
+      repoId: repo.id,
+      openWork: store.listOpenWorkItems(repo.id).length > 0,
+      activeJob: store.activeJobForRepo(repo.id) !== undefined,
+      instanceReady: store.getRepoInstance(repo.id)?.status === 'ready',
+    }))
     return reply.type('text/html').send(
       dashboardPage({
         config,
@@ -897,6 +917,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobFilter,
         repoOptions: allRepos.map((repo) => ({ id: repo.id, label: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}` })),
         allRepos,
+        nextRunFacts,
+        queued: store.listQueuedJobs(),
         questions,
         personal,
         windowDays,
@@ -948,8 +970,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     )
   })
 
-  // #362: every filter is validated here and the query is anchored on
-  // `viewer.user.id`, so an unknown `repo` value is dropped, not answered.
+  // #362: the query is anchored on `viewer.user.id`, so an unknown `repo` is dropped
+  // and never answered; `kind` is applied as given, so an unknown kind matches nothing.
   app.get('/search', async (request, reply) => {
     const viewer = requireApproved(request)
     const repos = store.listRepos(viewer.user.id)
@@ -963,8 +985,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const filters = {
       q: clip('q', 200),
       repo: repos.some((row) => row.id === repo) ? repo : '',
-      status: ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted'].includes(status) ? status : '',
-      kind: ['iterate', 'review', 'plan'].includes(kind) ? kind : '',
+      // #568: the same list the control renders, so a status the form offers can never be dropped here.
+      status: (JOB_FILTER_STATUSES as string[]).includes(status) ? status : '',
+      kind,
       from: from === '' ? '' : `${from}T00:00:00.000Z`, to: to === '' ? '' : `${to}T23:59:59.999Z`,
     }
     return reply.type('text/html').send(searchPage({
@@ -1322,6 +1345,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
           instancesCap: config.limits.instancesPerUser,
         },
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
+        queued: store.listQueuedJobs(),
         prJobs: store.listPrJobsForRepo(repo.id, 10),
         workItems: store.listWorkItems(repo.id),
         // #359: the page names the deadline and the way out, so an ignored plan
@@ -1380,6 +1404,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       state,
       stateError,
       jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
+      queued: store.listQueuedJobs(),
       jobsPage,
       jobsTotal,
       notice: queryText(request, 'notice'),
@@ -1743,14 +1768,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const queued = store.listQueuedJobs()
-    const queueIndex = queued.findIndex((entry) => entry.id === job.id)
+    // #565: the queue is instance-wide, the ahead-list is the viewer's own. The
+    // label map keeps the viewer's own repositories readable without naming
+    // anybody else's.
+    const repoLabels = new Map(store.listRepos(viewer.user.id).map((entry) => [entry.id, `${entry.upstream_owner || entry.owner}/${entry.upstream_name || entry.name}`]))
     return reply.type('text/html').send(jobPage({
       config,
       locale: request.locale ?? 'zh',
       viewer: viewOf(viewer),
       repo,
       job,
-      queuePosition: queueIndex === -1 ? undefined : queueIndex + 1,
+      queued,
+      viewerActive: store.listActiveJobsForUser(viewer.user.id),
+      repoLabels,
       events: store.listJobEvents(job.id, 200),
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),

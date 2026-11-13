@@ -244,11 +244,20 @@ test('admins can search and export jobs and audit within their visibility scope'
     const user = makeUser(store, { login: 'search-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_search', userId: user.id, owner: 'o', name: 'search', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'fix', autoIterate: false, intervalMinutes: 1440 })
     store.createJob({ id: 'job_search', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'search goal', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate' })
+    store.updateJob('job_search', { status: 'succeeded', finished_at: new Date().toISOString() })
+    store.createJob({ id: 'job_search_triage', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'search goal triage', callbackHash: 'cb-triage', platformTokenHash: '', kind: 'triage', workType: 'triage' })
+    store.updateJob('job_search_triage', { status: 'succeeded', finished_at: new Date().toISOString() })
     store.audit(user.id, 'repo.settings', 'search detail')
     const { cookie } = sessionFor(built, admin)
     const search = await built.app.inject({ method: 'GET', url: '/admin/search?q=search', headers: { cookie } })
     assert.equal(search.statusCode, 200)
     assert.match(search.body, /job_search/)
+    // The route has always passed `kind` through, so the URL filtered; the form
+    // did not offer the kinds that pass, so a triage row could not be picked.
+    assert.match(search.body, /<option value="triage"/, 'the admin job form offers triage')
+    const triageOnly = await built.app.inject({ method: 'GET', url: '/admin/search?q=search&kind=triage', headers: { cookie } })
+    assert.match(triageOnly.body, /job_search_triage/, 'the admin filter applies triage')
+    assert.doesNotMatch(triageOnly.body, /job_search"/, 'and leaves the iterate row out')
     const jobsCsv = await built.app.inject({ method: 'GET', url: '/admin/export/jobs.csv?q=search', headers: { cookie } })
     assert.equal(jobsCsv.statusCode, 200)
     assert.match(String(jobsCsv.headers['content-type']), /text\/csv/)
@@ -256,6 +265,41 @@ test('admins can search and export jobs and audit within their visibility scope'
     const auditCsv = await built.app.inject({ method: 'GET', url: '/admin/export/audit.csv?q=search', headers: { cookie } })
     assert.equal(auditCsv.statusCode, 200)
     assert.match(auditCsv.body, /repo.settings/)
+  } finally {
+    await built.close()
+  }
+})
+
+test('the admin job filter offers every kind and status under its console label, not the internal code', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'filter-admin', admin: true })
+    const repo = store.createRepo({ id: 'repo_filter', userId: admin.id, owner: 'o', name: 'filter', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'fix', autoIterate: false, intervalMinutes: 1440 })
+    makeTerminalJob(store, { id: 'job_filter_verify', repoId: repo.id, userId: admin.id, trigger: 'manual', goal: 'verify goal', callbackHash: 'cb-v', platformTokenHash: '', kind: 'verify' })
+    makeTerminalJob(store, { id: 'job_filter_iterate', repoId: repo.id, userId: admin.id, trigger: 'manual', goal: 'iterate goal', callbackHash: 'cb-i', platformTokenHash: '', kind: 'iterate' })
+    const { cookie } = sessionFor(built, admin)
+    const pageFor = async (locale: 'zh' | 'en'): Promise<string> => {
+      const response = await built.app.inject({ method: 'GET', url: '/admin/search', headers: { cookie: `${cookie}; fledge_lang=${locale}` } })
+      assert.equal(response.statusCode, 200)
+      return response.body
+    }
+    // `scope` and `verify` are job kinds the table already badges, so the filter
+    // that sits above it must offer them; the labels come from the same helper.
+    const chinese = await pageFor('zh')
+    assert.match(chinese, /<option value="verify"[^>]*>验证<\/option>/)
+    assert.match(chinese, /<option value="scope"[^>]*>范围<\/option>/)
+    assert.match(chinese, /<option value="quota_exhausted"[^>]*>额度用尽<\/option>/)
+    const english = await pageFor('en')
+    assert.match(english, /<option value="verify"[^>]*>Verify<\/option>/)
+    assert.match(english, /<option value="quota_exhausted"[^>]*>Quota exhausted<\/option>/)
+    // The value stays the code, so the option the form now offers is the filter
+    // that isolates a `verify` job and leaves an `iterate` job out.
+    const byKind = await built.app.inject({ method: 'GET', url: '/admin/search?kind=verify', headers: { cookie } })
+    assert.equal(byKind.statusCode, 200)
+    assert.match(byKind.body, /job_filter_verify/)
+    assert.doesNotMatch(byKind.body, /job_filter_iterate/)
   } finally {
     await built.close()
   }

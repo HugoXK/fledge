@@ -24,7 +24,9 @@ interface Analysis {
 }
 
 interface Lookups {
-  analysisFor: (sha: string) => Promise<Analysis | null>
+  // The optional hint carries the absolute deadline the module computed, so an
+  // implementation that has to page the API can stop inside the same bound.
+  analysisFor: (sha: string, hint?: { deadline?: number }) => Promise<Analysis | null>
 }
 
 interface Clock {
@@ -47,11 +49,23 @@ interface CodeqlRequiredInput {
   pollMs?: number
 }
 
+interface ApiOptions {
+  api: (path: string) => Promise<unknown>
+  repo: string
+  sha: string
+  now?: () => number
+  deadline?: number
+  perPage?: number
+  maxPages?: number
+}
+
 interface Lib {
   codeqlRequired: (input: CodeqlRequiredInput, lookups: Lookups, clock: Clock) => Promise<Verdict>
   shaForEvent: (input: { eventName: string; sha: string; payload: Record<string, unknown> }) => string | null
+  analysisFromApi: (options: ApiOptions) => Promise<Analysis | null>
   DEFAULT_WAIT_MS: number
   DEFAULT_POLL_MS: number
+  MAX_FALLBACK_PAGES: number
 }
 
 // A dynamic import on purpose: this file has to be readable and runnable before
@@ -287,6 +301,142 @@ test('the CodeQL matcher still answers a lone exact match', async () => {
 
 test('the CLI delegates the match to the lib and carries no live-head arm', () => {
   const cli = readFileSync(codeqlCliPath, 'utf8')
-  assert.match(cli, /import \{[^}]*analysisFor[^}]*\} from '\.\/lib\/codeql-required\.mjs'/, 'the matcher lives in the lib, where the suite can drive it')
+  assert.match(cli, /import \{[^}]*analysisFromApi[^}]*\} from '\.\/lib\/codeql-required\.mjs'/, 'the lookup lives in the lib, where the suite can drive it against a fake API')
   assert.doesNotMatch(cli, /pull_requests/, 'a live pull request head is not an input to the matcher')
+})
+
+// #585: the gate asked for a *window* of newest runs and looked for the commit
+// inside it. On a busy repository the commit's own run fell outside that page,
+// so a green analysis read as "no analysis", the job polled its full ten
+// minutes, and `ci-ok` reddened a mergeable pull request. The fix is to ask for
+// the commit (`?head_sha=…`) and keep the exact predicate; these cases pin the
+// request shape, the pending case, and the bounded fallback that must never
+// adopt a neighbouring commit's run.
+interface ApiPage {
+  total_count?: number
+  workflow_runs?: WorkflowRun[]
+}
+
+interface Api {
+  (path: string): Promise<ApiPage>
+}
+
+function urlOf(path: string): URL {
+  return new URL(path, 'https://api.github.com')
+}
+
+function param(path: string, name: string): string | null {
+  return urlOf(path).searchParams.get(name)
+}
+
+// A fake GitHub that records every request path, so a case can assert *how* the
+// commit was asked for and not only what the answer was.
+function recordingApi(respond: (path: string) => ApiPage): { api: Api; paths: string[] } {
+  const paths: string[] = []
+  return {
+    api: async (path: string) => {
+      paths.push(path)
+      return respond(path)
+    },
+    paths,
+  }
+}
+
+const OTHER = 'b'.repeat(40)
+
+// A full page of runs for other commits, in the API's newest-first order.
+function windowOf(count: number): WorkflowRun[] {
+  return Array.from({ length: count }, (_, index) => ({
+    head_sha: `${OTHER.slice(0, 34)}${String(index).padStart(6, '0')}`,
+    conclusion: 'success',
+  }))
+}
+
+test('the analysis lookup asks for the commit, not for a window of newest runs', async () => {
+  const { analysisFromApi } = await lib()
+  const { api, paths } = recordingApi((path) =>
+    param(path, 'head_sha') === TIP ? { total_count: 1, workflow_runs: [exactSuccess] } : { total_count: 878, workflow_runs: windowOf(100) },
+  )
+  const analysis = await analysisFromApi({ api, repo: 'HugoXK/fledge', sha: TIP })
+  assert.deepEqual(analysis, { conclusion: 'success' }, 'a concluded analysis for this commit answers it')
+  assert.equal(paths.length, 1, 'one filtered request answers it; scanning a newest-runs window is the defect')
+  assert.equal(param(paths[0]!, 'head_sha'), TIP, 'the commit under test has to be in the query, or the page is a window it can fall out of')
+  assert.equal(param(paths[0]!, 'status'), 'completed', 'only a completed analysis is a verdict')
+})
+
+test('a commit whose run is outside the newest page still answers from its own sha', async () => {
+  // The measured #532 shape: run 43463845160 is pull_request/success for
+  // 34dc6c7f…, `?head_sha=` answers total_count 1, and the unfiltered window is
+  // 878 runs whose newest 100 do not contain it.
+  const { analysisFromApi } = await lib()
+  const measured = '34dc6c7fd8ce02a25c714122332138171d0952e2'
+  const { api, paths } = recordingApi((path) =>
+    param(path, 'head_sha') === measured
+      ? { total_count: 1, workflow_runs: [{ head_sha: measured, conclusion: 'success' }] }
+      : { total_count: 878, workflow_runs: windowOf(100) },
+  )
+  const analysis = await analysisFromApi({ api, repo: 'HugoXK/fledge', sha: measured })
+  assert.deepEqual(analysis, { conclusion: 'success' }, 'a green analysis must not read as absent because the repository is busy')
+  assert.equal(paths.length, 1, 'the answer is one request away when the query names the commit')
+})
+
+test('a commit with no completed analysis stays pending and starts no page scan', async () => {
+  const { analysisFromApi } = await lib()
+  const { api, paths } = recordingApi(() => ({ total_count: 0, workflow_runs: [] }))
+  const analysis = await analysisFromApi({ api, repo: 'HugoXK/fledge', sha: TIP })
+  assert.equal(analysis, null, 'an analysis that has not concluded is pending, and the caller owns the wait')
+  assert.equal(paths.length, 1, 'no analysis means nothing to page through; scanning here would be ten minutes of requests')
+})
+
+test('a neighbouring run that advertises this commit never answers for it', async () => {
+  // #422's regression guard: every superseded run of a pull request carries the
+  // current tip in `pull_requests[].head.sha`. Adopting one is a verdict on
+  // another commit's analysis.
+  const { analysisFromApi } = await lib()
+  const neighbour: WorkflowRun = { head_sha: OTHER, conclusion: 'failure', pull_requests: [{ head: { sha: TIP } }] }
+  const { api, paths } = recordingApi(() => ({ total_count: 878, workflow_runs: [neighbour, ...windowOf(99)] }))
+  const analysis = await analysisFromApi({ api, repo: 'HugoXK/fledge', sha: TIP })
+  assert.equal(analysis, null, 'no run analysed this commit, so the gate must stay pending rather than adopt a neighbour')
+  assert.ok(paths.length <= 1 + 10, `a filter the API ignores must be paged a bounded number of times, made ${String(paths.length)} request(s)`)
+})
+
+test('a lookup that ignores the sha filter is paged, and the fallback finds the commit', async () => {
+  // Some deployments drop an unknown query parameter and answer the unfiltered
+  // list. The fallback may then scan pages, but only within the caller's budget.
+  const { analysisFromApi, MAX_FALLBACK_PAGES } = await lib()
+  const answer = (path: string): ApiPage => {
+    const page = Number(param(path, 'page') ?? '1')
+    if (page === 3) return { total_count: 878, workflow_runs: [exactSuccess] }
+    return { total_count: 878, workflow_runs: windowOf(100) }
+  }
+  const { api, paths } = recordingApi(answer)
+  const analysis = await analysisFromApi({ api, repo: 'HugoXK/fledge', sha: TIP })
+  assert.deepEqual(analysis, { conclusion: 'success' }, 'the fallback has to find the run it was paged for')
+  assert.ok(paths.length <= 1 + MAX_FALLBACK_PAGES, `the scan stops at the page cap, made ${String(paths.length)} request(s)`)
+})
+
+test('the fallback scan stops at the caller deadline instead of scanning a huge window', async () => {
+  const { analysisFromApi } = await lib()
+  let elapsed = 0
+  const now = (): number => (elapsed += 1_000)
+  const { api, paths } = recordingApi(() => ({ total_count: 878, workflow_runs: windowOf(100) }))
+  const analysis = await analysisFromApi({ api, repo: 'HugoXK/fledge', sha: TIP, now, deadline: 1_500, maxPages: 50 })
+  assert.equal(analysis, null, 'a run that never appears must not be invented')
+  assert.ok(paths.length <= 3, `the scan is bounded by the deadline, made ${String(paths.length)} request(s)`)
+})
+
+test('each poll hands the lookup its deadline so a fallback scan cannot outlive the bound', async () => {
+  const { codeqlRequired } = await lib()
+  const clock = fakeClock()
+  const seen: (number | undefined)[] = []
+  const lookups: Lookups = {
+    analysisFor: async (_sha, hint) => {
+      seen.push(hint?.deadline)
+      return null
+    },
+  }
+  await codeqlRequired({ eventName: 'push', sha: SHA, payload: {}, waitMs: 100, pollMs: 10 }, lookups, clock)
+  assert.ok(seen.length > 1, 'the absent-analysis case still polls inside the bound')
+  assert.equal(seen[0], 100, 'the first poll carries the absolute deadline the module computed')
+  assert.ok(seen.every((deadline) => deadline === 100), 'every poll inside one run carries the same deadline')
 })

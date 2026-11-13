@@ -114,6 +114,9 @@ export const FAILURE_CODES = [
   'PROVIDER_BUDGET_EXCEEDED',
   'PROVIDER_RATE_LIMITED',
   'PROVIDER_CALL_NEVER_STARTED',
+  // #390: the two ways a typed job fails closed on its own contract.
+  'WORK_TYPE_UNVERIFIED',
+  'TRIAGE_UNVERIFIED',
 ] as const
 
 export type FailureCode = (typeof FAILURE_CODES)[number]
@@ -136,6 +139,8 @@ export const FAILURE_CODE_KIND: Record<FailureCode, FailureKind> = {
   PROVIDER_BUDGET_EXCEEDED: 'quota',
   PROVIDER_RATE_LIMITED: 'quota',
   PROVIDER_CALL_NEVER_STARTED: 'model',
+  WORK_TYPE_UNVERIFIED: 'stage_evidence',
+  TRIAGE_UNVERIFIED: 'stage_evidence',
 }
 
 const FAILURE_SENTENCES: Record<FailureCode, [string, string]> = {
@@ -152,6 +157,8 @@ const FAILURE_SENTENCES: Record<FailureCode, [string, string]> = {
   PROVIDER_BUDGET_EXCEEDED: ['模型供应商拒绝了这次调用：实例的 DSH 预算已用完。请检查供应商额度，或配置自己的模型 API 后重试。', 'The model provider refused the call: the DSH budget of the instance is used up. Check the provider quota, or add your own model API, then retry.'],
   PROVIDER_RATE_LIMITED: ['模型供应商限流，拒绝了这次调用（剩余额度 0）。请等限流恢复，或配置自己的模型 API 后重试。', 'The model provider rate-limited the call (remaining quota 0). Wait for the limit to reset, or add your own model API, then retry.'],
   PROVIDER_CALL_NEVER_STARTED: ['实例里的会话在派发后没有发起任何模型调用：供应商额度或限流拒绝了这次调用。请检查 DSH 的供应商额度/密钥，或配置自己的模型 API 后重试。', 'The instance session made no model call after the job was dispatched: the provider budget or rate limit refused it. Check the DSH provider quota/key, or add your own model API, then retry.'],
+  WORK_TYPE_UNVERIFIED: ['这个工作类型缺少它要求的证据，任务已按约定失败。', 'This work type is missing the evidence it requires, so the job failed closed.'],
+  TRIAGE_UNVERIFIED: ['分诊任务没有返回可校验的结果，任务已按约定失败。', 'The triage job returned no verifiable report, so it failed closed.'],
 }
 
 // The parameterised form of a failure sentence, used only when the refusal

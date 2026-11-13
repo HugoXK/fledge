@@ -307,27 +307,32 @@ test('applying a filter keeps the 30-day window it was set in', async () => {
   }
 })
 
-test('the kind filter offers every job kind the runner can start, and nothing else', async () => {
-  // The kinds a job can have are the JobKind union in `src/jobs/runner.ts`:
-  // iterate, review, plan, scope, verify. A filter list that is a second, stale
-  // copy of that union silently hides the jobs a user wants to find — `scope`
-  // and `verify` are started by the work-item buttons — and offers a kind no job
-  // can have.
-  assert.deepEqual([...JOB_FILTER_KINDS].sort(), ['iterate', 'plan', 'review', 'scope', 'verify'], 'the filter list is the JobKind union')
+test('the kind filter offers every job kind a user can start, and nothing else', async () => {
+  // A filter list that is a second, stale copy of the kinds silently hides the
+  // jobs a user wants to find — `scope` and `verify` are started by the
+  // work-item buttons, `triage` by the console control tracked in #523 — and
+  // offers a kind no job can have. `discover` is the one kind left out on
+  // purpose: an account never starts one by hand.
+  assert.deepEqual([...JOB_FILTER_KINDS].sort(), ['iterate', 'plan', 'review', 'scope', 'triage', 'verify'], 'the filter list is the startable job kinds')
 
   const config = testConfig()
   const store = new Store(':memory:')
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const user = makeUser(store, { login: 'filters-kinds', status: 'approved' })
-    const cookie = `${sessionFor(built, user).cookie}; fledge_lang=en`
+    const session = sessionFor(built, user)
+    const cookie = `${session.cookie}; fledge_lang=en`
+    const zhCookie = session.cookie
     const repo = store.createRepo({ id: 'repo_k', userId: user.id, owner: 'o', name: 'k', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     makeJobs(store, user.id, repo.id, 'scope', 2, 'succeeded', 'scope')
     makeJobs(store, user.id, repo.id, 'verify', 2, 'succeeded', 'verify')
     makeJobs(store, user.id, repo.id, 'iter', 2, 'succeeded', 'iterate')
+    store.createJob({ id: 'job_triage_a', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'triage', callbackHash: 'cb-triage', platformTokenHash: '', kind: 'triage', workType: 'triage' })
+    store.updateJob('job_triage_a', { status: 'succeeded', finished_at: new Date().toISOString() })
+    store.createWorkItem({ id: 'work_triaged', repoId: repo.id, userId: user.id, title: 'triaged-thing', state: 'triaged' })
 
     const page = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
-    for (const kind of ['iterate', 'review', 'plan', 'scope', 'verify']) {
+    for (const kind of ['iterate', 'review', 'plan', 'scope', 'verify', 'triage']) {
       assert.match(page.body, new RegExp(`<option value="${kind}"`), `the form offers ${kind}`)
     }
     assert.doesNotMatch(page.body, /<option value="research"/, 'the form offers no kind a job cannot have')
@@ -339,7 +344,54 @@ test('the kind filter offers every job kind the runner can start, and nothing el
     const verify = await built.app.inject({ method: 'GET', url: '/dashboard?kind=verify', headers: { cookie } })
     assert.equal((verify.body.match(/data-job-id="job_verify/g) ?? []).length, 2, 'a verify job is filterable')
 
+    const triage = await built.app.inject({ method: 'GET', url: '/dashboard?kind=triage', headers: { cookie } })
+    assert.equal((triage.body.match(/data-job-id="job_triage_a"/g) ?? []).length, 1, 'a triage job is filterable')
+    assert.doesNotMatch(triage.body, /data-job-id="job_iter0"/, 'and no other kind leaks into the triage page')
+
+    // #529 item 4: the dashboard's drop rule had no end-to-end test; only
+    // `parseJobFilters` was pinned. An unknown kind is dropped, and the page then
+    // answers with every job — the reverse of `/search`, which keeps the value.
+    const unknownOnDashboard = await built.app.inject({ method: 'GET', url: '/dashboard?kind=research', headers: { cookie } })
+    assert.equal((unknownOnDashboard.body.match(/data-job-id="/g) ?? []).length, 7, 'an unknown kind leaves the dashboard filter unset and answers with every job')
+
+    const search = await built.app.inject({ method: 'GET', url: '/search?q=k', headers: { cookie } })
+    assert.match(search.body, /<option value="triage"/, 'the search form offers triage too')
+
+    // The two pages answer an unknown kind differently, on purpose, and neither
+    // rule is an accident: `/search` keeps the value, so a kind that matches no
+    // job is an empty answer; the dashboard drops a value no job can carry, so an
+    // unknown kind answers with every job. The assertions below pin both halves.
+    // (A page that silently swapped rules would still pass a test that only
+    // checked one of them.)
+    const triaged = await built.app.inject({ method: 'GET', url: '/search?q=e&kind=triage', headers: { cookie } })
+    assert.match(triaged.body, /job_triage_a/, 'the search filter applies triage')
+    assert.doesNotMatch(triaged.body, /job_iter0/, 'and no iterate job leaks into a triage search')
+    const noSuchKind = await built.app.inject({ method: 'GET', url: '/search?q=e&kind=research', headers: { cookie } })
+    assert.doesNotMatch(noSuchKind.body, /job_iter0|job_triage_a|job_scope|job_verify/, 'a kind no job has matches nothing rather than everything')
+
+    // #568: the same rule, now visible. The applied kind survives the empty
+    // answer as the selected option and the empty state names it, so a person can
+    // see and clear the filter that produced nothing; every option and badge
+    // reads a label rather than an enum token, in Chinese as in English.
+    const applied = await built.app.inject({ method: 'GET', url: '/search?q=e&kind=research', headers: { cookie: zhCookie } })
+    assert.match(applied.body, /<option value="research" selected>research<\/option>/, 'an applied kind is selected and reads as itself')
+    const appliedEmpty = await built.app.inject({ method: 'GET', url: '/search?q=no-such-needle&kind=research', headers: { cookie: zhCookie } })
+    assert.match(appliedEmpty.body, /当前类型：research。/, 'and the zero-result page names it')
+    const labelled = await built.app.inject({ method: 'GET', url: '/search?q=e&kind=scope', headers: { cookie: zhCookie } })
+    assert.match(labelled.body, /<span class="badge kind">范围<\/span>/, 'a scope job badge reads 范围')
+    assert.doesNotMatch(labelled.body, /<span class="badge kind">scope<\/span>/, 'and never the raw token')
+    assert.match(labelled.body, /<option value="triage">分诊<\/option>/, 'the offered kinds are labelled')
+    const quota = await built.app.inject({ method: 'GET', url: '/search?q=e&status=quota_exhausted', headers: { cookie: zhCookie } })
+    assert.match(quota.body, /<option value="quota_exhausted" selected>额度用尽<\/option>/, 'an applied status reads 额度用尽')
+    const item = await built.app.inject({ method: 'GET', url: '/search?q=triaged-thing', headers: { cookie: zhCookie } })
+    assert.match(item.body, /已分诊/, 'a work item state reads 已分诊')
+    assert.doesNotMatch(item.body, />triaged</, 'and never the raw token')
+    const hostileKind = await built.app.inject({ method: 'GET', url: `/search?q=e&kind=${encodeURIComponent('<b>x</b>')}`, headers: { cookie: zhCookie } })
+    assert.doesNotMatch(hostileKind.body, /<b>x<\/b>/, 'the applied kind is escaped on the way in')
+    assert.match(hostileKind.body, /&lt;b&gt;x&lt;\/b&gt;/, 'and reads as its own text')
+
     assert.deepEqual(parseJobFilters({ kind: 'scope' }, [repo.id]), { repo: '', status: '', kind: 'scope' }, 'the parser keeps scope')
+    assert.deepEqual(parseJobFilters({ kind: 'triage' }, [repo.id]), { repo: '', status: '', kind: 'triage' }, 'the parser keeps triage')
     assert.deepEqual(parseJobFilters({ kind: 'research' }, [repo.id]), { repo: '', status: '', kind: '' }, 'research is not a job kind, so it is dropped')
   } finally {
     await built.app.close()
