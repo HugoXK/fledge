@@ -512,6 +512,9 @@ when it has one), `pause` and `cancel` act on the queued or running job, and
 refuses in the thread instead of starting one. Each one calls the same service
 action as the console, so it writes the existing audit action (`job.retried`,
 `job.paused`, `job.resumed`, `job.cancelled`) and the same job-timeline event; the
-pause and cancel replies say that a live session was sent a stop request, hard only
-where the instance exposes one.
+pause and cancel replies report what the stop path actually did — how many live
+sessions were stopped, how many were asked to stop at the next safe point, that no
+live session was reachable, or that the stop could not be delivered — so they never
+claim a send that did not happen. The job is looked up by its work item, so an item
+whose job is older than the repository's newest twenty is still found.
 

@@ -81,6 +81,9 @@ export interface BuildOptions {
   mailer?: Mailer
   runner?: Runner
   startScheduler?: boolean
+  // Injected by tests that drive the route with a fake live-session controller;
+  // production always builds its own.
+  instances?: InstanceManager
 }
 
 export interface BuiltApp {
@@ -111,6 +114,21 @@ function refusalValue(result: { code?: string; detail?: string; error?: string }
   if (code === '') return text
   const detail = result.detail ?? ''
   return `${code}:${detail !== '' ? detail : text}`
+}
+
+// #360 review: the pause/cancel reply is built from the stop's own outcome, so it
+// never claims a send that did not happen. `sent` absent means no attempt was made
+// (a queued job, or no live-session controller in queue-dispatch mode), `false`
+// means the bridge call failed, and the counts are what `stopSessions` reported.
+function describeJobStop(result: { sent?: boolean; stopped?: number; requested?: number }): string {
+  if (result.sent === undefined) return 'no live session was reachable to stop'
+  if (result.sent !== true) return 'the stop could not be delivered'
+  const stopped = result.stopped ?? 0
+  const requested = result.requested ?? 0
+  if (stopped > 0 && requested > 0) return `stopped ${stopped} session(s) and requested a stop for ${requested} at the next safe point`
+  if (stopped > 0) return `stopped ${stopped} session(s)`
+  if (requested > 0) return `requested a stop for ${requested} session(s) at the next safe point`
+  return 'no live session was reachable to stop'
 }
 
 function queryText(request: FastifyRequest, name: string): string | undefined {
@@ -213,8 +231,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const oauth = new GithubOAuth(config)
   const sessions = new Sessions(store, config)
   const approvals = new Approvals(store, config, mailer)
-  const instances = new InstanceManager(store, config)
-  if (options.startScheduler !== false && config.env !== 'test' && config.flybot.instanceImage !== '') {
+  const instances = options.instances ?? new InstanceManager(store, config)
+  if (options.instances === undefined && options.startScheduler !== false && config.env !== 'test' && config.flybot.instanceImage !== '') {
     void instances.healthSweep().catch((error) => log.warn('startup instance health sweep failed', { error: String(error) }))
   }
   const githubApp = new GithubApp(config)
@@ -3057,7 +3075,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         await reply(`No work item is linked to this issue; nothing to ${command}.`)
         return
       }
-      const job = store.listJobsForRepo(repo.id, 20).find((entry) => entry.work_item_id === linked.id)
+      // #360 review: by the item, not through the repository's newest 20 — an older
+      // work item's job must not be answered "no job is attached".
+      const job = store.latestJobForWorkItem(linked.id)
       if (job === undefined) {
         await reply(`No job is attached to work item ${linked.id}; nothing to ${command}.`)
         return
@@ -3073,14 +3093,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
           await reply(`Could not ${command} job ${job.id}: ${result.error ?? 'unknown error'}`)
           return
         }
-        // The service sends a live session a stop: a hard stop where the instance
-        // exposes one, otherwise a request. The reply says exactly that and never
-        // claims a process was killed.
+        // The service returns what the stop path actually did, so the sentence
+        // reports a hard stop, a request, no reachable session or a failed call —
+        // never a send that did not happen, and never a claim a process was killed.
         const verb = command === 'pause' ? 'Paused' : 'Cancelled'
         const state = command === 'pause' ? 'paused' : 'cancelled'
-        await reply(job.status === 'running'
-          ? `${verb} job ${job.id}: the row is ${state}, and the session that was running was sent a stop request (a hard stop where the instance exposes one, otherwise a request).`
-          : `${verb} job ${job.id}: the row is ${state}.`)
+        await reply(`${verb} job ${job.id}: ${describeJobStop(result)}; the row is ${state}.`)
         return
       }
       if (command === 'resume') {

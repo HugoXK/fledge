@@ -5,6 +5,7 @@ import { buildApp, type BuiltApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { encryptSecret } from '../src/lib/secrets.js'
 import type { Runner } from '../src/jobs/runner.js'
+import type { InstanceManager, TeamLiveState } from '../src/flybot/instances.js'
 import { json, makeUser, MemoryMailer, readBody, startFakeServer, testConfig } from './helpers.js'
 
 // #360: the four job verbs act on the work item the issue is linked to. These
@@ -33,7 +34,7 @@ interface Harness {
   close: () => Promise<void>
 }
 
-async function harness(): Promise<Harness> {
+async function harness(options: { instances?: InstanceManager } = {}): Promise<Harness> {
   const comments: Comment[] = []
   const github = await startFakeServer(async (request, response) => {
     const raw = await readBody(request)
@@ -62,7 +63,7 @@ async function harness(): Promise<Harness> {
     intervalMinutes: 1440,
   })
   const item = store.createWorkItem({ id: 'work_issue_cmd', repoId: repo.id, userId: user.id, title: 'Fix it', detail: 'details', issueUrl: ISSUE_URL, state: 'assigned' })
-  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner, startScheduler: false })
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner, startScheduler: false, ...(options.instances === undefined ? {} : { instances: options.instances }) })
 
   let delivery = 0
   const deliver = async (command: string, options: { association?: string; commentId?: number; delivery?: string; issueNumber?: number } = {}): Promise<number> => {
@@ -198,7 +199,12 @@ test('cancel stops the active job and leaves no new job behind', async () => {
     assert.equal(h.store.getJob(active.id)?.status, 'cancelled', 'the active job is cancelled')
     assert.equal(jobBodies(h.store, h.repoId).length, 1, 'cancel creates no job')
     assert.equal(h.comments.length, 1)
-    assert.match((JSON.parse(h.comments[0]!.body) as { body: string }).body, new RegExp(`Cancelled job ${active.id}`), 'the cancel reply names the job')
+    const cancelBody = (JSON.parse(h.comments[0]!.body) as { body: string }).body
+    assert.match(cancelBody, new RegExp(`Cancelled job ${active.id}`), 'the cancel reply names the job')
+    // #360 review: this harness provisions no bridge, so the stop attempt fails;
+    // the reply must say it could not be delivered rather than claim a send.
+    assert.match(cancelBody, /the stop could not be delivered/, 'the cancel reply says the stop was not delivered')
+    assert.doesNotMatch(cancelBody, /sent a stop request|was sent a stop/, 'the cancel reply claims no send that did not happen')
     assert.ok(h.store.listAudit(50).some((row) => row.action === 'job.cancelled'), 'cancel uses the existing audit action')
     assert.ok(h.store.listJobEvents(active.id).some((event) => event.kind === 'job.cancelled'), 'cancel appears in the job timeline')
   } finally {
@@ -229,6 +235,119 @@ test('a control verb with nothing to act on refuses instead of starting a job', 
     assert.equal(jobBodies(h.store, h.repoId).length, 1, 'a control verb creates no work item and no job')
     assert.equal(h.comments.length, 4)
     assert.match((JSON.parse(h.comments[3]!.body) as { body: string }).body, /No work item is linked to this issue; nothing to pause/, 'the reply says there is no linked work item')
+  } finally {
+    await h.close()
+  }
+})
+
+// #360 review: the pause/cancel reply must be worded from what the stop path
+// actually did. `pauseJob`/`cancelJob` now return the outcome, so these cases
+// drive the real webhook route with a controller that reports one hard stop and
+// one request, one with no live session, and one whose stop call fails.
+function liveState(sessions: string[]): TeamLiveState {
+  return {
+    bots: sessions.map((sessionId) => ({ sessionId, activity: 'working', role: 'dev1', name: 'Dev-1' })) as unknown as TeamLiveState['bots'],
+    questions: [],
+    timeline: [],
+    instance: { status: 'ready', container: '' },
+  }
+}
+
+function fakeInstances(state: TeamLiveState, stop: { stopped: string[]; requested: string[] } | Error): InstanceManager {
+  return {
+    teamState: async () => state,
+    stopSessions: async () => {
+      if (stop instanceof Error) throw stop
+      return stop
+    },
+    clearJobToken: async () => {},
+  } as unknown as InstanceManager
+}
+
+test('the pause reply reports the stop outcome instead of claiming a send', async () => {
+  const h = await harness({ instances: fakeInstances(liveState(['sess-a', 'sess-b']), { stopped: ['sess-a'], requested: ['sess-b'] }) })
+  try {
+    const active = h.store.createJob({ id: 'job_stop_outcome', repoId: h.repoId, userId: h.userId, trigger: 'manual', goal: 'Implement it', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main', workItemId: h.itemId })
+    h.store.updateJob(active.id, { status: 'running', started_at: new Date().toISOString() })
+
+    await h.deliver('/fledge pause', { commentId: 701 })
+    const body = (JSON.parse(h.comments[0]!.body) as { body: string }).body
+    assert.match(body, /stopped 1 session/, 'the reply reports the hard stop it performed')
+    assert.match(body, /requested a stop for 1/, 'the reply reports the request it delivered separately')
+    assert.match(body, /the row is paused/, 'the reply still states the row state')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a pause with no working session says none was reachable to stop', async () => {
+  const h = await harness({ instances: fakeInstances(liveState([]), { stopped: [], requested: [] }) })
+  try {
+    const active = h.store.createJob({ id: 'job_stop_idle', repoId: h.repoId, userId: h.userId, trigger: 'manual', goal: 'Implement it', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main', workItemId: h.itemId })
+    h.store.updateJob(active.id, { status: 'running', started_at: new Date().toISOString() })
+
+    await h.deliver('/fledge pause', { commentId: 704 })
+    const body = (JSON.parse(h.comments[0]!.body) as { body: string }).body
+    assert.match(body, /no live session was reachable to stop/, 'the reply does not invent a session to stop')
+    assert.doesNotMatch(body, /stopped \d|requested a stop for \d/, 'the reply reports no counted stop')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a pause whose stop call fails does not claim a stop was sent', async () => {
+  const h = await harness({ instances: fakeInstances(liveState(['sess-a']), new Error('bridge down')) })
+  try {
+    const active = h.store.createJob({ id: 'job_stop_failed', repoId: h.repoId, userId: h.userId, trigger: 'manual', goal: 'Implement it', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main', workItemId: h.itemId })
+    h.store.updateJob(active.id, { status: 'running', started_at: new Date().toISOString() })
+
+    await h.deliver('/fledge pause', { commentId: 702 })
+    const body = (JSON.parse(h.comments[0]!.body) as { body: string }).body
+    assert.match(body, /could not be delivered/, 'the reply says the stop was not delivered')
+    assert.doesNotMatch(body, /stopped \d|requested a stop for \d/, 'the reply claims no counted stop')
+    assert.equal(h.store.getJob(active.id)?.status, 'paused', 'the row is still paused')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a refusal keeps its detail so the console banner can render it', async () => {
+  const h = await harness()
+  try {
+    // Two running jobs elsewhere bring the platform to `maxActiveJobs` (2), so the
+    // retry reaches the real JOB_LIMIT refusal, whose detail is the configured cap.
+    for (const n of [1, 2]) {
+      const other = h.store.createRepo({ id: `repo_limit_${n}`, userId: h.userId, owner: 'HugoXK', name: `limit-${n}`, defaultBranch: 'main', tokenEnc: '', permission: 'admin', repoRole: 'maintainer', installationId: 40 + n, goal: '', autoIterate: false, intervalMinutes: 1440 })
+      const running = h.store.createJob({ id: `job_limit_${n}`, repoId: other.id, userId: h.userId, trigger: 'manual', goal: 'Busy', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+      h.store.updateJob(running.id, { status: 'running', started_at: new Date().toISOString() })
+    }
+    const failed = h.store.createJob({ id: 'job_detail_source', repoId: h.repoId, userId: h.userId, trigger: 'manual', goal: 'Implement it', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main', workItemId: h.itemId })
+    h.store.updateJob(failed.id, { status: 'failed', finished_at: new Date().toISOString() })
+
+    const result = await h.built.jobs.retryJob(failed.id, h.userId)
+    assert.equal(result.ok, false, 'the retry is refused at the platform limit')
+    assert.equal(result.code, 'JOB_LIMIT')
+    assert.equal(result.detail, '2', 'the refusal parameter reaches the caller, so the banner can name the cap')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a control verb finds the work item job even when the repo has more than 20 jobs', async () => {
+  const h = await harness()
+  try {
+    const old = h.store.createJob({ id: 'job_old', repoId: h.repoId, userId: h.userId, trigger: 'manual', goal: 'Implement it', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main', workItemId: h.itemId, createdAt: '2026-01-01T00:00:00.000Z' })
+    h.store.updateJob(old.id, { status: 'failed', finished_at: '2026-01-01T00:10:00.000Z' })
+    for (let i = 0; i < 24; i += 1) {
+      const filler = h.store.createJob({ id: `job_filler_${i}`, repoId: h.repoId, userId: h.userId, trigger: 'manual', goal: 'Filler', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main', createdAt: `2026-02-01T00:00:${String(i).padStart(2, '0')}.000Z` })
+      h.store.updateJob(filler.id, { status: 'failed', finished_at: '2026-02-01T00:10:00.000Z' })
+    }
+    assert.equal(h.store.listJobsForRepo(h.repoId, 20).some((job) => job.id === old.id), false, 'the linked job sits outside the repo window')
+
+    await h.deliver('/fledge retry', { commentId: 703 })
+    const body = (JSON.parse(h.comments[0]!.body) as { body: string }).body
+    assert.match(body, /Queued job .* to retry job job_old/, 'the verb reaches the linked job instead of denying it exists')
+    assert.ok(h.store.listJobsForRepo(h.repoId, 30).some((job) => job.work_item_id === h.itemId && job.id !== old.id), 'the retry job is queued on the work item')
   } finally {
     await h.close()
   }
