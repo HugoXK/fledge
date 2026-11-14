@@ -344,10 +344,18 @@ defect.
   the instants passed over on the way to the decided one, so a year of missed
   hourly instants stays one row rather than 9k. The row carries the job it
   dispatched, the lag and the reason it skipped; the audit line stays for
-  operators and names the row. The lease, `attempts` and the rejection of a stale
-  worker's result at `(occurrence_id, timing_revision, lease_token)` are the next
-  slice — a decided instant has the identity they answer against. Reviews keep
-  their own cadence (`review_interval_minutes`): this switches the work loop
+  operators and names the row.
+  The lease (slice 3B-B2) answers the second worker: a dispatch claims the row
+  before it creates the job, and `lease_token` is compared at settle, so only the
+  holder's result lands. A live lease is refused (`leased`), a lapsed one is
+  recovered under the **same occurrence id** — which is why the id is not derived
+  from the attempt — and a row whose holder never came back is marked `expired` by
+  a sweep that runs at the top of every tick pass, which frees it for the next
+  claim. `attempts` counts claims and is never compared. A settled row
+  (`dispatched` / `skipped`) holds no lease and is never claimable again, so a
+  late worker cannot turn a recorded skip into a run. A worker that gives up
+  before deciding (quota) releases its lease instead of waiting for it to lapse.
+  Reviews keep their own cadence (`review_interval_minutes`): this switches the work loop
   only.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
