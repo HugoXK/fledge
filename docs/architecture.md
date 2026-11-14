@@ -1522,8 +1522,8 @@ callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
 Every console write used to be its own route: parse the form, check the owner,
 call the service, write an audit row, redirect. A second surface (an API, a chat
 entry, automation) would have had to copy all four steps. `src/management/`
-replaces that shape with one contract, and the first migrated write is the job
-cancel form.
+replaces that shape with one contract. The first migrated write is the job cancel
+form; slice 2 moved the rest of the job commands onto it.
 
 A command is an operation from a closed catalog (`src/management/catalog.ts`),
 a target (`projectId`, plus `jobId` today), validated arguments, the revision the
@@ -1550,7 +1550,8 @@ instance's job token happen first, best-effort and safe to repeat, so a repeat c
 never duplicate them. Everything that changes state — the job row, the repository
 status, the work item, the audit and job-event rows, the receipt, the revision
 bump — is handed back as the operation's `commit` callback and runs inside a
-single SQLite transaction. A crash therefore leaves either both the effect and its
+single SQLite transaction. The one exception is the platform-token revocation
+named below. A crash therefore leaves either both the effect and its
 receipt, or neither: the receipt stays `accepted`, which is the truth.
 
 The platform-token revocation is the one local write that is not in that
@@ -1561,30 +1562,55 @@ which this slice does not do.
 `Jobs.prepareCancel`/`preparePause` put the awaited work in one place so the
 legacy `cancelJob`/`pauseJob` and the command cannot drift apart.
 
+`task.create`, `task.resume` and `task.retry` are the rest of slice 2. Their
+business write is `Jobs.enqueue`, which runs in the operation body because its
+admission gates await the GitHub duplicate, credential and preflight reads; the
+receipt, the revision bump and the `management.command` audit still commit
+together afterwards. The gap that leaves is narrow, and it is why none of the
+three needs an `unknown` path: the only durable object `enqueue` creates is the
+local job row, so a crash between that row and the receipt leaves the receipt
+`accepted`, the same key replays `command_in_progress`, and a fresh key is
+refused by the active-job gate (`JOB_ACTIVE`) instead of queueing a second job. A
+create is fenced on the project's revision, bumped on every create; a resume or a
+retry is fenced on the source job's.
+
+A failed receipt keeps the refusal code and the parameter its sentence
+interpolates (`error_code`, `error_detail`), so replaying it answers with the same
+sentence: `BRANCH_MISSING` with its branch, `DUPLICATE_WORK` with its pull request
+URL. The console builds that sentence from the same banner table every other
+refusal uses. The parameter is stored only when the sentence has a `{detail}` or
+`{branch}` slot — a bare value would otherwise displace the text the service
+wrote.
+
 A receipt that has already answered is never rewritten. In `shadow` the route
 reserves the receipt, runs today's path and settles it; the same key submitted
 again replays that receipt and settles nothing, so one command moves the revision
 once and a resubmitted page cannot turn a recorded success into a failure.
 
-That split is why these two commands never need the `unknown` state. The first
-operation that does — a release, or a resume that enqueues through an external
-surface — will bring `management_command_attempts` and a reconcile step with it.
+That split is why the job commands never need the `unknown` state. The first
+operation that does — a release, or any write that crosses an external commit
+boundary — will bring `management_command_attempts` and a reconcile step with it.
 The form route stays a thin adapter: it renders the revision and a fresh key,
 calls the service, and turns the receipt into the same redirect as before.
 
-`MANAGEMENT_SERVICE=off|shadow|on` (default `off`) governs the adapters added
-after `task.cancel`. `off` keeps the route that existed before the contract,
+`MANAGEMENT_SERVICE=off|shadow|on` (default `off`) governs the `task.pause`
+adapter added with the switch. `task.create`, `task.resume` and `task.retry` run
+through the service in every mode, as `task.cancel` does: the switch was the
+pilot's safety net for one operation, and widening it to the rest is a later
+change. `off` keeps the route that existed before the contract,
 `shadow` reserves and records the command but still runs that route — so the
 receipt is where a divergence shows — and `on` lets the command answer. An
 unknown value is `off`: a typo must not start enforcing.
 
-The rest of the write surface — job create/resume/retry, repository settings,
-releases, member grants — still calls its service directly. Each migrates by
-registering one operation and leaving its route as an adapter; none of them may
-keep a second copy of the rules. Resume, retry and create come next and need
-their refusals mapped first: `Jobs.enqueue` answers with free-text Chinese plus an
-enqueue code, so the bilingual sentence table has to exist before the route can be
-an adapter.
+The rest of the write surface — repository settings, releases, member grants —
+still calls its service directly. Each migrates by registering one operation and
+leaving its route as an adapter; none of them may keep a second copy of the rules.
+The issue-thread `/fledge plan` and `/fledge fix` commands also still call `Jobs`
+directly: they are a chat surface, not a console form, and they migrate with the
+chat adapter. The refusal mapping that blocked this slice is in place: an
+operation hands its service's enqueue code back as the receipt's `error_code`
+(with `error_detail` when a sentence interpolates it), and the console builds the
+bilingual sentence from the one banner table rather than inventing text.
 
 ## Notification webhook egress
 

@@ -19,6 +19,8 @@ export interface StateAction {
   /** A form action instead of a link, for a retry that must POST. */
   formAction?: string
   csrf?: string
+  /** Extra hidden inputs for a POST that is a command (#540); escaped here. */
+  fields?: Array<{ name: string; value: string }>
 }
 
 export interface StateOptions {
@@ -66,7 +68,8 @@ const ROLES: Record<StateKind, string> = {
 function actionHtml(action: StateAction | undefined): string {
   if (action === undefined) return ''
   if (action.formAction !== undefined && action.formAction !== '') {
-    return `<form method="post" action="${escapeHtml(action.formAction)}" class="actions">${action.csrf === undefined ? '' : `<input type="hidden" name="csrf" value="${escapeHtml(action.csrf)}" />`}<button class="btn btn-small" type="submit">${escapeHtml(action.label)}</button></form>`
+    const fields = (action.fields ?? []).map((field) => `<input type="hidden" name="${escapeHtml(field.name)}" value="${escapeHtml(field.value)}" />`).join('')
+    return `<form method="post" action="${escapeHtml(action.formAction)}" class="actions">${action.csrf === undefined ? '' : `<input type="hidden" name="csrf" value="${escapeHtml(action.csrf)}" />`}${fields}<button class="btn btn-small" type="submit">${escapeHtml(action.label)}</button></form>`
   }
   if (action.href !== undefined && action.href !== '') {
     return `<div class="actions"><a class="btn btn-small" href="${escapeHtml(action.href)}">${escapeHtml(action.label)}</a></div>`

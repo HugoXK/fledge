@@ -99,7 +99,8 @@ import { repoGithubToken } from './repos/token.js'
 import { InstanceManager } from './flybot/instances.js'
 import { dshCookie, proxyWorkspaceHttp, proxyWorkspaceUpgrade } from './flybot/workspace.js'
 import { managementActor } from './management/actor.js'
-import { ManagementService, type ManagementCode } from './management/service.js'
+import { ManagementService, type CommandOutcome } from './management/service.js'
+import type { JobKind } from './jobs/runner.js'
 
 export interface BuildOptions {
   config: Config
@@ -195,11 +196,25 @@ function form(request: FastifyRequest): Record<string, string> {
   return out
 }
 
+// #540: a failed command carries either one of the contract's own codes (lower
+// case) or the admission refusal an operation's service returned (`REPO_DISABLED`,
+// `BRANCH_MISSING`). The first is answered here in both languages; the second is
+// handed to the banner table that already speaks it, parameter and all, so moving
+// a route behind the contract does not downgrade its refusal.
+const MANAGEMENT_CODE = /^[a-z][a-z0-9_]*$/
+
+function managementFailure(t: Translate, outcome: { code: string; message: string; detail?: string }, fallback: string): string {
+  if (!MANAGEMENT_CODE.test(outcome.code)) {
+    return refusalValue({ code: outcome.code, detail: outcome.detail, error: outcome.message }, fallback)
+  }
+  return managementRefusal(t, outcome.code, fallback)
+}
+
 // #540: the management codes are stable identifiers, so the sentence a person
 // reads is chosen here, once, in both languages. The last line is the caller's
 // own sentence: "the cancel failed" is wrong on a pause, and a code we have not
 // taught this switch yet must not borrow another operation's words.
-function managementRefusal(t: Translate, code: ManagementCode, fallback: string): string {
+function managementRefusal(t: Translate, code: string, fallback: string): string {
   switch (code) {
     case 'management_revision_conflict':
       return t('这个任务在你打开页面之后已经变化，请重新打开任务后再操作。', 'This job changed after you opened the page; reopen it before acting.')
@@ -213,6 +228,14 @@ function managementRefusal(t: Translate, code: ManagementCode, fallback: string)
       return t('这个任务已经结束。', 'This job has already finished.')
     case 'job_not_pausable':
       return t('这个任务已经结束，不能再暂停。', 'This job has already finished and cannot be paused.')
+    case 'job_not_resumable':
+      return t('只有已暂停的任务可以恢复。', 'Only a paused job can be resumed.')
+    case 'job_not_retryable':
+      return t('这个任务现在不能重试。', 'This job cannot be retried right now.')
+    case 'invalid_arguments':
+      return t('请求的内容不完整，无法执行。', 'The request is missing something this action needs.')
+    case 'work_item_not_found':
+      return t('工作项不存在。', 'The work item does not exist.')
     case 'job_not_found':
       return t('任务不存在。', 'The job does not exist.')
     case 'actor_not_allowed':
@@ -222,6 +245,26 @@ function managementRefusal(t: Translate, code: ManagementCode, fallback: string)
     default:
       return fallback
   }
+}
+
+// #540: a command form renders the revision it saw and a fresh key. A page cached
+// before those fields existed still acts once: it has no key to replay, so the
+// server mints one for that request, and the current revision stands in for the
+// one it could not render. One rule for every adapter.
+function commandParts(body: Record<string, string>, currentRevision: number): { expectedRevision: number; idempotencyKey: string } {
+  const rendered = Number.parseInt(body.expected_revision ?? '', 10)
+  const expectedRevision = Number.isFinite(rendered) && rendered >= 1 ? rendered : currentRevision
+  const idempotencyKey = body.idempotency_key !== undefined && body.idempotency_key !== '' ? body.idempotency_key : randomId('cmd')
+  return { expectedRevision, idempotencyKey }
+}
+
+// A succeeded command names what it wrote. A create says `jobId`; a resume or a
+// retry says the job it queued. Anything else is a contract bug, so the caller
+// falls back to the page it came from rather than inventing a link.
+function commandJobId(outcome: CommandOutcome): string | null {
+  if (!outcome.ok) return null
+  const jobId = outcome.result.jobId
+  return typeof jobId === 'string' && jobId !== '' ? jobId : null
 }
 
 function formList(request: FastifyRequest, key: string): string[] {
@@ -326,9 +369,57 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   }
   const githubApp = new GithubApp(config)
   const jobs = new Jobs(store, config, runner, mailer, instances, githubApp)
-  // #540: one contract behind the console writes that have migrated. The first
-  // is the job cancel form; the rest still call their services directly.
+  // #540: one contract behind the console writes that have migrated — the job
+  // cancel, pause, create, resume and retry forms. Settings, releases and member
+  // grants still call their services directly and migrate one operation at a time.
   const management = new ManagementService(store, jobs)
+
+  // #540 slice 2 (rest): the create adapter. The route keeps the checks that are
+  // reads — the plan is approved, the work item is open — and hands the write to
+  // one command, so idempotency, the revision fence and the audit are not copied
+  // into eight routes.
+  const runCreate = async (
+    request: FastifyRequest,
+    viewer: Viewer,
+    repo: RepoRow,
+    args: { kind: JobKind; goal?: string; workItemId?: string; prUrl?: string; priority?: number },
+  ): Promise<CommandOutcome> => {
+    const parts = commandParts(form(request), management.revisionOf('project', repo.id))
+    const actor = managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
+    const commandArgs: Record<string, unknown> = { kind: args.kind }
+    if (args.goal !== undefined) commandArgs.goal = args.goal
+    if (args.workItemId !== undefined) commandArgs.workItemId = args.workItemId
+    if (args.prUrl !== undefined) commandArgs.prUrl = args.prUrl
+    if (args.priority !== undefined) commandArgs.priority = args.priority
+    return management.run(actor, {
+      operation: 'task.create',
+      target: { projectId: repo.id },
+      arguments: commandArgs,
+      expectedRevision: parts.expectedRevision,
+      idempotencyKey: parts.idempotencyKey,
+    })
+  }
+
+  // Resume and retry are fenced on the source job's revision, not the project's:
+  // the page that offered the button rendered one job, and it is that job that
+  // must not have moved on.
+  const runJobOperation = async (
+    request: FastifyRequest,
+    viewer: Viewer,
+    repo: RepoRow,
+    jobId: string,
+    operation: 'task.resume' | 'task.retry',
+  ): Promise<CommandOutcome> => {
+    const parts = commandParts(form(request), management.revisionOf('job', jobId))
+    const actor = managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
+    return management.run(actor, {
+      operation,
+      target: { projectId: repo.id, jobId },
+      arguments: {},
+      expectedRevision: parts.expectedRevision,
+      idempotencyKey: parts.idempotencyKey,
+    })
+  }
   const loginLimiter = new RateLimiter(30, 60_000)
   const apiLimiter = new RateLimiter(120, 60_000)
   // #460 review: the destructive actions below are rate-limited as well as
@@ -1444,6 +1535,26 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     const planDeadlineCutoff = new Date(Date.now() - config.plan.expiryDays * 86_400_000).toISOString()
     const pendingPlan = store.pendingPlanJob(repo.id, planDeadlineCutoff)
+    const workItems = store.listWorkItems(repo.id)
+    // #540: each create form carries its own key, because two different forms on
+    // one page are different requests and one key for both would read as a
+    // conflict. The revision is the project's, so a page rendered before another
+    // create is refused rather than queueing a second job beside it.
+    const fields = (): { revision: number; idempotencyKey: string } => ({
+      revision: management.revisionOf('project', repo.id),
+      idempotencyKey: randomId('cmd'),
+    })
+    const commands: Record<string, { revision: number; idempotencyKey: string }> = {
+      run: fields(),
+      plan: fields(),
+      review: fields(),
+      triage: fields(),
+    }
+    for (const item of workItems) {
+      commands[`work-run:${item.id}`] = fields()
+      commands[`work-scope:${item.id}`] = fields()
+      commands[`work-verify:${item.id}`] = fields()
+    }
     return reply.type('text/html').send(
       repoPage({
         config,
@@ -1460,7 +1571,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
         queued: store.listQueuedJobs(),
         prJobs: store.listPrJobsForRepo(repo.id, 10),
-        workItems: store.listWorkItems(repo.id),
+        workItems,
+        commands,
         // #359: the page names the deadline and the way out, so an ignored plan
         // is a visible decision with a date rather than a silent wait.
         ...(pendingPlan === undefined || pendingPlan.finished_at === null ? {} : {
@@ -1987,6 +2099,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       // so a double submit replays the same receipt and a stale page conflicts.
       cancel: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
       pause: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
+      execute: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
+      resume: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
+      retry: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
@@ -1999,21 +2114,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
-    const body = form(request)
     const t = translator(request.locale ?? 'zh')
-    const current = management.revisionOf('job', job.id)
-    const rendered = Number.parseInt(body.expected_revision ?? '', 10)
-    const expectedRevision = Number.isFinite(rendered) && rendered >= 1 ? rendered : current
-    // A page cached before the hidden fields existed still cancels once: it just
-    // has no key to replay, so the server mints one for this one request.
-    const idempotencyKey = body.idempotency_key !== undefined && body.idempotency_key !== '' ? body.idempotency_key : randomId('cmd')
+    const parts = commandParts(form(request), management.revisionOf('job', job.id))
     const actor = managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
     const outcome = await management.run(actor, {
       operation: 'task.cancel',
       target: { projectId: repo.id, jobId: job.id },
       arguments: {},
-      expectedRevision,
-      idempotencyKey,
+      expectedRevision: parts.expectedRevision,
+      idempotencyKey: parts.idempotencyKey,
     })
     const back = `/repos/${repo.id}/jobs/${job.id}`
     if (outcome.ok) return reply.redirect(`${back}?notice=${encodeURIComponent(t('任务已取消。', 'Job cancelled.'))}`)
@@ -2040,18 +2149,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
     if (config.managementService === 'off') return answer(await today())
 
-    const body = form(request)
-    const current = management.revisionOf('job', job.id)
-    const rendered = Number.parseInt(body.expected_revision ?? '', 10)
-    const expectedRevision = Number.isFinite(rendered) && rendered >= 1 ? rendered : current
-    const idempotencyKey = body.idempotency_key !== undefined && body.idempotency_key !== '' ? body.idempotency_key : randomId('cmd')
+    const parts = commandParts(form(request), management.revisionOf('job', job.id))
     const actor = managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
     const envelope = {
       operation: 'task.pause',
       target: { projectId: repo.id, jobId: job.id },
       arguments: {},
-      expectedRevision,
-      idempotencyKey,
+      expectedRevision: parts.expectedRevision,
+      idempotencyKey: parts.idempotencyKey,
     }
 
     if (config.managementService === 'shadow') {
@@ -2076,26 +2181,36 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`${back}?error=${encodeURIComponent(managementRefusal(t, outcome.code, t('暂停失败。', 'The pause failed.')))}&code=${outcome.code}`)
   })
 
+  // #540 slice 2 (rest): resuming is a command. The route only resolves the job
+  // and turns the receipt into a redirect; the resume itself, its refusal and its
+  // audit row live in `Jobs.resumeJob`. A double submit replays the same new job.
   app.post('/repos/:id/jobs/:jobId/resume', async (request, reply) => {
-    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
-    const result = await jobs.resumeJob(job.id)
-    if (!result.ok || result.job === undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(refusalValue(result, '恢复失败。'))}`)
-    return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已恢复任务。')}`)
+    const t = translator(request.locale ?? 'zh')
+    const outcome = await runJobOperation(request, viewer, repo, job.id, 'task.resume')
+    if (!outcome.ok) {
+      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(managementFailure(t, outcome, t('恢复失败。', 'The resume failed.')))}&code=${outcome.code}`)
+    }
+    const resumed = commandJobId(outcome) ?? job.id
+    return reply.redirect(`/repos/${repo.id}/jobs/${resumed}?notice=${encodeURIComponent(t('已恢复任务。', 'Job resumed.'))}`)
   })
 
+  // The active-job check that used to sit here is `Jobs.enqueue`'s own refusal
+  // (`JOB_ACTIVE`), which the banner already translates; keeping a second copy in
+  // the route is exactly the duplication this contract removes.
   app.post('/repos/:id/jobs/:jobId/retry', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
-    const active = store.activeJobForRepo(repo.id)
-    if (active !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}`)
-    const result = await jobs.retryJob(job.id, viewer.user.id)
-    if (!result.ok || result.job === undefined) {
-      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(refusalValue(result, '重试失败。'))}`)
+    const t = translator(request.locale ?? 'zh')
+    const outcome = await runJobOperation(request, viewer, repo, job.id, 'task.retry')
+    if (!outcome.ok) {
+      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(managementFailure(t, outcome, t('重试失败。', 'The retry failed.')))}&code=${outcome.code}`)
     }
-    return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已重新排队。')}`)
+    const retried = commandJobId(outcome) ?? job.id
+    return reply.redirect(`/repos/${repo.id}/jobs/${retried}?notice=${encodeURIComponent(t('已重新排队。', 'Queued again.'))}`)
   })
 
   app.post('/repos/:id/jobs/:jobId/recheck', async (request, reply) => {
@@ -2164,12 +2279,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const allow = (job.plan_allow_paths ?? repo.allow_paths).trim()
     const deny = (job.plan_deny_paths ?? repo.deny_paths).trim()
     const goal = `${job.goal}\n\nApproved plan:\n${job.summary ?? ''}${allow === '' ? '' : `\n\nAllowed paths: ${allow}`}${deny === '' ? '' : `\nForbidden paths: ${deny}`}\nOnly modify files inside the allowed paths; never touch forbidden paths.`
-    const result = await jobs.enqueue(repo, 'manual', goal, 'iterate', { workItemId: job.work_item_id ?? undefined, priority: job.priority })
-    store.audit(viewer.user.id, 'job.executed', `${job.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
-    if (!result.ok || result.job === undefined) {
-      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(refusalValue(result, '执行计划失败。'))}`)
+    const t = translator(request.locale ?? 'zh')
+    const outcome = await runCreate(request, viewer, repo, {
+      kind: 'iterate',
+      goal,
+      ...(job.work_item_id === null ? {} : { workItemId: job.work_item_id }),
+      priority: job.priority,
+    })
+    if (!outcome.ok) {
+      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(managementFailure(t, outcome, t('执行计划失败。', 'The plan did not start.')))}&code=${outcome.code}`)
     }
-    return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('已按计划开始执行。')}`)
+    const started = commandJobId(outcome) ?? job.id
+    return reply.redirect(`/repos/${repo.id}/jobs/${started}?notice=${encodeURIComponent(t('已按计划开始执行。', 'Started from the approved plan.'))}`)
   })
 
   app.post('/repos/:id/work', async (request, reply) => {
@@ -2233,13 +2354,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       item.issue_url === null || item.issue_url === '' ? '' : `Issue: ${item.issue_url}`,
       'Follow the one issue, one branch, one pull request rule. Do not start unrelated work.',
     ].filter((line) => line !== '').join('\n\n')
-    const kind = repo.plan_required === 1 ? 'plan' : 'iterate'
-    const result = await jobs.enqueue(repo, 'manual', goal, kind, { workItemId: item.id, priority: item.priority })
-    store.audit(viewer.user.id, 'work_item.run', `${item.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
-    if (!result.ok || result.job === undefined) {
-      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(refusalValue(result, '工作项启动失败。'))}#work`)
+    const kind: JobKind = repo.plan_required === 1 ? 'plan' : 'iterate'
+    const t = translator(request.locale ?? 'zh')
+    const outcome = await runCreate(request, viewer, repo, { kind, goal, workItemId: item.id, priority: item.priority })
+    if (!outcome.ok) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(managementFailure(t, outcome, t('工作项启动失败。', 'The work item did not start.')))}&code=${outcome.code}#work`)
     }
-    return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent(kind === 'plan' ? '计划任务已排队。' : '工作项任务已排队。')}`)
+    const runJobId = commandJobId(outcome)
+    const message = kind === 'plan' ? t('计划任务已排队。', 'Plan job queued.') : t('工作项任务已排队。', 'Work item job queued.')
+    return reply.redirect(runJobId === null ? `/repos/${repo.id}?notice=${encodeURIComponent(message)}#work` : `/repos/${repo.id}/jobs/${runJobId}?notice=${encodeURIComponent(message)}`)
   })
 
   app.post('/repos/:id/delivery/merge-clean', async (request, reply) => {
@@ -2269,10 +2392,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const active = store.activeJobForRepo(repo.id)
     if (active !== undefined) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}#work`)
     const goal = [`Scope work item: ${item.title}`, item.detail === '' ? '' : item.detail, item.issue_url === null ? '' : `Issue: ${item.issue_url}`, 'Product scoping only: goal, non-goals, acceptance criteria and test plan. Do not code.'].filter((line) => line !== '').join('\n\n')
-    const result = await jobs.enqueue(repo, 'manual', goal, 'scope', { workItemId: item.id, priority: item.priority })
-    store.audit(viewer.user.id, 'work_item.scope', `${item.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
-    if (!result.ok || result.job === undefined) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(refusalValue(result, '范围任务启动失败。'))}#work`)
-    return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('Product 范围任务已排队。')}`)
+    const t = translator(request.locale ?? 'zh')
+    const outcome = await runCreate(request, viewer, repo, { kind: 'scope', goal, workItemId: item.id, priority: item.priority })
+    if (!outcome.ok) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(managementFailure(t, outcome, t('范围任务启动失败。', 'The scope job did not start.')))}&code=${outcome.code}#work`)
+    }
+    const scopeJobId = commandJobId(outcome)
+    const message = t('Product 范围任务已排队。', 'Product scope job queued.')
+    return reply.redirect(scopeJobId === null ? `/repos/${repo.id}?notice=${encodeURIComponent(message)}#work` : `/repos/${repo.id}/jobs/${scopeJobId}?notice=${encodeURIComponent(message)}`)
   })
 
   app.post('/repos/:id/work/:workItemId/verify', async (request, reply) => {
@@ -2284,10 +2411,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const active = store.activeJobForRepo(repo.id)
     if (active !== undefined) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('这个仓库已有任务在运行。')}#work`)
     const goal = `Verify PR ${item.pr_url} with the Test role. Read the PR and branch, run the relevant tests, and report failing and passing evidence. Do not code, push or merge.`
-    const result = await jobs.enqueue(repo, 'manual', goal, 'verify', { prUrl: item.pr_url, workItemId: item.id, priority: item.priority })
-    store.audit(viewer.user.id, 'work_item.verify', `${item.id} -> ${result.job?.id ?? result.error ?? 'failed'}`)
-    if (!result.ok || result.job === undefined) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(refusalValue(result, '验证任务启动失败。'))}#work`)
-    return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?notice=${encodeURIComponent('Test 验证任务已排队。')}`)
+    const t = translator(request.locale ?? 'zh')
+    const outcome = await runCreate(request, viewer, repo, { kind: 'verify', goal, prUrl: item.pr_url, workItemId: item.id, priority: item.priority })
+    if (!outcome.ok) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(managementFailure(t, outcome, t('验证任务启动失败。', 'The verify job did not start.')))}&code=${outcome.code}#work`)
+    }
+    const verifyJobId = commandJobId(outcome)
+    const message = t('Test 验证任务已排队。', 'Test verify job queued.')
+    return reply.redirect(verifyJobId === null ? `/repos/${repo.id}?notice=${encodeURIComponent(message)}#work` : `/repos/${repo.id}/jobs/${verifyJobId}?notice=${encodeURIComponent(message)}`)
   })
 
   app.get('/repos/:id/workspace', async (request, reply) => {
@@ -2343,19 +2474,25 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const viewer = approvedCsrfGuard(request)
     const repo = store.getRepo(String((request.params as Record<string, string>).id))
     if (repo === undefined || repo.user_id !== viewer.user.id) throw httpError(404, '仓库不存在。', 'REPO_NOT_FOUND')
-    const result = await jobs.enqueue(repo, 'manual', undefined, repo.plan_required === 1 ? 'plan' : 'iterate')
-    const key = result.ok ? 'notice' : 'error'
-    const message = result.ok ? (repo.plan_required === 1 ? '计划任务已排队；批准后才会写代码。' : '任务已排队。') : refusalValue(result, '任务启动失败。')
-    return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
+    const t = translator(request.locale ?? 'zh')
+    const outcome = await runCreate(request, viewer, repo, { kind: repo.plan_required === 1 ? 'plan' : 'iterate' })
+    if (!outcome.ok) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(managementFailure(t, outcome, t('任务启动失败。', 'The job did not start.')))}&code=${outcome.code}`)
+    }
+    const message = repo.plan_required === 1
+      ? t('计划任务已排队；批准后才会写代码。', 'Plan job queued; code is written after you approve it.')
+      : t('任务已排队。', 'Job queued.')
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(message)}`)
   })
 
   app.post('/repos/:id/plan', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    const result = await jobs.enqueue(repo, 'manual', undefined, 'plan')
-    store.audit(viewer.user.id, 'plan.enqueued', `${repo.owner}/${repo.name} ${result.ok ? 'ok' : result.error ?? 'failed'}`)
-    const key = result.ok ? 'notice' : 'error'
-    const message = result.ok ? '计划任务已排队，不会写代码或开 PR。' : refusalValue(result, '计划任务启动失败。')
-    return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
+    const t = translator(request.locale ?? 'zh')
+    const outcome = await runCreate(request, viewer, repo, { kind: 'plan' })
+    if (!outcome.ok) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(managementFailure(t, outcome, t('计划任务启动失败。', 'The plan job did not start.')))}&code=${outcome.code}`)
+    }
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(t('计划任务已排队，不会写代码或开 PR。', 'Plan job queued; it writes no code and opens no pull request.'))}`)
   })
 
   // #523: triage is repository-scoped, so its start belongs on the repository
@@ -2378,16 +2515,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // rebuilt from the parts it checked, never by what was pasted, so a query or
     // fragment cannot ride into the prompt as attacker-authored instructions.
     const goal = issue === undefined || !issue.ok ? undefined : `${DEFAULT_TRIAGE_GOAL}\n\nStart the board with the issue at ${issue.canonical}.`
-    const result = await jobs.enqueue(repo, 'manual', goal, 'triage')
-    store.audit(viewer.user.id, 'triage.enqueued', `${repo.owner}/${repo.name} ${result.ok ? 'ok' : result.error ?? 'failed'}`)
-    const key = result.ok ? 'notice' : 'error'
-    const message = result.ok
-      ? t('分诊任务已排队；只读，不会创建分支或 PR。', 'Triage job queued; it is read-only and opens no branch or pull request.')
-      : refusalValue(result, t('分诊任务启动失败。', 'The triage job did not start.'))
+    const outcome = await runCreate(request, viewer, repo, goal === undefined ? { kind: 'triage' } : { kind: 'triage', goal })
+    const message = t('分诊任务已排队；只读，不会创建分支或 PR。', 'Triage job queued; it is read-only and opens no branch or pull request.')
+    if (!outcome.ok) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(managementFailure(t, outcome, t('分诊任务启动失败。', 'The triage job did not start.')))}&code=${outcome.code}#triage`)
+    }
     // A queued triage lands on its own job page, where the work-type contract and
     // the empty board are visible without a second click.
-    if (result.ok && result.job !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?${key}=${encodeURIComponent(message)}`)
-    return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}#triage`)
+    const triageJobId = commandJobId(outcome)
+    if (triageJobId !== null) return reply.redirect(`/repos/${repo.id}/jobs/${triageJobId}?notice=${encodeURIComponent(message)}`)
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(message)}#triage`)
   })
 
   app.post('/repos/:id/refresh', async (request, reply) => {
@@ -2486,11 +2623,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/repos/:id/review', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    const result = await jobs.enqueue(repo, 'manual', undefined, 'review')
-    const key = result.ok ? 'notice' : 'error'
-    const message = result.ok ? '审核任务已排队。' : refusalValue(result, '审核任务启动失败。')
-    store.audit(viewer.user.id, 'review.enqueued', `${repo.owner}/${repo.name} ${result.ok ? 'ok' : result.error ?? message}`)
-    return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
+    const t = translator(request.locale ?? 'zh')
+    const outcome = await runCreate(request, viewer, repo, { kind: 'review' })
+    if (!outcome.ok) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(managementFailure(t, outcome, t('审核任务启动失败。', 'The review job did not start.')))}&code=${outcome.code}`)
+    }
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(t('审核任务已排队。', 'Review job queued.'))}`)
   })
 
   app.post('/repos/:id/role', async (request, reply) => {

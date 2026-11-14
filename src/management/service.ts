@@ -35,10 +35,19 @@ export type ManagementCode =
   | 'job_not_found'
   | 'job_not_cancellable'
   | 'job_not_pausable'
+  | 'job_not_resumable'
+  | 'job_not_retryable'
+  | 'task_not_queued'
+  | 'invalid_arguments'
+  | 'work_item_not_found'
 
+// A failed command's `code` is not always a management code: an operation hands
+// back the admission refusal its service returned (`REPO_DISABLED`, `JOB_ACTIVE`,
+// `BRANCH_MISSING`), which the console banner already knows how to translate. The
+// receipt keeps that code verbatim so a replay answers with the same refusal.
 export type CommandOutcome =
-  | { ok: true; receipt: ManagementCommandRow; replayed: boolean }
-  | { ok: false; code: ManagementCode; message: string; receipt?: ManagementCommandRow }
+  | { ok: true; receipt: ManagementCommandRow; replayed: boolean; result: Record<string, unknown> }
+  | { ok: false; code: string; message: string; detail?: string; receipt?: ManagementCommandRow }
 
 // A request hash must not depend on key order, or two payloads that say the same
 // thing would read as a conflict. Undefined values are dropped for the same
@@ -51,6 +60,18 @@ function canonical(value: unknown): string {
     .filter(([, entry]) => entry !== undefined)
     .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
   return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonical(entry)}`).join(',')}}`
+}
+
+// A receipt stores its result as canonical JSON. A replay answers from that row,
+// so the caller reads the same shape it would have read from the first attempt.
+function resultOf(value: string | null): Record<string, unknown> {
+  if (value === null || value === '') return {}
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
 }
 
 function isForbiddenArguments(args: Record<string, unknown>): string | null {
@@ -136,7 +157,7 @@ export class ManagementService {
     }
     const receipt = this.store.commandReceipt(id)
     if (receipt === undefined) return { ok: false, code: 'corrupt_receipt', message: 'the receipt disappeared after it was written' }
-    return { ok: true, receipt, replayed: false }
+    return { ok: true, receipt, replayed: false, result: resultOf(receipt.result_json) }
   }
 
   async run(actor: ActorContext, envelope: CommandEnvelope): Promise<CommandOutcome> {
@@ -152,9 +173,15 @@ export class ManagementService {
   async complete(receiptId: string): Promise<CommandOutcome> {
     const receipt = this.store.commandReceipt(receiptId)
     if (receipt === undefined) return { ok: false, code: 'not_accepted', message: 'the command does not exist' }
-    if (receipt.status === 'succeeded') return { ok: true, receipt, replayed: true }
+    if (receipt.status === 'succeeded') return { ok: true, receipt, replayed: true, result: resultOf(receipt.result_json) }
     if (receipt.status === 'failed') {
-      return { ok: false, code: (receipt.error_code as ManagementCode | null) ?? 'not_accepted', message: receipt.error_message ?? 'the command already failed', receipt }
+      return {
+        ok: false,
+        code: receipt.error_code ?? 'not_accepted',
+        message: receipt.error_message ?? 'the command already failed',
+        ...(receipt.error_detail === null ? {} : { detail: receipt.error_detail }),
+        receipt,
+      }
     }
     const operation = operationFor(receipt.operation)
     if (operation === undefined) return this.failReceipt(receipt, 'unknown_operation', `unknown operation: ${receipt.operation}`)
@@ -178,9 +205,9 @@ export class ManagementService {
       return this.failReceipt(receipt, 'management_revision_conflict', `the resource moved from ${receipt.expected_revision} to ${current} after acceptance`)
     }
 
-    const outcome = await operation.execute({ store: this.store, jobs: this.jobs }, target, args)
+    const outcome = await operation.execute({ store: this.store, jobs: this.jobs, principalId: receipt.principal_id }, target, args)
     if (outcome.status === 'failed') {
-      return this.failReceipt(receipt, (outcome.errorCode as ManagementCode | undefined) ?? 'job_not_cancellable', outcome.errorMessage ?? 'the operation failed')
+      return this.failReceipt(receipt, outcome.errorCode ?? 'job_not_cancellable', outcome.errorMessage ?? 'the operation failed', outcome.errorDetail)
     }
     // The receipt, the revision bump and the audit row commit together. The
     // business write itself already happened inside the operation, which is why
@@ -232,7 +259,7 @@ export class ManagementService {
     })
     const updated = this.store.commandReceipt(receipt.id)
     if (updated === undefined) return { ok: false, code: 'corrupt_receipt', message: 'the receipt disappeared after completion' }
-    return { ok: true, receipt: updated, replayed: false }
+    return { ok: true, receipt: updated, replayed: false, result }
   }
 
   // A replay answers with what the first attempt stored. Only a succeeded
@@ -240,20 +267,37 @@ export class ManagementService {
   // is still accepted/running/unknown is in progress — never a success notice,
   // which would tell a person the job was cancelled when it was not.
   private replay(receipt: ManagementCommandRow): CommandOutcome {
-    if (receipt.status === 'succeeded') return { ok: true, receipt, replayed: true }
+    if (receipt.status === 'succeeded') return { ok: true, receipt, replayed: true, result: resultOf(receipt.result_json) }
     if (receipt.status === 'failed') {
-      return { ok: false, code: (receipt.error_code as ManagementCode | null) ?? 'not_accepted', message: receipt.error_message ?? 'the command already failed', receipt }
+      return {
+        ok: false,
+        code: receipt.error_code ?? 'not_accepted',
+        message: receipt.error_message ?? 'the command already failed',
+        ...(receipt.error_detail === null ? {} : { detail: receipt.error_detail }),
+        receipt,
+      }
     }
     return { ok: false, code: 'command_in_progress', message: `the command is ${receipt.status} and has not finished`, receipt }
   }
 
-  private failReceipt(receipt: ManagementCommandRow, code: ManagementCode, message: string): CommandOutcome {
+  private failReceipt(receipt: ManagementCommandRow, code: string, message: string, detail?: string): CommandOutcome {
     this.store.transaction(() => {
-      this.store.updateCommandReceipt(receipt.id, { status: 'failed', error_code: code, error_message: message })
+      this.store.updateCommandReceipt(receipt.id, {
+        status: 'failed',
+        error_code: code,
+        error_message: message,
+        error_detail: detail ?? null,
+      })
       this.store.audit(receipt.principal_id, 'management.command', `${receipt.id} ${receipt.operation} status=failed code=${code}`)
     })
     const updated = this.store.commandReceipt(receipt.id)
-    return { ok: false, code, message, ...(updated === undefined ? {} : { receipt: updated }) }
+    return {
+      ok: false,
+      code,
+      message,
+      ...(detail === undefined ? {} : { detail }),
+      ...(updated === undefined ? {} : { receipt: updated }),
+    }
   }
 
   private scope(actor: ActorContext, target: CommandTarget): string {

@@ -6,6 +6,10 @@ import { FlyBotRunner } from './flybot.js'
 import { MockRunner } from './mock.js'
 
 export type JobKind = 'iterate' | 'review' | 'plan' | 'scope' | 'verify' | 'discover' | 'triage'
+// #540: the same closed set at runtime. A create command validates the kind it
+// was handed against this one list, so a new kind cannot be added to the type and
+// silently accepted (or refused) by the console.
+export const JOB_KINDS: readonly JobKind[] = ['iterate', 'review', 'plan', 'scope', 'verify', 'discover', 'triage']
 
 export interface JobCredential {
   url: string

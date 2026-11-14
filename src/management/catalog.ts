@@ -1,5 +1,7 @@
 import type { Store } from '../db.js'
 import type { Jobs } from '../jobs/service.js'
+import { JOB_KINDS, type JobKind } from '../jobs/runner.js'
+import { refusalSentenceUsesDetail } from '../lib/failure.js'
 import type { Capability } from './actor.js'
 
 // #540: the catalog is a closed map, not a registry a caller can extend. An
@@ -15,13 +17,22 @@ export interface CommandTarget {
 export interface OperationContext {
   store: Store
   jobs: Jobs
+  /** The principal on the accepted receipt, read from the row — never the payload. */
+  principalId: string
 }
 
 export interface OperationResult {
   status: 'succeeded' | 'failed'
   result?: Record<string, unknown>
+  /** A management code, or the admission code the operation's service returned. */
   errorCode?: string
   errorMessage?: string
+  /**
+   * The parameter the refusal names (`main`, `2`, a pull request URL). Recorded
+   * only when a banner sentence interpolates it: without a sentence the banner
+   * keeps `errorMessage`, and a bare parameter would displace that sentence.
+   */
+  errorDetail?: string
   /**
    * Local writes that belong to the business change. The service runs this inside
    * the receipt's transaction, so a crash cannot leave the effect committed with
@@ -45,6 +56,26 @@ export interface Operation {
 function stringArgument(args: Record<string, unknown>, name: string): string | undefined {
   const value = args[name]
   return typeof value === 'string' && value.trim() !== '' ? value : undefined
+}
+
+function integerArgument(args: Record<string, unknown>, name: string, min: number, max: number): number | undefined {
+  const value = args[name]
+  if (typeof value !== 'number' || !Number.isInteger(value)) return undefined
+  return Math.max(min, Math.min(max, value))
+}
+
+// The refusal shape `Jobs.enqueue` answers with: a code the banner table already
+// knows, an optional parameter, and the sentence the service wrote. Passing all
+// three through keeps the console's refusal exactly as good as it was before the
+// route moved behind the contract.
+function refused(code: string | undefined, message: string | undefined, detail: string | undefined, fallback: string): OperationResult {
+  const refusalCode = code ?? fallback
+  return {
+    status: 'failed',
+    errorCode: refusalCode,
+    errorMessage: message ?? 'the job did not start',
+    ...(detail === undefined || detail === '' || !refusalSentenceUsesDetail(refusalCode) ? {} : { errorDetail: detail }),
+  }
 }
 
 // The first command of the catalog and the only write that migrates in this
@@ -96,9 +127,99 @@ const taskPause: Operation = {
   },
 }
 
+// #540 slice 2 (rest): creating a job is a command like any other. The revision
+// fence is the project's, bumped on every create, so a page rendered before
+// someone else's create is refused instead of queueing beside it; the active-job
+// admission gate inside `Jobs.enqueue` remains the authority on a duplicate run.
+// The awaited part of `enqueue` — the duplicate/credential/preflight reads — runs
+// here, before the receipt is finalized. The job row is the only durable effect,
+// and a crash between it and the receipt leaves the receipt `accepted` (the same
+// key replays `command_in_progress`; a fresh key is refused as an active job), so
+// this command needs no `unknown` path.
+const taskCreate: Operation = {
+  kind: 'command',
+  capabilities: ['job.create'],
+  requiredTarget: ['projectId'],
+  revisionTarget: 'projectId',
+  revisionType: 'project',
+  async execute(context, target, args) {
+    const repo = context.store.getRepo(target.projectId ?? '')
+    if (repo === undefined) return { status: 'failed', errorCode: 'project_not_found', errorMessage: 'the project does not exist' }
+    const kind = stringArgument(args, 'kind')
+    if (kind === undefined || !(JOB_KINDS as readonly string[]).includes(kind)) {
+      return { status: 'failed', errorCode: 'invalid_arguments', errorMessage: 'a create command needs a job kind' }
+    }
+    const workItemId = stringArgument(args, 'workItemId')
+    if (workItemId !== undefined) {
+      // The adapter already checked this; the command checks it again at
+      // execution time, because the work item can close between acceptance and
+      // the write and a create must not resume work nobody owns.
+      const item = context.store.getWorkItem(workItemId)
+      if (item === undefined || item.repo_id !== repo.id) {
+        return { status: 'failed', errorCode: 'work_item_not_found', errorMessage: 'the work item does not exist in this project' }
+      }
+    }
+    const goal = stringArgument(args, 'goal')
+    const prUrl = stringArgument(args, 'prUrl')
+    const priority = integerArgument(args, 'priority', 0, 100)
+    const result = await context.jobs.enqueue(repo, 'manual', goal, kind as JobKind, {
+      ...(workItemId === undefined ? {} : { workItemId }),
+      ...(prUrl === undefined ? {} : { prUrl }),
+      ...(priority === undefined ? {} : { priority }),
+    })
+    if (!result.ok || result.job === undefined) return refused(result.code, result.error, result.detail, 'task_not_queued')
+    return { status: 'succeeded', result: { jobId: result.job.id } }
+  },
+}
+
+// Resuming and retrying both hand their rules to the service method that already
+// owns them, and both are fenced on the source job's revision: a page rendered
+// before the job moved on is refused instead of queueing a second continuation.
+// Their external step is the same read-only admission preflight as a create.
+const taskResume: Operation = {
+  kind: 'command',
+  capabilities: ['job.resume'],
+  requiredTarget: ['projectId', 'jobId'],
+  revisionTarget: 'jobId',
+  revisionType: 'job',
+  async execute(context, target) {
+    const repo = context.store.getRepo(target.projectId ?? '')
+    if (repo === undefined) return { status: 'failed', errorCode: 'project_not_found', errorMessage: 'the project does not exist' }
+    const job = context.store.getJob(target.jobId ?? '')
+    if (job === undefined || job.repo_id !== repo.id) return { status: 'failed', errorCode: 'job_not_found', errorMessage: 'the job does not exist in this project' }
+    const result = await context.jobs.resumeJob(job.id)
+    if (!result.ok || result.job === undefined) {
+      return { status: 'failed', errorCode: 'job_not_resumable', errorMessage: result.error ?? 'the job could not be resumed' }
+    }
+    return { status: 'succeeded', result: { jobId: result.job.id } }
+  },
+}
+
+const taskRetry: Operation = {
+  kind: 'command',
+  capabilities: ['job.retry'],
+  requiredTarget: ['projectId', 'jobId'],
+  revisionTarget: 'jobId',
+  revisionType: 'job',
+  async execute(context, target) {
+    const repo = context.store.getRepo(target.projectId ?? '')
+    if (repo === undefined) return { status: 'failed', errorCode: 'project_not_found', errorMessage: 'the project does not exist' }
+    const job = context.store.getJob(target.jobId ?? '')
+    if (job === undefined || job.repo_id !== repo.id) return { status: 'failed', errorCode: 'job_not_found', errorMessage: 'the job does not exist in this project' }
+    // The principal comes from the receipt, so the `job.retried` audit row names
+    // the same actor the server resolved, never a form field.
+    const result = await context.jobs.retryJob(job.id, context.principalId)
+    if (!result.ok || result.job === undefined) return refused(result.code, result.error, result.detail, 'job_not_retryable')
+    return { status: 'succeeded', result: { jobId: result.job.id } }
+  },
+}
+
 export const OPERATIONS: Readonly<Record<string, Operation>> = Object.freeze({
   'task.cancel': taskCancel,
   'task.pause': taskPause,
+  'task.create': taskCreate,
+  'task.resume': taskResume,
+  'task.retry': taskRetry,
 })
 
 export function operationFor(name: string): Operation | undefined {
