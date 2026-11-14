@@ -106,6 +106,25 @@ not a conclusion.
 - Never admin-merge, never bypass a required check, never force-push `main`.
 - One PR per issue. Push to the existing branch instead of opening a duplicate.
 
+## The issue tie in a PR body
+
+`pr-lint` requires every pull request to name the issue it belongs to, in one of
+these shapes, each at the start of a line:
+
+- `Fixes #N` — the pull request closes that issue. GitHub reads this itself at
+  merge time; the gate only accepts it.
+- `Part of #N` or `Refs #N` — the pull request is one slice of an epic and closes
+  nothing. The success line says so, so the reader can tell the two apart:
+  `pr-lint: ok (#603, T3, 10 files; tracks #546, closes nothing)`.
+- `No-issue: <reason>` or `Investigates: <reason>` — no issue stands behind the
+  change.
+
+A tracking reference is never read as a close, and `Fixes` keeps its meaning:
+nothing may infer a close from `Part of #N`. A body with none of these fails and
+the message lists all the accepted shapes. `Partner #544` and `Part of #544x` are
+not references — the anchor is a whole word, so a reference cannot be found
+inside another word.
+
 ## Review report shape
 
 ```

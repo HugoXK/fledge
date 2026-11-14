@@ -323,3 +323,63 @@ test('a Large-PR: line makes a 21-file PR pass, and it does not cap the size', a
     assert.match(result.stdout, /pr-lint: ok/)
   })
 })
+
+// --- the issue tie: closing, tracking, and neither (#602) ------------------
+
+const bodyWith = (tie: string): string =>
+  `Written-by: Fledge Platform Dev-1\nBot: Fledge Platform Dev-1\n\n${tie}\n\nRan:\n- \`npm run check\` — pass\n\nNot run: Docker image\n`
+
+const PR_PATHS = ['scripts/pr-lint.mjs', 'test/prLint.test.ts']
+
+test('a body that only tracks its epic passes and the success line says it closes nothing', async () => {
+  await withFakeGitHub(state({ body: bodyWith('Part of #544'), files: PR_PATHS }), async (env) => {
+    const result = await runScript(lintScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /pr-lint: ok \(#7, T3, 2 files; tracks #544, closes nothing\)/)
+  })
+})
+
+test('Refs #N is the other accepted non-closing shape, and it names its own issue', async () => {
+  await withFakeGitHub(state({ body: bodyWith('Refs #540'), files: PR_PATHS }), async (env) => {
+    const result = await runScript(lintScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /tracks #540, closes nothing/)
+  })
+})
+
+test('Fixes #N still passes and must not be reported as tracking only', async () => {
+  await withFakeGitHub(state({ body: bodyWith('Fixes #544'), files: PR_PATHS }), async (env) => {
+    const result = await runScript(lintScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /pr-lint: ok \(#7, T3, 2 files\)/)
+    assert.doesNotMatch(result.stdout, /tracks #|closes nothing/)
+  })
+})
+
+test('No-issue: is still accepted for a pull request with no issue at all', async () => {
+  await withFakeGitHub(state({ body: bodyWith('No-issue: mechanical cleanup with no issue behind it'), files: PR_PATHS }), async (env) => {
+    const result = await runScript(lintScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /pr-lint: ok \(#7, T3, 2 files\)/)
+  })
+})
+
+test('a body with no reference at all still fails, and the message names the new shapes', async () => {
+  await withFakeGitHub(state({ body: bodyWith('Written for the release card'), files: PR_PATHS }), async (env) => {
+    const result = await runScript(lintScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /"Fixes #N"/)
+    assert.match(result.stderr, /"Part of #N"/)
+    assert.match(result.stderr, /"Refs #N"/)
+  })
+})
+
+test('the non-closing anchor does not match inside another word', async () => {
+  for (const tie of ['Partner #544', 'Part of #544x', 'Refs #540x']) {
+    await withFakeGitHub(state({ body: bodyWith(tie), files: PR_PATHS }), async (env) => {
+      const result = await runScript(lintScript, ['--pr', '7'], env)
+      assert.equal(result.code, 1, `${tie} must not pass as a reference`)
+      assert.match(result.stderr, /the PR body needs/)
+    })
+  }
+})
