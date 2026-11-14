@@ -1652,12 +1652,17 @@ never updated in place). `src/lib/memory.ts` holds the rules that are not SQL.
   passes. An identical write is a no-op and creates no revision.
 - **Reads are exact.** A read names a revision and returns that body, its
   `sha256` digest and whether it is historical. Nothing is served from a cache
-  and no read returns "the latest" when a revision was asked for.
+  and no read returns "the latest" when a revision was asked for. A revision is
+  read under its own audience, never the current entry's, so a historical
+  revision written for another role is neither listed nor rendered after the
+  entry moves to a wider audience.
 - **Audience is a role, not a permission.** An entry is `project` or
   `role:<maintainer|developer>`. The reader's role is the repository's own chosen
   role, so an administrator acting as a developer reads the developer view, and
   an entry outside the audience is reported as absent (404) rather than listed.
-  A writer may not author an entry for a role it cannot act as.
+  A writer may not author an entry for a role it cannot act as, and a write aimed
+  at an entry outside the actor's audience is refused as absent before the
+  revision fence, leaving the row untouched.
 - **The page is reachable.** The repository page's memory card links to
   `/repos/:id/memory`; the page is not an orphan that only a typed URL opens.
 - **Sources are shown.** An exact-revision read lists that revision's `sources`
