@@ -3550,6 +3550,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       daily: store.dailyMetrics(since),
       repoCosts: store.repoCostMetrics(since),
       modelCosts: store.modelCostMetrics(since),
+      currency: store.costByCurrency(since),
       alerts: store.alerts({ usdCny: config.quota.usdCny }),
       windowDays,
       failures: failureBreakdown(store.failedJobsSince(since)),

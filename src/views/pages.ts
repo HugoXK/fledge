@@ -1,4 +1,5 @@
 import type { Config } from '../config.js'
+import type { CostReport } from '../metrics/cost.js'
 import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow } from '../db.js'
 import { redactCommand, type DriftAssessment, type EnvironmentCurrent, type ReleaseSnapshot } from '../lib/deployments.js'
 import { agreementContent } from '../users/agreements.js'
@@ -2862,6 +2863,12 @@ export function jobPage(input: {
   return layout({ title: `${t('任务', 'Job')} ${job.id}`, viewer, body, config, locale, path: `/repos/${repo.id}/jobs/${job.id}`, active: 'dashboard', notice, error })
 }
 
+// #636: a foreign bucket has no CNY conversion — show the amount with its code.
+function currencyAmount(amount: number, currency: string): string {
+  const digits = amount !== 0 && Math.abs(amount) < 0.01 ? 6 : 4
+  return `${amount.toFixed(digits)} ${currency}`
+}
+
 export function metricsPage(input: {
   config: Config
   locale: Locale
@@ -2900,6 +2907,7 @@ export function metricsPage(input: {
   daily: Array<{ day: string; jobs: number; succeeded: number; failed: number; merged: number }>
   repoCosts: Array<{ repoId: string; label: string; costUsd: number; calls: number }>
   modelCosts: Array<{ model: string; costUsd: number; calls: number }>
+  currency: CostReport
   alerts: AlertView[]
   windowDays?: number
   failures: Array<{ kind: FailureKind; count: number }>
@@ -2907,7 +2915,7 @@ export function metricsPage(input: {
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, metrics, team, workItems, attribution, stages, delivery, daily, repoCosts, modelCosts, alerts, failures, since, notice, error } = input
+  const { config, locale, viewer, metrics, team, workItems, attribution, stages, delivery, daily, repoCosts, modelCosts, currency, alerts, failures, since, notice, error } = input
   const windowDays = input.windowDays ?? 30
   const t = translator(locale)
   const successRate = metrics.jobs === 0 ? null : Math.round((metrics.succeeded / metrics.jobs) * 1000) / 10
@@ -2985,6 +2993,9 @@ export function metricsPage(input: {
       <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th></tr></thead><tbody>${repoCosts.length === 0 ? stateCell(3, { kind: 'empty', title: t('还没有仓库成本数据。', 'No repository cost data yet.'), body: t('窗口内没有产生计费调用。', 'No billed calls in this window.'), action: { href: '/dashboard', label: t('回到仓库', 'Back to repositories') } }) : repoCosts.map((row) => `<tr><td>${escapeHtml(row.label)}</td><td>${row.calls}</td><td>${escapeHtml(quotaMoney(row.costUsd * config.quota.usdCny))}</td></tr>`).join('')}</tbody></table></div>
     </div>
     <div class="card">
+      <h2>${escapeHtml(t('按币种成本', 'Cost by currency'))}</h2>
+      <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('币种', 'Currency'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th></tr></thead><tbody>${currency.buckets.length === 0 && currency.unknownRequests === 0 ? stateCell(3, { kind: 'empty', title: t('还没有计费调用。', 'No billed calls yet.'), body: t('窗口内没有产生计费请求。', 'No priced requests in this window.'), action: { href: '/dashboard', label: t('回到仓库', 'Back to repositories') } }) : `${currency.buckets.map((row) => `<tr><td><code>${escapeHtml(row.currency)}</code></td><td>${row.requests}</td><td>${escapeHtml(currencyAmount(row.amount, row.currency))}</td></tr>`).join('')}${currency.unknownRequests === 0 ? '' : `<tr><td><code>${escapeHtml(t('未知', 'Unknown'))}</code></td><td>${currency.unknownRequests}</td><td>${escapeHtml(t('未计价', 'Not priced'))}</td></tr>`}`}</tbody></table></div>
+      ${currency.semantics === 'lower_bound' ? `<p class="fine">${escapeHtml(t('有请求未能计价，这里的金额是下限，不是全部花费。', 'Some requests could not be priced, so these totals are a lower bound, not the whole spend.'))}</p>` : ''}
       <h2>${escapeHtml(t('模型成本', 'Cost by model'))}</h2>
       <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('模型', 'Model'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th></tr></thead><tbody>${modelCosts.length === 0 ? stateCell(3, { kind: 'empty', title: t('还没有模型成本数据。', 'No model cost data yet.'), body: t('窗口内没有模型调用。', 'No model calls in this window.'), action: { href: '/settings', label: t('检查模型配置', 'Check the model setup') } }) : modelCosts.map((row) => `<tr><td><code>${escapeHtml(row.model)}</code></td><td>${row.calls}</td><td>${escapeHtml(quotaMoney(row.costUsd * config.quota.usdCny))}</td></tr>`).join('')}</tbody></table></div>
     </div>

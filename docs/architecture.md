@@ -470,8 +470,17 @@ revoke stays one click.
 - If the user has an own model configured, Fledge proxies to it and does **not**
   meter platform quota.
 - Otherwise it proxies to `PLATFORM_LLM_BASE_URL` with `PLATFORM_LLM_KEY`, reads
-  `x-litellm-response-cost` (or estimates from `usage`), and records the cost in
-  `quota_ledger` + `users.quota_used_usd`.
+  `x-litellm-response-cost` (or prices `usage` from that model's entry in
+  `PLATFORM_LLM_PRICE_TABLE`), and records the cost in `quota_ledger` +
+  `users.quota_used_usd`. The row carries the model, currency, the price snapshot
+  it was charged at and `cost_known`; a request that cannot be priced is stored
+  as `cost_known = 0` with a `request.cost_unknown` audit entry instead of a
+  zero cost, so spend stays a lower bound rather than a claim of "free" (#636).
+  `users.quota_used_usd`, `jobs.cost_usd` and the CNY budgets are USD columns:
+  only rows billed in USD reach them, and a row in another currency is reported
+  by `Store.costByCurrency()` in its own bucket instead of being converted.
+  `src/metrics/cost.ts` holds the price table, the cache-token rule and the
+  unknown-vs-zero decision; the gateway only reads its answer.
 - At zero it returns HTTP 402 with `code: FLEDGE_QUOTA_EXHAUSTED` and a settings
   link.
 - Streaming is passed through; `stream_options.include_usage` is added so the
@@ -1346,7 +1355,12 @@ policy.
 The bridge's model proxy normally uses the per-repository instance token. While
 a job is running it uses that job's short-lived `flg_` token instead (the
 `/run` payload carries it), so the gateway can write `job_id` into
-`quota_ledger` and add `jobs.cost_usd`. The job page shows cost, attribution and
+`quota_ledger` and add `jobs.cost_usd`. A row that could not be priced is not a
+zero row for this purpose: `usageCountForJob` counts only `cost_known = 1`, so
+the per-job budget's unknown refusal (#357) still fires when every call a job
+made was unknown. Only USD-billed rows reach `jobs.cost_usd`, and a retry names
+the attempt it continues in `jobs.retry_of`, so the chain a job inherits is the
+sum of every attempt rather than a fresh budget. The job page shows cost, attribution and
 Team attribution is grounded in the DSH per-role call counts: the job page and the
 PR automation comment use only roles with actual calls, and a claimed role with
 zero calls is recorded as a `team_attribution_grounded` mismatch event.
@@ -1593,7 +1607,7 @@ listing, and every row links to the page that already owns it.
 | `repos` | upstream/fork identity, encrypted token, permission, reviewer config, goal, cadence, state |
 | `jobs` | lifecycle, kind (iterate/review), branch, issue/PR URL, review score, summary, cost, job-scoped token hash |
 | `api_tokens` | `flg_` tokens (PAT, job or instance), hashed, with `scope` (only `gateway` today) and `expires_at`; a PAT always carries an expiry |
-| `quota_ledger` | per-request cost records |
+| `quota_ledger` | per-request cost records: model, currency, price snapshot, `cost_known` (0 = could not be priced) |
 | `notifications` | in-app messages (quota, job failure), stored as written and localized at render |
 | `postmortems` | one evidence-backed write-up per failed/stalled/cancelled job, with category, recurrence key, owner and preventive action |
 | `postmortem_recurrences` | one ledger row per recurrence key: count, first/last seen, affected repositories and the single escalation marker |
