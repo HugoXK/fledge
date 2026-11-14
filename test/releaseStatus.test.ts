@@ -304,3 +304,142 @@ test('the admin page says the chain was not recorded instead of rendering a blan
   assert.match(page, /这台实例还没有记录发布链/)
   assert.match(page, /scripts\/verify-release\.mjs/)
 })
+
+// Issue #462: the local image digest and the fail-closed start hook.
+//
+// The chain read back from the API proves what was released; it says nothing
+// about the image this host is about to run. `--local-image-digest` is that one
+// extra comparison, and the unit's `ExecStartPre=` is the place that makes it
+// mandatory instead of advisory.
+
+const LOCAL = `sha256:${'1'.repeat(64)}`
+
+test('a local image digest that is the attested one is green and prints the digest', async () => {
+  const status = await evaluate(chain({ localImageDigest: DIGEST }))
+  assert.equal(status.ok, true, JSON.stringify(status.problems))
+  const local = linkOf(status, 'local')
+  assert.equal(local?.state, 'ok')
+  assert.match(local.detail, new RegExp(DIGEST))
+})
+
+test('a local image digest that differs from the attested one is red and names both digests', async () => {
+  const status = await evaluate(chain({ localImageDigest: LOCAL }))
+  assert.equal(status.ok, false)
+  const local = linkOf(status, 'local')
+  assert.equal(local?.state, 'mismatch')
+  assert.match(local.detail, new RegExp(LOCAL))
+  assert.match(local.detail, new RegExp(DIGEST))
+})
+
+test('a chain recorded without a local digest keeps the link skipped, never red', async () => {
+  const status = await evaluate(chain())
+  assert.equal(status.ok, true)
+  assert.equal(linkOf(status, 'local')?.state, 'skipped')
+})
+
+test('a local digest that is not a sha256 digest is red and names what it read', async () => {
+  const status = await evaluate(chain({ localImageDigest: 'ghcr.io/hugoxk/fledge:v0.3.2' }))
+  assert.equal(status.ok, false)
+  const local = linkOf(status, 'local')
+  assert.equal(local?.state, 'mismatch')
+  assert.match(local.detail, /ghcr\.io\/hugoxk\/fledge:v0\.3\.2/)
+})
+
+test('a local digest with no attested digest to compare against is red, not silently green', async () => {
+  const status = await evaluate(chain({ image: null, localImageDigest: DIGEST }))
+  assert.equal(linkOf(status, 'local')?.state, 'missing')
+})
+
+test('the CLI compares the local digest it is given and fails on a mismatch', () => {
+  const run = runCli(['--fixtures', fixtureFile(chain()), '--version', '0.3.2', '--local-image-digest', LOCAL])
+  assert.equal(run.status, 1, run.stdout + run.stderr)
+  assert.match(run.stdout, /local\s+mismatch/)
+  assert.match(run.stdout, new RegExp(LOCAL))
+  assert.match(run.stdout, new RegExp(DIGEST))
+})
+
+test('the CLI records the local digest in the snapshot, and replaying that snapshot keeps the verdict', () => {
+  // The boot hook replays the recorded file with no network at all, so the file
+  // the release step writes has to carry the digest it compared.
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-release-status-'))
+  const out = join(dir, 'release-status.json')
+  const written = runCli(['--fixtures', fixtureFile(chain()), '--version', '0.3.2', '--local-image-digest', DIGEST, '--write', out])
+  assert.equal(written.status, 0, written.stderr)
+  assert.match(written.stdout, /local\s+ok/)
+  const snapshot = JSON.parse(readFileSync(out, 'utf8'))
+  assert.equal(snapshot.localImageDigest, DIGEST)
+  const pkg = join(dir, 'package.json')
+  writeFileSync(pkg, JSON.stringify({ version: '0.3.2' }))
+  const replay = runCli(['--fixtures', out, '--version', '0.3.2', '--package', pkg])
+  assert.equal(replay.status, 0, replay.stderr)
+  assert.match(replay.stdout, /local\s+ok/)
+
+  // A tree that is not the release is red on the version link, so the hook
+  // cannot start a host whose /opt/fledge is another version.
+  const stale = join(dir, 'stale-package.json')
+  writeFileSync(stale, JSON.stringify({ version: '0.3.1' }))
+  const drift = runCli(['--fixtures', out, '--version', '0.3.2', '--package', stale])
+  assert.equal(drift.status, 1, drift.stdout + drift.stderr)
+  assert.match(drift.stdout, /version\s+mismatch/)
+})
+
+test('--local-image-digest without a value is a usage error, exit 2, not a green verdict', () => {
+  const run = runCli(['--fixtures', fixtureFile(chain()), '--version', '0.3.2', '--local-image-digest'])
+  assert.equal(run.status, 2, run.stdout + run.stderr)
+  assert.match(run.stderr, /--local-image-digest needs a value/)
+})
+
+test('the check never prints the token it was given', () => {
+  const token = `ghp_${'x'.repeat(36)}`
+  const run = runCli(['--fixtures', fixtureFile(chain()), '--version', '0.3.2', '--local-image-digest', DIGEST], {
+    GITHUB_TOKEN: token,
+    METRICS_TOKEN: token,
+  })
+  assert.equal(run.status, 0, run.stderr)
+  assert.doesNotMatch(run.stdout + run.stderr, new RegExp(token))
+})
+
+test('the unit checks the recorded release before start and refuses a host that has none', () => {
+  // The card's fail-closed requirement: the sample unit gains an ExecStartPre
+  // that runs the same verifier against the file the release step writes. The
+  // hook is offline — a reboot must not depend on the GitHub API — so it may
+  // only name `--fixtures`, and it must refuse when the file is absent.
+  const unit = readFileSync('deploy/fledge.service', 'utf8')
+  const line = /^ExecStartPre=(.+)$/m.exec(unit)
+  assert.ok(line !== null, 'deploy/fledge.service has no ExecStartPre hook')
+  const command = (line[1] ?? '').trim()
+  assert.match(command, /\/opt\/fledge\/scripts\/verify-release\.mjs/)
+  assert.match(command, /--fixtures \/etc\/fledge\/release-status\.json/)
+  assert.match(command, /--package \/opt\/fledge\/package\.json/)
+  assert.doesNotMatch(command, /--repo|--base-url|--version/, 'the start hook must not read the API')
+
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-unit-'))
+  const missing = join(dir, 'absent.json')
+  const pkg = join(dir, 'package.json')
+  writeFileSync(pkg, JSON.stringify({ version: '0.3.2' }))
+  const argv = command
+    .replace(/^\/usr\/bin\/node\s+/, '')
+    .replace('/opt/fledge/scripts/verify-release.mjs', 'scripts/verify-release.mjs')
+    .replace('/etc/fledge/release-status.json', missing)
+    .replace('/opt/fledge/package.json', pkg)
+  const result = spawnSync(process.execPath, argv.split(/\s+/), { encoding: 'utf8', env: { ...process.env, GITHUB_TOKEN: '', GH_TOKEN: '', GITHUB_REPOSITORY: '' } })
+  assert.equal(result.status, 2, result.stdout + result.stderr)
+  assert.match(result.stderr, /cannot read/)
+
+  // And with the file present the same command is green, so the hook is not
+  // failing on principle.
+  const fixture = join(dir, 'release-status.json')
+  writeFileSync(fixture, JSON.stringify(chain({ localImageDigest: DIGEST })))
+  const okArgv = argv.split(/\s+/).map((part) => (part === missing ? fixture : part))
+  const passed = spawnSync(process.execPath, okArgv, { encoding: 'utf8', env: { ...process.env, GITHUB_TOKEN: '', GH_TOKEN: '', GITHUB_REPOSITORY: '' } })
+  assert.equal(passed.status, 0, passed.stdout + passed.stderr)
+  assert.match(passed.stdout, /release-status: ok/)
+
+  // A digest that is not the attested one stops the same command, which is the
+  // whole point of putting it in front of the start.
+  const wrong = join(dir, 'wrong.json')
+  writeFileSync(wrong, JSON.stringify(chain({ localImageDigest: LOCAL })))
+  const refused = spawnSync(process.execPath, argv.split(/\s+/).map((part) => (part === missing ? wrong : part)), { encoding: 'utf8', env: { ...process.env } })
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr)
+  assert.match(refused.stdout, /local\s+mismatch/)
+})

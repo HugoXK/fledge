@@ -340,6 +340,56 @@ request head is then the record of the tip.
 `--fixtures <file>` replays a recorded chain instead of reading the API, which is
 how the test suite exercises the same code path.
 
+### Required before start
+
+The sample unit runs the same verifier as `ExecStartPre=` (#462), so a host whose
+recorded release is absent or disagrees does not start. Record the release on the
+host first, with the digest the machine actually has:
+
+```sh
+# the API half: the chain, and the digest this host would run
+GITHUB_TOKEN=… METRICS_TOKEN=… sudo node scripts/verify-release.mjs --version 0.3.2 \
+  --base-url https://fledge.hugoxk.online \
+  --local-image-digest "$(sudo docker image inspect ghcr.io/hugoxk/fledge:v0.3.2 \
+    --format '{{index .RepoDigests 0}}' | cut -d@ -f2)" \
+  --write /etc/fledge/release-status.json
+sudo chmod 600 /etc/fledge/release-status.json
+```
+
+`--local-image-digest` is the one comparison the API cannot make: the digest
+`docker image inspect` reports for the tag on this host, compared with the digest
+the release and its build-provenance attestation name. It is one more row in the
+same output, and a mismatch names both digests. Without the flag the row reads
+`skipped`, and the chain is still judged on its API links.
+
+The file the command writes is also the record the unit starts from. `ExecStartPre=`
+replays it with `--fixtures /etc/fledge/release-status.json --package
+/opt/fledge/package.json`: no token, no API call, no docker. It re-checks the
+recorded chain, the recorded digest and the version of the tree that will
+actually run, so a host upgraded without re-recording does not start. **A host
+with no `/etc/fledge/release-status.json` does not start** — that is the hook
+doing its job, not a bug.
+
+The console's copy of the same snapshot lives under `${DATA_DIR}`; run the
+command a second time with `--write "${DATA_DIR}/release-status.json"` if the
+`/admin` card should show it too.
+
+A non-zero exit means **do not start**. Read the failing row in
+`journalctl -u fledge` and fix the release:
+
+| Exit | Row | Meaning | Action |
+|---|---|---|---|
+| `2` | `verify-release: cannot read /etc/fledge/release-status.json: ENOENT…` | nothing was recorded on this host | run the recording command above on this host; never hand-write the file |
+| `2` | `verify-release: /opt/fledge/package.json has no readable version` | the installed tree is incomplete | finish the install, then start |
+| `1` | `local mismatch the local image sha256:… is not the attested digest sha256:…` | the image on this host is not the released one | pull the tag the chain names; do not start |
+| `1` | `version mismatch package.json is at vX, the chain is for vY` | `/opt/fledge` is not the recorded release | install the recorded version, or re-record if the new version really is the release |
+| `1` | `healthz mismatch …` | the recorded probe disagrees with the tag it was compared with | fix the deployment or the record; do not start |
+
+Both non-zero codes refuse the start: `1` is a fact that disagrees, `2` is an
+input that could not be read. They are printed as different lines so the journal
+says which one happened. The hook never contacts GitHub, so a reboot depends on
+one local file and nothing else — a stale record is refused rather than started.
+
 ### Deployment records, drift and rollback
 
 A release tag is not a deploy. Fledge keeps a **record** of what an operator

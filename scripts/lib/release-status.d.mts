@@ -78,6 +78,8 @@ export interface ReleaseStatusInput {
   attestation?: ReleaseAttestationFixture | null
   release?: ReleaseFixture | null
   healthz?: ReleaseHealthFixture | null
+  /** `sha256:…` of the image this host would run, read locally by the caller. */
+  localImageDigest?: string | null
 }
 
 export interface ReleaseStatus {
@@ -92,6 +94,8 @@ export interface ReleaseStatus {
   targetSha: string
   /** The GitHub Release url, empty when the chain has no readable Release. */
   releaseUrl: string
+  /** The local image digest that was compared, empty when none was given. */
+  localImageDigest: string
 }
 
 export function evaluateReleaseStatus(input?: ReleaseStatusInput): ReleaseStatus
