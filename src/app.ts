@@ -99,7 +99,7 @@ import { memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from 
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
 import { THEME_COOKIE, isTheme, resolveTheme, withTheme } from './views/theme.js'
 import { GithubClient, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
-import { GithubApp } from './repos/app.js'
+import { checkWebhookSignature, GithubApp, webhookSecretSlot } from './repos/app.js'
 import { repoGithubToken } from './repos/token.js'
 import { InstanceManager } from './flybot/instances.js'
 import { dshCookie, proxyWorkspaceHttp, proxyWorkspaceUpgrade } from './flybot/workspace.js'
@@ -816,7 +816,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       time: new Date().toISOString(),
     }
     if (diagnosticsAccess(request) === 'denied') return publicAnswer
-    return { ...publicAnswer, commit: config.build.commit, builtAt: config.build.builtAt }
+    // #466: `current`/`previous`/`none` says which secret slot the verifier is
+    // using, from the same pair the verifier reads, so a half-finished rotation
+    // is visible to the operator. It is never a value and never a fingerprint.
+    return { ...publicAnswer, commit: config.build.commit, builtAt: config.build.builtAt, webhookSecretSlot: webhookSecretSlot(config.githubApp) }
   })
 
   app.get('/readyz', async (_request, reply) => {
@@ -4525,7 +4528,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!githubApp.configured || config.githubApp.webhookSecret === '') return reply.code(503).send({ error: 'GitHub App webhook is not configured' })
     const signature = String(request.headers['x-hub-signature-256'] ?? '')
     const raw = (request as FastifyRequest & { rawBody?: Buffer }).rawBody
-    if (raw === undefined || !githubApp.verifyWebhook(raw, signature)) return reply.code(401).send({ error: 'bad webhook signature' })
+    const verdict = raw === undefined ? { ok: false, slot: null, superseded: false } : checkWebhookSignature(config.githubApp, raw, signature)
+    if (!verdict.ok) {
+      // #466: a signature that matches the value this instance retired is not
+      // noise, it means a delivery is still being signed with the old secret.
+      // One row per refusal, and the detail names only the closed window.
+      if (verdict.superseded) store.audit(null, 'app.webhook_secret_superseded', `signed with GITHUB_APP_WEBHOOK_SECRET_PREVIOUS after its window closed at ${config.githubApp.webhookSecretPreviousUntil ?? ''}`)
+      return reply.code(401).send({ error: 'bad webhook signature' })
+    }
     const event = String(request.headers['x-github-event'] ?? '')
     const delivery = String(request.headers['x-github-delivery'] ?? '')
     const body = (request.body ?? {}) as Record<string, unknown>

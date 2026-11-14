@@ -263,6 +263,13 @@ at the next safe point). Both endpoints require the `x-csrf-token` header.
 
 ## GitHub webhook follow-up
 
+`X-Hub-Signature-256` is verified against `GITHUB_APP_WEBHOOK_SECRET`, and while
+an overlap window is open, also against `GITHUB_APP_WEBHOOK_SECRET_PREVIOUS`
+until `GITHUB_APP_WEBHOOK_SECRET_PREVIOUS_UNTIL` (#466). A signature that matches
+only the retired value after that instant is a 401 like any other and records one
+`app.webhook_secret_superseded` audit row; `docs/security.md` carries the
+rotation runbook.
+
 A verified `check_run`/`check_suite` failure or a `pull_request_review` with
 `changes_requested` can enqueue a follow-up job when the PR URL matches an
 existing Fledge job for a repository with the same installation. The follow-up

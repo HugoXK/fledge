@@ -1447,7 +1447,10 @@ decision [0007](decisions/0007-build-identity.md) — because two `main` builds
 between a tag and the next version bump answer the same `version` and cannot
 otherwise be told apart from outside. Those two fields are bearer-only (#236):
 they are served on the `METRICS_TOKEN` credential `/metrics` uses (or to loopback
-in a development build without a token), never to an anonymous caller.
+in a development build without a token), never to an anonymous caller. The same gated
+answer carries `webhookSecretSlot` (#466) — `current`, `previous` or `none`, the
+slot the webhook verifier is using — so a half-finished secret rotation is
+visible to the operator and never to an anonymous caller.
 
 ### Release chain
 
