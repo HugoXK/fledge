@@ -1194,7 +1194,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // #232: the job filters are read from the query on every request and applied
     // in SQL, so the URL, the count and the page always describe the same list.
     const jobFilter = parseJobFilters(
-      { repo: queryText(request, 'repo'), status: queryText(request, 'status'), kind: queryText(request, 'kind') },
+      { repo: queryText(request, 'repo'), status: queryText(request, 'status'), kind: queryText(request, 'kind'), priority: queryText(request, 'priority') },
       allRepos.map((repo) => repo.id),
     )
     const reposTotal = store.countReposForUser(viewer.user.id)
@@ -3728,7 +3728,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return Number.isFinite(n) && n >= 1 ? Math.min(Math.floor(n), Math.max(1, Math.ceil(total / perPage))) : 1
     }
     const auditFilters = { q, action, from, to: to === '' ? '' : (to.length === 10 ? `${to}T23:59:59.999Z` : to) }
-    const jobFilters = { q, status, kind }
+    const priority = (queryText(request, 'priority') ?? '').slice(0, 10)
+    const jobFilters = { q, status, kind, priority }
     const auditTotal = store.countSearchAudit(userIds, auditFilters)
     const jobsTotal = store.countSearchJobs(userIds, jobFilters)
     const auditPage = page('auditPage', auditTotal)
@@ -3741,7 +3742,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       jobs: store.searchJobs(userIds, jobFilters, perPage, (jobsPage - 1) * perPage),
       audit: store.searchAudit(userIds, auditFilters, perPage, (auditPage - 1) * perPage),
       usersById,
-      filters: { q, status, kind, action, from, to },
+      filters: { q, status, kind, priority, action, from, to },
       jobsPage,
       jobsTotal,
       auditPage, auditTotal,
@@ -3861,7 +3862,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const viewer = requireAdmin(request)
     if (viewer.preview === true) return reply.code(403).send({ error: 'preview' })
     const userIds = adminVisibleUserIds(viewer)
-    const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), status: (queryText(request, 'status') ?? '').slice(0, 30), kind: (queryText(request, 'kind') ?? '').slice(0, 30) }
+    const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), status: (queryText(request, 'status') ?? '').slice(0, 30), kind: (queryText(request, 'kind') ?? '').slice(0, 30), priority: (queryText(request, 'priority') ?? '').slice(0, 10) }
     const matched = store.countSearchJobs(userIds, filters)
     if (matched > EXPORT_ROW_CAP) return refuseLargeExport(request, reply, viewer, 'jobs', matched)
     const built = assembleCsv(
@@ -3871,7 +3872,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       (row) => [row.id, row.repo_id, row.user_id, row.status, row.kind, row.trigger, row.created_at, row.finished_at ?? '', row.pr_url ?? '', row.issue_url ?? '', row.cost_usd].map(csvCell).join(','),
     )
     store.audit(viewer.user.id, 'admin.jobs_export', exportTrailDetail({
-      filters: [filters.status === '' ? '' : `status=${filters.status}`, filters.kind === '' ? '' : `kind=${filters.kind}`],
+      filters: [filters.status === '' ? '' : `status=${filters.status}`, filters.kind === '' ? '' : `kind=${filters.kind}`, filters.priority === '' ? '' : `priority=${filters.priority}`],
       q: filters.q,
       rows: built.rows,
       scope: exportScope(userIds),

@@ -4,6 +4,7 @@ import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { log } from './lib/log.js'
 import { nowIso } from './lib/time.js'
+import { isPriorityLevel, PRIORITY_BOUNDS } from './lib/priority.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 import { parseModelRun } from './lib/modelRun.js'
 import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
@@ -4551,7 +4552,16 @@ export class Store {
   // #232: the dashboard filters by repository, status and kind in SQL so the
   // count and the page agree, and so the filters compose with the pagination
   // offset instead of slicing a filtered array in memory.
-  private jobsForUserWhere(userId: string, filter?: { repo?: string; status?: string; kind?: string }): { sql: string; params: unknown[] } {
+  // #639: one level is a half-open rank range, so a filter names P0..P3 rather
+  // than the storage integers and still matches rows written before the ladder.
+  private priorityClause(level: string, params: unknown[]): string[] {
+    if (level === '' || !isPriorityLevel(level)) return []
+    const bounds = PRIORITY_BOUNDS[level]
+    params.push(bounds.min, bounds.max)
+    return ['priority >= ?', 'priority < ?']
+  }
+
+  private jobsForUserWhere(userId: string, filter?: { repo?: string; status?: string; kind?: string; priority?: string }): { sql: string; params: unknown[] } {
     const clauses = ['user_id = ?']
     const params: unknown[] = [userId]
     if (filter?.repo !== undefined && filter.repo !== '') {
@@ -4566,10 +4576,11 @@ export class Store {
       clauses.push('kind = ?')
       params.push(filter.kind)
     }
+    if (filter?.priority !== undefined) clauses.push(...this.priorityClause(filter.priority, params))
     return { sql: clauses.join(' AND '), params }
   }
 
-  listJobsPageForUser(userId: string, limit: number, offset: number, filter?: { repo?: string; status?: string; kind?: string }): JobRow[] {
+  listJobsPageForUser(userId: string, limit: number, offset: number, filter?: { repo?: string; status?: string; kind?: string; priority?: string }): JobRow[] {
     const where = this.jobsForUserWhere(userId, filter)
     // #232: `created_at` is not unique — a batch of jobs seeded in the same
     // millisecond ties, and SQLite then has no stable order, so the same row can
@@ -4578,7 +4589,7 @@ export class Store {
     return this.all<JobRow>(`SELECT * FROM jobs WHERE ${where.sql} ORDER BY ${newestJobOrder('jobs')} LIMIT ? OFFSET ?`, ...where.params, limit, offset)
   }
 
-  countJobsForUser(userId: string, filter?: { repo?: string; status?: string; kind?: string }): number {
+  countJobsForUser(userId: string, filter?: { repo?: string; status?: string; kind?: string; priority?: string }): number {
     const where = this.jobsForUserWhere(userId, filter)
     return Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM jobs WHERE ${where.sql}`, ...where.params)?.n ?? 0)
   }
@@ -5353,7 +5364,7 @@ export class Store {
     return Number(this.get<{ n: number }>(query.sql, ...query.params)?.n ?? 0)
   }
 
-  private jobFilter(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string }, limit: number, offset: number, count: boolean): { sql: string; params: Array<string | number> } {
+  private jobFilter(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string; priority?: string }, limit: number, offset: number, count: boolean): { sql: string; params: Array<string | number> } {
     const clauses: string[] = []
     const params: Array<string | number> = []
     if (userIds !== null) {
@@ -5373,17 +5384,18 @@ export class Store {
       clauses.push('kind = ?')
       params.push(filters.kind)
     }
+    if (filters.priority !== undefined) clauses.push(...this.priorityClause(filters.priority, params))
     const where = clauses.length === 0 ? '' : ` WHERE ${clauses.join(' AND ')}`
     if (count) return { sql: `SELECT COUNT(*) AS n FROM jobs${where}`, params }
     return { sql: `SELECT * FROM jobs${where} ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`, params: [...params, limit, offset] }
   }
 
-  searchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string }, limit: number, offset: number): JobRow[] {
+  searchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string; priority?: string }, limit: number, offset: number): JobRow[] {
     const query = this.jobFilter(userIds, filters, limit, offset, false)
     return this.all<JobRow>(query.sql, ...query.params)
   }
 
-  countSearchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string }): number {
+  countSearchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string; priority?: string }): number {
     const query = this.jobFilter(userIds, filters, 0, 0, true)
     return Number(this.get<{ n: number }>(query.sql, ...query.params)?.n ?? 0)
   }

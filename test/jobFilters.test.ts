@@ -31,20 +31,23 @@ function makeJobs(store: Store, userId: string, repoId: string, prefix: string, 
 
 test('a filter keeps only the values this account can use', () => {
   const parsed = parseJobFilters({ repo: 'r1', status: 'failed', kind: 'review' }, ['r1', 'r2'])
-  assert.deepEqual(parsed, { repo: 'r1', status: 'failed', kind: 'review' })
+  assert.deepEqual(parsed, { repo: 'r1', status: 'failed', kind: 'review', priority: '' })
 
-  assert.deepEqual(parseJobFilters({ repo: 'r9', status: 'failed', kind: 'review' }, ['r1', 'r2']), { repo: '', status: 'failed', kind: 'review' }, 'a repository this account does not own is dropped')
-  assert.deepEqual(parseJobFilters({ repo: 'r1', status: 'exploded', kind: 'review' }, ['r1']), { repo: 'r1', status: '', kind: 'review' }, 'an unknown status is dropped, not an error')
-  assert.deepEqual(parseJobFilters({ repo: 'r1', status: 'failed', kind: 'gossip' }, ['r1']), { repo: 'r1', status: 'failed', kind: '' }, 'an unknown kind is dropped')
-  assert.deepEqual(parseJobFilters({}, []), { repo: '', status: '', kind: '' }, 'no query is no filter')
+  assert.deepEqual(parseJobFilters({ repo: 'r9', status: 'failed', kind: 'review' }, ['r1', 'r2']), { repo: '', status: 'failed', kind: 'review', priority: '' }, 'a repository this account does not own is dropped')
+  assert.deepEqual(parseJobFilters({ repo: 'r1', status: 'exploded', kind: 'review' }, ['r1']), { repo: 'r1', status: '', kind: 'review', priority: '' }, 'an unknown status is dropped, not an error')
+  assert.deepEqual(parseJobFilters({ repo: 'r1', status: 'failed', kind: 'gossip' }, ['r1']), { repo: 'r1', status: 'failed', kind: '', priority: '' }, 'an unknown kind is dropped')
+  assert.deepEqual(parseJobFilters({}, []), { repo: '', status: '', kind: '', priority: '' }, 'no query is no filter')
+  assert.equal(parseJobFilters({ priority: 'P1' }, []).priority, 'P1')
+  assert.equal(parseJobFilters({ priority: 'P9' }, []).priority, '', 'an unknown level is dropped, not an error')
+  assert.equal(parseJobFilters({ priority: 'p1' }, []).priority, '', 'the ladder is case-sensitive, so a loose value is no filter')
 })
 
 test('the filter turns back into URL parameters and reports whether it is active', () => {
-  assert.deepEqual(jobFilterParams({ repo: 'r1', status: 'failed', kind: 'review' }), { repo: 'r1', status: 'failed', kind: 'review' })
-  assert.deepEqual(jobFilterParams({ repo: 'r1', status: '', kind: '' }), { repo: 'r1' }, 'empty values do not reach the URL')
-  assert.deepEqual(jobFilterParams({ repo: '', status: '', kind: '' }), {})
-  assert.equal(jobFilterIsActive({ repo: '', status: '', kind: '' }), false)
-  assert.equal(jobFilterIsActive({ repo: '', status: '', kind: 'review' }), true)
+  assert.deepEqual(jobFilterParams({ repo: 'r1', status: 'failed', kind: 'review', priority: '' }), { repo: 'r1', status: 'failed', kind: 'review' })
+  assert.deepEqual(jobFilterParams({ repo: 'r1', status: '', kind: '', priority: '' }), { repo: 'r1' }, 'empty values do not reach the URL')
+  assert.deepEqual(jobFilterParams({ repo: '', status: '', kind: '', priority: '' }), {})
+  assert.equal(jobFilterIsActive({ repo: '', status: '', kind: '', priority: '' }), false)
+  assert.equal(jobFilterIsActive({ repo: '', status: '', kind: 'review', priority: '' }), true)
 })
 
 test('the store filters compose, and the count matches the rows', () => {
@@ -67,6 +70,33 @@ test('the store filters compose, and the count matches the rows', () => {
     assert.deepEqual(page.map((job) => job.id).sort(), ['job_a0', 'job_a1', 'job_a2'])
     const second = store.listJobsPageForUser(user.id, 2, 2, { ...none, status: 'failed' as const })
     assert.equal(second.length, 2, 'the filter survives the page offset')
+  } finally {
+    store.close()
+  }
+})
+
+test('a level filter is a half-open rank range, so a legacy integer lands in the level it reads as', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'filters-levels', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_levels', userId: user.id, owner: 'o', name: 'levels', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const levels: Array<[string, number]> = [['job_p0', 30], ['job_p1', 20], ['job_p2', 10], ['job_p3', 0], ['job_legacy', 15]]
+    for (const [id, priority] of levels) {
+      store.createJob({ id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: `h-${id}`, platformTokenHash: '', priority })
+      store.updateJob(id, { status: 'succeeded' })
+    }
+    const none = { repo: '', status: '', kind: '', priority: '' }
+    const ids = (priority: string): string[] => store.listJobsPageForUser(user.id, 10, 0, { ...none, priority }).map((job) => job.id).sort()
+    assert.deepEqual(ids('P0'), ['job_p0'])
+    assert.deepEqual(ids('P1'), ['job_p1'])
+    assert.deepEqual(ids('P2'), ['job_legacy', 'job_p2'], '15 is ordinary work, exactly as the console prints it')
+    assert.deepEqual(ids('P3'), ['job_p3'])
+    assert.equal(store.countJobsForUser(user.id, { ...none, priority: 'P2' }), 2)
+    assert.equal(store.countJobsForUser(user.id, none), 5, 'no level is every level')
+    // The admin search reads the same clause through a different query builder.
+    assert.equal(store.countSearchJobs([user.id], { priority: 'P0' }), 1)
+    assert.equal(store.countSearchJobs([user.id], { priority: 'P2' }), 2)
+    assert.equal(store.countSearchJobs([user.id], { priority: '' }), 5)
   } finally {
     store.close()
   }
@@ -390,11 +420,41 @@ test('the kind filter offers every job kind a user can start, and nothing else',
     assert.doesNotMatch(hostileKind.body, /<b>x<\/b>/, 'the applied kind is escaped on the way in')
     assert.match(hostileKind.body, /&lt;b&gt;x&lt;\/b&gt;/, 'and reads as its own text')
 
-    assert.deepEqual(parseJobFilters({ kind: 'scope' }, [repo.id]), { repo: '', status: '', kind: 'scope' }, 'the parser keeps scope')
-    assert.deepEqual(parseJobFilters({ kind: 'triage' }, [repo.id]), { repo: '', status: '', kind: 'triage' }, 'the parser keeps triage')
-    assert.deepEqual(parseJobFilters({ kind: 'research' }, [repo.id]), { repo: '', status: '', kind: '' }, 'research is not a job kind, so it is dropped')
+    assert.deepEqual(parseJobFilters({ kind: 'scope' }, [repo.id]), { repo: '', status: '', kind: 'scope', priority: '' }, 'the parser keeps scope')
+    assert.deepEqual(parseJobFilters({ kind: 'triage' }, [repo.id]), { repo: '', status: '', kind: 'triage', priority: '' }, 'the parser keeps triage')
+    assert.deepEqual(parseJobFilters({ kind: 'research' }, [repo.id]), { repo: '', status: '', kind: '', priority: '' }, 'research is not a job kind, so it is dropped')
   } finally {
     await built.app.close()
     store.close()
+  }
+})
+
+// #639: the dashboard offers P0-P3 in the same filter row as status and kind, and
+// the value travels in the URL like the rest of the filters. A value that is not
+// a level is dropped rather than turned into an empty page.
+test('the dashboard filters by level, and a value that is not a level is dropped', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'filters-level-route', status: 'approved' })
+    const session = sessionFor(built, user)
+    const cookie = `${session.cookie}; fledge_lang=en`
+    const repo = store.createRepo({ id: 'repo_level_route', userId: user.id, owner: 'o', name: 'lv', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_lv_p0', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'urgent', callbackHash: 'h1', platformTokenHash: '', priority: 30 })
+    store.updateJob('job_lv_p0', { status: 'succeeded' })
+    store.createJob({ id: 'job_lv_p1', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'blocked', callbackHash: 'h2', platformTokenHash: '', priority: 20 })
+    store.updateJob('job_lv_p1', { status: 'succeeded' })
+
+    const filtered = await built.app.inject({ method: 'GET', url: '/dashboard?priority=P1', headers: { cookie } })
+    assert.match(filtered.body, /data-job-id="job_lv_p1"/)
+    assert.doesNotMatch(filtered.body, /data-job-id="job_lv_p0"/)
+    assert.match(filtered.body, /<option value="P1" selected>/, 'the level select keeps the applied filter')
+
+    const dropped = await built.app.inject({ method: 'GET', url: '/dashboard?priority=P9', headers: { cookie } })
+    assert.match(dropped.body, /data-job-id="job_lv_p0"/)
+    assert.match(dropped.body, /data-job-id="job_lv_p1"/)
+  } finally {
+    await built.app.close()
   }
 })

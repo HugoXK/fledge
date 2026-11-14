@@ -16,6 +16,16 @@ export function isPriorityLevel(value: unknown): value is PriorityLevel {
   return typeof value === 'string' && (PRIORITY_LEVELS as readonly string[]).includes(value)
 }
 
+// The SQL side of the ladder: a filter for one level is a half-open rank range,
+// so a row written before the ladder (an arbitrary integer) still lands in the
+// level the console shows it as. `levelFromRank` is the same comparison.
+export const PRIORITY_BOUNDS: Record<PriorityLevel, { min: number; max: number }> = {
+  P0: { min: 30, max: 1_000_000_000 },
+  P1: { min: 20, max: 30 },
+  P2: { min: 10, max: 20 },
+  P3: { min: -1_000_000_000, max: 10 },
+}
+
 export function priorityRank(level: PriorityLevel): number {
   return RANK_BY_LEVEL[level]
 }

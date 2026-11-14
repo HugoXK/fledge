@@ -287,7 +287,10 @@ defect.
   Raising a job to `P0` or `P1` is a claim, so the save carries a reason and
   evidence a second person can check — a link, a commit or ticket sha, or a
   measurement with a unit; adjectives alone are refused. The no-op rule and the
-  tail-ticket rule above still decide where the row sits.
+  tail-ticket rule above still decide where the row sits. The dashboard and the
+  admin job search filter by level (`P0`–`P3`), and the clause is a half-open
+  rank range, so a row written before the ladder still appears under the level
+  the console prints for it.
 - **Task relations are explicit**: `task_relations` joins two jobs of one
   repository as `same_problem`, `related` or `recurrence`, with the reason and
   the checkable evidence the claim rests on. Both ends must be jobs of the same
