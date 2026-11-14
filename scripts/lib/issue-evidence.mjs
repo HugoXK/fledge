@@ -41,23 +41,31 @@ function lastSegment(symbol) {
   return parts[parts.length - 1]
 }
 
-function escapeFor(symbol) {
-  return symbol.replace(/[$]/g, '\\$')
-}
+// A symbol is a name, not a pattern. Compare it with the line's tokens and let
+// a declaration keyword in front of it decide, rather than interpolating the
+// name into a RegExp: a name cannot be escaped correctly for pattern context
+// without matching that context's own rules, and `\b` after an escaped `$`
+// silently refuses `function price$(…)`, because `$` is not a word character.
+const TOKEN = /[A-Za-z_$][\w$]*/g
+// `class` covers a method's owner; the last segment of a dotted symbol is what a
+// definition line can be expected to name.
+const DECLARES = new Set(['function', 'class', 'interface', 'type', 'enum', 'def'])
+const BINDS = new Set(['const', 'let', 'var'])
 
-// One definition shape per language the repo actually holds. `class` covers a
-// method's owner; the last segment of a dotted symbol is what a definition line
-// can be expected to name.
 function definesLine(text, symbol) {
-  const name = escapeFor(lastSegment(symbol))
-  const shapes = [
-    `(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?function\\s*\\*?\\s*${name}\\b`,
-    `(?:export\\s+)?(?:default\\s+)?(?:abstract\\s+)?class\\s+${name}\\b`,
-    `(?:export\\s+)?(?:const|let|var)\\s+${name}\\s*[=:]`,
-    `(?:export\\s+)?(?:interface|type|enum)\\s+${name}\\b`,
-    `(?:export\\s+)?def\\s+${name}\\b`,
-  ]
-  return shapes.some((shape) => new RegExp(shape).test(text))
+  const name = lastSegment(symbol)
+  const tokens = [...text.matchAll(TOKEN)]
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]
+    if (token === undefined || token[0] !== name) continue
+    const previous = tokens[index - 1] ?? []
+    const keyword = previous[0] ?? ''
+    if (DECLARES.has(keyword)) return true
+    if (!BINDS.has(keyword)) continue
+    const after = text.slice(token.index + name.length).trimStart()
+    if (after.startsWith('=') || after.startsWith(':')) return true
+  }
+  return false
 }
 
 // Any line in the file that defines the symbol, so a failure can say where it is
