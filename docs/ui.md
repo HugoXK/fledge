@@ -56,8 +56,8 @@ them; this page only fixes the names and the values.
 | Spacing | `--space-6` | `32px` | block gap |
 | Spacing | `--space-7` | `48px` | page section |
 | Spacing | `--space-8` | `64px` | hero spacing |
-| Type | `--text-xs` | `11px` | eyebrow, table header, badge |
-| Type | `--text-sm` | `12.5px` | `.fine`, meta lines |
+| Type | `--text-xs` | `12px` | eyebrow, table header, badge |
+| Type | `--text-sm` | `13px` | `.fine`, meta lines |
 | Type | `--text-md` | `14px` | table cell, list item |
 | Type | `--text-lg` | `16px` | card heading |
 | Type | `--text-xl` | `19px` | section heading |
