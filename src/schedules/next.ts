@@ -51,22 +51,35 @@ interface CronFields {
 const MINUTE = 60_000
 const DAY = 86_400_000
 // A five-field cron repeats within a year except for a few pathological
-// combinations (`0 0 30 2 *` never matches). Five years is far past any window a
-// repository schedule can carry, and a null answer is honest there.
-const MAX_DAYS = 366 * 5
+// combinations (`0 0 30 2 *` never matches) and the leap-day gap: 29 February can
+// be eight years apart (2096 -> 2104, because 2100 is not a leap year). Ten years
+// covers that gap, so `0 0 29 2 *` resolves instead of answering null for a
+// schedule that does fire.
+const MAX_DAYS = 366 * 10
 const MAX_INTERVAL = 30 * DAY
 
 function fail(reason: string): { ok: false; reason: string } {
   return { ok: false, reason }
 }
 
-function isValidTimezone(timezone: string): boolean {
-  if (timezone.trim() === '') return false
+// `Intl` also accepts a fixed offset such as `+05:00`, and that is not an IANA
+// zone: the contract is a zone name, so a schedule follows the offset changes its
+// zone makes. A fixed offset would pin the wall clock and silently never observe a
+// DST transition, so it is refused by name rather than left to `Intl`.
+function timezoneProblem(timezone: string): string | null {
+  const trimmed = timezone.trim()
+  const upper = trimmed.toUpperCase()
+  const signed = trimmed.startsWith('+') || trimmed.startsWith('-')
+  const prefixed = upper.startsWith('UTC+') || upper.startsWith('UTC-') || upper.startsWith('GMT+') || upper.startsWith('GMT-')
+  if (signed || prefixed) {
+    return `timezone "${timezone}" is a fixed UTC offset, not an IANA zone; use a zone name such as Asia/Shanghai`
+  }
+  if (trimmed === '') return `timezone "${timezone}" is empty; an IANA zone such as UTC or Asia/Shanghai is required`
   try {
-    new Intl.DateTimeFormat('en-US', { timeZone: timezone })
-    return true
+    new Intl.DateTimeFormat('en-US', { timeZone: trimmed })
+    return null
   } catch {
-    return false
+    return `timezone "${timezone}" is not an IANA zone this runtime knows`
   }
 }
 
@@ -120,7 +133,9 @@ function parseField(raw: string, label: string, min: number, max: number): Field
       const single = parseNumber(rangeText, label, min, max)
       if (!single.ok) return denied(single.reason)
       low = single.value
-      high = single.value
+      // In Vixie cron `5/10` is "start at 5, step 10 through the end of the
+      // field" — 5,15,25,35,45,55 — not "5 only". Without a step it is one value.
+      high = stepText === undefined ? single.value : max
     }
     for (let value = low; value <= high; value += step) values.add(value)
   }
@@ -132,7 +147,12 @@ function parseField(raw: string, label: string, min: number, max: number): Field
 function parseCron(expression: string): { ok: true; fields: CronFields } | { ok: false; reason: string } {
   const parts = expression.trim().split(/\s+/)
   if (parts.length !== 5) {
-    return fail(`a cron expression is five fields, and "${expression}" has ${parts.length === 1 ? 'five fields or more missing' : parts.length}`)
+    if (parts.length > 5) {
+      return fail(
+        `a cron expression is five fields; "${expression}" has ${parts.length}, and a six-field form means a leading seconds field, which is not supported`,
+      )
+    }
+    return fail(`a cron expression is five fields; "${expression}" has ${parts.length}, so fields are missing`)
   }
   const minute = parts[0] ?? ''
   const hour = parts[1] ?? ''
@@ -174,7 +194,8 @@ export function parseSchedule(input: ScheduleInput): ScheduleParse {
   if (startAt !== null && endAt !== null && endAt <= startAt) return fail('end_at must be after start_at')
 
   if ('cron' in input) {
-    if (!isValidTimezone(input.timezone)) return fail(`timezone "${input.timezone}" is not an IANA zone this runtime knows`)
+    const zoneProblem = timezoneProblem(input.timezone)
+    if (zoneProblem !== null) return fail(zoneProblem)
     const parsed = parseCron(input.cron)
     if (!parsed.ok) return fail(parsed.reason)
     return { ok: true, schedule: { kind: 'cron', expression: input.cron.trim(), timezone: input.timezone, startAt, endAt } }
@@ -283,7 +304,12 @@ function nextInterval(schedule: IntervalSchedule, from: number): number | null {
   if (startAt !== null && from < startAt) {
     candidate = startAt
   } else if (startAt === null) {
-    candidate = minuteAligned(from) + schedule.everyMs
+    // Anchored to the epoch, not to `from`. `from + everyMs` (or a minute-aligned
+    // version of it) makes the gap depend on where the caller polled: a 90-second
+    // interval drifts to 60-second gaps and a sub-minute remainder is truncated
+    // away. Whole multiples keep every gap exactly `everyMs`, so the sequence is
+    // the same no matter who asks or how often.
+    candidate = (Math.floor(from / schedule.everyMs) + 1) * schedule.everyMs
   } else {
     candidate = startAt + (Math.floor((from - startAt) / schedule.everyMs) + 1) * schedule.everyMs
   }

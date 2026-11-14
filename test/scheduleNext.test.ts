@@ -64,7 +64,7 @@ test('the validity window bounds a cron schedule without moving its wall-clock t
 
 test('an expression the schedule does not support is refused with a reason', () => {
   const cases: Array<[string, string, string]> = [
-    ['0 9 * * * *', 'a seconds field is not a five-field cron', 'five fields'],
+    ['0 9 * * * *', 'a six-field form means a leading seconds field', 'seconds'],
     ['0 9 * JAN *', 'month names are not supported', 'month'],
     ['*/0 9 * * *', 'a zero step is not a schedule', 'step'],
     ['61 9 * * *', 'an out-of-range minute is refused', 'minute'],
@@ -81,6 +81,74 @@ test('an unknown timezone is refused instead of silently treated as UTC', () => 
   const result = parseSchedule({ cron: '0 9 * * *', timezone: 'Mars/Olympus' })
   assert.equal(result.ok, false)
   if (!result.ok) assert.ok(result.reason.includes('Mars/Olympus'), `the refusal names the zone: ${result.reason}`)
+})
+
+test('a fixed interval without start_at keeps every gap at exactly the configured length', () => {
+  const schedule = parse({ everyMs: 90_000 })
+  const from = Date.parse('2026-11-13T00:00:00Z')
+  const first = nextTime(schedule, from)
+  assert.ok(first !== null, 'an interval without start_at still has a next instant')
+  const second = nextTime(schedule, first)
+  assert.ok(second !== null)
+  const third = nextTime(schedule, second)
+  assert.ok(third !== null)
+  assert.equal(second - first, 90_000, 'the gap after the first run is the configured interval')
+  assert.equal(third - second, 90_000, 'and the next gap is the same')
+
+  const odd = parse({ everyMs: 600_001 })
+  const oddFirst = nextTime(odd, from)
+  assert.ok(oddFirst !== null)
+  const oddSecond = nextTime(odd, oddFirst)
+  assert.ok(oddSecond !== null)
+  assert.equal(oddSecond - oddFirst, 600_001, 'a sub-minute remainder is not truncated away')
+})
+
+test('with both day fields restricted either may match, and neither side alone is the answer', () => {
+  const schedule = parse({ cron: '0 0 13 * 5', timezone: 'UTC' })
+  assert.equal(
+    nextTime(schedule, Date.parse('2026-06-01T00:00:00Z')),
+    Date.parse('2026-06-05T00:00:00Z'),
+    'a Friday that is not the 13th fires',
+  )
+  assert.equal(
+    nextTime(schedule, Date.parse('2026-06-12T00:00:00Z')),
+    Date.parse('2026-06-13T00:00:00Z'),
+    'the 13th that is a Saturday fires',
+  )
+  assert.notEqual(
+    nextTime(schedule, Date.parse('2026-06-01T00:00:00Z')),
+    Date.parse('2026-11-13T00:00:00Z'),
+    'the AND answer is not the schedule',
+  )
+})
+
+test('a single value with a step spans to the end of the field, as Vixie cron does', () => {
+  const schedule = parse({ cron: '5/10 * * * *', timezone: 'UTC' })
+  assert.equal(nextTime(schedule, Date.parse('2026-11-13T00:00:00Z')), Date.parse('2026-11-13T00:05:00Z'))
+  assert.equal(
+    nextTime(schedule, Date.parse('2026-11-13T00:05:00Z')),
+    Date.parse('2026-11-13T00:15:00Z'),
+    '5/10 is 5,15,25,35,45,55 — not only :05',
+  )
+  assert.equal(nextTime(schedule, Date.parse('2026-11-13T00:55:00Z')), Date.parse('2026-11-13T01:05:00Z'))
+})
+
+test('a fixed UTC offset is refused by name instead of being taken as a zone', () => {
+  const result = parseSchedule({ cron: '0 9 * * *', timezone: '+05:00' })
+  assert.equal(result.ok, false, 'the contract says an IANA zone, and +05:00 is not one')
+  if (!result.ok) {
+    assert.ok(result.reason.includes('+05:00'), `the refusal names the value: ${result.reason}`)
+    assert.ok(result.reason.includes('IANA'), `the refusal names the requirement: ${result.reason}`)
+  }
+})
+
+test('a leap-day cron resolves past the window a five-year search would miss', () => {
+  const schedule = parse({ cron: '0 0 29 2 *', timezone: 'UTC' })
+  assert.equal(
+    nextTime(schedule, Date.parse('2096-03-01T00:00:00Z')),
+    Date.parse('2104-02-29T00:00:00Z'),
+    '2100 is not a leap year, so the next 29 February is 2104',
+  )
 })
 
 test('the expression is kept for display, so a console can show what it runs', () => {

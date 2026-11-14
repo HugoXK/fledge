@@ -294,9 +294,12 @@ defect.
   Jobs that exceed the timeout are failed.
 - **Schedule expressions** (#544, first slice): `src/schedules/next.ts` is the
   one planner a preview and the worker will share. A schedule is either a
-  five-field cron expression (numeric values, `*`, ranges and steps; no seconds
-  field, names or extensions) or a fixed interval between one minute and 30 days,
-  bound to an IANA timezone and an optional `[start_at, end_at)` window.
+  five-field cron expression (numeric values, `*`, ranges, lists and steps; no
+  seconds field, names or extensions) or a fixed interval between one minute and
+  30 days. The cron form names an IANA timezone; a fixed UTC offset is refused.
+  The interval form has no timezone and fires on whole multiples of its length
+  from the epoch, so every gap is exactly that length whatever the poll cadence.
+  Both forms take an optional `[start_at, end_at)` window.
   `nextTime` is where DST is decided once: a local time that does not exist in
   the spring-forward gap is skipped rather than shifted, and a local time that
   occurs twice in the fall-back hour fires once, at the earlier instant, so a
