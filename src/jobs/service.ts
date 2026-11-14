@@ -381,7 +381,31 @@ export class Jobs {
     const prepared = await this.prepareStop(jobId, reason, 'cancelled')
     if (!prepared.ok) return prepared
     prepared.apply()
-    prepared.afterCommit?.()
+    // #666: the second after-commit site. The management path guards this call in
+    // `commitSucceeded`, but this one is reached directly by callers that are not
+    // commands, and a cancel that has landed must not report an error because its
+    // after-commit write escaped. The callback owns its own catch as well; the
+    // guard here is the one that survives a callback that does not.
+    try {
+      prepared.afterCommit?.()
+    } catch (error) {
+      const name = error instanceof Error ? error.name : typeof error
+      const text = error instanceof Error ? error.message : String(error)
+      log.warn('after-commit callback failed', { trace: jobId, error: `${name}: ${text}` })
+      try {
+        const job = this.store.getJob(jobId)
+        this.store.recordJobEvent({
+          jobId,
+          repoId: job?.repo_id ?? null,
+          userId: job?.user_id ?? null,
+          kind: 'job.after_commit_failed',
+          step: job?.kind ?? null,
+          meta: `${jobId} ${name}: ${redact(text)}`,
+        })
+      } catch (traceError) {
+        log.warn('after-commit failure trace could not be written', { trace: jobId, error: String(traceError) })
+      }
+    }
     return { ok: true, ...prepared.stop }
   }
 
@@ -1164,6 +1188,25 @@ export class Jobs {
       })
     } catch (error) {
       log.warn('postmortem write failed', { trace: jobId, error: String(error) })
+      // #666: a postmortem that was not written is a repair job, not a no-op, so
+      // the loss gets its own durable row instead of living only in a process
+      // log. The cancel has committed by the time this runs: a trace that cannot
+      // be written must never become an error the caller can see.
+      const name = error instanceof Error ? error.name : typeof error
+      const reason = error instanceof Error ? error.message : String(error)
+      try {
+        const job = this.store.getJob(jobId)
+        this.store.recordJobEvent({
+          jobId,
+          repoId: job?.repo_id ?? null,
+          userId: job?.user_id ?? null,
+          kind: 'job.postmortem_failed',
+          step: job?.kind ?? null,
+          meta: `${jobId} ${name}: ${redact(reason)}`,
+        })
+      } catch (traceError) {
+        log.warn('postmortem failure trace could not be written', { trace: jobId, error: String(traceError) })
+      }
     }
   }
 

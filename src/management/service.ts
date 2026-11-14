@@ -1,6 +1,7 @@
 import type { ManagementCommandRow, Store } from '../db.js'
 import type { Jobs } from '../jobs/service.js'
-import { randomId, sha256Hex } from '../lib/secrets.js'
+import { randomId, redact, sha256Hex } from '../lib/secrets.js'
+import { log } from '../lib/log.js'
 import { capabilitiesForRepo, FORBIDDEN_ARGUMENT_KEYS, type ActorContext } from './actor.js'
 import { operationFor, type CommandTarget } from './catalog.js'
 
@@ -261,7 +262,23 @@ export class ManagementService {
     // it runs here — only after the commit returned, never for a rolled-back
     // command. A failure there must not turn a committed command into an error,
     // which is why the landing write owns its own error handling.
-    afterCommit?.()
+    // #666: "owns its own error handling" was an assumption, not a guarantee —
+    // one callback that throws escaped this line after COMMIT had returned, so a
+    // landed cancel reached the caller as an error. The guard is here, covering
+    // every callback, and the escaped failure leaves a durable trace naming the
+    // receipt and the error class.
+    try {
+      afterCommit?.()
+    } catch (error) {
+      const name = error instanceof Error ? error.name : typeof error
+      const reason = error instanceof Error ? error.message : String(error)
+      log.warn('after-commit callback failed', { trace: receipt.id, error: `${name}: ${reason}` })
+      try {
+        this.store.audit(receipt.principal_id, 'management.command.after_commit_failed', `${receipt.id} ${receipt.operation} ${name}: ${redact(reason)}`)
+      } catch (traceError) {
+        log.warn('after-commit failure trace could not be written', { trace: receipt.id, error: String(traceError) })
+      }
+    }
     const updated = this.store.commandReceipt(receipt.id)
     if (updated === undefined) return { ok: false, code: 'corrupt_receipt', message: 'the receipt disappeared after completion' }
     return { ok: true, receipt: updated, replayed: false, result }

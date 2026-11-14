@@ -156,3 +156,83 @@ test('a cancel whose receipt cannot commit leaves no postmortem behind', async (
     await f.close()
   }
 })
+
+// #666: the failure path #616 left behind. A failed postmortem write must leave a
+// durable trace instead of only a process log line, and a throwing after-commit
+// callback must not turn a cancel that already landed into an error.
+test('a failed postmortem write leaves a durable trace, not only a log line', async () => {
+  const f = await fixture('postmortem-failure')
+  const captured = captureLog()
+  try {
+    const store = f.built.store
+    const original = store.createPostmortemForJob.bind(store)
+    store.createPostmortemForJob = (() => {
+      throw new Error('database is locked')
+    }) as typeof store.createPostmortemForJob
+
+    const response = await cancelPost(f, { expected_revision: '1', idempotency_key: 'cancel-postmortem-failure' })
+    assert.equal(response.statusCode, 302)
+    assert.equal(store.getJob(f.jobId)?.status, 'cancelled', 'the cancel landed even though the postmortem did not')
+    assert.equal(store.getPostmortemForJob(f.jobId), undefined, 'the row really is missing, which is why the trace has to exist')
+
+    const traces = store.listJobEvents(f.jobId, 200).filter((row) => row.kind === 'job.postmortem_failed')
+    assert.equal(traces.length, 1, 'one durable row records the loss, so an operator can find and repair it')
+    assert.match(traces[0]?.meta ?? '', /job_cancel_postmortem-failure/, 'the trace names the job')
+    assert.match(traces[0]?.meta ?? '', /Error/, 'the trace names the error class')
+
+    assert.equal(captured.lines.filter((row) => row.msg === 'postmortem write failed').length, 1, 'the log line stays')
+    store.createPostmortemForJob = original
+  } finally {
+    captured.restore()
+    await f.close()
+  }
+})
+
+test('a throwing after-commit callback cannot turn a landed cancel into an error', async () => {
+  const f = await fixture('callback-throw')
+  try {
+    const store = f.built.store
+    const jobs = f.built.jobs
+    const original = jobs.prepareCancel.bind(jobs)
+    ;(jobs as unknown as { prepareCancel: typeof jobs.prepareCancel }).prepareCancel = async (jobId: string, reason: string) => {
+      const prepared = await original(jobId, reason)
+      return { ...prepared, afterCommit: () => { throw new Error('callback exploded') } }
+    }
+
+    const response = await cancelPost(f, { expected_revision: '1', idempotency_key: 'cancel-callback-throw' })
+    assert.equal(response.statusCode, 302, 'the committed command still reports success')
+    assert.equal(store.getJob(f.jobId)?.status, 'cancelled', 'the cancel landed before the callback threw')
+
+    const traces = store.listAudit(200).filter((row) => row.action === 'management.command.after_commit_failed')
+    assert.equal(traces.length, 1, 'the escaped failure is durable, not only a log line')
+    assert.match(traces[0]?.detail ?? '', /callback exploded/, 'the trace names the error class')
+  } finally {
+    await f.close()
+  }
+})
+
+// The management path is not the only caller: `cancelJob` runs the same
+// after-commit write for callers that are not commands, so the guard has to
+// hold there as well instead of only behind the receipt.
+test('the direct cancel path guards its own after-commit write', async () => {
+  const f = await fixture('direct-cancel')
+  try {
+    const store = f.built.store
+    const jobs = f.built.jobs as unknown as { notePostmortem: (jobId: string) => void }
+    const original = jobs.notePostmortem
+    jobs.notePostmortem = () => { throw new Error('trace write failed') }
+
+    const result = await f.built.jobs.cancelJob(f.jobId, 'stop it')
+    assert.equal(result.ok, true, 'the landed cancel keeps reporting success')
+    assert.equal(store.getJob(f.jobId)?.status, 'cancelled', 'the cancel landed before the write threw')
+
+    const traces = store.listJobEvents(f.jobId, 200).filter((row) => row.kind === 'job.after_commit_failed')
+    assert.equal(traces.length, 1, 'the escaped failure is durable on the job timeline')
+    assert.match(traces[0]?.meta ?? '', /job_cancel_direct-cancel/, 'the trace names the job')
+    assert.match(traces[0]?.meta ?? '', /Error/, 'the trace names the error class')
+
+    jobs.notePostmortem = original
+  } finally {
+    await f.close()
+  }
+})
