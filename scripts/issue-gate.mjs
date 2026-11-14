@@ -25,11 +25,19 @@
 //   5  issue-gate: corrupt-body #<N>
 //   6  the gate could not run (arguments, policy, HTTP, no token)
 //   7  issue-gate: hold #<N> <hash>[ (trimmed)]
+//   8  issue-gate: bad-evidence #<N> <hash> ref=<path:line|symbol> expected=<text> found=<none|line>
 //
 // `hold` means approved but not claimable. It replaces `ok` and nothing else:
 // a held card whose live verdict is CHANGES still prints `changes` (exit 4), a
 // held card with no verdict still prints `no-pass` (exit 2), and a held card
 // whose PASS names another body still prints `stale-pass` (exit 1).
+//
+// Exit 8 is emitted only after the hash check passes, because a card with no
+// PASS at the live body is unbuildable whatever it cites. A body that cites a
+// `path:line`, a test line or a symbol tied to one resolves at the sha its
+// `main` = <sha> names, and that pin must be an ancestor of the live main; a
+// body that cites no such evidence needs no pin and is judged exactly as before.
+// `scripts/lib/issue-evidence.mjs` carries the rule and its stated limits.
 //
 // Exit 6 exists so a caller can tell "the card is blocked" apart from "the
 // check broke"; folding them together would make an outage look like a verdict.
@@ -46,6 +54,7 @@
 
 import { readFileSync } from 'node:fs'
 import { bodyHashes, trimmedSuffix } from './lib/issue-body-hash.mjs'
+import { resolveEvidence } from './lib/issue-evidence.mjs'
 
 const DEFAULT_API = 'https://api.github.com'
 const VERDICT = /^Issue-review: (PASS|CHANGES) at issue #(\d+) body ([0-9a-f]{12})$/
@@ -171,6 +180,21 @@ if (latestAtBody !== undefined) {
   }
   if (held) {
     report(7, `issue-gate: hold #${issueNumber} ${latestAtBody.hash}${trimmedSuffix(latestAtBody.form)}`, 'the card carries hold')
+  }
+  // Only now is the body the one a verdict approved, so the evidence it cites is
+  // decided here: a ref that does not resolve at the pin, or a symbol claimed at
+  // a line that does not define it, is a card whose red test cannot be the one
+  // the body describes.
+  const evidence = await resolveEvidence({ body: issue.body, apiBase, repo, fetchJson: async (url) => (await getJson(url)).value })
+  for (const note of evidence.notes) console.error(`issue-gate: note #${issueNumber} ${note}`)
+  if (!evidence.ok) {
+    const first = evidence.failures[0]
+    for (const rest of evidence.failures.slice(1)) {
+      console.error(`issue-gate: note #${issueNumber} also bad: ${rest.ref} expected=${rest.expected} found=${rest.found} — ${rest.detail}`)
+    }
+    console.error(`issue-gate: note #${issueNumber} ${first.detail}`)
+    console.log(`issue-gate: bad-evidence #${issueNumber} ${latestAtBody.hash}${trimmedSuffix(latestAtBody.form)} ref=${first.ref} expected=${first.expected} found=${first.found}`)
+    process.exit(8)
   }
   report(0, `issue-gate: ok #${issueNumber} ${latestAtBody.hash}${trimmedSuffix(latestAtBody.form)}`)
 }
