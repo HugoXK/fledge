@@ -7,7 +7,7 @@ import { MockRunner } from '../src/jobs/mock.js'
 import { Jobs } from '../src/jobs/service.js'
 import { quotaView } from '../src/gateway/quota.js'
 import { parsePriceTable, requestCost } from '../src/metrics/cost.js'
-import { json, makeUser, MemoryMailer, readBody, startFakeServer, testConfig } from './helpers.js'
+import { json, makeUser, MemoryMailer, readBody, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
 // #636: a request is priced from a snapshot taken at the time of the call, and a
 // missing price or a missing usage block is `unknown`, never a free call.
@@ -101,6 +101,43 @@ test('currency buckets stay separate and unknown requests make the total a lower
     assert.equal(report.semantics, 'lower_bound')
   } finally {
     store.close()
+  }
+})
+
+// #702: an instance upgraded from the pre-#636 schema has `currency NULL` on
+// every ledger row it already had, and the migration adds the column without a
+// value. Grouping by the raw column and labelling NULL as USD afterwards made a
+// NULL row and a 'USD' row two buckets with the same label, so the first deploy
+// after an upgrade showed two `USD` rows on the cost-by-currency table. They are
+// the same currency: one bucket, one row.
+test('a NULL-currency row joins the USD bucket and the page shows one USD row', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'currency-admin', superadmin: true, status: 'approved' })
+    store.recordUsage(admin.id, null, 0.2, null, null, { currency: null, model: 'model-a', priceSnapshot: null })
+    store.recordUsage(admin.id, null, 0.1, null, null, { currency: 'USD', model: 'model-a', priceSnapshot: null })
+
+    const report = store.costByCurrency('2000-01-01T00:00:00.000Z')
+    assert.equal(report.buckets.length, 1, 'one bucket per currency label, not per raw column value')
+    assert.equal(report.buckets[0]?.currency, 'USD')
+    assert.equal(report.buckets[0]?.requests, 2)
+    assert.equal(Number(report.buckets[0]?.amount.toFixed(10)), 0.3)
+    assert.equal(report.unknownRequests, 0)
+    assert.equal(report.semantics, 'exact')
+
+    const { cookie } = sessionFor(built, admin)
+    const page = await built.app.inject({ method: 'GET', url: '/admin/metrics', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    const start = page.body.indexOf('按币种成本')
+    const end = page.body.indexOf('模型成本', start)
+    assert.ok(start > 0 && end > start, 'the cost-by-currency table is on the page')
+    const table = page.body.slice(start, end)
+    assert.equal(table.match(/<code>USD<\/code>/g)?.length, 1, 'the table renders USD once')
+    assert.match(table, /0\.3000 USD/, 'the one USD row shows the combined amount')
+  } finally {
+    await built.close()
   }
 })
 
