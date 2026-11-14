@@ -101,6 +101,7 @@ is internal (`src/management/`) and the console call it outlives:
 
 ```ts
 POST /repos/:id/jobs/:jobId/cancel   // form adapter, carries expected_revision and idempotency_key
+POST /repos/:id/jobs/:jobId/pause    // same adapter shape, behind MANAGEMENT_SERVICE
 ```
 
 A command is `{ operation, target: { projectId, jobId? }, arguments,
@@ -114,10 +115,23 @@ The server fills the actor; a payload that carries an identity field is refused.
 | `idempotency_conflict` | Same key, different arguments; refused, the first receipt stands |
 | `management_revision_conflict` | The resource moved on; nothing was written |
 | `authorization_revoked` | The caller lost the capability between acceptance and execution; nothing was written |
-| `job_not_cancellable` | The job had already finished; the catalog operation refused |
+| `job_not_cancellable` | The job had already finished; the cancel operation refused |
+| `job_not_pausable` | The job had already finished; the pause operation refused |
+| `command_in_progress` | The receipt is `accepted`, `running` or `unknown`: the command is still unresolved, so replaying the same key answers this and never a success notice |
 
-Operation names today: `task.cancel`. The catalog is closed — an unknown
-operation is `unknown_operation`, never a fallback.
+Operation names today: `task.cancel`, `task.pause`. The catalog is closed — an
+unknown operation is `unknown_operation`, never a fallback.
+
+`MANAGEMENT_SERVICE=off|shadow|on` decides how far the adapters added after
+`task.cancel` go. `off` (the default) registers the command but keeps the route
+that existed before it — the same writes and the same answers, with the notice now
+in the reader's language; `shadow` reserves the receipt and then runs that same
+route, recording what the contract would have decided, so a divergence is visible
+in `management_commands` and not in the page; `on` runs the command and turns its
+receipt into the response. A stale page in `shadow` still writes no receipt — the
+revision fence runs before the receipt insert, as it does everywhere else — and a
+replayed key settles nothing, so a receipt that already answered is never
+rewritten and the revision moves once per command.
 
 ## Read-only metrics
 

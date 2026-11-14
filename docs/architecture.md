@@ -1538,20 +1538,47 @@ a change of hands between acceptance and execution fails the receipt before the
 business write. On success the receipt, the revision bump and the
 `management.command` audit row commit in one transaction.
 
-`task.cancel` is not fully transactional, and that is deliberate: it calls
-`Jobs.cancelJob`, which stops live bot sessions over the bridge before the local
-status write, so the external step cannot sit inside the SQLite transaction. Its
-external call is best-effort and safe to repeat, so the operation never needs the
-`unknown` state; the first operation that does (a release, or a resume that
-enqueues through an external surface) will bring
-`management_command_attempts` and a reconcile step with it. The form route stays
-a thin adapter: it renders the revision and a fresh key, calls the service, and
-turns the receipt into the same redirect as before.
+`task.cancel` and `task.pause` are only partly outside the transaction, and the
+split is at the await: stopping live bot sessions over the bridge and clearing the
+instance's job token happen first, best-effort and safe to repeat, so a repeat can
+never duplicate them. Everything that changes state — the job row, the repository
+status, the work item, the audit and job-event rows, the receipt, the revision
+bump — is handed back as the operation's `commit` callback and runs inside a
+single SQLite transaction. A crash therefore leaves either both the effect and its
+receipt, or neither: the receipt stays `accepted`, which is the truth.
 
-The rest of the write surface — job create/pause/resume/retry, repository
-settings, releases, member grants — still calls its service directly. Each
-migrates by registering one operation and leaving its route as an adapter; none
-of them may keep a second copy of the rules.
+The platform-token revocation is the one local write that is not in that
+transaction: it happens with the awaited work, before the commit, so a command
+whose transaction fails leaves the job queued or running with its token already
+revoked. Closing that gap means moving the revocation into the `commit` callback,
+which this slice does not do.
+`Jobs.prepareCancel`/`preparePause` put the awaited work in one place so the
+legacy `cancelJob`/`pauseJob` and the command cannot drift apart.
+
+A receipt that has already answered is never rewritten. In `shadow` the route
+reserves the receipt, runs today's path and settles it; the same key submitted
+again replays that receipt and settles nothing, so one command moves the revision
+once and a resubmitted page cannot turn a recorded success into a failure.
+
+That split is why these two commands never need the `unknown` state. The first
+operation that does — a release, or a resume that enqueues through an external
+surface — will bring `management_command_attempts` and a reconcile step with it.
+The form route stays a thin adapter: it renders the revision and a fresh key,
+calls the service, and turns the receipt into the same redirect as before.
+
+`MANAGEMENT_SERVICE=off|shadow|on` (default `off`) governs the adapters added
+after `task.cancel`. `off` keeps the route that existed before the contract,
+`shadow` reserves and records the command but still runs that route — so the
+receipt is where a divergence shows — and `on` lets the command answer. An
+unknown value is `off`: a typo must not start enforcing.
+
+The rest of the write surface — job create/resume/retry, repository settings,
+releases, member grants — still calls its service directly. Each migrates by
+registering one operation and leaving its route as an adapter; none of them may
+keep a second copy of the rules. Resume, retry and create come next and need
+their refusals mapped first: `Jobs.enqueue` answers with free-text Chinese plus an
+enqueue code, so the bilingual sentence table has to exist before the route can be
+an adapter.
 
 ## Notification webhook egress
 

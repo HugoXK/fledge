@@ -6,8 +6,8 @@ import type { RepoRow, Store } from '../db.js'
 export type Channel = 'web' | 'api' | 'chat' | 'system'
 
 // The closed capability set of this slice. #541 adds the real grant model; until
-// then the repository owner holds the one capability this catalog checks.
-export type Capability = 'job.cancel'
+// then the repository owner holds every capability the catalog checks.
+export type Capability = 'job.cancel' | 'job.pause'
 
 export interface ActorContext {
   principalId: string
@@ -50,7 +50,10 @@ export function capabilitiesForRepo(store: Store, principalId: string, projectId
   const capabilities = new Set<Capability>()
   if (projectId === null || projectId === '') return capabilities
   const repo = store.getRepo(projectId)
-  if (repo !== undefined && repo.user_id === principalId) capabilities.add('job.cancel')
+  if (repo !== undefined && repo.user_id === principalId) {
+    capabilities.add('job.cancel')
+    capabilities.add('job.pause')
+  }
   return capabilities
 }
 
@@ -64,7 +67,10 @@ export function managementActor(input: {
   // again from the database, so this one is only a copy of what held at the time
   // the request arrived.
   const capabilities = new Set<Capability>()
-  if (input.repo.user_id === input.userId) capabilities.add('job.cancel')
+  if (input.repo.user_id === input.userId) {
+    capabilities.add('job.cancel')
+    capabilities.add('job.pause')
+  }
   return {
     principalId: input.userId,
     tenantId: null,

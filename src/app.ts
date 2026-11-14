@@ -172,17 +172,23 @@ function form(request: FastifyRequest): Record<string, string> {
 }
 
 // #540: the management codes are stable identifiers, so the sentence a person
-// reads is chosen here, once, in both languages.
-function managementRefusal(t: Translate, code: ManagementCode): string {
+// reads is chosen here, once, in both languages. The last line is the caller's
+// own sentence: "the cancel failed" is wrong on a pause, and a code we have not
+// taught this switch yet must not borrow another operation's words.
+function managementRefusal(t: Translate, code: ManagementCode, fallback: string): string {
   switch (code) {
     case 'management_revision_conflict':
       return t('这个任务在你打开页面之后已经变化，请重新打开任务后再操作。', 'This job changed after you opened the page; reopen it before acting.')
     case 'idempotency_conflict':
       return t('这个请求已经用不同的内容提交过，已拒绝。请刷新页面后重试。', 'That request was already submitted with different content; reload the page and try again.')
+    case 'command_in_progress':
+      return t('这个操作还在处理中，请刷新页面查看结果。', 'This action is still being processed; reload to see the result.')
     case 'authorization_revoked':
       return t('你已经没有执行这个操作的权限。', 'You no longer have permission for this action.')
     case 'job_not_cancellable':
       return t('这个任务已经结束。', 'This job has already finished.')
+    case 'job_not_pausable':
+      return t('这个任务已经结束，不能再暂停。', 'This job has already finished and cannot be paused.')
     case 'job_not_found':
       return t('任务不存在。', 'The job does not exist.')
     case 'actor_not_allowed':
@@ -190,7 +196,7 @@ function managementRefusal(t: Translate, code: ManagementCode): string {
     case 'unknown_operation':
       return t('不支持的操作。', 'Unsupported operation.')
     default:
-      return t('取消失败。', 'The cancel failed.')
+      return fallback
   }
 }
 
@@ -1907,6 +1913,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       // #540: the cancel form carries the revision it rendered and a fresh key,
       // so a double submit replays the same receipt and a stale page conflicts.
       cancel: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
+      pause: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
@@ -1937,15 +1944,63 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     })
     const back = `/repos/${repo.id}/jobs/${job.id}`
     if (outcome.ok) return reply.redirect(`${back}?notice=${encodeURIComponent(t('任务已取消。', 'Job cancelled.'))}`)
-    return reply.redirect(`${back}?error=${encodeURIComponent(managementRefusal(t, outcome.code))}&code=${outcome.code}`)
+    return reply.redirect(`${back}?error=${encodeURIComponent(managementRefusal(t, outcome.code, t('取消失败。', 'The cancel failed.')))}&code=${outcome.code}`)
   })
 
+  // #540 slice 2: pausing goes through the same contract as cancelling. The
+  // switch decides how far — `off` is the route that existed before this slice,
+  // `shadow` reserves and records the command but keeps that route, and `on`
+  // runs the command and turns its receipt into the redirect.
   app.post('/repos/:id/jobs/:jobId/pause', async (request, reply) => {
-    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
-    const result = await jobs.pauseJob(job.id)
-    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${result.ok ? 'notice' : 'error'}=${encodeURIComponent(result.ok ? '任务已暂停。' : result.error ?? '暂停失败。')}`)
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    const t = translator(request.locale ?? 'zh')
+    const today = async (): Promise<{ notice: string } | { error: string }> => {
+      const result = await jobs.pauseJob(job.id)
+      return result.ok ? { notice: t('任务已暂停。', 'Job paused.') } : { error: result.error ?? t('暂停失败。', 'The pause failed.') }
+    }
+    const answer = (result: { notice: string } | { error: string }) => ('notice' in result
+      ? reply.redirect(`${back}?notice=${encodeURIComponent(result.notice)}`)
+      : reply.redirect(`${back}?error=${encodeURIComponent(result.error)}`))
+
+    if (config.managementService === 'off') return answer(await today())
+
+    const body = form(request)
+    const current = management.revisionOf('job', job.id)
+    const rendered = Number.parseInt(body.expected_revision ?? '', 10)
+    const expectedRevision = Number.isFinite(rendered) && rendered >= 1 ? rendered : current
+    const idempotencyKey = body.idempotency_key !== undefined && body.idempotency_key !== '' ? body.idempotency_key : randomId('cmd')
+    const actor = managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
+    const envelope = {
+      operation: 'task.pause',
+      target: { projectId: repo.id, jobId: job.id },
+      arguments: {},
+      expectedRevision,
+      idempotencyKey,
+    }
+
+    if (config.managementService === 'shadow') {
+      // The person keeps today's route and its sentence; the receipt records what
+      // the contract would have done with the very same form, which is the point
+      // of shadow — a divergence shows up in the receipt, not in the UI.
+      const begun = management.begin(actor, envelope)
+      const result = await today()
+      // A replayed command already has its receipt, and a replay must never
+      // rewrite it: the second submit of the same form runs today's route again
+      // (which refuses), but the ledger keeps the success it recorded first.
+      if (begun.ok && !begun.replayed) {
+        management.settle(begun.receipt.id, 'notice' in result
+          ? { ok: true, result: { jobId: job.id, shadow: true } }
+          : { ok: false, code: 'job_not_pausable', message: 'the route refused the pause' })
+      }
+      return answer(result)
+    }
+
+    const outcome = await management.run(actor, envelope)
+    if (outcome.ok) return answer({ notice: t('任务已暂停。', 'Job paused.') })
+    return reply.redirect(`${back}?error=${encodeURIComponent(managementRefusal(t, outcome.code, t('暂停失败。', 'The pause failed.')))}&code=${outcome.code}`)
   })
 
   app.post('/repos/:id/jobs/:jobId/resume', async (request, reply) => {

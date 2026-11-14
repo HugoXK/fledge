@@ -2507,6 +2507,7 @@ export function jobPage(input: {
   // #540: the revision this render saw and the key a double submit replays.
   // Absent on surfaces that cannot write (the admin support view).
   cancel?: { revision: number; idempotencyKey: string }
+  pause?: { revision: number; idempotencyKey: string }
   supportMode?: boolean
   notice?: string
   error?: string
@@ -2516,6 +2517,10 @@ export function jobPage(input: {
   const cancelHidden = cancel === undefined
     ? ''
     : `<input type="hidden" name="expected_revision" value="${cancel.revision}" /><input type="hidden" name="idempotency_key" value="${escapeHtml(cancel.idempotencyKey)}" />`
+  const pause = input.pause
+  const pauseHidden = pause === undefined
+    ? ''
+    : `<input type="hidden" name="expected_revision" value="${pause.revision}" /><input type="hidden" name="idempotency_key" value="${escapeHtml(pause.idempotencyKey)}" />`
   const events = input.events ?? []
   const postmortem = input.postmortem ?? null
   const supportMode = input.supportMode === true
@@ -2623,7 +2628,7 @@ export function jobPage(input: {
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/execute">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('执行这个计划', 'Execute this plan'))}</button></form>`
     : ''
   const control = job.status === 'queued' || job.status === 'running'
-    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/pause">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('暂停', 'Pause'))}</button></form><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/cancel" data-confirm="${escapeHtml(t('取消这个任务？', 'Cancel this job?'))}">${csrf(viewer)}${cancelHidden}<button class="btn btn-danger" type="submit">${escapeHtml(t('取消', 'Cancel'))}</button></form>`
+    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/pause">${csrf(viewer)}${pauseHidden}<button class="btn btn-ghost" type="submit">${escapeHtml(t('暂停', 'Pause'))}</button></form><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/cancel" data-confirm="${escapeHtml(t('取消这个任务？', 'Cancel this job?'))}">${csrf(viewer)}${cancelHidden}<button class="btn btn-danger" type="submit">${escapeHtml(t('取消', 'Cancel'))}</button></form>`
     : job.status === 'paused'
       ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/resume">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('恢复', 'Resume'))}</button></form>`
       : ''
