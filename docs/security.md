@@ -94,9 +94,17 @@ person at the keyboard is still the GitHub account behind it. Destructive writes
 therefore require a GitHub confirmation inside `RECENT_AUTH_MINUTES` (default 15),
 tracked as `sessions.recent_auth_at`:
 
-- Gated actions: repository delete, turning a repository's auto-merge on or off,
-  quota changes, API-token creation and revocation, admin approve/reject, and
-  stopping a FlyBot instance. Reads and normal job actions are unaffected.
+- Gated actions: repository delete, the repository settings POST, quota changes,
+  API-token creation and revocation, admin approve/reject, and stopping a FlyBot
+  instance. The settings POST is gated on either of two paths: turning a
+  repository's auto-merge on or off, audited as `repo.auto_merge`, and changing
+  the pre-merge policy — branch protection, the stage gate, the allowed and
+  denied paths, the target branch and the repository role, audited as
+  `repo.policy`. The rest of that form (enablement, budgets, reviewer
+  preference, model assignment) stays a preference save and is not gated. Reads
+  and normal job actions are unaffected.
+- A policy change that passes the gate is audited once as `repo.policy`, naming
+  the fields that moved, so one row says which weakening was attempted.
 - A session that has not re-authenticated (`recent_auth_at` is `NULL`, which is
   also every session that predates this control) is refused, audited as
   `recent_auth_required` with the action and path, and redirected through
