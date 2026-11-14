@@ -292,6 +292,26 @@ defect.
   is skipped while another job for that repository is active. The global
   concurrency cap is 2. Review cadence is from every 6 hours to every 30 days.
   Jobs that exceed the timeout are failed.
+- **Schedule expressions** (#544, first slice): `src/schedules/next.ts` is the
+  one planner a preview and the worker will share. A schedule is either a
+  five-field cron expression (numeric values, `*`, ranges, lists and steps; no
+  seconds field, names or extensions) or a fixed interval between one minute and
+  30 days. The cron form names an IANA timezone; a fixed UTC offset is refused.
+  The interval form has no timezone and fires on whole multiples of its length
+  from the epoch, so every gap is exactly that length whatever the poll cadence.
+  Both forms take an optional `[start_at, end_at)` window.
+  `nextTime` is where DST is decided once: a local time that does not exist in
+  the spring-forward gap is skipped rather than shifted, and a local time that
+  occurs twice in the fall-back hour fires once, at the earlier instant, so a
+  poll inside the repeated hour does not run it a second time.
+  The preview is the planner's first consumer (#544, second slice): `/schedule`
+  and `GET /api/schedule/preview` walk the next N instants, show the wall clock in
+  the schedule's zone, and mark a local time the spring-forward gap removed as
+  skipped rather than shifting it. Because the interval form has no timezone, an
+  interval that arrives with one is refused by name instead of being accepted and
+  shown as if a zone applied. A preview stores nothing and creates no job.
+  Occurrence rows, leases, misfire policies, layered budgets and the notification
+  outbox are not built yet; the tick still runs on `repos.interval_minutes`.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
@@ -1472,6 +1492,8 @@ listing, and every row links to the page that already owns it.
 | `postmortems` | one evidence-backed write-up per failed/stalled/cancelled job, with category, recurrence key, owner and preventive action |
 | `postmortem_recurrences` | one ledger row per recurrence key: count, first/last seen, affected repositories and the single escalation marker |
 | `audit_log` | who changed what |
+| `management_commands` | one receipt per command: principal, channel, idempotency scope/key, request hash, operation, target, arguments, expected/before/after revision, status and result (#540) |
+| `resource_revisions` | the fence a command compares against, one row per resource; a resource with no row is at revision 1 (#540) |
 | `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
 
 ## Deployment records
@@ -1511,6 +1533,75 @@ queued ──► running ──► succeeded
 
 The claim/worker dispatch model, the `queued` meaning and the idempotent
 callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
+
+## Management commands (#540)
+
+Every console write used to be its own route: parse the form, check the owner,
+call the service, write an audit row, redirect. A second surface (an API, a chat
+entry, automation) would have had to copy all four steps. `src/management/`
+replaces that shape with one contract, and the first migrated write is the job
+cancel form.
+
+A command is an operation from a closed catalog (`src/management/catalog.ts`),
+a target (`projectId`, plus `jobId` today), validated arguments, the revision the
+caller saw (`expected_revision`), an idempotency key, and the source conversation
+or message when the caller has one. The actor — principal, channel, tenant,
+capabilities — is built by the server from the session and the repository; a form
+field, an IM message or a model cannot supply it, and an argument that names one
+(`actor`, `tenant_id`, `capabilities`, `sql`, `url`, `path`) is refused rather
+than ignored.
+
+The service stores a receipt before the business write, in `accepted` state.
+Repeating the same key with the same request hash returns that receipt and runs
+nothing; reusing the key with different arguments returns
+`idempotency_conflict`; a revision that has moved on returns
+`management_revision_conflict` and writes no receipt at all. Execution re-reads
+the caller's capabilities from the database and compares the revision again, so
+a change of hands between acceptance and execution fails the receipt before the
+business write. On success the receipt, the revision bump and the
+`management.command` audit row commit in one transaction.
+
+`task.cancel` and `task.pause` are only partly outside the transaction, and the
+split is at the await: stopping live bot sessions over the bridge and clearing the
+instance's job token happen first, best-effort and safe to repeat, so a repeat can
+never duplicate them. Everything that changes state — the job row, the repository
+status, the work item, the audit and job-event rows, the receipt, the revision
+bump — is handed back as the operation's `commit` callback and runs inside a
+single SQLite transaction. A crash therefore leaves either both the effect and its
+receipt, or neither: the receipt stays `accepted`, which is the truth.
+
+The platform-token revocation is the one local write that is not in that
+transaction: it happens with the awaited work, before the commit, so a command
+whose transaction fails leaves the job queued or running with its token already
+revoked. Closing that gap means moving the revocation into the `commit` callback,
+which this slice does not do.
+`Jobs.prepareCancel`/`preparePause` put the awaited work in one place so the
+legacy `cancelJob`/`pauseJob` and the command cannot drift apart.
+
+A receipt that has already answered is never rewritten. In `shadow` the route
+reserves the receipt, runs today's path and settles it; the same key submitted
+again replays that receipt and settles nothing, so one command moves the revision
+once and a resubmitted page cannot turn a recorded success into a failure.
+
+That split is why these two commands never need the `unknown` state. The first
+operation that does — a release, or a resume that enqueues through an external
+surface — will bring `management_command_attempts` and a reconcile step with it.
+The form route stays a thin adapter: it renders the revision and a fresh key,
+calls the service, and turns the receipt into the same redirect as before.
+
+`MANAGEMENT_SERVICE=off|shadow|on` (default `off`) governs the adapters added
+after `task.cancel`. `off` keeps the route that existed before the contract,
+`shadow` reserves and records the command but still runs that route — so the
+receipt is where a divergence shows — and `on` lets the command answer. An
+unknown value is `off`: a typo must not start enforcing.
+
+The rest of the write surface — job create/resume/retry, repository settings,
+releases, member grants — still calls its service directly. Each migrates by
+registering one operation and leaving its route as an adapter; none of them may
+keep a second copy of the rules. Resume, retry and create come next and need
+their refusals mapped first: `Jobs.enqueue` answers with free-text Chinese plus an
+enqueue code, so the bilingual sentence table has to exist before the route can be
+an adapter.
 
 ## Notification webhook egress
 

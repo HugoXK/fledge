@@ -75,6 +75,7 @@ export function sectionForPath(path: string): string {
   // Workspace lit there instead of showing no current section.
   if (clean === '/search' || clean.startsWith('/search/')) return 'console'
   if (clean === '/dashboard' || clean.startsWith('/dashboard/') || clean === '/repos' || clean.startsWith('/repos/')) return 'dashboard'
+  if (clean === '/schedule' || clean.startsWith('/schedule/')) return 'schedule'
   if (clean === '/settings' || clean.startsWith('/settings/')) return 'settings'
   if (clean === '/admin' || clean.startsWith('/admin/')) return 'admin'
   return ''
@@ -129,6 +130,7 @@ export function layout(options: LayoutOptions): string {
     : `<nav class="nav" id="main-nav" aria-label="${escapeHtml(t('主导航', 'Main navigation'))}">
         ${navItem('console', '/console', t('工作区', 'Workspace'))}
         ${navItem('dashboard', '/dashboard', t('仓库', 'Repositories'))}
+        ${navItem('schedule', '/schedule', t('排期', 'Schedule'))}
         ${navItem('settings', '/settings', t('设置', 'Settings'))}
         ${!preview && (viewer.user.role === 'admin' || viewer.user.role === 'superadmin') ? navItem('admin', '/admin', t('管理', 'Admin')) : ''}
       </nav>`

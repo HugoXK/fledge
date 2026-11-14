@@ -6,6 +6,7 @@ import { buildIdentity } from './lib/buildIdentity.js'
 import { DEFAULT_EXPECTED_HOURS } from './lib/backupStatus.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 import { registerRedactionSecrets } from './lib/secrets.js'
+import { parseManagementService, type ManagementServiceMode } from './management/mode.js'
 
 export type RunnerMode = 'mock' | 'flybot'
 export type MailTransport = 'console' | 'smtp'
@@ -28,6 +29,9 @@ export interface Config {
   }
   // How long a GitHub re-authentication stays "recent" for destructive actions.
   recentAuthMinutes: number
+  // #540: how far the console adapters go for commands added after slice 1.
+  // `off` (the default) is the route that existed before the contract.
+  managementService: ManagementServiceMode
   tokenEncryptionKey: string
   github: {
     clientId: string
@@ -264,6 +268,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       instancesGlobal: Math.max(0, number('LIMIT_INSTANCES_GLOBAL', 0)),
     },
     recentAuthMinutes: Math.max(1, number('RECENT_AUTH_MINUTES', 15)),
+    managementService: parseManagementService(text('MANAGEMENT_SERVICE', 'off')),
     tokenEncryptionKey: encryptionKey,
     github: {
       clientId: text('GITHUB_CLIENT_ID'),

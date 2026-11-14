@@ -18,6 +18,7 @@ import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkI
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
+import type { PreviewResult } from '../schedules/preview.js'
 import { contractOf, resolveWorkType, workTypeLabel, workTypePurpose } from '../lib/workTypes.js'
 import { parseTriageJson, triageSummaryLine } from '../lib/triage.js'
 import { parseModelRun } from '../lib/modelRun.js'
@@ -2510,11 +2511,23 @@ export function jobPage(input: {
   repoLabels?: Map<string, string>
   events?: JobEventRow[]
   postmortem?: PostmortemRow | null
+  // #540: the revision this render saw and the key a double submit replays.
+  // Absent on surfaces that cannot write (the admin support view).
+  cancel?: { revision: number; idempotencyKey: string }
+  pause?: { revision: number; idempotencyKey: string }
   supportMode?: boolean
   notice?: string
   error?: string
 }): string {
   const { config, locale, viewer, repo, job, notice, error } = input
+  const cancel = input.cancel
+  const cancelHidden = cancel === undefined
+    ? ''
+    : `<input type="hidden" name="expected_revision" value="${cancel.revision}" /><input type="hidden" name="idempotency_key" value="${escapeHtml(cancel.idempotencyKey)}" />`
+  const pause = input.pause
+  const pauseHidden = pause === undefined
+    ? ''
+    : `<input type="hidden" name="expected_revision" value="${pause.revision}" /><input type="hidden" name="idempotency_key" value="${escapeHtml(pause.idempotencyKey)}" />`
   const events = input.events ?? []
   const postmortem = input.postmortem ?? null
   const supportMode = input.supportMode === true
@@ -2622,7 +2635,7 @@ export function jobPage(input: {
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/execute">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('执行这个计划', 'Execute this plan'))}</button></form>`
     : ''
   const control = job.status === 'queued' || job.status === 'running'
-    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/pause">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('暂停', 'Pause'))}</button></form><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/cancel" data-confirm="${escapeHtml(t('取消这个任务？', 'Cancel this job?'))}">${csrf(viewer)}<button class="btn btn-danger" type="submit">${escapeHtml(t('取消', 'Cancel'))}</button></form>`
+    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/pause">${csrf(viewer)}${pauseHidden}<button class="btn btn-ghost" type="submit">${escapeHtml(t('暂停', 'Pause'))}</button></form><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/cancel" data-confirm="${escapeHtml(t('取消这个任务？', 'Cancel this job?'))}">${csrf(viewer)}${cancelHidden}<button class="btn btn-danger" type="submit">${escapeHtml(t('取消', 'Cancel'))}</button></form>`
     : job.status === 'paused'
       ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/resume">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('恢复', 'Resume'))}</button></form>`
       : ''
@@ -3464,4 +3477,63 @@ export function adminSearchPage(input: {
     <section class="card"><h2>${escapeHtml(t('任务', 'Jobs'))}</h2><form method="get" action="/admin/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" /></label><label>${escapeHtml(t('状态', 'Status'))} <select name="status"><option value="">${escapeHtml(t('全部', 'All'))}</option>${JOB_FILTER_STATUSES.map((status) => `<option value="${status}"${filters.status === status ? ' selected' : ''}>${escapeHtml(statusFilterLabel(t, status))}</option>`).join('')}</select></label><label>${escapeHtml(t('类型', 'Kind'))} <select name="kind"><option value="">${escapeHtml(t('全部', 'All'))}</option>${JOB_FILTER_KINDS.map((kind) => `<option value="${kind}"${filters.kind === kind ? ' selected' : ''}>${escapeHtml(kindFilterLabel(t, kind))}</option>`).join('')}</select></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button><a class="btn btn-ghost" href="/admin/export/jobs.csv?${escapeHtml(jobQuery)}">${escapeHtml(t('导出 CSV', 'Export CSV'))}</a></div></form>${lastExportLine(lastJobsExport)}<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('用户', 'User'))}</th><th>PR / Issue</th></tr></thead><tbody>${jobRows}</tbody></table></div><p class="fine">${escapeHtml(t('共', 'Total'))} ${jobsTotal} · ${escapeHtml(t('第', 'Page'))} ${jobsPage}</p>${pager('/admin/search', 'jobsPage', jobsPage, jobsTotal, perPage, t, { q: filters.q, status: filters.status, kind: filters.kind, auditPage })}</section>
     <section class="card"><h2>${escapeHtml(t('审计', 'Audit'))}</h2><form method="get" action="/admin/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" /></label><label>${escapeHtml(t('动作', 'Action'))} <input name="action" value="${escapeHtml(filters.action)}" placeholder="repo.settings" /></label><label>${escapeHtml(t('从', 'From'))} <input name="from" value="${escapeHtml(filters.from)}" placeholder="YYYY-MM-DD" /></label><label>${escapeHtml(t('到', 'To'))} <input name="to" value="${escapeHtml(filters.to)}" placeholder="YYYY-MM-DD" /></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button><a class="btn btn-ghost" href="/admin/export/audit.csv?${escapeHtml(auditQuery)}">${escapeHtml(t('导出 CSV', 'Export CSV'))}</a></div></form>${lastExportLine(lastAuditExport)}${auditTable}<p class="fine">${escapeHtml(t('共', 'Total'))} ${auditTotal} · ${escapeHtml(t('第', 'Page'))} ${auditPage}</p>${pager('/admin/search', 'auditPage', auditPage, auditTotal, perPage, t, { q: filters.q, action: filters.action, from: filters.from, to: filters.to, jobsPage })}</section>`
   return layout({ title: t('审计与任务', 'Audit and jobs'), viewer, body, config, locale, path: '/admin/search', active: 'admin', notice, error })
+}
+
+// #544, second slice: the first surface where a person can see what the planner
+// answers. The form and the JSON preview read the same query names and call the
+// same planner, so the page cannot drift from the API.
+export function schedulePage(input: {
+  config: Config
+  locale: Locale
+  viewer: Viewer
+  form: { cron: string; every: string; timezone: string; startAt: string; endAt: string; from: string; count: string }
+  preview: Extract<PreviewResult, { ok: true }> | null
+  error?: string
+}): string {
+  const { config, locale, viewer, form, preview, error } = input
+  const t = translator(locale)
+  const field = (name: string, label: string, value: string, placeholder: string, hint = ''): string =>
+    `<label>${escapeHtml(label)} <input name="${escapeHtml(name)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" />${hint === '' ? '' : ` <span class="fine">${escapeHtml(hint)}</span>`}</label>`
+  const scheduleLine = preview === null ? '' : preview.schedule.kind === 'cron'
+    ? t('cron', 'cron') + ` <code>${escapeHtml(preview.schedule.expression)}</code> · ${escapeHtml(preview.schedule.timezone)}`
+    : t('间隔', 'interval') + ` <code>${String(preview.schedule.everyMs)} ms</code>`
+  const rows = preview === null ? [] : preview.times.map((time, index) => {
+    const when = time.local === null
+      ? `<code>${escapeHtml(time.at)}</code>`
+      : `${escapeHtml(time.local)} <span class="fine">${escapeHtml(time.timezone ?? '')}</span>`
+    const skipped = time.skipped.length === 0 ? '—' : time.skipped.map((wall) => `<code>${escapeHtml(wall)}</code>`).join('<br />')
+    return `<tr><td>${index + 1}</td><td>${when}</td><td><code>${escapeHtml(time.at)}</code></td><td>${escapeHtml(time.offset ?? '—')}</td><td>${skipped}</td></tr>`
+  }).join('')
+  const skipNote = preview === null || !preview.times.some((time) => time.skipped.length > 0)
+    ? ''
+    : `<p class="muted">${escapeHtml(t(
+      '标记为“已跳过”的本地时间在那一刻不存在（夏令时前拨），预览没有把它平移到别的时刻，下一次运行按计划顺延。',
+      'A local time in the Skipped column does not exist in that zone at that moment (spring forward). The preview did not shift it; the next run falls on the next scheduled wall time.',
+    ))}</p>`
+  const truncatedNote = preview !== null && preview.truncated
+    ? `<p class="muted">${escapeHtml(t('窗口在 end_at 之前结束，因此只列到这些。', 'The window ended before the requested count, so this is all of it.'))}</p>`
+    : ''
+  const intervalNote = preview !== null && preview.schedule.kind === 'interval'
+    ? `<p class="muted">${escapeHtml(t('间隔形式没有时区：时间是绝对时间，UTC 一侧显示的就是它的时刻。', 'The interval form has no timezone: these are absolute instants, and the UTC column is the instant itself.'))}</p>`
+    : ''
+  const body = `<a class="back" href="/console">← ${escapeHtml(t('返回工作区', 'Back to workspace'))}</a>
+    <section class="card"><div class="eyebrow">${escapeHtml(t('排期', 'SCHEDULE'))}</div><h1>${escapeHtml(t('预览下一次运行', 'Preview the next runs'))}</h1>
+      <p class="muted">${escapeHtml(t(
+        '这个预览和将来的 worker 使用同一个规划器，回答“接下来会在哪些时刻运行”。它不保存任何东西，也不会创建任务。',
+        'This preview uses the same planner the worker will use and answers "when does this run next". It saves nothing and creates no job.',
+      ))}</p>
+      <form method="get" action="/schedule" class="form"><div class="row">
+        ${field('cron', t('cron 表达式', 'cron expression'), form.cron, '0 9 * * 1-5', t('五个字段：分 时 日 月 周', 'five fields: minute hour day month weekday'))}
+        ${field('every', t('或固定间隔', 'or a fixed interval'), form.every, '15m', t('s、m、h、d，例如 90s', 's, m, h or d, for example 90s'))}
+        ${field('timezone', t('时区（仅 cron）', 'timezone (cron only)'), form.timezone, 'Asia/Shanghai', '')}
+        ${field('from', t('从', 'From'), form.from, '2026-11-16T00:00:00Z', t('留空=现在', 'empty = now'))}
+        ${field('start_at', t('生效时间 start_at', 'start_at'), form.startAt, '2026-11-16T00:00:00Z', '')}
+        ${field('end_at', t('结束时间 end_at', 'end_at'), form.endAt, '', '')}
+        <label>${escapeHtml(t('条数', 'Count'))} <input name="count" value="${escapeHtml(form.count)}" placeholder="5" inputmode="numeric" /></label>
+        <button class="btn" type="submit">${escapeHtml(t('预览', 'Preview'))}</button>
+      </div></form>
+      <p class="fine">${escapeHtml(t('时间必须带时区偏移，例如 2026-11-16T09:00:00+08:00；只写日期和时间会被拒绝，因为它在一半时区里是另一个时刻。', 'An instant needs an offset, such as 2026-11-16T09:00:00+08:00; a bare date and time is refused because it names another instant in half the zones.'))}</p>
+    </section>
+    ${preview === null ? '' : `<section class="card"><h2>${escapeHtml(t('接下来的运行', 'Next runs'))}</h2><p class="muted">${scheduleLine}</p><div class="table-scroll"><table><thead><tr><th>#</th><th>${escapeHtml(t('本地时间', 'Local time'))}</th><th>UTC</th><th>${escapeHtml(t('偏移', 'Offset'))}</th><th>${escapeHtml(t('已跳过', 'Skipped'))}</th></tr></thead><tbody>${rows}</tbody></table></div>${intervalNote}${skipNote}${truncatedNote}</section>`}`
+  return layout({ title: t('排期预览', 'Schedule preview'), viewer, body, config, locale, path: '/schedule', active: 'schedule', error })
 }

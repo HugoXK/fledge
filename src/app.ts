@@ -33,7 +33,7 @@ import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256H
 import { expiryFromDays, GATEWAY_SCOPE, isTokenScope, patExpiryDays } from './lib/tokens.js'
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
-import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale } from './i18n.js'
+import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale, type Translate } from './i18n.js'
 import { normalizeInterval } from './lib/intervals.js'
 import { JOB_FILTER_STATUSES, parseJobFilters } from './lib/jobFilters.js'
 import { isValidBranchName } from './lib/branches.js'
@@ -61,6 +61,7 @@ import {
 import { configureOtel, endSpan, shutdownOtel, startSpan, type SpanHandle } from './lib/otel.js'
 import { configureGithubBudget } from './lib/githubBudget.js'
 import { normalizeReviewInstruction } from './lib/followUpInstruction.js'
+import { parsePreviewQuery, previewSchedule, type PreviewResult } from './schedules/preview.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -82,6 +83,7 @@ import {
   appReposPage,
   workspacePage,
   searchPage,
+  schedulePage,
   agentWorkspacePage,
   settingsPage,
   inboxSection,
@@ -97,6 +99,8 @@ import { GithubApp } from './repos/app.js'
 import { repoGithubToken } from './repos/token.js'
 import { InstanceManager } from './flybot/instances.js'
 import { dshCookie, proxyWorkspaceHttp, proxyWorkspaceUpgrade } from './flybot/workspace.js'
+import { managementActor } from './management/actor.js'
+import { ManagementService, type ManagementCode } from './management/service.js'
 
 export interface BuildOptions {
   config: Config
@@ -159,6 +163,28 @@ function queryText(request: FastifyRequest, name: string): string | undefined {
   return typeof value === 'string' && value !== '' ? value.slice(0, 500) : undefined
 }
 
+// The preview's query is a closed set of names, so it is read into a literal:
+// a user-supplied key never becomes a property name. A loop over
+// `Object.entries(query)` did, which is remote property injection (CodeQL
+// `js/remote-property-injection` at this helper), and the allowlist is the same
+// shape `form()` already uses below.
+function queryTextOf(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value.slice(0, 500) : undefined
+}
+
+function previewQuery(request: FastifyRequest): Record<string, string | undefined> {
+  const query = (request.query as Record<string, unknown> | undefined) ?? {}
+  return {
+    cron: queryTextOf(query.cron),
+    every: queryTextOf(query.every),
+    timezone: queryTextOf(query.timezone),
+    from: queryTextOf(query.from),
+    start_at: queryTextOf(query.start_at),
+    end_at: queryTextOf(query.end_at),
+    count: queryTextOf(query.count),
+  }
+}
+
 const FORM_KEY = /^[A-Za-z0-9_-]{1,80}$/
 
 function form(request: FastifyRequest): Record<string, string> {
@@ -168,6 +194,35 @@ function form(request: FastifyRequest): Record<string, string> {
     if (FORM_KEY.test(key) && typeof value === 'string') out[key] = value
   }
   return out
+}
+
+// #540: the management codes are stable identifiers, so the sentence a person
+// reads is chosen here, once, in both languages. The last line is the caller's
+// own sentence: "the cancel failed" is wrong on a pause, and a code we have not
+// taught this switch yet must not borrow another operation's words.
+function managementRefusal(t: Translate, code: ManagementCode, fallback: string): string {
+  switch (code) {
+    case 'management_revision_conflict':
+      return t('这个任务在你打开页面之后已经变化，请重新打开任务后再操作。', 'This job changed after you opened the page; reopen it before acting.')
+    case 'idempotency_conflict':
+      return t('这个请求已经用不同的内容提交过，已拒绝。请刷新页面后重试。', 'That request was already submitted with different content; reload the page and try again.')
+    case 'command_in_progress':
+      return t('这个操作还在处理中，请刷新页面查看结果。', 'This action is still being processed; reload to see the result.')
+    case 'authorization_revoked':
+      return t('你已经没有执行这个操作的权限。', 'You no longer have permission for this action.')
+    case 'job_not_cancellable':
+      return t('这个任务已经结束。', 'This job has already finished.')
+    case 'job_not_pausable':
+      return t('这个任务已经结束，不能再暂停。', 'This job has already finished and cannot be paused.')
+    case 'job_not_found':
+      return t('任务不存在。', 'The job does not exist.')
+    case 'actor_not_allowed':
+      return t('请求里不能包含身份或权限字段。', 'A request may not carry identity or permission fields.')
+    case 'unknown_operation':
+      return t('不支持的操作。', 'Unsupported operation.')
+    default:
+      return fallback
+  }
 }
 
 function formList(request: FastifyRequest, key: string): string[] {
@@ -272,6 +327,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   }
   const githubApp = new GithubApp(config)
   const jobs = new Jobs(store, config, runner, mailer, instances, githubApp)
+  // #540: one contract behind the console writes that have migrated. The first
+  // is the job cancel form; the rest still call their services directly.
+  const management = new ManagementService(store, jobs)
   const loginLimiter = new RateLimiter(30, 60_000)
   const apiLimiter = new RateLimiter(120, 60_000)
   // #460 review: the destructive actions below are rate-limited as well as
@@ -1009,6 +1067,55 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
+  })
+
+  // #544, second slice: the planner's first surface a person can reach. The page
+  // and the JSON below take the same query names and call the same planner, so
+  // what a maintainer reads on the page is what an integration would get.
+  app.get('/api/schedule/preview', async (request, reply) => {
+    requireApproved(request)
+    const parsed = parsePreviewQuery(previewQuery(request), Date.now())
+    if (!parsed.ok) return reply.code(400).send({ error: parsed.reason })
+    const preview = previewSchedule(parsed.request)
+    if (!preview.ok) return reply.code(400).send({ error: preview.reason })
+    return preview
+  })
+
+  app.get('/schedule', async (request, reply) => {
+    const viewer = requireApproved(request)
+    const query = previewQuery(request)
+    // No query at all is the empty form, not a refusal: opening the page should
+    // not look like an error.
+    const asked = Object.values(query).some((value) => value !== undefined)
+    const parsed = asked ? parsePreviewQuery(query, Date.now()) : null
+    let preview: Extract<PreviewResult, { ok: true }> | null = null
+    let error: string | undefined
+    if (parsed !== null) {
+      if (!parsed.ok) {
+        error = parsed.reason
+      } else {
+        const result = previewSchedule(parsed.request)
+        if (result.ok) preview = result
+        else error = result.reason
+      }
+    }
+    const page = schedulePage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      form: {
+        cron: query.cron ?? '',
+        every: query.every ?? '',
+        timezone: query.timezone ?? '',
+        startAt: query.start_at ?? '',
+        endAt: query.end_at ?? '',
+        from: query.from ?? '',
+        count: query.count ?? '',
+      },
+      preview,
+      error,
+    })
+    return htmlPage(reply, error === undefined ? 200 : 400, page)
   })
 
   app.get('/repos', async (_request, reply) => {
@@ -1877,25 +1984,97 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repoLabels,
       events: store.listJobEvents(job.id, 200),
       postmortem: store.getPostmortemForJob(job.id) ?? null,
+      // #540: the cancel form carries the revision it rendered and a fresh key,
+      // so a double submit replays the same receipt and a stale page conflicts.
+      cancel: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
+      pause: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
   })
 
+  // #540: the form route is an adapter over the management contract. It resolves
+  // the actor, hands over the revision and key the page rendered, and turns the
+  // receipt into a redirect. The cancel rules themselves live in Jobs.cancelJob.
   app.post('/repos/:id/jobs/:jobId/cancel', async (request, reply) => {
-    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
-    const result = await jobs.cancelJob(job.id, '用户取消任务')
-    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${result.ok ? 'notice' : 'error'}=${encodeURIComponent(result.ok ? '任务已取消。' : result.error ?? '取消失败。')}`)
+    const body = form(request)
+    const t = translator(request.locale ?? 'zh')
+    const current = management.revisionOf('job', job.id)
+    const rendered = Number.parseInt(body.expected_revision ?? '', 10)
+    const expectedRevision = Number.isFinite(rendered) && rendered >= 1 ? rendered : current
+    // A page cached before the hidden fields existed still cancels once: it just
+    // has no key to replay, so the server mints one for this one request.
+    const idempotencyKey = body.idempotency_key !== undefined && body.idempotency_key !== '' ? body.idempotency_key : randomId('cmd')
+    const actor = managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
+    const outcome = await management.run(actor, {
+      operation: 'task.cancel',
+      target: { projectId: repo.id, jobId: job.id },
+      arguments: {},
+      expectedRevision,
+      idempotencyKey,
+    })
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    if (outcome.ok) return reply.redirect(`${back}?notice=${encodeURIComponent(t('任务已取消。', 'Job cancelled.'))}`)
+    return reply.redirect(`${back}?error=${encodeURIComponent(managementRefusal(t, outcome.code, t('取消失败。', 'The cancel failed.')))}&code=${outcome.code}`)
   })
 
+  // #540 slice 2: pausing goes through the same contract as cancelling. The
+  // switch decides how far — `off` is the route that existed before this slice,
+  // `shadow` reserves and records the command but keeps that route, and `on`
+  // runs the command and turns its receipt into the redirect.
   app.post('/repos/:id/jobs/:jobId/pause', async (request, reply) => {
-    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
-    const result = await jobs.pauseJob(job.id)
-    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${result.ok ? 'notice' : 'error'}=${encodeURIComponent(result.ok ? '任务已暂停。' : result.error ?? '暂停失败。')}`)
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    const t = translator(request.locale ?? 'zh')
+    const today = async (): Promise<{ notice: string } | { error: string }> => {
+      const result = await jobs.pauseJob(job.id)
+      return result.ok ? { notice: t('任务已暂停。', 'Job paused.') } : { error: result.error ?? t('暂停失败。', 'The pause failed.') }
+    }
+    const answer = (result: { notice: string } | { error: string }) => ('notice' in result
+      ? reply.redirect(`${back}?notice=${encodeURIComponent(result.notice)}`)
+      : reply.redirect(`${back}?error=${encodeURIComponent(result.error)}`))
+
+    if (config.managementService === 'off') return answer(await today())
+
+    const body = form(request)
+    const current = management.revisionOf('job', job.id)
+    const rendered = Number.parseInt(body.expected_revision ?? '', 10)
+    const expectedRevision = Number.isFinite(rendered) && rendered >= 1 ? rendered : current
+    const idempotencyKey = body.idempotency_key !== undefined && body.idempotency_key !== '' ? body.idempotency_key : randomId('cmd')
+    const actor = managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
+    const envelope = {
+      operation: 'task.pause',
+      target: { projectId: repo.id, jobId: job.id },
+      arguments: {},
+      expectedRevision,
+      idempotencyKey,
+    }
+
+    if (config.managementService === 'shadow') {
+      // The person keeps today's route and its sentence; the receipt records what
+      // the contract would have done with the very same form, which is the point
+      // of shadow — a divergence shows up in the receipt, not in the UI.
+      const begun = management.begin(actor, envelope)
+      const result = await today()
+      // A replayed command already has its receipt, and a replay must never
+      // rewrite it: the second submit of the same form runs today's route again
+      // (which refuses), but the ledger keeps the success it recorded first.
+      if (begun.ok && !begun.replayed) {
+        management.settle(begun.receipt.id, 'notice' in result
+          ? { ok: true, result: { jobId: job.id, shadow: true } }
+          : { ok: false, code: 'job_not_pausable', message: 'the route refused the pause' })
+      }
+      return answer(result)
+    }
+
+    const outcome = await management.run(actor, envelope)
+    if (outcome.ok) return answer({ notice: t('任务已暂停。', 'Job paused.') })
+    return reply.redirect(`${back}?error=${encodeURIComponent(managementRefusal(t, outcome.code, t('暂停失败。', 'The pause failed.')))}&code=${outcome.code}`)
   })
 
   app.post('/repos/:id/jobs/:jobId/resume', async (request, reply) => {
