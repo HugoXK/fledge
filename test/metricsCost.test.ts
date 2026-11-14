@@ -196,3 +196,34 @@ test('the gateway records an unpriced model as unknown and says so in the audit 
     await gateway.close()
   }
 })
+
+test('a retry continues the budget of the job it continues', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'chain', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_chain', userId: user.id, owner: 'o', name: 'c', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    // One active job per repository, so each finished attempt is closed before
+    // the next is created — the retry chain is a history, not concurrent work.
+    const make = (id: string, retryOf: string | null) => {
+      store.createJob({ id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', retryOf })
+      store.updateJob(id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    }
+    make('job_root', null)
+    make('job_retry', 'job_root')
+    make('job_retry2', 'job_retry')
+    store.recordUsage(user.id, 'job_root', 0.5, null, repo.id)
+    // The second attempt starts from a fresh job id, but it inherits the spend.
+    assert.equal(store.usageForJobChain('job_retry'), 0.5)
+    assert.equal(store.usageForJobChain('job_retry2'), 0.5)
+    assert.equal(store.usageCountForJobChain('job_retry2'), 1)
+    // An unknown row on the original is still unknown for the retry.
+    store.recordUsage(user.id, 'job_root', 0, null, repo.id, { currency: null, model: 'unpriced', priceSnapshot: null, known: false })
+    assert.equal(store.usageCountForJobChain('job_retry2'), 1)
+    assert.equal(store.unknownUsageCountForJob('job_root'), 1)
+    // A job that is not part of the chain is not charged for it.
+    make('job_other', null)
+    assert.equal(store.usageForJobChain('job_other'), 0)
+  } finally {
+    store.close()
+  }
+})

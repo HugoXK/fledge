@@ -5045,6 +5045,33 @@ export class Store {
     return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM quota_ledger WHERE job_id = ? AND cost_known = 0', jobId)?.n ?? 0)
   }
 
+  // #636: a retry or a recovery is the same budget, not a fresh one. The chain is
+  // `retry_of` walked upwards, so a spend recorded on the original job still
+  // counts against the job that continues it.
+  private jobChain(jobId: string): string {
+    return `WITH RECURSIVE chain(id) AS (
+      SELECT id FROM jobs WHERE id = ?
+      UNION
+      SELECT j.retry_of FROM jobs j JOIN chain c ON j.id = c.id WHERE j.retry_of IS NOT NULL
+    )`
+  }
+
+  usageForJobChain(jobId: string): number {
+    const row = this.get<{ total: number | null }>(
+      `${this.jobChain(jobId)} SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE job_id IN (SELECT id FROM chain) AND cost_known = 1`,
+      jobId,
+    )
+    return Number(row?.total ?? 0)
+  }
+
+  usageCountForJobChain(jobId: string): number {
+    const row = this.get<{ n: number }>(
+      `${this.jobChain(jobId)} SELECT COUNT(*) AS n FROM quota_ledger WHERE job_id IN (SELECT id FROM chain) AND cost_known = 1`,
+      jobId,
+    )
+    return Number(row?.n ?? 0)
+  }
+
   usageForJob(jobId: string): number {
     const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE job_id = ?', jobId)
     return Number(row?.total ?? 0)

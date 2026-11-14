@@ -460,6 +460,9 @@ export class Jobs {
     const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
     const resumePr = kind === 'iterate' && job.pr_url !== null
     const result = await this.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, {
+      // #636: the retry continues the same budget, so it names the root of the
+      // chain it belongs to; a fresh id would reset the per-job spend to zero.
+      retryOf: job.retry_of ?? job.id,
       // #353: both callers are a person — the console's retry button and an
       // issue-thread `/fledge retry` — so the run is theirs. The trigger alone
       // cannot say that: `followup` is also what `tick()` enqueues.
@@ -2224,7 +2227,7 @@ export class Jobs {
     if (action !== 'pause' && action !== 'cancel') return
     // No ledger row is an unknown cost, not a zero one: a provider error
     // deducts nothing, and reading that as "fits the budget" would be a lie.
-    if (this.store.usageCountForJob(job.id) === 0) {
+    if (this.store.usageCountForJobChain(job.id) === 0) {
       const key = `job_budget_unknown:${job.id}`
       if (this.store.getSetting(key) === undefined) {
         this.store.setSetting(key, nowIso())
@@ -2233,7 +2236,7 @@ export class Jobs {
       }
       return
     }
-    const costCny = this.store.usageForJob(job.id) * this.config.quota.usdCny
+    const costCny = this.store.usageForJobChain(job.id) * this.config.quota.usdCny
     if (!(costCny > repo.job_budget_cny)) return
     const cancel = action === 'cancel'
     const code = cancel ? 'JOB_BUDGET_CANCELLED' : 'JOB_BUDGET_PAUSED'

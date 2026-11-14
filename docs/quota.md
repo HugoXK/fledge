@@ -117,8 +117,12 @@ settings:
     `JOB_BUDGET_CANCELLED`, the job token is revoked and only a new job continues
     the work.
 
-  A terminal callback that arrives after a `pause` or `cancel` is refused, so a
-  late result cannot revive a job the budget stopped. The threshold is never
+  A retry does not reset the budget: the new attempt names the job it continues
+  in `jobs.retry_of`, and the checkpoint sums the whole chain, so a second
+  attempt starts from the spend the first one recorded (a resume reuses the same
+  job row and needs no chain). A terminal callback that arrives after a `pause`
+  or `cancel` is refused, so a late result cannot revive a job the budget
+  stopped. The threshold is never
   compared against an unknown cost: a job with no **priced** `quota_ledger` row
   yet (a provider error deducts nothing, so there may be none) is left running
   and the checkpoint writes one `job.budget_unknown` audit entry instead of
