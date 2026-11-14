@@ -34,6 +34,7 @@ export type ManagementCode =
   | 'project_not_found'
   | 'job_not_found'
   | 'job_not_cancellable'
+  | 'job_not_pausable'
 
 export type CommandOutcome =
   | { ok: true; receipt: ManagementCommandRow; replayed: boolean }
@@ -184,16 +185,49 @@ export class ManagementService {
     // The receipt, the revision bump and the audit row commit together. The
     // business write itself already happened inside the operation, which is why
     // `docs/architecture.md` names the operations that cannot be one transaction.
+    return this.commitSucceeded(receipt, operation.revisionType, resourceId, outcome.result ?? {}, outcome.commit)
+  }
+
+  // #540 slice 2: shadow mode runs today's path and then records what happened,
+  // so a receipt exists for a command the service did not execute. It commits the
+  // same way a real completion does — revision bump, receipt, audit row together —
+  // because the business write did happen, just not here.
+  settle(receiptId: string, outcome: { ok: true; result?: Record<string, unknown> } | { ok: false; code: ManagementCode; message: string }): CommandOutcome {
+    const receipt = this.store.commandReceipt(receiptId)
+    if (receipt === undefined) return { ok: false, code: 'not_accepted', message: 'the command does not exist' }
+    // A receipt that already answered is the record of what happened, and one
+    // command moves the revision once. A later settle — the shape a resubmitted
+    // form produces — replays it instead of overwriting a success with a failure
+    // and bumping the revision a second time.
+    if (receipt.status !== 'accepted') return this.replay(receipt)
+    if (!outcome.ok) return this.failReceipt(receipt, outcome.code, outcome.message)
+    const operation = operationFor(receipt.operation)
+    if (operation === undefined) return this.failReceipt(receipt, 'unknown_operation', `unknown operation: ${receipt.operation}`)
+    let target: CommandTarget
+    try {
+      target = JSON.parse(receipt.target_json) as CommandTarget
+    } catch {
+      return this.failReceipt(receipt, 'corrupt_receipt', 'the stored target is unreadable')
+    }
+    return this.commitSucceeded(receipt, operation.revisionType, String(target[operation.revisionTarget] ?? ''), outcome.result ?? {})
+  }
+
+  private commitSucceeded(receipt: ManagementCommandRow, revisionType: string, resourceId: string, result: Record<string, unknown>, commit?: () => void): CommandOutcome {
+    const current = receipt.before_revision ?? this.store.revisionOf(revisionType, resourceId)
     this.store.transaction(() => {
-      const revision = this.store.bumpRevision(operation.revisionType, resourceId)
+      // The effect and the receipt that records it are one commit: a crash either
+      // leaves both absent (the receipt still `accepted`, which is honest) or both
+      // present. The awaited parts of an operation happened before this point.
+      commit?.()
+      const revision = this.store.bumpRevision(revisionType, resourceId)
       this.store.updateCommandReceipt(receipt.id, {
         status: 'succeeded',
-        result_json: canonical(outcome.result ?? {}),
+        result_json: canonical(result),
         after_revision: revision,
         error_code: null,
         error_message: null,
       })
-      this.store.audit(receipt.principal_id, 'management.command', `${receipt.id} ${receipt.operation} revision ${receipt.before_revision ?? current}->${revision} status=succeeded`)
+      this.store.audit(receipt.principal_id, 'management.command', `${receipt.id} ${receipt.operation} revision ${current}->${revision} status=succeeded`)
       return revision
     })
     const updated = this.store.commandReceipt(receipt.id)

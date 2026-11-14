@@ -167,12 +167,17 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // on the merged tree: those read `:615`/`:650`/`:660`/`:670` and the webhook
   // registration `:3358`, while the gateway pair stays `:155`/`:180` because the
   // insert lands below both. No result is added or dismissed.
+  // #544's schedule-preview slice then adds one import line, an 11-line query
+  // helper and its two read-only GET routes above the webhook registration, so
+  // those anchors read `:628`/`:663`/`:673`/`:683` and the webhook registration
+  // `:3419`; the gateway pair stays `:155`/`:180` because both inserts land below
+  // it. Nothing is added or dismissed.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3358',
-    'js/missing-rate-limiting|src/app.ts|615',
-    'js/missing-rate-limiting|src/app.ts|650',
-    'js/missing-rate-limiting|src/app.ts|660',
-    'js/missing-rate-limiting|src/app.ts|670',
+    'js/missing-rate-limiting|src/app.ts|3431',
+    'js/missing-rate-limiting|src/app.ts|639',
+    'js/missing-rate-limiting|src/app.ts|674',
+    'js/missing-rate-limiting|src/app.ts|684',
+    'js/missing-rate-limiting|src/app.ts|694',
 
     'js/missing-rate-limiting|src/gateway/gateway.ts|155',
     'js/missing-rate-limiting|src/gateway/gateway.ts|180',

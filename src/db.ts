@@ -533,6 +533,29 @@ export interface PostmortemRecord {
   escalated: boolean
 }
 
+// #542: one row per failed Actions run on a repository's default branch, and
+// the decision Fledge made about it. The first slice records the decision only —
+// `queued` for a failure it will analyse later, `ignored` (with its reason) for
+// a failure it deliberately will not triage — so "nothing happened" is a stored
+// decision instead of silence. No log, model call or rerun is involved yet.
+export type WorkflowFailureStatus = 'queued' | 'ignored'
+
+export interface WorkflowFailureRow {
+  id: string
+  repo_id: string
+  run_id: number
+  attempt: number
+  workflow_name: string
+  head_sha: string
+  head_branch: string
+  event: string
+  status: WorkflowFailureStatus
+  reason: string | null
+  run_url: string
+  created_at: string
+  updated_at: string
+}
+
 export interface ArtifactVersionRow {
   id: string
   artifact: string
@@ -1232,6 +1255,27 @@ CREATE TABLE IF NOT EXISTS postmortem_recurrences (
   representative_id TEXT,
   updated_at TEXT NOT NULL
 );
+
+-- #542: intake keeps one row per failed run attempt, so a redelivered webhook or
+-- a retried run cannot double-count. The reason column carries the intake
+-- decision when Fledge chose not to triage the failure.
+CREATE TABLE IF NOT EXISTS workflow_failures (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  run_id INTEGER NOT NULL,
+  attempt INTEGER NOT NULL,
+  workflow_name TEXT NOT NULL,
+  head_sha TEXT NOT NULL,
+  head_branch TEXT NOT NULL,
+  event TEXT NOT NULL,
+  status TEXT NOT NULL,
+  reason TEXT,
+  run_url TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(repo_id, run_id, attempt)
+);
+CREATE INDEX IF NOT EXISTS workflow_failures_repo_idx ON workflow_failures(repo_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS artifact_versions (
   id TEXT PRIMARY KEY,
@@ -2166,6 +2210,50 @@ export class Store {
         ORDER BY last_seen_at DESC`,
       repoId,
     )
+  }
+
+  // #542: intake only. The insert conflicts on (repo, run, attempt) so a
+  // redelivered webhook or a restarted process cannot record the same failure
+  // twice; `created` says whether this delivery was the first to see it.
+  recordWorkflowFailure(input: {
+    id: string
+    repoId: string
+    runId: number
+    attempt: number
+    workflowName: string
+    headSha: string
+    headBranch: string
+    event: string
+    status: WorkflowFailureStatus
+    reason: string | null
+    runUrl: string
+  }): { row: WorkflowFailureRow; created: boolean } {
+    const at = nowIso()
+    this.run(
+      `INSERT INTO workflow_failures (id, repo_id, run_id, attempt, workflow_name, head_sha, head_branch, event, status, reason, run_url, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(repo_id, run_id, attempt) DO NOTHING`,
+      input.id, input.repoId, input.runId, input.attempt, input.workflowName, input.headSha,
+      input.headBranch, input.event, input.status, input.reason, input.runUrl, at, at,
+    )
+    const row = this.get<WorkflowFailureRow>(
+      'SELECT * FROM workflow_failures WHERE repo_id = ? AND run_id = ? AND attempt = ?',
+      input.repoId, input.runId, input.attempt,
+    )
+    // `created` is whether the row carries the id this call tried to insert; a
+    // lost race selects the winner's row instead of claiming a second write.
+    return { row: row as WorkflowFailureRow, created: row?.id === input.id }
+  }
+
+  listWorkflowFailuresForRepo(repoId: string, limit = 10): WorkflowFailureRow[] {
+    return this.all<WorkflowFailureRow>(
+      'SELECT * FROM workflow_failures WHERE repo_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?',
+      repoId, limit,
+    )
+  }
+
+  getWorkflowFailure(id: string): WorkflowFailureRow | undefined {
+    return this.get<WorkflowFailureRow>('SELECT * FROM workflow_failures WHERE id = ?', id)
   }
 
   // #539: the project-memory store. Every write goes through the revision fence

@@ -303,9 +303,15 @@ defect.
   `nextTime` is where DST is decided once: a local time that does not exist in
   the spring-forward gap is skipped rather than shifted, and a local time that
   occurs twice in the fall-back hour fires once, at the earlier instant, so a
-  poll inside the repeated hour does not run it a second time. Occurrence rows,
-  leases, misfire policies, layered budgets and the notification outbox are not
-  built yet; the tick still runs on `repos.interval_minutes`.
+  poll inside the repeated hour does not run it a second time.
+  The preview is the planner's first consumer (#544, second slice): `/schedule`
+  and `GET /api/schedule/preview` walk the next N instants, show the wall clock in
+  the schedule's zone, and mark a local time the spring-forward gap removed as
+  skipped rather than shifting it. Because the interval form has no timezone, an
+  interval that arrives with one is refused by name instead of being accepted and
+  shown as if a zone applied. A preview stores nothing and creates no job.
+  Occurrence rows, leases, misfire policies, layered budgets and the notification
+  outbox are not built yet; the tick still runs on `repos.interval_minutes`.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
@@ -1059,6 +1065,32 @@ active job; requests are parked per fingerprint, so two different reviews on one
 commit are two follow-ups rather than one overwritten entry. A follow-up does not
 receive a second automation comment; the job list labels it "Follow-up".
 
+### Default-branch failure intake
+
+A `workflow_run.completed` webhook is read as well, but only as intake: the
+repository is resolved from the installation, and a run is considered only when
+its conclusion is `failure`. A run whose `pull_requests` list is non-empty (or
+whose event is a pull-request event) is recorded as `ignored` with reason
+`pull_request`; a run whose `head_branch` is not one of the repository's
+default-branch names is recorded as `ignored` with reason `not_default_branch`,
+which is how a tag run is kept out until a later slice proves the SHA is an
+ancestor. A green, cancelled or skipped run is not a failed run, so it stores
+nothing.
+
+One row per `repository + run_id + attempt` lives in `workflow_failures`: a
+redelivered webhook or a restarted process cannot double-count, and a rerun of
+the same run is a new attempt rather than a second row for the old one. The
+repository page's delivery tab lists the recorded failures with the workflow, the
+branch and event, the attempt and the run link, so a red default branch is
+visible where the other work is instead of only in GitHub.
+
+This is intake only. No job log is fetched, no model is called, no run is rerun
+and no issue is opened: `queued` means the failure is recorded for the analysis
+slice, and `ignored` carries the reason no action will be taken. Everything that
+reads the log, classifies the failure, spends the one rerun or opens a report is
+a later slice of the same card, so a `queued` row is a decision about visibility,
+not a promise of an automatic fix.
+
 ### Plan-first-lite, checkpoints and templates
 
 A manual "plan only" job uses the same team and repository context but the
@@ -1516,20 +1548,47 @@ a change of hands between acceptance and execution fails the receipt before the
 business write. On success the receipt, the revision bump and the
 `management.command` audit row commit in one transaction.
 
-`task.cancel` is not fully transactional, and that is deliberate: it calls
-`Jobs.cancelJob`, which stops live bot sessions over the bridge before the local
-status write, so the external step cannot sit inside the SQLite transaction. Its
-external call is best-effort and safe to repeat, so the operation never needs the
-`unknown` state; the first operation that does (a release, or a resume that
-enqueues through an external surface) will bring
-`management_command_attempts` and a reconcile step with it. The form route stays
-a thin adapter: it renders the revision and a fresh key, calls the service, and
-turns the receipt into the same redirect as before.
+`task.cancel` and `task.pause` are only partly outside the transaction, and the
+split is at the await: stopping live bot sessions over the bridge and clearing the
+instance's job token happen first, best-effort and safe to repeat, so a repeat can
+never duplicate them. Everything that changes state — the job row, the repository
+status, the work item, the audit and job-event rows, the receipt, the revision
+bump — is handed back as the operation's `commit` callback and runs inside a
+single SQLite transaction. A crash therefore leaves either both the effect and its
+receipt, or neither: the receipt stays `accepted`, which is the truth.
 
-The rest of the write surface — job create/pause/resume/retry, repository
-settings, releases, member grants — still calls its service directly. Each
-migrates by registering one operation and leaving its route as an adapter; none
-of them may keep a second copy of the rules.
+The platform-token revocation is the one local write that is not in that
+transaction: it happens with the awaited work, before the commit, so a command
+whose transaction fails leaves the job queued or running with its token already
+revoked. Closing that gap means moving the revocation into the `commit` callback,
+which this slice does not do.
+`Jobs.prepareCancel`/`preparePause` put the awaited work in one place so the
+legacy `cancelJob`/`pauseJob` and the command cannot drift apart.
+
+A receipt that has already answered is never rewritten. In `shadow` the route
+reserves the receipt, runs today's path and settles it; the same key submitted
+again replays that receipt and settles nothing, so one command moves the revision
+once and a resubmitted page cannot turn a recorded success into a failure.
+
+That split is why these two commands never need the `unknown` state. The first
+operation that does — a release, or a resume that enqueues through an external
+surface — will bring `management_command_attempts` and a reconcile step with it.
+The form route stays a thin adapter: it renders the revision and a fresh key,
+calls the service, and turns the receipt into the same redirect as before.
+
+`MANAGEMENT_SERVICE=off|shadow|on` (default `off`) governs the adapters added
+after `task.cancel`. `off` keeps the route that existed before the contract,
+`shadow` reserves and records the command but still runs that route — so the
+receipt is where a divergence shows — and `on` lets the command answer. An
+unknown value is `off`: a typo must not start enforcing.
+
+The rest of the write surface — job create/resume/retry, repository settings,
+releases, member grants — still calls its service directly. Each migrates by
+registering one operation and leaving its route as an adapter; none of them may
+keep a second copy of the rules. Resume, retry and create come next and need
+their refusals mapped first: `Jobs.enqueue` answers with free-text Chinese plus an
+enqueue code, so the bilingual sentence table has to exist before the route can be
+an adapter.
 
 ## Notification webhook egress
 
