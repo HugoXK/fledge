@@ -47,6 +47,11 @@ export interface Config {
     slug: string
     privateKeyPath: string
     webhookSecret: string
+    // #466: the rotation slot. Both are empty when no overlap is open, so a
+    // config assembled by hand (a test, a maintenance script) can omit them:
+    // absent means the same thing as empty, and loadConfig always writes both.
+    webhookSecretPrevious?: string
+    webhookSecretPreviousUntil?: string
     useUserToken: boolean
   }
   mail: {
@@ -284,6 +289,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       slug: text('GITHUB_APP_SLUG'),
       privateKeyPath: text('GITHUB_APP_PRIVATE_KEY_PATH'),
       webhookSecret: text('GITHUB_APP_WEBHOOK_SECRET'),
+      webhookSecretPrevious: text('GITHUB_APP_WEBHOOK_SECRET_PREVIOUS'),
+      webhookSecretPreviousUntil: text('GITHUB_APP_WEBHOOK_SECRET_PREVIOUS_UNTIL'),
       useUserToken: bool('GITHUB_APP_USER_TOKEN', false),
     },
     mail: {
@@ -399,6 +406,21 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
   // the next tick with its deadline still days away. This is not a missing
   // operator secret — it is a pair that cannot mean what the operator wrote, it
   // happens in every environment, and only the merged value can see it.
+  // #466: an overlap with no end accepts a retired webhook secret forever, so a
+  // `_PREVIOUS` with no `_UNTIL` is a boot refusal and never a warning. The check
+  // lives beside the pair rather than in the verifier so a unit test can pin it
+  // without starting the app; the undo is one edit, and docs/security.md carries
+  // it, because this refusal is itself a way to keep the unit down mid-rotation.
+  const rotationPrevious = merged.githubApp.webhookSecretPrevious ?? ''
+  const rotationUntil = merged.githubApp.webhookSecretPreviousUntil ?? ''
+  if (rotationPrevious !== '') {
+    if (rotationUntil === '') {
+      throw new Error('GITHUB_APP_WEBHOOK_SECRET_PREVIOUS is set but GITHUB_APP_WEBHOOK_SECRET_PREVIOUS_UNTIL is empty, so the overlap would never end. Unset GITHUB_APP_WEBHOOK_SECRET_PREVIOUS, or set GITHUB_APP_WEBHOOK_SECRET_PREVIOUS_UNTIL to the ISO 8601 instant the old secret stops being accepted.')
+    }
+    if (Number.isNaN(Date.parse(rotationUntil))) {
+      throw new Error(`GITHUB_APP_WEBHOOK_SECRET_PREVIOUS_UNTIL (${rotationUntil}) is not an ISO 8601 timestamp, so the overlap would never close. Fix the value, or unset GITHUB_APP_WEBHOOK_SECRET_PREVIOUS.`)
+    }
+  }
   if (merged.plan.reminderDays >= merged.plan.expiryDays) {
     throw new Error(`PLAN_REMINDER_DAYS (${merged.plan.reminderDays}) must be smaller than PLAN_EXPIRY_DAYS (${merged.plan.expiryDays}); a reminder at or after the deadline is sent immediately.`)
   }
@@ -409,6 +431,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     merged.tokenEncryptionKey,
     merged.github.clientSecret,
     merged.githubApp.webhookSecret,
+    merged.githubApp.webhookSecretPrevious ?? '',
     merged.mail.smtp.pass,
     merged.llm.key,
     merged.runner.bridgeToken,

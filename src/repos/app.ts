@@ -165,12 +165,59 @@ export class GithubApp {
     return repos
   }
 
-  verifyWebhook(payload: Buffer, signature: string): boolean {
-    const secret = this.config.githubApp.webhookSecret
-    if (secret === '' || !signature.startsWith('sha256=')) return false
-    const expected = createHmac('sha256', secret).update(payload).digest('hex')
-    const given = signature.slice('sha256='.length)
-    if (given.length !== expected.length) return false
-    return timingSafeEqual(Buffer.from(given, 'hex'), Buffer.from(expected, 'hex'))
+  verifyWebhook(payload: Buffer, signature: string, now: number = Date.now()): boolean {
+    return checkWebhookSignature(this.config.githubApp, payload, signature, now).ok
   }
+}
+
+// #466: the webhook secret is a pair, not one value. `current` is what the App
+// signs with now; `previous` stays acceptable only until its own ISO instant, so
+// a rotation has an overlap window instead of a flag day. The two readers below
+// are the only place that decision is made: the route, the audit row for a
+// retired signature and the `/healthz` report all ask them, which is why the
+// operator's status cannot drift from the verifier.
+
+export type WebhookSecretSlot = 'none' | 'current' | 'previous'
+
+export type WebhookSecretConfig = Pick<Config['githubApp'], 'webhookSecret' | 'webhookSecretPrevious' | 'webhookSecretPreviousUntil'>
+
+export interface WebhookSignatureVerdict {
+  ok: boolean
+  /** Which slot matched a good signature; null when nothing did. */
+  slot: 'current' | 'previous' | null
+  /** The signature matched the retired value after its window closed. */
+  superseded: boolean
+}
+
+// A missing or unparseable instant is closed, never open: loadConfig refuses to
+// boot on that pair, and a config assembled without it must fail the same way.
+function previousSlotOpen(app: WebhookSecretConfig, now: number): boolean {
+  if ((app.webhookSecretPrevious ?? '') === '') return false
+  const until = Date.parse(app.webhookSecretPreviousUntil ?? '')
+  return Number.isFinite(until) && now <= until
+}
+
+export function webhookSecretSlot(app: WebhookSecretConfig, now: number = Date.now()): WebhookSecretSlot {
+  if (app.webhookSecret === '') return 'none'
+  return previousSlotOpen(app, now) ? 'previous' : 'current'
+}
+
+function signatureMatches(secret: string, payload: Buffer, given: string): boolean {
+  const expected = createHmac('sha256', secret).update(payload).digest('hex')
+  // A 64-character value that is not hex decodes to a shorter buffer, and
+  // timingSafeEqual throws on a length mismatch: the guard keeps a malformed
+  // header a 401 instead of a 500.
+  if (given.length !== expected.length || !/^[0-9a-f]+$/i.test(given)) return false
+  return timingSafeEqual(Buffer.from(given, 'hex'), Buffer.from(expected, 'hex'))
+}
+
+export function checkWebhookSignature(app: WebhookSecretConfig, payload: Buffer, signature: string, now: number = Date.now()): WebhookSignatureVerdict {
+  if (!signature.startsWith('sha256=')) return { ok: false, slot: null, superseded: false }
+  const given = signature.slice('sha256='.length)
+  if (app.webhookSecret !== '' && signatureMatches(app.webhookSecret, payload, given)) return { ok: true, slot: 'current', superseded: false }
+  const previous = app.webhookSecretPrevious ?? ''
+  if (previous === '' || !signatureMatches(previous, payload, given)) return { ok: false, slot: null, superseded: false }
+  return previousSlotOpen(app, now)
+    ? { ok: true, slot: 'previous', superseded: false }
+    : { ok: false, slot: null, superseded: true }
 }
