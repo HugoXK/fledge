@@ -26,6 +26,7 @@
   --raised-top: #101722;
   --raised-bottom: #0a0e15;
   --line: #1c232d;
+  --field-line: #5a6680;
   --line-strong: #2a3545;
   --scroll-track: #5b6779;
   --scroll-thumb: #c8d2de;
@@ -118,7 +119,10 @@
    preference has to work with JavaScript off, so neither branch can be dropped.
    Ratios, measured with the same formula test/uiTokens.test.ts uses:
    --text 16.8:1 on --bg, --muted-2 5.8:1 on --panel-2, --badge-ink 7.3:1 on
-   --badge-bg, --scroll-track 3.4:1 on --panel and 3.3:1 on --scroll-thumb. */
+   --badge-bg, --scroll-track 3.4:1 on --panel and 3.3:1 on --scroll-thumb.
+   The resting field boundary is its own token because --line paints every card
+   and divider (issue 596). --field-line measures 3.65:1 on the white field
+   and 3.46:1 on --panel-2, over the 3:1 WCAG 1.4.11 minimum for an edge. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
     color-scheme: light;
@@ -135,6 +139,7 @@
     --raised-top: #ffffff;
     --raised-bottom: #f3f6fa;
     --line: #dbe1e9;
+    --field-line: #7c8794;
     --line-strong: #b9c2cf;
     --scroll-track: #828c9a;
     --scroll-thumb: #333c48;
@@ -178,6 +183,7 @@
   --raised-top: #ffffff;
   --raised-bottom: #f3f6fa;
   --line: #dbe1e9;
+  --field-line: #7c8794;
   --line-strong: #b9c2cf;
   --scroll-track: #828c9a;
   --scroll-thumb: #333c48;
@@ -584,7 +590,7 @@ label.check { min-height: var(--touch); }
 .form { display: grid; gap: 13px; }
 .form label { display: grid; gap: 6px; font-size: 12.5px; color: var(--muted); }
 input, textarea, select {
-  width: 100%; background: var(--field); color: var(--text); border: 1px solid var(--line);
+  width: 100%; background: var(--field); color: var(--text); border: 1px solid var(--field-line);
   border-radius: var(--radius-sm); padding: 10px 12px; font: inherit; font-size: 14px;
   transition: border-color 0.15s, box-shadow 0.15s;
 }

@@ -23,6 +23,7 @@ them; this page only fixes the names and the values.
 | Surface | `--raised-top` | `#101722` | gradient start of a raised card |
 | Surface | `--raised-bottom` | `#0a0e15` | gradient end of a raised card |
 | Line | `--line` | `#1c232d` | default border and divider |
+| Line | `--field-line` | `#5a6680` | input, textarea, select resting boundary (3.40:1 on `--field`) |
 | Line | `--line-strong` | `#2a3545` | emphasised border |
 | Line | `--row-line` | `#18202a` | table row divider |
 | Line | `--scroll-track` | `#5b6779` | `.table-scroll` scrollbar track, 641-960px only (3.3:1 on `--panel`) |
@@ -196,6 +197,14 @@ computes the ratios from `:root` instead of trusting the palette:
   unchanged.
 - `--accent-ink` on `--accent-strong` is 4.64:1 — the primary button passes
   without changing the brand fill.
+- The resting field boundary is non-text, so it answers a different rule:
+  WCAG 2.2 1.4.11 asks 3:1 for the visual information that identifies a
+  control, and a fill is not that information — `--field` is 1.04:1 against
+  `--panel` in dark and 1.00:1 in light, so the hairline was the only edge a
+  field had. `--field-line` carries it: `#5a6680` in dark (3.40 on `--field`,
+  3.28 on `--panel`, 3.12 on `--panel-2`) and `#7c8794` in light (3.65 on
+  `--field` and `--panel`, 3.46 on `--panel-2`, 3.37 on `--bg`). `--line`
+  stays the surface divider so cards, tables and panels do not move (#596).
 - A new text colour is added together with a row in the test's contrast list, so
   the ratio is checked in CI rather than in a browser.
 
@@ -215,6 +224,7 @@ default; the light palette redefines the same colour names:
 | Surface | `--surface-inset` | `#080d13` | `#e9edf3` | `--text` 14.6:1 |
 | Surface | `--field` | `#080c12` | `#ffffff` | `--text` 17.4:1 |
 | Line | `--line` | `#1c232d` | `#dbe1e9` | 1px divider, non-text |
+| Line | `--field-line` | `#5a6680` | `#7c8794` | 3.65:1 on `--field`, 3.46:1 on `--panel-2` |
 | Line | `--scroll-track` | `#5b6779` | `#828c9a` | 3.4:1 on `--panel`, 3.3:1 on `--scroll-thumb` |
 | Line | `--scroll-thumb` | `#c8d2de` | `#333c48` | 11.2:1 on `--panel` |
 | Text | `--text` | `#f2f5f9` | `#10161f` | 16.8:1 on `--bg` |

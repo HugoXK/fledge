@@ -13,7 +13,7 @@ const rules = parseRules(cssSource)
 const colourTokens = [
   '--bg', '--bg-soft', '--panel', '--panel-2', '--surface-sunken', '--surface-inset',
   '--surface-raised', '--field', '--track', '--row-line', '--raised-top', '--raised-bottom',
-  '--line', '--line-strong', '--scroll-track', '--scroll-thumb', '--text', '--muted',
+  '--line', '--field-line', '--line-strong', '--scroll-track', '--scroll-thumb', '--text', '--muted',
   '--muted-2', '--brand', '--brand-2', '--accent', '--accent-strong', '--accent-hover',
   '--accent-ink', '--good', '--warn', '--danger', '--mint', '--blue', '--violet',
   '--mark-ink', '--badge-bg', '--badge-ink', '--lede-ink', '--tip-ink', '--paper',

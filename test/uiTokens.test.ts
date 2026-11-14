@@ -4,11 +4,9 @@ import { readFileSync } from 'node:fs'
 
 const cssSource = readFileSync(new URL('../public/app.css', import.meta.url), 'utf8')
 
-function rootTokens(source: string): Map<string, string> {
-  const match = /:root\s*\{([^}]*)\}/.exec(source)
-  assert.ok(match !== null, 'public/app.css must keep a :root token block')
+function declarations(block: string): Map<string, string> {
   const tokens = new Map<string, string>()
-  for (const declaration of (match[1] ?? '').split(';')) {
+  for (const declaration of block.split(';')) {
     const separator = declaration.indexOf(':')
     if (separator === -1) continue
     const name = declaration.slice(0, separator).trim()
@@ -16,6 +14,21 @@ function rootTokens(source: string): Map<string, string> {
     if (name.startsWith('--')) tokens.set(name, value)
   }
   return tokens
+}
+
+function rootTokens(source: string): Map<string, string> {
+  const match = /:root\s*\{([^}]*)\}/.exec(source)
+  assert.ok(match !== null, 'public/app.css must keep a :root token block')
+  return declarations(match[1] ?? '')
+}
+
+// The two light palettes are separate blocks: the media query one carries an
+// owner, so the declaration parser reads the block the selector names rather
+// than whichever `:root` happens to come first.
+function paletteTokens(pattern: RegExp, label: string): Map<string, string> {
+  const match = pattern.exec(cssSource)
+  assert.ok(match !== null, `public/app.css must keep the ${label} token block`)
+  return declarations(match[1] ?? '')
 }
 
 function channels(value: string): [number, number, number] | null {
@@ -141,4 +154,41 @@ test('the workspace frame derives its height from --header-h and keeps its 620px
   assert.match(value, /^calc\(\s*100vh\s*-\s*var\(\s*--header-h\s*\)\s*\)$/, `.workspace-frame height must be calc(100vh - var(--header-h)), got ${value}`)
   assert.doesNotMatch(value, /\d+px/, 'the frame must not subtract a private pixel constant')
   assert.match(body, /min-height:\s*620px/, 'the 620px floor must stay')
+})
+
+// 6. The resting field boundary is the only thing that shows where a text field
+//    begins: the fill itself is 1.04:1 against the panel in dark and 1.00:1 in
+//    light, so WCAG 2.2 1.4.11 wants 3:1 from the border (#596). The boundary
+//    gets its own token because --line paints every card, table and divider;
+//    the field rule must consume the token, not the surface hairline.
+test('the resting field boundary clears the 3:1 non-text minimum in every palette', () => {
+  const palettes: Array<[string, Map<string, string>]> = [
+    ['dark :root', rootTokens(cssSource)],
+    ['prefers-color-scheme light', paletteTokens(/:root:not\(\[data-theme="dark"\]\)\s*\{([^}]*)\}/, 'prefers-color-scheme light')],
+    ['[data-theme="light"]', paletteTokens(/:root\[data-theme="light"\]\s*\{([^}]*)\}/, '[data-theme="light"]')],
+  ]
+  const failures: string[] = []
+  for (const [name, tokens] of palettes) {
+    const boundary = tokens.get('--field-line')
+    if (boundary === undefined) {
+      failures.push(`${name}: no --field-line token`)
+      continue
+    }
+    // The border sits on the field's edge: the fill is on one side and the card
+    // the form is drawn on is on the other, so each pair is a 1.4.11 pair.
+    for (const surface of ['--field', '--panel', '--panel-2', '--bg']) {
+      const background = tokens.get(surface)
+      if (background === undefined) {
+        failures.push(`${name}: missing ${surface}`)
+        continue
+      }
+      const ratio = contrast(boundary, background)
+      if (ratio < 3) failures.push(`${name}: --field-line on ${surface} = ${ratio.toFixed(2)}:1 (needs 3:1)`)
+    }
+  }
+  assert.deepEqual(failures, [], `the field boundary is below the non-text minimum:\n${failures.join('\n')}`)
+
+  const fieldRule = /(?:^|\n)\s*input,\s*textarea,\s*select\s*\{([^}]*)\}/.exec(cssSource)
+  assert.ok(fieldRule !== null, 'public/app.css must keep the shared input, textarea, select rule')
+  assert.match(fieldRule[1] ?? '', /border:\s*1px solid var\(--field-line\)/, 'the shared field rule must draw its boundary with --field-line, not --line')
 })
