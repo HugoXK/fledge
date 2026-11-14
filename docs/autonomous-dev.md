@@ -460,6 +460,18 @@ Not run: Docker, real SMTP
 - A new commit voids the PASS.
 - A `hold` label blocks the queue.
 
+`reviewer-authored` runs on `pull_request` (`opened`, `synchronize`, `reopened`) and
+fails at the push that makes the condition true: a tip carrying a commit whose
+`author.login` is a reviewer identity in `.github/agent/review-policy.json` cannot
+be independently reviewed, and no verdict at any SHA can turn that green. It reads
+the same `reviewerAuthoredCommit()` the gate reads, from the **base** ref, and it
+is an early warning rather than a required context — `review-gate` still decides.
+The fix is to re-author the commit (`git commit --amend --author=...`, or a
+`filter-branch`/`rebase` over the branch) and push; the trees do not change.
+Before this job existed the condition was visible only in the job log of a red
+`review-gate` run, which is how `#532`, `#533` and `#618` each spent a review round
+on a tip that could never merge.
+
 A verdict only paints the check that sits at the head SHA when a run at that SHA
 is re-run, because a run started by `issue_comment` checks the default branch and
 a review run only adds a check of its own. `scripts/gate-repair.mjs` therefore

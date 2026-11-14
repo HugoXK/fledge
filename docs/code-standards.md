@@ -103,6 +103,10 @@ not a conclusion.
   conversation resolution and the merge API refuses such a tip no matter what the
   checks say (#308).
 - Any new commit voids the PASS. Re-run the Verifier on the new tip.
+- A tip carrying a commit authored by a reviewer identity cannot be independently
+  reviewed, and no verdict at any SHA can turn that green: the `reviewer-authored`
+  job names the offending commit at the push that makes it true (#598), and the fix
+  is to re-author it rather than to ask for another review round.
 - Never admin-merge, never bypass a required check, never force-push `main`.
 - One PR per issue. Push to the existing branch instead of opening a duplicate.
 
