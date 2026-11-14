@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
-import { openStore, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
+import { openStore, type GateSessionRow, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
 import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions, type Viewer } from './auth/session.js'
@@ -91,6 +91,8 @@ import {
   type InboxQuestion,
 } from './views/pages.js'
 import { withDensity } from './views/layout.js'
+import { gatePage } from './views/gate.js'
+import { planHash, validateGatePlan } from './gates/plan.js'
 import { memoryMissingPage, memoryPage } from './views/memory.js'
 import { memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from './lib/memory.js'
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
@@ -320,6 +322,35 @@ function viewOf(viewer: { user: UserRow; csrfToken: string; preview?: boolean })
 
 function htmlPage(reply: FastifyReply, status: number, page: string): FastifyReply {
   return reply.code(status).type('text/html; charset=utf-8').send(page)
+}
+
+// #543: the read-only gate API returns the stored plan itself, not only its
+// hash, so the later gate-PR slice and a person see the same bytes the human
+// confirmed.
+function gateSessionView(row: GateSessionRow): Record<string, unknown> {
+  let plan: unknown = null
+  try {
+    plan = JSON.parse(row.plan_json)
+  } catch {
+    // A row whose JSON cannot be read is returned with `plan: null`; the status
+    // and hash are still the stored record, and the page shows the refusal.
+    plan = null
+  }
+  return {
+    id: row.id,
+    repoId: row.repo_id,
+    status: row.status,
+    baseSha: row.base_sha,
+    plan,
+    planHash: row.plan_hash,
+    confirmedBy: row.confirmed_by,
+    confirmedAt: row.confirmed_at,
+    prUrl: row.pr_url,
+    branch: row.branch,
+    errorCode: row.error_code,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
 }
 
 async function testOwnModel(baseUrl: string, key: string, model: string): Promise<void> {
@@ -601,6 +632,35 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const repo = store.getRepo(id)
     if (repo === undefined || repo.user_id !== viewer.user.id) throw httpError(404, '仓库不存在。', 'REPO_NOT_FOUND')
     return { viewer, repo }
+  }
+
+  // #543: a plan carries the SHA it was analysed at. Resolving the default
+  // branch here is opportunistic: a read-only GET when a token is available, and
+  // an absent SHA when GitHub is unreachable. An absent result accepts the plan
+  // (its baseSha is still required and stored); a mismatch refuses the stale plan.
+  const resolveGateBaseSha = async (repo: RepoRow): Promise<string | null> => {
+    try {
+      const token = await repoGithubToken(repo, config, githubApp, store)
+      if (token === '') return null
+      const owner = repo.upstream_owner || repo.owner
+      const name = repo.upstream_name || repo.name
+      const branch = repo.target_branch || repo.upstream_default_branch || repo.default_branch
+      const found = await new GithubClient(token, config.github.apiBase).getBranch(owner, name, branch)
+      return found === null ? null : found.sha.toLowerCase()
+    } catch (error) {
+      log.warn('gate base sha resolution failed', { repo: repo.id, error: String(error) })
+      return null
+    }
+  }
+
+  const gateMaintainerRefusal = (reply: FastifyReply, request: FastifyRequest): FastifyReply => {
+    const t = translator(request.locale ?? 'zh')
+    return reply.code(403).send({
+      error: {
+        type: 'MAINTAINER_ONLY',
+        message: t('只有维护者可以提出或确认门禁计划。', 'Only a maintainer may propose or confirm a gate plan.'),
+      },
+    })
   }
 
   const inboxCache = new Map<string, { at: number; questions: InboxQuestion[] }>()
@@ -1685,6 +1745,120 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     const base = `/repos/${repo.id}/memory?key=${encodeURIComponent(input.key)}`
     return reply.redirect(result.noop ? `${base}&unchanged=1` : `${base}&saved=1`)
+  })
+
+  // #543 first slice: a gate plan is proposed and confirmed, and nothing is
+  // written to the repository. The API is the handoff for the gate-PR slice.
+  app.get('/repos/:id/gate', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    return reply.type('text/html').send(gatePage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      repo,
+      canMaintain: repo.repo_role === 'maintainer',
+      sessions: store.listGateSessionsForRepo(repo.id),
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
+  })
+
+  app.post('/repos/:id/gate/sessions', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (repo.repo_role !== 'maintainer') return gateMaintainerRefusal(reply, request)
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const submitted = Object.keys(body).length === 1 && 'plan' in body ? body.plan : body
+    const result = validateGatePlan(submitted)
+    if (!result.ok) {
+      return reply.code(400).send({ error: { type: result.code, field: result.field, message: result.message } })
+    }
+    const plan = result.plan
+    const current = await resolveGateBaseSha(repo)
+    if (current !== null && current !== plan.baseSha) {
+      const t = translator(request.locale ?? 'zh')
+      return reply.code(409).send({
+        error: {
+          type: 'STALE_BASE_SHA',
+          field: 'baseSha',
+          currentSha: current,
+          message: t(
+            `计划基于 ${plan.baseSha}，但默认分支现在是 ${current}；请重新分析后再提交。`,
+            `The plan is based on ${plan.baseSha}, but the default branch is now ${current}; analyse again before submitting.`,
+          ),
+        },
+      })
+    }
+    const id = randomId('gate')
+    const hash = planHash(plan)
+    const row = store.createGateSession({
+      id,
+      repoId: repo.id,
+      status: 'proposed',
+      baseSha: plan.baseSha,
+      planJson: JSON.stringify(plan),
+      planHash: hash,
+    })
+    store.audit(viewer.user.id, 'gate.session.created', `${repo.owner}/${repo.name} session=${id} hash=${hash}`)
+    return reply.code(201).send(gateSessionView(row))
+  })
+
+  app.get('/repos/:id/gate/sessions/:sessionId', async (request, reply) => {
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const sessionId = String((request.params as Record<string, string>).sessionId)
+    const session = store.getGateSessionForRepo(repo.id, sessionId)
+    if (session === undefined) {
+      const t = translator(request.locale ?? 'zh')
+      return reply.code(404).send({ error: { type: 'GATE_SESSION_NOT_FOUND', message: t('门禁会话不存在。', 'That gate session does not exist.') } })
+    }
+    return reply.send(gateSessionView(session))
+  })
+
+  app.post('/repos/:id/gate/sessions/:sessionId/confirm', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (repo.repo_role !== 'maintainer') return gateMaintainerRefusal(reply, request)
+    const sessionId = String((request.params as Record<string, string>).sessionId)
+    const session = store.getGateSessionForRepo(repo.id, sessionId)
+    const t = translator(request.locale ?? 'zh')
+    if (session === undefined) {
+      return reply.code(404).send({ error: { type: 'GATE_SESSION_NOT_FOUND', message: t('门禁会话不存在。', 'That gate session does not exist.') } })
+    }
+    if (session.status !== 'proposed') {
+      return reply.code(409).send({
+        error: {
+          type: 'SESSION_NOT_PROPOSED',
+          message: t(`这个会话的状态是 ${session.status}，不能确认。`, `The session is ${session.status} and cannot be confirmed.`),
+        },
+      })
+    }
+    // The hash is recomputed from the stored plan: a row edited behind the store
+    // cannot be confirmed under the hash a person saw.
+    let storedHash = ''
+    try {
+      const stored = validateGatePlan(JSON.parse(session.plan_json))
+      if (stored.ok) storedHash = planHash(stored.plan)
+    } catch {
+      storedHash = ''
+    }
+    if (storedHash === '' || storedHash !== session.plan_hash) {
+      return reply.code(409).send({
+        error: {
+          type: 'PLAN_HASH_MISMATCH',
+          message: t('存储的计划与它记录的哈希不一致，请重新提交计划。', 'The stored plan does not match its recorded hash; submit the plan again.'),
+        },
+      })
+    }
+    const confirmed = store.updateGateSession(session.id, {
+      status: 'confirmed',
+      confirmed_by: viewer.user.login,
+      confirmed_at: nowIso(),
+      plan_hash: storedHash,
+    })!
+    store.audit(viewer.user.id, 'gate.session.confirmed', `${repo.owner}/${repo.name} session=${session.id} hash=${storedHash}`)
+    const contentType = String(request.headers['content-type'] ?? '')
+    if (contentType.includes('application/x-www-form-urlencoded')) {
+      return reply.redirect(`/repos/${repo.id}/gate?notice=${encodeURIComponent(t('计划已确认。还没有写入仓库。', 'The plan is confirmed. Nothing has been written to the repository yet.'))}`)
+    }
+    return reply.send(gateSessionView(confirmed))
   })
 
   app.get('/repos/:id/settings', async (request, reply) => {

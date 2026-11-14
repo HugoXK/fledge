@@ -335,6 +335,41 @@ export interface WorkItemRow {
   updated_at: string
 }
 
+export type GateSessionStatus = 'analyzing' | 'proposed' | 'confirmed' | 'created' | 'refused' | 'failed'
+
+// #543: one row per proposed gate plan. This first slice stops at `confirmed`:
+// no repository write, branch or pull request exists until the later gate-PR
+// slice, so `pr_url` and `branch` stay empty here.
+export interface GateSessionRow {
+  id: string
+  repo_id: string
+  status: GateSessionStatus
+  base_sha: string
+  plan_json: string
+  plan_hash: string
+  confirmed_by: string | null
+  confirmed_at: string | null
+  pr_url: string | null
+  branch: string | null
+  error_code: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface GateSessionInput {
+  id: string
+  repoId: string
+  status: GateSessionStatus
+  baseSha: string
+  planJson: string
+  planHash: string
+  confirmedBy?: string | null
+  confirmedAt?: string | null
+  prUrl?: string | null
+  branch?: string | null
+  errorCode?: string | null
+}
+
 export interface ApiTokenRow {
   id: string
   user_id: string
@@ -1431,6 +1466,23 @@ CREATE TABLE IF NOT EXISTS project_memory_versions (
   PRIMARY KEY (memory_id, revision)
 );
 
+CREATE TABLE IF NOT EXISTS gate_sessions (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  status TEXT NOT NULL,
+  base_sha TEXT NOT NULL,
+  plan_json TEXT NOT NULL,
+  plan_hash TEXT NOT NULL,
+  confirmed_by TEXT,
+  confirmed_at TEXT,
+  pr_url TEXT,
+  branch TEXT,
+  error_code TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS gate_sessions_repo_idx ON gate_sessions(repo_id, created_at DESC);
+
 -- #544 slice 3A: one schedule per repository. When a row exists it owns the
 -- repository's cadence and repos.interval_minutes stops deciding when a run is
 -- due; a repository without a row keeps the legacy interval untouched.
@@ -2220,6 +2272,64 @@ export class Store {
         WHERE recurrence_key IN (SELECT recurrence_key FROM postmortems WHERE repo_id = ?)
         ORDER BY last_seen_at DESC`,
       repoId,
+    )
+  }
+
+  // #543: a gate session is the proposal and the human decision, never a
+  // repository write. `plan_json` is the canonical plan that `plan_hash` covers,
+  // so a later gate-PR slice can refuse a plan edited after confirmation.
+  createGateSession(input: GateSessionInput): GateSessionRow {
+    const at = nowIso()
+    this.run(
+      `INSERT INTO gate_sessions
+        (id, repo_id, status, base_sha, plan_json, plan_hash, confirmed_by, confirmed_at, pr_url, branch, error_code, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      input.id,
+      input.repoId,
+      input.status,
+      input.baseSha,
+      input.planJson,
+      input.planHash,
+      input.confirmedBy ?? null,
+      input.confirmedAt ?? null,
+      input.prUrl ?? null,
+      input.branch ?? null,
+      input.errorCode ?? null,
+      at,
+      at,
+    )
+    return this.getGateSession(input.id)!
+  }
+
+  getGateSession(id: string): GateSessionRow | undefined {
+    return this.get<GateSessionRow>('SELECT * FROM gate_sessions WHERE id = ?', id)
+  }
+
+  getGateSessionForRepo(repoId: string, id: string): GateSessionRow | undefined {
+    return this.get<GateSessionRow>('SELECT * FROM gate_sessions WHERE repo_id = ? AND id = ?', repoId, id)
+  }
+
+  updateGateSession(
+    id: string,
+    patch: Partial<Pick<GateSessionRow, 'status' | 'confirmed_by' | 'confirmed_at' | 'pr_url' | 'branch' | 'error_code' | 'plan_json' | 'plan_hash'>>,
+  ): GateSessionRow | undefined {
+    const keys = Object.keys(patch) as Array<keyof typeof patch>
+    if (keys.length === 0) return this.getGateSession(id)
+    const assignments = keys.map((key) => `${key} = ?`)
+    this.run(
+      `UPDATE gate_sessions SET ${assignments.join(', ')}, updated_at = ? WHERE id = ?`,
+      ...keys.map((key) => patch[key] ?? null),
+      nowIso(),
+      id,
+    )
+    return this.getGateSession(id)
+  }
+
+  listGateSessionsForRepo(repoId: string, limit = 50): GateSessionRow[] {
+    return this.all<GateSessionRow>(
+      'SELECT * FROM gate_sessions WHERE repo_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?',
+      repoId,
+      limit,
     )
   }
 
