@@ -303,9 +303,15 @@ defect.
   `nextTime` is where DST is decided once: a local time that does not exist in
   the spring-forward gap is skipped rather than shifted, and a local time that
   occurs twice in the fall-back hour fires once, at the earlier instant, so a
-  poll inside the repeated hour does not run it a second time. Occurrence rows,
-  leases, misfire policies, layered budgets and the notification outbox are not
-  built yet; the tick still runs on `repos.interval_minutes`.
+  poll inside the repeated hour does not run it a second time.
+  The preview is the planner's first consumer (#544, second slice): `/schedule`
+  and `GET /api/schedule/preview` walk the next N instants, show the wall clock in
+  the schedule's zone, and mark a local time the spring-forward gap removed as
+  skipped rather than shifting it. Because the interval form has no timezone, an
+  interval that arrives with one is refused by name instead of being accepted and
+  shown as if a zone applied. A preview stores nothing and creates no job.
+  Occurrence rows, leases, misfire policies, layered budgets and the notification
+  outbox are not built yet; the tick still runs on `repos.interval_minutes`.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR

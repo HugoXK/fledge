@@ -60,6 +60,7 @@ import {
 import { configureOtel, endSpan, shutdownOtel, startSpan, type SpanHandle } from './lib/otel.js'
 import { configureGithubBudget } from './lib/githubBudget.js'
 import { normalizeReviewInstruction } from './lib/followUpInstruction.js'
+import { parsePreviewQuery, previewSchedule, type PreviewResult } from './schedules/preview.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -81,6 +82,7 @@ import {
   appReposPage,
   workspacePage,
   searchPage,
+  schedulePage,
   agentWorkspacePage,
   settingsPage,
   inboxSection,
@@ -158,6 +160,28 @@ function describeJobStop(result: { sent?: boolean; stopped?: number; requested?:
 function queryText(request: FastifyRequest, name: string): string | undefined {
   const value = (request.query as Record<string, unknown> | undefined)?.[name]
   return typeof value === 'string' && value !== '' ? value.slice(0, 500) : undefined
+}
+
+// The preview's query is a closed set of names, so it is read into a literal:
+// a user-supplied key never becomes a property name. A loop over
+// `Object.entries(query)` did, which is remote property injection (CodeQL
+// `js/remote-property-injection` at this helper), and the allowlist is the same
+// shape `form()` already uses below.
+function queryTextOf(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value.slice(0, 500) : undefined
+}
+
+function previewQuery(request: FastifyRequest): Record<string, string | undefined> {
+  const query = (request.query as Record<string, unknown> | undefined) ?? {}
+  return {
+    cron: queryTextOf(query.cron),
+    every: queryTextOf(query.every),
+    timezone: queryTextOf(query.timezone),
+    from: queryTextOf(query.from),
+    start_at: queryTextOf(query.start_at),
+    end_at: queryTextOf(query.end_at),
+    count: queryTextOf(query.count),
+  }
 }
 
 const FORM_KEY = /^[A-Za-z0-9_-]{1,80}$/
@@ -1042,6 +1066,55 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
+  })
+
+  // #544, second slice: the planner's first surface a person can reach. The page
+  // and the JSON below take the same query names and call the same planner, so
+  // what a maintainer reads on the page is what an integration would get.
+  app.get('/api/schedule/preview', async (request, reply) => {
+    requireApproved(request)
+    const parsed = parsePreviewQuery(previewQuery(request), Date.now())
+    if (!parsed.ok) return reply.code(400).send({ error: parsed.reason })
+    const preview = previewSchedule(parsed.request)
+    if (!preview.ok) return reply.code(400).send({ error: preview.reason })
+    return preview
+  })
+
+  app.get('/schedule', async (request, reply) => {
+    const viewer = requireApproved(request)
+    const query = previewQuery(request)
+    // No query at all is the empty form, not a refusal: opening the page should
+    // not look like an error.
+    const asked = Object.values(query).some((value) => value !== undefined)
+    const parsed = asked ? parsePreviewQuery(query, Date.now()) : null
+    let preview: Extract<PreviewResult, { ok: true }> | null = null
+    let error: string | undefined
+    if (parsed !== null) {
+      if (!parsed.ok) {
+        error = parsed.reason
+      } else {
+        const result = previewSchedule(parsed.request)
+        if (result.ok) preview = result
+        else error = result.reason
+      }
+    }
+    const page = schedulePage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      form: {
+        cron: query.cron ?? '',
+        every: query.every ?? '',
+        timezone: query.timezone ?? '',
+        startAt: query.start_at ?? '',
+        endAt: query.end_at ?? '',
+        from: query.from ?? '',
+        count: query.count ?? '',
+      },
+      preview,
+      error,
+    })
+    return htmlPage(reply, error === undefined ? 200 : 400, page)
   })
 
   app.get('/repos', async (_request, reply) => {
