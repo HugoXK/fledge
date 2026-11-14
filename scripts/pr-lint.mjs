@@ -92,6 +92,14 @@ async function paginate(path, maxPages = 6) {
 }
 
 const INVESTIGATE_PATH = /(^|\n)\s*(No-issue|Investigates)\s*:/i
+// How a PR ties itself to an issue, without inventing a close: `Fixes #N` closes
+// one, `Part of #N` and `Refs #N` say the PR is one slice of an epic and closes
+// nothing, and `No-issue:`/`Investigates:` say there is no issue. Only `Fixes`
+// closes, and GitHub reads that itself at merge time, so nothing may infer a
+// close from a tracking reference. Anchored at a line start like the other
+// shapes, and `#\d+\b` keeps `Part of #544x` out.
+const CLOSING_REF = /(^|\n)\s*Fixes #(\d+)\b/
+const TRACKING_REF = /(^|\n)\s*(?:Part of|Refs) #(\d+)\b/
 const DOCS_GROUPS = [
   { match: /^src\/(auth|users|email)\//, docs: ['docs/security.md'] },
   { match: /^src\/gateway\//, docs: ['docs/quota.md'] },
@@ -118,8 +126,13 @@ const mechanical = mechanicalRelease({ branch: pr.head?.ref, title: pr.title, fi
 
 const errors = checkBody(body, POLICY)
 
-if (!INVESTIGATE_PATH.test(body) && !/(^|\n)\s*Fixes #\d+\b/.test(body)) {
-  errors.push('the PR body needs "Fixes #N", "No-issue:" or "Investigates:"')
+const closingRef = CLOSING_REF.exec(body)
+const trackingRef = TRACKING_REF.exec(body)
+// `Fixes` wins when both are present: the PR closes something and also belongs
+// to an epic, so the reader is told what it closes, not that it closes nothing.
+const trackingNote = closingRef === null && trackingRef !== null ? `; tracks #${trackingRef[2]}, closes nothing` : ''
+if (!INVESTIGATE_PATH.test(body) && closingRef === null && trackingRef === null) {
+  errors.push('the PR body needs "Fixes #N", "Part of #N", "Refs #N", "No-issue:" or "Investigates:"')
 }
 
 const fragmentAdded = files.some((file) => file.status === 'added' && /^changelog\.d\/[^/]+\.(added|changed|deprecated|removed|fixed|security)\.md$/.test(file.filename))
@@ -162,5 +175,5 @@ if (errors.length > 0) {
   process.exit(1)
 }
 
-if (mechanical.mechanical) console.log(`pr-lint: ok (#${prNumber}, mechanical release v${mechanical.version}, ${paths.length} files)`)
-else console.log(`pr-lint: ok (#${prNumber}, ${computed}, ${paths.length} files)`)
+if (mechanical.mechanical) console.log(`pr-lint: ok (#${prNumber}, mechanical release v${mechanical.version}, ${paths.length} files${trackingNote})`)
+else console.log(`pr-lint: ok (#${prNumber}, ${computed}, ${paths.length} files${trackingNote})`)
