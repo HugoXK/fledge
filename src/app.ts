@@ -3474,6 +3474,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return user.id === viewer.user.id || user.role === 'user'
   }
 
+  // The admin page owns the Users section; `/admin/users` is a link/bookmark
+  // from older empty states, not a page. Keep it admin-only and send it to the
+  // section instead of the generic 404.
+  app.get('/admin/users', async (request, reply) => {
+    const viewer = requireAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    return reply.redirect('/admin#users')
+  })
+
   app.get('/admin/users/:id', async (request, reply) => {
     const viewer = requireAdmin(request)
     if (viewer.preview === true) return reply.redirect('/console')

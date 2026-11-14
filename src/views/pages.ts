@@ -2107,7 +2107,7 @@ export function adminPage(input: {
     .filter((user) => user.status === 'pending')
     .sort((a, b) => String(a.application_submitted_at ?? a.created_at).localeCompare(String(b.application_submitted_at ?? b.created_at)))
   const pendingRows = pending.length === 0
-    ? stateCell(4, { kind: 'empty', title: t('没有待审批申请。', 'No pending applications.'), body: t('新申请会出现在这里；审批会发邮件并写审计。', 'New applications land here; approving one sends mail and writes an audit entry.'), action: { href: '/admin/users', label: t('查看用户', 'View users') } })
+    ? stateCell(4, { kind: 'empty', title: t('没有待审批申请。', 'No pending applications.'), body: t('新申请会出现在这里；审批会发邮件并写审计。', 'New applications land here; approving one sends mail and writes an audit entry.'), action: { href: '/admin#users', label: t('查看用户', 'View users') } })
     : pending
         .map(
           (user, index) => `<tr>
@@ -2316,7 +2316,7 @@ export function adminPage(input: {
   </section>
   <section class="card" id="jobs">
     <div class="row between"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))} <small class="count">${jobsTotal}</small></h2><span class="fine">${escapeHtml(t('每页 10 条', '10 per page'))}</span></div>
-    ${jobTable(locale, jobs, { body: t('这里汇总所有用户的任务；还没有任何一条。', 'Jobs from every user are collected here; there are none yet.'), action: { href: '/admin/users', label: t('查看用户', 'View users') } }, { id: 'admin-jobs-table', name: t('最近任务', 'Recent jobs') })}
+    ${jobTable(locale, jobs, { body: t('这里汇总所有用户的任务；还没有任何一条。', 'Jobs from every user are collected here; there are none yet.'), action: { href: '/admin#users', label: t('查看用户', 'View users') } }, { id: 'admin-jobs-table', name: t('最近任务', 'Recent jobs') })}
     ${pager('/admin', 'jobsPage', jobsPage, jobsTotal, perPage, t, showAudit ? { auditPage } : {})}
   </section>
   ${showAudit ? `<section class="card" id="audit">
@@ -3416,7 +3416,7 @@ export function adminSupportPage(input: {
   const t = translator(locale)
   const usersById = new Map([[user.id, user.login]])
   const repoRows = repos.length === 0
-    ? stateCell(4, { kind: 'empty', title: t('没有仓库。', 'No repositories.'), body: t('这个用户还没有接入仓库。', 'This user has not connected a repository.'), action: { href: '/admin/users', label: t('查看用户', 'View users') } })
+    ? stateCell(4, { kind: 'empty', title: t('没有仓库。', 'No repositories.'), body: t('这个用户还没有接入仓库。', 'This user has not connected a repository.'), action: { href: '/admin#users', label: t('查看用户', 'View users') } })
     : repos.map((repo) => `<tr><td data-label="${escapeHtml(t('仓库', 'Repository'))}"><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></td><td data-label="${escapeHtml(t('角色', 'Role'))}"><span class="badge kind">${escapeHtml(repoRoleLabel(t, repo.repo_role))}</span></td><td data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, repo.last_status ?? 'idle')}</td><td data-label="${escapeHtml(t('上次运行', 'Last run'))}">${escapeHtml(humanTimeShort(repo.last_run_at))}</td></tr>`).join('')
   const jobRows = jobs.length === 0
     ? stateCell(4, { kind: 'empty', title: t('没有任务。', 'No jobs.'), body: t('这个仓库还没有跑过任务。', 'This repository has not run a job yet.'), action: { href: '/dashboard#jobs', label: t('查看任务', 'View jobs') } })
