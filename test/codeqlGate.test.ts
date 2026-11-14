@@ -173,11 +173,11 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // `:3419`; the gateway pair stays `:155`/`:180` because both inserts land below
   // it. Nothing is added or dismissed.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3419',
-    'js/missing-rate-limiting|src/app.ts|628',
-    'js/missing-rate-limiting|src/app.ts|663',
-    'js/missing-rate-limiting|src/app.ts|673',
-    'js/missing-rate-limiting|src/app.ts|683',
+    'js/missing-rate-limiting|src/app.ts|3431',
+    'js/missing-rate-limiting|src/app.ts|639',
+    'js/missing-rate-limiting|src/app.ts|674',
+    'js/missing-rate-limiting|src/app.ts|684',
+    'js/missing-rate-limiting|src/app.ts|694',
 
     'js/missing-rate-limiting|src/gateway/gateway.ts|155',
     'js/missing-rate-limiting|src/gateway/gateway.ts|180',

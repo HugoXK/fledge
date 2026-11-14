@@ -237,3 +237,34 @@ test('the preview refuses a count outside 1..20 and a window it cannot walk', as
   assert.deepEqual(result.times.map((time) => time.at), ['2026-11-16T01:00:00.000Z', '2026-11-16T02:00:00.000Z'])
   assert.equal(result.truncated, true)
 })
+
+test('the preview reads a closed set of query names and copies no other key', async () => {
+  const { built, cookie } = await fixture()
+  try {
+    const response = await built.app.inject({
+      method: 'GET',
+      url: `/api/schedule/preview?${new URLSearchParams([['cron', '0 9 * * *'], ['timezone', 'UTC'], ['__proto__', 'polluted'], ['constructor', 'x'], ['toString', 'y']]).toString()}`,
+      headers: { cookie },
+    })
+    assert.equal(response.statusCode, 200)
+    const body = response.json() as { times: Array<{ at: string }> }
+    assert.equal(body.times.length, 5)
+    // The helper builds its record from a literal, so a user-supplied name cannot
+    // become a property name; this pins the allowlist the CodeQL sink needed.
+    assert.equal(({} as Record<string, unknown>).polluted, undefined)
+  } finally {
+    await built.close()
+  }
+})
+
+test('the page opens as an empty form rather than a refusal', async () => {
+  const { built, cookie } = await fixture()
+  try {
+    const page = await built.app.inject({ method: 'GET', url: '/schedule', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.ok(page.body.includes('name="cron"'))
+    assert.ok(!page.body.includes('give "cron"'))
+  } finally {
+    await built.close()
+  }
+})

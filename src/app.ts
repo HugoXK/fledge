@@ -162,15 +162,26 @@ function queryText(request: FastifyRequest, name: string): string | undefined {
   return typeof value === 'string' && value !== '' ? value.slice(0, 500) : undefined
 }
 
-// A query string is repeated for arrays (`?a=1&a=2`), and the planner takes one
-// value per field; only a plain string reaches it.
-function queryStrings(request: FastifyRequest): Record<string, string | undefined> {
+// The preview's query is a closed set of names, so it is read into a literal:
+// a user-supplied key never becomes a property name. A loop over
+// `Object.entries(query)` did, which is remote property injection (CodeQL
+// `js/remote-property-injection` at this helper), and the allowlist is the same
+// shape `form()` already uses below.
+function queryTextOf(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value.slice(0, 500) : undefined
+}
+
+function previewQuery(request: FastifyRequest): Record<string, string | undefined> {
   const query = (request.query as Record<string, unknown> | undefined) ?? {}
-  const out: Record<string, string | undefined> = {}
-  for (const [key, value] of Object.entries(query)) {
-    if (typeof value === 'string' && value !== '') out[key] = value.slice(0, 500)
+  return {
+    cron: queryTextOf(query.cron),
+    every: queryTextOf(query.every),
+    timezone: queryTextOf(query.timezone),
+    from: queryTextOf(query.from),
+    start_at: queryTextOf(query.start_at),
+    end_at: queryTextOf(query.end_at),
+    count: queryTextOf(query.count),
   }
-  return out
 }
 
 const FORM_KEY = /^[A-Za-z0-9_-]{1,80}$/
@@ -1056,7 +1067,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // what a maintainer reads on the page is what an integration would get.
   app.get('/api/schedule/preview', async (request, reply) => {
     requireApproved(request)
-    const parsed = parsePreviewQuery(queryStrings(request), Date.now())
+    const parsed = parsePreviewQuery(previewQuery(request), Date.now())
     if (!parsed.ok) return reply.code(400).send({ error: parsed.reason })
     const preview = previewSchedule(parsed.request)
     if (!preview.ok) return reply.code(400).send({ error: preview.reason })
@@ -1065,10 +1076,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/schedule', async (request, reply) => {
     const viewer = requireApproved(request)
-    const query = queryStrings(request)
+    const query = previewQuery(request)
     // No query at all is the empty form, not a refusal: opening the page should
     // not look like an error.
-    const parsed = Object.keys(query).length === 0 ? null : parsePreviewQuery(query, Date.now())
+    const asked = Object.values(query).some((value) => value !== undefined)
+    const parsed = asked ? parsePreviewQuery(query, Date.now()) : null
     let preview: Extract<PreviewResult, { ok: true }> | null = null
     let error: string | undefined
     if (parsed !== null) {
