@@ -653,6 +653,11 @@ shared with the project or scoped to one role (`role:maintainer`,
 `role:developer`). The audience is resolved from the repository's chosen role,
 not from the account's permission: an administrator acting as a developer reads
 the developer view and an entry outside that audience is reported as absent, so
-a role boundary is not a list filter that a direct URL walks around. A writer may
-not author an entry for a role it cannot act as, and the store refuses a write
-whose `expected_revision` is stale instead of overwriting the current body.
+a role boundary is not a list filter that a direct URL walks around. A revision
+is read under its own audience, so an old revision written for another role is
+neither listed nor rendered even after the current entry moves to a wider one.
+A writer may not author an entry for a role it cannot act as, and a write aimed
+at an entry outside the actor's audience is refused as if the entry were absent,
+before the revision fence, so a hidden key is not a write target or a revision
+oracle. The store refuses a write whose `expected_revision` is stale instead of
+overwriting the current body.

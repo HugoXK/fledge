@@ -91,7 +91,7 @@ import {
 } from './views/pages.js'
 import { withDensity } from './views/layout.js'
 import { memoryMissingPage, memoryPage } from './views/memory.js'
-import { memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from './lib/memory.js'
+import { audienceVisible, memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from './lib/memory.js'
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
 import { GithubClient, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
 import { GithubApp } from './repos/app.js'
@@ -1511,11 +1511,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (entry === undefined) {
         return htmlPage(reply, 404, memoryMissingPage({ config, locale, viewer: viewOf(viewer), repo }))
       }
-      versions = store.listMemoryVersions(entry.id)
+      // A revision carries its own audience: the entry may have moved to a
+      // wider audience, but an old revision written for another role stays
+      // outside this reader's audience and is neither listed nor rendered.
+      versions = store.listMemoryVersions(entry.id).filter((row) => audienceVisible(row.audience, role))
       const rawRevision = queryText(request, 'rev')
       const wanted = rawRevision === undefined ? entry.revision : Number(rawRevision)
       const version = Number.isInteger(wanted) ? store.getMemoryVersion(entry.id, wanted) : undefined
-      if (version === undefined) {
+      if (version === undefined || !audienceVisible(version.audience, role)) {
         return htmlPage(reply, 404, memoryMissingPage({ config, locale, viewer: viewOf(viewer), repo }))
       }
       detail = { entry, version, historical: version.revision !== entry.revision }
@@ -1547,6 +1550,13 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/${repo.id}/memory?refused=${encodeURIComponent(parsed.refused)}`)
     }
     const input = parsed.value
+    // An entry outside the actor's audience is not a write target. Refuse it
+    // before the revision fence so a hidden key is not a revision oracle, and use
+    // the same refusal an update to a missing entry gives.
+    const current = store.getMemory(repo.id, input.key)
+    if (current !== undefined && !audienceVisible(current.audience, role)) {
+      return reply.redirect(`/repos/${repo.id}/memory?refused=memory_not_found`)
+    }
     const result = store.writeMemory({
       repoId: repo.id,
       key: input.key,
