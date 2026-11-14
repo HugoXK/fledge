@@ -5,7 +5,7 @@ import { buildApp, type BuiltApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { encryptSecret } from '../src/lib/secrets.js'
 import type { Runner } from '../src/jobs/runner.js'
-import { json, makeUser, MemoryMailer, readBody, startFakeServer, testConfig } from './helpers.js'
+import { json, makeUser, MemoryMailer, startFakeServer, testConfig } from './helpers.js'
 
 // #540 slice 6: the chat half of the management contract. An issue-comment
 // command is a third surface on the same service as the console forms — the
