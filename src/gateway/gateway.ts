@@ -453,7 +453,12 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
 
     function recordKnown(costUsd: number, meta: string, detail: UsageDetail): void {
       store.recordUsage(authed.user.id, jobId, costUsd, meta, authed.token.repo_id ?? null, detail)
-      if (jobId !== null) store.addJobCost(jobId, costUsd)
+      // #636 review: `jobs.cost_usd` is the per-job USD column the console prints
+      // with a `$`, so a call priced in another currency is not added to it;
+      // `costByCurrency` is the surface that reports every currency.
+      if (jobId !== null && (detail.currency === undefined || detail.currency === null || detail.currency === 'USD')) {
+        store.addJobCost(jobId, costUsd)
+      }
       // #100: a call made with a job token is that job's spend; name the job
       // under the same key every other job line uses. A call without a job in
       // scope (a user's own PAT) carries no trace at all rather than a null one.

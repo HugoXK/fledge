@@ -476,6 +476,9 @@ revoke stays one click.
   it was charged at and `cost_known`; a request that cannot be priced is stored
   as `cost_known = 0` with a `request.cost_unknown` audit entry instead of a
   zero cost, so spend stays a lower bound rather than a claim of "free" (#636).
+  `users.quota_used_usd`, `jobs.cost_usd` and the CNY budgets are USD columns:
+  only rows billed in USD reach them, and a row in another currency is reported
+  by `Store.costByCurrency()` in its own bucket instead of being converted.
   `src/metrics/cost.ts` holds the price table, the cache-token rule and the
   unknown-vs-zero decision; the gateway only reads its answer.
 - At zero it returns HTTP 402 with `code: FLEDGE_QUOTA_EXHAUSTED` and a settings
@@ -1355,7 +1358,9 @@ a job is running it uses that job's short-lived `flg_` token instead (the
 `quota_ledger` and add `jobs.cost_usd`. A row that could not be priced is not a
 zero row for this purpose: `usageCountForJob` counts only `cost_known = 1`, so
 the per-job budget's unknown refusal (#357) still fires when every call a job
-made was unknown. The job page shows cost, attribution and
+made was unknown. Only USD-billed rows reach `jobs.cost_usd`, and a retry names
+the attempt it continues in `jobs.retry_of`, so the chain a job inherits is the
+sum of every attempt rather than a fresh budget. The job page shows cost, attribution and
 Team attribution is grounded in the DSH per-role call counts: the job page and the
 PR automation comment use only roles with actual calls, and a claimed role with
 zero calls is recorded as a `team_attribution_grounded` mismatch event.

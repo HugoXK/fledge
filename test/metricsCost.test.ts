@@ -4,6 +4,8 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { randomToken, sha256Hex } from '../src/lib/secrets.js'
 import { MockRunner } from '../src/jobs/mock.js'
+import { Jobs } from '../src/jobs/service.js'
+import { quotaView } from '../src/gateway/quota.js'
 import { parsePriceTable, requestCost } from '../src/metrics/cost.js'
 import { json, makeUser, MemoryMailer, readBody, startFakeServer, testConfig } from './helpers.js'
 
@@ -223,6 +225,107 @@ test('a retry continues the budget of the job it continues', () => {
     // A job that is not part of the chain is not charged for it.
     make('job_other', null)
     assert.equal(store.usageForJobChain('job_other'), 0)
+  } finally {
+    store.close()
+  }
+})
+
+// #676 review, finding 1: the CNY quota is `quota_used_usd * USD_CNY_RATE`, so a
+// row priced in CNY must not be added to that USD column; the ledger keeps it in
+// its own bucket instead. The doc's own example table is CNY, which is why this
+// path is the one that matters.
+test('a call priced in CNY does not consume the USD quota', async () => {
+  const cnyTable = JSON.stringify([
+    { model: 'gw-cny', currency: 'CNY', inputPerToken: 0.00001, outputPerToken: 0.00002, cachedInputPerToken: 0.000001 },
+  ])
+  const gateway = await gatewayFor({ model: 'gw-cny', priceTable: cnyTable, usage: { prompt_tokens: 100, completion_tokens: 0 } })
+  try {
+    const answer = await gateway.call()
+    assert.equal(answer.statusCode, 200)
+    const row = gateway.store.get<{ cost_usd: number; currency: string | null; cost_known: number }>(
+      'SELECT cost_usd, currency, cost_known FROM quota_ledger ORDER BY id DESC LIMIT 1',
+    )
+    assert.equal(row?.currency, 'CNY')
+    assert.equal(row?.cost_known, 1)
+    assert.equal(Number(row?.cost_usd.toFixed(10)), 0.001, 'the ledger row is the real CNY charge')
+    // Folding 0.001 CNY into the USD column read 0.0072 CNY here: 7.2x the spend.
+    const stored = gateway.store.userById(gateway.user.id)
+    assert.equal(stored?.quota_used_usd, 0, 'the USD quota column is untouched by a CNY row')
+    assert.equal(quotaView(stored!, testConfig()).usedCny, 0, 'so the CNY quota does not drain 7.2x too fast')
+    // The spend is still reported, in the bucket it was charged in.
+    const report = gateway.store.costByCurrency('2000-01-01T00:00:00.000Z')
+    const bucket = report.buckets.find((entry) => entry.currency === 'CNY')
+    assert.equal(bucket?.requests, 1)
+    assert.equal(Number(bucket?.amount.toFixed(10)), 0.001)
+  } finally {
+    await gateway.close()
+  }
+})
+
+test('a CNY row stays out of the per-job USD column but still counts as a priced call', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'cny-job', status: 'approved' })
+    store.recordUsage(user.id, 'job_cny', 0.001, null, null, { currency: 'CNY', model: 'model-cny', priceSnapshot: null })
+    store.recordUsage(user.id, 'job_cny', 0.002, null, null, { currency: 'USD', model: 'model-a', priceSnapshot: null })
+    assert.equal(Number(store.usageForJob('job_cny').toFixed(10)), 0.002, 'the per-job USD figure sums USD rows only')
+    assert.equal(Number(store.usageTotal(user.id).toFixed(10)), 0.002)
+    assert.equal(store.usageCountForJob('job_cny'), 2, 'both rows are priced, so the job has a cost on record')
+  } finally {
+    store.close()
+  }
+})
+
+// #676 review, finding 2: `retryOf: job.retry_of ?? job.id` named the grandparent,
+// so a retry of a retry lost the middle attempt's rows. The chain walk is upward
+// only, and every other producer names the immediate parent.
+test('a retry names the attempt it continues, so a second retry keeps the middle spend', async () => {
+  const store = new Store(':memory:')
+  try {
+    const jobs = new Jobs(store, testConfig(), { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+    const user = makeUser(store, { login: 'retry-chain', status: 'approved', quota: 100 })
+    const repo = store.createRepo({ id: 'repo_retry_chain', userId: user.id, owner: 'o', name: 'chain', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_chain_root', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob('job_chain_root', { status: 'failed', finished_at: new Date().toISOString() })
+    store.recordUsage(user.id, 'job_chain_root', 0.5, null, repo.id)
+
+    const first = await jobs.retryJob('job_chain_root', user.id)
+    assert.equal(first.ok, true, 'the first retry is created')
+    const middle = first.job!
+    store.updateJob(middle.id, { status: 'failed', finished_at: new Date().toISOString() })
+    store.recordUsage(user.id, middle.id, 0.3, null, repo.id)
+
+    const second = await jobs.retryJob(middle.id, user.id)
+    assert.equal(second.ok, true, 'the retry of the retry is created')
+    const last = second.job!
+    // The grandparent form gave a chain of 0.55 against a real 0.8.
+    assert.equal(last.retry_of, middle.id, 'a retry names the attempt it continues, not the root')
+    assert.equal(Number(store.usageForJobChain(last.id).toFixed(10)), 0.8, 'the chain sums the root and the middle attempt')
+    assert.equal(store.usageCountForJobChain(last.id), 2)
+  } finally {
+    store.close()
+  }
+})
+
+test('the checkpoint sums the chain when the running job is a retry', async () => {
+  const store = new Store(':memory:')
+  try {
+    const jobs = new Jobs(store, testConfig(), { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+    const user = makeUser(store, { login: 'retry-budget', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_retry_budget', userId: user.id, owner: 'o', name: 'budget', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440, jobBudgetCny: 0.05, jobBudgetAction: 'pause' })
+    store.createJob({ id: 'job_budget_root', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob('job_budget_root', { status: 'failed', finished_at: new Date().toISOString() })
+    // 0.004 USD is 0.0288 CNY: the attempt alone fits the 0.05 CNY cap, the two
+    // attempts together (0.0576) do not. Only the chain can see that.
+    store.recordUsage(user.id, 'job_budget_root', 0.004, null, repo.id)
+    const secret = 'retry-budget-secret'
+    store.createJob({ id: 'job_budget_retry', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main', retryOf: 'job_budget_root' })
+    store.updateJob('job_budget_retry', { status: 'running', started_at: new Date().toISOString() })
+    store.recordUsage(user.id, 'job_budget_retry', 0.004, null, repo.id)
+
+    const result = await jobs.handleCallback('job_budget_retry', secret, { status: 'running', summary: 'checkpoint 1' })
+    assert.equal(result.ok, true)
+    assert.equal(store.getJob('job_budget_retry')?.status, 'paused', 'the retry inherits the spend that already crossed the budget')
   } finally {
     store.close()
   }

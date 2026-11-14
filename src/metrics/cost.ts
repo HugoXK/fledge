@@ -113,8 +113,9 @@ export function requestCost(usage: unknown, model: string, table: PriceTable): R
   const total = count(record.total_tokens)
   if (prompt === null && completion === null && total === null) return { known: false, model, reason: 'no_tokens' }
   const output = completion ?? 0
-  // No prompt count but a total still bounds the input tokens from below; the
-  // call is priced, and the caller reports the total as a lower bound.
+  // `total_tokens` is the sum of the prompt and completion counts, so a missing
+  // prompt count is derived from it and the row stays a priced one. Only an
+  // unknown price makes a report a lower bound; this derivation does not.
   const input = prompt ?? Math.max(0, (total ?? 0) - output)
   const cached = cachedTokens(record, input)
   const amount = (input - cached) * price.inputPerToken + cached * price.cachedInputPerToken + output * price.outputPerToken

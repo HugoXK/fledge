@@ -32,6 +32,15 @@ const PAT_EXPIRY_BACKFILL_KEY = 'pat_expiry_backfilled'
 
 const require = createRequire(import.meta.url)
 
+// #636 review: the quota and the repository budgets are CNY figures computed as
+// `USD amount * USD_CNY_RATE`, so they may only read rows billed in USD. A row
+// priced in another currency stays in `costByCurrency`, which keeps the buckets
+// apart and never invents a rate between them; it is not folded into a USD
+// column here.
+function usdBilled(prefix = ''): string {
+  return `(${prefix}currency IS NULL OR ${prefix}currency = 'USD')`
+}
+
 interface Statement {
   run(...params: unknown[]): { changes: number | bigint; lastInsertRowid: number | bigint }
   get(...params: unknown[]): unknown
@@ -3593,7 +3602,7 @@ export class Store {
               SUM(q.cost_usd) AS total, COUNT(*) AS calls
          FROM quota_ledger q
          LEFT JOIN repos r ON r.id = q.repo_id
-        WHERE q.at >= ? AND q.repo_id IS NOT NULL
+        WHERE q.at >= ? AND q.repo_id IS NOT NULL AND q.cost_known = 1 AND ${usdBilled('q.')}
         GROUP BY q.repo_id
         ORDER BY total DESC
         LIMIT ?`,
@@ -3603,7 +3612,10 @@ export class Store {
   }
 
   modelCostMetrics(sinceIso: string, limit = 20): Array<{ model: string; costUsd: number; calls: number }> {
-    const rows = this.all<{ meta: string | null; cost_usd: number }>('SELECT meta, cost_usd FROM quota_ledger WHERE at >= ?', sinceIso)
+    // #636 review: an unpriced model has no USD figure, so the by-model table
+    // must not show it as a row of zero-cost calls next to the currency table
+    // that calls it unknown. Only priced USD rows are ranked here.
+    const rows = this.all<{ meta: string | null; cost_usd: number }>(`SELECT meta, cost_usd FROM quota_ledger WHERE at >= ? AND cost_known = 1 AND ${usdBilled()}`, sinceIso)
     const byModel = new Map<string, { costUsd: number; calls: number }>()
     for (const row of rows) {
       let model = 'unknown'
@@ -4975,8 +4987,13 @@ export class Store {
         nowIso(), userId, jobId, repoId, costUsd, meta, currency, detail?.model ?? null, detail?.priceSnapshot ?? null, known ? 1 : 0,
       )
       // An unknown row adds nothing to the spend it could not measure; it is
-      // counted separately instead of being read as a free call.
-      if (known) this.run('UPDATE users SET quota_used_usd = quota_used_usd + ? WHERE id = ?', costUsd, userId)
+      // counted separately instead of being read as a free call. A row priced in
+      // another currency is real spend, but this column is USD by definition (the
+      // CNY quota is `quota_used_usd * USD_CNY_RATE`); converting it here would
+      // invent a rate between the buckets, so `costByCurrency` reports it instead.
+      if (known && (currency === null || currency === 'USD')) {
+        this.run('UPDATE users SET quota_used_usd = quota_used_usd + ? WHERE id = ?', costUsd, userId)
+      }
     })
   }
 
@@ -4996,15 +5013,15 @@ export class Store {
 
   repoUsageSince(repoId: string, sinceIso: string): number {
     const row = this.get<{ total: number | null }>(
-      'SELECT SUM(q.cost_usd) AS total FROM quota_ledger q LEFT JOIN jobs j ON j.id = q.job_id WHERE COALESCE(q.repo_id, j.repo_id) = ? AND q.at >= ?',
+      `SELECT SUM(q.cost_usd) AS total FROM quota_ledger q LEFT JOIN jobs j ON j.id = q.job_id WHERE COALESCE(q.repo_id, j.repo_id) = ? AND q.at >= ? AND ${usdBilled('q.')}`,
       repoId, sinceIso,
     )
     return Number(row?.total ?? 0)
   }
 
   usageAttribution(sinceIso: string): { unattributedCount: number; unattributedUsd: number; attributedUsd: number } {
-    const unattributed = this.get<{ n: number; total: number | null }>("SELECT COUNT(*) AS n, SUM(cost_usd) AS total FROM quota_ledger WHERE repo_id IS NULL AND job_id IS NULL AND at >= ?", sinceIso)
-    const attributed = this.get<{ total: number | null }>("SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE (repo_id IS NOT NULL OR job_id IS NOT NULL) AND at >= ?", sinceIso)
+    const unattributed = this.get<{ n: number; total: number | null }>(`SELECT COUNT(*) AS n, SUM(cost_usd) AS total FROM quota_ledger WHERE repo_id IS NULL AND job_id IS NULL AND at >= ? AND ${usdBilled()}`, sinceIso)
+    const attributed = this.get<{ total: number | null }>(`SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE (repo_id IS NOT NULL OR job_id IS NOT NULL) AND at >= ? AND ${usdBilled()}`, sinceIso)
     return {
       unattributedCount: Number(unattributed?.n ?? 0),
       unattributedUsd: Number(unattributed?.total ?? 0),
@@ -5026,12 +5043,12 @@ export class Store {
   }
 
   usageTotal(userId: string): number {
-    const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ?', userId)
+    const row = this.get<{ total: number | null }>(`SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ? AND ${usdBilled()}`, userId)
     return Number(row?.total ?? 0)
   }
 
   usageSince(userId: string, sinceIso: string): number {
-    const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ? AND at >= ?', userId, sinceIso)
+    const row = this.get<{ total: number | null }>(`SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ? AND at >= ? AND ${usdBilled()}`, userId, sinceIso)
     return Number(row?.total ?? 0)
   }
 
@@ -5057,14 +5074,19 @@ export class Store {
   }
 
   usageForJobChain(jobId: string): number {
+    // #636 review: the CNY job budget is `usd amount * USD_CNY_RATE`, so it sums
+    // USD-billed rows only; a row in another currency stays in `costByCurrency`.
     const row = this.get<{ total: number | null }>(
-      `${this.jobChain(jobId)} SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE job_id IN (SELECT id FROM chain) AND cost_known = 1`,
+      `${this.jobChain(jobId)} SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE job_id IN (SELECT id FROM chain) AND cost_known = 1 AND ${usdBilled()}`,
       jobId,
     )
     return Number(row?.total ?? 0)
   }
 
   usageCountForJobChain(jobId: string): number {
+    // Every priced row counts here, whatever its currency: this answers "did the
+    // chain record a cost at all", which is what separates an unknown cost from a
+    // zero one. The sum above is the USD-only figure the CNY cap compares.
     const row = this.get<{ n: number }>(
       `${this.jobChain(jobId)} SELECT COUNT(*) AS n FROM quota_ledger WHERE job_id IN (SELECT id FROM chain) AND cost_known = 1`,
       jobId,
@@ -5073,7 +5095,7 @@ export class Store {
   }
 
   usageForJob(jobId: string): number {
-    const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE job_id = ?', jobId)
+    const row = this.get<{ total: number | null }>(`SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE job_id = ? AND ${usdBilled()}`, jobId)
     return Number(row?.total ?? 0)
   }
 
