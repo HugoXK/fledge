@@ -357,6 +357,21 @@ defect.
   before deciding (quota) releases its lease instead of waiting for it to lapse.
   Reviews keep their own cadence (`review_interval_minutes`): this switches the work loop
   only.
+- **The console reads the planner** (#544, the console slice): `/repos/:id/schedule`
+  is the page a maintainer reads and the only product write that creates a
+  `schedules` row — before it, `saveSchedule` had no caller outside tests, so
+  neither the schedule nor the lease above could be felt. It shows the stored
+  schedule, the next run from `nextTime`, the newest decided instant with its
+  state, reason, `missed` and `attempts`, whether a live lease holds it, and the
+  last instant whose job succeeded. A value nobody recorded prints `unknown`: a
+  schedule with no occurrence row has not run, and this slice has no delivery
+  outbox, so neither is a zero. `src/schedules/console.ts` is that view model. The
+  repository page passes the planner's answer for a scheduled repository and keeps
+  the legacy interval line only for one without a row, so the page prints one
+  number instead of a second, weaker one; the comment that claimed the interval
+  rule restates the worker's formula is gone with the citation it rested on.
+  Saving is audited as `schedule.saved` and deleting the row as
+  `schedule.removed`, each naming the repository and what changed.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR

@@ -63,6 +63,9 @@ import { configureOtel, endSpan, shutdownOtel, startSpan, type SpanHandle } from
 import { configureGithubBudget } from './lib/githubBudget.js'
 import { normalizeReviewInstruction } from './lib/followUpInstruction.js'
 import { parsePreviewQuery, previewSchedule, type PreviewResult } from './schedules/preview.js'
+import { intervalFieldText, scheduleConsole } from './schedules/console.js'
+import { nextTime } from './schedules/next.js'
+import { scheduleFromRow } from './schedules/tick.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -85,6 +88,7 @@ import {
   workspacePage,
   searchPage,
   schedulePage,
+  scheduleConsolePage,
   agentWorkspacePage,
   settingsPage,
   inboxSection,
@@ -1382,6 +1386,88 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return htmlPage(reply, error === undefined ? 200 : 400, page)
   })
 
+  // #544 slice 3A/3B, the console: the page a maintainer reads, and the write
+  // that makes `saveSchedule` reachable in the product at all. Once the row
+  // exists it owns the repository's cadence, so this route is the only door to it.
+  app.get('/repos/:id/schedule', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const locale = request.locale ?? 'zh'
+    const t = translator(locale)
+    const row = store.scheduleForRepo(repo.id)
+    const state = scheduleConsole({
+      repoId: repo.id,
+      row,
+      occurrences: store.listScheduleOccurrences(repo.id, 20),
+      now: Date.now(),
+      jobStatus: (jobId) => store.getJob(jobId)?.status ?? null,
+    })
+    const refused = queryText(request, 'refused')
+    const instant = (value: number | null | undefined): string => (value === null || value === undefined ? '' : new Date(value).toISOString())
+    return reply.type('text/html').send(scheduleConsolePage({
+      config,
+      locale,
+      viewer: viewOf(viewer),
+      repo,
+      state,
+      form: {
+        cron: row?.expression ?? '',
+        every: row?.every_ms === null || row?.every_ms === undefined ? '' : intervalFieldText(row.every_ms),
+        timezone: row?.timezone ?? '',
+        startAt: instant(row?.start_at),
+        endAt: instant(row?.end_at),
+      },
+      ...(queryText(request, 'saved') === undefined ? {} : { notice: t('排期已保存。', 'The schedule is saved.') }),
+      ...(queryText(request, 'removed') === undefined ? {} : { notice: t('排期已删除，仓库回到旧的自动间隔。', 'The schedule was deleted; the repository is back on the legacy interval.') }),
+      ...(refused === undefined ? {} : { error: refused }),
+    }))
+  })
+
+  // The form is the same query shape the preview takes, so the console and the
+  // preview cannot disagree about what a legal schedule is. A refusal comes back
+  // as a reason naming the field, and nothing is written.
+  app.post('/repos/:id/schedule', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const back = `/repos/${repo.id}/schedule`
+    const body = form(request)
+    const parsed = parsePreviewQuery({
+      cron: String(body.cron ?? '').trim(),
+      every: String(body.every ?? '').trim(),
+      timezone: String(body.timezone ?? '').trim(),
+      start_at: String(body.start_at ?? '').trim(),
+      end_at: String(body.end_at ?? '').trim(),
+    }, Date.now(), translator(request.locale ?? 'zh'))
+    if (!parsed.ok) return reply.redirect(`${back}?refused=${encodeURIComponent(parsed.reason)}`)
+    const schedule = parsed.request.schedule
+    const existing = store.scheduleForRepo(repo.id)
+    store.saveSchedule({
+      id: existing?.id ?? randomId('sch'),
+      repoId: repo.id,
+      kind: schedule.kind,
+      expression: schedule.kind === 'cron' ? schedule.expression : null,
+      everyMs: schedule.kind === 'interval' ? schedule.everyMs : null,
+      timezone: schedule.kind === 'cron' ? schedule.timezone : null,
+      startAt: schedule.startAt,
+      endAt: schedule.endAt,
+    })
+    const label = schedule.kind === 'cron'
+      ? `${schedule.expression} ${schedule.timezone}`
+      : `every ${intervalFieldText(schedule.everyMs)}`
+    store.audit(viewer.user.id, 'schedule.saved', `${repo.id}: ${label}`)
+    return reply.redirect(`${back}?saved=1`)
+  })
+
+  // Deleting the row hands the repository back to its legacy interval; it does
+  // not stop the repository, so the audit says which schedule stopped owning it.
+  app.post('/repos/:id/schedule/remove', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const existing = store.scheduleForRepo(repo.id)
+    if (existing !== undefined) {
+      store.deleteSchedule(repo.id)
+      store.audit(viewer.user.id, 'schedule.removed', `${repo.id}: ${existing.kind} ${existing.expression ?? `${String(existing.every_ms)}ms`}`)
+    }
+    return reply.redirect(`/repos/${repo.id}/schedule?removed=1`)
+  })
+
   app.get('/repos', async (_request, reply) => {
     return reply.redirect('/dashboard#add-repo')
   })
@@ -1700,6 +1786,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const trendSince = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString()
     const reviewTrend = { week: store.reviewTrend(repo.id, trendSince(7)), month: store.reviewTrend(repo.id, trendSince(30)) }
     const repoModels = store.listRepoModelSelection(repo.id)
+    const scheduleRow = store.scheduleForRepo(repo.id)
+    const schedule = scheduleRow === undefined ? null : scheduleFromRow(scheduleRow)
     let chiefMessages
     if ((viewer.user.role !== 'superadmin' || viewer.preview === true) && instance?.status === 'ready') {
       chiefMessages = await instances.chiefTranscript(repo.id).catch((error) => {
@@ -1758,6 +1846,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         }),
         ...(workState !== undefined && isWorkItemState(workState) ? { workState } : {}),
         reviewTrend,
+        // #544: a repository with a schedule row is answered by the planner, not
+        // by the legacy interval rule the page computed for every repository.
+        ...(scheduleRow === undefined ? {} : {
+          scheduledNext: schedule === null ? { kind: 'unreadable' as const, at: null } : { kind: schedule.kind, at: nextTime(schedule, Date.now()) },
+        }),
         workflowFailures: store.listWorkflowFailuresForRepo(repo.id, 10),
         postmortems: store.listPostmortemsForRepo(repo.id, { openOnly: true }),
         recurrences: store.listPostmortemRecurrences(repo.id),
