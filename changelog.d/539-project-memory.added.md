@@ -1,1 +1,0 @@
-Project memory: a repository page where a decision, convention or piece of experience is written with a revision fence, scoped to the project or to one role, and read back as an exact revision with its digest and history.
