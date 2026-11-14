@@ -726,24 +726,30 @@ for a message no code covers — which is why a new failure adds a code rather t
 a dictionary row.
 
 A refusal carries its code too. The job service answers an enqueue it will not
-start with a code, and the route puts that code on the redirect with the payload
-after a colon: the code's own parameter where it has one (`BRANCH_MISSING:main`,
-`JOB_LIMIT:2`, `BOT_MODEL_ASSIGNMENT_FAILED:chief, lead`) or else the sentence the
-service wrote. The banner asks the sentence table first, so those codes read in
-the reader's language with their parameter filled in. A code whose table entry
-carries `{detail}` keeps that parameter too — the duplicate-work refusal names the
-pull request that already covers the issue (`DUPLICATE_WORK:<url>`) — so the value
-the service found survives the redirect instead of being dropped when the sentence
-is rebuilt. A refusal that names a pull request (`DUPLICATE_WORK` for work in
+start with one of the codes in `ENQUEUE_REFUSAL_CODES`, and the route puts that
+code on the redirect with the payload after a colon. Every code in that tuple has
+a sentence in `REFUSAL_SENTENCES`, in both languages, and the table is typed
+`Record<EnqueueRefusalCode, [string, string]>`: a new return that is not declared
+fails typecheck, and a declared code with no sentence fails it too. The banner
+asks the sentence table first and ignores the service's payload except for the
+placeholders the sentence declares — the code's own parameter where it has one
+(`BRANCH_MISSING:main`, `JOB_LIMIT:2`, `BOT_MODEL_ASSIGNMENT_FAILED:chief, lead`)
+or `{detail}` for the duplicate-work refusal, which names the pull request that
+already covers the issue (`DUPLICATE_WORK:<url>`). That is why
+`INSTANCE_NOT_READY` and `PREFLIGHT_FAILED` can no longer put an exception's
+host, port, error class or status in the URL or the banner: their entries have a
+fixed sentence, and the upstream text stays only in the audit row and the job
+row. A work-type mismatch has its own code (`WORK_TYPE_MISMATCH`, with
+`<kind>/<type>` as the detail) rather than reusing `UNKNOWN_WORK_TYPE`.
+
+A refusal that names a pull request (`DUPLICATE_WORK` for work in
 flight, `ALREADY_FIXED` for a fix that landed) renders that value as a link, so the
 maintainer opens the pull request the refusal came from instead of copying a URL out
 of the sentence; the anchor is built only for a `github.com` pull request URL,
 because the banner value arrives as a query parameter and any other value stays
-escaped text. A code with no sentence
-keeps the text that travelled with it, which the dictionary translates as it did
-before this change, so no refusal reads worse than at base; only a bare code with
-neither a sentence nor a text renders a sentence naming the code, so an unknown
-value cannot leak. The raw text stays in `jobs.error`, under "Technical detail"
+escaped text. A value that is not a code still goes through the dictionary, and only a bare code with neither a sentence nor a text
+renders a sentence naming the code, so an unknown value cannot leak. The raw text
+stays in `jobs.error`, under "Technical detail"
 and in the notification row, for operators and for the API, and "Technical
 detail" prints it as written rather than translating it. The choice is
 recorded in `docs/decisions/0009-job-failure-codes.md`.
@@ -952,7 +958,7 @@ per-job cap is the repository's `repos.job_budget_cny`, enforced once at the
 checkpoint described in `docs/quota.md`, and a second number shown on the
 work-type card could not bind. Only `iterate` and `triage` have a handler in
 this slice; a declared type with no handler is refused at enqueue exactly like
-an unknown one (`UNKNOWN_WORK_TYPE` / `WORK_TYPE_UNSUPPORTED`), because nothing
+an unknown one (`UNKNOWN_WORK_TYPE` / `WORK_TYPE_MISMATCH` / `WORK_TYPE_UNSUPPORTED`), because nothing
 may run under a contract that is not enforced.
 
 Auto-merge reads the registry. The gate is still the repository's `repo_role`,

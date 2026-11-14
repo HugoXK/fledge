@@ -169,27 +169,92 @@ const DETAIL_SENTENCES: Partial<Record<FailureCode, [string, string]>> = {
   DUPLICATE_WORK: ['已有 PR 覆盖这个 issue：{detail}', 'A pull request already covers this issue: {detail}'],
 }
 
+// #611: every code `Jobs.enqueue` can put on a redirect, and therefore every
+// code the banner can be asked to render. `EnqueueResult.code` and the three
+// helpers that refuse before a row exists are typed to this tuple, and
+// `REFUSAL_SENTENCES` below is a `Record` over the same set. A new return that
+// is not declared fails typecheck, and a declared code with no sentence fails it
+// too.
+export const ENQUEUE_REFUSAL_CODES = [
+  'PLATFORM_PAUSED',
+  'UNKNOWN_WORK_TYPE',
+  'WORK_TYPE_MISMATCH',
+  'WORK_TYPE_UNSUPPORTED',
+  'REPO_DISABLED',
+  'ROLE_REQUIRED',
+  'ROLE_FORBIDDEN',
+  'REVIEW_DISABLED',
+  'ROLE_STALE',
+  'JOB_ACTIVE',
+  'USER_UNAVAILABLE',
+  'QUEUE_FULL',
+  'QUEUE_LIMIT',
+  'REPO_CREDENTIAL_INVALID',
+  'REPO_BUDGET_EXHAUSTED',
+  'BRANCH_INVALID',
+  'DUPLICATE_WORK',
+  'ALREADY_FIXED',
+  'BRANCH_MISSING',
+  'PREFLIGHT_FAILED',
+  'QUOTA_EXHAUSTED',
+  'INSTANCE_UNAVAILABLE',
+  'BOT_MODEL_ASSIGNMENT_FAILED',
+  'INSTANCE_NOT_READY',
+  'JOB_LIMIT',
+  'RUNNER_ERROR',
+] as const
+
+export type EnqueueRefusalCode = (typeof ENQUEUE_REFUSAL_CODES)[number]
+
+function isEnqueueRefusalCode(value: string): value is EnqueueRefusalCode {
+  return (ENQUEUE_REFUSAL_CODES as readonly string[]).includes(value)
+}
+
 // The enqueue path refuses before a job row exists, so its answer never reaches
 // `jobs.error_code`; the route carries the code on the redirect instead and the
-// banner builds the sentence from it. These are the refusals that can reach a
-// banner. The credential refusal reuses its failure sentence above, so it is not
-// repeated here. `BRANCH_MISSING` carries the branch after a colon, and a git ref
-// can never contain one, so `BRANCH_MISSING:main` is one unambiguous value.
-const REFUSAL_SENTENCES: Record<string, [string, string]> = {
-  REPO_BUDGET_EXHAUSTED: ['仓库月度预算已用完，请在仓库设置里提高预算，或等下个月再试。', "This repository's monthly budget is used up; raise it in the repository settings or wait for the next month, then retry."],
+// banner builds the sentence from it. Every refusal that can reach a banner has
+// one entry here, in both languages. Only a value the sentence declares may be
+// interpolated (`{branch}`, `{detail}`); the payload is otherwise ignored, so an
+// exception's text can never become the banner.
+//
+// The eight entries that were correct only because the service's exact Chinese
+// happened to be a dictionary key keep that Chinese verbatim, so the zh banner
+// cannot move. `BRANCH_MISSING` carries the branch after a colon, and a git ref
+// can never contain one, so `BRANCH_MISSING:main` is one unambiguous value. The
+// two refusals that used to carry an exception get a fixed sentence instead.
+export const REFUSAL_SENTENCES: Record<EnqueueRefusalCode, [string, string]> = {
+  // #283: the platform stop outranks every other refusal, so its sentence has to
+  // read as an operator decision rather than as a problem the reader caused.
+  PLATFORM_PAUSED: ['平台已紧急停止，暂不接受新任务；等管理员恢复后再试。', 'The platform is stopped for an emergency, so no new job is accepted; retry once an admin resumes it.'],
+  UNKNOWN_WORK_TYPE: ['未知的工作类型。', 'Unknown work type.'],
+  WORK_TYPE_MISMATCH: ['任务类型与工作类型不匹配：{detail}。', 'The job kind and work type do not match: {detail}.'],
+  WORK_TYPE_UNSUPPORTED: ['这个工作类型已登记但还没有实现。', 'This work type is declared but not implemented yet.'],
+  REPO_DISABLED: ['这个仓库已停用。', 'This repository is disabled.'],
+  ROLE_REQUIRED: ['请先选择你在这个仓库的角色。', 'Choose your role for this repository first.'],
+  ROLE_FORBIDDEN: ['只有 maintainer 可以运行审核任务。', 'Only a maintainer can run review jobs.'],
+  REVIEW_DISABLED: ['这个仓库没有启用审核角色', 'The reviewer role is not enabled for this repository.'],
+  ROLE_STALE: ['GitHub 权限检查已过期，请刷新仓库后再审核。', 'The GitHub permission check has expired; refresh the repository before reviewing.'],
+  JOB_ACTIVE: ['这个仓库已有任务在运行', 'A job is already running for this repository.'],
+  USER_UNAVAILABLE: ['用户不可用', 'The user is not available.'],
   QUEUE_FULL: ['任务队列已满，请稍后再试。', 'The job queue is full; retry in a moment.'],
   QUEUE_LIMIT: ['你排队的任务过多，请等其中几个结束后再试。', 'You have too many jobs queued; wait for some of them to finish, then retry.'],
-  JOB_LIMIT: ['平台同时运行的任务数已达上限（{detail} 个），请稍后再试。', 'The platform already has {detail} jobs running at once; retry in a moment.'],
-  BOT_MODEL_ASSIGNMENT_FAILED: ['机器人模型未就绪：{detail}；请在仓库设置里重新应用模型。', 'The bot models are not ready: {detail}; re-apply the models in the repository settings.'],
-  BRANCH_MISSING: ['目标分支 {branch} 不存在或不可访问。', 'The target branch {branch} does not exist, or this account cannot read it.'],
+  REPO_CREDENTIAL_INVALID: ['GitHub token 权限不足，请重新授权这个仓库。', 'The GitHub token for this repository lacks permission; re-authorize the repository and retry.'],
+  REPO_BUDGET_EXHAUSTED: ['仓库月度预算已用完，请在仓库设置里提高预算，或等下个月再试。', "This repository's monthly budget is used up; raise it in the repository settings or wait for the next month, then retry."],
+  BRANCH_INVALID: ['目标分支格式不正确。', 'The target branch name is invalid.'],
+  DUPLICATE_WORK: ['已有 PR 覆盖这个 issue：{detail}', 'A pull request already covers this issue: {detail}'],
   // #174: already-fixed work is refused with its own code, so the banner says the
   // fix is in rather than that someone else is still working on it. Like every
   // refusal here it never reaches `jobs.error_code` — the enqueue path refuses
   // before a job row exists.
   ALREADY_FIXED: ['这个 issue 的修复已经合入上游：{detail}', 'The fix for this issue is already merged upstream: {detail}'],
-  // #283: the platform stop outranks every other refusal, so its sentence has to
-  // read as an operator decision rather than as a problem the reader caused.
-  PLATFORM_PAUSED: ['平台已紧急停止，暂不接受新任务；等管理员恢复后再试。', 'The platform is stopped for an emergency, so no new job is accepted; retry once an admin resumes it.'],
+  BRANCH_MISSING: ['目标分支 {branch} 不存在或不可访问。', 'The target branch {branch} does not exist, or this account cannot read it.'],
+  PREFLIGHT_FAILED: ['启动前检查失败，任务无法开始。', 'The preflight check failed, so the job could not start.'],
+  QUOTA_EXHAUSTED: ['平台额度已用完，请在 Settings → Model 配置自己的模型 API 后重试。', 'The platform quota is used up; add your own model API in Settings → Model, then retry.'],
+  INSTANCE_UNAVAILABLE: ['FlyBot 实例管理器未配置', 'The FlyBot instance manager is not configured.'],
+  BOT_MODEL_ASSIGNMENT_FAILED: ['机器人模型未就绪：{detail}；请在仓库设置里重新应用模型。', 'The bot models are not ready: {detail}; re-apply the models in the repository settings.'],
+  INSTANCE_NOT_READY: ['FlyBot 实例未就绪，任务无法启动。', 'The FlyBot instance is not ready, so the job could not start.'],
+  JOB_LIMIT: ['平台同时运行的任务数已达上限（{detail} 个），请稍后再试。', 'The platform already has {detail} jobs running at once; retry in a moment.'],
+  RUNNER_ERROR: ['任务启动失败。', 'The job did not start.'],
 }
 
 const BRANCH_EMPTY: [string, string] = ['目标分支不存在或不可访问。', 'The target branch does not exist, or this account cannot read it.']
@@ -206,8 +271,10 @@ export function errorCodeOf(value: string | null | undefined): FailureCode | nul
 export function refusalSentenceUsesDetail(code: string | null | undefined): boolean {
   const known = errorCodeOf(code)
   if (known !== null) return DETAIL_SENTENCES[known] !== undefined
-  const refusal = REFUSAL_SENTENCES[String(code ?? '').trim()]
-  return refusal !== undefined && (refusal[0].includes('{detail}') || refusal[0].includes('{branch}'))
+  const refusalCode = String(code ?? '').trim()
+  if (!isEnqueueRefusalCode(refusalCode)) return false
+  const refusal = REFUSAL_SENTENCES[refusalCode]
+  return refusal[0].includes('{detail}') || refusal[0].includes('{branch}')
 }
 
 export function failureSentence(t: (zh: string, en: string) => string, code: string | null | undefined, detail = ''): string | null {
@@ -229,7 +296,8 @@ export function failureSentence(t: (zh: string, en: string) => string, code: str
     }
     return t(FAILURE_SENTENCES[known][0], FAILURE_SENTENCES[known][1])
   }
-  const refusal = REFUSAL_SENTENCES[String(code ?? '').trim()]
+  const refusalCode = String(code ?? '').trim()
+  const refusal = isEnqueueRefusalCode(refusalCode) ? REFUSAL_SENTENCES[refusalCode] : undefined
   if (refusal === undefined) return null
   const value = String(detail ?? '').trim()
   if (refusal[0].includes('{branch}') && value === '') return t(BRANCH_EMPTY[0], BRANCH_EMPTY[1])

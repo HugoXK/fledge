@@ -77,17 +77,18 @@ for (const refusal of REFUSALS) {
   })
 }
 
-// A refusal code the sentence table does not know yet must not print the service's
-// Chinese either: naming the code in the reader's language is the safe default, so
-// a future refusal cannot leak before somebody gives it a sentence.
+// A refusal code the sentence table does not know at all must not print the
+// service's Chinese either: naming the code in the reader's language is the safe
+// default, so an unknown value cannot leak. Every enqueue code has an entry now,
+// so this pins the last-resort shape.
 test('an unmapped refusal code renders a localized sentence that names the code', () => {
   const { store, userId, repo } = fixture()
   try {
-    const en = repoBanner(store, userId, repo, 'en', 'ROLE_REQUIRED')
+    const en = repoBanner(store, userId, repo, 'en', 'SOMETHING_UNMAPPED_IN_THE_TABLE')
     assert.doesNotMatch(en, CJK, `an unmapped code leaked Chinese: ${en}`)
     assert.match(en, /could not start/i)
-    assert.match(en, /ROLE_REQUIRED/, 'the banner names the code so an operator can search it')
-    const zh = repoBanner(store, userId, repo, 'zh', 'ROLE_REQUIRED')
+    assert.match(en, /SOMETHING_UNMAPPED_IN_THE_TABLE/, 'the banner names the code so an operator can search it')
+    const zh = repoBanner(store, userId, repo, 'zh', 'SOMETHING_UNMAPPED_IN_THE_TABLE')
     assert.match(zh, CJK, 'the Chinese banner is a Chinese sentence')
   } finally {
     store.close()
@@ -231,11 +232,10 @@ test('every enqueue button carries the refusal code, not the service sentence', 
 })
 
 // Review at `077be4d1`, finding 3: a code with no sentence of its own used to
-// render "The job could not start (CODE)." in both languages, which is worse than
-// base for the codes the dictionary already translates. The order is now sentence
-// table, then the writer's text through the dictionary, then the named-code stub;
-// these three are the codes the reviewer named.
-test('a refusal code with no sentence of its own keeps the dictionary sentence', async () => {
+// render "The job could not start (CODE)." in both languages. These three codes
+// used to rely on the dictionary and now have table entries with the same text,
+// so the route still changes nothing while the sentence has one home.
+test('the newly tabled refusal codes serve their sentence in both locales', async () => {
   const store = new Store(':memory:')
   const mailer = new MemoryMailer()
   const built = await buildApp({ config: testConfig(), store, mailer, runner: new MockRunner(), startScheduler: false })
@@ -318,8 +318,9 @@ test('a refusal code with no sentence of its own keeps the dictionary sentence',
 // dictionary. `JOB_LIMIT` and `BOT_MODEL_ASSIGNMENT_FAILED` carry parameters.
 test('the banner prefers the sentence table, then the writer text, then the code stub', () => {
   assert.match(failureBannerSentence('en', 'JOB_LEASE_EXPIRED:任务租约过期：worker 未续约。') ?? '', /lease expired/i)
-  assert.equal(failureBannerSentence('en', 'BRANCH_INVALID:目标分支格式不正确。'), 'The target branch name is invalid.', 'a code with no sentence must keep the dictionary sentence')
-  assert.match(failureBannerSentence('en', 'BRANCH_INVALID:一个没人翻译过的拒绝。') ?? '', /一个没人翻译过的拒绝。/, 'a text the dictionary does not know is shown as written, never replaced by the stub')
+  assert.equal(failureBannerSentence('en', 'BRANCH_INVALID:目标分支格式不正确。'), 'The target branch name is invalid.', 'a tabled code serves its own sentence')
+  assert.equal(failureBannerSentence('en', 'BRANCH_INVALID:一个没人翻译过的拒绝。'), 'The target branch name is invalid.', 'a tabled code ignores the payload it no longer needs')
+  assert.match(failureBannerSentence('en', 'SOMETHING_UNMAPPED_IN_THE_TABLE:一个没人翻译过的拒绝。') ?? '', /一个没人翻译过的拒绝。/, 'a text the dictionary does not know is shown as written, never replaced by the stub')
   assert.equal(failureBannerSentence('en', 'SOMETHING_UNMAPPED_IN_THE_TABLE'), 'The job could not start (SOMETHING_UNMAPPED_IN_THE_TABLE).', 'the stub is for a bare code with neither a sentence nor a text')
   assert.equal(failureBannerSentence('en', '表单已过期，请刷新页面后重试。'), null, 'a text banner must stay on the dictionary')
   assert.match(failureBannerSentence('en', 'JOB_LIMIT:3') ?? '', /already has 3 jobs running/i)

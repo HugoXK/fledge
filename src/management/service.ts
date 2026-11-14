@@ -293,7 +293,13 @@ export class ManagementService {
         error_message: message,
         error_detail: detail ?? null,
       })
-      this.store.audit(receipt.principal_id, 'management.command', `${receipt.id} ${receipt.operation} status=failed code=${code}`)
+      // #611: a refusal's parameter (the exception's class and address, the
+      // branch it named) is the operator's copy. The banner shows a sentence, not
+      // this value, so the audit row is the only place a support engineer can read
+      // what the upstream actually answered. Truncated like every other detail
+      // that can carry exception text.
+      const copy = (detail ?? '').replace(/\s+/g, ' ').trim().slice(0, 300)
+      this.store.audit(receipt.principal_id, 'management.command', `${receipt.id} ${receipt.operation} status=failed code=${code}${copy === '' ? '' : ` detail=${copy}`}`)
     })
     const updated = this.store.commandReceipt(receipt.id)
     return {

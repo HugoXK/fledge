@@ -12,7 +12,7 @@ import { redact } from '../lib/secrets.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
-import { classifyFailure, providerRefusalCode, type FailureCode } from '../lib/failure.js'
+import { classifyFailure, providerRefusalCode, type EnqueueRefusalCode, type FailureCode } from '../lib/failure.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
 import { jobEmailDecision } from '../lib/emailPolicy.js'
@@ -73,7 +73,9 @@ export interface EnqueueResult {
   ok: boolean
   job?: JobRow
   error?: string
-  code?: string
+  // #611: the enqueue path may only answer with a code that has a bilingual
+  // sentence in `REFUSAL_SENTENCES`; a new refusal without one fails typecheck.
+  code?: EnqueueRefusalCode
   // The value a refusal names, such as the missing target branch, so the banner
   // can say which one instead of a bare sentence.
   detail?: string
@@ -92,6 +94,11 @@ function scheduleAnchor(row: ScheduleRow, repo: RepoRow): number {
   const repoCreated = Date.parse(repo.created_at)
   return Number.isFinite(repoCreated) ? repoCreated : Date.now()
 }
+
+// A follow-up is refused by its own duplicate key before it reaches `enqueue`, so
+// its result is the enqueue shape plus that one local code. The command-level
+// codes stay out of this union: an enqueue refusal keeps its own code and detail.
+export type FollowUpResult = Omit<EnqueueResult, 'code'> & { code?: EnqueueRefusalCode | 'DUPLICATE_FOLLOWUP' }
 
 // #283: the whole platform stop is one `settings` row, and every reader goes back
 // to the row instead of to a field on this object. A cached copy is exactly how a
@@ -410,7 +417,7 @@ export class Jobs {
   // until #360, which is exactly the second-place-to-disagree shape this codebase
   // keeps paying for. The caller names the actor so the audit row is the same
   // `job.retried` action either way.
-  async retryJob(jobId: string, actorUserId: string, options: { workItemId?: string } = {}): Promise<{ ok: boolean; job?: JobRow; error?: string; code?: string; detail?: string }> {
+  async retryJob(jobId: string, actorUserId: string, options: { workItemId?: string } = {}): Promise<{ ok: boolean; job?: JobRow; error?: string; code?: EnqueueRefusalCode; detail?: string }> {
     const job = this.store.getJob(jobId)
     if (job === undefined) return { ok: false, error: '任务不存在。' }
     if (job.status === 'queued' || job.status === 'running') return { ok: false, error: '这个任务还在运行；请先暂停或取消。' }
@@ -562,7 +569,7 @@ export class Jobs {
     return [...due].sort()
   }
 
-  private async duplicatePreflight(repo: RepoRow, goal: string, workItemId?: string): Promise<{ ok: boolean; error?: string; code?: string; detail?: string }> {
+  private async duplicatePreflight(repo: RepoRow, goal: string, workItemId?: string): Promise<{ ok: boolean; error?: string; code?: EnqueueRefusalCode; detail?: string }> {
     // Only the FlyBot runner reads the upstream repository; the sibling
     // `preflight` has the same guard at its first line. Without it a deployment
     // on another runner decrypted the repo token and made GitHub reads it never
@@ -618,7 +625,7 @@ export class Jobs {
     }
   }
 
-  private async preflight(repo: RepoRow, baseBranch: string, trigger: string): Promise<{ ok: boolean; baseSha?: string; warning?: string; error?: string; code?: string; detail?: string }> {
+  private async preflight(repo: RepoRow, baseBranch: string, trigger: string): Promise<{ ok: boolean; baseSha?: string; warning?: string; error?: string; code?: EnqueueRefusalCode; detail?: string }> {
     if (this.runner.name !== 'flybot') return { ok: true }
     try {
       const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
@@ -650,7 +657,7 @@ export class Jobs {
     }
   }
 
-  private async checkCredential(repo: RepoRow): Promise<{ ok: boolean; code?: string; error?: string }> {
+  private async checkCredential(repo: RepoRow): Promise<{ ok: boolean; code?: EnqueueRefusalCode; error?: string }> {
     const cached = this.credentialCache.get(repo.id)
     if (cached !== undefined && Date.now() - cached.at < 10 * 60_000) return { ok: true }
     try {
@@ -715,10 +722,10 @@ export class Jobs {
     // work type, which stored `work_type='iterate'` and showed the iterate
     // contract for a run that is forbidden to open a branch or a PR.
     if ((workType.type === 'triage') !== (kind === 'triage')) {
-      return { ok: false, error: '分诊是独立的任务类型，不能借用其他任务类型。', code: 'UNKNOWN_WORK_TYPE', detail: `${kind}/${workType.type}` }
+      return { ok: false, error: '分诊是独立的任务类型，不能借用其他任务类型。', code: 'WORK_TYPE_MISMATCH', detail: `${kind}/${workType.type}` }
     }
     if (kind !== 'triage' && workType.branch === false) {
-      return { ok: false, error: `${workType.type} 工作类型不能创建分支或 PR。`, code: 'UNKNOWN_WORK_TYPE', detail: workType.type }
+      return { ok: false, error: `${workType.type} 工作类型不能创建分支或 PR。`, code: 'WORK_TYPE_MISMATCH', detail: `${kind}/${workType.type}` }
     }
     if (repo.enabled !== 1) return { ok: false, error: '这个仓库已停用', code: 'REPO_DISABLED' }
     if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
@@ -2237,7 +2244,7 @@ export class Jobs {
     }
   }
 
-  async followUp(repo: RepoRow, input: { prUrl: string; branch: string; baseBranch?: string; reason: string; headSha: string; instruction?: string }): Promise<EnqueueResult> {
+  async followUp(repo: RepoRow, input: { prUrl: string; branch: string; baseBranch?: string; reason: string; headSha: string; instruction?: string }): Promise<FollowUpResult> {
     const baseBranch = input.baseBranch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch))
     if (!isValidBranchName(input.branch) || input.branch === baseBranch || input.branch === repo.upstream_default_branch || input.branch === repo.default_branch) {
       return { ok: false, error: 'follow-up 分支不能是目标分支。', code: 'BRANCH_INVALID' }
