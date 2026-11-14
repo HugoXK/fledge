@@ -62,6 +62,91 @@ test('the validity window bounds a cron schedule without moving its wall-clock t
   assert.equal(nextTime(schedule, Date.parse('2026-11-17T09:00:00+08:00')), null, 'the next run would be past end_at')
 })
 
+// #605: the cron search began at `start_at` and then rejected the first day with
+// `minute <= first.minute` — exactly the occurrence that opens the window. The
+// interval form returns `start_at` verbatim (`:305`), so the two forms disagreed
+// about one field. These rows pin the boundary: inclusive on the `start_at` side,
+// exclusive on the `from` side, because a caller that passes the instant it
+// dispatched must not be handed that instant again.
+
+test('a daily occurrence exactly at start_at is inside the window', () => {
+  const schedule = parse({
+    cron: '0 9 * * *',
+    timezone: 'Asia/Shanghai',
+    startAt: Date.parse('2026-11-17T01:00:00Z'),
+  })
+  assert.equal(
+    nextTime(schedule, Date.parse('2026-11-15T00:00:00Z')),
+    Date.parse('2026-11-17T01:00:00Z'),
+    'the occurrence that falls exactly on start_at is the first run, not the following day',
+  )
+})
+
+test('a weekly occurrence exactly at start_at does not lose the first week', () => {
+  const schedule = parse({
+    cron: '0 9 * * 1',
+    timezone: 'Asia/Shanghai',
+    startAt: Date.parse('2026-11-16T01:00:00Z'),
+  })
+  assert.equal(
+    nextTime(schedule, Date.parse('2026-11-15T00:00:00Z')),
+    Date.parse('2026-11-16T01:00:00Z'),
+    'Monday 09:00 at start_at is the first run, not the Monday after it',
+  )
+})
+
+test('a sub-daily expression returns the occurrence exactly at start_at', () => {
+  const schedule = parse({
+    cron: '*/5 * * * *',
+    timezone: 'Asia/Shanghai',
+    startAt: Date.parse('2026-11-17T01:05:00Z'),
+  })
+  assert.equal(
+    nextTime(schedule, Date.parse('2026-11-15T00:00:00Z')),
+    Date.parse('2026-11-17T01:05:00Z'),
+    'a five-minute expression is not pushed to its second step',
+  )
+})
+
+test('the start_at boundary is inclusive one millisecond on each side', () => {
+  const startAt = Date.parse('2026-11-17T01:00:00Z')
+  const before = parse({ cron: '0 9 * * *', timezone: 'Asia/Shanghai', startAt: startAt - 1 })
+  assert.equal(
+    nextTime(before, Date.parse('2026-11-15T00:00:00Z')),
+    startAt,
+    'one millisecond earlier still includes the occurrence',
+  )
+  const after = parse({ cron: '0 9 * * *', timezone: 'Asia/Shanghai', startAt: startAt + 1 })
+  assert.equal(
+    nextTime(after, Date.parse('2026-11-15T00:00:00Z')),
+    Date.parse('2026-11-18T01:00:00Z'),
+    'one millisecond later is past it',
+  )
+
+  const interval = parse({ everyMs: 60 * 60_000, startAt })
+  assert.equal(
+    nextTime(interval, Date.parse('2026-11-15T00:00:00Z')),
+    startAt,
+    'the interval form returns start_at verbatim, as it already did',
+  )
+})
+
+test('strictly after from still holds when from is an occurrence', () => {
+  const occurrence = Date.parse('2026-11-17T01:00:00Z')
+  const open = parse({ cron: '0 9 * * *', timezone: 'Asia/Shanghai' })
+  assert.equal(
+    nextTime(open, occurrence),
+    Date.parse('2026-11-18T01:00:00Z'),
+    'without start_at, from equal to an occurrence returns the next one',
+  )
+  const windowed = parse({ cron: '0 9 * * *', timezone: 'Asia/Shanghai', startAt: occurrence })
+  assert.equal(
+    nextTime(windowed, occurrence),
+    Date.parse('2026-11-18T01:00:00Z'),
+    'with from equal to both start_at and the occurrence, the next one',
+  )
+})
+
 test('an expression the schedule does not support is refused with a reason', () => {
   const cases: Array<[string, string, string]> = [
     ['0 9 * * * *', 'a six-field form means a leading seconds field', 'seconds'],

@@ -299,7 +299,10 @@ defect.
   30 days. The cron form names an IANA timezone; a fixed UTC offset is refused.
   The interval form has no timezone and fires on whole multiples of its length
   from the epoch, so every gap is exactly that length whatever the poll cadence.
-  Both forms take an optional `[start_at, end_at)` window.
+  Both forms take an optional `[start_at, end_at)` window. An occurrence that
+  falls exactly on `start_at` is inside the window and is the next run, while an
+  instant equal to the caller's `from` is not, so a caller that passes the instant
+  it dispatched is handed the following occurrence.
   `nextTime` is where DST is decided once: a local time that does not exist in
   the spring-forward gap is skipped rather than shifted, and a local time that
   occurs twice in the fall-back hour fires once, at the earlier instant, so a
