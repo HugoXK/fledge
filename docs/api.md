@@ -35,6 +35,9 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/api/read/metrics` | approved | Read-only metrics: a super admin gets the global window, users get their own personal window (`?window=7 or 30`) |
 | GET | `/schedule` | approved | Schedule preview page: a mode picker (interval, daily, weekdays, weekly, monthly, advanced cron), local times and DST skips |
 | GET | `/api/schedule/preview` | approved | The same preview as JSON |
+| GET | `/repos/:id/schedule` | owner | Schedule console: the stored schedule, the planner's next run, the newest decided instant (state, reason, attempts, lease) and the last success; an unknown value prints `unknown` |
+| POST | `/repos/:id/schedule` | owner + CSRF | Save the console form (cron or interval, zone, window); audits `schedule.saved` and writes nothing when the form is refused |
+| POST | `/repos/:id/schedule/remove` | owner + CSRF | Delete the schedule so the repository returns to its legacy interval; audits `schedule.removed` |
 | POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job; plan-first repositories enqueue a plan |
 | POST | `/repos/:id/work` | owner + CSRF | Create a work item |
 | POST | `/repos/:id/work/:workItemId/state` | owner + CSRF | Move a work item through the triage/assignment/review state machine |
@@ -276,6 +279,13 @@ to stop every role that is currently thinking/working. The response distinguishe
 at the next safe point). Both endpoints require the `x-csrf-token` header.
 
 ## GitHub webhook follow-up
+
+`X-Hub-Signature-256` is verified against `GITHUB_APP_WEBHOOK_SECRET`, and while
+an overlap window is open, also against `GITHUB_APP_WEBHOOK_SECRET_PREVIOUS`
+until `GITHUB_APP_WEBHOOK_SECRET_PREVIOUS_UNTIL` (#466). A signature that matches
+only the retired value after that instant is a 401 like any other and records one
+`app.webhook_secret_superseded` audit row; `docs/security.md` carries the
+rotation runbook.
 
 A verified `check_run`/`check_suite` failure or a `pull_request_review` with
 `changes_requested` can enqueue a follow-up job when the PR URL matches an
@@ -674,9 +684,26 @@ while any other status becomes the fixed `the tag reference was refused by GitHu
 the page. A 422 from `createAnnotatedTag` is the `target_missing` refusal rather
 than an exception. No call here updates or deletes a ref.
 
+Workflow tracking uses bounded reads and one draft-only write:
+`listWorkflowRunsForRef` (up to three pages of `GET /actions/runs?branch=<tag>`,
+so other workflows cannot push the tag's run out of the window),
+`listWorkflowJobs` (up to three pages of `GET /actions/runs/{id}/jobs`),
+`getReleaseByTag` (`GET /releases/tags/{tag}`, `null` on 404), `createRelease`
+(`POST /releases`, `draft` fixed `true`, so this client cannot publish) and
+`updateRelease` (`PATCH /releases/{id}`). Only a run whose head is the tag commit
+and whose path is the release workflow can produce a draft; a tag without such a
+run is `run_missing`. The tracker reads an existing Release before the run: the id
+the row recorded is `draft_exists` while it is a draft and `draft_published` once
+the human publishes it, and every other Release is `external_release` and is never
+duplicated.
+
 `POST /repos/:id/release` (owner only, CSRF) redirects to
 `/repos/:id?release=1&refused=<reason>` on a refusal and
 `?release=1&tagged=<tag>` on success; a re-tag of a name that already has a
 `repo_releases` row updates that row and adds `&retagged=1` so the page says the
 tag already existed and the record was updated. The page renders whichever
-outcome is present above the form.
+outcome is present above the form. The first workflow observation is recorded
+against the same row, and
+`POST /repos/:id/releases/:releaseId/check` (owner only, CSRF, maintainer role)
+repeats it, then redirects to `?release=1&checked=<message>`. The check may
+prepare a draft Release; it never publishes, reruns, deletes or moves anything.

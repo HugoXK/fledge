@@ -160,7 +160,10 @@ defect.
   open. The toggle itself is hidden outside the phone band by a base rule, so
   the desktop header never shows a control whose panel does not exist there.
   Every destination the wide header lists is still rendered in the panel,
-  so a phone loses no route. Below 420px the row also drops the wordmark (the
+  so a phone loses no route. The theme control is one 44px icon summary in the
+  header, not a text group: its `<details>` menu carries the three choices, is
+  available signed-out, and on a phone is pinned under the header so it cannot
+  overflow either edge. Below 420px the row also drops the wordmark (the
   mark and its own `aria-label` stay) and tightens its padding and gaps: at a
   360px viewport with a classic 15px scrollbar the row has 301px of usable
   width, and the wordmark is the one child that can leave without taking a
@@ -363,6 +366,21 @@ defect.
   before deciding (quota) releases its lease instead of waiting for it to lapse.
   Reviews keep their own cadence (`review_interval_minutes`): this switches the work loop
   only.
+- **The console reads the planner** (#544, the console slice): `/repos/:id/schedule`
+  is the page a maintainer reads and the only product write that creates a
+  `schedules` row — before it, `saveSchedule` had no caller outside tests, so
+  neither the schedule nor the lease above could be felt. It shows the stored
+  schedule, the next run from `nextTime`, the newest decided instant with its
+  state, reason, `missed` and `attempts`, whether a live lease holds it, and the
+  last instant whose job succeeded. A value nobody recorded prints `unknown`: a
+  schedule with no occurrence row has not run, and this slice has no delivery
+  outbox, so neither is a zero. `src/schedules/console.ts` is that view model. The
+  repository page passes the planner's answer for a scheduled repository and keeps
+  the legacy interval line only for one without a row, so the page prints one
+  number instead of a second, weaker one; the comment that claimed the interval
+  rule restates the worker's formula is gone with the citation it rested on.
+  Saving is audited as `schedule.saved` and deleting the row as
+  `schedule.removed`, each naming the repository and what changed.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
@@ -461,8 +479,17 @@ revoke stays one click.
 - If the user has an own model configured, Fledge proxies to it and does **not**
   meter platform quota.
 - Otherwise it proxies to `PLATFORM_LLM_BASE_URL` with `PLATFORM_LLM_KEY`, reads
-  `x-litellm-response-cost` (or estimates from `usage`), and records the cost in
-  `quota_ledger` + `users.quota_used_usd`.
+  `x-litellm-response-cost` (or prices `usage` from that model's entry in
+  `PLATFORM_LLM_PRICE_TABLE`), and records the cost in `quota_ledger` +
+  `users.quota_used_usd`. The row carries the model, currency, the price snapshot
+  it was charged at and `cost_known`; a request that cannot be priced is stored
+  as `cost_known = 0` with a `request.cost_unknown` audit entry instead of a
+  zero cost, so spend stays a lower bound rather than a claim of "free" (#636).
+  `users.quota_used_usd`, `jobs.cost_usd` and the CNY budgets are USD columns:
+  only rows billed in USD reach them, and a row in another currency is reported
+  by `Store.costByCurrency()` in its own bucket instead of being converted.
+  `src/metrics/cost.ts` holds the price table, the cache-token rule and the
+  unknown-vs-zero decision; the gateway only reads its answer.
 - At zero it returns HTTP 402 with `code: FLEDGE_QUOTA_EXHAUSTED` and a settings
   link.
 - Streaming is passed through; `stream_options.include_usage` is added so the
@@ -1318,7 +1345,10 @@ also assign a selected model to each DSH bot role; after the restart Fledge call
 model or the new default, so a bot cannot keep a stale provider reference.
 
 Provider metadata also carries a region tag, an optional data-policy URL and an
-allowed flag. A repository can set a provider allowlist and a required region;
+allowed flag. Region and data policy are optional advanced fields: the region is
+a label used only by a repository's region constraint, and the data-policy link
+is recorded for review rather than fetched.
+ A repository can set a provider allowlist and a required region;
 the gateway enforces both at candidate resolution, including the fallback loop,
 and refuses a disallowed model with a stable code before any upstream call. With
 a policy set, a call must name one of the repository's models: a call that omits
@@ -1337,7 +1367,12 @@ policy.
 The bridge's model proxy normally uses the per-repository instance token. While
 a job is running it uses that job's short-lived `flg_` token instead (the
 `/run` payload carries it), so the gateway can write `job_id` into
-`quota_ledger` and add `jobs.cost_usd`. The job page shows cost, attribution and
+`quota_ledger` and add `jobs.cost_usd`. A row that could not be priced is not a
+zero row for this purpose: `usageCountForJob` counts only `cost_known = 1`, so
+the per-job budget's unknown refusal (#357) still fires when every call a job
+made was unknown. Only USD-billed rows reach `jobs.cost_usd`, and a retry names
+the attempt it continues in `jobs.retry_of`, so the chain a job inherits is the
+sum of every attempt rather than a fresh budget. The job page shows cost, attribution and
 Team attribution is grounded in the DSH per-role call counts: the job page and the
 PR automation comment use only roles with actual calls, and a claimed role with
 zero calls is recorded as a `team_attribution_grounded` mismatch event.
@@ -1453,7 +1488,10 @@ decision [0007](decisions/0007-build-identity.md) — because two `main` builds
 between a tag and the next version bump answer the same `version` and cannot
 otherwise be told apart from outside. Those two fields are bearer-only (#236):
 they are served on the `METRICS_TOKEN` credential `/metrics` uses (or to loopback
-in a development build without a token), never to an anonymous caller.
+in a development build without a token), never to an anonymous caller. The same gated
+answer carries `webhookSecretSlot` (#466) — `current`, `previous` or `none`, the
+slot the webhook verifier is using — so a half-finished secret rotation is
+visible to the operator and never to an anonymous caller.
 
 ### Release chain
 
@@ -1581,7 +1619,7 @@ listing, and every row links to the page that already owns it.
 | `repos` | upstream/fork identity, encrypted token, permission, reviewer config, goal, cadence, state |
 | `jobs` | lifecycle, kind (iterate/review), branch, issue/PR URL, review score, summary, cost, job-scoped token hash |
 | `api_tokens` | `flg_` tokens (PAT, job or instance), hashed, with `scope` (only `gateway` today) and `expires_at`; a PAT always carries an expiry |
-| `quota_ledger` | per-request cost records |
+| `quota_ledger` | per-request cost records: model, currency, price snapshot, `cost_known` (0 = could not be priced) |
 | `notifications` | in-app messages (quota, job failure), stored as written and localized at render |
 | `postmortems` | one evidence-backed write-up per failed/stalled/cancelled job, with category, recurrence key, owner and preventive action |
 | `postmortem_recurrences` | one ledger row per recurrence key: count, first/last seen, affected repositories and the single escalation marker |
@@ -1939,7 +1977,47 @@ never quoted. A 422 keeps its own `tag v1.2.3 already exists; nothing was moved 
 deleted` sentence, so the race and the generic refusal do not merge.
 
 `repo_releases` records one row per created tag (`UNIQUE(repo_id, tag_name)`), with
-the tag object SHA, the target commit, the previous tag and the actor, so the
-workflow tracking and draft-release slices (#546's steps 3-7) can build on the
-record instead of re-running the preflight. `release_sources` from the issue is
-deliberately not created yet: it belongs to the notes slice.
+the tag object SHA, the target commit, the previous tag and the actor. The
+workflow-run slice adds its observation to that same row (additive columns, no
+second table): `run_id`, `run_attempt`, `status`, `conclusion`, `workflow_name`,
+`draft_release_id`, `draft_url`, `external_release_id` and `last_checked_at`.
+`release_sources` from the issue is deliberately not created yet: it belongs to
+the notes slice.
+
+## Following the release workflow and preparing a draft
+
+`src/releases/tracking.ts` observes the workflow a tag fires and stops at a draft
+Release — a human still edits and publishes it. The reconcile is bounded: three
+pages of runs (`GET /actions/runs?branch=<tag>`, so another workflow's traffic
+cannot push the tag's run out of the window), three pages of jobs
+(`GET /actions/runs/{id}/jobs`), and no history crawl. The selected run must match
+twice: its head is the tag commit, and its path is the release workflow
+(`.github/workflows/release.yml` or `.yaml`). Neither match is a preference with a
+fallback — a tag whose release workflow has not appeared yet is `run_missing`,
+because a draft body that says the release workflow succeeded has to be true.
+Among the runs that do match, the newest run and highest attempt win.
+
+A draft is prepared only when the run is completed with conclusion `success` and
+every job is `success`, `neutral` or `skipped`. An in-progress run or job keeps
+the row at `running`; a `failure`, `cancelled`, `timed_out`, `startup_failure`,
+`action_required` or `stale` run, or one failed job under a green run, records
+`run_failed` and creates nothing. Fledge never reruns the workflow.
+
+Before the run is read, `GET /releases/tags/{tag}` answers whether the repository
+already has a Release for this tag. The id this row recorded is its own: still a
+draft is `draft_exists`, and once the human published it the same id is
+`draft_published` — the pointer and the page link are kept either way, because
+publishing is the documented end state. Any other Release is `external_release`:
+the row stores its id and no second Release is created. A Release that appears
+between the read and the write is caught as a 422 on `POST /releases`, re-read by
+tag, and recorded as external instead of retried. `POST /releases` is fixed to
+`draft: true` in the client, so this path cannot publish.
+
+The first observation happens once after a successful tag write and is recorded
+even when no run exists yet (`run_missing`); a failed observation is logged and
+never turns the created tag into a refusal. The maintainer repeats it from the
+repository page with `POST /repos/:id/releases/:releaseId/check` (owner only,
+CSRF, maintainer role), which re-reads the run, writes the tracking columns and
+audits `release.checked`. The page shows the status, run id, conclusion, draft
+link or external marker, and the check button. Nothing in this slice publishes a
+Release, deletes or moves a tag, or starts a workflow.

@@ -10,6 +10,11 @@ User=fledge
 Group=fledge
 WorkingDirectory=/opt/fledge
 EnvironmentFile=/etc/fledge/fledge.env
+# Fail closed before start (#462): the release step records the chain it verified
+# in this file, including the image digest it compared. The hook replays that
+# record offline — no API, no docker, no network — and refuses the start when the
+# file is absent, unreadable or disagrees with the tree it names.
+ExecStartPre=/usr/bin/node /opt/fledge/scripts/verify-release.mjs --fixtures /etc/fledge/release-status.json --package /opt/fledge/package.json
 ExecStart=/usr/bin/node dist/index.js
 Restart=always
 RestartSec=3

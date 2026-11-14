@@ -8,6 +8,7 @@ import { dailyDigestEmail, jobAttentionEmail, jobFailedEmail, jobSucceededEmail,
 import { notifyEmail, replyAddressFor } from '../email/recipient.js'
 import { sendNotificationWebhook } from '../lib/webhook.js'
 import { log } from '../lib/log.js'
+import { errorClass, errorMessage } from '../lib/errorText.js'
 import { redact } from '../lib/secrets.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
@@ -389,8 +390,8 @@ export class Jobs {
     try {
       prepared.afterCommit?.()
     } catch (error) {
-      const name = error instanceof Error ? error.name : typeof error
-      const text = error instanceof Error ? error.message : String(error)
+      const name = errorClass(error)
+      const text = errorMessage(error)
       log.warn('after-commit callback failed', { trace: jobId, error: `${name}: ${text}` })
       try {
         const job = this.store.getJob(jobId)
@@ -460,6 +461,11 @@ export class Jobs {
     const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
     const resumePr = kind === 'iterate' && job.pr_url !== null
     const result = await this.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, {
+      // #636: the retry continues the same budget, so it names the attempt it
+      // continues; a fresh id would reset the per-job spend to zero. The chain is
+      // the immediate parent every time — naming the grandparent skipped the
+      // middle attempt's rows when a retry was retried (#676 review).
+      retryOf: job.id,
       // #353: both callers are a person — the console's retry button and an
       // issue-thread `/fledge retry` — so the run is theirs. The trigger alone
       // cannot say that: `followup` is also what `tick()` enqueues.
@@ -1146,7 +1152,9 @@ export class Jobs {
     }
     const repo = this.store.getRepo(job.repo_id)
     if (repo !== undefined && repo.job_budget_cny > 0) {
-      const jobCostCny = this.store.usageForJob(jobId) * this.config.quota.usdCny
+      // #636 review: the post-finish notice sums the chain, like the checkpoint
+      // that may already have stopped the job, so both name the same figure.
+      const jobCostCny = this.store.usageForJobChain(jobId) * this.config.quota.usdCny
       if (jobCostCny > repo.job_budget_cny) {
         this.store.audit(job.user_id, 'job.budget_exceeded', `${jobId}: ${jobCostCny.toFixed(4)} > ${repo.job_budget_cny}`)
         this.store.notify(job.user_id, 'quota', `任务 ${jobId} 成本 ${jobCostCny.toFixed(2)} 元，超过单任务预算 ${repo.job_budget_cny.toFixed(2)} 元。`)
@@ -1192,8 +1200,8 @@ export class Jobs {
       // the loss gets its own durable row instead of living only in a process
       // log. The cancel has committed by the time this runs: a trace that cannot
       // be written must never become an error the caller can see.
-      const name = error instanceof Error ? error.name : typeof error
-      const reason = error instanceof Error ? error.message : String(error)
+      const name = errorClass(error)
+      const reason = errorMessage(error)
       try {
         const job = this.store.getJob(jobId)
         this.store.recordJobEvent({
@@ -2224,7 +2232,7 @@ export class Jobs {
     if (action !== 'pause' && action !== 'cancel') return
     // No ledger row is an unknown cost, not a zero one: a provider error
     // deducts nothing, and reading that as "fits the budget" would be a lie.
-    if (this.store.usageCountForJob(job.id) === 0) {
+    if (this.store.usageCountForJobChain(job.id) === 0) {
       const key = `job_budget_unknown:${job.id}`
       if (this.store.getSetting(key) === undefined) {
         this.store.setSetting(key, nowIso())
@@ -2233,7 +2241,7 @@ export class Jobs {
       }
       return
     }
-    const costCny = this.store.usageForJob(job.id) * this.config.quota.usdCny
+    const costCny = this.store.usageForJobChain(job.id) * this.config.quota.usdCny
     if (!(costCny > repo.job_budget_cny)) return
     const cancel = action === 'cancel'
     const code = cancel ? 'JOB_BUDGET_CANCELLED' : 'JOB_BUDGET_PAUSED'

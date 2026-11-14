@@ -892,6 +892,7 @@ test('the admin metrics page shows delivery, cost and alerts', () => {
       daily: [{ day: '2026-01-01', jobs: 2, succeeded: 1, failed: 1, merged: 1 }],
       repoCosts: [{ repoId: 'r1', label: 'o/r', costUsd: 0.4, calls: 3 }],
       modelCosts: [{ model: 'model-a', costUsd: 0.4, calls: 3 }],
+      currency: { buckets: [{ currency: 'USD', amount: 0.4, requests: 3 }], unknownRequests: 1, semantics: 'lower_bound' },
       alerts: [{ kind: 'job_stalled', level: 'critical', repoId: 'r1', repoLabel: 'o/r', jobId: 'j1', minutes: 60, message: 'job j1 has no callback for 60m' }],
       windowDays: 7,
       failures: [{ kind: 'quota', count: 1 }],
@@ -906,6 +907,13 @@ test('the admin metrics page shows delivery, cost and alerts', () => {
     assert.match(page, /job_stalled/)
     assert.match(page, /7 days/)
     assert.match(page, /Failure breakdown/)
+    // #636: each currency is its own bucket, with the amount shown in that
+    // currency and an explicit unknown row rather than a silent zero.
+    assert.match(page, /Cost by currency/)
+    assert.match(page, /USD/)
+    assert.match(page, /0\.4000 USD/)
+    assert.match(page, /Unknown/)
+    assert.match(page, /lower bound/)
   } finally {
     store.close()
   }
@@ -1167,6 +1175,7 @@ test('admin metrics shows the failure breakdown', () => {
       daily: [],
       repoCosts: [],
       modelCosts: [],
+      currency: { buckets: [], unknownRequests: 0, semantics: 'exact' },
       alerts: [],
       windowDays: 30,
       failures: [{ kind: 'quota', count: 1 }, { kind: 'github', count: 1 }],
