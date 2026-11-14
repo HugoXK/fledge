@@ -1242,6 +1242,20 @@ CREATE INDEX IF NOT EXISTS job_events_at_idx ON job_events(at);
 -- #384: one postmortem per failed/stalled/cancelled job, plus a ledger row per
 -- recurrence key. The job_id unique constraint is the idempotency guard: a
 -- replayed terminal transition cannot create a second write-up for the same job.
+CREATE TABLE IF NOT EXISTS repo_releases (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  tag_name TEXT NOT NULL,
+  target_sha TEXT NOT NULL,
+  tag_object_sha TEXT,
+  status TEXT NOT NULL,
+  preflight_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(repo_id, tag_name)
+);
 CREATE TABLE IF NOT EXISTS postmortems (
   id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
@@ -1599,6 +1613,20 @@ function redactJobText(patch: Record<string, unknown>): Record<string, unknown> 
     ...(typeof patch.summary === 'string' ? { summary: redact(patch.summary) } : {}),
     ...(typeof patch.error === 'string' ? { error: redact(patch.error) } : {}),
   }
+}
+
+export interface ReleaseRow {
+  id: string
+  repo_id: string
+  user_id: string
+  version: string
+  tag_name: string
+  target_sha: string
+  tag_object_sha: string | null
+  status: string
+  preflight_json: string | null
+  created_at: string
+  updated_at: string
 }
 
 export class Store {
@@ -2563,6 +2591,41 @@ export class Store {
       input.reason,
       at,
     )
+  }
+
+  // #546: one row per created tag. The UNIQUE(repo_id, tag_name) constraint is the
+  // second guard against a duplicate tag; a second insert returns undefined so the
+  // caller reports it instead of writing a second row for one tag.
+  recordRelease(input: { repoId: string; userId: string; version: string; tagName: string; targetSha: string; tagObjectSha: string; previousTag: string | null; actor: string }): ReleaseRow | undefined {
+    const at = nowIso()
+    try {
+      this.run(
+        `INSERT INTO repo_releases (id, repo_id, user_id, version, tag_name, target_sha, tag_object_sha, status, preflight_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'tagged', ?, ?, ?)`,
+        `rel_${randomBytes(6).toString('hex')}`,
+        input.repoId,
+        input.userId,
+        input.version,
+        input.tagName,
+        input.targetSha,
+        input.tagObjectSha,
+        JSON.stringify({ previousTag: input.previousTag, actor: input.actor }),
+        at,
+        at,
+      )
+    } catch (error) {
+      if (/UNIQUE constraint failed/i.test(String(error))) return undefined
+      throw error
+    }
+    return this.releaseByTag(input.repoId, input.tagName)
+  }
+
+  releaseByTag(repoId: string, tagName: string): ReleaseRow | undefined {
+    return this.get<ReleaseRow>('SELECT * FROM repo_releases WHERE repo_id = ? AND tag_name = ?', repoId, tagName)
+  }
+
+  listReleasesForRepo(repoId: string, limit = 5): ReleaseRow[] {
+    return this.all<ReleaseRow>('SELECT * FROM repo_releases WHERE repo_id = ? ORDER BY created_at DESC LIMIT ?', repoId, limit)
   }
 
   createPostmortemForJob(jobId: string): PostmortemRecord | undefined {

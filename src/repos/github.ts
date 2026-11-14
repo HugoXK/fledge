@@ -699,6 +699,77 @@ export class GithubClient {
   async comment(owner: string, name: string, number: number, body: string): Promise<void> {
     await this.request('POST', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/comments`, { body })
   }
+
+  // Release management (#546): read the tag list and a commit range, read one
+  // file at a ref, and write an annotated tag object plus its ref. Nothing here
+  // moves or deletes a ref; the ref call reports a 422 instead of forcing.
+  async listTags(owner: string, name: string): Promise<Array<{ name: string; sha: string }>> {
+    const tags: Array<{ name: string; sha: string }> = []
+    for (let page = 1; page <= 10; page += 1) {
+      const list = await this.request<Array<{ name: string; commit: { sha: string } }>>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/tags?per_page=100&page=${page}`,
+      )
+      if (!Array.isArray(list)) return tags
+      for (const entry of list) tags.push({ name: entry.name, sha: entry.commit?.sha ?? '' })
+      if (list.length < 100) break
+    }
+    return tags
+  }
+
+  async compareCommits(owner: string, name: string, base: string, head: string): Promise<{ status: string; aheadBy: number }> {
+    const result = await this.request<{ status?: string; ahead_by?: number }>(
+      'GET',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`,
+    )
+    return { status: result.status ?? 'unknown', aheadBy: result.ahead_by ?? 0 }
+  }
+
+  // A release target is a SHA a maintainer types by hand, so existence is a
+  // question with a boolean answer: the caller refuses by name instead of
+  // discovering the missing object as a 404 from compare or a 422 from a write.
+  async commitExists(owner: string, name: string, sha: string): Promise<boolean> {
+    try {
+      await this.request('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/commits/${encodeURIComponent(sha)}`)
+      return true
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return false
+      throw error
+    }
+  }
+
+  async getRepoFile(owner: string, name: string, path: string, ref: string): Promise<string | null> {
+    try {
+      const file = await this.request<{ content?: string }>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/contents/${path}?ref=${encodeURIComponent(ref)}`,
+      )
+      return file.content === undefined ? null : Buffer.from(file.content, 'base64').toString('utf8')
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return null
+      throw error
+    }
+  }
+
+  async createAnnotatedTag(owner: string, name: string, input: { tag: string; message: string; target: string }): Promise<{ sha: string }> {
+    const tag = await this.request<{ sha: string }>('POST', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/git/tags`, {
+      tag: input.tag,
+      message: input.message,
+      object: input.target,
+      type: 'commit',
+    })
+    return { sha: tag.sha }
+  }
+
+  async createTagRef(owner: string, name: string, input: { ref: string; sha: string }): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
+    try {
+      await this.request('POST', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/git/refs`, { ref: input.ref, sha: input.sha })
+      return { ok: true }
+    } catch (error) {
+      if (error instanceof GithubError) return { ok: false, status: error.status, message: error.message }
+      throw error
+    }
+  }
 }
 
 export async function repoPermissionWithToken(token: string, owner: string, name: string, apiBase?: string): Promise<RepoPermission> {

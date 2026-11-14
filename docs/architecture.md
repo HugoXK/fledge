@@ -1798,3 +1798,50 @@ repository.
 Not built yet: the gate pull request, GitHub file/commit writes, merging the
 planned job into an existing workflow YAML, and trial runs; those belong to later
 slices of #543.
+
+## Release tags for hosted repositories
+
+`src/releases/release.ts` turns a maintainer's release request into either a
+refusal or one annotated tag. The version is supplied, never derived: a strict
+SemVer parser accepts `v1.2.3` or `v1.2.3-beta.1` and nothing else. The previous
+version tag is the highest SemVer tag whose commit is an ancestor of the target
+(the `compare/{base}...{head}` status decides ancestry, not tag date or string
+order), so "nothing to release" and "not higher than what shipped" are decidable
+from the repository's own history.
+
+The preflight is read-only (five GETs) and checks, in this order: the version
+parses; the confirmed SHA is a commit in the repository; the default branch is
+protected by required checks (the gate onboarding of #543); a tag-triggered
+`.github/workflows/release.yml` exists at the target commit; the tag does not
+exist; there is something to release; the version is higher than the previous
+tag. A not-higher refusal carries the next legal version, and the page shows it.
+
+A tag-triggered workflow means a `tags:` filter directly under the `push:` event.
+The filter's depth is read from the block instead of assumed to be two spaces, so
+a four-space workflow reads the same as a two-space one, and `tags:` under another
+event (`workflow_dispatch.inputs.tags`) is not a trigger — reading it as one would
+write an irreversible tag whose release workflow never runs. `tags-ignore` is not
+accepted as a positive answer either: the glob cannot be judged against the
+version about to be created, and a missed tag is the worse error.
+
+Only a plan that passes every check reaches the write: an annotated tag object
+(`POST /git/tags`) followed by its ref (`POST /git/refs`). A 422 on the ref means
+somebody else created the tag first and is a refusal, never an update; a 422 on
+the tag object means the commit is not there any more and is the same refusal as
+the preflight's missing-commit check. Nothing deletes or moves a ref, and Fledge
+never publishes a Release. The write uses the token Fledge already holds for the
+repository: the GitHub App installation token when the repository is installed,
+otherwise the connected account's repo-scoped OAuth token.
+
+The page is the only surface a maintainer reads, so both outcomes land there:
+`?release=1&refused=<reason>` renders the refusal (with the suggested version)
+above the form, and `?release=1&tagged=<tag>` confirms the tag that was created.
+When the tag exists but the `repo_releases` row cannot be written (a duplicate
+`UNIQUE(repo_id, tag_name)`), the audit still records `release.tagged` and the
+page says so instead of claiming a clean tag.
+
+`repo_releases` records one row per created tag (`UNIQUE(repo_id, tag_name)`), with
+the tag object SHA, the target commit, the previous tag and the actor, so the
+workflow tracking and draft-release slices (#546's steps 3-7) can build on the
+record instead of re-running the preflight. `release_sources` from the issue is
+deliberately not created yet: it belongs to the notes slice.

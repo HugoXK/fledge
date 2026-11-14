@@ -1,5 +1,5 @@
 import type { Config } from '../config.js'
-import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow } from '../db.js'
+import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow } from '../db.js'
 import { redactCommand, type DriftAssessment, type EnvironmentCurrent, type ReleaseSnapshot } from '../lib/deployments.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
@@ -1073,7 +1073,7 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number } }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number } }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const workItems = input.workItems ?? []
@@ -1562,7 +1562,27 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <p class="fine">${escapeHtml(t('平台只通过 GitHub API 读取元数据、创建 fork 和分支/PR；不会 clone 到公共磁盘。', 'The platform only uses the GitHub API to read metadata, create forks and open branches/PRs; it never clones to public disk.'))}</p>
     </div>
   </section>`
-  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${planBanner}${lifecycleBanner}${triageCard}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}`)}${repoSection('delivery', `${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceNotice}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
+  const releases = input.releases ?? []
+  const releaseCard = `<section class="card" id="release">
+    <div class="eyebrow">${escapeHtml(t('发布', 'RELEASE'))}</div>
+    <h2>${escapeHtml(t('给这个仓库打版本标签', 'Tag a release'))}</h2>
+    <p class="muted">${escapeHtml(t('版本由你输入，Fledge 只做校验：没有新提交、版本不高于上一个标签、标签已存在、缺门禁或不是标签触发的 release.yml，都会拒绝。标签只会新建，永不移动或删除。', 'You enter the version; Fledge only checks it: nothing new to release, not higher than the previous tag, an existing tag, a missing gate or a release.yml not triggered by tags are all refused. A tag is only created — never moved or deleted.'))}</p>
+    ${input.releaseRefused === undefined ? '' : `<p class="banner bad" id="release-refused">${escapeHtml(t('没有打标签', 'No tag was created'))} / ${escapeHtml(t('No tag was created', '没有打标签'))}: ${escapeHtml(input.releaseRefused)}</p>`}
+    ${input.releaseTagged === undefined ? '' : `<p class="banner ok" id="release-tagged">${escapeHtml(t('已创建标签', 'Created tag'))} / ${escapeHtml(t('Created tag', '已创建标签'))}: <code>${escapeHtml(input.releaseTagged)}</code> · ${escapeHtml(t('仓库自己的 release.yml 负责发布。', "The repository's own release.yml does the release."))}</p>`}
+    <form method="post" action="/repos/${escapeHtml(repo.id)}/release" class="form">
+      ${csrf(viewer)}
+      <label for="release-version-${escapeHtml(repo.id)}">${escapeHtml(t('版本（SemVer）', 'Version (SemVer)'))}
+        <input id="release-version-${escapeHtml(repo.id)}" name="version" type="text" autocomplete="off" placeholder="v1.2.3" required />
+      </label>
+      <label for="release-sha-${escapeHtml(repo.id)}">${escapeHtml(t('确认完整提交 SHA', 'Confirm the full commit SHA'))}
+        <input id="release-sha-${escapeHtml(repo.id)}" name="sha" type="text" autocomplete="off" spellcheck="false" pattern="[0-9a-fA-F]{40}" placeholder="40-character SHA" required />
+      </label>
+      <label class="row"><input type="checkbox" name="confirm" value="1" required /> ${escapeHtml(t('我确认版本和提交，标签创建后不会移动', 'I confirm the version and commit; the tag will not be moved'))}</label>
+      <div class="row"><button class="btn" type="submit">${escapeHtml(t('校验并打标签', 'Preflight and tag'))}</button></div>
+    </form>
+    ${releases.length === 0 ? `<p class="fine">${escapeHtml(t('还没有由 Fledge 创建的版本标签。', 'No release tag created by Fledge yet.'))}</p>` : `<ul class="list">${releases.map((release) => `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}</span></li>`).join('')}</ul>`}
+  </section>`
+  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${planBanner}${lifecycleBanner}${triageCard}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceNotice}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : '<script src="/assets/chief.js" defer></script>'}<script src="/assets/repoTabs.js" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
 }
 
