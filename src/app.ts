@@ -225,8 +225,20 @@ function queryTextOf(value: unknown): string | undefined {
 function previewQuery(request: FastifyRequest): Record<string, string | undefined> {
   const query = (request.query as Record<string, unknown> | undefined) ?? {}
   return {
+    mode: queryTextOf(query.mode),
     cron: queryTextOf(query.cron),
     every: queryTextOf(query.every),
+    every_amount: queryTextOf(query.every_amount),
+    every_unit: queryTextOf(query.every_unit),
+    // #677: the page posts one clock per panel under `<mode>_time`, so no two
+    // panels can collide in one request; `time` stays for the documented API.
+    time: queryTextOf(query.time),
+    daily_time: queryTextOf(query.daily_time),
+    weekdays_time: queryTextOf(query.weekdays_time),
+    weekly_time: queryTextOf(query.weekly_time),
+    monthly_time: queryTextOf(query.monthly_time),
+    weekday: queryTextOf(query.weekday),
+    month_day: queryTextOf(query.month_day),
     timezone: queryTextOf(query.timezone),
     from: queryTextOf(query.from),
     start_at: queryTextOf(query.start_at),
@@ -1371,18 +1383,26 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         else error = result.reason
       }
     }
+    const mode = query.mode ?? (query.cron !== undefined ? 'custom' : query.every !== undefined ? 'interval' : 'daily')
     const page = schedulePage({
       config,
       locale: request.locale ?? 'zh',
       viewer: viewOf(viewer),
       form: {
+        mode,
         cron: query.cron ?? '',
-        every: query.every ?? '',
+        everyAmount: query.every_amount ?? (query.every === undefined ? '15' : (query.every.replace(/[^0-9].*$/, '') || '15')),
+        everyUnit: query.every_unit ?? (query.every === undefined ? 'm' : (query.every.slice(-1) || 'm')),
+        // The mode's own field first: the page names each panel's clock after
+        // its mode, and `time` is the API's single name (#677).
+        time: query[`${mode}_time`] ?? query.time ?? '09:00',
+        weekday: query.weekday ?? '1',
+        monthDay: query.month_day ?? '1',
         timezone: query.timezone ?? '',
         startAt: query.start_at ?? '',
         endAt: query.end_at ?? '',
         from: query.from ?? '',
-        count: query.count ?? '',
+        count: query.count ?? '5',
       },
       preview,
       error,

@@ -317,9 +317,15 @@ defect.
   interval that arrives with one is refused by name instead of being accepted and
   shown as if a zone applied. A preview stores nothing and creates no job. Each
   refusal is authored in both Chinese and English where the planner raises it,
-  from the request's locale, so the page alert and `GET /api/schedule/preview`
-  show the same reason in the reader's language rather than an English-only
-  sentence.
+  The console page leads with a human mode picker (#675): every N
+  minutes/hours, every day at a time, weekdays at a time, weekly on a weekday,
+  monthly on a day, and an advanced cron mode. `src/schedules/preview.ts` builds
+  the same `cron`/`every` planner input from those fields, so the page and the
+  JSON API agree, and a mode ignores stale legacy fields. Weekday and
+  day-of-month are selects; time is a native `time` input; the timezone is a
+  select and defaults to `Asia/Shanghai` when omitted. The start/end/from window
+  is optional and lives under an advanced disclosure, so a reader who only wants
+  "weekdays at 09:30" never types cron or an ISO offset.
   Leases, misfire policies, layered budgets and the notification outbox are not
   built yet.
 - **The tick consumes the planner** (#544, third slice): a `schedules` row — at

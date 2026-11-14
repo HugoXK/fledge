@@ -213,6 +213,82 @@ test('every preview refusal reaches the alert banner in the reader language', as
   }
 })
 
+test('friendly schedule modes build the same planner input without cron syntax', async () => {
+  const { built, cookie } = await fixture()
+  const cases: Array<{ params: Record<string, string>; expression?: string; everyMs?: number }> = [
+    { params: { mode: 'daily', time: '09:30', timezone: 'Asia/Shanghai' }, expression: '30 9 * * *' },
+    { params: { mode: 'weekdays', time: '09:30', timezone: 'Asia/Shanghai' }, expression: '30 9 * * 1-5' },
+    { params: { mode: 'weekly', weekday: '3', time: '09:30', timezone: 'Asia/Shanghai' }, expression: '30 9 * * 3' },
+    { params: { mode: 'monthly', month_day: '15', time: '09:30', timezone: 'Asia/Shanghai' }, expression: '30 9 15 * *' },
+    { params: { mode: 'interval', every_amount: '15', every_unit: 'm' }, everyMs: 900000 },
+    { params: { mode: 'custom', cron: '0 9 * * 1-5', timezone: 'UTC' }, expression: '0 9 * * 1-5' },
+  ]
+  try {
+    for (const sample of cases) {
+      const response = await built.app.inject({
+        method: 'GET',
+        url: previewUrl({ ...sample.params, count: '2', from: '2026-11-16T00:00:00Z' }),
+        headers: { cookie },
+      })
+      assert.equal(response.statusCode, 200, JSON.stringify(sample.params))
+      const body = response.json() as { schedule: { kind: string; expression?: string; everyMs?: number; timezone?: string } }
+      if (sample.expression !== undefined) {
+        assert.equal(body.schedule.kind, 'cron')
+        assert.equal(body.schedule.expression, sample.expression)
+      } else {
+        assert.equal(body.schedule.kind, 'interval')
+        assert.equal(body.schedule.everyMs, sample.everyMs)
+        assert.equal(body.schedule.timezone, undefined, 'an interval mode ignores the submitted timezone')
+      }
+    }
+  } finally {
+    await built.close()
+  }
+})
+
+test('a friendly mode refuses the field that is wrong and keeps the page usable', async () => {
+  const { built, cookie } = await fixture()
+  const headers = { cookie: `${cookie}; fledge_lang=en` }
+  try {
+    const time = await built.app.inject({ method: 'GET', url: previewUrl({ mode: 'daily', time: '25:00', timezone: 'UTC' }), headers })
+    assert.equal(time.statusCode, 400)
+    assert.ok((time.json() as { error: string }).error.includes('25:00'))
+
+    const weekday = await built.app.inject({ method: 'GET', url: previewUrl({ mode: 'weekly', weekday: '9', time: '09:00', timezone: 'UTC' }), headers })
+    assert.equal(weekday.statusCode, 400)
+    assert.ok((weekday.json() as { error: string }).error.includes('weekday'))
+
+    const day = await built.app.inject({ method: 'GET', url: previewUrl({ mode: 'monthly', month_day: '32', time: '09:00', timezone: 'UTC' }), headers })
+    assert.equal(day.statusCode, 400)
+    assert.ok((day.json() as { error: string }).error.includes('month_day'))
+
+    const unknown = await built.app.inject({ method: 'GET', url: previewUrl({ mode: 'sometimes', time: '09:00' }), headers })
+    assert.equal(unknown.statusCode, 400)
+    assert.ok((unknown.json() as { error: string }).error.includes('sometimes'))
+  } finally {
+    await built.close()
+  }
+})
+
+test('the schedule page leads with a mode picker and keeps cron in the advanced group', async () => {
+  const { built, cookie } = await fixture()
+  try {
+    const page = await built.app.inject({ method: 'GET', url: '/schedule', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /name="mode"/)
+    assert.match(page.body, /data-schedule-form/)
+    assert.match(page.body, /data-schedule-panel="interval"/)
+    assert.match(page.body, /data-schedule-panel="daily"/)
+    assert.match(page.body, /data-schedule-panel="custom"/)
+    assert.match(page.body, /type="time"/)
+    assert.match(page.body, /name="every_amount"/)
+    assert.match(page.body, /name="cron"/)
+    assert.match(page.body, /advanced-help/)
+  } finally {
+    await built.close()
+  }
+})
+
 test('the JSON preview authors its refusal in the same reader locale', async () => {
   const { built, cookie } = await fixture()
   try {

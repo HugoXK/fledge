@@ -1200,3 +1200,7 @@ html:lang(zh) .brand { letter-spacing: 0; }
 html:lang(zh) .hero-copy h1 { letter-spacing: 0; line-height: 1.14; }
 html:lang(zh) .workspace-user h1 { letter-spacing: 0; }
 html:lang(zh) .stat strong { letter-spacing: 0; line-height: 1.15; }
+
+/* A schedule panel hidden by the mode selector must stay hidden: `.row` sets
+   display:flex, which would otherwise outrank the user-agent [hidden] rule. */
+.schedule-panel[hidden], [data-schedule-timezone-wrap][hidden] { display: none !important; }
