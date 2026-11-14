@@ -497,6 +497,13 @@ which must pass the job block to the Lead verbatim; review jobs go to the
 Reviewer only when the repository has enabled it. The Lead delegates to the
 member whose scope fits and posts the final callback exactly once.
 
+The admin page is ordered by the admin's work: Pending, Users, Jobs, Audit,
+Release and Backups. The release facts and the release chain share one `Release`
+section, and the section nav is a sticky underline tab row rather than a wall of
+pill links. An empty release chain says it is expected and keeps the operator
+command under a disclosure with a `<DATA_DIR>` placeholder, never the real host
+path.
+
 ### Team console and live events
 
 The team console is admin-only. `GET /api/repos/:id/team/events` streams
