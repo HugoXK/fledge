@@ -170,3 +170,28 @@ test('a running job takes its notice at the checkpoint, not before it', async ()
     store.close()
   }
 })
+
+test('a relation written to a running task is taken by that task at its checkpoint', async () => {
+  const { store, jobs, user, repo, job } = setup()
+  try {
+    // The other producer of a notice: a person links a finished follow-up to a
+    // task that is still running, so the running task is the one that must read it.
+    // The callback secret is hashed into the row, as dispatch hands it out.
+    const secret = 'coord-secret-relate'
+    const source = job('job_rel_source')
+    store.createJob({ id: 'job_rel_target', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '' })
+    store.updateJob('job_rel_target', { status: 'running' })
+    const target = store.getJob('job_rel_target')!
+    const out = await jobs.relate({ repoId: repo.id, sourceJobId: source.id, targetJobId: target.id, kind: 'related', reason: claim.reason, evidence: claim.evidence, actorUserId: user.id })
+    assert.equal(out.ok, true)
+    assert.notEqual(store.getSetting(`coordination:${target.id}`), undefined, 'the running task gets one notice')
+
+    const atCheckpoint = await jobs.handleCallback(target.id, secret, { status: 'running', summary: 'mid run', checkpoint: 'mid run; next tests' })
+    assert.equal(atCheckpoint.ok, true)
+    assert.equal(store.getSetting(`coordination:${target.id}`), undefined, 'the running task takes it at its checkpoint')
+    assert.equal(store.getJob(target.id)?.status, 'running', 'the notice did not take the claim')
+    assert.equal(store.listJobEvents(target.id, 20).filter((event) => event.kind === 'job.coordination_notice').length, 1)
+  } finally {
+    store.close()
+  }
+})
