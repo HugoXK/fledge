@@ -288,6 +288,13 @@ defect.
   evidence a second person can check — a link, a commit or ticket sha, or a
   measurement with a unit; adjectives alone are refused. The no-op rule and the
   tail-ticket rule above still decide where the row sits.
+- **Task relations are explicit**: `task_relations` joins two jobs of one
+  repository as `same_problem`, `related` or `recurrence`, with the reason and
+  the checkable evidence the claim rests on. Both ends must be jobs of the same
+  repository, so a relation cannot cross a project boundary, and a task cannot
+  be related to itself. A repeated save is one row. Nothing derives a relation
+  from a title or an embedding: similar tasks stay separate until a person links
+  them, and a relation never moves, merges or suppresses work.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
   a maintainer reviewer is due); with no open work it **stays idle** unless the

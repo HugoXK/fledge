@@ -641,6 +641,18 @@ export interface JobEventRow {
   meta: string | null
 }
 
+export interface TaskRelationRow {
+  id: string
+  repo_id: string
+  source_job_id: string
+  target_job_id: string
+  kind: string
+  reason: string
+  evidence: string
+  created_by: string
+  created_at: string
+}
+
 export interface PostmortemRow {
   id: string
   job_id: string
@@ -1342,6 +1354,24 @@ CREATE TABLE IF NOT EXISTS job_events (
 );
 CREATE INDEX IF NOT EXISTS job_events_job_idx ON job_events(job_id, id DESC);
 CREATE INDEX IF NOT EXISTS job_events_at_idx ON job_events(at);
+
+-- #639: an explicit relation between two tasks of one project. The row is a
+-- claim somebody made with a reason and evidence; nothing derives it from a
+-- title, so two similarly named tasks stay two tasks until a person links them.
+CREATE TABLE IF NOT EXISTS task_relations (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  source_job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  target_job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  evidence TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (source_job_id, target_job_id, kind)
+);
+CREATE INDEX IF NOT EXISTS task_relations_source_idx ON task_relations(source_job_id);
+CREATE INDEX IF NOT EXISTS task_relations_target_idx ON task_relations(target_job_id);
 
 -- #384: one postmortem per failed/stalled/cancelled job, plus a ledger row per
 -- recurrence key. The job_id unique constraint is the idempotency guard: a
@@ -2614,6 +2644,65 @@ export class Store {
       input.role ?? null,
       input.step ?? null,
       input.meta === undefined || input.meta === null ? null : input.meta.slice(0, 4000),
+    )
+  }
+
+  // #639: both ends must be jobs of the same repository. A relation that named a
+  // job in another project would join two tenants' work, so it is refused here
+  // rather than being written and filtered at read time.
+  createTaskRelation(input: {
+    repoId: string
+    sourceJobId: string
+    targetJobId: string
+    kind: string
+    reason: string
+    evidence: string
+    createdBy: string
+  }): { created: boolean; relation: TaskRelationRow } | { error: 'relation_same_job' | 'relation_target_missing' | 'relation_cross_project' } {
+    const source = this.getJob(input.sourceJobId)
+    const target = this.getJob(input.targetJobId)
+    if (source === undefined || target === undefined) return { error: 'relation_target_missing' }
+    if (source.id === target.id) return { error: 'relation_same_job' }
+    if (source.repo_id !== input.repoId || target.repo_id !== input.repoId) return { error: 'relation_cross_project' }
+    if (input.kind === '') return { error: 'relation_target_missing' }
+    const existing = this.get<TaskRelationRow>(
+      'SELECT * FROM task_relations WHERE source_job_id = ? AND target_job_id = ? AND kind = ?',
+      input.sourceJobId,
+      input.targetJobId,
+      input.kind,
+    )
+    if (existing !== undefined) return { created: false, relation: existing }
+    const relation: TaskRelationRow = {
+      id: `rel_${randomBytes(8).toString('hex')}`,
+      repo_id: input.repoId,
+      source_job_id: input.sourceJobId,
+      target_job_id: input.targetJobId,
+      kind: input.kind,
+      reason: input.reason,
+      evidence: input.evidence,
+      created_by: input.createdBy,
+      created_at: nowIso(),
+    }
+    this.run(
+      'INSERT INTO task_relations (id, repo_id, source_job_id, target_job_id, kind, reason, evidence, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      relation.id,
+      relation.repo_id,
+      relation.source_job_id,
+      relation.target_job_id,
+      relation.kind,
+      relation.reason,
+      relation.evidence,
+      relation.created_by,
+      relation.created_at,
+    )
+    return { created: true, relation }
+  }
+
+  listTaskRelations(jobId: string): TaskRelationRow[] {
+    return this.all<TaskRelationRow>(
+      'SELECT * FROM task_relations WHERE source_job_id = ? OR target_job_id = ? ORDER BY created_at ASC, id ASC',
+      jobId,
+      jobId,
     )
   }
 

@@ -2523,6 +2523,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewerActive: store.listActiveJobsForUser(viewer.user.id),
       repoLabels,
       events: store.listJobEvents(job.id, 200),
+      relations: store.listTaskRelations(job.id),
       postmortem: store.getPostmortemForJob(job.id) ?? null,
       // #540: the cancel form carries the revision it rendered and a fresh key,
       // so a double submit replays the same receipt and a stale page conflicts.
@@ -2681,6 +2682,49 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const notice = result.changed === true
       ? t(`优先级已改为 ${result.level}。`, `Priority is now ${result.level}.`)
       : t('优先级没有变化。', 'The priority is unchanged.')
+    return reply.redirect(`${back}?notice=${encodeURIComponent(notice)}`)
+  })
+
+  // #639: a relation is an explicit claim that two tasks are about one problem.
+  // The route refuses a target outside this repository and hands the claim
+  // standard to the service, so no title match can ever create one.
+  app.post('/repos/:id/jobs/:jobId/relations', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
+      return reply.redirect(`${back}?error=${encodeURIComponent('请先选择你的角色。')}`)
+    }
+    const t = translator(request.locale ?? 'zh')
+    const body = form(request)
+    const result = await jobs.relate({
+      repoId: repo.id,
+      sourceJobId: job.id,
+      targetJobId: String(body.target_job_id ?? '').trim(),
+      kind: body.kind,
+      reason: body.reason ?? '',
+      evidence: body.evidence ?? '',
+      actorUserId: viewer.user.id,
+    })
+    if (!result.ok) {
+      const refusal = result.code === 'RELATION_EVIDENCE_REQUIRED'
+        ? t(
+          '关联需要理由（至少 8 字）和可核对的证据：链接、提交/工单 sha，或带单位的测量值。',
+          'A relation needs a reason (at least 8 characters) and checkable evidence: a link, a commit/issue sha, or a measurement with a unit.',
+        )
+        : result.code === 'RELATION_KIND_INVALID'
+          ? t('关联类型无效，请选同一问题、相关或复发。', 'That relation kind is not valid; choose same problem, related or recurrence.')
+          : result.code === 'relation_cross_project'
+            ? t('只能关联同一仓库里的任务。', 'A relation can only join two tasks of the same repository.')
+            : result.code === 'relation_same_job'
+              ? t('任务不能和它自己建立关联。', 'A task cannot be related to itself.')
+              : t('目标任务不存在。', 'The target task does not exist.')
+      return reply.redirect(`${back}?error=${encodeURIComponent(refusal)}`)
+    }
+    const notice = result.created === true
+      ? t('已建立关联。', 'Relation saved.')
+      : t('关联已存在。', 'That relation already exists.')
     return reply.redirect(`${back}?notice=${encodeURIComponent(notice)}`)
   })
 

@@ -21,6 +21,7 @@ import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
 import { levelFromRank, priorityRank, validatePriorityClaim, type PriorityLevel } from '../lib/priority.js'
+import { validateRelationClaim, type RelationKind } from '../lib/relations.js'
 import { reviewMergeBlock } from '../lib/mergeReview.js'
 import {
   MAX_DIFF_CHARS,
@@ -499,6 +500,50 @@ export class Jobs {
     this.store.audit(claim.actorUserId, 'job.priority_changed', detail)
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.priority_changed', meta: `${currentLevel}->${verdict.level}` })
     return { ok: true, changed: true, level: verdict.level }
+  }
+
+  // #639: an explicit relation between two tasks of one project. The store owns
+  // the two boundary refusals (same job, a job of another project); the service
+  // owns the claim standard and the audit record, so a relation is always a
+  // decision somebody can read back with its reason and evidence.
+  async relate(input: {
+    repoId: string
+    sourceJobId: string
+    targetJobId: string
+    kind: unknown
+    reason: unknown
+    evidence: unknown
+    actorUserId: string
+  }): Promise<{ ok: boolean; created?: boolean; kind?: RelationKind; code?: string; error?: string }> {
+    const claim = validateRelationClaim({ kind: input.kind, reason: input.reason, evidence: input.evidence })
+    if (!claim.ok) return { ok: false, code: claim.code, error: claim.message }
+    const written = this.store.createTaskRelation({
+      repoId: input.repoId,
+      sourceJobId: input.sourceJobId,
+      targetJobId: input.targetJobId,
+      kind: claim.kind,
+      reason: claim.reason,
+      evidence: claim.evidence,
+      createdBy: input.actorUserId,
+    })
+    if ('error' in written) {
+      const message = written.error === 'relation_same_job'
+        ? '任务不能和它自己建立关联。'
+        : written.error === 'relation_cross_project'
+          ? '只能关联同一仓库里的任务。'
+          : '目标任务不存在。'
+      return { ok: false, code: written.error, error: message }
+    }
+    if (!written.created) return { ok: true, created: false, kind: claim.kind }
+    this.store.audit(input.actorUserId, 'job.relation_created', `${input.sourceJobId}->${input.targetJobId} ${claim.kind} reason=${redact(claim.reason)} evidence=${redact(claim.evidence)}`)
+    this.store.recordJobEvent({
+      jobId: input.sourceJobId,
+      repoId: input.repoId,
+      userId: input.actorUserId,
+      kind: 'job.relation_created',
+      meta: `${claim.kind} ${input.targetJobId}`,
+    })
+    return { ok: true, created: true, kind: claim.kind }
   }
 
   async cancelRepoJobs(repoId: string, reason: string, errorCode?: FailureCode): Promise<void> {

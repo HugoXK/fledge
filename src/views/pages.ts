@@ -1,6 +1,6 @@
 import type { Config } from '../config.js'
 import type { CostReport } from '../metrics/cost.js'
-import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow } from '../db.js'
+import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow, TaskRelationRow } from '../db.js'
 import { redactCommand, type DriftAssessment, type EnvironmentCurrent, type ReleaseSnapshot } from '../lib/deployments.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
@@ -8,6 +8,7 @@ import { humanTimeShort } from '../lib/time.js'
 import { nextRun, type NextRun } from '../lib/nextRun.js'
 import { aheadOfViewer, queueRanks, rankQueued, type QueueRank } from '../lib/queueRank.js'
 import { levelFromRank, PRIORITY_LEVELS } from '../lib/priority.js'
+import { RELATION_KINDS, relationKindLabel, type RelationKind } from '../lib/relations.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { renderState, stateCell, type StateAction } from './states.js'
@@ -2572,6 +2573,8 @@ export function jobPage(input: {
   repoLabels?: Map<string, string>
   events?: JobEventRow[]
   postmortem?: PostmortemRow | null
+  // #639: relations are explicit; the page lists them and offers one write.
+  relations?: TaskRelationRow[]
   // #540: the revision this render saw and the key a double submit replays.
   // Absent on surfaces that cannot write (the admin support view).
   cancel?: { revision: number; idempotencyKey: string }
@@ -2597,6 +2600,7 @@ export function jobPage(input: {
   const retryHidden = commandHidden(input.retry)
   const events = input.events ?? []
   const postmortem = input.postmortem ?? null
+  const relations = input.relations ?? []
   const supportMode = input.supportMode === true
   const t = translator(locale)
   const advanced = advancedViewer(viewer)
@@ -2806,6 +2810,34 @@ export function jobPage(input: {
       <button class="btn" type="submit">${escapeHtml(t('保存优先级', 'Save priority'))}</button>
     </form>
   </section>`
+  const relationRows = relations.map((relation) => {
+    const otherId = relation.source_job_id === job.id ? relation.target_job_id : relation.source_job_id
+    return `<div class="list-row" data-job-relation="${escapeHtml(relation.id)}">
+        <div class="list-main"><span class="badge">${escapeHtml(relationKindLabel(relation.kind as RelationKind, t))}</span> <a href="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(otherId)}"><code>${escapeHtml(otherId)}</code></a>
+          <small>${escapeHtml(relation.reason)} · <code>${escapeHtml(relation.evidence)}</code></small></div>
+      </div>`
+  }).join('')
+  const relationForm = supportMode
+    ? ''
+    : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/relations" class="form">
+      ${csrf(viewer)}
+      <div class="row">
+        <label>${escapeHtml(t('目标任务', 'Target task'))} <input name="target_job_id" required maxlength="80" placeholder="${escapeHtml(t('同一仓库里的任务 id', 'a task id in this repository'))}" /></label>
+        <label>${escapeHtml(t('关系', 'Relation'))} <select name="kind">${RELATION_KINDS.map((kind) => `<option value="${kind}">${escapeHtml(relationKindLabel(kind, t))}</option>`).join('')}</select></label>
+      </div>
+      <label>${escapeHtml(t('理由', 'Reason'))} <input name="reason" maxlength="200" placeholder="${escapeHtml(t('为什么是同一个问题', 'Why they belong together'))}" /></label>
+      <label>${escapeHtml(t('证据（链接、提交/工单 sha，或带单位的测量值）', 'Evidence (a link, a commit/issue sha, or a measurement with a unit)'))} <input name="evidence" maxlength="300" /></label>
+      <button class="btn" type="submit">${escapeHtml(t('保存关联', 'Save relation'))}</button>
+    </form>`
+  const relationsCard = supportMode
+    ? ''
+    : `<section class="card" id="relations">
+    <div class="row between"><h2>${escapeHtml(t('关联任务', 'Related tasks'))}</h2><span class="fine" data-relation-count>${relations.length}</span></div>
+    <p class="fine">${escapeHtml(t('关联只有一个来源：人明确写下理由和证据。标题相似不会自动合并，也不会压制任何任务。', 'A relation has one source: a person writes the reason and the evidence. A similar title never merges tasks and never suppresses one.'))}</p>
+    ${relationRows === '' ? `<p class="muted">${escapeHtml(t('还没有关联任务。', 'No related tasks yet.'))}</p>` : `<div class="list">${relationRows}</div>`}
+    ${relationForm}
+  </section>`
+
   const body = `<section class="card">
     <div class="row between">
       <div>
@@ -2826,6 +2858,7 @@ export function jobPage(input: {
     ${queueBlock}
   </section>
   ${priorityCard}
+  ${relationsCard}
   ${jobLoading}
   ${supportMode ? '' : planCard}
   ${postmortemCard}

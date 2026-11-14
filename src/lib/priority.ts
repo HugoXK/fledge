@@ -39,6 +39,12 @@ export type PriorityAccepted = { ok: true; level: PriorityLevel; changed: boolea
 // adjective ("urgent", "critical") is a restatement of the claim, not evidence.
 const EVIDENCE_SHAPE = /(https?:\/\/\S+|\b[0-9a-f]{7,40}\b|\d+(?:\.\d+)?\s*(?:ms|s|%|x|requests?|errors?|failures?|tokens?|users?|jobs?|CNY|USD))/i
 
+// One evidence standard for every claim the console accepts (#639). A relation
+// is a claim too, so it reads the same predicate instead of writing a second one.
+export function hasCheckableEvidence(text: string): boolean {
+  return EVIDENCE_SHAPE.test(text.trim())
+}
+
 const MIN_REASON = 12
 
 export interface PriorityClaim {
@@ -58,7 +64,7 @@ export function validatePriorityClaim(claim: PriorityClaim): PriorityAccepted | 
   if (claim.level !== 'P0' && claim.level !== 'P1') return { ok: true, level: claim.level, changed: true }
   const reason = (claim.reason ?? '').trim()
   const evidence = (claim.evidence ?? '').trim()
-  if (reason.length < MIN_REASON || !EVIDENCE_SHAPE.test(evidence)) {
+  if (reason.length < MIN_REASON || !hasCheckableEvidence(evidence)) {
     return {
       ok: false,
       code: 'PRIORITY_EVIDENCE_REQUIRED',
