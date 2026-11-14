@@ -22,6 +22,13 @@ export interface OperationResult {
   result?: Record<string, unknown>
   errorCode?: string
   errorMessage?: string
+  /**
+   * Local writes that belong to the business change. The service runs this inside
+   * the receipt's transaction, so a crash cannot leave the effect committed with
+   * the receipt still saying `accepted`. Anything that must await stays in the
+   * operation body, before it returns.
+   */
+  commit?: () => void
 }
 
 export interface Operation {
@@ -57,14 +64,41 @@ const taskCancel: Operation = {
     if (repo === undefined) return { status: 'failed', errorCode: 'project_not_found', errorMessage: 'the project does not exist' }
     const job = context.store.getJob(jobId)
     if (job === undefined || job.repo_id !== repo.id) return { status: 'failed', errorCode: 'job_not_found', errorMessage: 'the job does not exist in this project' }
-    const outcome = await context.jobs.cancelJob(job.id, stringArgument(args, 'reason') ?? '用户取消任务')
-    if (!outcome.ok) return { status: 'failed', errorCode: 'job_not_cancellable', errorMessage: outcome.error ?? 'cancel refused' }
-    return { status: 'succeeded', result: { jobId: job.id, stopped: outcome.stopped ?? 0 } }
+    // The awaited part (the bridge stop) is repeatable; the local write it hands
+    // back commits inside the receipt transaction, so the effect and its receipt
+    // are never split by a crash.
+    const prepared = await context.jobs.prepareCancel(job.id, stringArgument(args, 'reason') ?? '用户取消任务')
+    if (!prepared.ok) return { status: 'failed', errorCode: 'job_not_cancellable', errorMessage: prepared.error }
+    return { status: 'succeeded', result: { jobId: job.id, stopped: prepared.stop.stopped ?? 0 }, commit: prepared.apply }
+  },
+}
+
+// #540 slice 2: pausing is the same shape as cancelling — one job, one local
+// status write, one repeatable bridge stop — and its only refusal is "already
+// finished", so the code stays stable. `task.resume`, `task.retry` and
+// `task.create` are not here yet: their refusals come back from `Jobs.enqueue`
+// as free-text Chinese with an enqueue code, and turning those into bilingual
+// management codes is its own change, not something to bolt onto this one.
+const taskPause: Operation = {
+  kind: 'command',
+  capabilities: ['job.pause'],
+  requiredTarget: ['projectId', 'jobId'],
+  revisionTarget: 'jobId',
+  revisionType: 'job',
+  async execute(context, target) {
+    const repo = context.store.getRepo(target.projectId ?? '')
+    if (repo === undefined) return { status: 'failed', errorCode: 'project_not_found', errorMessage: 'the project does not exist' }
+    const job = context.store.getJob(target.jobId ?? '')
+    if (job === undefined || job.repo_id !== repo.id) return { status: 'failed', errorCode: 'job_not_found', errorMessage: 'the job does not exist in this project' }
+    const prepared = await context.jobs.preparePause(job.id)
+    if (!prepared.ok) return { status: 'failed', errorCode: 'job_not_pausable', errorMessage: prepared.error }
+    return { status: 'succeeded', result: { jobId: job.id, stopped: prepared.stop.stopped ?? 0 }, commit: prepared.apply }
   },
 }
 
 export const OPERATIONS: Readonly<Record<string, Operation>> = Object.freeze({
   'task.cancel': taskCancel,
+  'task.pause': taskPause,
 })
 
 export function operationFor(name: string): Operation | undefined {
