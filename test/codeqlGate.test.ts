@@ -172,8 +172,11 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // those anchors read `:628`/`:663`/`:673`/`:683` and the webhook registration
   // `:3419`; the gateway pair stays `:155`/`:180` because both inserts land below
   // it. Nothing is added or dismissed.
+  // #615 then adds four locale lines above the deployments rollback registration,
+  // so alert #65 reads `:3435`; the four top-of-file registrations and the
+  // gateway pair do not move. Nothing is added or dismissed.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3431',
+    'js/missing-rate-limiting|src/app.ts|3435',
     'js/missing-rate-limiting|src/app.ts|639',
     'js/missing-rate-limiting|src/app.ts|674',
     'js/missing-rate-limiting|src/app.ts|684',
