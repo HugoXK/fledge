@@ -18,6 +18,40 @@
     // Storage can be unavailable in private modes; the server-rendered locale still works.
   }
 
+  // The schedule builder shows only the fields the selected mode reads. The
+  // server is authoritative; this only removes the noise between choices. With
+  // no script every panel stays visible and the server still builds from `mode`.
+  document.querySelectorAll('[data-schedule-form]').forEach((form) => {
+    const mode = form.querySelector('[data-schedule-mode]')
+    if (!mode) return
+    const panels = Array.from(form.querySelectorAll('[data-schedule-panel]'))
+    const timezone = form.querySelector('[data-schedule-timezone-wrap]')
+    const sync = () => {
+      for (const panel of panels) panel.hidden = panel.getAttribute('data-schedule-panel') !== mode.value
+      if (timezone) timezone.hidden = mode.value === 'interval'
+    }
+    mode.addEventListener('change', sync)
+    sync()
+    const zone = form.querySelector('[data-schedule-timezone]')
+    if (zone && zone.dataset.auto === '1' && typeof Intl === 'object' && typeof Intl.DateTimeFormat === 'function') {
+      try {
+        const local = Intl.DateTimeFormat().resolvedOptions().timeZone
+        if (local) {
+          if (!Array.from(zone.options ?? []).some((option) => option.value === local)) {
+            const option = document.createElement('option')
+            option.value = local
+            option.textContent = local
+            zone.append(option)
+          }
+          zone.value = local
+          zone.dataset.auto = '0'
+        }
+      } catch {
+        // Keep the server-rendered default; the preview still works.
+      }
+    }
+  })
+
   // The sticky header is content-driven: the locale, the wrapping and the
   // reader's default font size all change its height, so the offset typed into
   // app.css is only the no-JS fallback. Let the rendered header win, and observe

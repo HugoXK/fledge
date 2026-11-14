@@ -3532,7 +3532,20 @@ export function schedulePage(input: {
   config: Config
   locale: Locale
   viewer: Viewer
-  form: { cron: string; every: string; timezone: string; startAt: string; endAt: string; from: string; count: string }
+  form: {
+    mode: string
+    cron: string
+    everyAmount: string
+    everyUnit: string
+    time: string
+    weekday: string
+    monthDay: string
+    timezone: string
+    startAt: string
+    endAt: string
+    from: string
+    count: string
+  }
   preview: Extract<PreviewResult, { ok: true }> | null
   error?: string
 }): string {
@@ -3540,9 +3553,34 @@ export function schedulePage(input: {
   const t = translator(locale)
   const field = (name: string, label: string, value: string, placeholder: string, hint = ''): string =>
     `<label>${escapeHtml(label)} <input name="${escapeHtml(name)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" />${hint === '' ? '' : ` <span class="fine">${escapeHtml(hint)}</span>`}</label>`
+  const timeField = (): string =>
+    `<label>${escapeHtml(t('时间', 'Time'))} <input type="time" name="time" value="${escapeHtml(form.time === '' ? '09:00' : form.time)}" step="60" required /></label>`
+  const zoneOptions = ['Asia/Shanghai', 'Asia/Tokyo', 'Asia/Singapore', 'Asia/Kolkata', 'Europe/London', 'Europe/Berlin', 'Europe/Paris', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'Australia/Sydney', 'UTC']
+  if (form.timezone !== '' && !zoneOptions.includes(form.timezone)) zoneOptions.push(form.timezone)
+  const timezoneSelect = `<select name="timezone" data-schedule-timezone data-auto="${form.timezone === '' ? '1' : '0'}">${zoneOptions.map((zone) => `<option value="${escapeHtml(zone)}"${form.timezone === zone || (form.timezone === '' && zone === 'Asia/Shanghai') ? ' selected' : ''}>${escapeHtml(zone)}</option>`).join('')}</select>`
+  const weekdayOptions: Array<[string, string, string]> = [['1', '周一', 'Monday'], ['2', '周二', 'Tuesday'], ['3', '周三', 'Wednesday'], ['4', '周四', 'Thursday'], ['5', '周五', 'Friday'], ['6', '周六', 'Saturday'], ['0', '周日', 'Sunday']]
+  const weekdaySelect = `<select name="weekday">${weekdayOptions.map(([value, zh, en]) => `<option value="${value}"${form.weekday === value ? ' selected' : ''}>${escapeHtml(t(zh, en))}</option>`).join('')}</select>`
+  const monthDaySelect = `<select name="month_day">${Array.from({ length: 31 }, (_, index) => index + 1).map((day) => `<option value="${String(day)}"${form.monthDay === String(day) ? ' selected' : ''}>${day}</option>`).join('')}</select>`
+  const modeOptions: Array<[string, string, string]> = [
+    ['interval', '固定间隔', 'Every N minutes/hours'],
+    ['daily', '每天', 'Every day'],
+    ['weekdays', '工作日', 'Weekdays'],
+    ['weekly', '每周', 'Weekly'],
+    ['monthly', '每月', 'Monthly'],
+    ['custom', '高级 cron', 'Advanced cron'],
+  ]
+  const modeSelect = `<label>${escapeHtml(t('什么时候运行', 'When should it run'))} <select name="mode" data-schedule-mode>${modeOptions.map(([value, zh, en]) => `<option value="${value}"${form.mode === value ? ' selected' : ''}>${escapeHtml(t(zh, en))}</option>`).join('')}</select></label>`
   const scheduleLine = preview === null ? '' : preview.schedule.kind === 'cron'
     ? t('cron', 'cron') + ` <code>${escapeHtml(preview.schedule.expression)}</code> · ${escapeHtml(preview.schedule.timezone)}`
-    : t('间隔', 'interval') + ` <code>${String(preview.schedule.everyMs)} ms</code>`
+    : (() => {
+      const minutes = Math.round(preview.schedule.everyMs / 60_000)
+      const label = minutes % 1440 === 0
+        ? t(`每 ${minutes / 1440} 天`, `every ${minutes / 1440} day(s)`)
+        : minutes % 60 === 0
+          ? t(`每 ${minutes / 60} 小时`, `every ${minutes / 60} hour(s)`)
+          : t(`每 ${minutes} 分钟`, `every ${minutes} minute(s)`)
+      return `${label} <span class="fine">(${String(preview.schedule.everyMs)} ms)</span>`
+    })()
   const rows = preview === null ? [] : preview.times.map((time, index) => {
     const when = time.local === null
       ? `<code>${escapeHtml(time.at)}</code>`
@@ -3560,25 +3598,30 @@ export function schedulePage(input: {
     ? `<p class="muted">${escapeHtml(t('窗口在 end_at 之前结束，因此只列到这些。', 'The window ended before the requested count, so this is all of it.'))}</p>`
     : ''
   const intervalNote = preview !== null && preview.schedule.kind === 'interval'
-    ? `<p class="muted">${escapeHtml(t('间隔形式没有时区：时间是绝对时间，UTC 一侧显示的就是它的时刻。', 'The interval form has no timezone: these are absolute instants, and the UTC column is the instant itself.'))}</p>`
+    ? `<p class="muted">${escapeHtml(t('间隔形式没有时区：这些是绝对时间，UTC 列就是它的时刻。', 'The interval form has no timezone: these are absolute instants, and the UTC column is the instant itself.'))}</p>`
     : ''
+  const panel = (mode: string, content: string): string =>
+    `<div class="row schedule-panel" data-schedule-panel="${mode}">${content}</div>`
   const body = `<a class="back" href="/console">← ${escapeHtml(t('返回工作区', 'Back to workspace'))}</a>
-    <section class="card"><div class="eyebrow">${escapeHtml(t('排期', 'SCHEDULE'))}</div><h1>${escapeHtml(t('预览下一次运行', 'Preview the next runs'))}</h1>
+    <section class="card"><div class="eyebrow">${escapeHtml(t('排期', 'SCHEDULE'))}</div><h1>${escapeHtml(t('下一次什么时候运行？', 'When does it run next?'))}</h1>
       <p class="muted">${escapeHtml(t(
-        '这个预览和将来的 worker 使用同一个规划器，回答“接下来会在哪些时刻运行”。它不保存任何东西，也不会创建任务。',
-        'This preview uses the same planner the worker will use and answers "when does this run next". It saves nothing and creates no job.',
+        '选一个常用节奏就能看到接下来几次运行。预览和将来的 worker 使用同一个规划器；它不保存任何东西，也不会创建任务。',
+        'Pick a common rhythm and see the next runs. The preview uses the same planner the worker will use; it saves nothing and creates no job.',
       ))}</p>
-      <form method="get" action="/schedule" class="form"><div class="row">
-        ${field('cron', t('cron 表达式', 'cron expression'), form.cron, '0 9 * * 1-5', t('五个字段：分 时 日 月 周', 'five fields: minute hour day month weekday'))}
-        ${field('every', t('或固定间隔', 'or a fixed interval'), form.every, '15m', t('s、m、h、d，例如 90s', 's, m, h or d, for example 90s'))}
-        ${field('timezone', t('时区（仅 cron）', 'timezone (cron only)'), form.timezone, 'Asia/Shanghai', '')}
-        ${field('from', t('从', 'From'), form.from, '2026-11-16T00:00:00Z', t('留空=现在', 'empty = now'))}
-        ${field('start_at', t('生效时间 start_at', 'start_at'), form.startAt, '2026-11-16T00:00:00Z', '')}
-        ${field('end_at', t('结束时间 end_at', 'end_at'), form.endAt, '', '')}
-        <label>${escapeHtml(t('条数', 'Count'))} <input name="count" value="${escapeHtml(form.count)}" placeholder="5" inputmode="numeric" /></label>
-        <button class="btn" type="submit">${escapeHtml(t('预览', 'Preview'))}</button>
-      </div></form>
-      <p class="fine">${escapeHtml(t('时间必须带时区偏移，例如 2026-11-16T09:00:00+08:00；只写日期和时间会被拒绝，因为它在一半时区里是另一个时刻。', 'An instant needs an offset, such as 2026-11-16T09:00:00+08:00; a bare date and time is refused because it names another instant in half the zones.'))}</p>
+      <form method="get" action="/schedule" class="form" data-schedule-form>
+        <div class="row">${modeSelect}<label data-schedule-timezone-wrap>${escapeHtml(t('时区', 'Timezone'))} ${timezoneSelect}</label><label>${escapeHtml(t('预览条数', 'Runs to show'))} <input type="number" name="count" min="1" max="20" value="${escapeHtml(form.count === '' ? '5' : form.count)}" inputmode="numeric" /></label></div>
+        ${panel('interval', `<label>${escapeHtml(t('每', 'Every'))} <input type="number" name="every_amount" min="1" max="10080" value="${escapeHtml(form.everyAmount === '' ? '15' : form.everyAmount)}" inputmode="numeric" /> <select name="every_unit"><option value="m"${form.everyUnit !== 'h' && form.everyUnit !== 'd' ? ' selected' : ''}>${escapeHtml(t('分钟', 'minutes'))}</option><option value="h"${form.everyUnit === 'h' ? ' selected' : ''}>${escapeHtml(t('小时', 'hours'))}</option><option value="d"${form.everyUnit === 'd' ? ' selected' : ''}>${escapeHtml(t('天', 'days'))}</option></select></label>`)}
+        ${panel('daily', timeField())}
+        ${panel('weekdays', `${timeField()}<p class="fine">${escapeHtml(t('周一到周五，按上面的时区。', 'Monday through Friday in the timezone above.'))}</p>`)}
+        ${panel('weekly', `${weekdaySelect}${timeField()}`)}
+        ${panel('monthly', `${monthDaySelect}${timeField()}<p class="fine">${escapeHtml(t('每月这一天；不存在的日期会按规划器规则处理。', 'This day of the month; a missing date follows the planner rules.'))}</p>`)}
+        ${panel('custom', `<label class="grow">${escapeHtml(t('cron 表达式', 'cron expression'))} <input name="cron" value="${escapeHtml(form.cron)}" placeholder="0 9 * * 1-5" /></label><p class="fine">${escapeHtml(t('五个字段：分 时 日 月 周。给熟悉 cron 的人使用。', 'Five fields: minute hour day month weekday. For people who already know cron.'))}</p>`)}
+        <details class="advanced-help"><summary>${escapeHtml(t('高级：起止时间 / 从哪个时刻开始预览', 'Advanced: start, end and preview from'))}</summary>
+          <div class="row">${field('from', t('从', 'From'), form.from, '2026-11-16T00:00:00Z', t('留空=现在', 'empty = now'))}${field('start_at', t('生效时间', 'Start at'), form.startAt, '2026-11-16T00:00:00Z', '')}${field('end_at', t('结束时间', 'End at'), form.endAt, '', '')}</div>
+          <p class="fine">${escapeHtml(t('时间必须带偏移，例如 2026-11-16T09:00:00+08:00。', 'An instant needs an offset, such as 2026-11-16T09:00:00+08:00.'))}</p>
+        </details>
+        <button class="btn" type="submit">${escapeHtml(t('预览接下来的运行', 'Preview the next runs'))}</button>
+      </form>
     </section>
     ${preview === null ? '' : `<section class="card"><h2>${escapeHtml(t('接下来的运行', 'Next runs'))}</h2><p class="muted">${scheduleLine}</p><div class="table-scroll"><table><thead><tr><th>#</th><th>${escapeHtml(t('本地时间', 'Local time'))}</th><th>UTC</th><th>${escapeHtml(t('偏移', 'Offset'))}</th><th>${escapeHtml(t('已跳过', 'Skipped'))}</th></tr></thead><tbody>${rows}</tbody></table></div>${intervalNote}${skipNote}${truncatedNote}</section>`}`
   return layout({ title: t('排期预览', 'Schedule preview'), viewer, body, config, locale, path: '/schedule', active: 'schedule', error })
