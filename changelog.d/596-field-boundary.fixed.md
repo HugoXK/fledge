@@ -1,0 +1,1 @@
+Text fields now draw their resting edge with a dedicated `--field-line` token, so an input, textarea or select has a visible boundary in both themes and clears the WCAG 2.2 non-text minimum: 3.40:1 on the dark field and 3.65:1 on the light one, where the shared `--line` hairline measured 1.24:1 and 1.32:1. Cards, tables and dividers keep `--line`, so no surface moves.

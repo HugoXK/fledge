@@ -1,0 +1,142 @@
+{
+  "issue": 596,
+  "browser": "Chromium via playwright",
+  "page": "/repos/new",
+  "method": "computed borderTopColor and backgroundColor, WCAG 2.x relative luminance",
+  "before": [
+    {
+      "theme": "dark",
+      "width": 1280,
+      "locale": "zh",
+      "tag": "input",
+      "borderColor": "rgb(28, 35, 45)",
+      "background": "rgb(8, 12, 18)",
+      "fieldWidth": 454,
+      "borderOnFill": 1.24,
+      "borderOnCard": 1.33
+    },
+    {
+      "theme": "dark",
+      "width": 1280,
+      "locale": "en",
+      "tag": "input",
+      "borderColor": "rgb(28, 35, 45)",
+      "background": "rgb(8, 12, 18)",
+      "fieldWidth": 454,
+      "borderOnFill": 1.24,
+      "borderOnCard": 1.33
+    },
+    {
+      "theme": "dark",
+      "width": 360,
+      "locale": "en",
+      "tag": "input",
+      "borderColor": "rgb(28, 35, 45)",
+      "background": "rgb(8, 12, 18)",
+      "fieldWidth": 294,
+      "borderOnFill": 1.24,
+      "borderOnCard": 1.33
+    },
+    {
+      "theme": "light",
+      "width": 1280,
+      "locale": "en",
+      "tag": "input",
+      "borderColor": "rgb(219, 225, 233)",
+      "background": "rgb(255, 255, 255)",
+      "fieldWidth": 454,
+      "borderOnFill": 1.32,
+      "borderOnCard": 15.96
+    },
+    {
+      "theme": "light",
+      "width": 360,
+      "locale": "en",
+      "tag": "input",
+      "borderColor": "rgb(219, 225, 233)",
+      "background": "rgb(255, 255, 255)",
+      "fieldWidth": 294,
+      "borderOnFill": 1.32,
+      "borderOnCard": 15.96
+    },
+    {
+      "theme": "light",
+      "width": 360,
+      "locale": "zh",
+      "tag": "input",
+      "borderColor": "rgb(219, 225, 233)",
+      "background": "rgb(255, 255, 255)",
+      "fieldWidth": 294,
+      "borderOnFill": 1.32,
+      "borderOnCard": 15.96
+    }
+  ],
+  "after": [
+    {
+      "theme": "dark",
+      "width": 1280,
+      "locale": "zh",
+      "tag": "input",
+      "borderColor": "rgb(90, 102, 128)",
+      "background": "rgb(8, 12, 18)",
+      "fieldWidth": 454,
+      "borderOnFill": 3.4,
+      "borderOnCard": 3.65
+    },
+    {
+      "theme": "dark",
+      "width": 1280,
+      "locale": "en",
+      "tag": "input",
+      "borderColor": "rgb(90, 102, 128)",
+      "background": "rgb(8, 12, 18)",
+      "fieldWidth": 454,
+      "borderOnFill": 3.4,
+      "borderOnCard": 3.65
+    },
+    {
+      "theme": "dark",
+      "width": 360,
+      "locale": "en",
+      "tag": "input",
+      "borderColor": "rgb(90, 102, 128)",
+      "background": "rgb(8, 12, 18)",
+      "fieldWidth": 294,
+      "borderOnFill": 3.4,
+      "borderOnCard": 3.65
+    },
+    {
+      "theme": "light",
+      "width": 1280,
+      "locale": "en",
+      "tag": "input",
+      "borderColor": "rgb(124, 135, 148)",
+      "background": "rgb(255, 255, 255)",
+      "fieldWidth": 454,
+      "borderOnFill": 3.65,
+      "borderOnCard": 5.75
+    },
+    {
+      "theme": "light",
+      "width": 360,
+      "locale": "en",
+      "tag": "input",
+      "borderColor": "rgb(124, 135, 148)",
+      "background": "rgb(255, 255, 255)",
+      "fieldWidth": 294,
+      "borderOnFill": 3.65,
+      "borderOnCard": 5.75
+    },
+    {
+      "theme": "light",
+      "width": 360,
+      "locale": "zh",
+      "tag": "input",
+      "borderColor": "rgb(124, 135, 148)",
+      "background": "rgb(255, 255, 255)",
+      "fieldWidth": 294,
+      "borderOnFill": 3.65,
+      "borderOnCard": 5.75
+    }
+  ]
+}
