@@ -72,6 +72,10 @@ concurrency:
 jobs:
   release:
     name: plan the daily minor release and push its branch
+    # #527: the opener token is an environment secret, so only this job may read
+    # it. The environment must exist with the secret in place before this line
+    # ships; the `tag` job publishes with the automatic token and stays out.
+    environment: release
     # A push to `main` is eligible only when the paths filter above matched a
     # release-shaped change. Ordinary merges are kept quiet by that filter; among
     # the runs that do arrive, the trigger predicate below decides whether the

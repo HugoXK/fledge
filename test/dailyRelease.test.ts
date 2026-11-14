@@ -370,3 +370,14 @@ test('release.yml keeps its own concurrency and verifies the tag before publishi
   assert.match(release, /tag:\s*\n\s*description:/)
   assert.match(release, /gh release create "\$RELEASE_TAG"/)
 })
+
+test('the opener token is read through the release environment, and the tag job stays out of it', () => {
+  // #527: `RELEASE_OPEN_TOKEN` was repository-scoped, so every workflow on
+  // `main` could read it. Declaring the environment on the one job that uses it
+  // is the whole fix — the token then resolves from `Settings → Environments →
+  // release → Environment secrets` for that job only. The `tag` job publishes
+  // with the automatic token, so it must not inherit the environment: an
+  // `environment:` there would be a second place the scope could drift.
+  assert.match(job('release'), /^ {4}environment: release$/m, 'the release job declares the release environment')
+  assert.equal(/^ {4}environment:/m.test(job('tag')), false, 'the tag job stays outside the release environment')
+})

@@ -271,8 +271,10 @@ backstop: it dispatches `ci.yml` when an open same-repo pull request has no `CI`
 run at all at its head SHA, and it does not replace opening the PR with a real
 identity.
 
-The opener runs on the repository secret **`RELEASE_OPEN_TOKEN`** (Settings →
-Secrets and variables → Actions). Set it to a token for the team account —
+The opener runs on the environment secret **`RELEASE_OPEN_TOKEN`** (Settings →
+Environments → `release` → Environment secrets), declared by
+`environment: release` on the `release` job and on no other job. Set it to a
+token for the team account —
 never the Reviewer's `HugoXK-bot` account — scoped to this repository alone, with
 `Contents: read` and `Pull requests: write` — it does not need push, because the
 workflow pushes `release/v<next>` before the opener runs. The opener reads
