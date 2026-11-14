@@ -1,1 +1,0 @@
-Every job now holds a queue ticket: two jobs that arrive in the same instant keep a stable order instead of being ranked by whatever the query returned, the queue reads by priority and then by ticket, and promoting or demoting a job moves it to the tail of its new level while saving the same priority keeps the ticket it already had.

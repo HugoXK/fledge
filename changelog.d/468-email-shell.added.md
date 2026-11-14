@@ -1,1 +1,0 @@
-Transactional email now shares one responsive Fledge shell: a wordmark, a 640px table measure that stays readable on a 360px client, inline-only styling, a docs/status footer and a plain-text part that keeps the same facts. Job, digest, approval, quota, trial and test messages use it, and failure mail keeps its red banner and subject marker.

@@ -1,1 +1,0 @@
-A pull request that renames a file with no content change no longer blocks its own automatic merge: a 100 %-similarity rename carries no hunks, so the adversarial pass used to count it as a file it could not read and refused the change, and now the rename is excluded from that list while a pull request whose every changed file is such a rename still refuses.
