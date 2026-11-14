@@ -35,8 +35,64 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Classify the changed paths once, before any runner is allocated for a heavy
+  # job. A job that cannot learn anything from this diff is skipped by its own
+  # job-level `if`; it does not start, install dependencies and then skip. The
+  # classifier is conservative: an unknown path or an unreadable diff runs the
+  # full gate, and a skipped job is accepted by `ci-ok` only when the matching
+  # output is false.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      docsOnly: ${{ steps.classify.outputs.docsOnly }}
+      source: ${{ steps.classify.outputs.source }}
+      frontend: ${{ steps.classify.outputs.frontend }}
+      deps: ${{ steps.classify.outputs.deps }}
+      db: ${{ steps.classify.outputs.db }}
+      docker: ${{ steps.classify.outputs.docker }}
+      workflows: ${{ steps.classify.outputs.workflows }}
+      codeql: ${{ steps.classify.outputs.codeql }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # A pull request needs the whole range for `git diff base...head`; a
+          # push or schedule classifies every flag as true without reading git.
+          fetch-depth: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 0 || 1 }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Classify the changed paths
+        id: classify
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/changed-paths.txt"
+          case "$EVENT" in
+            pull_request) base="$PR_BASE"; head="$PR_HEAD" ;;
+            merge_group) base="$GROUP_BASE"; head="$GROUP_HEAD" ;;
+            *) node scripts/ci-changes.mjs --all; exit 0 ;;
+          esac
+          # A fork head may not be in this checkout; a failed diff runs every
+          # gate rather than guessing that a heavy one is unnecessary.
+          if git diff --name-only --no-renames "$base...$head" > "$file"; then
+            node scripts/ci-changes.mjs --from-file "$file"
+          else
+            echo "cannot diff $base...$head; running every gate" >&2
+            node scripts/ci-changes.mjs --all
+          fi
   lint:
     name: lint
+    needs: changes
+    if: needs.changes.outputs.source == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -52,6 +108,8 @@ jobs:
 
   typecheck:
     name: typecheck
+    needs: changes
+    if: needs.changes.outputs.source == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -67,6 +125,10 @@ jobs:
 
   test:
     name: test (${{ matrix.node }})
+    # Unconditional on purpose: the suite reads `docs/`, `public/`, `deploy/` and
+    # `.github/` (60 of the 184 files under `test/`), so no diff makes it
+    # inapplicable. Skipping it turned `ci-ok` green over a red suite for
+    # docs-only, `public/`-only, `deploy/`-only and workflow-only diffs.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -90,6 +152,7 @@ jobs:
   # would only add noise to the number.
   coverage:
     name: coverage
+    # Same reason as `test`: the floor measures the suite that reads those trees.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -117,6 +180,8 @@ jobs:
 
   build:
     name: build
+    needs: changes
+    if: needs.changes.outputs.source == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -140,6 +205,8 @@ jobs:
   # element overflow. Screenshots are artifacts, not committed files.
   visual:
     name: visual
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -166,6 +233,8 @@ jobs:
   # an image that starts is not one without a known high-severity package.
   docker:
     name: docker
+    needs: changes
+    if: needs.changes.outputs.docker == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -249,6 +318,8 @@ jobs:
 
   audit:
     name: audit
+    needs: changes
+    if: needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -343,7 +414,8 @@ jobs:
 
   restore-drill:
     name: restore-drill
-    needs: build
+    needs: [changes, build]
+    if: needs.changes.outputs.db == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -360,6 +432,8 @@ jobs:
 
   action-pins:
     name: action-pins
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -379,6 +453,8 @@ jobs:
   # opened the pull request wrote. scripts/workflow-injection.mjs is that check.
   workflow-lint:
     name: workflow-lint
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -481,6 +557,8 @@ jobs:
   # into a red required check.
   codeql-required:
     name: codeql-required
+    needs: changes
+    if: needs.changes.outputs.codeql == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -508,7 +586,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required]
+    needs: [changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -523,6 +601,7 @@ jobs:
       - name: Every required job passed
         env:
           NEEDS: ${{ toJSON(needs) }}
+          CHANGES: ${{ toJSON(needs.changes.outputs) }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: node scripts/ci-ok.mjs
 
@@ -541,7 +620,7 @@ jobs:
   main-health:
     name: main-health
     if: always() && github.ref == 'refs/heads/main'
-    needs: [ci-ok, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required]
+    needs: [ci-ok, changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

@@ -4,6 +4,18 @@ on:
   push:
     branches: [main]
   pull_request:
+    # A documentation-only, deploy-only or Dockerfile-only pull request cannot
+    # add a JavaScript/TypeScript finding. `ci-ok` skips `codeql-required` only
+    # when the classifier's `codeql` flag is false. A workflow change is
+    # deliberately not ignored: the CodeQL workflow and its baseline are policy
+    # files, and the PR that edits them must not also remove the analysis. A
+    # push and the nightly run stay unfiltered.
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'LICENSE'
+      - 'deploy/**'
+      - 'Dockerfile'
   schedule:
     - cron: '17 3 * * 1'
 
