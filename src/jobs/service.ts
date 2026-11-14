@@ -22,6 +22,7 @@ import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
 import { levelFromRank, priorityRank, validatePriorityClaim, type PriorityLevel } from '../lib/priority.js'
 import { validateRelationClaim, type RelationKind } from '../lib/relations.js'
+import { DEFAULT_DECISION, isDecisionKind, repairDecision, validateDecision, type DecisionKind } from '../lib/taskDecision.js'
 import { reviewMergeBlock } from '../lib/mergeReview.js'
 import {
   MAX_DIFF_CHARS,
@@ -535,6 +536,12 @@ export class Jobs {
       return { ok: false, code: written.error, error: message }
     }
     if (!written.created) return { ok: true, created: false, kind: claim.kind }
+    const target = this.store.getJob(input.targetJobId)
+    // #639: the related task does not take the claim of work already running. It
+    // leaves one notice the running job takes at its next checkpoint.
+    if (target !== undefined && target.status === 'running') {
+      this.store.requestCoordination(target.id, `${input.sourceJobId} ${claim.kind}`)
+    }
     this.store.audit(input.actorUserId, 'job.relation_created', `${input.sourceJobId}->${input.targetJobId} ${claim.kind} reason=${redact(claim.reason)} evidence=${redact(claim.evidence)}`)
     this.store.recordJobEvent({
       jobId: input.sourceJobId,
@@ -544,6 +551,88 @@ export class Jobs {
       meta: `${claim.kind} ${input.targetJobId}`,
     })
     return { ok: true, created: true, kind: claim.kind }
+  }
+
+  // #639: one bounded post-QA decision. `new` creates a separate task, `supplement`
+  // appends to an existing one without a second execution, and `related` /
+  // `recurrence` create the task and the explicit relation that says why. The
+  // contradiction `new` plus an existing task id is repaired once into `related`.
+  async decideNextTask(input: {
+    repoId: string
+    sourceJobId: string
+    kind: unknown
+    existingTaskId?: string
+    reason: unknown
+    evidence: unknown
+    title?: string
+    level?: unknown
+    actorUserId: string
+  }): Promise<{ ok: boolean; kind?: DecisionKind; workItemId?: string; repaired?: boolean; code?: string; error?: string }> {
+    if (!isDecisionKind(input.kind)) return { ok: false, code: 'DECISION_KIND_INVALID', error: '下一步决定无效。' }
+    const repair = repairDecision(input.kind, (input.existingTaskId ?? '').trim())
+    const claim = validateDecision({
+      kind: repair.kind,
+      existingTaskId: repair.existingTaskId,
+      reason: input.reason,
+      evidence: input.evidence,
+    })
+    if (!claim.ok) return { ok: false, code: claim.code, error: claim.message }
+    const source = this.store.getJob(input.sourceJobId)
+    if (source === undefined) return { ok: false, code: 'DECISION_TARGET_MISSING', error: '找不到来源任务。' }
+    const item = claim.existingTaskId === '' ? undefined : this.store.getWorkItem(claim.existingTaskId)
+    if (claim.kind !== 'new' && (item === undefined || item.repo_id !== input.repoId)) {
+      return { ok: false, code: 'DECISION_TARGET_MISSING', error: '找不到要补充或关联的任务。' }
+    }
+    if (claim.kind === 'supplement' && item !== undefined) {
+      const appended = `${item.detail === '' ? '' : `${item.detail}\n`}- ${claim.reason} (${claim.evidence})`.slice(0, 4000)
+      this.store.updateWorkItem(item.id, { detail: appended })
+      this.store.audit(input.actorUserId, 'task.decision_supplement', `${item.id} <- ${input.sourceJobId} reason=${redact(claim.reason)} evidence=${redact(claim.evidence)}`)
+      return { ok: true, kind: 'supplement', workItemId: item.id, repaired: repair.repaired }
+    }
+    const title = (input.title ?? '').trim()
+    if (title === '') return { ok: false, code: 'DECISION_TARGET_MISSING', error: '新任务需要一个标题。' }
+    const level = input.level === 'P0' || input.level === 'P1' || input.level === 'P2' || input.level === 'P3' ? input.level : DEFAULT_DECISION.level
+    const id = randomId('work')
+    this.store.createWorkItem({
+      id,
+      repoId: input.repoId,
+      userId: source.user_id,
+      title: title.slice(0, 200),
+      detail: `${claim.reason} (${claim.evidence})`,
+      state: 'proposed',
+      priority: level === 'P0' ? 30 : level === 'P1' ? 20 : level === 'P2' ? 10 : 0,
+    })
+    if (claim.kind === 'related' || claim.kind === 'recurrence') {
+      if (item === undefined || item.job_id === null) {
+        return { ok: false, code: 'DECISION_TARGET_MISSING', error: '那个任务还没有执行记录，无法建立关联。' }
+      }
+      const written = this.store.createTaskRelation({
+        repoId: input.repoId,
+        sourceJobId: input.sourceJobId,
+        targetJobId: item.job_id,
+        kind: claim.kind === 'recurrence' ? 'recurrence' : 'related',
+        reason: claim.reason,
+        evidence: claim.evidence,
+        createdBy: input.actorUserId,
+      })
+      if ('error' in written) return { ok: false, code: written.error, error: '关联没有写成。' }
+      const targetJob = this.store.getJob(item.job_id)
+      if (targetJob !== undefined && targetJob.status === 'running') {
+        this.store.requestCoordination(targetJob.id, `${input.sourceJobId} ${claim.kind}`)
+      }
+    }
+    this.store.audit(input.actorUserId, `task.decision_${claim.kind}`, `${id} <- ${input.sourceJobId} reason=${redact(claim.reason)} evidence=${redact(claim.evidence)}`)
+    return { ok: true, kind: claim.kind, workItemId: id, repaired: repair.repaired }
+  }
+
+  // A notice left by a related task is taken once, at a checkpoint. Taking it
+  // removes the row, so the same notice cannot interrupt a second checkpoint.
+  consumeCoordination(jobId: string): boolean {
+    const detail = this.store.takeCoordination(jobId)
+    if (detail === undefined) return false
+    const job = this.store.getJob(jobId)
+    this.store.recordJobEvent({ jobId, repoId: job?.repo_id ?? null, kind: 'job.coordination_notice', meta: detail })
+    return true
   }
 
   async cancelRepoJobs(repoId: string, reason: string, errorCode?: FailureCode): Promise<void> {
@@ -2824,7 +2913,10 @@ export class Jobs {
       if (latest !== undefined && latest.callback_fingerprint !== null && latest.callback_fingerprint === fingerprint) return { ok: true, duplicate: true }
       return { ok: false, status: 409, error: 'job already finished' }
     }
-    if (checkpoint !== undefined) this.store.updateJob(jobId, { checkpoint })
+    if (checkpoint !== undefined) {
+      this.store.updateJob(jobId, { checkpoint })
+      this.consumeCoordination(jobId)
+    }
     if (status === 'succeeded' && followUps.length > 0) {
       await this.queueReviewFollowUps(job, followUps)
       await this.releasePendingFollowups(job.repo_id)

@@ -2699,6 +2699,19 @@ export class Store {
     return { created: true, relation }
   }
 
+  // #639: a related task does not steal a running job's claim. It leaves one
+  // notice that job takes at its next checkpoint; taking it removes the row, so
+  // a second checkpoint cannot repeat the same interruption.
+  requestCoordination(jobId: string, detail: string): void {
+    this.setSetting(`coordination:${jobId}`, detail.slice(0, 500))
+  }
+
+  takeCoordination(jobId: string): string | undefined {
+    const value = this.getSetting(`coordination:${jobId}`)
+    if (value !== undefined) this.deleteSetting(`coordination:${jobId}`)
+    return value
+  }
+
   listTaskRelations(jobId: string): TaskRelationRow[] {
     return this.all<TaskRelationRow>(
       'SELECT * FROM task_relations WHERE source_job_id = ? OR target_job_id = ? ORDER BY created_at ASC, id ASC',

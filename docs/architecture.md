@@ -298,6 +298,16 @@ defect.
   be related to itself. A repeated save is one row. Nothing derives a relation
   from a title or an embedding: similar tasks stay separate until a person links
   them, and a relation never moves, merges or suppresses work.
+- **One bounded next-task decision**: after a job is verified the follow-up is a
+  single decision — `new`, `supplement`, `related` or `recurrence` — carrying a
+  reason and checkable evidence. `new` creates one separate task, `supplement`
+  appends to an existing task without a second execution, and `related` /
+  `recurrence` create the task and the explicit relation that says why. `new`
+  aimed at an existing task is contradictory and is repaired once into
+  `related`. When the decision step is unavailable the framework default is a
+  separate task at `P2`. A related task whose target is still running leaves one
+  coordination notice, which that job consumes at its next checkpoint and only
+  once; the running job keeps its claim.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
   a maintainer reviewer is due); with no open work it **stays idle** unless the
