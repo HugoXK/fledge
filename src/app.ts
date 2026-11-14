@@ -3419,6 +3419,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const id = String((request.params as Record<string, string>).id)
     const provider = store.modelProviderById(id, viewer.user.id)
     if (provider === undefined) return reply.code(404).send({ error: '模型提供方不存在。' })
+    // #525: the delete removes configuration the owner may not have recorded,
+    // and the lookup above only proves the provider is theirs - a stolen cookie
+    // is still theirs. The actor's own scope keeps a refusal local to the owner.
+    if (requireRecentAuth(request, reply, viewer, 'model.provider.remove')) return reply
     store.deleteModelProvider(id, viewer.user.id)
     store.audit(viewer.user.id, 'model.provider.removed', `${id} ${provider.label}`)
     return reply.redirect(`/settings?notice=${encodeURIComponent('模型提供方已删除。')}#model-providers`)
@@ -4094,6 +4098,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!loginLimiter.take(`platform-stop:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以停止平台。', 'ADMIN_ONLY')
+    // #525: a stop drains the fleet and cancels work that a resume cannot bring
+    // back, so the admin session alone is not enough evidence of the person.
+    if (requireRecentAuth(request, reply, viewer, 'flybot.platform.stop')) return reply
     const t = translator(request.locale ?? 'zh')
     const reason = (form(request).reason ?? '').trim().slice(0, 200)
     const result = await jobs.stopPlatform({ id: viewer.user.id, login: viewer.user.login }, reason)
@@ -4219,8 +4226,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (user === undefined || user.id === viewer.user.id || user.role === 'superadmin') throw httpError(403, '不能修改这个账号。', 'ROLE_PROTECTED')
     const role = form(request).role
     if (role !== 'admin' && role !== 'user') throw httpError(400, '角色无效。', 'BAD_ROLE')
+    // #525: a promotion is privilege escalation, so a superadmin cookie on its
+    // own must not be enough. The 403 and 400 above still answer first.
+    if (requireRecentAuth(request, reply, viewer, 'admin.user.role')) return reply
     store.setUserRole(id, role)
-    store.audit(id, 'admin.role', `role=${role} by @${viewer.user.login}`)
+    store.audit(id, 'admin.role', `role=${user.role}->${role} by @${viewer.user.login}`)
     return reply.redirect(`/admin?notice=${encodeURIComponent(role === 'admin' ? '已设为管理员。' : '已设为用户。')}`)
   })
 
