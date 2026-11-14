@@ -349,24 +349,38 @@ p { margin: 0 0 12px; }
 }
 .lang a:hover { color: var(--text); text-decoration: none; }
 .lang a[aria-pressed="true"] { background: rgba(123, 149, 255, 0.16); color: var(--accent); }
-/* Issue 657: the palette choice is a three-way segmented control, the same shape as
-   the language switch next to it, so the two preferences do not look like
-   different kinds of thing. Every choice keeps the 44px touch floor; the current
-   one is marked by fill, ink and an inset ring, not by colour alone. */
-.theme {
-  display: inline-flex; align-items: center; gap: 2px;
-  border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 2px;
+/* Issue 682: the theme choice is one 44px icon button with a small menu, not three
+   text labels that read as "AutoLightDark" and consume a whole row segment. The
+   summary shows the saved mode through `data-theme`; the menu options are plain
+   links, so the choice still works without JavaScript. */
+.theme-menu { position: relative; flex: none; }
+.theme-menu summary {
+  list-style: none; width: var(--touch); height: var(--touch);
+  display: grid; place-items: center; padding: 0;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--chip-bg); color: var(--muted); cursor: pointer;
 }
-.theme a {
-  min-width: var(--touch); min-height: var(--touch); text-align: center; padding: 4px 7px;
-  border-radius: var(--radius-xs); display: grid; place-items: center;
-  color: var(--muted-2); font-size: 12px; font-weight: 700; letter-spacing: 0.02em;
+.theme-menu summary::-webkit-details-marker { display: none; }
+.theme-menu summary:hover, .theme-menu[open] summary { color: var(--accent); border-color: var(--accent); }
+.theme-glyph { display: none; place-items: center; }
+:root[data-theme="system"] .theme-glyph-system,
+:root[data-theme="light"] .theme-glyph-light,
+:root[data-theme="dark"] .theme-glyph-dark { display: grid; }
+.theme-options {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
+  display: grid; gap: 2px; min-width: 190px; padding: 4px;
+  border: 1px solid var(--line); border-radius: var(--radius-md);
+  background: var(--panel); box-shadow: var(--shadow);
 }
-.theme a:hover { color: var(--text); text-decoration: none; }
-.theme a[aria-current="true"] {
-  background: rgba(123, 149, 255, 0.16); color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+.theme-options a {
+  display: flex; align-items: center; gap: 10px; min-height: var(--touch); padding: 0 12px;
+  border-radius: var(--radius-sm); color: var(--muted); font-size: var(--text-sm);
 }
+.theme-options a:hover { color: var(--text); background: var(--surface-raised); text-decoration: none; }
+.theme-options a[aria-current="true"] {
+  color: var(--accent); background: rgba(123, 149, 255, 0.12); font-weight: 700;
+}
+.theme-option-icon { display: grid; place-items: center; flex: none; }
 
 .wrap {
   max-width: var(--content); margin: 0 auto;
@@ -910,15 +924,7 @@ a.list-row:hover strong { color: var(--accent); }
      tablet reaches every destination with a finger, not only with a cursor. */
   .top .nav a { padding: 0; min-height: var(--touch); border-bottom: 1px solid var(--row-line); }
   .top .nav a:last-child { border-bottom: 0; }
-  /* Issue 657: inside the panel the chooser is one row of three equal targets under a
-     divider, so it cannot wrap and the row above stays the fixed one-row header
-     #133 pinned. */
-  .theme {
-    display: flex; width: 100%; gap: 4px; margin-top: 4px; padding: 8px 0 4px;
-    border: 0; border-top: 1px solid var(--line); border-radius: 0;
-  }
-  .theme a { flex: 1; padding: 4px 7px; }
-  .top .nav .theme a { padding: 4px 7px; border-bottom: 0; }
+  .theme-menu { order: 1; }
   .wrap { padding: 28px 16px 72px; }
   @supports (padding: env(safe-area-inset-top)) {
     .wrap { padding: 28px calc(16px + env(safe-area-inset-right)) calc(72px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
@@ -933,6 +939,13 @@ a.list-row:hover strong { color: var(--accent); }
 }
 
 @media (max-width: 640px) {
+  /* On phones the summary sits on either side of the row depending on whether
+     the signed-in navigation is present, so neither left nor right anchoring is
+     safe. Pin the popover to the viewport, just under the measured header. */
+  .theme-options {
+    position: fixed; top: calc(var(--header-h) + 4px); right: 12px; left: auto;
+    max-width: calc(100vw - 24px);
+  }
   body { font-size: 15px; }
   h1 { font-size: clamp(28px, 9vw, 38px); }
   .hero-copy h1 { font-size: clamp(38px, 11vw, 54px); }
@@ -1040,13 +1053,10 @@ a.list-row:hover strong { color: var(--accent); }
 }
 
 @media (max-width: 420px) {
-  /* At 360px with a classic 15px scrollbar the row has 345px minus the two
-     10px paddings and three 8px gaps: 301px for four children. The mark, the
-     toggle, the two 44px language targets and the 44px sign-out already take
-     more than that, so the wordmark leaves the row rather than a control:
-     the mark keeps the brand, the toggle still names itself, the language
-     switch keeps both targets and the account keeps its exit. #133 acceptance
-     3's 44px floor is not touched here. */
+  /* The theme menu is one 44px child now. The quota pill is the one thing that
+     can leave the phone row without removing a destination or a 44px target:
+     it remains on Settings and the dashboard. */
+  .account .pill { display: none; }
   .top-inner { padding: 0 10px; gap: 8px; }
   @supports (padding: env(safe-area-inset-top)) {
     .top-inner { padding: 0 calc(10px + env(safe-area-inset-right)) 0 calc(10px + env(safe-area-inset-left)); }
