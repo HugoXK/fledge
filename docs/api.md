@@ -94,6 +94,31 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/approve/:token` | token | Confirmation page |
 | POST | `/approve/:token` | token | Apply approve/reject |
 
+## Management commands (internal)
+
+There is no public management HTTP endpoint yet; #392 exposes one. The contract
+is internal (`src/management/`) and the console call it outlives:
+
+```ts
+POST /repos/:id/jobs/:jobId/cancel   // form adapter, carries expected_revision and idempotency_key
+```
+
+A command is `{ operation, target: { projectId, jobId? }, arguments,
+expected_revision, idempotency_key, source_conversation?, source_message? }`.
+The server fills the actor; a payload that carries an identity field is refused.
+
+| Outcome | Meaning |
+|---|---|
+| `succeeded` | The business write ran; the receipt records before/after revision and result |
+| replay of a `succeeded` receipt | Same key and same arguments; nothing runs again |
+| `idempotency_conflict` | Same key, different arguments; refused, the first receipt stands |
+| `management_revision_conflict` | The resource moved on; nothing was written |
+| `authorization_revoked` | The caller lost the capability between acceptance and execution; nothing was written |
+| `job_not_cancellable` | The job had already finished; the catalog operation refused |
+
+Operation names today: `task.cancel`. The catalog is closed — an unknown
+operation is `unknown_operation`, never a fallback.
+
 ## Read-only metrics
 
 ### `GET /api/read/metrics`
