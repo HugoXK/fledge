@@ -29,6 +29,13 @@ export interface OperationResult {
    * operation body, before it returns.
    */
   commit?: () => void
+  /**
+   * A write that must not run inside the receipt transaction because it opens a
+   * transaction of its own (#616: the cancel postmortem). The service runs it
+   * only after the transaction committed, so a rolled-back command leaves no
+   * trace of it.
+   */
+  afterCommit?: () => void
 }
 
 export interface Operation {
@@ -69,7 +76,7 @@ const taskCancel: Operation = {
     // are never split by a crash.
     const prepared = await context.jobs.prepareCancel(job.id, stringArgument(args, 'reason') ?? '用户取消任务')
     if (!prepared.ok) return { status: 'failed', errorCode: 'job_not_cancellable', errorMessage: prepared.error }
-    return { status: 'succeeded', result: { jobId: job.id, stopped: prepared.stop.stopped ?? 0 }, commit: prepared.apply }
+    return { status: 'succeeded', result: { jobId: job.id, stopped: prepared.stop.stopped ?? 0 }, commit: prepared.apply, afterCommit: prepared.afterCommit }
   },
 }
 

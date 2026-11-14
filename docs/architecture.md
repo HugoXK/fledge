@@ -760,6 +760,12 @@ stage, the repository instance's status and last error, and the `job_events`
 timeline. A suspected cause is stated only when an error or code exists. A row
 with neither is `unverified` with a null cause; it is not guessed.
 
+The management cancel path commits the job, its receipt and its audit row in one
+transaction. The postmortem write opens a transaction of its own, so on that path
+it runs as an after-commit step, once the receipt transaction has returned
+(#616): a cancel whose transaction rolls back writes no postmortem, and a
+committed cancel can no longer lose the row to a nested `BEGIN`.
+
 The recurrence key is a hash of the category and the stable error code, or of a
 normalised error sentence when no code exists (job ids, URLs and numbers are
 removed so two sightings of one cause land on one key). `postmortem_recurrences`

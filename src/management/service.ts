@@ -185,7 +185,7 @@ export class ManagementService {
     // The receipt, the revision bump and the audit row commit together. The
     // business write itself already happened inside the operation, which is why
     // `docs/architecture.md` names the operations that cannot be one transaction.
-    return this.commitSucceeded(receipt, operation.revisionType, resourceId, outcome.result ?? {}, outcome.commit)
+    return this.commitSucceeded(receipt, operation.revisionType, resourceId, outcome.result ?? {}, outcome.commit, outcome.afterCommit)
   }
 
   // #540 slice 2: shadow mode runs today's path and then records what happened,
@@ -212,7 +212,7 @@ export class ManagementService {
     return this.commitSucceeded(receipt, operation.revisionType, String(target[operation.revisionTarget] ?? ''), outcome.result ?? {})
   }
 
-  private commitSucceeded(receipt: ManagementCommandRow, revisionType: string, resourceId: string, result: Record<string, unknown>, commit?: () => void): CommandOutcome {
+  private commitSucceeded(receipt: ManagementCommandRow, revisionType: string, resourceId: string, result: Record<string, unknown>, commit?: () => void, afterCommit?: () => void): CommandOutcome {
     const current = receipt.before_revision ?? this.store.revisionOf(revisionType, resourceId)
     this.store.transaction(() => {
       // The effect and the receipt that records it are one commit: a crash either
@@ -230,6 +230,11 @@ export class ManagementService {
       this.store.audit(receipt.principal_id, 'management.command', `${receipt.id} ${receipt.operation} revision ${current}->${revision} status=succeeded`)
       return revision
     })
+    // #616: a write that opens its own transaction cannot run inside this one, so
+    // it runs here — only after the commit returned, never for a rolled-back
+    // command. A failure there must not turn a committed command into an error,
+    // which is why the landing write owns its own error handling.
+    afterCommit?.()
     const updated = this.store.commandReceipt(receipt.id)
     if (updated === undefined) return { ok: false, code: 'corrupt_receipt', message: 'the receipt disappeared after completion' }
     return { ok: true, receipt: updated, replayed: false }
