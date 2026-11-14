@@ -1668,6 +1668,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         // one that never ran.
         releaseRefused: queryText(request, 'refused'),
         releaseTagged: queryText(request, 'tagged'),
+        releaseRetagged: queryText(request, 'retagged'),
       }),
     )
   })
@@ -1745,10 +1746,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const created = await createAnnotatedTag(client, { owner, name, plan })
     if (!created.ok) return reply.redirect(`${back}&refused=${encodeURIComponent(created.message)}`)
     // The tag exists from here on, so the audit records it even if the row below
-    // cannot be written; only the page's wording changes.
+    // cannot be written. A name that already has a row is a re-tag: the row is
+    // updated to the new SHAs and the page says so, rather than claiming no tag
+    // was created while the audit says one was.
+    const retagged = store.releaseByTag(repo.id, plan.tagName) !== undefined
     const recorded = store.recordRelease({ repoId: repo.id, userId: viewer.user.id, version: plan.version, tagName: plan.tagName, targetSha: plan.targetSha, tagObjectSha: created.tagObjectSha, previousTag: plan.previousTag, actor: viewer.user.login })
     store.audit(viewer.user.id, 'release.tagged', `${repo.id}: ${plan.tagName}@${plan.targetSha}`)
-    if (recorded === undefined) return reply.redirect(`${back}&refused=${encodeURIComponent(`tag ${plan.tagName} was created, but a release record for it was already recorded; Fledge wrote no second row and moved nothing`)}`)
+    if (recorded === undefined) return reply.redirect(`${back}&refused=${encodeURIComponent(`tag ${plan.tagName} was created, but its release record could not be updated; Fledge moved nothing`)}`)
+    if (retagged) return reply.redirect(`${back}&tagged=${encodeURIComponent(plan.tagName)}&retagged=1`)
     return reply.redirect(`${back}&tagged=${encodeURIComponent(plan.tagName)}`)
   })
 

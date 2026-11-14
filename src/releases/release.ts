@@ -186,7 +186,7 @@ export async function createAnnotatedTag(
   if (created.status === 422) {
     return { ok: false, code: 'tag_exists', message: `tag ${input.plan.tagName} already exists; nothing was moved or deleted` }
   }
-  return { ok: false, code: 'tag_ref_failed', message: created.message }
+  return { ok: false, code: 'tag_ref_failed', message: `the tag reference was refused by GitHub (HTTP ${created.status}); nothing was moved or deleted` }
 }
 
 // The workflow text is read, never executed. A `tags:` key inside the `on:` block
