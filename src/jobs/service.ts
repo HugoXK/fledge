@@ -236,7 +236,7 @@ function adversarialAssetExempt(filename: string): boolean {
 }
 
 export type PreparedStop =
-  | { ok: true; stop: { sent?: boolean; stopped?: number; requested?: number }; apply: () => void }
+  | { ok: true; stop: { sent?: boolean; stopped?: number; requested?: number }; apply: () => void; afterCommit?: () => void }
   | { ok: false; error: string }
 
 export class Jobs {
@@ -337,7 +337,6 @@ export class Jobs {
         this.store.audit(job.user_id, 'job.cancelled', `${jobId}: ${cleanReason.slice(0, 300)}`)
         this.store.event('job_cancelled', { userId: job.user_id, repoId: job.repo_id, jobId })
         this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.cancelled', meta: cleanReason })
-        this.notePostmortem(jobId)
         return
       }
       this.store.updateJob(jobId, { status: 'paused', error: cleanReason })
@@ -346,7 +345,12 @@ export class Jobs {
       this.store.event('job_paused', { userId: job.user_id, repoId: job.repo_id, jobId })
       this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.paused', meta: cleanReason })
     }
-    return { ok: true, stop, apply }
+    // #616: the postmortem opens a transaction of its own, so it cannot run
+    // inside the receipt transaction this `apply` is called from. It is the one
+    // write that must happen after the commit, and it is only for a cancel: a
+    // pause has no postmortem by design.
+    const afterCommit = status === 'cancelled' ? (): void => this.notePostmortem(jobId) : undefined
+    return { ok: true, stop, apply, afterCommit }
   }
 
   // The command adapters use these two: prepare performs the awaited, repeatable
@@ -365,6 +369,7 @@ export class Jobs {
     const prepared = await this.prepareStop(jobId, reason, 'cancelled')
     if (!prepared.ok) return prepared
     prepared.apply()
+    prepared.afterCommit?.()
     return { ok: true, ...prepared.stop }
   }
 
