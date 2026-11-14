@@ -20,6 +20,7 @@ import { duplicateOutcome, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
+import { levelFromRank, priorityRank, validatePriorityClaim, type PriorityLevel } from '../lib/priority.js'
 import { reviewMergeBlock } from '../lib/mergeReview.js'
 import {
   MAX_DIFF_CHARS,
@@ -479,6 +480,25 @@ export class Jobs {
     if (!result.ok || result.job === undefined) return { ok: false, error: result.error ?? '重试失败。', code: result.code, detail: result.detail }
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: actorUserId, kind: 'job.retry_started', step: kind, meta: result.job.id })
     return { ok: true, job: result.job }
+  }
+
+  // #639: a priority change is a claim, so it carries the closed ladder, a
+  // reason and evidence a second person can check. The ticket rule stays the
+  // store's: a real change takes a ticket at the new level's tail, a no-op keeps
+  // the one the row holds, and a running job is never paused here — its status
+  // is not touched, so a later P0 cannot preempt it.
+  async setPriority(jobId: string, claim: { level: PriorityLevel; reason?: string; evidence?: string; actorUserId: string }): Promise<{ ok: boolean; changed?: boolean; level?: PriorityLevel; error?: string; code?: string }> {
+    const job = this.store.getJob(jobId)
+    if (job === undefined) return { ok: false, error: '任务不存在。' }
+    const currentLevel = levelFromRank(job.priority)
+    const verdict = validatePriorityClaim({ level: claim.level, currentLevel, reason: claim.reason, evidence: claim.evidence })
+    if (!verdict.ok) return { ok: false, code: verdict.code, error: verdict.message }
+    if (!verdict.changed) return { ok: true, changed: false, level: currentLevel }
+    this.store.updateJob(jobId, { priority: priorityRank(verdict.level) })
+    const detail = `${jobId} ${currentLevel}->${verdict.level} reason=${redact((claim.reason ?? '').trim())} evidence=${redact((claim.evidence ?? '').trim())}`
+    this.store.audit(claim.actorUserId, 'job.priority_changed', detail)
+    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.priority_changed', meta: `${currentLevel}->${verdict.level}` })
+    return { ok: true, changed: true, level: verdict.level }
   }
 
   async cancelRepoJobs(repoId: string, reason: string, errorCode?: FailureCode): Promise<void> {

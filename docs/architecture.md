@@ -278,6 +278,16 @@ defect.
   keeps the ticket. `0` marks a row written before the column existed, and it is
   backfilled in `created_at` order when the database opens, which is the order
   those rows were already ranked by. A running job is never preempted.
+- **Priority ladder**: `P0`–`P3` is the closed set a person sees; the integer
+  column stays the storage form the ticket orders by, so `P0` maps to `30`
+  (ongoing damage, credential exposure or an outage), `P1` to `20` (the core goal
+  is blocked), `P2` to `10` (ordinary work, the default) and `P3` to `0`
+  (non-core polish). Rows written before the ladder, and work-item priorities on
+  a 0–100 scale, read as the nearest level rather than as an invalid value.
+  Raising a job to `P0` or `P1` is a claim, so the save carries a reason and
+  evidence a second person can check — a link, a commit or ticket sha, or a
+  measurement with a unit; adjectives alone are refused. The no-op rule and the
+  tail-ticket rule above still decide where the row sits.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
   a maintainer reviewer is due); with no open work it **stays idle** unless the

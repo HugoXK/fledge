@@ -28,6 +28,7 @@ import { DEFAULT_TRIAGE_GOAL, Jobs } from './jobs/service.js'
 import { parseIssueUrl } from './jobs/prUrl.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
+import type { PriorityLevel } from './lib/priority.js'
 import fastifyRateLimit from '@fastify/rate-limit'
 import { rateLimitKey, RateLimiter } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
@@ -2642,6 +2643,45 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     const retried = commandJobId(outcome) ?? job.id
     return reply.redirect(`/repos/${repo.id}/jobs/${retried}?notice=${encodeURIComponent(t('已重新排队。', 'Queued again.'))}`)
+  })
+
+  // #639: a priority change is a claim about urgency, so the route hands the
+  // level, the reason and the evidence to one service method. The ladder is the
+  // closed P0..P3 set; the store moves a real change to the new level's tail and
+  // leaves a running job running.
+  app.post('/repos/:id/jobs/:jobId/priority', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
+      return reply.redirect(`${back}?error=${encodeURIComponent('请先选择你的角色。')}`)
+    }
+    const t = translator(request.locale ?? 'zh')
+    const body = form(request)
+    const result = await jobs.setPriority(job.id, {
+      level: String(body.level ?? '') as PriorityLevel,
+      reason: String(body.reason ?? ''),
+      evidence: String(body.evidence ?? ''),
+      actorUserId: viewer.user.id,
+    })
+    if (!result.ok) {
+      // The refusal reaches the page as text, so it is written in the request
+      // locale here; the service names the code and the route owns the wording.
+      const refusal = result.code === 'PRIORITY_EVIDENCE_REQUIRED'
+        ? t(
+          'P0/P1 需要理由（至少 12 字）和可核对的证据：链接、提交/工单 sha，或带单位的测量值。形容词不算证据。',
+          'P0/P1 need a reason (at least 12 characters) and checkable evidence: a link, a commit/issue sha, or a measurement with a unit. An adjective is not evidence.',
+        )
+        : result.code === 'PRIORITY_LEVEL_INVALID'
+          ? t('优先级别无效，请选 P0、P1、P2 或 P3。', 'That priority level is not valid; choose P0, P1, P2 or P3.')
+          : (result.error ?? t('优先级修改失败。', 'The priority change failed.'))
+      return reply.redirect(`${back}?error=${encodeURIComponent(refusal)}&code=${encodeURIComponent(result.code ?? '')}`)
+    }
+    const notice = result.changed === true
+      ? t(`优先级已改为 ${result.level}。`, `Priority is now ${result.level}.`)
+      : t('优先级没有变化。', 'The priority is unchanged.')
+    return reply.redirect(`${back}?notice=${encodeURIComponent(notice)}`)
   })
 
   app.post('/repos/:id/jobs/:jobId/recheck', async (request, reply) => {

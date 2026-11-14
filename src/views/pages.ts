@@ -7,6 +7,7 @@ import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
 import { nextRun, type NextRun } from '../lib/nextRun.js'
 import { aheadOfViewer, queueRanks, rankQueued, type QueueRank } from '../lib/queueRank.js'
+import { levelFromRank, PRIORITY_LEVELS } from '../lib/priority.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { renderState, stateCell, type StateAction } from './states.js'
@@ -396,7 +397,7 @@ function jobRows(locale: Locale, jobs: JobRow[], empty?: EmptyJobs, ranks?: Map<
       return `<tr data-job-id="${escapeHtml(job.id)}">
         <td class="job-cell" data-label="${escapeHtml(t('任务', 'Job'))}">
           <a href="/repos/${escapeHtml(job.repo_id)}/jobs/${escapeHtml(job.id)}"><code>${escapeHtml(job.id)}</code></a> <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span>
-          <small class="job-meta">${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(humanTimeShort(job.created_at))}</small>${rank === undefined ? '' : `<small class="job-meta" title="${escapeHtml(t('队列位置按优先级、再按到达顺序', 'queue position by priority, then arrival'))}" data-queue-rank>#${rank.position}/${rank.total} · P${job.priority}</small>`}
+          <small class="job-meta">${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(humanTimeShort(job.created_at))}</small>${rank === undefined ? '' : `<small class="job-meta" title="${escapeHtml(t('队列位置按优先级、再按到达顺序', 'queue position by priority, then arrival'))}" data-queue-rank>#${rank.position}/${rank.total} · ${escapeHtml(levelFromRank(job.priority))}</small>`}
         </td>
         <td data-job-status data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, job.status)}${classifyFailure(job) === null ? '' : `<br /><small class="muted">${escapeHtml(failureLabel(t, classifyFailure(job)!.kind))}</small>`}</td>
         <td class="job-links" data-label="${escapeHtml(t('PR / Issue', 'PR / Issue'))}">${jobLinks(job)}</td>
@@ -2550,6 +2551,13 @@ export function messagePage(config: Config, title: string, message: string, view
   })
 }
 
+function priorityLevelLabel(t: Translate, level: string): string {
+  if (level === 'P0') return t('持续损害、凭证泄露或故障', 'ongoing damage, credential exposure or an outage')
+  if (level === 'P1') return t('核心目标被阻塞', 'the core goal is blocked')
+  if (level === 'P2') return t('普通工作（默认）', 'ordinary work (default)')
+  return t('非核心打磨', 'non-core polish')
+}
+
 export function jobPage(input: {
   config: Config
   locale: Locale
@@ -2764,7 +2772,7 @@ export function jobPage(input: {
     const labels = input.repoLabels ?? new Map<string, string>()
     const ownedRows = ahead.owned.map((entry) => `<div class="list-row" data-queue-owned-job="${escapeHtml(entry.id)}">
         <div class="list-main"><a href="/repos/${escapeHtml(entry.repo_id)}/jobs/${escapeHtml(entry.id)}">${escapeHtml(labels.get(entry.repo_id) ?? entry.repo_id)}</a>
-          <small>${escapeHtml(t(`优先级 ${entry.priority}（${triggerLabel(t, entry.trigger)}）`, `priority ${entry.priority} (${triggerLabel(t, entry.trigger).toLowerCase()})`))} · ${escapeHtml(humanTimeShort(entry.created_at))}</small></div>
+          <small>${escapeHtml(t(`优先级 ${levelFromRank(entry.priority)}（${triggerLabel(t, entry.trigger)}）`, `priority ${levelFromRank(entry.priority)} (${triggerLabel(t, entry.trigger).toLowerCase()})`))} · ${escapeHtml(humanTimeShort(entry.created_at))}</small></div>
       </div>`).join('')
     const others = ahead.othersAhead === 0
       ? ''
@@ -2772,12 +2780,32 @@ export function jobPage(input: {
         ? t('另有 1 个排队任务在前，不显示详情。', '1 other queued job is ahead; its details are not shown.')
         : t(`另有 ${ahead.othersAhead} 个排队任务在前，不显示详情。`, `${ahead.othersAhead} other queued jobs are ahead; their details are not shown.`))}</p>`
     return `<div data-queue>
-      <p class="fine" data-job-queue-position>${escapeHtml(t(`队列位置 ${rank.position} / 共 ${rank.total} · 优先级 ${job.priority}（${triggerLabel(t, job.trigger)}）`, `Queue position ${rank.position} of ${rank.total} · priority ${job.priority} (${triggerLabel(t, job.trigger).toLowerCase()})`))}</p>
+      <p class="fine" data-job-queue-position>${escapeHtml(t(`队列位置 ${rank.position} / 共 ${rank.total} · 优先级 ${levelFromRank(job.priority)}（${triggerLabel(t, job.trigger)}）`, `Queue position ${rank.position} of ${rank.total} · priority ${levelFromRank(job.priority)} (${triggerLabel(t, job.trigger).toLowerCase()})`))}</p>
       <p class="fine" data-queue-rule>${escapeHtml(t('按优先级、再按进入顺序排队；同一位置可能有多个任务。仓库里已有运行中或更早的排队任务时，这个位置不会立即开始。', 'Position is by priority, then arrival; jobs equal on both share a position. A repository with a running or earlier queued job delays its own next job, so this is the order, not a promise that it starts next.'))}</p>
       ${ahead.owned.length === 0 ? '' : `<p class="fine">${escapeHtml(t('你的排队任务，按优先级、再按进入顺序：', 'Your queued jobs, by priority, then arrival:'))}</p><div class="list" data-queue-owned>${ownedRows}</div>`}
       ${others}
     </div>`
   })()
+  const priorityNow = levelFromRank(job.priority)
+  const priorityCard = supportMode
+    ? ''
+    : `<section class="card" id="priority">
+    <div class="row between"><h2>${escapeHtml(t('优先级', 'Priority'))}</h2><span class="fine" data-priority-level>${escapeHtml(priorityNow)}</span></div>
+    <p class="fine">${escapeHtml(t('P0 持续损害、凭证泄露或故障；P1 核心目标被阻塞；P2 普通工作；P3 非核心打磨。P0/P1 需要理由和可核对的证据，形容词不算证据。改级会排到新级别的队尾；运行中的任务不会被打断。', 'P0 ongoing damage, credential exposure or an outage; P1 the core goal is blocked; P2 ordinary work; P3 non-core polish. P0/P1 need a reason and checkable evidence — adjectives are not evidence. A change moves the job to the tail of its new level; a running job is not interrupted.'))}</p>
+    <form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/priority" class="form">
+      ${csrf(viewer)}
+      <div class="row">
+        <label>${escapeHtml(t('级别', 'Level'))}
+          <select name="level" aria-label="${escapeHtml(t('优先级 P0-P3', 'Priority P0-P3'))}">
+            ${PRIORITY_LEVELS.map((level) => `<option value="${level}"${level === priorityNow ? ' selected' : ''}>${level} — ${escapeHtml(priorityLevelLabel(t, level))}</option>`).join('')}
+          </select>
+        </label>
+        <label class="grow">${escapeHtml(t('理由', 'Reason'))} <input name="reason" maxlength="200" placeholder="${escapeHtml(t('为什么是这个级别', 'Why this level'))}" /></label>
+      </div>
+      <label>${escapeHtml(t('证据（链接、提交/工单 sha，或带单位的测量值）', 'Evidence (a link, a commit/issue sha, or a measurement with a unit)'))} <input name="evidence" maxlength="300" /></label>
+      <button class="btn" type="submit">${escapeHtml(t('保存优先级', 'Save priority'))}</button>
+    </form>
+  </section>`
   const body = `<section class="card">
     <div class="row between">
       <div>
@@ -2797,6 +2825,7 @@ export function jobPage(input: {
     </div>
     ${queueBlock}
   </section>
+  ${priorityCard}
   ${jobLoading}
   ${supportMode ? '' : planCard}
   ${postmortemCard}
