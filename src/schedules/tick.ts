@@ -6,11 +6,13 @@
 // the worker cannot disagree with the preview about when a run was due.
 //
 // A schedule names logical instants; an occurrence is one of them that the
-// worker actually decides to run or to skip. Slice A stores no occurrence rows
-// (that is slice B, with the lease and the stale-result rejection): a skipped
-// instant is an audit line with a reason, and `last_occurrence_at` is the high
-// water mark so the same instant is not reported twice. `misfire: 'skip'` is the
-// only policy here — a passed-over instant is not made up later.
+// worker actually decides to run or to skip. `planTick` stays pure and knows
+// nothing about storage: the tick stores the decision as a `schedule_occurrences`
+// row keyed by `(schedule_id, logical_time, timing_revision)` and keeps
+// `last_occurrence_at` as the high water mark, so the same instant is not
+// reported twice even though a second process can reach it too. `misfire: 'skip'`
+// is the only policy here — a passed-over instant is counted on the decided row
+// and is not made up later.
 //
 // Boundaries, stated once because both the tests and slice B depend on them:
 //   - `start_at` is inclusive: an instant equal to `start_at` is a run.

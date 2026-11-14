@@ -313,8 +313,8 @@ defect.
   skipped rather than shifting it. Because the interval form has no timezone, an
   interval that arrives with one is refused by name instead of being accepted and
   shown as if a zone applied. A preview stores nothing and creates no job.
-  Occurrence rows, leases, misfire policies, layered budgets and the notification
-  outbox are not built yet.
+  Leases, misfire policies, layered budgets and the notification outbox are not
+  built yet.
 - **The tick consumes the planner** (#544, third slice): a `schedules` row — at
   most one per repository — makes `nextTime` the only rule for when a work run is
   due, and `repos.interval_minutes` stops deciding for that repository. A
@@ -327,15 +327,24 @@ defect.
   never moves backwards, so one instant is dispatched once; `timing_revision`
   moves only when a field that changes *when* the schedule fires changes (the
   expression, the interval, the zone or the window), never for a display edit.
-  `misfire: 'skip'` is the only policy in this slice: a due instant that cannot
-  run is written to `audit_log` with a reason (`active-job`, `idle`, `not-due`, a
-  dispatch refusal) and is not made up later. The table, not the audit line, is
-  the missing half: slice A stores no occurrence row, so a skip has no lease, no
-  attempt count and no console field, and a stale worker's result cannot yet be
-  rejected. Occurrence identity at
-  `UNIQUE(schedule_id, logical_time, plan_revision)`, the lease and the
-  stale-result rejection are the next slice. Reviews keep their own cadence
-  (`review_interval_minutes`): this slice switches the work loop only.
+  `misfire: 'skip'` is the only policy: a due instant that cannot run is
+  recorded with a reason (`active-job`, `idle`, `not-due`, a dispatch refusal) and
+  is not made up later.
+  A decided instant now has a row of its own (`schedule_occurrences`, fourth
+  slice): `timing_revision` copies the schedule's revision at decision time, and
+  `UNIQUE(schedule_id, logical_time, timing_revision)` makes that instant under
+  that plan one decision. A second tick that reaches the same instant inserts
+  nothing and reads the row that already exists, so a later report cannot turn a
+  recorded skip into a run; an edit that re-times the schedule re-keys the same
+  wall clock as a new decision and leaves the old one readable. `missed` counts
+  the instants passed over on the way to the decided one, so a year of missed
+  hourly instants stays one row rather than 9k. The row carries the job it
+  dispatched, the lag and the reason it skipped; the audit line stays for
+  operators and names the row. The lease, `attempts` and the rejection of a stale
+  worker's result at `(occurrence_id, timing_revision, lease_token)` are the next
+  slice — a decided instant has the identity they answer against. Reviews keep
+  their own cadence (`review_interval_minutes`): this switches the work loop
+  only.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
