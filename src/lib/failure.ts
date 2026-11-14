@@ -199,6 +199,17 @@ export function errorCodeOf(value: string | null | undefined): FailureCode | nul
   return (FAILURE_CODES as readonly string[]).includes(code) ? (code as FailureCode) : null
 }
 
+// #540: a refusal records the parameter (`main`, `2`, a pull request URL) only
+// when a sentence interpolates it. For a code with no sentence the banner falls
+// back to the text the service wrote, and a bare parameter would replace that
+// sentence with a value the reader cannot use.
+export function refusalSentenceUsesDetail(code: string | null | undefined): boolean {
+  const known = errorCodeOf(code)
+  if (known !== null) return DETAIL_SENTENCES[known] !== undefined
+  const refusal = REFUSAL_SENTENCES[String(code ?? '').trim()]
+  return refusal !== undefined && (refusal[0].includes('{detail}') || refusal[0].includes('{branch}'))
+}
+
 export function failureSentence(t: (zh: string, en: string) => string, code: string | null | undefined, detail = ''): string | null {
   const known = errorCodeOf(code)
   if (known !== null) {

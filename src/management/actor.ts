@@ -7,7 +7,7 @@ export type Channel = 'web' | 'api' | 'chat' | 'system'
 
 // The closed capability set of this slice. #541 adds the real grant model; until
 // then the repository owner holds every capability the catalog checks.
-export type Capability = 'job.cancel' | 'job.pause'
+export type Capability = 'job.cancel' | 'job.pause' | 'job.create' | 'job.resume' | 'job.retry'
 
 export interface ActorContext {
   principalId: string
@@ -46,13 +46,16 @@ export const FORBIDDEN_ARGUMENT_KEYS = new Set([
   'path',
 ])
 
+// #540 slice 2 (rest): the owner holds the job commands the console offers. One
+// list, so the acceptance-time set and the execution-time re-read cannot drift.
+export const OWNER_CAPABILITIES: readonly Capability[] = ['job.cancel', 'job.pause', 'job.create', 'job.resume', 'job.retry']
+
 export function capabilitiesForRepo(store: Store, principalId: string, projectId: string | null): Set<Capability> {
   const capabilities = new Set<Capability>()
   if (projectId === null || projectId === '') return capabilities
   const repo = store.getRepo(projectId)
   if (repo !== undefined && repo.user_id === principalId) {
-    capabilities.add('job.cancel')
-    capabilities.add('job.pause')
+    for (const capability of OWNER_CAPABILITIES) capabilities.add(capability)
   }
   return capabilities
 }
@@ -68,8 +71,7 @@ export function managementActor(input: {
   // the request arrived.
   const capabilities = new Set<Capability>()
   if (input.repo.user_id === input.userId) {
-    capabilities.add('job.cancel')
-    capabilities.add('job.pause')
+    for (const capability of OWNER_CAPABILITIES) capabilities.add(capability)
   }
   return {
     principalId: input.userId,

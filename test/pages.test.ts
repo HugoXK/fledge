@@ -1613,7 +1613,12 @@ test('every redirect banner value has an English form', () => {
     [],
     'every notice=/error= value must be encodeURIComponent at the call site or withMessage/fail; a third helper or a hand-built query fails here',
   )
-  assert.ok(texts.length >= 100, `the extraction read ${texts.length} banner texts; it is meant to cover every redirect in src/app.ts`)
+  // The floor is a broken-extractor alarm, not a pinned count. It moved with #540
+  // slice 2: the migrated write adapters answer through `t(zh, en)` and
+  // `managementFailure`, which this walk skips by construction (a `t()` call has
+  // both languages already), so the literals it can read went down as the routes
+  // that used to carry one went up.
+  assert.ok(texts.length >= 90, `the extraction read ${texts.length} banner texts; it is meant to cover every redirect in src/app.ts`)
   const unresolved = [...new Set(texts.map((entry) => entry.rendered))]
     .filter((text) => CJK.test(localizeMessage('en', text) ?? ''))
     .sort()

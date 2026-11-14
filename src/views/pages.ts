@@ -50,6 +50,14 @@ function csrf(viewer: Viewer): string {
   return `<input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />`
 }
 
+// #540: a console write carries the revision it rendered and a key that a double
+// submit replays. One renderer, so run, plan, review, triage, start, scope,
+// verify, execute, resume and retry all name the same two fields.
+function commandHidden(fields: { revision: number; idempotencyKey: string } | undefined): string {
+  if (fields === undefined) return ''
+  return `<input type="hidden" name="expected_revision" value="${fields.revision}" /><input type="hidden" name="idempotency_key" value="${escapeHtml(fields.idempotencyKey)}" />`
+}
+
 function infoTip(text: string): string {
   return `<button type="button" class="info-tip" aria-label="${escapeHtml(text)}" aria-expanded="false" data-tip="${escapeHtml(text)}">!</button>`
 }
@@ -1065,10 +1073,11 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number } }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number } }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const workItems = input.workItems ?? []
+  const commands = input.commands ?? {}
   const workState = input.workState
   const prJobs = input.prJobs ?? []
   const models = input.models ?? []
@@ -1257,9 +1266,9 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <div class="row">
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>
         ${advanced ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
-        ${roleMissing ? `<span class="badge busy">${escapeHtml(t('先选择角色', 'Choose a role first'))}</span>` : !runnable ? `<span class="badge busy">${escapeHtml(t('仓库不可运行', 'Not runnable'))}</span>` : `<form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button></form>
-        <form method="post" action="/repos/${escapeHtml(repo.id)}/plan">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('只出计划', 'Plan only'))}</button></form>`}
-        ${!roleMissing && runnable && canReview && reviewerEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/review">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('立即审核', 'Review now'))}</button></form>` : ''}
+        ${roleMissing ? `<span class="badge busy">${escapeHtml(t('先选择角色', 'Choose a role first'))}</span>` : !runnable ? `<span class="badge busy">${escapeHtml(t('仓库不可运行', 'Not runnable'))}</span>` : `<form method="post" action="/repos/${escapeHtml(repo.id)}/run">${csrf(viewer)}${commandHidden(commands.run)}<button class="btn" type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button></form>
+        <form method="post" action="/repos/${escapeHtml(repo.id)}/plan">${csrf(viewer)}${commandHidden(commands.plan)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('只出计划', 'Plan only'))}</button></form>`}
+        ${!roleMissing && runnable && canReview && reviewerEnabled ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/review">${csrf(viewer)}${commandHidden(commands.review)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('立即审核', 'Review now'))}</button></form>` : ''}
       </div>
     </div>
   </section>`
@@ -1272,7 +1281,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const triageForm = roleMissing
     ? `<p class="muted">${escapeHtml(t('先选择你的角色，然后才能开始分诊。', 'Choose your role first; triage opens after that.'))}</p>`
     : `<form method="post" action="/repos/${escapeHtml(repo.id)}/triage" class="form">
-      ${csrf(viewer)}
+      ${csrf(viewer)}${commandHidden(commands.triage)}
       <label for="${escapeHtml(triageFieldId)}">${escapeHtml(t('Issue URL（可选）', 'Issue URL (optional)'))}
         <input id="${escapeHtml(triageFieldId)}" name="issueUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://github.com/${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}/issues/1" aria-describedby="${escapeHtml(triageFieldId)}-hint"${activeJob ? ' disabled' : ''} />
       </label>
@@ -1359,9 +1368,9 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           <td data-label="Issue / PR">${item.issue_url === null ? '' : `<a href="${escapeHtml(item.issue_url)}" target="_blank" rel="noreferrer">Issue</a>`}${item.issue_url !== null && item.pr_url !== null ? ' · ' : ''}${item.pr_url === null ? '' : `<a href="${escapeHtml(item.pr_url)}" target="_blank" rel="noreferrer">PR</a>`}</td>
           <td data-label="${escapeHtml(t('任务', 'Job'))}">${item.job_id === null ? '—' : `<a href="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(item.job_id)}"><code>${escapeHtml(item.job_id)}</code></a>`}</td>
           <td data-label="${escapeHtml(t('操作', 'Actions'))}"><div class="row">
-            ${item.state === 'merged' || item.state === 'closed' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/run">${csrf(viewer)}<button class="btn btn-small" type="submit">${escapeHtml(t('开始工作', 'Start work'))}</button></form>`}
-            ${item.state === 'merged' || item.state === 'closed' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/scope">${csrf(viewer)}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('Product 范围', 'Product scope'))}</button></form>`}
-            ${item.pr_url === null ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/verify">${csrf(viewer)}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('Test 验证', 'Test verify'))}</button></form>`}
+            ${item.state === 'merged' || item.state === 'closed' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/run">${csrf(viewer)}${commandHidden(commands[`work-run:${item.id}`])}<button class="btn btn-small" type="submit">${escapeHtml(t('开始工作', 'Start work'))}</button></form>`}
+            ${item.state === 'merged' || item.state === 'closed' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/scope">${csrf(viewer)}${commandHidden(commands[`work-scope:${item.id}`])}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('Product 范围', 'Product scope'))}</button></form>`}
+            ${item.pr_url === null ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/verify">${csrf(viewer)}${commandHidden(commands[`work-verify:${item.id}`])}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('Test 验证', 'Test verify'))}</button></form>`}
             ${stateOptions === '' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/state" class="row">${csrf(viewer)}<select name="state" aria-label="${escapeHtml(t('新状态', 'New state'))}">${stateOptions}</select><button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('更新状态', 'Update state'))}</button></form>`}
           </div></td>
         </tr>`
@@ -1942,6 +1951,8 @@ const AUDIT_ACTIONS: Record<string, [string, string]> = {
   'approval.rejected': ['拒绝申请', 'Application rejected'],
   'repo.role': ['调整仓库角色', 'Repository role changed'],
   'repo.goal_updated': ['更新仓库目标', 'Repository goal updated'],
+  // Only rows written before #540 carry this name: the plan route now queues
+  // through `task.create`, so the running code cannot produce it.
   'plan.enqueued': ['计划入队', 'Plan queued'],
   'job.executed': ['执行计划', 'Plan executed'],
   'job.quota_exhausted': ['任务额度用完', 'Job quota exhausted'],
@@ -2509,6 +2520,9 @@ export function jobPage(input: {
   // Absent on surfaces that cannot write (the admin support view).
   cancel?: { revision: number; idempotencyKey: string }
   pause?: { revision: number; idempotencyKey: string }
+  execute?: { revision: number; idempotencyKey: string }
+  resume?: { revision: number; idempotencyKey: string }
+  retry?: { revision: number; idempotencyKey: string }
   supportMode?: boolean
   notice?: string
   error?: string
@@ -2522,6 +2536,9 @@ export function jobPage(input: {
   const pauseHidden = pause === undefined
     ? ''
     : `<input type="hidden" name="expected_revision" value="${pause.revision}" /><input type="hidden" name="idempotency_key" value="${escapeHtml(pause.idempotencyKey)}" />`
+  const executeHidden = commandHidden(input.execute)
+  const resumeHidden = commandHidden(input.resume)
+  const retryHidden = commandHidden(input.retry)
   const events = input.events ?? []
   const postmortem = input.postmortem ?? null
   const supportMode = input.supportMode === true
@@ -2622,16 +2639,16 @@ export function jobPage(input: {
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('回滚', 'Rollback'))}</strong><small>${escapeHtml(evidence.rollback ?? '—')}</small></div></div>
       </div>`
   const retry = job.status === 'failed'
-    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/retry">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(job.checkpoint === null || job.checkpoint === '' ? t('重试这个任务', 'Retry this job') : t('从断点继续', 'Resume from checkpoint'))}</button></form>`
+    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/retry">${csrf(viewer)}${retryHidden}<button class="btn" type="submit">${escapeHtml(job.checkpoint === null || job.checkpoint === '' ? t('重试这个任务', 'Retry this job') : t('从断点继续', 'Resume from checkpoint'))}</button></form>`
     : ''
   const recheck = job.pr_url === null || supportMode ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('重新核实 PR', 'Re-check PR'))}</button></form>`
   const execute = job.kind === 'plan' && job.status === 'succeeded' && job.plan_approved_at !== null
-    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/execute">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('执行这个计划', 'Execute this plan'))}</button></form>`
+    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/execute">${csrf(viewer)}${executeHidden}<button class="btn" type="submit">${escapeHtml(t('执行这个计划', 'Execute this plan'))}</button></form>`
     : ''
   const control = job.status === 'queued' || job.status === 'running'
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/pause">${csrf(viewer)}${pauseHidden}<button class="btn btn-ghost" type="submit">${escapeHtml(t('暂停', 'Pause'))}</button></form><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/cancel" data-confirm="${escapeHtml(t('取消这个任务？', 'Cancel this job?'))}">${csrf(viewer)}${cancelHidden}<button class="btn btn-danger" type="submit">${escapeHtml(t('取消', 'Cancel'))}</button></form>`
     : job.status === 'paused'
-      ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/resume">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('恢复', 'Resume'))}</button></form>`
+      ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/resume">${csrf(viewer)}${resumeHidden}<button class="btn" type="submit">${escapeHtml(t('恢复', 'Resume'))}</button></form>`
       : ''
   const planCard = job.kind === 'plan' && job.status === 'succeeded'
     ? `<section class="card">
@@ -2788,7 +2805,7 @@ export function jobPage(input: {
     <h2>${escapeHtml(t('时间线', 'Timeline'))}</h2>
     <p class="fine" data-trace-token="${escapeHtml(job.id)}">${escapeHtml(t('日志检索令牌', 'Log search token'))}: <code>${escapeHtml(job.id)}</code> — ${escapeHtml(t('这个任务的每条日志都用 trace 记着它；在日志里检索这个值，就能一次拿到整个任务的全部行。', 'every line this job writes carries it under trace; search the logs for it and the whole job comes back in one pass.'))}</p>
     ${events.length === 0
-      ? renderState({ kind: 'empty', title: t('还没有任务事件。', 'No job events yet.'), body: t('任务开始后，每一次状态变化都会记录在这里。', 'Every state change is recorded here once the job starts.'), action: job.status === 'failed' ? { formAction: `/repos/${repo.id}/jobs/${job.id}/retry`, label: t('重试这个任务', 'Retry this job'), csrf: csrf(viewer) } : { href: `/repos/${repo.id}`, label: t('返回仓库', 'Back to repository') } })
+      ? renderState({ kind: 'empty', title: t('还没有任务事件。', 'No job events yet.'), body: t('任务开始后，每一次状态变化都会记录在这里。', 'Every state change is recorded here once the job starts.'), action: job.status === 'failed' ? { formAction: `/repos/${repo.id}/jobs/${job.id}/retry`, label: t('重试这个任务', 'Retry this job'), csrf: csrf(viewer), fields: input.retry === undefined ? undefined : [{ name: 'expected_revision', value: String(input.retry.revision) }, { name: 'idempotency_key', value: input.retry.idempotencyKey }] } : { href: `/repos/${repo.id}`, label: t('返回仓库', 'Back to repository') } })
       : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('时间', 'Time'))}</th><th>${escapeHtml(t('事件', 'Event'))}</th><th>${escapeHtml(t('角色/步骤', 'Role/step'))}</th><th>${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${events.map((entry) => `<tr><td>${escapeHtml(humanTimeShort(entry.at))}</td><td><code>${escapeHtml(entry.kind)}</code></td><td>${escapeHtml([entry.role, entry.step].filter((value) => value !== null && value !== '').join(' · ') || '—')}</td><td>${escapeHtml(jobEventDetail(t, entry))}</td></tr>`).join('')}</tbody></table></div>`}
   </section>
   ${advanced ? `<section class="card">

@@ -419,6 +419,8 @@ export interface ManagementCommandRow {
   result_json: string | null
   error_code: string | null
   error_message: string | null
+  /** The parameter a refusal sentence interpolates, when it has one (#540). */
+  error_detail: string | null
   source_conversation: string | null
   source_message: string | null
   created_at: string
@@ -1509,6 +1511,7 @@ export class Store {
     this.migrateProviderColumns()
     this.migrateWebhookColumns()
     this.migrateArtifactColumns()
+    this.migrateManagementColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
     this.migrateModelsV2()
@@ -1605,6 +1608,14 @@ export class Store {
       }
       this.setSetting('models_v2', nowIso())
     })
+  }
+
+  // #540 slice 2 (rest): a refusal keeps the parameter its sentence interpolates
+  // (`BRANCH_MISSING:main`, `DUPLICATE_WORK:<pr url>`), so replaying the receipt
+  // answers with the same sentence instead of a bare code. Additive.
+  private migrateManagementColumns(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(management_commands)').map((row) => row.name))
+    if (!columns.has('error_detail')) this.run('ALTER TABLE management_commands ADD COLUMN error_detail TEXT')
   }
 
   private migrateWebhookColumns(): void {
@@ -4349,8 +4360,8 @@ export class Store {
     )
   }
 
-  updateCommandReceipt(id: string, patch: Partial<Pick<ManagementCommandRow, 'status' | 'result_json' | 'error_code' | 'error_message' | 'after_revision' | 'before_revision'>>): void {
-    const columns = ['status', 'result_json', 'error_code', 'error_message', 'after_revision', 'before_revision'] as const
+  updateCommandReceipt(id: string, patch: Partial<Pick<ManagementCommandRow, 'status' | 'result_json' | 'error_code' | 'error_message' | 'error_detail' | 'after_revision' | 'before_revision'>>): void {
+    const columns = ['status', 'result_json', 'error_code', 'error_message', 'error_detail', 'after_revision', 'before_revision'] as const
     const entries = columns.filter((column) => patch[column] !== undefined)
     if (entries.length === 0) return
     const assignments = entries.map((column) => `${column} = ?`).join(', ')

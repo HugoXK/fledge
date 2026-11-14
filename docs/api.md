@@ -104,11 +104,30 @@ is internal (`src/management/`) and the console call it outlives:
 ```ts
 POST /repos/:id/jobs/:jobId/cancel   // form adapter, carries expected_revision and idempotency_key
 POST /repos/:id/jobs/:jobId/pause    // same adapter shape, behind MANAGEMENT_SERVICE
+POST /repos/:id/jobs/:jobId/resume   // same adapter shape, fenced on the job
+POST /repos/:id/jobs/:jobId/retry    // same adapter shape, fenced on the job
+POST /repos/:id/run                  // task.create, fenced on the project
+POST /repos/:id/plan                 // task.create, kind=plan
+POST /repos/:id/review               // task.create, kind=review
+POST /repos/:id/triage               // task.create, kind=triage
+POST /repos/:id/work/:itemId/run     // task.create with a work item
+POST /repos/:id/work/:itemId/scope   // task.create, kind=scope
+POST /repos/:id/work/:itemId/verify  // task.create, kind=verify
+POST /repos/:id/jobs/:jobId/execute  // task.create from an approved plan
 ```
 
 A command is `{ operation, target: { projectId, jobId? }, arguments,
 expected_revision, idempotency_key, source_conversation?, source_message? }`.
 The server fills the actor; a payload that carries an identity field is refused.
+`task.create` takes `{ kind, goal?, workItemId?, prUrl?, priority? }`; a
+`workItemId` must belong to the project, checked again at execution time, and a
+`priority` outside `0..100` (or not an integer) is refused rather than clamped.
+
+`/execute` is the only create drawn on a job page, so it is the one form whose
+hidden revision is the **project's**: cancel, pause, resume and retry fence the
+job they are printed on, but an execute starts a new job and must send the
+revision `task.create` compares. It also writes the `job.executed` audit row
+that links the plan to the job it started.
 
 | Outcome | Meaning |
 |---|---|
@@ -119,18 +138,32 @@ The server fills the actor; a payload that carries an identity field is refused.
 | `authorization_revoked` | The caller lost the capability between acceptance and execution; nothing was written |
 | `job_not_cancellable` | The job had already finished; the cancel operation refused |
 | `job_not_pausable` | The job had already finished; the pause operation refused |
+| `job_not_resumable` | The job is not paused; the resume operation refused |
+| `job_not_retryable` | The job is queued or running; the retry operation refused |
+| `invalid_arguments` | The command's arguments failed validation; nothing was written |
+| `work_item_not_found` | The named work item is not in this project |
+| `task_not_queued` | `Jobs.enqueue` refused without a code of its own |
 | `command_in_progress` | The receipt is `accepted`, `running` or `unknown`: the command is still unresolved, so replaying the same key answers this and never a success notice |
 
-Operation names today: `task.cancel`, `task.pause`. The catalog is closed — an
-unknown operation is `unknown_operation`, never a fallback.
+An operation may also fail with its service's admission code (`REPO_DISABLED`,
+`JOB_ACTIVE`, `BRANCH_MISSING`, `QUEUE_LIMIT`, …). The receipt keeps that code
+verbatim in `error_code`, plus `error_detail` when a banner sentence
+interpolates a parameter, so a replay answers with the same refusal and the same
+sentence.
 
-`MANAGEMENT_SERVICE=off|shadow|on` decides how far the adapters added after
-`task.cancel` go. `off` (the default) registers the command but keeps the route
-that existed before it — the same writes and the same answers, with the notice now
-in the reader's language; `shadow` reserves the receipt and then runs that same
-route, recording what the contract would have decided, so a divergence is visible
-in `management_commands` and not in the page; `on` runs the command and turns its
-receipt into the response. A stale page in `shadow` still writes no receipt — the
+Operation names today: `task.cancel`, `task.pause`, `task.create`, `task.resume`,
+`task.retry`. The catalog is closed — an unknown operation is
+`unknown_operation`, never a fallback.
+
+`MANAGEMENT_SERVICE=off|shadow|on` decides how far the `task.pause` adapter goes.
+`off` (the default) keeps the route that existed before it: the same write and the
+same outcome, with the notice now chosen through `t()`, so an English-locale
+viewer reads it in English where the old route always wrote Chinese; `shadow`
+reserves the receipt and then runs that same route, recording what the contract
+would have decided, so a divergence is visible in `management_commands` and not in
+the page; `on` runs the command and turns its receipt into the response.
+`task.cancel`, `task.create`, `task.resume` and `task.retry` run through the
+service in every mode: the switch was the pilot's safety net for one operation. A stale page in `shadow` still writes no receipt — the
 revision fence runs before the receipt insert, as it does everywhere else — and a
 replayed key settles nothing, so a receipt that already answered is never
 rewritten and the revision moves once per command.
