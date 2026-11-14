@@ -29,6 +29,7 @@ import { parseIssueUrl } from './jobs/prUrl.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
 import type { PriorityLevel } from './lib/priority.js'
+import { decisionKindLabel, isDecisionKind } from './lib/taskDecision.js'
 import fastifyRateLimit from '@fastify/rate-limit'
 import { rateLimitKey, RateLimiter } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
@@ -2725,6 +2726,50 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const notice = result.created === true
       ? t('已建立关联。', 'Relation saved.')
       : t('关联已存在。', 'That relation already exists.')
+    return reply.redirect(`${back}?notice=${encodeURIComponent(notice)}`)
+  })
+
+  // #639: the post-QA decision is one bounded write. The route accepts the four
+  // kinds, names the refusal in the request's locale, and leaves the claim
+  // standard and the repair to the service. A decision that needs no decision at
+  // all is not a route: the framework default is what the page preselects.
+  app.post('/repos/:id/jobs/:jobId/decision', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
+      return reply.redirect(`${back}?error=${encodeURIComponent('请先选择你的角色。')}`)
+    }
+    const t = translator(request.locale ?? 'zh')
+    const body = form(request)
+    const result = await jobs.decideNextTask({
+      repoId: repo.id,
+      sourceJobId: job.id,
+      kind: body.kind,
+      existingTaskId: String(body.existing_task_id ?? '').trim(),
+      reason: body.reason ?? '',
+      evidence: body.evidence ?? '',
+      title: String(body.title ?? ''),
+      level: body.level,
+      actorUserId: viewer.user.id,
+    })
+    if (!result.ok) {
+      // The service names the code; the route owns the sentence, so it is
+      // written in the request's language rather than translated afterwards.
+      const refusal = result.code === 'DECISION_KIND_INVALID'
+        ? t('下一步决定无效，请选新任务、补充、相关或复发。', 'That next-step decision is not valid; choose a new task, a supplement, related or a recurrence.')
+        : result.code === 'DECISION_EVIDENCE_REQUIRED'
+          ? t('下一步决定需要理由（至少 8 字）和可核对的证据：链接、提交/工单 sha，或带单位的测量值。', 'A next-step decision needs a reason (at least 8 characters) and checkable evidence: a link, a commit/issue sha, or a measurement with a unit.')
+          : result.code === 'DECISION_TARGET_REQUIRED'
+            ? t('补充、相关或复发都要指出一个已有的任务。', 'To supplement, relate or recur, you must name an existing task.')
+            : t('那个已有任务不存在，或新任务还没有标题。', 'That existing task does not exist, or the new task has no title.')
+      return reply.redirect(`${back}?error=${encodeURIComponent(refusal)}&code=${encodeURIComponent(result.code ?? '')}`)
+    }
+    const kind = isDecisionKind(result.kind) ? result.kind : 'new'
+    const label = decisionKindLabel(kind, t)
+    const repaired = result.repaired === true ? t('（“新任务”与已有任务 id 同时出现，已按相关处理一次。）', ' (a separate new task and an existing task id came together; it was repaired once into related.)') : ''
+    const notice = t(`已记为下一步：${label}。${repaired}`, `Recorded as the next step: ${label}.${repaired}`)
     return reply.redirect(`${back}?notice=${encodeURIComponent(notice)}`)
   })
 

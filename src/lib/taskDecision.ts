@@ -13,6 +13,13 @@ export function isDecisionKind(value: unknown): value is DecisionKind {
   return typeof value === 'string' && (DECISION_KINDS as readonly string[]).includes(value)
 }
 
+export function decisionKindLabel(kind: DecisionKind, t: (zh: string, en: string) => string): string {
+  if (kind === 'supplement') return t('补充已有任务', 'Supplement an existing task')
+  if (kind === 'related') return t('相关的新任务', 'A related new task')
+  if (kind === 'recurrence') return t('复发的新任务', 'A recurrence as a new task')
+  return t('单独的新任务', 'A separate new task')
+}
+
 // When the decision step is unavailable the framework does not guess: every
 // follow-up is ordinary work in its own task, which is the P2 default.
 export const DEFAULT_DECISION: { kind: 'new'; level: 'P2' } = { kind: 'new', level: 'P2' }

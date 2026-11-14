@@ -9,6 +9,7 @@ import { nextRun, type NextRun } from '../lib/nextRun.js'
 import { aheadOfViewer, queueRanks, rankQueued, type QueueRank } from '../lib/queueRank.js'
 import { levelFromRank, PRIORITY_LEVELS } from '../lib/priority.js'
 import { RELATION_KINDS, relationKindLabel, type RelationKind } from '../lib/relations.js'
+import { DECISION_KINDS, DEFAULT_DECISION, decisionKindLabel } from '../lib/taskDecision.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { renderState, stateCell, type StateAction } from './states.js'
@@ -2833,6 +2834,30 @@ export function jobPage(input: {
       <label>${escapeHtml(t('证据（链接、提交/工单 sha，或带单位的测量值）', 'Evidence (a link, a commit/issue sha, or a measurement with a unit)'))} <input name="evidence" maxlength="300" /></label>
       <button class="btn" type="submit">${escapeHtml(t('保存关联', 'Save relation'))}</button>
     </form>`
+  // #639: a verify or review run ends in one bounded decision, so the page
+  // offers it where that run ends and already selects the framework default —
+  // a separate P2 task — for the case where nobody decides.
+  const postQa = (job.kind === 'verify' || job.kind === 'review') && (job.status === 'succeeded' || job.status === 'failed')
+  const decisionCard = supportMode || !postQa
+    ? ''
+    : `<section class="card" id="decision">
+    <div class="row between"><h2>${escapeHtml(t('下一步', 'What comes next'))}</h2><span class="fine" data-decision-default>${escapeHtml(`${DEFAULT_DECISION.kind} · ${DEFAULT_DECISION.level}`)}</span></div>
+    <p class="fine">${escapeHtml(t('验证结束后只做一个有界决定：另开新任务、补充已有任务、标为相关或复发。理由至少 8 字，并给出可核对的证据。没有人做决定时，框架按 P2 另开一个任务，不猜。', 'A verify run ends in one bounded decision: a separate new task, a supplement to an existing one, related, or a recurrence. It needs a reason of at least 8 characters and checkable evidence. When nobody decides, the framework opens a separate P2 task instead of guessing.'))}</p>
+    <form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/decision" class="form">
+      ${csrf(viewer)}
+      <div class="row">
+        <label>${escapeHtml(t('决定', 'Decision'))}<select name="kind" aria-label="${escapeHtml(t('下一步决定', 'Next-step decision'))}">${DECISION_KINDS.map((kind) => `<option value="${kind}"${kind === DEFAULT_DECISION.kind ? ' selected' : ''}>${escapeHtml(decisionKindLabel(kind, t))}</option>`).join('')}</select></label>
+        <label>${escapeHtml(t('级别', 'Level'))}<select name="level" aria-label="${escapeHtml(t('新任务的级别 P0-P3', 'Level of the new task, P0-P3'))}">${PRIORITY_LEVELS.map((level) => `<option value="${level}"${level === DEFAULT_DECISION.level ? ' selected' : ''}>${level} — ${escapeHtml(priorityLevelLabel(t, level))}</option>`).join('')}</select></label>
+      </div>
+      <div class="row">
+        <label class="grow">${escapeHtml(t('新任务标题', 'New task title'))} <input name="title" maxlength="200" placeholder="${escapeHtml(t('一句话说清要做什么', 'One line on what the task is'))}" /></label>
+        <label>${escapeHtml(t('已有任务 id（补充、相关、复发时必填）', 'Existing task id (required to supplement, relate or recur)'))} <input name="existing_task_id" maxlength="80" /></label>
+      </div>
+      <label>${escapeHtml(t('理由', 'Reason'))} <input name="reason" maxlength="200" placeholder="${escapeHtml(t('为什么是这个决定', 'Why this is the next step'))}" /></label>
+      <label>${escapeHtml(t('证据（链接、提交/工单 sha，或带单位的测量值）', 'Evidence (a link, a commit/issue sha, or a measurement with a unit)'))} <input name="evidence" maxlength="300" /></label>
+      <button class="btn" type="submit">${escapeHtml(t('记下这一步', 'Record this step'))}</button>
+    </form>
+  </section>`
   const relationsCard = supportMode
     ? ''
     : `<section class="card" id="relations">
@@ -2863,6 +2888,7 @@ export function jobPage(input: {
   </section>
   ${priorityCard}
   ${relationsCard}
+  ${decisionCard}
   ${jobLoading}
   ${supportMode ? '' : planCard}
   ${postmortemCard}

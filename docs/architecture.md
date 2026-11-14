@@ -307,7 +307,10 @@ defect.
   `related`. When the decision step is unavailable the framework default is a
   separate task at `P2`. A related task whose target is still running leaves one
   coordination notice, which that job consumes at its next checkpoint and only
-  once; the running job keeps its claim.
+  once; the running job keeps its claim. The console offers the decision where a
+  `verify` or `review` run ends, at `POST /repos/:id/jobs/:jobId/decision`, and
+  preselects the framework default, so the undecided case is still one ordinary
+  `P2` task rather than an open-ended chain.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
   a maintainer reviewer is due); with no open work it **stays idle** unless the
