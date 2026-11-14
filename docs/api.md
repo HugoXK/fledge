@@ -641,3 +641,21 @@ live session was reachable, or that the stop could not be delivered — so they 
 claim a send that did not happen. The job is looked up by its work item, so an item
 whose job is older than the repository's newest twenty is still found.
 
+
+### Release management calls
+
+`GithubClient` carries the release writes and reads used by `src/releases/release.ts`:
+`commitExists` (`GET /commits/{sha}`, `false` on 404, so a hand-typed SHA is a
+named refusal instead of a crash), `listTags` (paginated tags with their commit),
+`compareCommits` (status and `ahead_by` for `GET /compare/{base}...{head}`),
+`getRepoFile` (one file at a ref, `null` on 404), `createAnnotatedTag`
+(`POST /git/tags`, `object` = the confirmed commit) and `createTagRef`
+(`POST /git/refs`). `createTagRef` returns `{ ok: false, status: 422 }` when the
+ref exists instead of forcing it; the caller turns that into a refusal, and a 422
+from `createAnnotatedTag` is the `target_missing` refusal rather than an
+exception. No call here updates or deletes a ref.
+
+`POST /repos/:id/release` (owner only, CSRF) redirects to
+`/repos/:id?release=1&refused=<reason>` on a refusal and
+`?release=1&tagged=<tag>` on success; the page renders whichever is present above
+the form.

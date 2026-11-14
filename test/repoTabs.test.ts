@@ -38,6 +38,8 @@ const FORM_ACTIONS = [
   '/repos/:id/jobs/job_nav/recheck',
   '/repos/:id/plan',
   '/repos/:id/refresh',
+  // #546: the release form is a repository-page action like the others.
+  '/repos/:id/release',
   '/repos/:id/run',
   '/repos/:id/settings',
   // #523: the triage start is a repository-page form like the run and plan

@@ -8,6 +8,7 @@ import { Readable } from 'node:stream'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
 import { openStore, type GateSessionRow, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
+import { createAnnotatedTag, releasePreflight } from './releases/release.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
 import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions, type Viewer } from './auth/session.js'
@@ -1622,6 +1623,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
         repo,
+        releases: store.listReleasesForRepo(repo.id),
         instance,
         usage: {
           repos: store.countReposForUser(viewer.user.id),
@@ -1660,6 +1662,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobsTotal,
         notice: queryText(request, 'notice'),
         error: queryText(request, 'error'),
+        // #546: the release form is on this page, so its outcome has to land here
+        // too — a refusal the maintainer cannot see reads as a click that did
+        // nothing, and a success that is not confirmed is indistinguishable from
+        // one that never ran.
+        releaseRefused: queryText(request, 'refused'),
+        releaseTagged: queryText(request, 'tagged'),
       }),
     )
   })
@@ -1710,6 +1718,38 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       ...(conflict === undefined ? {} : { conflictRevision: Number(conflict) }),
       ...(refused === undefined ? {} : { refused }),
     }))
+  })
+
+  // #546: a maintainer-supplied version and a confirmed full SHA. The preflight
+  // is read-only; only a plan that passes every check reaches the tag write, and
+  // the tag is annotated and created through the repository's installation token.
+  app.post('/repos/:id/release', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const body = form(request)
+    const version = String(body.version ?? '').trim()
+    const targetSha = String(body.sha ?? '').trim().toLowerCase()
+    const back = `/repos/${repo.id}?release=1`
+    if (!/^[0-9a-f]{40}$/.test(targetSha)) return reply.redirect(`${back}&refused=${encodeURIComponent('confirm the full 40-character commit SHA')}`)
+    if (body.confirm !== '1') return reply.redirect(`${back}&refused=${encodeURIComponent('the release must be confirmed')}`)
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    const token = await repoGithubToken(repo, config, githubApp, store)
+    const client = new GithubClient(token, config.github.apiBase)
+    const plan = await releasePreflight(client, { owner, name, defaultBranch: repo.upstream_default_branch || repo.default_branch, requestedVersion: version, targetSha })
+    if (!plan.ok) {
+      // The suggestion is the whole value of the not-higher refusal: the page is
+      // the only place a maintainer reads it, so it travels in the same string.
+      const reason = plan.suggestion === undefined ? plan.message : `${plan.message}; the next legal version is ${plan.suggestion}`
+      return reply.redirect(`${back}&refused=${encodeURIComponent(reason)}`)
+    }
+    const created = await createAnnotatedTag(client, { owner, name, plan })
+    if (!created.ok) return reply.redirect(`${back}&refused=${encodeURIComponent(created.message)}`)
+    // The tag exists from here on, so the audit records it even if the row below
+    // cannot be written; only the page's wording changes.
+    const recorded = store.recordRelease({ repoId: repo.id, userId: viewer.user.id, version: plan.version, tagName: plan.tagName, targetSha: plan.targetSha, tagObjectSha: created.tagObjectSha, previousTag: plan.previousTag, actor: viewer.user.login })
+    store.audit(viewer.user.id, 'release.tagged', `${repo.id}: ${plan.tagName}@${plan.targetSha}`)
+    if (recorded === undefined) return reply.redirect(`${back}&refused=${encodeURIComponent(`tag ${plan.tagName} was created, but a release record for it was already recorded; Fledge wrote no second row and moved nothing`)}`)
+    return reply.redirect(`${back}&tagged=${encodeURIComponent(plan.tagName)}`)
   })
 
   app.post('/repos/:id/memory', async (request, reply) => {
