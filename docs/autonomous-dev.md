@@ -55,6 +55,11 @@ issue → claim → branch/worktree → red test → fix → gates → PR
 - One issue, one branch, one PR. Never open a second PR and close the first.
 - If an issue already has a PR, push to that branch (rebase, `update-branch`, or
   a new commit) and put the new tests there.
+- A branch pushed or a pull request opened with the automatic `GITHUB_TOKEN`
+  starts no `push` or `pull_request` workflow. Automation that writes a branch or
+  opens a PR uses a PAT or a GitHub App installation token with the needed
+  `contents` and `pull-requests` scopes, so the ordinary `pull_request` run still
+  starts. The watchdog below is the backstop for when it does not.
 
 ### 4. Red test
 
@@ -100,6 +105,33 @@ Add a changelog fragment for a user-visible change. Update the owned doc or add
 - Never `--admin`; never force-push `main`; never bypass a required check.
 - After merge: fetch, fast-forward `main`, delete the branch/worktree, and file
   follow-ups as issues (not TODOs).
+
+### Missing CI backstop
+
+`.github/workflows/ci-watchdog.yml` runs hourly and on
+`workflow_dispatch`. It lists open same-repo, non-fork pull requests and, for each
+head SHA with no `CI` run at all, dispatches `ci.yml` on the head branch. The run
+is a backstop, not the primary path: it never replaces the `pull_request` run a
+real identity starts.
+
+- A fork pull request is skipped: a fork ref is not dispatchable with this
+  repository's token.
+- A pull request with a `CI` run already at its head SHA is skipped, whatever
+  that run's conclusion; another workflow's check run does not count, because
+  `CodeQL` or a review bot can leave a check on a tip `CI` never visited.
+- A queued or in-progress `CI` run is never duplicated.
+- A head whose only `CI` run is `cancelled` is skipped too. A superseded run is
+  marked `cancelled` before any job exists, so it carries no `ci-ok`, and
+  re-dispatching that head would race the run that replaced it: such a head is a
+  human's to re-dispatch, not the watchdog's to loop on.
+- At most 5 pull requests are dispatched per tick, so an outage cannot start an
+  unbounded number of full CI runs in one pass.
+
+The job uses the automatic `GITHUB_TOKEN` with `contents: read`,
+`pull-requests: read` and `actions: write`. `workflow_dispatch` is the documented
+exception to the token-suppression rule, so the dispatch itself starts a run. The
+watchdog does not bypass a required check and does not change branch protection;
+it only gives an empty head a run to report.
 
 ## Issue states and labels
 

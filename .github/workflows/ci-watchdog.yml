@@ -1,0 +1,54 @@
+name: CI watchdog
+
+# A backstop for the one gap GitHub leaves: a branch pushed or a pull request
+# opened with the automatic `GITHUB_TOKEN` starts no `push` or `pull_request`
+# workflow, and a ref written through the Git data API can leave the same shape.
+# Such a pull request sits with zero check runs, so no required check can ever
+# turn green. This job finds that shape and dispatches `ci.yml` at the head
+# branch. `workflow_dispatch` is the documented exception to the token rule, so
+# the automatic token can start the repair run.
+#
+# The primary path stays a branch/PR written by a real identity: it starts its own
+# `pull_request` run. This job only repairs what is still empty.
+
+on:
+  schedule:
+    # Hourly. The repair is a backstop, not a hot path: a missing run can wait
+    # for one tick, and an every-10-minute schedule would add more runs than the
+    # release workflow this watchdog exists to keep quiet. GitHub can delay a
+    # scheduled run under load; the window is therefore one tick or more.
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-watchdog
+  cancel-in-progress: false
+
+jobs:
+  dispatch-missing-ci:
+    name: dispatch CI for a pull request with no run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Read the planner from the default branch, never from the head of the
+          # pull request it is judging.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Dispatch ci.yml where a pull request has no run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+        run: node scripts/ci-watchdog.mjs

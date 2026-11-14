@@ -18,7 +18,7 @@ predates this inventory — it is not a value.
 
 | Secret | Purpose | Storage | Minimum scope | Owner | Last rotated | Rotation command | Verification command | Fingerprint |
 |---|---|---|---|---|---|---|---|---|
-| Team GitHub PAT | git push and `gh` for the maintenance Bots | `~/.dsh/bot/secrets.json` (0600) | classic `repo`; revoke everything else | owner | pending (#59) | `node scripts/rotate-github-token.mjs` | old value `GET /user` → 401 and new value → 200 in the same run (see `docs/security.md`) | unknown |
+| Team GitHub PAT | git push, `gh`, and branch/PR writes for the maintenance Bots; those writes start workflows, unlike `GITHUB_TOKEN` | `~/.dsh/bot/secrets.json` (0600) | classic `repo`; revoke everything else | owner | pending (#59) | `node scripts/rotate-github-token.mjs` | old value `GET /user` → 401 and new value → 200 in the same run (see `docs/security.md`) | unknown |
 | `SESSION_SECRET` | signs session cookies | production `.env` | 32 random bytes, base64 | owner | unknown | `openssl rand -base64 32` then restart | sign in, then `curl -I` the console and confirm the session survives a restart | unknown |
 | `TOKEN_ENCRYPTION_KEY` | AES-256-GCM key for stored GitHub tokens and user model keys | production `.env`, backed up separately from the database | exactly 32 bytes, base64 | owner | unknown | `openssl rand -base64 32` then re-enter every stored token | `npm run dev` and load a page that reads a stored token | unknown |
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth app | production `.env` | OAuth app client secret | owner | unknown | mint a new client secret in the GitHub OAuth app, then replace and restart | complete one OAuth login | unknown |
@@ -37,6 +37,14 @@ predates this inventory — it is not a value.
   also the only credential of the daily release (`#80`): the branch push, the tag
   through the Git data API and the dispatch of `release.yml` all run with it, so
   the stored `RELEASE_TOKEN` that used to gate that workflow is gone.
+
+  A branch pushed or a pull request opened with `GITHUB_TOKEN` starts no `push`
+  or `pull_request` workflow; `workflow_dispatch` and `repository_dispatch` are
+  the exceptions. Automation that pushes branches or opens PRs therefore uses a
+  PAT or a GitHub App installation token, not this per-run token.
+  `.github/workflows/ci-watchdog.yml` is the backstop: it dispatches `ci.yml` on a
+  head branch whose pull request has no `CI` run at all at its head SHA — a check
+  run from another workflow does not count — and no live `CI` run.
 
 - Per-user OAuth tokens and per-repository fine-grained tokens: they live in the
   database encrypted with `TOKEN_ENCRYPTION_KEY` and are rotated by their owner
