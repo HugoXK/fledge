@@ -306,8 +306,10 @@ defect.
   aimed at an existing task is contradictory and is repaired once into
   `related`. When the decision step is unavailable the framework default is a
   separate task at `P2`. A related task whose target is still running leaves one
-  coordination notice, which that job consumes at its next checkpoint and only
-  once; the running job keeps its claim. The console offers the decision where a
+  coordination notice, which that job takes at its next progress heartbeat that
+  carries a checkpoint, and only once — a heartbeat without a checkpoint is
+  progress, not a checkpoint, so it takes nothing. The running job keeps its
+  claim. The console offers the decision where a
   `verify` or `review` run ends, at `POST /repos/:id/jobs/:jobId/decision`, and
   preselects the framework default, so the undecided case is still one ordinary
   `P2` task rather than an open-ended chain.

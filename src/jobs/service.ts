@@ -2869,6 +2869,10 @@ export class Jobs {
         step: job.kind,
         ...(summary === undefined ? {} : { meta: summary }),
       })
+      // #639: a heartbeat that carries a checkpoint is the running job's next
+      // checkpoint, so a notice left by a related task is taken here and the job
+      // keeps its claim. A heartbeat without one is progress, not a checkpoint.
+      if (checkpoint !== undefined) this.consumeCoordination(jobId)
       // #357: a checkpoint is the earliest place a recorded cost exists without
       // a second model call, so it is where a pause/cancel budget acts.
       await this.enforceJobBudget(job, repoRow)

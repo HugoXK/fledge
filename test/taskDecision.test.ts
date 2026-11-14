@@ -5,6 +5,7 @@ import { Jobs } from '../src/jobs/service.js'
 import type { Runner } from '../src/jobs/runner.js'
 import { InstanceManager } from '../src/flybot/instances.js'
 import { DEFAULT_DECISION, repairDecision, validateDecision } from '../src/lib/taskDecision.js'
+import { sha256Hex } from '../src/lib/secrets.js'
 import { makeUser, MemoryMailer, testConfig } from './helpers.js'
 
 // #639: one bounded post-QA decision. These are the cases the issue names: a
@@ -133,6 +134,38 @@ test('a related task leaves the running job one notice, consumed once', async ()
     assert.equal(store.getSetting(`coordination:${running.id}`), undefined)
     const events = store.listJobEvents(running.id, 20)
     assert.equal(events.filter((event) => event.kind === 'job.coordination_notice').length, 1)
+  } finally {
+    store.close()
+  }
+})
+
+test('a running job takes its notice at the checkpoint, not before it', async () => {
+  const { store, jobs, user, repo } = setup()
+  try {
+    // The callback secret is the one the dispatch contract hands the agent; the
+    // row stores only its hash.
+    const secret = 'coord-secret-running'
+    store.createJob({ id: 'job_coord_running', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '' })
+    store.updateJob('job_coord_running', { status: 'running' })
+    store.requestCoordination('job_coord_running', 'job_dec_other related')
+
+    // A heartbeat with no checkpoint is not a checkpoint: the notice waits.
+    const ping = await jobs.handleCallback('job_coord_running', secret, { status: 'running', summary: 'still working' })
+    assert.equal(ping.ok, true)
+    assert.notEqual(store.getSetting('coordination:job_coord_running'), undefined, 'a heartbeat without a checkpoint takes nothing')
+
+    // The checkpoint heartbeat is where the running job takes the notice, so the
+    // related task never needed to take its claim.
+    const atCheckpoint = await jobs.handleCallback('job_coord_running', secret, { status: 'running', summary: 'tests green; next docs', checkpoint: 'tests green; next docs' })
+    assert.equal(atCheckpoint.ok, true)
+    assert.equal(store.getSetting('coordination:job_coord_running'), undefined, 'the notice is taken at the checkpoint')
+    assert.equal(store.getJob('job_coord_running')?.status, 'running', 'taking a notice does not end the run')
+
+    // A second checkpoint cannot repeat it.
+    const after = await jobs.handleCallback('job_coord_running', secret, { status: 'running', summary: 'docs written', checkpoint: 'docs written; next: PR' })
+    assert.equal(after.ok, true)
+    const notices = store.listJobEvents('job_coord_running', 50).filter((event) => event.kind === 'job.coordination_notice')
+    assert.equal(notices.length, 1, 'the same notice is recorded once')
   } finally {
     store.close()
   }
