@@ -641,8 +641,10 @@ not checked (only the newest copy is hashed)`. Above the cap the newest row says
 the `sha256` was not checked, which is not a pass — `npm run db:restore-drill` is
 the command that verifies a large copy. The copies line counts only copies a
 manifest contradicts and names the rest separately, so `0 copies · nothing to
-check` is what an empty directory says. The
-drill prints its verdict and records nothing, so the card says `none recorded`
+check` is what an empty directory says. An encrypted copy is listed the same
+way: its manifest's size and `sha256` cover the file on disk, so the card
+compares the ciphertext and reads the age from the name. The drill prints its
+verdict and records nothing, so the card says `none recorded`
 rather than showing a green it cannot prove.
 
 Back up `.env` separately (it contains the encryption key). Without
