@@ -43,6 +43,13 @@ const TREE: Record<string, string[]> = {
   'src/jobs/service.ts': SERVICE_LINES,
   'test/notificationsLocale.test.ts': ['// test file', 'export const marker = 1'],
   'src/i18n.ts': ['// i18n', 'export function localizeMessage(key: string): string { return key }'],
+  'src/price.ts': [
+    "import { format } from './format.js'",
+    '',
+    'export function price$(amount: number): string {',
+    '  return format(amount)',
+    '}',
+  ],
 }
 const PATHS = Object.keys(TREE)
 
@@ -213,4 +220,15 @@ test('hold still wins over the evidence check', async () => {
   const result = await runGate({ body: bodyWith('See `src/views/pages.ts:99999` for the helper.'), pass: true, labels: ['hold'] })
   assert.equal(result.code, 7)
   assert.match(result.stdout, /^issue-gate: hold #76 [0-9a-f]{12}$/m)
+})
+
+test('a definition whose name ends in `$` is a definition, not bad evidence', async () => {
+  // `$` is the one regex metacharacter an issue body can actually put in a
+  // symbol. Escaping it for the pattern while every shape ended in `\b` made the
+  // gate refuse a definition that is plainly there: `$` is a non-word character,
+  // so `price\$\b` cannot match `price$(`. Comparing declaration tokens instead
+  // of building a pattern removes the edge rather than re-escaping around it.
+  const result = await runGate({ body: bodyWith('The formatter is `price$` defined at `src/price.ts:3`.'), pass: true })
+  assert.equal(result.code, 0)
+  assert.match(result.stdout, /^issue-gate: ok #76 [0-9a-f]{12}$/m)
 })
