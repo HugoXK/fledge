@@ -670,15 +670,18 @@ while any other status becomes the fixed `the tag reference was refused by GitHu
 the page. A 422 from `createAnnotatedTag` is the `target_missing` refusal rather
 than an exception. No call here updates or deletes a ref.
 
-Workflow tracking uses bounded reads and one draft-only write: `getWorkflowRun`
-(`GET /actions/runs/{id}`, `null` on 404), `listWorkflowRunsForRef` (up to three
-pages of `GET /actions/runs`), `listWorkflowJobs` (up to three pages of
-`GET /actions/runs/{id}/jobs`), `getReleaseByTag`
-(`GET /releases/tags/{tag}`, `null` on 404), `createRelease`
+Workflow tracking uses bounded reads and one draft-only write:
+`listWorkflowRunsForRef` (up to three pages of `GET /actions/runs?branch=<tag>`,
+so other workflows cannot push the tag's run out of the window),
+`listWorkflowJobs` (up to three pages of `GET /actions/runs/{id}/jobs`),
+`getReleaseByTag` (`GET /releases/tags/{tag}`, `null` on 404), `createRelease`
 (`POST /releases`, `draft` fixed `true`, so this client cannot publish) and
-`updateRelease` (`PATCH /releases/{id}`). The tracker reads an existing Release
-before the run, so a Release the repository published is `external_release` and
-is never duplicated.
+`updateRelease` (`PATCH /releases/{id}`). Only a run whose head is the tag commit
+and whose path is the release workflow can produce a draft; a tag without such a
+run is `run_missing`. The tracker reads an existing Release before the run: the id
+the row recorded is `draft_exists` while it is a draft and `draft_published` once
+the human publishes it, and every other Release is `external_release` and is never
+duplicated.
 
 `POST /repos/:id/release` (owner only, CSRF) redirects to
 `/repos/:id?release=1&refused=<reason>` on a refusal and

@@ -20,7 +20,7 @@ const FAILED_CONCLUSIONS = new Set([
 export interface ReleaseTrackingClient {
   getReleaseByTag(owner: string, name: string, tag: string): Promise<GithubReleaseInfo | null>
   listWorkflowRunsForRef(owner: string, name: string, ref: string): Promise<WorkflowRunInfo[]>
-  listWorkflowJobs(owner: string, name: string, runId: number): Promise<WorkflowJobInfo[]>
+  listWorkflowJobs(owner: string, name: string, runId: number, maxPages?: number): Promise<WorkflowJobInfo[]>
   createRelease(owner: string, name: string, input: GithubReleaseInput): Promise<GithubReleaseInfo>
 }
 
@@ -39,18 +39,22 @@ export type ReleaseTrackingResult =
   | { status: 'run_failed'; message: string; run: WorkflowRunInfo; conclusion: string }
   | { status: 'draft_created'; message: string; run: WorkflowRunInfo; release: GithubReleaseInfo }
   | { status: 'draft_exists'; message: string; run: WorkflowRunInfo | null; release: GithubReleaseInfo | null }
+  | { status: 'draft_published'; message: string; release: GithubReleaseInfo }
   | { status: 'external_release'; message: string; release: GithubReleaseInfo }
 
-// A run list is newest by id. The release workflow's path is the first choice
-// because other workflows also fire on a tag; the tag commit breaks a tie, and
-// then the newest attempt wins.
+function isReleaseWorkflow(run: WorkflowRunInfo): boolean {
+  return /(^|\/)release\.ya?ml$/.test(run.path ?? '')
+}
+
+// The tag's own release workflow is the only run that may produce a draft. A
+// run for another commit, or another workflow that fired on the same tag, is not
+// evidence that the release workflow succeeded — the draft body says exactly
+// that, so the match is a requirement and never a fallback. Among the runs that
+// do qualify, the newest attempt wins.
 export function selectWorkflowRun(runs: WorkflowRunInfo[], targetSha: string): WorkflowRunInfo | null {
-  if (runs.length === 0) return null
-  const matching = runs.filter((run) => run.headSha === targetSha)
-  const pool = matching.length > 0 ? matching : runs
-  const releaseRuns = pool.filter((run) => /(^|\/)release\.ya?ml$/.test(run.path ?? ''))
-  const candidates = releaseRuns.length > 0 ? releaseRuns : pool
-  return candidates.reduce((best, run) => {
+  const matching = runs.filter((run) => run.headSha === targetSha && isReleaseWorkflow(run))
+  if (matching.length === 0) return null
+  return matching.reduce((best, run) => {
     if (run.id !== best.id) return run.id > best.id ? run : best
     return run.runAttempt > best.runAttempt ? run : best
   })
@@ -71,19 +75,28 @@ function failedRun(run: WorkflowRunInfo, conclusion: string): ReleaseTrackingRes
 
 // The order matters: an existing Release is found before the run is read, so a
 // repository that publishes its own Release is marked external and Fledge never
-// duplicates it. A draft already recorded for this row is returned as-is, which
-// is what makes a second reconcile idempotent.
+// duplicates it. The id this row recorded is ours whether the draft is still a
+// draft or the human has published it — publishing is the documented end state,
+// not a sign that someone else released. A draft already recorded for this row
+// is returned as-is, which is what makes a second reconcile idempotent.
 export async function reconcileRelease(
   client: ReleaseTrackingClient,
   input: ReconcileReleaseInput,
 ): Promise<ReleaseTrackingResult> {
   const existing = await client.getReleaseByTag(input.owner, input.name, input.tagName)
   if (existing !== null) {
-    if (input.draftReleaseId !== null && existing.id === input.draftReleaseId && existing.draft) {
+    if (input.draftReleaseId !== null && existing.id === input.draftReleaseId) {
+      if (existing.draft) {
+        return {
+          status: 'draft_exists',
+          message: `draft Release ${existing.htmlUrl} is already recorded for ${input.tagName}`,
+          run: null,
+          release: existing,
+        }
+      }
       return {
-        status: 'draft_exists',
-        message: `draft Release ${existing.htmlUrl} is already recorded for ${input.tagName}`,
-        run: null,
+        status: 'draft_published',
+        message: `Release ${existing.htmlUrl} is the one this row prepared and it is published; Fledge created nothing`,
         release: existing,
       }
     }
@@ -97,7 +110,7 @@ export async function reconcileRelease(
   const runs = await client.listWorkflowRunsForRef(input.owner, input.name, input.tagName)
   const run = selectWorkflowRun(runs, input.targetSha)
   if (run === null) {
-    return { status: 'run_missing', message: `no workflow run for ${input.tagName} yet` }
+    return { status: 'run_missing', message: `no release workflow run for ${input.tagName} at ${input.targetSha} yet` }
   }
   if (run.conclusion !== null && FAILED_CONCLUSIONS.has(run.conclusion)) {
     return failedRun(run, run.conclusion)
@@ -111,7 +124,9 @@ export async function reconcileRelease(
 
   // Every job decides: one in-progress job keeps tracking, and a failed or
   // cancelled job is a failed release even if the run-level conclusion is green.
-  const jobs = await client.listWorkflowJobs(input.owner, input.name, run.id)
+  // Three pages is 300 jobs; the run has to be all-green, so a longer job list
+  // is read to its third page rather than stopped at the second.
+  const jobs = await client.listWorkflowJobs(input.owner, input.name, run.id, 3)
   if (jobs.length === 0) {
     return { status: 'running', message: `workflow run ${run.id} reports no jobs yet`, run }
   }
@@ -194,7 +209,7 @@ export function trackingUpdate(
 ): ReleaseTrackingUpdate {
   const run = 'run' in result ? result.run : null
   const release = 'release' in result ? result.release : null
-  const keepsDraft = result.status === 'draft_created' || result.status === 'draft_exists'
+  const keepsDraft = result.status === 'draft_created' || result.status === 'draft_exists' || result.status === 'draft_published'
   return {
     status: result.status,
     runId: run === null ? null : String(run.id),

@@ -873,36 +873,24 @@ export class GithubClient {
     }
   }
 
-  // #546 slice 3: read the run for the tag and its jobs, then create a draft
-  // Release only. The run list is bounded (three pages) because a reconcile is a
-  // user-facing read, not a history crawl; the tracker prefers the run whose
-  // head is the tag's commit, so an unrelated recent run cannot win.
-  async getWorkflowRun(owner: string, name: string, runId: number): Promise<WorkflowRunInfo | null> {
-    try {
-      const run = await this.request<WorkflowRunPayload>(
-        'GET',
-        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/actions/runs/${runId}`,
-      )
-      return this.mapWorkflowRun(run)
-    } catch (error) {
-      if (error instanceof GithubError && error.status === 404) return null
-      throw error
-    }
-  }
-
+  // #546 slice 3: read the runs for the tag and the jobs of the chosen one, then
+  // create a draft Release only. Both lists are bounded (three pages) because a
+  // reconcile is a user-facing read, not a history crawl. The ref is a server-side
+  // filter, so a busy repository cannot push the tag's run out of the window; a
+  // run that still names another ref is dropped rather than offered as a
+  // fallback, because no run at all is an honest `run_missing`.
   async listWorkflowRunsForRef(owner: string, name: string, ref: string): Promise<WorkflowRunInfo[]> {
     const runs: WorkflowRunInfo[] = []
     for (let page = 1; page <= 3; page += 1) {
       const list = await this.request<WorkflowRunListPayload>(
         'GET',
-        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/actions/runs?per_page=100&page=${page}`,
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/actions/runs?branch=${encodeURIComponent(ref)}&per_page=100&page=${page}`,
       )
       const entries = Array.isArray(list.workflow_runs) ? list.workflow_runs : []
       for (const entry of entries) runs.push(this.mapWorkflowRun(entry))
       if (entries.length < 100) break
     }
-    const matching = runs.filter((run) => run.headSha === ref || run.headBranch === ref)
-    return matching.length > 0 ? matching : runs
+    return runs.filter((run) => run.headSha === ref || run.headBranch === ref)
   }
 
   async getReleaseByTag(owner: string, name: string, tag: string): Promise<GithubReleaseInfo | null> {

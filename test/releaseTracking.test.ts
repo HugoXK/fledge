@@ -140,6 +140,67 @@ test('the newest run for the tag commit is selected over an unrelated run', () =
   assert.equal(selectWorkflowRun([], TARGET), null)
 })
 
+test('a run for another commit or another workflow never supplies the draft', async () => {
+  // Finding 1 of the review: the selection used to fall back to any run in the
+  // window, so a ci.yml run at the tag commit, or an older release.yml run for a
+  // different tag, produced a draft whose body claimed the release workflow ran.
+  const otherWorkflow = await harness({ runs: [run({ id: 300, path: '.github/workflows/ci.yml' })] })
+  try {
+    const result = await reconcileRelease(otherWorkflow.client, input())
+    assert.equal(result.status, 'run_missing', 'a ci.yml run at the tag commit is not the release workflow')
+    assert.equal(otherWorkflow.calls.filter((call) => call.method === 'POST' && call.url === '/repos/o/r/releases').length, 0)
+    const listed = otherWorkflow.calls.filter((call) => call.method === 'GET' && call.url.startsWith('/repos/o/r/actions/runs?'))
+    assert.ok(listed.length > 0, 'the run list is read')
+    assert.ok(listed.every((call) => call.url.includes(`branch=${TAG}`)), 'the run list is bounded to the tag ref')
+  } finally {
+    await otherWorkflow.close()
+  }
+
+  const otherCommit = await harness({ runs: [run({ id: 301, headSha: 'b'.repeat(40), headBranch: 'v1.3.0' })] })
+  try {
+    const result = await reconcileRelease(otherCommit.client, input())
+    assert.equal(result.status, 'run_missing', 'an older release.yml run for another tag is not this tag’s run')
+    assert.equal(otherCommit.calls.filter((call) => call.method === 'POST' && call.url === '/repos/o/r/releases').length, 0)
+  } finally {
+    await otherCommit.close()
+  }
+
+  const selected = (id: number, headSha: string, path = '.github/workflows/release.yml') => ({
+    id,
+    name: 'release',
+    path,
+    status: 'completed',
+    conclusion: 'success',
+    headSha,
+    headBranch: TAG,
+    runAttempt: 1,
+    htmlUrl: `https://github.com/o/r/actions/runs/${id}`,
+    event: 'push',
+  })
+  assert.equal(selectWorkflowRun([selected(310, 'b'.repeat(40))], TARGET), null, 'a run for another commit is never selected')
+  assert.equal(selectWorkflowRun([selected(311, TARGET, '.github/workflows/ci.yml')], TARGET), null, 'another workflow at the tag commit is never selected')
+  assert.equal(selectWorkflowRun([selected(312, TARGET)], TARGET)?.id, 312, 'the release workflow at the tag commit still wins')
+})
+
+test('the draft this row prepared stays ours after the human publishes it', async () => {
+  // Finding 2 of the review: the row used to call its own Release external once
+  // it was no longer a draft, and dropped the pointer the page links.
+  const published = { id: 500, tag_name: TAG, draft: false, prerelease: false, html_url: DRAFT_URL }
+  const h = await harness({ release: published })
+  try {
+    const result = await reconcileRelease(h.client, input({ draftReleaseId: 500 }))
+    assert.equal(result.status, 'draft_published')
+    const update = trackingUpdate(result, { draftReleaseId: '500', draftUrl: DRAFT_URL })
+    assert.equal(update.status, 'draft_published')
+    assert.equal(update.draftReleaseId, '500', 'the pointer to our own Release is kept')
+    assert.equal(update.draftUrl, DRAFT_URL)
+    assert.equal(update.externalReleaseId, null, 'our own Release is never recorded as someone else’s')
+    assert.equal(h.calls.filter((call) => call.method === 'POST').length, 0)
+  } finally {
+    await h.close()
+  }
+})
+
 test('a successful run with success, neutral and skipped jobs creates exactly one draft', async () => {
   const h = await harness({
     runs: [run()],

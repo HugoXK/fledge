@@ -1962,11 +1962,14 @@ the notes slice.
 
 `src/releases/tracking.ts` observes the workflow a tag fires and stops at a draft
 Release — a human still edits and publishes it. The reconcile is bounded: three
-pages of runs (`GET /actions/runs`), three pages of jobs
-(`GET /actions/runs/{id}/jobs`), and no history crawl. The selected run is the
-one whose head is the tag commit; among those, the repository's
-`.github/workflows/release.yml` wins over another workflow that also fires on a
-tag, then the newest run and highest attempt.
+pages of runs (`GET /actions/runs?branch=<tag>`, so another workflow's traffic
+cannot push the tag's run out of the window), three pages of jobs
+(`GET /actions/runs/{id}/jobs`), and no history crawl. The selected run must match
+twice: its head is the tag commit, and its path is the release workflow
+(`.github/workflows/release.yml` or `.yaml`). Neither match is a preference with a
+fallback — a tag whose release workflow has not appeared yet is `run_missing`,
+because a draft body that says the release workflow succeeded has to be true.
+Among the runs that do match, the newest run and highest attempt win.
 
 A draft is prepared only when the run is completed with conclusion `success` and
 every job is `success`, `neutral` or `skipped`. An in-progress run or job keeps
@@ -1975,13 +1978,14 @@ the row at `running`; a `failure`, `cancelled`, `timed_out`, `startup_failure`,
 `run_failed` and creates nothing. Fledge never reruns the workflow.
 
 Before the run is read, `GET /releases/tags/{tag}` answers whether the repository
-already published a Release for this tag. Any Release that is not the draft this
-row created is `external_release`: the row stores its id and no second Release is
-created. A second reconcile for a row that already has a draft is the same
-`draft_exists` answer and makes no write. A Release that appears between the read
-and the write is caught as a 422 on `POST /releases`, re-read by tag, and recorded
-as external instead of retried. `POST /releases` is fixed to `draft: true` in the
-client, so this path cannot publish.
+already has a Release for this tag. The id this row recorded is its own: still a
+draft is `draft_exists`, and once the human published it the same id is
+`draft_published` — the pointer and the page link are kept either way, because
+publishing is the documented end state. Any other Release is `external_release`:
+the row stores its id and no second Release is created. A Release that appears
+between the read and the write is caught as a 422 on `POST /releases`, re-read by
+tag, and recorded as external instead of retried. `POST /releases` is fixed to
+`draft: true` in the client, so this path cannot publish.
 
 The first observation happens once after a successful tag write and is recorded
 even when no run exists yet (`run_missing`); a failed observation is logged and

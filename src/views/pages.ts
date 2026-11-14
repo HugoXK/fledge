@@ -1596,7 +1596,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     ${releases.length === 0 ? `<p class="fine">${escapeHtml(t('还没有由 Fledge 创建的版本标签。', 'No release tag created by Fledge yet.'))}</p>` : `<ul class="list">${releases.map((release) => {
       const draft = release.draft_url === null || !/^https?:\/\//.test(release.draft_url)
         ? ''
-        : ` · <a class="link" href="${escapeHtml(release.draft_url)}" target="_blank" rel="noreferrer">${escapeHtml(t('草稿 Release', 'draft Release'))}</a>`
+        : ` · <a class="link" href="${escapeHtml(release.draft_url)}" target="_blank" rel="noreferrer">${escapeHtml(release.status === 'draft_published' ? t('已发布的 Release', 'published Release') : t('草稿 Release', 'draft Release'))}</a>`
       const external = release.external_release_id === null ? '' : ` · ${escapeHtml(t('外部 Release', 'external Release'))}`
       const run = release.run_id === null
         ? ''

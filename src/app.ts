@@ -1965,7 +1965,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (recorded === undefined) return reply.redirect(`${back}&refused=${encodeURIComponent(`tag ${plan.tagName} was created, but its release record could not be updated; Fledge moved nothing`)}`)
     // The run may not exist yet; the first observation is still recorded, and
     // the check route repeats it later. A failed check never turns a created tag
-    // into a refusal.
+    // into a refusal. The recorded draft pointer travels into the reconcile: on a
+    // re-tag the row still owns the Release it prepared, and without the pointer
+    // that Release would be misread as someone else's.
     try {
       const tracked = await reconcileRelease(client, {
         owner,
@@ -1973,7 +1975,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         tagName: plan.tagName,
         targetSha: plan.targetSha,
         prerelease: plan.prerelease,
-        draftReleaseId: null,
+        draftReleaseId: recorded.draft_release_id === null ? null : Number(recorded.draft_release_id),
       })
       store.updateReleaseTracking(recorded.id, trackingUpdate(tracked, {
         draftReleaseId: recorded.draft_release_id,
