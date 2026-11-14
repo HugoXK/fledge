@@ -28,3 +28,11 @@ Typical layout:
 ```
 
 See [../docs/deploy.md](../docs/deploy.md) for the full checklist.
+
+## Release automation
+
+`fledge-deploy-tag.sh` and `fledge-verify-release.sh` are the host half of the
+release flow: deploy the newest SemVer tag (never roll a newer main back) and
+write `release-status.json` for `/admin`. See
+[`docs/deploy.md`](../docs/deploy.md#automatic-tag-deployment-and-verification)
+for the cron examples, environment overrides and safety rules.

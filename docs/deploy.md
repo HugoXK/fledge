@@ -340,6 +340,40 @@ request head is then the record of the tip.
 `--fixtures <file>` replays a recorded chain instead of reading the API, which is
 how the test suite exercises the same code path.
 
+### Automatic tag deployment and verification
+
+The release plan → release pull request → tag half lives in
+`.github/workflows/daily-release.yml` and `release.yml`. The last two steps are
+tracked here as host scripts under `deploy/`:
+
+```sh
+# Deploy a newer tag; never roll a newer main back.
+*/10 * * * * /opt/fledge/deploy/fledge-deploy-tag.sh
+
+# Refresh release-status.json for /admin.
+*/30 * * * * /opt/fledge/deploy/fledge-verify-release.sh
+```
+
+`fledge-deploy-tag.sh` fetches tags, takes the newest `vX.Y.Z`, and deploys only
+when that version is newer than the running `package.json`. It uses a detached
+tag worktree, builds, stops/starts the configured service, checks `/healthz`
+reports that version, and restores the previous `dist` and build identity if
+the build or health check fails. It never runs `git push`, `--admin`, a merge or
+a rollback to an older tag. On success it invokes the verifier.
+
+`fledge-verify-release.sh` reads `GITHUB_TOKEN` from the environment or the
+`GITHUB_TOKEN` entry in `FLEDGE_SECRETS_FILE` (default
+`~/.dsh/bot/secrets.json`), loads `METRICS_TOKEN` / `BASE_URL` from `.env`, and
+writes `release-status.json` through a temporary file and rename. The token is
+never printed or passed as an argument. A `not released` verdict is a normal
+result in the log and status file, not a cron crash; missing input exits 1.
+
+Both scripts accept `FLEDGE_APP_DIR`, `FLEDGE_SOURCE_DIR`, `FLEDGE_DATA_DIR`,
+`FLEDGE_DEPLOY_LOG`, `FLEDGE_STOP_CMD`, `FLEDGE_START_CMD`, `FLEDGE_HEALTH_URL`,
+`FLEDGE_SECRETS_FILE` and `FLEDGE_REPOSITORY` overrides. They hold a `flock`
+so two cron ticks cannot overlap, and the deploy script exits without changing
+anything when production is already at the newest tag or ahead of it.
+
 ### Required before start
 
 The sample unit runs the same verifier as `ExecStartPre=` (#462), so a host whose
