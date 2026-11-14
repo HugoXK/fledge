@@ -169,7 +169,7 @@ test('an in-progress receipt says it is still processing, never "the cancel fail
     const repo = f.built.store.getRepo(f.repoId)
     assert.notEqual(repo, undefined)
     if (repo === undefined) return
-    const begun = service.begin(managementActor({ userId: f.user.id, repo, channel: 'web', requestId: 'req-in-progress' }), {
+    const begun = service.begin(managementActor({ store: f.built.store, userId: f.user.id, repo, channel: 'web', requestId: 'req-in-progress' }), {
       operation: 'task.cancel',
       target: { projectId: f.repoId, jobId: f.jobId },
       arguments: {},

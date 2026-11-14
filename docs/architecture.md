@@ -1539,6 +1539,12 @@ listing, and every row links to the page that already owns it.
 | `audit_log` | who changed what |
 | `management_commands` | one receipt per command: principal, channel, idempotency scope/key, request hash, operation, target, arguments, expected/before/after revision, status and result (#540) |
 | `resource_revisions` | the fence a command compares against, one row per resource; a resource with no row is at revision 1 (#540) |
+| `tenants` | GitHub owner scope; the first slice stores the legacy login id `github.com:legacy:<owner-lowercase>` (#541) |
+| `projects` | one row per repository, keyed by the repository id and linked to its tenant (#541) |
+| `principals` | one human principal per user (`principal:user:<user_id>`); service principals are a later #541 slice |
+| `repo_members` | per-repository `maintainer`/`developer`/`viewer` rows with a revocation time (#541) |
+| `scoped_grants` | explicit capability grants with source, evidence, expiry, revocation and revision (#541) |
+| `identity_migrations` | one report row per identity backfill version (#541) |
 | `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
 
 ## Deployment records
@@ -1673,6 +1679,32 @@ chat adapter. The refusal mapping that blocked this slice is in place: an
 operation hands its service's enqueue code back as the receipt's `error_code`
 (with `error_detail` when a sentence interpolates it), and the console builds the
 bilingual sentence from the one banner table rather than inventing text.
+
+## Identity backfill and capability resolution (#541)
+
+The first identity slice adds the rows and a read-only resolver; every existing
+owner check still decides access, so behaviour does not change. On open,
+`Store.migrateIdentity()` backfills one tenant per repository owner, one project
+per repository, one human principal per user, one `repo_members` row for the
+connection owner and one explicit `scoped_grants` row for that owner. The
+migration is idempotent, records its counts in `identity_migrations` version 1,
+and `createRepo` ensures the same rows for a repository added later. A user with
+no repository still gets a principal.
+
+The tenant id is deliberately legacy: `repos` carries the owner login, not the
+numeric GitHub owner id, so the id is `github.com:legacy:<owner-lowercase>` until
+a later rekey. A rename must not merge or rebuild identity; the project id is the
+repository id and stays stable. A numeric owner id is follow-up work, not a guess
+this slice makes.
+
+`src/identity/authorization.ts` resolves an actor from active memberships, active
+grants and the legacy `repos.user_id` owner. `maintainer`, `developer` and
+`viewer` expand to capability sets; `superadmin` is the only wildcard, while
+`admin` gets `grants.manage` and repository capabilities only through a
+membership or grant. `GET /api/auth/me` is the first read surface: it requires an
+approved session and returns the user summary, tenant/project roles,
+capabilities and platform capabilities without a token or key column. Enforcement
+on read and write routes remains a later slice.
 
 ## Notification webhook egress
 

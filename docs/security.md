@@ -289,6 +289,13 @@ per day. Test mail is rate-limited to one per minute.
 - The super-admin-only preview cookie renders the normal-user UI while leaving the
   actual session owner-scoped behind the scenes. The owner workspace is available
   in preview like a normal-user page; advanced team routes remain blocked.
+- Identity resolution (#541) reads active `repo_members` rows, active
+  `scoped_grants` rows and the legacy `repos.user_id` owner. `superadmin` holds
+  every capability; `admin` holds `grants.manage` plus only the repository
+  capabilities a membership or grant actually gives, so the platform role never
+  widens project access. `GET /api/auth/me` requires an approved session and
+  returns capabilities, not a token, key or password column. Enforcement on the
+  existing routes is a later slice, so the old owner check still decides access.
 - Repository roles are per user-repository connection: `maintainer` or
   `developer`. The allowed roles come from the user's GitHub permission
   (`admin`/`maintain` may choose either; all other permissions may only choose
