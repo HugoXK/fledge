@@ -1,8 +1,8 @@
 import type { Store } from '../db.js'
 import type { Jobs } from '../jobs/service.js'
 import { JOB_KINDS, type JobKind } from '../jobs/runner.js'
-import { refusalSentenceUsesDetail } from '../lib/failure.js'
 import type { Capability } from './actor.js'
+import { refusalSentenceUsesDetail } from '../lib/failure.js'
 
 // #540: the catalog is a closed map, not a registry a caller can extend. An
 // operation declares its capabilities, the target it needs and the arguments it
@@ -65,6 +65,15 @@ function stringArgument(args: Record<string, unknown>, name: string): string | u
   return typeof value === 'string' && value.trim() !== '' ? value : undefined
 }
 
+// #611: what an operator needs to read after a refusal. A parameterised sentence
+// already owns `detail`; a fixed sentence does not print anything, so the text the
+// service wrote (the exception's class and address) is the copy instead.
+function operatorCopy(detail: string | undefined, code: string, message: string | undefined): string | undefined {
+  if (detail !== undefined && detail !== '') return detail
+  if (refusalSentenceUsesDetail(code)) return undefined
+  return message === undefined || message.trim() === '' ? undefined : message
+}
+
 // A caller-supplied integer is either absent, valid, or refused. Clamping a
 // posted 500 to 100 would queue a job the caller did not ask for and answer
 // success, so an out-of-range or non-integer value fails the command instead.
@@ -85,7 +94,13 @@ function refused(code: string | undefined, message: string | undefined, detail: 
     status: 'failed',
     errorCode: refusalCode,
     errorMessage: message ?? 'the job did not start',
-    ...(detail === undefined || detail === '' || !refusalSentenceUsesDetail(refusalCode) ? {} : { errorDetail: detail }),
+    // #611: the operator copy is the value the service named, or — for a code
+    // whose sentence is fixed — the text the service wrote in `error`, which is
+    // where an upstream exception's class and address arrive. The banner shows
+    // only the sentence (`refusalSentenceUsesDetail` guards the interpolation);
+    // this value stays in the receipt and the audit row, the two places support
+    // reads.
+    ...(operatorCopy(detail, refusalCode, message) === undefined ? {} : { errorDetail: operatorCopy(detail, refusalCode, message) }),
   }
 }
 

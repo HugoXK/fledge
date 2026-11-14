@@ -55,13 +55,13 @@ test('the triage kind and the triage work type must agree in both directions', a
     // A job kind cannot borrow the triage contract...
     const borrowed = await jobs.enqueue(repo, 'manual', undefined, 'iterate', { workType: 'triage' })
     assert.equal(borrowed.ok, false)
-    assert.equal(borrowed.code, 'UNKNOWN_WORK_TYPE')
+    assert.equal(borrowed.code, 'WORK_TYPE_MISMATCH')
     // ...and a triage run cannot be given another work type, which used to store
     // `work_type='iterate'` and print the iterate contract for a run that is
     // forbidden to open a branch.
     const mislabelled = await jobs.enqueue(repo, 'manual', undefined, 'triage', { workType: 'iterate' })
     assert.equal(mislabelled.ok, false)
-    assert.equal(mislabelled.code, 'UNKNOWN_WORK_TYPE')
+    assert.equal(mislabelled.code, 'WORK_TYPE_MISMATCH')
     assert.equal(store.listJobsForRepo(repo.id).length, 0, 'neither mismatch writes a row')
   } finally {
     store.close()
