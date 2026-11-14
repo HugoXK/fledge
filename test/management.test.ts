@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { Store, type JobRow, type RepoRow } from '../src/db.js'
 import { Jobs } from '../src/jobs/service.js'
 import { buildApp } from '../src/app.js'
-import { managementActor, type ActorContext } from '../src/management/actor.js'
+import { managementActor } from '../src/management/actor.js'
 import { ManagementService, type CommandEnvelope } from '../src/management/service.js'
 import { encryptSecret } from '../src/lib/secrets.js'
 import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
@@ -46,10 +46,6 @@ function envelope(overrides: Partial<CommandEnvelope> = {}): CommandEnvelope {
     idempotencyKey: 'key-1',
     ...overrides,
   }
-}
-
-function actorFor(actor: ActorContext, store: Store, repo: RepoRow): ActorContext {
-  return managementActor({ userId: actor.principalId, repo, channel: 'web', requestId: actor.requestId })
 }
 
 test('the same key and arguments return the same receipt and cancel the job once', async () => {
@@ -169,6 +165,81 @@ test('an operation outside the closed catalog is refused', async () => {
     assert.equal(h.store.getJob('job_management')?.status, 'queued')
   } finally {
     h.store.close()
+  }
+})
+
+test('a failed receipt replays its stored refusal, never a success', async () => {
+  const h = harness()
+  try {
+    const job = queuedJob(h.store, h.user, h.repo.id)
+    // The job finishes between the page render and the submit, so the command is
+    // refused and the receipt is stored as failed.
+    h.store.updateJob(job.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    const actor = managementActor({ userId: h.user, repo: h.repo, channel: 'web', requestId: 'req-7' })
+    const first = await h.service.run(actor, envelope({ idempotencyKey: 'key-failed' }))
+    assert.equal(first.ok, false)
+    if (first.ok) return
+    assert.equal(first.code, 'job_not_cancellable')
+
+    const replay = await h.service.run(actor, envelope({ idempotencyKey: 'key-failed' }))
+    assert.equal(replay.ok, false, 'a stored failure must not replay as success')
+    if (replay.ok) return
+    assert.equal(replay.code, 'job_not_cancellable', 'the replay repeats the stored code')
+    assert.equal(replay.receipt?.status, 'failed')
+    assert.equal(h.store.listAudit(50).filter((row) => row.action === 'management.command').length, 1, 'the replay writes no second audit row')
+  } finally {
+    h.store.close()
+  }
+})
+
+test('an accepted receipt replays as in progress, never as a success', async () => {
+  const h = harness()
+  try {
+    queuedJob(h.store, h.user, h.repo.id)
+    const actor = managementActor({ userId: h.user, repo: h.repo, channel: 'web', requestId: 'req-8' })
+    const begun = h.service.begin(actor, envelope({ idempotencyKey: 'key-accepted' }))
+    assert.equal(begun.ok, true)
+    if (!begun.ok) return
+    assert.equal(begun.receipt.status, 'accepted')
+
+    // Same key and payload while the command is only reserved: this is the state
+    // a crash before execution leaves behind. It is not a success.
+    const replay = await h.service.run(actor, envelope({ idempotencyKey: 'key-accepted' }))
+    assert.equal(replay.ok, false, 'an unfinished command must not replay as success')
+    if (replay.ok) return
+    assert.equal(replay.code, 'command_in_progress')
+    assert.equal(replay.receipt?.status, 'accepted')
+    assert.equal(h.store.getJob('job_management')?.status, 'queued', 'nothing claims the job was cancelled')
+  } finally {
+    h.store.close()
+  }
+})
+
+test('the cancel form replays a refusal as a refusal, never as a success', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: { name: 'capture', async run() { return { status: 'running' as const } } }, startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'replay-refusal', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_replay', userId: user.id, owner: 'o', name: 'replay', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_replay', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-replay', platformTokenHash: '' })
+    // The job finished after this page was rendered: the submit is refused, and
+    // the receipt is stored as failed.
+    store.updateJob(job.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    const session = sessionFor(built, user)
+    const headers = { 'content-type': 'application/x-www-form-urlencoded', cookie: session.cookie }
+    const body = formBody({ csrf: session.csrf, expected_revision: 1, idempotency_key: 'form-key-refusal' })
+
+    const first = await built.app.inject({ method: 'POST', url: `/repos/${repo.id}/jobs/${job.id}/cancel`, headers, payload: body })
+    assert.equal(first.statusCode, 302)
+    assert.match(String(first.headers.location), /error=/, 'the refused command reports the refusal')
+
+    const replay = await built.app.inject({ method: 'POST', url: `/repos/${repo.id}/jobs/${job.id}/cancel`, headers, payload: body })
+    assert.equal(replay.statusCode, 302)
+    assert.match(String(replay.headers.location), /error=/, 'the replay of a stored failure is still a refusal')
+    assert.doesNotMatch(String(replay.headers.location), /notice=/, 'and never a success notice')
+  } finally {
+    await built.close()
   }
 })
 

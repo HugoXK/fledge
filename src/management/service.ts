@@ -27,6 +27,7 @@ export type ManagementCode =
   | 'actor_not_allowed'
   | 'idempotency_conflict'
   | 'management_revision_conflict'
+  | 'command_in_progress'
   | 'authorization_revoked'
   | 'not_accepted'
   | 'corrupt_receipt'
@@ -95,7 +96,7 @@ export class ManagementService {
     const requestHash = this.requestHash(envelope)
     const existing = this.store.commandReceiptByKey(scope, envelope.idempotencyKey)
     if (existing !== undefined) {
-      if (existing.request_hash === requestHash) return { ok: true, receipt: existing, replayed: true }
+      if (existing.request_hash === requestHash) return this.replay(existing)
       return { ok: false, code: 'idempotency_conflict', message: 'this idempotency key was already used for a different request', receipt: existing }
     }
 
@@ -128,7 +129,7 @@ export class ManagementService {
       // Two callers with the same key: the unique index decides. The loser reads
       // the winner's receipt rather than inventing a second command.
       const winner = this.store.commandReceiptByKey(scope, envelope.idempotencyKey)
-      if (winner !== undefined && winner.request_hash === requestHash) return { ok: true, receipt: winner, replayed: true }
+      if (winner !== undefined && winner.request_hash === requestHash) return this.replay(winner)
       if (winner !== undefined) return { ok: false, code: 'idempotency_conflict', message: 'this idempotency key was already used for a different request', receipt: winner }
       return { ok: false, code: 'invalid_envelope', message: `the receipt could not be written: ${String(error)}` }
     }
@@ -183,7 +184,7 @@ export class ManagementService {
     // The receipt, the revision bump and the audit row commit together. The
     // business write itself already happened inside the operation, which is why
     // `docs/architecture.md` names the operations that cannot be one transaction.
-    const after = this.store.transaction(() => {
+    this.store.transaction(() => {
       const revision = this.store.bumpRevision(operation.revisionType, resourceId)
       this.store.updateCommandReceipt(receipt.id, {
         status: 'succeeded',
@@ -198,6 +199,18 @@ export class ManagementService {
     const updated = this.store.commandReceipt(receipt.id)
     if (updated === undefined) return { ok: false, code: 'corrupt_receipt', message: 'the receipt disappeared after completion' }
     return { ok: true, receipt: updated, replayed: false }
+  }
+
+  // A replay answers with what the first attempt stored. Only a succeeded
+  // receipt is a success: a stored failure repeats its code, and a receipt that
+  // is still accepted/running/unknown is in progress — never a success notice,
+  // which would tell a person the job was cancelled when it was not.
+  private replay(receipt: ManagementCommandRow): CommandOutcome {
+    if (receipt.status === 'succeeded') return { ok: true, receipt, replayed: true }
+    if (receipt.status === 'failed') {
+      return { ok: false, code: (receipt.error_code as ManagementCode | null) ?? 'not_accepted', message: receipt.error_message ?? 'the command already failed', receipt }
+    }
+    return { ok: false, code: 'command_in_progress', message: `the command is ${receipt.status} and has not finished`, receipt }
   }
 
   private failReceipt(receipt: ManagementCommandRow, code: ManagementCode, message: string): CommandOutcome {
