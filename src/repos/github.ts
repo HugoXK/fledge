@@ -86,6 +86,41 @@ export interface ReviewInfo {
   submittedAt: string
 }
 
+// #546 slice 3: one workflow run for the tag, its jobs, and a GitHub Release.
+// The tracker reads these and writes only a draft Release; `conclusion` is null
+// while a run is still going, which is what keeps a draft from being prepared
+// early.
+export interface WorkflowRunInfo {
+  id: number
+  name: string | null
+  path: string | null
+  status: string
+  conclusion: string | null
+  headSha: string
+  headBranch: string | null
+  runAttempt: number
+  htmlUrl: string
+  event: string
+}
+
+export interface GithubReleaseInfo {
+  id: number
+  tagName: string
+  name: string | null
+  draft: boolean
+  prerelease: boolean
+  htmlUrl: string
+  targetCommitish: string | null
+}
+
+export interface GithubReleaseInput {
+  tagName: string
+  targetCommitish: string
+  name: string
+  body: string
+  prerelease: boolean
+}
+
 interface GithubRepoPayload {
   name: string
   full_name: string
@@ -96,6 +131,46 @@ interface GithubRepoPayload {
   parent?: { full_name?: string } | null
   owner: { login: string }
   permissions?: { push?: boolean; admin?: boolean; maintain?: boolean; triage?: boolean; pull?: boolean }
+}
+
+interface WorkflowRunPayload {
+  id?: number
+  name?: string | null
+  path?: string | null
+  status?: string
+  conclusion?: string | null
+  head_sha?: string
+  head_branch?: string | null
+  run_attempt?: number
+  html_url?: string
+  event?: string
+}
+
+interface WorkflowRunListPayload {
+  total_count?: number
+  workflow_runs?: WorkflowRunPayload[]
+}
+
+interface WorkflowJobPayload {
+  id?: number
+  name?: string
+  status?: string
+  conclusion?: string | null
+}
+
+interface WorkflowJobsPayload {
+  total_count?: number
+  jobs?: WorkflowJobPayload[]
+}
+
+interface ReleasePayload {
+  id?: number
+  tag_name?: string
+  name?: string | null
+  draft?: boolean
+  prerelease?: boolean
+  html_url?: string
+  target_commitish?: string | null
 }
 
 export class GithubError extends Error {
@@ -264,6 +339,33 @@ export class GithubClient {
         triage: repo.permissions?.triage === true,
         pull: repo.permissions?.pull === true,
       },
+    }
+  }
+
+  private mapWorkflowRun(run: WorkflowRunPayload): WorkflowRunInfo {
+    return {
+      id: Number(run.id ?? 0),
+      name: typeof run.name === 'string' ? run.name : null,
+      path: typeof run.path === 'string' ? run.path : null,
+      status: String(run.status ?? 'unknown'),
+      conclusion: typeof run.conclusion === 'string' ? run.conclusion : null,
+      headSha: String(run.head_sha ?? ''),
+      headBranch: typeof run.head_branch === 'string' ? run.head_branch : null,
+      runAttempt: Number(run.run_attempt ?? 1),
+      htmlUrl: String(run.html_url ?? ''),
+      event: String(run.event ?? ''),
+    }
+  }
+
+  private mapRelease(release: ReleasePayload): GithubReleaseInfo {
+    return {
+      id: Number(release.id ?? 0),
+      tagName: String(release.tag_name ?? ''),
+      name: typeof release.name === 'string' ? release.name : null,
+      draft: release.draft === true,
+      prerelease: release.prerelease === true,
+      htmlUrl: String(release.html_url ?? ''),
+      targetCommitish: typeof release.target_commitish === 'string' ? release.target_commitish : null,
     }
   }
 
@@ -769,6 +871,83 @@ export class GithubClient {
       if (error instanceof GithubError) return { ok: false, status: error.status, message: error.message }
       throw error
     }
+  }
+
+  // #546 slice 3: read the run for the tag and its jobs, then create a draft
+  // Release only. The run list is bounded (three pages) because a reconcile is a
+  // user-facing read, not a history crawl; the tracker prefers the run whose
+  // head is the tag's commit, so an unrelated recent run cannot win.
+  async getWorkflowRun(owner: string, name: string, runId: number): Promise<WorkflowRunInfo | null> {
+    try {
+      const run = await this.request<WorkflowRunPayload>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/actions/runs/${runId}`,
+      )
+      return this.mapWorkflowRun(run)
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return null
+      throw error
+    }
+  }
+
+  async listWorkflowRunsForRef(owner: string, name: string, ref: string): Promise<WorkflowRunInfo[]> {
+    const runs: WorkflowRunInfo[] = []
+    for (let page = 1; page <= 3; page += 1) {
+      const list = await this.request<WorkflowRunListPayload>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/actions/runs?per_page=100&page=${page}`,
+      )
+      const entries = Array.isArray(list.workflow_runs) ? list.workflow_runs : []
+      for (const entry of entries) runs.push(this.mapWorkflowRun(entry))
+      if (entries.length < 100) break
+    }
+    const matching = runs.filter((run) => run.headSha === ref || run.headBranch === ref)
+    return matching.length > 0 ? matching : runs
+  }
+
+  async getReleaseByTag(owner: string, name: string, tag: string): Promise<GithubReleaseInfo | null> {
+    try {
+      const release = await this.request<ReleasePayload>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/releases/tags/${encodeURIComponent(tag)}`,
+      )
+      return this.mapRelease(release)
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return null
+      throw error
+    }
+  }
+
+  // A draft is the only release this client creates: `draft` is fixed true here,
+  // not a caller input, so a tracked run cannot publish a Release by accident.
+  async createRelease(owner: string, name: string, input: GithubReleaseInput): Promise<GithubReleaseInfo> {
+    const release = await this.request<ReleasePayload>(
+      'POST',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/releases`,
+      {
+        tag_name: input.tagName,
+        target_commitish: input.targetCommitish,
+        name: input.name,
+        body: input.body,
+        draft: true,
+        prerelease: input.prerelease,
+      },
+    )
+    return this.mapRelease(release)
+  }
+
+  async updateRelease(
+    owner: string,
+    name: string,
+    releaseId: number,
+    input: { body?: string; name?: string; prerelease?: boolean },
+  ): Promise<GithubReleaseInfo> {
+    const release = await this.request<ReleasePayload>(
+      'PATCH',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/releases/${releaseId}`,
+      input,
+    )
+    return this.mapRelease(release)
   }
 }
 

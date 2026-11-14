@@ -1331,6 +1331,14 @@ CREATE TABLE IF NOT EXISTS repo_releases (
   tag_object_sha TEXT,
   status TEXT NOT NULL,
   preflight_json TEXT,
+  run_id TEXT,
+  run_attempt INTEGER,
+  conclusion TEXT,
+  workflow_name TEXT,
+  draft_release_id TEXT,
+  draft_url TEXT,
+  external_release_id TEXT,
+  last_checked_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(repo_id, tag_name)
@@ -1784,8 +1792,31 @@ export interface ReleaseRow {
   tag_object_sha: string | null
   status: string
   preflight_json: string | null
+  run_id: string | null
+  run_attempt: number | null
+  conclusion: string | null
+  workflow_name: string | null
+  draft_release_id: string | null
+  draft_url: string | null
+  external_release_id: string | null
+  last_checked_at: string | null
   created_at: string
   updated_at: string
+}
+
+// #546: the workflow-run tracker writes only these fields. Every reconcile is a
+// full observation, so a value the current observation did not produce is
+// cleared instead of left behind from an earlier check.
+export interface ReleaseTrackingPatch {
+  status: string
+  runId: string | null
+  runAttempt: number | null
+  conclusion: string | null
+  workflowName: string | null
+  draftReleaseId: string | null
+  draftUrl: string | null
+  externalReleaseId: string | null
+  lastCheckedAt: string
 }
 
 export class Store {
@@ -1810,6 +1841,7 @@ export class Store {
     this.migrateArtifactColumns()
     this.migrateManagementColumns()
     this.migrateScheduleOccurrenceColumns()
+    this.migrateReleaseColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
     this.migrateModelsV2()
@@ -1998,6 +2030,26 @@ export class Store {
         // value, and the honest one is the moment this migration ran.
         row.promoted_at ?? nowIso(),
       )
+    }
+  }
+
+  // #546 slice 3: tracking columns are added to the row the tag write already
+  // created. `status` existed at slice 1, so the tracker reuses it rather than
+  // adding a second state column; a fresh schema carries these from the start.
+  private migrateReleaseColumns(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(repo_releases)').map((row) => row.name))
+    const additions: Array<[string, string]> = [
+      ['run_id', 'TEXT'],
+      ['run_attempt', 'INTEGER'],
+      ['conclusion', 'TEXT'],
+      ['workflow_name', 'TEXT'],
+      ['draft_release_id', 'TEXT'],
+      ['draft_url', 'TEXT'],
+      ['external_release_id', 'TEXT'],
+      ['last_checked_at', 'TEXT'],
+    ]
+    for (const [name, type] of additions) {
+      if (!columns.has(name)) this.run(`ALTER TABLE repo_releases ADD COLUMN ${name} ${type}`)
     }
   }
 
@@ -2902,8 +2954,36 @@ export class Store {
     return this.get<ReleaseRow>('SELECT * FROM repo_releases WHERE repo_id = ? AND tag_name = ?', repoId, tagName)
   }
 
+  releaseById(id: string): ReleaseRow | undefined {
+    return this.get<ReleaseRow>('SELECT * FROM repo_releases WHERE id = ?', id)
+  }
+
   listReleasesForRepo(repoId: string, limit = 5): ReleaseRow[] {
     return this.all<ReleaseRow>('SELECT * FROM repo_releases WHERE repo_id = ? ORDER BY created_at DESC LIMIT ?', repoId, limit)
+  }
+
+  // #546: one reconcile replaces the whole observation. The row is keyed by its
+  // tag, so a repeated check cannot create a second draft pointer or a second
+  // external-release pointer for the same tag.
+  updateReleaseTracking(id: string, patch: ReleaseTrackingPatch): ReleaseRow | undefined {
+    this.run(
+      `UPDATE repo_releases
+          SET status = ?, run_id = ?, run_attempt = ?, conclusion = ?, workflow_name = ?,
+              draft_release_id = ?, draft_url = ?, external_release_id = ?, last_checked_at = ?, updated_at = ?
+        WHERE id = ?`,
+      patch.status,
+      patch.runId,
+      patch.runAttempt,
+      patch.conclusion,
+      patch.workflowName,
+      patch.draftReleaseId,
+      patch.draftUrl,
+      patch.externalReleaseId,
+      patch.lastCheckedAt,
+      nowIso(),
+      id,
+    )
+    return this.releaseById(id)
   }
 
   createPostmortemForJob(jobId: string): PostmortemRecord | undefined {
