@@ -1193,15 +1193,15 @@ branch and event, the attempt and the run link, so a red default branch is
 visible where the other work is instead of only in GitHub.
 
 The intake also reads the failed job's log for a `queued` row. It lists the run's
-jobs (`GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs`, at most two pages of
-100), picks the first job whose conclusion is `failure` or `timed_out`, and reads
-that job's log (`GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs`) through the
-repository's token. The log is capped at 8 MiB, and a redirect to a signed storage
-URL is followed without the GitHub token. The raw log is never stored or rendered:
-it goes through the single redactor and is reduced to a 4,000-character excerpt
-before it is written to `log_excerpt`. A token, GitHub or empty-log failure writes
-a redacted reason to `log_error` and keeps the intake row. An `ignored` row never
-spends a request on a log nobody will analyse.
+jobs (`GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs`, at most three pages
+of 100), picks the first job whose conclusion is `failure` or `timed_out`, and
+reads that job's log (`GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs`)
+through the repository's token. The log is capped at 8 MiB, and a redirect to a
+signed storage URL is followed without the GitHub token. The raw log is never
+stored or rendered: it goes through the single redactor and is reduced to a
+4,000-character excerpt before it is written to `log_excerpt`. A token, GitHub or
+empty-log failure writes a redacted reason to `log_error` and keeps the intake
+row. An `ignored` row never spends a request on a log nobody will analyse.
 
 The cited-line verifier (`src/actions/evidence.ts`) is the next building block:
 given the model's cited lines and the failed step's output it trims whitespace and
