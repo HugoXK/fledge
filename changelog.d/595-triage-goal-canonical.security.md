@@ -1,1 +1,0 @@
-A triage job started from an issue link now names that issue by the canonical URL rebuilt from its owner, repository and number, so a query string or fragment left on the pasted link can no longer become part of the instructions the agent receives.
