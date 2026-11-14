@@ -131,6 +131,45 @@ function httpError(statusCode: number, message: string, code = 'REQUEST_FAILED')
   return Object.assign(new Error(message), { statusCode, code })
 }
 
+// #540 finding 3: the per-comment marker answers "was this comment handled?", and
+// a marker that only ever says "yes" is a tombstone — a process killed between the
+// marker and the command receipt left a comment that no later delivery would ever
+// answer. The marker is a claim instead: `claimed:<iso>` from the moment the
+// delivery starts until the answer reaches the issue, then `done:<iso>`. A claim
+// older than the delivery row's own five-minute lease is retakeable, and a failed
+// delivery releases its claim at once (see `releaseIssueCommandClaim`), so a
+// comment can always be retried. Retaking is safe because the writes it repeats
+// are fenced elsewhere — the command receipt answers a replay, and `enqueue`
+// refuses a second active job — so the claim never carried "queue exactly once".
+const ISSUE_COMMAND_CLAIM_MS = 5 * 60_000
+
+function readIssueCommandMarker(raw: string | undefined): { state: 'claimed' | 'done'; at: number } | undefined {
+  if (raw === undefined) return undefined
+  const separator = raw.indexOf(':')
+  if (separator > 0) {
+    const state = raw.slice(0, separator)
+    if (state === 'claimed' || state === 'done') {
+      const at = Date.parse(raw.slice(separator + 1))
+      return { state, at: Number.isFinite(at) ? at : 0 }
+    }
+  }
+  // A marker written before this slice carries no state, so all it can prove is
+  // that a delivery started. Read as a lapsed claim: a redelivery replays the
+  // receipt it may already have, which is why re-answering it is safe.
+  return { state: 'claimed', at: 0 }
+}
+
+// A delivery that threw before it answered hands its claim back, so the redelivery
+// GitHub sends is not told the comment was handled. This runs on the webhook
+// failure path, which is where the delivery row is marked failed for the same
+// reason and with the same lease.
+function releaseIssueCommandClaim(store: Store, body: Record<string, unknown>): void {
+  const parsed = parseIssueCommand(body)
+  if (parsed === null) return
+  const key = `issue_command:${parsed.commentId}`
+  if (readIssueCommandMarker(store.getSetting(key))?.state === 'claimed') store.deleteSetting(key)
+}
+
 // #231 review: a refused enqueue answers with the job service's code, and the
 // banner builds the sentence from it, so a refusal reaches an English reader in
 // English. The detail a refusal names (a missing target branch) travels after a
@@ -4220,22 +4259,32 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (parsed === null) return
     const { command, issueUrl, number, title, detail } = parsed
     const key = `issue_command:${parsed.commentId}`
-    if (store.getSetting(key) !== undefined) return
-    store.setSetting(key, nowIso())
+    const marker = readIssueCommandMarker(store.getSetting(key))
+    // Answered already: a redelivery says nothing twice.
+    if (marker?.state === 'done') return
+    // Still inside the claim's lease: another delivery of the same comment is
+    // answering it right now. A lapsed claim is the shape a killed process leaves,
+    // so this delivery takes it over rather than leaving the comment unanswered.
+    if (marker !== undefined && Date.now() - marker.at < ISSUE_COMMAND_CLAIM_MS) return
+    store.setSetting(key, `claimed:${nowIso()}`)
     const token = await repoGithubToken(repo, config, githubApp, store)
     const client = new GithubClient(token, config.github.apiBase)
     const owner = repo.upstream_owner || repo.owner
     const name = repo.upstream_name || repo.name
     const reply = async (message: string): Promise<void> => {
       await client.comment(owner, name, number, `${message}\n\n<sub>Fledge · issue command</sub>`)
+      // The claim settles only once the answer is on the issue, so a reply that
+      // never posted leaves a marker the next delivery can retake.
+      store.setSetting(key, `done:${nowIso()}`)
     }
 
   // #540 slice 6: the chat half. An issue comment is a third surface on the same
   // command contract as the console forms, so the reply is built from the receipt
   // and the audit row, the revision fence and the refusal codes are the same ones.
   // A chat message has no rendered page to go stale, so the revision is read as the
-  // event is handled; the comment id is the idempotency key, which is what makes a
-  // redelivered webhook answer the receipt it already has instead of queueing again.
+  // event is handled. The comment id is both the claim key and the idempotency key:
+  // the claim absorbs a duplicate delivery, and if a delivery is retaken the
+  // receipt answers the replay instead of queueing a second job.
   const runChatCreate = async (kind: JobKind, goal: string, itemId: string): Promise<CommandOutcome> => {
     const actor = managementActor({ userId: repo.user_id, repo, channel: 'chat', requestId: `issue_command:${parsed.commentId}` })
     return management.run(actor, {
@@ -4435,7 +4484,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     try {
       await handleWorkItemEvent(event, body)
       await handleWorkflowRun(event, body)
-      await handleIssueCommand(event, body)
+      // A command that threw before it answered hands its comment claim back, so
+      // the redelivery GitHub sends can retry it instead of reading a marker that
+      // says "handled". The delivery row below is marked failed for the same
+      // reason, and with the same five-minute lease.
+      await handleIssueCommand(event, body).catch((error: unknown) => {
+        releaseIssueCommandClaim(store, body)
+        throw error
+      })
       await handleGithubFollowup(event, body)
       if (delivery !== '') store.finishWebhookDelivery(delivery, 'processed')
     } catch (error) {

@@ -1690,9 +1690,16 @@ still calls its service directly. Each migrates by registering one operation and
 leaving its route as an adapter; none of them may keep a second copy of the rules.
 The issue-thread `/fledge plan` and `/fledge fix` commands are the chat adapter:
 they register a `task.create` receipt in the `chat` channel instead of calling
-`Jobs.enqueue` themselves. The comment id is the idempotency key, so a
-redelivered webhook answers the receipt it already has and queues nothing twice;
-a chat message has no rendered page, so the revision fence is read as the event is
+`Jobs.enqueue` themselves. The comment id is the claim key and the idempotency
+key, and the two guards answer different questions. A per-comment marker records
+`claimed` from the moment a delivery starts until the answer is posted, then
+`done`; it absorbs a duplicate delivery, it is released when a delivery fails, and
+a claim left behind by a killed process lapses after the same five minutes as the
+webhook delivery row, so a comment can be retried instead of being dropped. The
+receipt is the second guard: a retaken `/fledge plan` or `/fledge fix` replays the
+first result, and a retaken `/fledge retry` is refused by the single-active-job
+rule every enqueue goes through, so a retaken delivery queues nothing twice. A
+chat message has no rendered page, so the revision fence is read as the event is
 handled rather than posted back by a form. The refusal mapping that made this
 possible is the same one the console uses: an operation hands its service's
 enqueue code back as the receipt's `error_code`, with `error_detail` carrying the
