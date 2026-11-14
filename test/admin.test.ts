@@ -236,6 +236,31 @@ test('admins can inspect a normal user read-only from a support view', async () 
   }
 })
 
+test('the empty-state View users action and /admin/users land on the Users section', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'users-link-admin', admin: true })
+    const normal = makeUser(store, { login: 'users-link-normal', status: 'approved' })
+    const adminSession = sessionFor(built, admin)
+    const page = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: adminSession.cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /href="\/admin#users">[^<]*(查看用户|View users)/, 'the empty state must link to the Users section')
+    assert.doesNotMatch(page.body, /href="\/admin\/users"/, 'nothing may link to the bare /admin/users path')
+
+    const redirect = await built.app.inject({ method: 'GET', url: '/admin/users', headers: { cookie: adminSession.cookie } })
+    assert.equal(redirect.statusCode, 302)
+    assert.equal(redirect.headers.location, '/admin#users')
+
+    const normalSession = sessionFor(built, normal)
+    const denied = await built.app.inject({ method: 'GET', url: '/admin/users', headers: { cookie: normalSession.cookie } })
+    assert.equal(denied.statusCode, 403)
+  } finally {
+    await built.close()
+  }
+})
+
 test('admins can search and export jobs and audit within their visibility scope', async () => {
   const config = testConfig()
   const store = new Store(':memory:')

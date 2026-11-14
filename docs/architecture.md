@@ -512,6 +512,10 @@ which must pass the job block to the Lead verbatim; review jobs go to the
 Reviewer only when the repository has enabled it. The Lead delegates to the
 member whose scope fits and posts the final callback exactly once.
 
+The admin page owns the Users section at `/admin#users`; `/admin/users` is an
+admin-only redirect to that section for older links and bookmarks, while
+`/admin/users/:id` remains the read-only support view.
+
 ### Team console and live events
 
 The team console is admin-only. `GET /api/repos/:id/team/events` streams
