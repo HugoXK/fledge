@@ -1,0 +1,1 @@
+The model-provider form now keeps region and data-policy metadata in an optional Advanced section, with plain-language labels and help: the region is a label used only by a repository's region constraint, and the data-policy link is recorded for review rather than fetched.

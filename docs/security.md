@@ -565,6 +565,12 @@ optional data-policy URL and an allowed flag. The base URL and the data-policy
 URL reject credentials, and neither is written to a log or an audit row; the
 stored key is encrypted and never rendered.
 
+The region and data-policy fields on a provider are optional advanced
+metadata. The region is a label the owner assigns (`eu`, `us`, `cn`, …), not a
+data-residency guarantee or a certification; it only participates when a
+repository sets a region constraint. The data-policy link is recorded for review
+and audit and is never fetched. Empty means “not declared”.
+
 A repository may keep a provider allowlist and an optional region constraint.
 The allowlist names provider ids owned by the repository owner; an empty
 allowlist means no restriction in this version, and a region constraint matches

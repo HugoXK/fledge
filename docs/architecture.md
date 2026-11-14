@@ -1339,7 +1339,10 @@ also assign a selected model to each DSH bot role; after the restart Fledge call
 model or the new default, so a bot cannot keep a stale provider reference.
 
 Provider metadata also carries a region tag, an optional data-policy URL and an
-allowed flag. A repository can set a provider allowlist and a required region;
+allowed flag. Region and data policy are optional advanced fields: the region is
+a label used only by a repository's region constraint, and the data-policy link
+is recorded for review rather than fetched.
+ A repository can set a provider allowlist and a required region;
 the gateway enforces both at candidate resolution, including the fallback loop,
 and refuses a disallowed model with a stable code before any upstream call. With
 a policy set, a call must name one of the repository's models: a call that omits
