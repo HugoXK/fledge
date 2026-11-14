@@ -301,6 +301,8 @@ test('the admin page does not turn an unreadable Release URL into a link', async
 
 test('the admin page says the chain was not recorded instead of rendering a blank card', async () => {
   const page = await adminPage(null)
-  assert.match(page, /这台实例还没有记录发布链/)
-  assert.match(page, /scripts\/verify-release\.mjs/)
+  assert.match(page, /还没有记录发布链/)
+  assert.match(page, /这不是错误/)
+  assert.match(page, /&lt;DATA_DIR&gt;\/release-status\.json/)
+  assert.doesNotMatch(page, /\/home\//)
 })

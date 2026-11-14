@@ -2119,7 +2119,7 @@ export function adminPage(input: {
     .filter((user) => user.status === 'pending')
     .sort((a, b) => String(a.application_submitted_at ?? a.created_at).localeCompare(String(b.application_submitted_at ?? b.created_at)))
   const pendingRows = pending.length === 0
-    ? stateCell(4, { kind: 'empty', title: t('没有待审批申请。', 'No pending applications.'), body: t('新申请会出现在这里；审批会发邮件并写审计。', 'New applications land here; approving one sends mail and writes an audit entry.'), action: { href: '/admin/users', label: t('查看用户', 'View users') } })
+    ? stateCell(4, { kind: 'empty', title: t('没有待审批申请。', 'No pending applications.'), body: t('新申请会出现在这里；审批会发邮件并写审计。', 'New applications land here; approving one sends mail and writes an audit entry.'), action: { href: '/admin#users', label: t('查看用户', 'View users') } })
     : pending
         .map(
           (user, index) => `<tr>
@@ -2161,14 +2161,11 @@ export function adminPage(input: {
   // the card names it as the running version and never claims a commit. A file
   // that is not in this build says so; a zero fragment count is a real fact.
   const absent = t('此构建中不可用', 'not available in this build')
-  const releaseCard = `<section class="card" id="release">
-    <h2>${escapeHtml(t('发布', 'Release'))}</h2>
-    <div class="list">
+  const releaseFacts = `<div class="list">
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('运行版本', 'Running'))}</strong><small>${release.version === null ? escapeHtml(absent) : `v${escapeHtml(release.version)} · ${escapeHtml(t('来自 package.json', 'from package.json'))}`}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新 CHANGELOG 段落', 'Newest CHANGELOG section'))}</strong><small>${release.changelogVersion === null || release.releasedAt === null ? escapeHtml(absent) : `${escapeHtml(release.changelogVersion)} · ${escapeHtml(release.releasedAt)}`}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('待发布片段', 'Pending fragments'))}</strong><small>${release.fragments === null ? escapeHtml(absent) : release.fragments === 0 ? escapeHtml(t('没有待发布片段', 'nothing pending')) : escapeHtml(t(`${release.fragments} 个待发布片段`, `${release.fragments} pending fragment${release.fragments === 1 ? '' : 's'}`))}</small></div></div>
-    </div>
-  </section>`
+    </div>`
   // Issue #280: the chain is assembled by `node scripts/verify-release.mjs` and
   // read from `${DATA_DIR}/release-status.json`; the page renders what that run
   // recorded and never calls GitHub itself. The running row is the only live
@@ -2197,7 +2194,8 @@ export function adminPage(input: {
     return t(pair[0]!, pair[1]!)
   }
   const chainRows = releaseStatus === null
-    ? `<p class="muted">${escapeHtml(t('这台实例还没有记录发布链。', 'No release chain is recorded on this instance.'))} <code>node scripts/verify-release.mjs --version X.Y.Z --write ${escapeHtml(config.dataDir)}/release-status.json</code></p>`
+    ? `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('还没有记录发布链', 'No release chain is recorded'))}</strong><small>${escapeHtml(t('这不是错误：发布链只有在管理员于主机上记录过一次校验后才会出现。', 'This is expected, not an error: the chain appears only after an operator records a verification on the host.'))}</small></div></div>
+      <details class="advanced-help"><summary>${escapeHtml(t('在主机上记录发布链', 'Record it on the host'))}</summary><p class="fine">${escapeHtml(t('运行', 'Run'))} <code>node scripts/verify-release.mjs --version X.Y.Z --write &lt;DATA_DIR&gt;/release-status.json</code> ${escapeHtml(t('然后刷新此页。', 'then reload this page.'))}</p></details>`
     : `${releaseStatus.links
         .map(
           (entry) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(linkLabel(entry.id))}</strong><small>${escapeHtml(entry.detail)}</small></div><div class="row">${stateBadge(entry.state)}</div></div>`,
@@ -2206,8 +2204,10 @@ export function adminPage(input: {
         const running = compareRunning(releaseStatus, { version: release.version ?? '', commit: config.build.commit })
         return `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('这个进程', 'This process'))}</strong><small>${escapeHtml(running.detail)}</small></div><div class="row">${stateBadge(running.state)}</div></div>`
       })()}`
-  const chainCard = `<section class="card" id="release-chain">
-    <h2>${escapeHtml(t('发布链', 'Release chain'))}${releaseStatus === null ? '' : ` <small class="count">v${escapeHtml(releaseStatus.version)} · ${escapeHtml(releaseStatus.ok ? t('已发布', 'released') : t('未完成', 'not released'))}${releaseStatus.checkedAt === '' ? '' : ` · ${escapeHtml(t(`检查于 ${releaseStatus.checkedAt}`, `checked ${releaseStatus.checkedAt}`))}`}${releaseStatus.releaseUrl === '' ? '' : ` · <a class="link" href="${escapeHtml(releaseStatus.releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(t('GitHub Release', 'GitHub Release'))}</a>`}</small>`}</h2>
+  const releaseCard = `<section class="card" id="release">
+    <h2>${escapeHtml(t('发布', 'Release'))}</h2>
+    ${releaseFacts}
+    <h3 class="mt-16">${escapeHtml(t('发布链', 'Release chain'))}${releaseStatus === null ? '' : ` <small class="count">v${escapeHtml(releaseStatus.version)} · ${escapeHtml(releaseStatus.ok ? t('已发布', 'released') : t('未完成', 'not released'))}${releaseStatus.checkedAt === '' ? '' : ` · ${escapeHtml(t(`检查于 ${releaseStatus.checkedAt}`, `checked ${releaseStatus.checkedAt}`))}`}${releaseStatus.releaseUrl === '' ? '' : ` · <a class="link" href="${escapeHtml(releaseStatus.releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(t('GitHub Release', 'GitHub Release'))}</a>`}</small>`}</h3>
     <div class="list">${chainRows}</div>
   </section>`
 
@@ -2307,17 +2307,13 @@ export function adminPage(input: {
     ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出用户视图预览', 'Exit user preview') : t('预览用户视图', 'Preview the user view'))}</button></form>` : ''}
   </section>
   <nav class="section-nav" aria-label="${escapeHtml(t('页面导航', 'Section navigation'))}">
-    <a href="#release" data-allow-overflow>${escapeHtml(t('发布', 'Release'))}</a>
-    <a href="#release-chain" data-allow-overflow>${escapeHtml(t('发布链', 'Release chain'))}</a>
-    <a href="#backups" data-allow-overflow>${escapeHtml(t('备份', 'Backups'))}</a>
     <a href="#pending" data-allow-overflow>${escapeHtml(t('待审批', 'Pending'))}</a>
     <a href="#users" data-allow-overflow>${escapeHtml(t('用户', 'Users'))}</a>
     <a href="#jobs" data-allow-overflow>${escapeHtml(t('任务', 'Jobs'))}</a>
     ${showAudit ? `<a href="#audit" data-allow-overflow>${escapeHtml(t('审计', 'Audit'))}</a>` : ''}
+    <a href="#release" data-allow-overflow>${escapeHtml(t('发布', 'Release'))}</a>
+    <a href="#backups" data-allow-overflow>${escapeHtml(t('备份', 'Backups'))}</a>
   </nav>
-  ${releaseCard}
-  ${chainCard}
-  ${backupCard}
   <section class="card" id="pending">
     <h2>${escapeHtml(t('待审批', 'Pending'))} <small class="count">${pending.length}</small></h2>
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('用户', 'User'))}</th><th>${escapeHtml(t('申请时间', 'Applied'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th></th></tr></thead><tbody>${pendingRows}</tbody></table></div>
@@ -2328,14 +2324,16 @@ export function adminPage(input: {
   </section>
   <section class="card" id="jobs">
     <div class="row between"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))} <small class="count">${jobsTotal}</small></h2><span class="fine">${escapeHtml(t('每页 10 条', '10 per page'))}</span></div>
-    ${jobTable(locale, jobs, { body: t('这里汇总所有用户的任务；还没有任何一条。', 'Jobs from every user are collected here; there are none yet.'), action: { href: '/admin/users', label: t('查看用户', 'View users') } }, { id: 'admin-jobs-table', name: t('最近任务', 'Recent jobs') })}
+    ${jobTable(locale, jobs, { body: t('这里汇总所有用户的任务；还没有任何一条。', 'Jobs from every user are collected here; there are none yet.'), action: { href: '/admin#users', label: t('查看用户', 'View users') } }, { id: 'admin-jobs-table', name: t('最近任务', 'Recent jobs') })}
     ${pager('/admin', 'jobsPage', jobsPage, jobsTotal, perPage, t, showAudit ? { auditPage } : {})}
   </section>
   ${showAudit ? `<section class="card" id="audit">
     <div class="row between"><h2>${escapeHtml(t('审计', 'Audit'))} <small class="count">${auditTotal}</small></h2><span class="fine">${escapeHtml(t('每页 10 条', '10 per page'))}</span></div>
     <div class="table-scroll"><table class="table-cards table-priority" id="audit-table" aria-label="${escapeHtml(t('审计', 'Audit'))}"><thead><tr><th>${escapeHtml(t('时间', 'Time'))}</th><th>${escapeHtml(t('动作', 'Action'))}</th><th>${escapeHtml(t('操作者', 'Actor'))}</th><th data-priority="low">${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${auditRows(locale, audit, usersById, hideActor)}</tbody></table></div>
     ${pager('/admin', 'auditPage', auditPage, auditTotal, perPage, t, { jobsPage })}
-  </section>` : ''}`
+  </section>` : ''}
+  ${releaseCard}
+  ${backupCard}`
   return layout({ title: t('管理', 'Admin'), viewer, body, config, locale, path: '/admin', active: 'admin', notice, error, release })
 }
 
@@ -3428,7 +3426,7 @@ export function adminSupportPage(input: {
   const t = translator(locale)
   const usersById = new Map([[user.id, user.login]])
   const repoRows = repos.length === 0
-    ? stateCell(4, { kind: 'empty', title: t('没有仓库。', 'No repositories.'), body: t('这个用户还没有接入仓库。', 'This user has not connected a repository.'), action: { href: '/admin/users', label: t('查看用户', 'View users') } })
+    ? stateCell(4, { kind: 'empty', title: t('没有仓库。', 'No repositories.'), body: t('这个用户还没有接入仓库。', 'This user has not connected a repository.'), action: { href: '/admin#users', label: t('查看用户', 'View users') } })
     : repos.map((repo) => `<tr><td data-label="${escapeHtml(t('仓库', 'Repository'))}"><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></td><td data-label="${escapeHtml(t('角色', 'Role'))}"><span class="badge kind">${escapeHtml(repoRoleLabel(t, repo.repo_role))}</span></td><td data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, repo.last_status ?? 'idle')}</td><td data-label="${escapeHtml(t('上次运行', 'Last run'))}">${escapeHtml(humanTimeShort(repo.last_run_at))}</td></tr>`).join('')
   const jobRows = jobs.length === 0
     ? stateCell(4, { kind: 'empty', title: t('没有任务。', 'No jobs.'), body: t('这个仓库还没有跑过任务。', 'This repository has not run a job yet.'), action: { href: '/dashboard#jobs', label: t('查看任务', 'View jobs') } })
