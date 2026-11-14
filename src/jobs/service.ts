@@ -3279,28 +3279,34 @@ export class Jobs {
     return Date.now() - last >= Math.max(15, repo.review_interval_minutes) * 60_000
   }
 
-  // #544 slice 3A, `misfire: 'skip'`: a logical instant that is due but does not
-  // run is recorded with a reason and the high water mark moves past it. Slice A
-  // has no occurrence row, so the audit line is the whole record — no lease, no
-  // attempt count, no console field. Slice B gives the same instant a row.
+  // #544 slice 3B, `misfire: 'skip'`: a logical instant that is due but does not
+  // run gets a skipped row carrying its reason, and the high water mark moves
+  // past it. The row is the decision; the audit line stays for operators and
+  // names the row, so the two records can be joined. The lease and the stale
+  // result rejection are the next slice: a decided instant already has the
+  // identity they will answer against.
   private skipScheduledOccurrence(repo: RepoRow, plan: TickPlan, reason: string): void {
     if (plan.dueAt === null) return
+    const at = Date.now()
+    const occurrence = this.recordScheduledOccurrence(repo, plan, 'skipped', { reason })
     this.store.audit(repo.user_id, 'schedule.skipped', JSON.stringify({
       repo: `${repo.owner}/${repo.name}`,
       occurrence_at: plan.dueAt,
-      decided_at: Date.now(),
+      decided_at: at,
       missed: plan.missed,
       reason,
+      occurrence: occurrence?.id ?? null,
     }))
     this.store.advanceScheduleOccurrence(repo.id, plan.dueAt)
     log.info('scheduled occurrence skipped', { repo: `${repo.owner}/${repo.name}`, reason, at: plan.dueAt, missed: plan.missed })
   }
 
-  // A due instant that did become a job. The logical time is what is stored; the
-  // dispatch time and the lag only ever live in this audit line in slice A.
+  // A due instant that did become a job. The row keeps the logical time, the
+  // dispatch time and the lag; the audit line keeps both for operators.
   private dispatchedScheduledOccurrence(repo: RepoRow, plan: TickPlan, jobId: string | undefined): void {
     if (plan.dueAt === null) return
     const at = Date.now()
+    const occurrence = this.recordScheduledOccurrence(repo, plan, 'dispatched', { jobId, dispatchedAt: at, lagMs: at - plan.dueAt })
     this.store.audit(repo.user_id, 'schedule.dispatched', JSON.stringify({
       repo: `${repo.owner}/${repo.name}`,
       occurrence_at: plan.dueAt,
@@ -3308,8 +3314,37 @@ export class Jobs {
       lag_ms: at - plan.dueAt,
       missed: plan.missed,
       job: jobId ?? null,
+      occurrence: occurrence?.id ?? null,
     }))
     this.store.advanceScheduleOccurrence(repo.id, plan.dueAt)
+  }
+
+  // One row per decided instant. A schedule deleted between the plan and this
+  // write leaves nothing to key the row on, so the audit line above is the whole
+  // record for that instant rather than an occurrence under a schedule that no
+  // longer exists.
+  private recordScheduledOccurrence(
+    repo: RepoRow,
+    plan: TickPlan,
+    state: 'dispatched' | 'skipped',
+    detail: { reason?: string; jobId?: string; dispatchedAt?: number; lagMs?: number },
+  ): { id: string } | undefined {
+    if (plan.dueAt === null) return undefined
+    const schedule = this.store.scheduleForRepo(repo.id)
+    if (schedule === undefined) return undefined
+    return this.store.recordScheduleOccurrence({
+      id: randomId('occ'),
+      scheduleId: schedule.id,
+      repoId: repo.id,
+      logicalTime: plan.dueAt,
+      timingRevision: schedule.timing_revision,
+      state,
+      reason: detail.reason ?? null,
+      missed: plan.missed,
+      jobId: detail.jobId ?? null,
+      dispatchedAt: detail.dispatchedAt ?? null,
+      lagMs: detail.lagMs ?? null,
+    }).row
   }
 
   // #265: the preview-trial sweep runs on its own clock rather than inside the

@@ -171,6 +171,29 @@ export interface ScheduleRow {
   updated_at: string
 }
 
+// #544 slice 3B. One row per logical instant a schedule decided about. The
+// identity of a decision is `(schedule_id, logical_time, timing_revision)`: the
+// same instant under the same plan is the same decision, so a second tick
+// reports it instead of recording it twice, and an edit that re-times the
+// schedule records a new decision without rewriting the one already taken.
+export interface ScheduleOccurrenceRow {
+  id: string
+  schedule_id: string
+  repo_id: string
+  logical_time: number
+  timing_revision: number
+  /** `dispatched` when the instant became a job, `skipped` when it did not. */
+  state: string
+  /** Why a `skipped` instant did not run; null on a dispatched one. */
+  reason: string | null
+  /** Instants strictly between the high water mark and this one under misfire: skip. */
+  missed: number
+  job_id: string | null
+  decided_at: string
+  dispatched_at: number | null
+  lag_ms: number | null
+}
+
 export interface UserModelRow {
   id: string
   user_id: string
@@ -1452,6 +1475,35 @@ CREATE TABLE IF NOT EXISTS schedules (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- #544 slice 3B: one row per decided logical instant. Slice A recorded a
+-- decision only as an audit line, so a skip had no row and a second tick could
+-- not be told that the instant had already been decided. The unique key is that
+-- answer: the same instant under the same plan is one row, while an edit that
+-- moves timing_revision re-keys the same wall clock as a new decision and
+-- leaves the old one readable.
+--
+-- missed counts the instants passed over on the way to this one; under
+-- misfire = 'skip' they are counted, never written as their own rows, so a year
+-- of missed hourly instants stays one row instead of 9k. The lease and the
+-- stale-result rejection are the next slice; they answer against these rows.
+CREATE TABLE IF NOT EXISTS schedule_occurrences (
+  id TEXT PRIMARY KEY,
+  schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  logical_time INTEGER NOT NULL,
+  timing_revision INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  reason TEXT,
+  missed INTEGER NOT NULL DEFAULT 0,
+  job_id TEXT,
+  decided_at TEXT NOT NULL,
+  dispatched_at INTEGER,
+  lag_ms INTEGER,
+  UNIQUE(schedule_id, logical_time, timing_revision)
+);
+CREATE INDEX IF NOT EXISTS schedule_occurrences_repo_idx ON schedule_occurrences(repo_id, logical_time DESC);
+CREATE INDEX IF NOT EXISTS schedule_occurrences_schedule_idx ON schedule_occurrences(schedule_id, logical_time DESC);
 `
 
 function clean(params: unknown[]): unknown[] {
@@ -1501,9 +1553,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 36) {
+    if (previousVersion > 37) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (36)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (37)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -1522,7 +1574,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 36)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 37)};`)
   }
 
   migrateIndexes(): void {
@@ -3599,6 +3651,55 @@ export class Store {
 
   deleteSchedule(repoId: string): void {
     this.run('DELETE FROM schedules WHERE repo_id = ?', repoId)
+  }
+
+  // #544 slice 3B. `INSERT ... ON CONFLICT DO NOTHING` on the unique key is what
+  // makes a decision unique: a second tick that reaches the same instant under
+  // the same plan inserts nothing and gets the row that is already there, so a
+  // later report cannot turn a recorded skip into a run. The returned `created`
+  // is the only place that distinction is visible.
+  recordScheduleOccurrence(input: {
+    id: string
+    scheduleId: string
+    repoId: string
+    logicalTime: number
+    timingRevision: number
+    state: 'dispatched' | 'skipped'
+    reason?: string | null
+    missed?: number
+    jobId?: string | null
+    dispatchedAt?: number | null
+    lagMs?: number | null
+  }): { row: ScheduleOccurrenceRow; created: boolean } {
+    const result = this.db.prepare(
+      `INSERT INTO schedule_occurrences
+         (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(schedule_id, logical_time, timing_revision) DO NOTHING`,
+    ).run(...clean([
+      input.id, input.scheduleId, input.repoId, input.logicalTime, input.timingRevision,
+      input.state, input.reason ?? null, input.missed ?? 0, input.jobId ?? null,
+      nowIso(), input.dispatchedAt ?? null, input.lagMs ?? null,
+    ]))
+    const row = this.findScheduleOccurrence(input.scheduleId, input.logicalTime, input.timingRevision)
+    if (row === undefined) throw new Error(`occurrence ${input.scheduleId}@${input.logicalTime}/${input.timingRevision} disappeared after insert`)
+    return { row, created: Number(result.changes) > 0 }
+  }
+
+  findScheduleOccurrence(scheduleId: string, logicalTime: number, timingRevision: number): ScheduleOccurrenceRow | undefined {
+    return this.get<ScheduleOccurrenceRow>(
+      'SELECT * FROM schedule_occurrences WHERE schedule_id = ? AND logical_time = ? AND timing_revision = ?',
+      scheduleId, logicalTime, timingRevision,
+    )
+  }
+
+  // Newest logical instant first: the console and an operator both read
+  // "what happened lately", not the order rows happened to be written in.
+  listScheduleOccurrences(repoId: string, limit = 20): ScheduleOccurrenceRow[] {
+    return this.all<ScheduleOccurrenceRow>(
+      'SELECT * FROM schedule_occurrences WHERE repo_id = ? ORDER BY logical_time DESC, decided_at DESC LIMIT ?',
+      repoId, limit,
+    )
   }
 
   getRepoInstance(repoId: string): RepoInstanceRow | undefined {
