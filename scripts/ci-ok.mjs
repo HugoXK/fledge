@@ -20,6 +20,9 @@ import { pathToFileURL } from 'node:url'
 // with the `needs:` list in ci.yml, so a job added to one side and not the other
 // is caught before it can silently disappear from the gate.
 export const REQUIRED_JOBS = [
+  // The change classifier is part of the gate: a skipped heavy job is only
+  // acceptable when this job succeeded and said the category does not apply.
+  'changes',
   'lint',
   'typecheck',
   'test',
@@ -38,7 +41,10 @@ export const REQUIRED_JOBS = [
   'secret-scan',
   // #304: the CodeQL analysis conclusion, read by `scripts/codeql-required.mjs`.
   // It is deliberately absent from SKIPPABLE_ON: a gate skipped on the event that
-  // merges would be vacuous. On `schedule` the job itself exits 0 with its reason.
+  // merges would be vacuous. The change-aware exception is narrower: a docs-only
+  // or workflow-only pull request cannot add a JS/TS finding, and the CodeQL
+  // workflow filters those paths itself. On `schedule` the job itself exits 0
+  // with its reason.
   'codeql-required',
 ]
 
@@ -52,6 +58,31 @@ export const SKIPPABLE_ON = {
   'dependency-review': ['push', 'merge_group', 'schedule', 'workflow_dispatch'],
 }
 
+// A job that is conditional on a change category. `skipped` is a pass only when
+// the category is present and false; a missing category is a failure, so a
+// broken or absent classifier cannot turn the gate off.
+export const SKIP_WHEN = {
+  // `test` and `coverage` are deliberately absent: the suite reads `docs/`,
+  // `public/`, `deploy/` and `.github/`, so it runs on every diff and a skipped
+  // one is red here whatever the classifier says.
+  lint: 'source',
+  typecheck: 'source',
+  build: 'source',
+  visual: 'frontend',
+  docker: 'docker',
+  audit: 'deps',
+  'restore-drill': 'db',
+  'action-pins': 'workflows',
+  'workflow-lint': 'workflows',
+  'codeql-required': 'codeql',
+}
+
+function flagIsFalse(changes, name) {
+  if (changes === null || typeof changes !== 'object') return false
+  const value = changes[name]
+  return value === false || value === 'false'
+}
+
 function resultOf(value) {
   if (value === null || typeof value !== 'object') return 'missing'
   return typeof value.result === 'string' && value.result !== '' ? value.result : 'missing'
@@ -61,6 +92,7 @@ export function evaluate(needs, options = {}) {
   const required = options.required ?? REQUIRED_JOBS
   const skippable = options.skippable ?? SKIPPABLE_ON
   const eventName = options.eventName ?? ''
+  const changes = options.changes ?? {}
   const lines = []
   const problems = []
   for (const [name, value] of Object.entries(needs)) {
@@ -77,6 +109,9 @@ export function evaluate(needs, options = {}) {
     if (result === 'success') continue
     const skippableHere = (skippable[name] ?? []).includes(eventName)
     if (result === 'skipped' && skippableHere) continue
+    const condition = (options.skipWhen ?? SKIP_WHEN)[name]
+    const conditionalEvent = eventName === 'pull_request' || eventName === 'merge_group'
+    if (result === 'skipped' && conditionalEvent && condition !== undefined && flagIsFalse(changes, condition)) continue
     problems.push(`required job did not succeed: ${name} (${result})`)
   }
   return { lines, problems }
@@ -101,7 +136,13 @@ export function main() {
     process.exit(1)
   }
   const eventName = process.env.GITHUB_EVENT_NAME ?? ''
-  const { lines, problems } = evaluate(needs, { eventName })
+  let changes = {}
+  try {
+    changes = JSON.parse(process.env.CHANGES ?? '{}')
+  } catch {
+    changes = {}
+  }
+  const { lines, problems } = evaluate(needs, { eventName, changes })
   for (const line of lines) console.log(line)
   if (problems.length > 0) {
     for (const problem of problems) console.error(problem)

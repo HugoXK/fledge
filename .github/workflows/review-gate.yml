@@ -88,7 +88,10 @@ jobs:
     # A verdict is only read from an owner, member or collaborator (the same
     # associations `scripts/lib/review-gate.mjs` filters), so a stranger's comment
     # cannot start this `actions: write` job and paint someone else's tip red.
-    if: github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    # A comment that cannot be a verdict never needs a runner. The step below
+    # still parses the exact first line; this is only a prefilter so ordinary
+    # discussion does not start a job that would immediately skip its steps.
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) && (contains(github.event.comment.body, 'Verdict') || contains(github.event.comment.body, 'verdict') || contains(github.event.comment.body, 'VERDICT') || contains(github.event.comment.body, 'Review') || contains(github.event.comment.body, 'review'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

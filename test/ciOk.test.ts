@@ -106,6 +106,87 @@ test('dependency-review may be skipped on a push, but a pull request must run it
   assert.match(pulled.stderr, /dependency-review/)
 })
 
+test('a skipped conditional job passes only when its change flag is false', async () => {
+  const required = await requiredJobs()
+  const needs = allSuccess(required)
+  needs['lint'] = { result: 'skipped' }
+  const skippedForDocs = await runCiOk(needs, {
+    GITHUB_EVENT_NAME: 'pull_request',
+    CHANGES: JSON.stringify({ source: 'false' }),
+  })
+  assert.equal(skippedForDocs.code, 0, `a docs-only diff may skip lint: ${skippedForDocs.stderr}`)
+
+  const sourceChanged = await runCiOk(needs, {
+    GITHUB_EVENT_NAME: 'pull_request',
+    CHANGES: JSON.stringify({ source: 'true' }),
+  })
+  assert.equal(sourceChanged.code, 1, 'a skipped lint on a source change must fail')
+
+  const noClassifier = await runCiOk(needs, { GITHUB_EVENT_NAME: 'pull_request' })
+  assert.equal(noClassifier.code, 1, 'a missing classifier output must fail closed')
+})
+
+// The suite reads `docs/`, `public/`, `deploy/` and `.github/` — 60 of the 184
+// files under `test/` — so a docs-only, asset-only, deploy-only or workflow-only
+// diff can still turn it red. Accepting its skip was the defect: `ci-ok` went
+// green over a red suite, and for `docs/` (T0) and `public/` (T1) no verdict
+// reads the tip either.
+test('the suite and the coverage floor are never skippable, whatever the classifier says', async () => {
+  const required = await requiredJobs()
+  for (const job of ['test', 'coverage']) {
+    for (const changes of [{ source: 'false' }, { source: 'false', docsOnly: 'true' }, { frontend: 'false' }, {}]) {
+      const needs = allSuccess(required)
+      needs[job] = { result: 'skipped' }
+      const result = await runCiOk(needs, {
+        GITHUB_EVENT_NAME: 'pull_request',
+        CHANGES: JSON.stringify(changes),
+      })
+      assert.equal(result.code, 1, `a skipped ${job} must fail on pull_request with ${JSON.stringify(changes)}`)
+      assert.match(result.stderr, new RegExp(job))
+    }
+  }
+})
+
+test('a skipped conditional job fails on a push even when the flag is false', async () => {
+  const required = await requiredJobs()
+  const needs = allSuccess(required)
+  needs['visual'] = { result: 'skipped' }
+  const result = await runCiOk(needs, {
+    GITHUB_EVENT_NAME: 'push',
+    CHANGES: JSON.stringify({ frontend: 'false' }),
+  })
+  assert.equal(result.code, 1, 'a push verifies the whole tree; conditional skips are pull-request only')
+})
+
+test('every conditional job is wired to the change classifier', async () => {
+  const module = (await import('../scripts/ci-ok.mjs')) as { SKIP_WHEN?: Record<string, string> }
+  assert.ok(module.SKIP_WHEN !== undefined, 'scripts/ci-ok.mjs must export SKIP_WHEN')
+  const workflow = readFileSync(workflowPath, 'utf8')
+  assert.match(workflow, /^  changes:$/m, 'ci.yml must declare the changes job')
+  // The two jobs that read every tree are unconditional: assert the shape that
+  // makes a docs-only diff still produce a runnable suite, not just the absence
+  // of an entry in the map.
+  for (const job of ['test', 'coverage']) {
+    assert.equal(Object.hasOwn(module.SKIP_WHEN, job), false, `${job} must not be conditional`)
+    const start = workflow.indexOf(`\n  ${job}:`)
+    assert.ok(start !== -1, `ci.yml must declare ${job}`)
+    const rest = workflow.slice(start + 1)
+    const next = rest.search(/\n  [a-z][a-z0-9-]*:\n/)
+    const block = next === -1 ? rest : rest.slice(0, next)
+    assert.doesNotMatch(block, /if: needs\.changes\.outputs\./, `${job} must not carry a change-classifier condition`)
+    assert.doesNotMatch(block, /needs: changes/, `${job} must not wait on the classifier`)
+  }
+  for (const [job, flag] of Object.entries(module.SKIP_WHEN)) {
+    const start = workflow.indexOf(`\n  ${job}:`)
+    assert.ok(start !== -1, `ci.yml must declare the conditional job ${job}`)
+    const rest = workflow.slice(start + 1)
+    const next = rest.search(/\n  [a-z][a-z0-9-]*:\n/)
+    const block = next === -1 ? rest : rest.slice(0, next)
+    assert.match(block, new RegExp(`if: needs\\.changes\\.outputs\\.${flag} == 'true'`), `${job} must read the ${flag} flag`)
+    assert.match(block, /needs: (?:\[changes, build\]|changes)/, `${job} must depend on changes`)
+  }
+})
+
 test('the workflow runs the script and no longer accepts a skipped job inline', () => {
   const workflow = readFileSync(workflowPath, 'utf8')
   assert.match(workflow, /node scripts\/ci-ok\.mjs/, 'ci-ok must call scripts/ci-ok.mjs')

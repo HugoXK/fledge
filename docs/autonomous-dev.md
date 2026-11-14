@@ -217,20 +217,23 @@ review.
 
 ## Gates
 
-The required checks on `main` are **`ci-ok`**, **`review-gate`**,
-**`pr-lint`**, **`dependency-review`** and the CodeQL job's own name,
-**`Analyze JavaScript/TypeScript`**. The set is recorded, with the names exactly
+Branch protection on `main` enforces **`ci-ok`**, **`review-gate`** and
+**`pr-lint`** directly. `dependency-review` and the CodeQL analysis are enforced
+inside `ci-ok` (as `dependency-review` and `codeql-required`), so they are not
+separate branch-protection contexts. The set is recorded, with the names exactly
 as the checks API reports them, in
 [`.github/agent/required-checks.md`](../.github/agent/required-checks.md); that
 file is the record and not the gate — branch protection is an owner action.
 
 `ci-ok` is green only when all of these are green at the same tip:
 
+- `changes` (the diff classifier; it must succeed before any conditional job)
 - `lint`
 - `typecheck`
 - `test` on Node 22 and Node 24
 - `coverage` (the Node coverage floor recorded in `package.json`)
 - `build`
+- `visual` (the UI matrix, when the diff reaches a rendered surface)
 - `docker` (image builds, scans and starts)
 - `audit` (no high-severity advisory in either the runtime set or the full graph)
 - `changelog` (fragments are well formed)
@@ -246,6 +249,37 @@ file is the record and not the gate — branch protection is an owner action.
 A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
 `skipped`, `cancelled` or a job absent from `needs`, except where
 `SKIPPABLE_ON` records that an event has nothing for that job to read.
+
+### Change-aware gates
+
+The `changes` job in `ci.yml` classifies the pull request diff once and writes
+eight flags: `source`, `frontend`, `deps`, `db`, `docker`, `workflows`, `codeql`
+and `docsOnly`. Jobs that cannot learn anything from the diff carry a job-level `if`
+and are skipped **before a runner starts**, not after an install:
+
+| Flag false | Jobs skipped |
+|---|---|
+| `source` | `lint`, `typecheck`, `build` |
+| `frontend` | `visual` |
+| `deps` | `audit` |
+| `db` | `restore-drill` |
+| `docker` | `docker` |
+| `workflows` | `action-pins`, `workflow-lint` |
+| `codeql` | `codeql-required` (and the CodeQL workflow's own docs/deploy/Dockerfile path filter) |
+
+`test` and `coverage` are never conditional, and are not in this table. The suite
+is a cross-cutting reader: 60 of the 184 files under `test/` read `docs/`,
+`public/`, `deploy/` or `.github/`, so a docs-only, asset-only, deploy-only or
+workflow-only diff still turns the suite red. Skipping it for `source: false` let
+`ci-ok` go green over a red suite, and for `docs/` (T0) and `public/` (T1) no
+verdict reads it either.
+
+The classifier is an allowlist. An unknown path, an unreadable diff or an empty
+path list runs every gate. A push, schedule or manual run sets every flag true,
+so `main` is still verified in full. `ci-ok` accepts a skipped conditional job
+only when the matching flag is false on a `pull_request` or `merge_group`
+event; a missing flag fails closed. `SKIP_WHEN` in `scripts/ci-ok.mjs` is the
+machine copy of this table.
 
 ### A red `main` reports itself
 

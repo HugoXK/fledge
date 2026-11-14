@@ -12,21 +12,37 @@ be listed by its `name:`.
 
 ## Required on `main`
 
+The branch protection API currently enforces three contexts directly:
+
 | Context | Workflow | What it proves |
 |---|---|---|
 | `ci-ok` | `ci.yml` | every aggregate job succeeded at the same tip |
 | `review-gate` | `review-gate.yml` | a PASS at that tip from the required reviewer |
-| `pr-lint` | `pr-lint.yml` | the PR body, fragment and docs obligations |
-| `dependency-review` | `ci.yml` | no new high-severity advisory in the diff |
-| `Analyze JavaScript/TypeScript` | `codeql.yml` | no new high/critical CodeQL result |
+| `pr-lint` | `review-gate.yml` | the PR body, fragment and docs obligations |
 
-`ci-ok` is the aggregate: `lint`, `typecheck`, `test` (Node 22 and 24),
-`coverage`, `build`, `docker` (build, vulnerability scan, smoke run), `audit`
-(runtime and full graph), `changelog`, `version`, `risk`, `restore-drill`,
-`dependency-review`, `action-pins`, `workflow-lint`, `secret-scan`,
-`codeql-required` (the analysis for the event's commit is green). The list
-asserted by the gate is `REQUIRED_JOBS` in `scripts/ci-ok.mjs`, and
-`test/ciOk.test.ts` fails when it and `needs:` in `ci.yml` drift apart.
+Two more checks are enforced **inside** `ci-ok` rather than as separate required
+contexts:
+
+| Context | Where | What it proves |
+|---|---|---|
+| `dependency-review` | `ci-ok` need | no new high-severity advisory in the pull request diff |
+| `codeql-required` / `Analyze JavaScript/TypeScript` | `ci-ok` need + CodeQL analysis | no new high/critical CodeQL result |
+
+`ci-ok` is the aggregate: `changes`, `lint`, `typecheck`, `test` (Node 22 and
+24), `coverage`, `build`, `visual` (UI diffs), `docker` (image builds, scans and
+starts), `audit` (runtime and full graph), `changelog`, `version`, `risk`,
+`restore-drill`, `dependency-review`, `action-pins`, `workflow-lint`,
+`secret-scan`, `codeql-required`. The list asserted by the gate is
+`REQUIRED_JOBS` in `scripts/ci-ok.mjs`, and `test/ciOk.test.ts` fails when it and
+`needs:` in `ci.yml` drift apart.
+
+`changes` is a gate too: it classifies the pull request diff and the heavy jobs
+use job-level `if` conditions so an inapplicable job never starts a runner.
+`ci-ok` accepts a skipped conditional job only when the matching flag is false
+and the event is a pull request or merge-group entry; a push, schedule or manual
+run classifies every flag as true, so nothing is skipped there. An unknown path
+or an unreadable diff also sets every flag true. The full mapping is
+`SKIP_WHEN` in `scripts/ci-ok.mjs`.
 
 ## Up-to-date rule: `strict` is conditional
 
