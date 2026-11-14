@@ -68,6 +68,18 @@ export interface CheckRunInfo {
   conclusion: string | null
 }
 
+export interface WorkflowJobInfo {
+  id: number
+  name: string
+  status: string
+  conclusion: string | null
+  htmlUrl: string
+}
+
+// A failed job log can be the whole CI transcript. Eight MiB is the cap this
+// path will read; the caller takes a much smaller excerpt from it.
+export const MAX_JOB_LOG_BYTES = 8 * 1024 * 1024
+
 export interface ReviewInfo {
   state: string
   user: string
@@ -141,6 +153,38 @@ const BODY_CAP_TAIL = 4_000
 function capBody(body: string): string {
   if (body.length <= BODY_CAP_HEAD + BODY_CAP_TAIL) return body
   return `${body.slice(0, BODY_CAP_HEAD)}\n${body.slice(-BODY_CAP_TAIL)}`
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1'
+}
+
+async function readBoundedText(response: Response, maxBytes: number): Promise<string> {
+  if (response.body === null) return ''
+  const reader = response.body.getReader()
+  const chunks: Buffer[] = []
+  let total = 0
+  let truncated = false
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value === undefined) continue
+    const chunk = Buffer.from(value)
+    if (total + chunk.length > maxBytes) {
+      if (maxBytes > total) chunks.push(chunk.subarray(0, maxBytes - total))
+      total = maxBytes
+      truncated = true
+      await reader.cancel().catch(() => {
+        // The read stopped at the cap on purpose; the rest of the stream is not needed.
+      })
+      break
+    }
+    chunks.push(chunk)
+    total += chunk.length
+  }
+  const text = Buffer.concat(chunks).toString('utf8')
+  return truncated ? `${text}\n[log truncated at ${maxBytes} bytes]` : text
 }
 
 export class GithubClient {
@@ -368,6 +412,134 @@ export class GithubClient {
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/commits/${encodeURIComponent(ref)}/status`,
     )
     return { state: result.state ?? 'unknown', count: Array.isArray(result.statuses) ? result.statuses.length : 0 }
+  }
+
+  // The workflow-run payload names a run, not the job that failed. The job list
+  // is the bounded bridge to a job id; `filter=latest` keeps a previous attempt
+  // of a rerun out of the set.
+  async listWorkflowJobs(owner: string, name: string, runId: number, maxPages = 2): Promise<WorkflowJobInfo[]> {
+    if (!Number.isInteger(runId) || runId <= 0) throw new GithubError(400, 'invalid workflow run id')
+    const jobs: WorkflowJobInfo[] = []
+    for (let page = 1; page <= maxPages; page += 1) {
+      const result = await this.request<{ jobs?: Array<{ id?: number; name?: string; status?: string; conclusion?: string | null; html_url?: string }> }>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/actions/runs/${runId}/jobs?filter=latest&per_page=100&page=${page}`,
+      )
+      const batch = Array.isArray(result.jobs) ? result.jobs : []
+      for (const job of batch) {
+        if (typeof job.id !== 'number' || !Number.isInteger(job.id) || job.id <= 0) continue
+        jobs.push({
+          id: job.id,
+          name: typeof job.name === 'string' ? job.name : 'job',
+          status: typeof job.status === 'string' ? job.status : 'unknown',
+          conclusion: typeof job.conclusion === 'string' ? job.conclusion : null,
+          htmlUrl: typeof job.html_url === 'string' ? job.html_url : '',
+        })
+      }
+      if (batch.length < 100) break
+    }
+    return jobs
+  }
+
+  // GitHub answers the log endpoint with a redirect to a short-lived storage URL.
+  // That target is followed without the GitHub token, the body is read only up
+  // to `maxBytes`, and the whole path uses the same budget and retry rules as
+  // every other GitHub request.
+  async getJobLog(owner: string, name: string, jobId: number, maxBytes = MAX_JOB_LOG_BYTES): Promise<string> {
+    if (!Number.isInteger(jobId) || jobId <= 0) throw new GithubError(400, 'invalid workflow job id')
+    let target = `${this.apiBase.replace(/\/$/, '')}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/actions/jobs/${jobId}/logs`
+    let authorized = true
+    let baseIsLoopback = false
+    try {
+      baseIsLoopback = isLoopbackHost(new URL(this.apiBase).hostname)
+    } catch {
+      // An unparseable API base fails at fetch; it cannot make a non-https redirect acceptable.
+    }
+    for (let hop = 0; hop < 4; hop += 1) {
+      const result = await this.fetchBoundedText(target, authorized, maxBytes)
+      if (result.status >= 300 && result.status < 400) {
+        if (result.location === null) throw new GithubError(502, 'GitHub returned a log redirect without a location')
+        let next: URL
+        try {
+          next = new URL(result.location, target)
+        } catch {
+          throw new GithubError(502, 'GitHub returned an invalid log redirect')
+        }
+        // A signed log URL is always https. A loopback API base may redirect to
+        // loopback over http so a test fake can exercise the path; production's
+        // api.github.com base can only move to another https URL.
+        if (next.protocol !== 'https:' && !(baseIsLoopback && isLoopbackHost(next.hostname))) throw new GithubError(502, 'GitHub returned a non-https log redirect')
+        target = next.toString()
+        // The storage URL is signed, so it needs no credential and must not see ours.
+        authorized = false
+        continue
+      }
+      return result.text
+    }
+    throw new GithubError(502, 'too many log redirects')
+  }
+
+  private async fetchBoundedText(url: string, authorized: boolean, maxBytes: number): Promise<{ status: number; text: string; location: string | null }> {
+    const span = startSpan('github.request', { method: 'GET', path: url.replace(this.apiBase, '').split('?')[0] ?? url })
+    const startedAt = Date.now()
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await acquireGithubBudget(this.token)
+      let response: Response
+      try {
+        response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            ...(authorized ? { authorization: `Bearer ${this.token}` } : {}),
+            accept: 'application/vnd.github+json',
+            'x-github-api-version': '2022-11-28',
+            'user-agent': 'fledge/0.1',
+          },
+          redirect: 'manual',
+          signal: AbortSignal.timeout(30_000),
+        })
+      } catch (error) {
+        incCounter('fledge_github_requests_total', { method: 'GET', status: 0 }, 1, 'GitHub API requests')
+        endSpan(span, 'ERROR', error instanceof Error ? error.message : String(error), { status: 0 })
+        throw error
+      }
+      incCounter('fledge_github_requests_total', { method: 'GET', status: response.status }, 1, 'GitHub API requests')
+      observeHistogram('fledge_github_request_seconds', (Date.now() - startedAt) / 1000, { method: 'GET' }, 'GitHub request duration')
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get('location')
+        await response.body?.cancel().catch(() => {
+          // A redirect body carries nothing this method needs.
+        })
+        endSpan(span, 'OK', undefined, { status: response.status })
+        return { status: response.status, text: '', location }
+      }
+      if (!response.ok) {
+        const text = await response.text()
+        let message = text.slice(0, 300)
+        try {
+          const parsed = JSON.parse(text) as { message?: string }
+          if (parsed.message !== undefined) message = parsed.message
+        } catch {}
+        const retryable = response.status === 429 || response.status >= 500 || (response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.get('retry-after') !== null || /rate limit/i.test(message)))
+        if (!retryable || attempt === 2) {
+          endSpan(span, 'ERROR', message, { status: response.status })
+          throw new GithubError(response.status, message)
+        }
+        const retryAfter = Number(response.headers.get('retry-after'))
+        const reset = Number(response.headers.get('x-ratelimit-reset'))
+        const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+          ? Math.min(retryAfter * 1000, 10_000)
+          : Number.isFinite(reset) && reset > 0
+            ? Math.min(Math.max(0, reset * 1000 - Date.now()), 10_000)
+            : Math.min(500 * 2 ** attempt, 5_000)
+        noteGithubRateLimit(this.token, waitMs)
+        await sleep(waitMs)
+        continue
+      }
+      const text = await readBoundedText(response, maxBytes)
+      endSpan(span, 'OK', undefined, { status: response.status })
+      return { status: response.status, text, location: null }
+    }
+    throw new GithubError(500, 'GitHub request failed')
   }
 
   async listReviews(owner: string, name: string, number: number): Promise<ReviewInfo[]> {

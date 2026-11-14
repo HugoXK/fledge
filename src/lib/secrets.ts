@@ -2,40 +2,9 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, 
 
 const VERSION = 'v1'
 
-// Configured secrets (an SMTP password, a model key) have no shape a pattern can
-// recognise, so the config registers its literal values here. The set is
-// replaced per call, not appended: tests call loadConfig() repeatedly, and
-// appending would leak every earlier config's secrets into later assertions.
-let registeredSecrets: string[] = []
-
-export function registerRedactionSecrets(values: readonly string[]): void {
-  const unique = new Set<string>()
-  for (const value of values) {
-    // A short operator password is ordinary words in prose; replacing it would
-    // shred summaries without protecting anything.
-    if (typeof value === 'string' && value.length >= 8) unique.add(value)
-  }
-  registeredSecrets = [...unique].sort((a, b) => b.length - a.length)
-}
-
-export function redact(value: string): string {
-  let text = String(value ?? '')
-  for (const secret of registeredSecrets) {
-    if (text.includes(secret)) text = text.split(secret).join('[redacted-secret]')
-  }
-  return text
-    // No leading boundary on an opaque prefix: a summary can glue a token onto a
-    // word ("…xyzghp_…") and a fragment of a token is still a token. `sk-` keeps
-    // its boundary because English words contain "sk-" ("ri sk-assessment…").
-    .replace(/(gh[pousr]_[A-Za-z0-9_]{20,})\b/g, '[redacted-github-token]')
-    .replace(/github_pat_[A-Za-z0-9_]{20,}\b/g, '[redacted-github-token]')
-    .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, '[redacted-api-key]')
-    .replace(/flg_[A-Za-z0-9_-]{16,}\b/g, '[redacted-fledge-token]')
-    .replace(/AKIA[0-9A-Z]{16}\b/g, '[redacted-aws-key]')
-    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[redacted-private-key]')
-    .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{12,}=*/gi, '$1[redacted]')
-    .replace(/api_key:\s*[A-Fa-f0-9]{16,}/g, 'api_key: [redacted]')
-}
+// The recogniser lives in one module so a job log, a callback and a URL cannot
+// drift onto different rules. This re-export keeps the existing import path.
+export { redact, registerRedactionSecrets } from './redact.js'
 
 export function decodeKey(keyBase64: string): Buffer {
   const key = Buffer.from(keyBase64, 'base64')

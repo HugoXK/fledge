@@ -496,6 +496,10 @@ export interface WorkflowFailureRow {
   event: string
   status: WorkflowFailureStatus
   reason: string | null
+  /** A bounded, redacted excerpt of the failed job log; null until fetched. */
+  log_excerpt: string | null
+  /** Why the log could not be read, or `no_failed_job`/`empty_log`; null on success. */
+  log_error: string | null
   run_url: string
   created_at: string
   updated_at: string
@@ -1184,6 +1188,8 @@ CREATE TABLE IF NOT EXISTS workflow_failures (
   event TEXT NOT NULL,
   status TEXT NOT NULL,
   reason TEXT,
+  log_excerpt TEXT,
+  log_error TEXT,
   run_url TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -1697,6 +1703,11 @@ export class Store {
     // a plan expiry.
     const workItemColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(work_items)').map((row) => row.name))
     if (!workItemColumns.has('closed_reason')) this.run('ALTER TABLE work_items ADD COLUMN closed_reason TEXT')
+    // #542 slice 2: the log fields are additive on purpose. A row written by
+    // slice 1 reads back as "no excerpt, no error", which is exactly true.
+    const workflowFailureColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(workflow_failures)').map((row) => row.name))
+    if (!workflowFailureColumns.has('log_excerpt')) this.run('ALTER TABLE workflow_failures ADD COLUMN log_excerpt TEXT')
+    if (!workflowFailureColumns.has('log_error')) this.run('ALTER TABLE workflow_failures ADD COLUMN log_error TEXT')
     const notificationColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(notifications)').map((row) => row.name))
     if (!notificationColumns.has('code')) this.run('ALTER TABLE notifications ADD COLUMN code TEXT')
     const tokenColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(api_tokens)').map((row) => row.name))
@@ -2118,6 +2129,15 @@ export class Store {
     // `created` is whether the row carries the id this call tried to insert; a
     // lost race selects the winner's row instead of claiming a second write.
     return { row: row as WorkflowFailureRow, created: row?.id === input.id }
+  }
+
+  // The log read happens after the intake write, so a fetch failure updates the
+  // same row with its reason instead of rolling the intake back.
+  updateWorkflowFailureLog(id: string, input: { excerpt: string | null; error: string | null }): void {
+    this.run(
+      'UPDATE workflow_failures SET log_excerpt = ?, log_error = ?, updated_at = ? WHERE id = ?',
+      input.excerpt, input.error, nowIso(), id,
+    )
   }
 
   listWorkflowFailuresForRepo(repoId: string, limit = 10): WorkflowFailureRow[] {

@@ -22,6 +22,7 @@ import { assertSafeNotificationWebhook } from './lib/webhook.js'
 import { quotaView } from './gateway/quota.js'
 import { parseAttributionJson } from './lib/attribution.js'
 import { failureBreakdown } from './lib/failure.js'
+import { fetchFailureLog, logFailureReason } from './actions/workflowLog.js'
 import { DEFAULT_TRIAGE_GOAL, Jobs } from './jobs/service.js'
 import { parseIssueUrl } from './jobs/prUrl.js'
 import { createRunner, type Runner } from './jobs/runner.js'
@@ -3521,6 +3522,27 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       runUrl: runUrl.slice(0, 500),
     })
     if (!stored.created) return
+    // Slice 2 reads the failed job log for a queued failure. The row already
+    // exists, so a token or GitHub failure stores its reason and keeps the
+    // intake. Ignored rows never spend a request on a log nobody will analyse.
+    if (status === 'queued') {
+      let excerpt: string | null = null
+      let error: string | null = null
+      const [logOwner, logName] = fullName.split('/')
+      if (logOwner === undefined || logName === undefined || logOwner === '' || logName === '') {
+        error = 'invalid_repository'
+      } else {
+        try {
+          const token = await repoGithubToken(repo, config, githubApp, store)
+          const result = await fetchFailureLog(new GithubClient(token, config.github.apiBase), logOwner, logName, runId)
+          excerpt = result.excerpt
+          error = result.error
+        } catch (fetchError) {
+          error = logFailureReason(fetchError)
+        }
+      }
+      store.updateWorkflowFailureLog(stored.row.id, { excerpt, error })
+    }
     store.event('workflow_failure', {
       userId: repo.user_id,
       repoId: repo.id,
