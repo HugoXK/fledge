@@ -66,6 +66,29 @@ function jobIn(f: Fixture, status: 'failed' | 'paused', id: string): JobRow {
   return f.built.store.getJob(id) as JobRow
 }
 
+// An approved, finished plan job: the only state that renders the execute form.
+// It is made directly because the plan route's own create is the command under
+// test elsewhere; what matters here is the revision the form then carries.
+function planIn(f: Fixture, id: string): JobRow {
+  const job = f.built.store.createJob({
+    id,
+    repoId: f.repoId,
+    userId: f.user.id,
+    trigger: 'manual',
+    goal: 'g',
+    kind: 'plan',
+    callbackHash: `cb-${id}`,
+    platformTokenHash: '',
+  })
+  f.built.store.updateJob(job.id, {
+    status: 'succeeded',
+    summary: 'Approved plan',
+    plan_approved_at: new Date().toISOString(),
+    finished_at: new Date().toISOString(),
+  })
+  return f.built.store.getJob(id) as JobRow
+}
+
 // The page renders several forms; the assertions below are about one of them.
 function formFor(html: string, action: string): string {
   const start = html.indexOf(`action="${action}"`)
@@ -270,6 +293,84 @@ test('a caller cannot put an identity field into a create command', async () => 
     })
     assert.equal(begun.ok, false)
     if (!begun.ok) assert.equal(begun.code, 'actor_not_allowed')
+  } finally {
+    store.close()
+  }
+})
+
+test('the execute form fences the project revision the create command compares', async () => {
+  const f = await fixture()
+  try {
+    // A create is what produces a plan job, and it bumps the project revision to
+    // 2 while the plan job's own revision stays at 1. The execute form must carry
+    // the revision `task.create` fences, or every click conflicts (#540 review).
+    const setup = await post(f, `/repos/${f.repoId}/run`, { expected_revision: '1', idempotency_key: 'cmd_execute_setup' })
+    assert.ok(setup.location.includes('notice='), `the setup create is accepted: ${setup.location}`)
+    const running = f.built.store.listJobsForRepo(f.repoId, 10)[0] as JobRow
+    f.built.store.updateJob(running.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    const plan = planIn(f, 'job_task_execute')
+    const html = await page(f, `/repos/${f.repoId}/jobs/${plan.id}`)
+    const form = formFor(html, `/repos/${f.repoId}/jobs/${plan.id}/execute`)
+    assert.equal(hiddenValue(form, 'expected_revision'), '2', 'the execute form carries the project revision, not the plan job revision')
+    const before = jobCount(f)
+    const outcome = await post(f, `/repos/${f.repoId}/jobs/${plan.id}/execute`, {
+      expected_revision: hiddenValue(form, 'expected_revision') ?? '',
+      idempotency_key: hiddenValue(form, 'idempotency_key') ?? '',
+    })
+    assert.ok(outcome.location.includes('notice='), `execute answers with a notice: ${outcome.location}`)
+    assert.equal(jobCount(f), before + 1, 'exactly one job started')
+    const executed = f.built.store.all<{ action: string; detail: string }>("SELECT action, detail FROM audit_log WHERE action = 'job.executed'")
+    assert.equal(executed.length, 1, 'the execute leaves the job.executed trail the old route wrote')
+    assert.ok((executed[0]?.detail ?? '').startsWith(`${plan.id} -> `), `the audit row links the plan to the job it produced: ${executed[0]?.detail}`)
+  } finally {
+    await f.close()
+  }
+})
+
+test('a stale execute is refused and starts nothing', async () => {
+  const f = await fixture()
+  try {
+    const setup = await post(f, `/repos/${f.repoId}/run`, { expected_revision: '1', idempotency_key: 'cmd_execute_stale_setup' })
+    assert.ok(setup.location.includes('notice='), `the setup create is accepted: ${setup.location}`)
+    const running = f.built.store.listJobsForRepo(f.repoId, 10)[0] as JobRow
+    f.built.store.updateJob(running.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    const plan = planIn(f, 'job_task_execute_stale')
+    const before = jobCount(f)
+    // 1 is what the plan job's own revision answers; the fence is the project's 2.
+    const outcome = await post(f, `/repos/${f.repoId}/jobs/${plan.id}/execute`, { expected_revision: '1', idempotency_key: 'cmd_execute_stale' })
+    assert.ok(outcome.location.includes('code=management_revision_conflict'), `the stale execute is a conflict: ${outcome.location}`)
+    assert.equal(jobCount(f), before, 'nothing started')
+  } finally {
+    await f.close()
+  }
+})
+
+test('an out-of-range priority is refused, not clamped', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const user = makeUser(store, { login: 'task-priority', status: 'approved' })
+  const repo = store.createRepo({
+    id: 'repo_task_priority', userId: user.id, owner: 'o', name: 'priority', defaultBranch: 'main',
+    tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer',
+    goal: '', autoIterate: false, intervalMinutes: 1440,
+  })
+  const jobs = new Jobs(store, config, { name: 'capture', async run() { return { status: 'running' as const } } }, new MemoryMailer())
+  const management = new ManagementService(store, jobs)
+  try {
+    const actor = managementActor({ userId: user.id, repo, channel: 'web', requestId: 'r1' })
+    for (const priority of [500, -1, 12.5]) {
+      // `run` is begin + complete: the refusal happens in the command body.
+      const begun = await management.run(actor, {
+        operation: 'task.create',
+        target: { projectId: repo.id },
+        arguments: { kind: 'iterate', priority },
+        expectedRevision: 1,
+        idempotencyKey: `cmd_priority_${String(priority).replace('.', '_')}`,
+      })
+      assert.equal(begun.ok, false, `a priority of ${priority} is refused`)
+      if (!begun.ok) assert.equal(begun.code, 'invalid_arguments', `a priority of ${priority} names the argument refusal`)
+    }
+    assert.equal(store.listJobsForRepo(repo.id, 10).length, 0, 'no job was queued for a refused priority')
   } finally {
     store.close()
   }

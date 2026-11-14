@@ -58,10 +58,14 @@ function stringArgument(args: Record<string, unknown>, name: string): string | u
   return typeof value === 'string' && value.trim() !== '' ? value : undefined
 }
 
-function integerArgument(args: Record<string, unknown>, name: string, min: number, max: number): number | undefined {
+// A caller-supplied integer is either absent, valid, or refused. Clamping a
+// posted 500 to 100 would queue a job the caller did not ask for and answer
+// success, so an out-of-range or non-integer value fails the command instead.
+function integerArgument(args: Record<string, unknown>, name: string, min: number, max: number): number | undefined | null {
   const value = args[name]
-  if (typeof value !== 'number' || !Number.isInteger(value)) return undefined
-  return Math.max(min, Math.min(max, value))
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) return null
+  return value
 }
 
 // The refusal shape `Jobs.enqueue` answers with: a code the banner table already
@@ -162,6 +166,7 @@ const taskCreate: Operation = {
     const goal = stringArgument(args, 'goal')
     const prUrl = stringArgument(args, 'prUrl')
     const priority = integerArgument(args, 'priority', 0, 100)
+    if (priority === null) return { status: 'failed', errorCode: 'invalid_arguments', errorMessage: 'the priority must be an integer between 0 and 100' }
     const result = await context.jobs.enqueue(repo, 'manual', goal, kind as JobKind, {
       ...(workItemId === undefined ? {} : { workItemId }),
       ...(prUrl === undefined ? {} : { prUrl }),

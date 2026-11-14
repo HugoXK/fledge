@@ -120,7 +120,14 @@ A command is `{ operation, target: { projectId, jobId? }, arguments,
 expected_revision, idempotency_key, source_conversation?, source_message? }`.
 The server fills the actor; a payload that carries an identity field is refused.
 `task.create` takes `{ kind, goal?, workItemId?, prUrl?, priority? }`; a
-`workItemId` must belong to the project, checked again at execution time.
+`workItemId` must belong to the project, checked again at execution time, and a
+`priority` outside `0..100` (or not an integer) is refused rather than clamped.
+
+`/execute` is the only create drawn on a job page, so it is the one form whose
+hidden revision is the **project's**: cancel, pause, resume and retry fence the
+job they are printed on, but an execute starts a new job and must send the
+revision `task.create` compares. It also writes the `job.executed` audit row
+that links the plan to the job it started.
 
 | Outcome | Meaning |
 |---|---|

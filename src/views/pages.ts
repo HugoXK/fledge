@@ -1951,6 +1951,8 @@ const AUDIT_ACTIONS: Record<string, [string, string]> = {
   'approval.rejected': ['拒绝申请', 'Application rejected'],
   'repo.role': ['调整仓库角色', 'Repository role changed'],
   'repo.goal_updated': ['更新仓库目标', 'Repository goal updated'],
+  // Only rows written before #540 carry this name: the plan route now queues
+  // through `task.create`, so the running code cannot produce it.
   'plan.enqueued': ['计划入队', 'Plan queued'],
   'job.executed': ['执行计划', 'Plan executed'],
   'job.quota_exhausted': ['任务额度用完', 'Job quota exhausted'],

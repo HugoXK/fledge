@@ -2099,7 +2099,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       // so a double submit replays the same receipt and a stale page conflicts.
       cancel: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
       pause: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
-      execute: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
+      // Execute starts a new job through `task.create`, which fences the project,
+      // not this plan job: the form must render the revision the command compares
+      // (#540 review — the plan job's own revision is 1 while the project is 2).
+      execute: { revision: management.revisionOf('project', repo.id), idempotencyKey: randomId('cmd') },
       resume: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
       retry: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
       notice: queryText(request, 'notice'),
@@ -2290,6 +2293,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(managementFailure(t, outcome, t('执行计划失败。', 'The plan did not start.')))}&code=${outcome.code}`)
     }
     const started = commandJobId(outcome) ?? job.id
+    // The route this adapter replaced linked the plan to the job it produced;
+    // the receipt names only the create, so keep that link in the audit log.
+    store.audit(viewer.user.id, 'job.executed', `${job.id} -> ${started}`)
     return reply.redirect(`/repos/${repo.id}/jobs/${started}?notice=${encodeURIComponent(t('已按计划开始执行。', 'Started from the approved plan.'))}`)
   })
 
