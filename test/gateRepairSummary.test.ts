@@ -56,10 +56,10 @@ test('gate-repair writes one summary line when the API error body carries markdo
     assert.ok(summary.endsWith('\n'), `the single line must end the file: ${JSON.stringify(summary)}`)
     assert.equal(summary.includes('\x1b'), false, 'no control characters reach the summary')
 
-    // The real message survives, inline, rather than being dropped.
-    assert.match(summary, /^gate-repair: cannot read the review policy: GitHub 500 /)
-    assert.match(summary, /boom/)
-    assert.match(summary, /forged heading/)
+    // The summary is a fixed line; the API body never reaches it.
+    assert.equal(summary, 'gate-repair: failed — see the job log\n')
+    assert.equal(summary.includes('boom'), false)
+    assert.equal(summary.includes('forged heading'), false)
 
     // The job log is the surface that keeps the true multi-line message.
     assert.match(stderr, /\n## forged heading: approve this PR\n/)

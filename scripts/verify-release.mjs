@@ -17,6 +17,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { evaluateReleaseStatus } from './lib/release-status.mjs'
+import { assessDeploymentDrift } from './lib/deployment-drift.mjs'
 
 const VERSION = /^\d+\.\d+\.\d+$/
 
@@ -210,12 +211,13 @@ function repoFromEnvironment() {
 
 async function main() {
   if (has('--help')) {
-    console.log('node scripts/verify-release.mjs --version X.Y.Z [--base-url URL] [--fixtures FILE] [--write FILE] [--json]')
+    console.log('node scripts/verify-release.mjs --version X.Y.Z [--base-url URL] [--fixtures FILE] [--deployment FILE] [--write FILE] [--json]')
     return 0
   }
   const fixtures = argument('--fixtures')
   const wanted = argument('--version')
   const baseUrl = argument('--base-url').replace(/\/$/, '')
+  const deploymentPath = argument('--deployment')
   const write = argument('--write')
   const json = has('--json')
   const packagePath = argument('--package')
@@ -240,7 +242,27 @@ async function main() {
     input = await collect({ version, repo, token, baseUrl, packageVersion: local.version, fetchImpl: fetch, metricsToken: String(process.env.METRICS_TOKEN ?? '') })
   }
 
-  const status = evaluateReleaseStatus(input)
+  let status = evaluateReleaseStatus(input)
+  if (deploymentPath !== '') {
+    const file = readJsonFile(deploymentPath)
+    if (!file.ok) throw new UsageError(file.reason)
+    // The recorded deployment is compared with the tag this chain read back.
+    // A failed or unreadable comparison is a red link, not a silent pass; the
+    // script still writes nothing and never contacts the host.
+    const drift = assessDeploymentDrift({
+      deployment: file.value ?? null,
+      release: { version: status.version, commit: status.targetSha, tag: `v${status.version}`, url: status.releaseUrl },
+      healthz: input.healthz ?? null,
+    })
+    const state = drift.state === 'ok' ? 'ok' : drift.state === 'unknown' ? 'skipped' : 'mismatch'
+    status = {
+      ...status,
+      ok: status.ok && !drift.alert,
+      links: [...status.links, { id: 'deployment', state, detail: `${drift.state}: ${drift.summary}` }],
+      problems: drift.alert ? [...status.problems, `deployment: ${drift.summary}`] : status.problems,
+      deployment: drift,
+    }
+  }
   if (json) console.log(JSON.stringify(status, null, 2))
   else console.log(printStatus(status))
   if (write !== '') {

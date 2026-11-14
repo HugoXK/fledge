@@ -361,7 +361,14 @@ Enforcement is a second question and `#304` answers it: `analyze` runs in
 required context named it — a red analysis blocked only itself. The
 `codeql-required` job reads the completed run of `codeql.yml` for this event's
 commit and fails `ci-ok` when that analysis is red or absent, so the verdict is
-required through the aggregate that already gates every merge. The commit is
+required through the aggregate that already gates every merge. The lookup names
+the commit in its query (`?head_sha=…&status=completed`) instead of scanning the
+workflow's newest runs: on a busy repository a commit's own run falls outside any
+fixed window, so a green analysis reads as absent and the gate reds a mergeable
+pull request (#585). The exact `head_sha === sha` predicate is unchanged — a row
+that merely advertises the commit in `pull_requests[].head.sha` never answers for
+it — and an API that ignores the filter is paged inside the same ten-minute
+bound, capped at ten pages of a hundred runs. The commit is
 chosen per event (`scripts/lib/codeql-required.mjs`): `push` and
 `workflow_dispatch` gate the commit they run on; `pull_request` gates the pull
 request head, which is the commit the analysis run reports, because `GITHUB_SHA`
@@ -465,6 +472,31 @@ land on the default branch, and a skipped job would still publish a check run
 under the required name. Its `if:` tests the event first and reaches the
 association test only for `issue_comment`, so a stranger cannot start the
 `actions: write` job and the other three events never evaluate the association.
+The association gate is per job, not per workflow: any job holding `actions:
+write` must test `author_association` on every event a stranger can trigger, and
+`review-gate-repair` does the same for `pull_request_review` (reading
+`github.event.review.author_association`). `scripts/action-pins.mjs` enforces the
+rule for the whole tree — a job with `actions: write` on a stranger-reachable
+event without the matching association test reds the required `action-pins` job.
+The scan counts the permission in each form it takes: a block mapping, an inline
+`{ actions: write }`, `write-all`, and a workflow-level block that a job without
+its own inherits. Block indentation is not assumed: the jobs' width is taken from
+the first key after `jobs:`, and the events' width from the first key after
+`on:`, so a block indented three or four spaces is scanned like any other and a
+header with a trailing comment is still a header. A shape the parser cannot read
+is a finding rather than a skip — an unreadable `permissions:` value, an empty or
+unreadable `jobs:` block, an `on:` value that is neither a list, a block mapping
+nor a flow mapping, an entry under `jobs:` or `on:` that does not parse. The same
+holds per job: a job holding `actions: write` whose triggers are empty or
+unreadable is refused, and so is one on an event this gate cannot classify. The
+classifiable events are the association map plus an explicit `SAFE_EVENTS` list of
+triggers an outside account cannot start (`push`, `schedule`,
+`workflow_dispatch`, `workflow_call`, `workflow_run`, `merge_group`, `release`,
+`create`, `delete`, `repository_dispatch`, `deployment`, `deployment_status`,
+`page_build`, `status`, `registry_package`, `branch_protection_rule`, `public`) —
+any other event name reds until someone classifies it. The association list must
+be exactly `OWNER`, `MEMBER` and `COLLABORATOR`: an extra role, a missing role or
+a role-name substring is a finding.
 A PASS that arrives after a rejection at the same SHA keeps the
 check red until the repair step re-runs the failed run at that SHA; that now
 happens without a hand step. A run above the attempt cap (attempt 3, after
@@ -540,6 +572,14 @@ the state, asks the planner and the pure `decideDrive()` in
 | the trigger refuses: tag newer than the `14:30Z` boundary, a release branch present, or a release pull request open | no push; the summary names the blocker. Exit 0 only when the Decide step above already cleared the branch: a `release/v<next>` branch with no pull request and no tag is the orphan row, red and named, and no run repairs it |
 | a push before today's boundary with the previous boundary unreleased | plan; the summary says `catch-up` |
 | a dry run | the same summary and artifact, and no push and no comment |
+
+The state collection measures the changelog fragments with
+`scripts/fragment-count.mjs`, the same rule `scripts/changelog.mjs` folds with. A
+directory holding only `README.md`, or no markdown at all, is zero fragments — a
+legitimate answer the planner turns into its own first reason, not a failed step —
+while a directory the process cannot read fails the job (#548). The `Trigger` step
+reads the collected state only when the collect step succeeded, so a missing state
+file is never dereferenced.
 
 A push is a planning trigger, not a tolerated one, and the event name no longer
 decides: the quantity the rule counts — merged pull requests since the tag —

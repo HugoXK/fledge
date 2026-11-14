@@ -50,9 +50,12 @@ a second clock that disagrees.
 the order the page draws the cards, so the marker can always name the section on
 screen. `test/sectionNav.test.ts` asserts that mapping in both directions, which
 is how a card added without a chip fails the suite instead of quietly leaving
-the previous chip marked. `/admin`'s top card has no `id` on purpose — it is the
-page header, not a section — so nothing is marked at the very top of that page;
-that is the accepted state, not a defect.
+the previous chip marked. The marker seeds with the first chip, then takes the
+last target whose top has passed the reading band; between cards it stays on the
+last one that passed. `/admin`'s top card has no `id` on purpose — it is the page
+header, not a section — so at the top of that page nothing has passed and
+`#release`, the first chip, is marked. That fallback is the accepted state, not a
+defect.
 
 ## Components
 
@@ -100,7 +103,17 @@ that is the accepted state, not a defect.
   the known next scheduled automatic run (a repository the scheduler has never
   run is not a known time and never shadows one), or says that no repository runs
   automatically. Every source is one the route already loads, so the block cannot
-  disagree with the sections below it. The newest job is read on its own, not
+  disagree with the sections below it.
+- **One next-run rule** (`src/lib/nextRun.ts`, `nextRun`): both the all-clear card
+  and the repository page's next-run line call one function, which copies the
+  worker's due rule — `max(15, min(intervalMinutes, workCooldownMinutes))` after
+  the last run (`src/jobs/service.ts`, `workDue`) — instead of the discovery
+  interval. It also answers why a run will not start now: a disabled repository, a
+  FlyBot instance that is not ready, auto-iteration switched off, an active job,
+  no open work, or a repository the scheduler has never run. The dashboard route
+  passes open work, the active job and instance readiness per repository because
+  those live outside `RepoRow`; the two surfaces therefore print one string, and
+  the wording says "next run", never an estimate. The newest job is read on its own, not
   from the job-table slice: the table is paged and filtered, and `?jobsPage=2` or
   `?status=` must not change the sentence the page opens with. The first-run
   checklist becomes the detail of the same action and does not render a second
@@ -115,6 +128,23 @@ that is the accepted state, not a defect.
   and Apply would land on a hidden table. A failed job whose message the
   platform only writes in Chinese is named by its failure class on a page in the
   other language, and the raw sentence stays on the job page.
+- **Queue position** (`src/lib/queueRank.ts`, `rankQueued`): a queued job shows
+  its place in the queue with the length (`#3/7`) and the priority it competes
+  on, computed with the claimer's two keys only — `priority DESC, created_at ASC`
+  (`src/db.ts`, `claimQueuedJob`); the id comparison inside its per-repo
+  `NOT EXISTS` is not an instance key, so rows equal on both keys share a
+  position instead of inventing a third one. Position and total are
+  instance-wide counts, because they describe the real line. The job page's
+  ahead-list names only the viewer's own queued jobs (the per-user read is
+  filtered to `queued` and re-sorted, so a running job is not a neighbour), and
+  jobs owned by anyone else are one sentence with a number and no identifier:
+  no repository, account, priority class or arrival time. The number is the
+  ordering, not a promise — the claimer also refuses a job while its repository
+  has a running or earlier queued job. The rank renders inside the existing job
+  cell on the dashboard, repository and team console tables; the admin
+  recent-jobs table deliberately keeps its four columns and shows no position,
+  because a queue place read from an operator slice would read as the admin's
+  own.
 - **Shell** (`src/views/layout.ts`, `public/app.css`): the main nav marks the
   current page with `aria-current="page"` on the one link whose own target is the
   route, derived from the route and overridable with `active`; a nested route
@@ -171,6 +201,16 @@ that is the accepted state, not a defect.
   option values stay the codes, so the query, the totals and the CSV export are
   unchanged. A second hand-written list in a view is how `scope` and `verify`
   went missing from a form once already.
+- **Admin CSV exports**: both `/admin/export/jobs.csv` and
+  `/admin/export/audit.csv` write one `admin.jobs_export` / `admin.audit_export`
+  row once the body is known — `filters=` echoes the allow-listed codes and ISO
+  dates verbatim, `q` and `action` are recorded only as `<length>ch#<8 hex>`,
+  `scope=all|users:<n>` names the visibility list the query actually used,
+  `rows=` is the data-line count, and `sha256=` is the digest of the exact body
+  sent, so a file found elsewhere can be matched to its row. The read is paged
+  at 500 rows, so no store call materialises the 5000-row cap, and
+  `/admin/search` renders the newest completed export for the viewer's scope
+  above each table.
 - **Redirect targets**: every `next=` / `returnTo` value goes through one helper
   that returns a path on this site or the fallback. It validates the parsed
   result, not the input, so a value that is a plain path before parsing and
@@ -229,7 +269,15 @@ that is the accepted state, not a defect.
   same transaction (a legal `in_progress -> triaged` edge in
   `WORK_ITEM_TRANSITIONS`) and its audit row names the item id, because the item
   would otherwise stay `in_progress` behind a job that can never finish. The
-  lease and queue columns are schema version 33.
+  lease and queue columns are schema version 34.
+- **Queue tickets**: every job carries a `queue_seq` taken inside its insert, so
+  two jobs created at the same instant cannot be handed the same one, and the
+  queue is ordered by priority, then `queue_seq`, then `id` — never by a clock
+  that can tie. A priority change moves the row to the tail of its new level,
+  because that is a new arrival; saving the same value again is not a move and
+  keeps the ticket. `0` marks a row written before the column existed, and it is
+  backfilled in `created_at` order when the database opens, which is the order
+  those rows were already ranked by. A running job is never preempted.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
   a maintainer reviewer is due); with no open work it **stays idle** unless the
@@ -244,6 +292,20 @@ that is the accepted state, not a defect.
   is skipped while another job for that repository is active. The global
   concurrency cap is 2. Review cadence is from every 6 hours to every 30 days.
   Jobs that exceed the timeout are failed.
+- **Schedule expressions** (#544, first slice): `src/schedules/next.ts` is the
+  one planner a preview and the worker will share. A schedule is either a
+  five-field cron expression (numeric values, `*`, ranges, lists and steps; no
+  seconds field, names or extensions) or a fixed interval between one minute and
+  30 days. The cron form names an IANA timezone; a fixed UTC offset is refused.
+  The interval form has no timezone and fires on whole multiples of its length
+  from the epoch, so every gap is exactly that length whatever the poll cadence.
+  Both forms take an optional `[start_at, end_at)` window.
+  `nextTime` is where DST is decided once: a local time that does not exist in
+  the spring-forward gap is skipped rather than shifted, and a local time that
+  occurs twice in the fall-back hour fires once, at the earlier instant, so a
+  poll inside the repeated hour does not run it a second time. Occurrence rows,
+  leases, misfire policies, layered budgets and the notification outbox are not
+  built yet; the tick still runs on `repos.interval_minutes`.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
@@ -269,6 +331,22 @@ that is the accepted state, not a defect.
   upstream can enable a scheduled reviewer. Review jobs list every open upstream
   PR, score each one, and post a COMMENT review; they never merge or modify
   code. A developer cannot run review jobs even when GitHub grants write access.
+- **Starting a triage job**: triage is repository-scoped, not issue-scoped, so a
+  person starts one from the repository page (`POST /repos/:id/triage`, behind
+  `ownedRepo` and the CSRF guard) rather than from `/admin`: an operator-only
+  start would leave the repository's own owner unable to triage it, and a
+  maintainer or developer role is enough. The control accepts one optional input,
+  an issue URL that focuses the board, and the route binds it to the repository
+  with `parseIssueUrl` before anything is enqueued, so a foreign host or a
+  foreign repository is refused with a visible error and no job row instead of
+  being caught only when the callback's board comes back. Because the goal is
+  read by the agent as instructions, the route names the issue by the canonical
+  URL the parser rebuilds from the checked owner, name and number, never by the
+  pasted string: a query string or fragment on the link cannot reach the prompt.
+  The duplicate rule is
+  the existing `jobs_one_active_per_repo` index: a start while a job is queued or
+  running is refused with `JOB_ACTIVE`, while a start after the previous one
+  finished is allowed because triage only reads.
 - **Work items and gates**: each repository has work items with a
   triage-to-merge state machine (`proposed → triaged → assigned → in_progress →
   pr_ready → in_review → changes_requested → approved → merged/closed`, plus the
@@ -349,7 +427,7 @@ real endpoint and key out of git and out of public documentation.
 
 ### Repository rules and skills
 
-A repository can add `.fledge/rules.md`, `.fledge/review.md`, `.fledge/develop.md` and text skills under `.agents/skills/`. Fledge reads them from the default branch at the job's fixed commit, records the commit and file hashes in `job_contexts`/`job_context_files`, and injects the effective rule text into the bridge prompt. The full text of a skill is read on demand with the job callback secret from `GET /api/jobs/:id/context?path=...`; the endpoint only serves files recorded for that job and only while it is queued or running. A PR that changes a rule or skill file blocks auto-merge until a maintainer acknowledges that head SHA. Details and limits: [rules.md](rules.md).
+A repository can add `.fledge/rules.md`, `.fledge/review.md`, `.fledge/develop.md` and text skills under `.agents/skills/`. Fledge reads them from the default branch at the job's fixed commit, records the commit and file hashes in `job_contexts`/`job_context_files`, and injects the effective rule text into the bridge prompt. For the three rule files the effective layer is repository file first, then a maintainer-owned console override in `repo_rule_overrides`, then the implicit built-in behaviour; each job records that layer per path in its context. The full text of a skill is read on demand with the job callback secret from `GET /api/jobs/:id/context?path=...`; the endpoint only serves files recorded for that job and only while it is queued or running. A PR that changes a rule or skill file blocks auto-merge until a maintainer acknowledges that head SHA. Details and limits: [rules.md](rules.md).
 
 ### Per-repository FlyBot instances
 
@@ -644,6 +722,34 @@ and in the notification row, for operators and for the API, and "Technical
 detail" prints it as written rather than translating it. The choice is
 recorded in `docs/decisions/0009-job-failure-codes.md`.
 
+### Postmortems and recurrence
+
+A failed, stalled (a failed job with `JOB_STALLED`) or cancelled job writes one
+`postmortems` row from the same guarded terminal transition that writes its
+`job.*` event, so a replayed callback cannot create a second write-up and a
+succeeded, queued, running or paused job writes none. `src/lib/postmortem.ts`
+derives the category from the existing failure classifier and records evidence
+from fields that already exist: the error and code, the last heartbeat, the job
+stage, the repository instance's status and last error, and the `job_events`
+timeline. A suspected cause is stated only when an error or code exists. A row
+with neither is `unverified` with a null cause; it is not guessed.
+
+The recurrence key is a hash of the category and the stable error code, or of a
+normalised error sentence when no code exists (job ids, URLs and numbers are
+removed so two sightings of one cause land on one key). `postmortem_recurrences`
+holds one ledger row per key with the count, first/last seen and the affected
+repositories. A second sighting increments the count and emits one `ops`
+notification plus a `postmortem_escalated` event; later sightings keep counting
+without escalating again.
+
+A preventive action is `test`, `guard`, `doc` or `config` plus a reference to the
+PR, issue or test that prevents the cause. `Store.linkPreventiveAction` records
+it without closing the postmortem; `Store.verifyPreventiveAction` refuses unless
+a linked action exists and, when the action lands, marks it verified, sets
+`status = 'closed'` and stamps `closed_at`. The repository page lists open
+postmortems and the recurrence ledger; the job page links the one postmortem for
+that job (`#postmortems`), never a duplicate.
+
 ### Enforcement: path guard, evidence verification and merge readiness
 
 Plan path constraints are now enforced, not only included in the prompt. After a
@@ -682,6 +788,49 @@ card carries that combined verdict rather than the PR evidence alone, so a pull
 request the path guard blocks never renders as evidence passed; the row names the
 guard as the reason its claim was lowered.
 
+### The independent adversarial review
+
+The last gate before an automatic merge is a second read of the same change by a
+model call that shares no context with the agent that wrote it
+(`src/lib/adversarialReview.ts`). Fledge assembles an `AdversarialPacket` from
+named fields only — base sha, tip sha, the pull-request patches, the verifier
+result at the tip and the repository policy — so the author's summary and its
+claimed test output are not in the request at all; a caller that still holds them
+cannot pass them through. Each automatic merge attempt records one
+`job.adversarial` event with the model, the prompt hash and the evidence the
+reviewer saw.
+
+The answer must be one of two shapes: `Concrete risk: <path>:<line>` with a
+failure mode and a repro, or `No concrete risk` with the checks it ran. A bare
+score is rejected as not a review. A concrete risk blocks the automatic merge
+with the page naming the file and line; the next run that clears it merges
+normally, and a maintainer merging by hand keeps that decision.
+
+The pass is granted only when it read the whole change. A diff cut at
+`MAX_DIFF_CHARS`, a changed-file listing the client reports incomplete, or a
+changed file that arrives without a patch is a refusal that names the omission
+and is recorded as `incomplete` — never a `skipped` pass with no block, and never
+a `partial` outcome that still merges (#556). A 100 %-similarity rename is the
+one patch-less shape that is not an omission: it has no hunks to read, so it is
+not withheld text, and a change that renames a file beside readable ones is
+reviewed on its readable half and merges (#566). It is still not a way past the
+gate: a change whose every file is a hunkless rename, or one that pairs a rename
+with nothing but allowlisted assets, refuses through the nothing-readable branch
+below, because a pure path move is how a change can be disabled without a diff to
+read. A patch-less file inside the
+binary-asset allowlist (`png`, `jpg`, `jpeg`, `gif`, `webp`, `ico`, `woff`,
+`woff2`, `ttf`, `eot` under `public/` or `docs/`) is recorded as unread and may
+merge, because a screenshot cannot be read by a text model and refusing it would
+block a class of change this gate never judged. An unconfigured platform model or
+a model error stays fail-open with a recorded reason, because a change cannot
+cause it, unless the pass already knows it could not read the change: a cut diff
+is refused whether or not the model answered. Fledge does not invent a risk, and
+it does not treat a number as proof: the job page says which of the outcomes
+happened — a refusal is reported as `incomplete` with the omission it found, not
+as a risk at a file and line — with the model and the prompt hash.
+A review job still runs in its own Reviewer session for the normal score; this
+pass is deliberately a separate context, not a second report from the same one.
+
 ### Retry policy and capacity
 
 `src/lib/retry.ts` classifies transient failures (bridge, model, GitHub,
@@ -695,7 +844,9 @@ once per failed review, with the same 1-minute cooldown and 30-minute cap and th
 same pull request and work item; a review that already recorded a
 `review_score` is never retried automatically, because its verdict is already
 posted. `summary` is the job's progress line, written on every running heartbeat,
-not a post marker, so it does not block a retry. If a review posted its comments
+not a post marker, so it does not block a retry; it and `error` pass through
+`src/lib/secrets.ts` before the row is written and again when the page renders
+them (`docs/decisions/0015`). If a review posted its comments
 and then lost the terminal callback, nothing stored tells that apart from a
 review that never posted; that residual case is manual. `github`, `quota`,
 `credential` and `review` failures stay manual.
@@ -758,16 +909,19 @@ cooldown up to a 4x cap; the manual run path and reviews bypass the backoff.
 ### Work types and triage
 
 A job carries two independent values. `kind` is the pipeline that runs it
-(`iterate`, `review`, `plan`, `scope`, `verify`, `discover`, `triage`); `work_type`
-is the contract the work is held to and is stored on the row. The registry in
-`src/lib/workTypes.ts` is the only list of work types — `iterate`, `triage`,
-`dependency`, `security`, `docs`, `performance`, `accessibility`, `migration` —
-and each entry declares its allowed stages, the evidence keys it requires, a
-declared risk tier, a per-job budget ceiling, whether it may open a branch and
-whether its pull request may auto-merge. Only `iterate` and `triage` have a
-handler in this slice; a declared type with no handler is refused at enqueue
-exactly like an unknown one (`UNKNOWN_WORK_TYPE` / `WORK_TYPE_UNSUPPORTED`),
-because nothing may run under a contract that is not enforced.
+(`iterate`, `review`, `plan`, `scope`, `verify`, `discover`, `triage`);
+`work_type` is the contract the work is held to and is stored on the row. The
+registry in `src/lib/workTypes.ts` is the only list of work types — `iterate`,
+`triage`, `dependency`, `security`, `docs`, `performance`, `accessibility`,
+`migration` — and each entry declares its allowed stages, the evidence keys it
+requires, a declared risk tier, whether it may open a branch and whether its
+pull request may auto-merge. A work type declares no budget of its own: the
+per-job cap is the repository's `repos.job_budget_cny`, enforced once at the
+checkpoint described in `docs/quota.md`, and a second number shown on the
+work-type card could not bind. Only `iterate` and `triage` have a handler in
+this slice; a declared type with no handler is refused at enqueue exactly like
+an unknown one (`UNKNOWN_WORK_TYPE` / `WORK_TYPE_UNSUPPORTED`), because nothing
+may run under a contract that is not enforced.
 
 Auto-merge reads the registry. The gate is still the repository's `repo_role`,
 `auto_merge` setting and a green tip, plus `workTypeMayAutoMerge(job.work_type)`,
@@ -789,34 +943,45 @@ which is the same path the next scheduled work session already consumes, so a
 triage run proposes work without opening a branch and without a second scheduler.
 The decision record is `docs/decisions/0014-work-types.md`.
 
-The kind and the work type are checked as a pair in both directions: a
-`triage` run cannot be declared as another work type, and no other kind can
-borrow the triage contract, so the page can never show the iterate contract for a
-run that is forbidden to write. Resume and retry read one shared rule instead of
-a ternary: a row keeps its own kind when that kind's contract does not depend on
-the row being re-enqueued (review, plan, triage), everything else runs as iterate
-work, and a declared work type that is not what the new kind implies travels with
-the re-enqueue so a contract with no handler is refused rather than re-labelled.
-A failed triage row therefore comes back as `kind='triage'`. What a triage row can
-never do is start itself: this slice has no route, form or scheduler branch that
-enqueues `kind='triage'`, so `triage` rows come from the service and from retry
-only; the console control that starts one is tracked in #523. The report itself is
-strict: an issue URL must carry a host (`https://` alone is refused) and a title
-over `TRIAGE_TITLE_MAX` is refused rather than shortened, because a cut title
-reads like the issue's real one. `triage` is also a filterable kind: it is in the
-dashboard's `JOB_FILTER_KINDS`, offered by the dashboard, the search and the admin
-search forms, and applied by `/search` as a value the user chose — a kind that
-matches no job returns nothing rather than dropping the filter and answering with
-every job. `discover` stays out of it because an account never starts a discovery
-run by hand.
+The kind and the work type are checked as a pair in both directions: a `triage`
+run cannot be declared as another work type, and no other kind can borrow the
+triage contract, so the page can never show the iterate contract for a run that
+is forbidden to write. Resume and retry read one shared rule instead of a
+ternary: a row keeps its own kind when that kind's contract does not depend on
+the row being re-enqueued (review, plan, triage), everything else runs as
+iterate work, and a declared work type that is not what the new kind implies
+travels with the re-enqueue so a contract with no handler is refused rather
+than re-labelled. A failed triage row therefore comes back as `kind='triage'`.
+What a triage row can never do is start itself: this slice has no route, form
+or scheduler branch that enqueues `kind='triage'`, so `triage` rows come from
+the service and from retry only; the console control that starts one is tracked
+in #523. The report itself is strict: an issue URL must carry a host
+(`https://` alone is refused) and a title over `TRIAGE_TITLE_MAX` is refused
+rather than shortened, because a cut title reads like the issue's real one.
+`triage` is also a filterable kind: it is in the dashboard's
+`JOB_FILTER_KINDS`, offered by the dashboard, the search and the admin search
+forms, and applied by `/search` as a value the user chose — a kind that matches
+no job returns nothing rather than dropping the filter and answering with every
+job. The dashboard applies the opposite rule to a kind no job can carry:
+`parseJobFilters` drops the value, so `/dashboard?kind=<unknown>` answers with
+every job. Both are intended, both are pinned end to end, and the difference is
+the page's job: a search asks a question and may answer "nothing", while a
+dashboard filter narrows a list that exists without the filter. `discover`
+stays out of it because an account never starts a discovery run by hand. The
+search form also renders a kind that is applied but not offered — `discover`, or
+a token no job can have — as the selected option, so the page never claims
+全部类型 / All kinds while the query narrows by something else. That option is
+render-only: the list the form offers does not change, the applied value is
+escaped like any other query text, and `JOB_FILTER_KINDS` keeps `discover` out.
 
 ### Platform emergency stop
 
 The stop is one `settings` row (`platform.stop`: when, who, why), not a field on
 the `Jobs` object, so a restart cannot resume scheduling from a stale in-memory
 "open" and a second process reads the same answer. `enqueue()` reads the row on
-every call and refuses `PLATFORM_PAUSED` before the per-repository and per-role
-gates; `tickOnce()` reads it once per tick, after its cleanup (stale jobs,
+every call and refuses `PLATFORM_PAUSED` before the work-type resolution and the
+per-repository and per-role gates, so a stopped platform never answers with a
+work-type refusal; `tickOnce()` reads it once per tick, after its cleanup (stale jobs,
 expired leases, token pruning, instance health) and before anything that creates,
 dispatches or merges work — the follow-up release, the due retries, the auto-merge
 reconcile, the queue dispatch and both scheduling loops. The admission check is
@@ -1012,6 +1177,21 @@ the patch and restarts the container only when no job is active. A repository ca
 also assign a selected model to each DSH bot role; after the restart Fledge calls
 `update-bot` with `model: <provider>/<model>` for every role, using the assigned
 model or the new default, so a bot cannot keep a stale provider reference.
+
+Provider metadata also carries a region tag, an optional data-policy URL and an
+allowed flag. A repository can set a provider allowlist and a required region;
+the gateway enforces both at candidate resolution, including the fallback loop,
+and refuses a disallowed model with a stable code before any upstream call. With
+a policy set, a call must name one of the repository's models: a call that omits
+`model`, or names a model that does not resolve, is refused with
+`FLEDGE_PROVIDER_POLICY_NO_MODEL` rather than reaching the caller's own model or
+the platform model, which carry no provider id or region. The job row records the
+answering provider id, label, region and model, keeps those values when a later
+call resolves no provider, and the job page and review packet show them. The
+settings form disables the checkbox of a provider whose allowed flag is off.
+`repos.provider_allowlist` and `repos.required_region` are additive columns, so an
+existing repository keeps the unrestricted behaviour until an owner sets a
+policy.
 
 ### Per-job cost, evidence and metrics
 
@@ -1264,8 +1444,29 @@ listing, and every row links to the page that already owns it.
 | `api_tokens` | `flg_` tokens (PAT, job or instance), hashed, with `scope` (only `gateway` today) and `expires_at`; a PAT always carries an expiry |
 | `quota_ledger` | per-request cost records |
 | `notifications` | in-app messages (quota, job failure), stored as written and localized at render |
+| `postmortems` | one evidence-backed write-up per failed/stalled/cancelled job, with category, recurrence key, owner and preventive action |
+| `postmortem_recurrences` | one ledger row per recurrence key: count, first/last seen, affected repositories and the single escalation marker |
 | `audit_log` | who changed what |
+| `management_commands` | one receipt per command: principal, channel, idempotency scope/key, request hash, operation, target, arguments, expected/before/after revision, status and result (#540) |
+| `resource_revisions` | the fence a command compares against, one row per resource; a resource with no row is at revision 1 (#540) |
 | `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
+
+## Deployment records
+
+A release and a deployment are separate events. `scripts/verify-release.mjs`
+proves the tag/image chain; an operator records the deployment itself on
+`/admin/deployments` (admin-only) with the environment, version, commit, image
+digest, operator and the observed `/healthz` / `/readyz`. Fledge never opens a
+host connection or runs the deploy: every field is a recorded fact.
+
+The read model compares the latest recorded deployment with the newest released
+tag and reports `ok`, `behind`, `mismatch` or `unknown`; a `/healthz` commit that
+does not match the record is a mismatch. Promotion requires a canary checklist
+(`/healthz`, `/readyz`, a smoke job, error and latency windows) and fails closed
+when evidence is missing. A rollback record names the previous digest/commit,
+owner and redacted command, and is verified only when the resulting `/healthz`
+matches the previous commit. `scripts/verify-release.mjs --deployment FILE`
+turns the same drift verdict into a release-check link.
 
 ## Job lifecycle
 
@@ -1288,11 +1489,64 @@ queued ──► running ──► succeeded
 The claim/worker dispatch model, the `queued` meaning and the idempotent
 callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
 
+## Management commands (#540)
+
+Every console write used to be its own route: parse the form, check the owner,
+call the service, write an audit row, redirect. A second surface (an API, a chat
+entry, automation) would have had to copy all four steps. `src/management/`
+replaces that shape with one contract, and the first migrated write is the job
+cancel form.
+
+A command is an operation from a closed catalog (`src/management/catalog.ts`),
+a target (`projectId`, plus `jobId` today), validated arguments, the revision the
+caller saw (`expected_revision`), an idempotency key, and the source conversation
+or message when the caller has one. The actor — principal, channel, tenant,
+capabilities — is built by the server from the session and the repository; a form
+field, an IM message or a model cannot supply it, and an argument that names one
+(`actor`, `tenant_id`, `capabilities`, `sql`, `url`, `path`) is refused rather
+than ignored.
+
+The service stores a receipt before the business write, in `accepted` state.
+Repeating the same key with the same request hash returns that receipt and runs
+nothing; reusing the key with different arguments returns
+`idempotency_conflict`; a revision that has moved on returns
+`management_revision_conflict` and writes no receipt at all. Execution re-reads
+the caller's capabilities from the database and compares the revision again, so
+a change of hands between acceptance and execution fails the receipt before the
+business write. On success the receipt, the revision bump and the
+`management.command` audit row commit in one transaction.
+
+`task.cancel` is not fully transactional, and that is deliberate: it calls
+`Jobs.cancelJob`, which stops live bot sessions over the bridge before the local
+status write, so the external step cannot sit inside the SQLite transaction. Its
+external call is best-effort and safe to repeat, so the operation never needs the
+`unknown` state; the first operation that does (a release, or a resume that
+enqueues through an external surface) will bring
+`management_command_attempts` and a reconcile step with it. The form route stays
+a thin adapter: it renders the revision and a fresh key, calls the service, and
+turns the receipt into the same redirect as before.
+
+The rest of the write surface — job create/pause/resume/retry, repository
+settings, releases, member grants — still calls its service directly. Each
+migrates by registering one operation and leaving its route as an adapter; none
+of them may keep a second copy of the rules.
+
+## Notification webhook egress
+
+`buildApp()` checks `NOTIFY_WEBHOOK_URL` before it opens the store. In production
+an unsafe target stops the process instead of starting with an alert path that
+would POST into the internal network. The same guard runs on every send and on
+every redirect hop, so a runtime change or a redirect fails closed. The guard
+resolves the host and refuses loopback, RFC1918, carrier-grade NAT, link-local,
+multicast, ULA, IPv6 loopback and IPv4-mapped private addresses; an exact
+`NOTIFY_WEBHOOK_ALLOWED_HOSTS` entry is the only way an operator may name a
+private self-hosted target. Errors name the host but never the secret or payload.
+
 ## Trust boundaries
 
 | Boundary | Control |
 |---|---|
-| Browser → Fledge | session cookie, CSRF token on every form, rate limits; destructive writes also need a GitHub re-authentication inside `RECENT_AUTH_MINUTES` (`sessions.recent_auth_at`, audited as `recent_auth_required`) |
+| Browser → Fledge | session cookie, CSRF token on every form, rate limits; destructive writes also need a GitHub re-authentication inside `RECENT_AUTH_MINUTES` (`sessions.recent_auth_at`, audited as `recent_auth_required`). The bounce returns to the page the form was on with exactly one `notice` — the key is replaced, not appended, because a page that just came out of a save already carries one and a second key parses as an array that `queryText()` refuses |
 | Fledge → GitHub | user's fine-grained token; platform OAuth only for identity |
 | Fledge → SMTP | credentials in env, never logged |
 | FlyBot bridge → Fledge | job callback secret; credential URL; job token |
@@ -1324,3 +1578,42 @@ callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
 - Auto-merging.
 - Multi-tenant process isolation (one instance = one operator/team).
 - Billing integration; the 1 CNY quota is a soft platform budget, not an invoice.
+
+## Project memory (`#539`)
+
+A repository can keep durable, versioned memory: decisions, conventions and
+experience that a later job cites instead of re-deriving. The store is
+`project_memories` (the current revision, unique per `(repo_id, key)`) plus
+`project_memory_versions` (every revision, including the first, written once and
+never updated in place). `src/lib/memory.ts` holds the rules that are not SQL.
+
+- **Writes are fenced.** Every write carries `expected_revision`; `0` means
+  create-only. A stale revision is refused with `memory_revision_conflict` and
+  the current entry is left untouched — the store compares inside one
+  `BEGIN IMMEDIATE` transaction and appends the version only after the fence
+  passes. An identical write is a no-op and creates no revision.
+- **Reads are exact.** A read names a revision and returns that body, its
+  `sha256` digest and whether it is historical. Nothing is served from a cache
+  and no read returns "the latest" when a revision was asked for.
+- **Audience is a role, not a permission.** An entry is `project` or
+  `role:<maintainer|developer>`. The reader's role is the repository's own chosen
+  role, so an administrator acting as a developer reads the developer view, and
+  an entry outside the audience is reported as absent (404) rather than listed.
+  A writer may not author an entry for a role it cannot act as.
+- **The page is reachable.** The repository page's memory card links to
+  `/repos/:id/memory`; the page is not an orphan that only a typed URL opens.
+- **Sources are shown.** An exact-revision read lists that revision's `sources`
+  next to the body, links the ones Fledge can turn into a GitHub URL (`pr#N`,
+  `file:<path>`, `commit:<sha>`, an `http(s)` URL) and marks the rest
+  unrecognised. It does not claim the reference still resolves upstream.
+- **Lookups are bounded.** Search is a case-insensitive substring match over the
+  key, body and scope of the visible entries: the query is capped at 120
+  characters (a longer one is refused by name) and results are capped at 50. The
+  result table lists the key and its metadata, never the body, so a long entry
+  cannot lengthen the list. There is no ranking and no embedding, so the same
+  store always answers the same way.
+
+The slice is the repository page (`/repos/:id/memory`, `src/views/memory.ts`).
+Not built yet: the bounded index handed to a job prompt and the agent read tool
+(`src/jobs/service.ts`), the three-notes-per-run agent writer, repository-document
+promotion with merge/blob proof, review scheduling and export.

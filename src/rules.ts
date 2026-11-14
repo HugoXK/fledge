@@ -8,11 +8,26 @@ export const MAX_RULES_TOTAL_BYTES = 256 * 1024
 export const MAX_SKILLS = 32
 export const MAX_SKILL_BYTES = 32 * 1024
 
+export type RuleLayer = 'repository' | 'console' | 'builtin'
+
 export interface RuleFile {
   path: string
   sha256: string
   bytes: number
   content: string
+  layer: RuleLayer
+}
+
+export interface RuleLayerRecord {
+  path: string
+  layer: RuleLayer
+  revision: number | null
+}
+
+export interface ConsoleRuleOverride {
+  path: string
+  content: string
+  revision: number
 }
 
 export interface SkillFile {
@@ -30,6 +45,7 @@ export interface RepoRules {
   commit: string
   files: RuleFile[]
   skills: SkillFile[]
+  layers: RuleLayerRecord[]
   effective: string
   hash: string
   totalBytes: number
@@ -48,7 +64,7 @@ export class RulesError extends Error {
   }
 }
 
-function isRulePath(path: string): boolean {
+export function isRulePath(path: string): boolean {
   return (RULE_PATHS as readonly string[]).includes(path)
 }
 
@@ -76,7 +92,7 @@ async function readRule(client: GithubClient, owner: string, name: string, commi
   if (file.type !== 'file') throw new RulesError('rules_invalid', path, `${path} is a ${file.type}, not a regular file`)
   if (file.size > MAX_RULE_FILE_BYTES) throw new RulesError('rules_invalid', path, `${path} is larger than ${MAX_RULE_FILE_BYTES} bytes`)
   validateText(path, file.content)
-  return { path, sha256: file.sha === '' ? sha256Hex(file.content) : file.sha, bytes: Buffer.byteLength(file.content), content: file.content }
+  return { path, sha256: file.sha === '' ? sha256Hex(file.content) : file.sha, bytes: Buffer.byteLength(file.content), content: file.content, layer: 'repository' }
 }
 
 async function readSkills(client: GithubClient, owner: string, name: string, commit: string): Promise<SkillFile[]> {
@@ -110,11 +126,33 @@ export async function loadRepoRules(
   owner: string,
   name: string,
   commit: string,
+  consoleOverrides: readonly ConsoleRuleOverride[] = [],
 ): Promise<RepoRules> {
+  const overrides = new Map(
+    consoleOverrides
+      .filter((override) => isRulePath(override.path))
+      .map((override) => [override.path, override]),
+  )
   const files: RuleFile[] = []
+  const layers: RuleLayerRecord[] = []
   for (const path of RULE_PATHS) {
     const file = await readRule(client, owner, name, commit, path)
-    if (file !== null) files.push(file)
+    if (file !== null) {
+      files.push(file)
+      layers.push({ path, layer: 'repository', revision: null })
+      continue
+    }
+    const override = overrides.get(path)
+    if (override !== undefined) {
+      validateText(path, override.content)
+      if (override.content.trim() === '') throw new RulesError('rules_invalid', path, `${path} override is empty`)
+      const bytes = Buffer.byteLength(override.content)
+      if (bytes > MAX_RULE_FILE_BYTES) throw new RulesError('rules_invalid', path, `${path} override is larger than ${MAX_RULE_FILE_BYTES} bytes`)
+      files.push({ path, sha256: sha256Hex(override.content), bytes, content: override.content, layer: 'console' })
+      layers.push({ path, layer: 'console', revision: override.revision })
+      continue
+    }
+    layers.push({ path, layer: 'builtin', revision: null })
   }
   const skills = await readSkills(client, owner, name, commit)
   const totalBytes = files.reduce((sum, file) => sum + file.bytes, 0) + skills.reduce((sum, skill) => sum + skill.bytes, 0)
@@ -124,10 +162,11 @@ export async function loadRepoRules(
   const effective = files.map((file) => `## ${file.path}\n${file.content.trimEnd()}`).join('\n\n')
   const hash = sha256Hex(JSON.stringify({
     commit,
-    files: files.map((file) => [file.path, file.sha256]),
+    files: files.map((file) => [file.path, file.sha256, file.layer]),
+    layers: layers.map((layer) => [layer.path, layer.layer, layer.revision]),
     skills: skills.map((skill) => [skill.path, skill.sha256]),
   }))
-  return { owner, name, commit, files, skills, effective, hash, totalBytes }
+  return { owner, name, commit, files, skills, layers, effective, hash, totalBytes }
 }
 
 export function isRuleChange(path: string): boolean {

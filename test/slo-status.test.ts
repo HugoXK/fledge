@@ -28,7 +28,7 @@ test('the numerator is one exported status, and neither file carries it as a sec
   // A mutated numerator (`status="failed"`) has to red: the only shape the report
   // may carry is the interpolation of the constant itself.
   assert.equal(report.includes('status="succeeded"'), false, 'the report does not inline the success status')
-  assert.equal(report.includes('status="${SLO_SUCCESS_STATUS}"'), true, 'the report builds its numerator from the exported status')
+  assert.match(report, /status="\$\{SLO_SUCCESS_STATUS\}"/, 'the report builds its numerator from the exported status')
   const script = read('scripts/slo-report.mjs')
   assert.equal(script.includes('fledge_jobs_total'), false, 'the CLI carries no PromQL of its own')
   const rules = read('deploy/prometheus/fledge-alerts.yml')

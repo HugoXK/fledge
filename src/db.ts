@@ -6,7 +6,10 @@ import { log } from './lib/log.js'
 import { nowIso } from './lib/time.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 import { parseModelRun } from './lib/modelRun.js'
+import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
+import { redact } from './lib/secrets.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
+import { buildPostmortem, isPreventiveActionKind, type PreventiveActionKind } from './lib/postmortem.js'
 import { artifactKey, candidateRefusal, type CandidateRefusal } from './lib/evolution/artifacts.js'
 
 // #355: one settings row marks the PAT expiry backfill as done, so a later
@@ -146,6 +149,8 @@ export interface RepoRow {
   last_review_status: string | null
   upstream_html_url: string | null
   fork_html_url: string | null
+  provider_allowlist: string
+  required_region: string
 }
 
 export interface UserModelRow {
@@ -174,6 +179,9 @@ export interface ModelProviderRow {
   base_url: string
   key_enc: string
   allow_private: number
+  region: string
+  data_policy_url: string
+  allowed: number
   created_at: string
   updated_at: string
 }
@@ -188,6 +196,9 @@ export interface ProviderModelRow {
 
 export interface RepoProviderModelRow extends ProviderModelRow {
   provider_label: string
+  provider_region: string
+  provider_data_policy_url: string
+  provider_allowed: number
   base_url: string
   key_enc: string
   allow_private: number
@@ -253,6 +264,7 @@ export interface JobRow {
   team_stats_json: string | null
   work_item_id: string | null
   priority: number
+  queue_seq: number
   plan_approved_at: string | null
   plan_approved_by: string | null
   plan_rejected_at: string | null
@@ -264,6 +276,10 @@ export interface JobRow {
   verification_json: string | null
   continuity_json: string | null
   model_json: string | null
+  provider_id: string | null
+  provider_label: string | null
+  provider_region: string | null
+  provider_model: string | null
   output_kind: string | null
   continuity_used: number
   owner_started: number
@@ -362,6 +378,35 @@ export interface AuditRow {
   detail: string | null
 }
 
+// #540: one row per command a caller asked for. `accepted` is the reservation
+// (the receipt exists before any business write), `succeeded`/`failed` is the
+// outcome, and `unknown` is reserved for a write whose external response was
+// lost — no operation in this build can reach it yet.
+export type ManagementCommandStatus = 'accepted' | 'running' | 'succeeded' | 'failed' | 'unknown'
+
+export interface ManagementCommandRow {
+  id: string
+  principal_id: string
+  channel: string
+  idempotency_scope: string
+  idempotency_key: string
+  request_hash: string
+  operation: string
+  target_json: string
+  arguments_json: string
+  expected_revision: number
+  before_revision: number | null
+  after_revision: number | null
+  status: ManagementCommandStatus
+  result_json: string | null
+  error_code: string | null
+  error_message: string | null
+  source_conversation: string | null
+  source_message: string | null
+  created_at: string
+  updated_at: string
+}
+
 // #362: only the columns the owner search renders, so a row it returns can carry
 // no `token_enc`, `platform_token_hash` or email.
 export type SearchRepoRow = Pick<RepoRow, 'id' | 'owner' | 'name' | 'enabled'>
@@ -397,6 +442,15 @@ function likePattern(q: string): string {
   return `%${q.replace(/[\\%_]/g, (char) => `\\${char}`)}%`
 }
 
+function postmortemRepositories(value: string | null | undefined): string[] {
+  try {
+    const parsed: unknown = JSON.parse(value ?? '[]')
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string') : []
+  } catch {
+    return []
+  }
+}
+
 export interface JobEventRow {
   id: number
   at: string
@@ -424,6 +478,59 @@ export interface JobContextFileRow {
   sha256: string
   bytes: number
   content: string
+}
+
+export interface RepoRuleOverrideRow {
+  repo_id: string
+  path: string
+  content: string
+  revision: number
+  updated_by: string
+  updated_at: string
+}
+
+export interface PostmortemRow {
+  id: string
+  job_id: string
+  repo_id: string
+  user_id: string
+  status: string
+  category: string
+  outcome: string
+  recurrence_key: string
+  evidence_state: string
+  evidence_json: string | null
+  timeline_json: string | null
+  suspected_cause: string | null
+  owner: string
+  preventive_action: string | null
+  preventive_kind: string | null
+  preventive_verified: number
+  preventive_verified_at: string | null
+  first_seen_at: string
+  last_seen_at: string
+  closed_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface PostmortemRecurrenceRow {
+  recurrence_key: string
+  category: string
+  count: number
+  first_seen_at: string
+  last_seen_at: string
+  repositories_json: string
+  escalated_at: string | null
+  representative_id: string | null
+  updated_at: string
+}
+
+export interface PostmortemRecord {
+  postmortem: PostmortemRow
+  recurrence: PostmortemRecurrenceRow
+  created: boolean
+  escalated: boolean
 }
 
 export interface ArtifactVersionRow {
@@ -481,6 +588,71 @@ export interface PromotionRow {
   created_at: string
 }
 
+// #395: what an operator recorded about one environment. Fledge never runs the
+// host deploy, so every field is a fact supplied by a person and kept as it was
+// supplied; `gate_json` is the canary checklist that had to pass first.
+export interface DeploymentRow {
+  id: string
+  environment: string
+  version: string
+  commit_sha: string
+  image_digest: string
+  deployed_at: string
+  operator: string
+  healthz_ok: number
+  healthz_status: number | null
+  healthz_version: string | null
+  healthz_commit: string | null
+  readyz_ok: number
+  readyz_status: number | null
+  release_url: string | null
+  gate_json: string
+  created_at: string
+}
+
+export interface DeploymentRollbackRow {
+  id: string
+  environment: string
+  from_deployment_id: string | null
+  previous_deployment_id: string
+  previous_digest: string
+  previous_commit: string
+  owner: string
+  command: string
+  decision: string
+  healthz_ok: number
+  healthz_status: number | null
+  healthz_commit: string | null
+  verified: number
+  created_at: string
+}
+
+export interface DeploymentInput {
+  environment: string
+  version: string
+  commit: string
+  imageDigest: string
+  deployedAt: string
+  operator: string
+  healthz: { ok: boolean; status: number | null; version?: string | null; commit?: string | null }
+  readyz: { ok: boolean; status: number | null }
+  releaseUrl: string | null
+  gate: unknown
+}
+
+export interface DeploymentRollbackInput {
+  environment: string
+  fromDeploymentId: string | null
+  previousDeploymentId: string
+  previousDigest: string
+  previousCommit: string
+  owner: string
+  command: string
+  decision: string
+  healthz: { ok: boolean; status: number | null; commit?: string | null }
+  verified: boolean
+}
+
 // #265: what the sweep may end. No address and no display name — the operator
 // output is built from this, and it stays safe to paste into a terminal.
 export interface TrialExpiryCandidate {
@@ -518,6 +690,72 @@ export interface AlertView {
   state?: string
   message: string
 }
+
+// #539: a versioned project-memory entry. The row in `project_memories` is the
+// current revision; every revision including the first lives in
+// `project_memory_versions`, and no version row is ever updated in place.
+// `audience` is `project` or `role:<id>` and is decided by the reader's
+// repository role, never by an administrator's permission.
+export interface ProjectMemoryRow {
+  id: string
+  repo_id: string
+  key: string
+  kind: string
+  status: string
+  verification: string
+  audience: string
+  scope: string
+  body: string
+  digest: string
+  sources_json: string
+  owner_type: string
+  owner_id: string | null
+  source_job_id: string | null
+  revision: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ProjectMemoryVersionRow {
+  memory_id: string
+  revision: number
+  kind: string
+  status: string
+  verification: string
+  audience: string
+  scope: string
+  body: string
+  digest: string
+  sources_json: string
+  actor_type: string
+  actor_id: string | null
+  reason: string
+  created_at: string
+}
+
+export interface MemoryWriteInput {
+  repoId: string
+  key: string
+  kind: string
+  status: string
+  verification: string
+  audience: string
+  scope: string
+  body: string
+  digest: string
+  sourcesJson: string
+  actorType: string
+  actorId: string | null
+  sourceJobId: string | null
+  reason: string
+  // The revision the writer believed it was replacing. `0` means "create only":
+  // an existing entry at the same key refuses the write instead of adopting it.
+  expectedRevision: number
+}
+
+export type MemoryWriteResult =
+  | { ok: true; created: boolean; noop: boolean; row: ProjectMemoryRow }
+  | { ok: false; code: 'memory_revision_conflict' | 'memory_not_found'; current: ProjectMemoryRow | null; revision: number }
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -640,6 +878,8 @@ CREATE TABLE IF NOT EXISTS repos (
   last_review_status TEXT,
   upstream_html_url TEXT,
   fork_html_url TEXT,
+  provider_allowlist TEXT NOT NULL DEFAULT '',
+  required_region TEXT NOT NULL DEFAULT '',
   UNIQUE(user_id, owner, name)
 );
 CREATE INDEX IF NOT EXISTS repos_user_idx ON repos(user_id);
@@ -697,6 +937,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   team_stats_json TEXT,
   work_item_id TEXT,
   priority INTEGER NOT NULL DEFAULT 0,
+  -- The position this job holds in its priority level (#545). Allocated once,
+  -- monotonically, and never reused; 0 means a row that predates the column and
+  -- has not been backfilled yet.
+  queue_seq INTEGER NOT NULL DEFAULT 0,
   plan_approved_at TEXT,
   plan_approved_by TEXT,
   plan_rejected_at TEXT,
@@ -708,6 +952,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   verification_json TEXT,
   continuity_json TEXT,
   model_json TEXT,
+  provider_id TEXT,
+  provider_label TEXT,
+  provider_region TEXT,
+  provider_model TEXT,
   output_kind TEXT,
   continuity_used INTEGER NOT NULL DEFAULT 0,
   owner_started INTEGER NOT NULL DEFAULT 0,
@@ -845,6 +1093,9 @@ CREATE TABLE IF NOT EXISTS model_providers (
   base_url TEXT NOT NULL,
   key_enc TEXT NOT NULL,
   allow_private INTEGER NOT NULL DEFAULT 0,
+  region TEXT NOT NULL DEFAULT '',
+  data_policy_url TEXT NOT NULL DEFAULT '',
+  allowed INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -927,6 +1178,61 @@ CREATE TABLE IF NOT EXISTS job_context_files (
   PRIMARY KEY (job_id, path)
 );
 
+-- #538: a maintainer can override one of the three rule files from the console.
+-- A repository file still wins; this row is the middle layer, and revision is
+-- the fence a console write compares against.
+CREATE TABLE IF NOT EXISTS repo_rule_overrides (
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  content TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  updated_by TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (repo_id, path)
+);
+
+-- #384: one postmortem per failed/stalled/cancelled job, plus a ledger row per
+-- recurrence key. The job_id unique constraint is the idempotency guard: a
+-- replayed terminal transition cannot create a second write-up for the same job.
+CREATE TABLE IF NOT EXISTS postmortems (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'open',
+  category TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  recurrence_key TEXT NOT NULL,
+  evidence_state TEXT NOT NULL DEFAULT 'unverified',
+  evidence_json TEXT,
+  timeline_json TEXT,
+  suspected_cause TEXT,
+  owner TEXT NOT NULL,
+  preventive_action TEXT,
+  preventive_kind TEXT,
+  preventive_verified INTEGER NOT NULL DEFAULT 0,
+  preventive_verified_at TEXT,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  closed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS postmortems_repo_idx ON postmortems(repo_id, status, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS postmortems_recurrence_idx ON postmortems(recurrence_key);
+
+CREATE TABLE IF NOT EXISTS postmortem_recurrences (
+  recurrence_key TEXT PRIMARY KEY,
+  category TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 1,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  repositories_json TEXT NOT NULL DEFAULT '[]',
+  escalated_at TEXT,
+  representative_id TEXT,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS artifact_versions (
   id TEXT PRIMARY KEY,
   artifact TEXT NOT NULL,
@@ -983,6 +1289,44 @@ CREATE TABLE IF NOT EXISTS promotions (
 );
 CREATE INDEX IF NOT EXISTS promotions_artifact_idx ON promotions(artifact_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS deployments (
+  id TEXT PRIMARY KEY,
+  environment TEXT NOT NULL,
+  version TEXT NOT NULL,
+  commit_sha TEXT NOT NULL,
+  image_digest TEXT NOT NULL,
+  deployed_at TEXT NOT NULL,
+  operator TEXT NOT NULL,
+  healthz_ok INTEGER NOT NULL,
+  healthz_status INTEGER,
+  healthz_version TEXT,
+  healthz_commit TEXT,
+  readyz_ok INTEGER NOT NULL,
+  readyz_status INTEGER,
+  release_url TEXT,
+  gate_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS deployments_env_idx ON deployments(environment, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS deployment_rollbacks (
+  id TEXT PRIMARY KEY,
+  environment TEXT NOT NULL,
+  from_deployment_id TEXT REFERENCES deployments(id) ON DELETE SET NULL,
+  previous_deployment_id TEXT NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,
+  previous_digest TEXT NOT NULL,
+  previous_commit TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  command TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  healthz_ok INTEGER NOT NULL,
+  healthz_status INTEGER,
+  healthz_commit TEXT,
+  verified INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS deployment_rollbacks_env_idx ON deployment_rollbacks(environment, created_at DESC);
+
 CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS audit_log_user_idx ON audit_log(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS audit_log_at_idx ON audit_log(at);
@@ -994,6 +1338,85 @@ CREATE INDEX IF NOT EXISTS jobs_created_idx ON jobs(created_at);
 CREATE INDEX IF NOT EXISTS events_at_idx ON events(at);
 CREATE INDEX IF NOT EXISTS quota_ledger_at_idx ON quota_ledger(at);
 CREATE INDEX IF NOT EXISTS work_items_merged_idx ON work_items(merged_at);
+
+-- #540: the management contract's two durable pieces. A receipt records one
+-- command (what was asked, by whom, under which key, against which revision, and
+-- what happened); a revision row is the fence a command compares against, so a
+-- page rendered before someone else's write is refused instead of applied. Both
+-- are additive, so the version bump is a refusal boundary, not a backfill.
+CREATE TABLE IF NOT EXISTS resource_revisions (
+  resource_type TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (resource_type, resource_id)
+);
+
+CREATE TABLE IF NOT EXISTS management_commands (
+  id TEXT PRIMARY KEY,
+  principal_id TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  idempotency_scope TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  target_json TEXT NOT NULL,
+  arguments_json TEXT NOT NULL,
+  expected_revision INTEGER NOT NULL,
+  before_revision INTEGER,
+  after_revision INTEGER,
+  status TEXT NOT NULL,
+  result_json TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  source_conversation TEXT,
+  source_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(idempotency_scope, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS management_commands_principal_idx ON management_commands(principal_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS management_commands_status_idx ON management_commands(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS project_memories (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  verification TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL,
+  digest TEXT NOT NULL,
+  sources_json TEXT NOT NULL DEFAULT '[]',
+  owner_type TEXT NOT NULL,
+  owner_id TEXT,
+  source_job_id TEXT,
+  revision INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(repo_id, key)
+);
+CREATE INDEX IF NOT EXISTS project_memories_repo_idx ON project_memories(repo_id, audience, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS project_memory_versions (
+  memory_id TEXT NOT NULL REFERENCES project_memories(id) ON DELETE CASCADE,
+  revision INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  verification TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL,
+  digest TEXT NOT NULL,
+  sources_json TEXT NOT NULL,
+  actor_type TEXT NOT NULL,
+  actor_id TEXT,
+  reason TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (memory_id, revision)
+);
 `
 
 function clean(params: unknown[]): unknown[] {
@@ -1021,6 +1444,18 @@ function newestJobOrder(alias: string): string {
   return `${alias}.created_at DESC, ${alias}.rowid DESC`
 }
 
+// #458: `summary` and `error` are the two free-text columns a runner can echo a
+// secret into. Both writers pass through this one helper, so a caller that skips
+// the job service (a retry, a test, a future runner) cannot store a raw value.
+function redactJobText(patch: Record<string, unknown>): Record<string, unknown> {
+  if (typeof patch.summary !== 'string' && typeof patch.error !== 'string') return patch
+  return {
+    ...patch,
+    ...(typeof patch.summary === 'string' ? { summary: redact(patch.summary) } : {}),
+    ...(typeof patch.error === 'string' ? { error: redact(patch.error) } : {}),
+  }
+}
+
 export class Store {
   readonly db: Database
 
@@ -1031,13 +1466,14 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 33) {
+    if (previousVersion > 35) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (33)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (35)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
     this.migrateRepoColumns()
+    this.migrateProviderColumns()
     this.migrateWebhookColumns()
     this.migrateArtifactColumns()
     this.migrateIndexes()
@@ -1050,7 +1486,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 33)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 35)};`)
   }
 
   migrateIndexes(): void {
@@ -1271,6 +1707,8 @@ export class Store {
       ['last_review_status', 'TEXT'],
       ['upstream_html_url', 'TEXT'],
       ['fork_html_url', 'TEXT'],
+      ['provider_allowlist', "TEXT NOT NULL DEFAULT ''"],
+      ['required_region', "TEXT NOT NULL DEFAULT ''"],
     ]
     for (const [name, type] of repoAdditions) {
       if (!repoColumns.has(name)) this.run(`ALTER TABLE repos ADD COLUMN ${name} ${type}`)
@@ -1296,6 +1734,18 @@ export class Store {
     if (!jobColumns.has('team_stats_json')) this.run('ALTER TABLE jobs ADD COLUMN team_stats_json TEXT')
     if (!jobColumns.has('work_item_id')) this.run('ALTER TABLE jobs ADD COLUMN work_item_id TEXT')
     if (!jobColumns.has('priority')) this.run('ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0')
+    if (!jobColumns.has('queue_seq')) this.run('ALTER TABLE jobs ADD COLUMN queue_seq INTEGER NOT NULL DEFAULT 0')
+    // Backfill the ticket in arrival order, which is the order those rows were
+    // ranked by before the column existed, so an upgrade does not reshuffle a
+    // queue that is already waiting.
+    const unticketed = this.all<{ id: string }>('SELECT id FROM jobs WHERE queue_seq = 0 ORDER BY created_at ASC, id ASC')
+    if (unticketed.length > 0) {
+      let seq = Number(this.get<{ seq: number }>('SELECT COALESCE(MAX(queue_seq), 0) AS seq FROM jobs')?.seq ?? 0)
+      for (const row of unticketed) {
+        seq += 1
+        this.run('UPDATE jobs SET queue_seq = ? WHERE id = ?', seq, row.id)
+      }
+    }
     if (!jobColumns.has('plan_approved_at')) this.run('ALTER TABLE jobs ADD COLUMN plan_approved_at TEXT')
     if (!jobColumns.has('plan_approved_by')) this.run('ALTER TABLE jobs ADD COLUMN plan_approved_by TEXT')
     if (!jobColumns.has('plan_rejected_at')) this.run('ALTER TABLE jobs ADD COLUMN plan_rejected_at TEXT')
@@ -1310,6 +1760,10 @@ export class Store {
     if (!jobColumns.has('continuity_used')) this.run('ALTER TABLE jobs ADD COLUMN continuity_used INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('owner_started')) this.run('ALTER TABLE jobs ADD COLUMN owner_started INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('model_json')) this.run('ALTER TABLE jobs ADD COLUMN model_json TEXT')
+    if (!jobColumns.has('provider_id')) this.run('ALTER TABLE jobs ADD COLUMN provider_id TEXT')
+    if (!jobColumns.has('provider_label')) this.run('ALTER TABLE jobs ADD COLUMN provider_label TEXT')
+    if (!jobColumns.has('provider_region')) this.run('ALTER TABLE jobs ADD COLUMN provider_region TEXT')
+    if (!jobColumns.has('provider_model')) this.run('ALTER TABLE jobs ADD COLUMN provider_model TEXT')
     if (!jobColumns.has('retry_attempt')) this.run('ALTER TABLE jobs ADD COLUMN retry_attempt INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('retry_of')) this.run('ALTER TABLE jobs ADD COLUMN retry_of TEXT')
     if (!jobColumns.has('last_callback_at')) this.run('ALTER TABLE jobs ADD COLUMN last_callback_at TEXT')
@@ -1348,6 +1802,18 @@ export class Store {
     if (!ledgerColumns.has('repo_id')) this.run('ALTER TABLE quota_ledger ADD COLUMN repo_id TEXT')
     if (!jobColumns.has('base_branch')) this.run('ALTER TABLE jobs ADD COLUMN base_branch TEXT')
     this.run("UPDATE jobs SET base_branch = (SELECT upstream_default_branch FROM repos WHERE repos.id = jobs.repo_id) WHERE base_branch IS NULL")
+  }
+
+  private migrateProviderColumns(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(model_providers)').map((row) => row.name))
+    const additions: Array<[string, string]> = [
+      ['region', "TEXT NOT NULL DEFAULT ''"],
+      ['data_policy_url', "TEXT NOT NULL DEFAULT ''"],
+      ['allowed', 'INTEGER NOT NULL DEFAULT 1'],
+    ]
+    for (const [name, type] of additions) {
+      if (!columns.has(name)) this.run(`ALTER TABLE model_providers ADD COLUMN ${name} ${type}`)
+    }
   }
 
   close(): void {
@@ -1673,6 +2139,298 @@ export class Store {
     return this.all<JobEventRow>('SELECT * FROM job_events WHERE job_id = ? ORDER BY id DESC LIMIT ?', jobId, limit)
   }
 
+  getPostmortem(id: string): PostmortemRow | undefined {
+    return this.get<PostmortemRow>('SELECT * FROM postmortems WHERE id = ?', id)
+  }
+
+  getPostmortemForJob(jobId: string): PostmortemRow | undefined {
+    return this.get<PostmortemRow>('SELECT * FROM postmortems WHERE job_id = ?', jobId)
+  }
+
+  getPostmortemRecurrence(recurrenceKey: string): PostmortemRecurrenceRow | undefined {
+    return this.get<PostmortemRecurrenceRow>('SELECT * FROM postmortem_recurrences WHERE recurrence_key = ?', recurrenceKey)
+  }
+
+  listPostmortemsForRepo(repoId: string, options: { openOnly?: boolean } = {}): PostmortemRow[] {
+    const openClause = options.openOnly === true ? " AND status = 'open'" : ''
+    return this.all<PostmortemRow>(`SELECT * FROM postmortems WHERE repo_id = ?${openClause} ORDER BY last_seen_at DESC, rowid DESC`, repoId)
+  }
+
+  listPostmortemRecurrences(repoId?: string): PostmortemRecurrenceRow[] {
+    if (repoId === undefined) {
+      return this.all<PostmortemRecurrenceRow>('SELECT * FROM postmortem_recurrences ORDER BY last_seen_at DESC')
+    }
+    return this.all<PostmortemRecurrenceRow>(
+      `SELECT * FROM postmortem_recurrences
+        WHERE recurrence_key IN (SELECT recurrence_key FROM postmortems WHERE repo_id = ?)
+        ORDER BY last_seen_at DESC`,
+      repoId,
+    )
+  }
+
+  // #539: the project-memory store. Every write goes through the revision fence
+  // in `writeMemory`; reads are plain selects so a caller can apply the audience
+  // rule (`audienceVisible`) before it shows anything.
+  listMemoriesForRepo(repoId: string): ProjectMemoryRow[] {
+    return this.all<ProjectMemoryRow>(
+      'SELECT * FROM project_memories WHERE repo_id = ? ORDER BY updated_at DESC, rowid DESC',
+      repoId,
+    )
+  }
+
+  getMemory(repoId: string, key: string): ProjectMemoryRow | undefined {
+    return this.get<ProjectMemoryRow>('SELECT * FROM project_memories WHERE repo_id = ? AND key = ?', repoId, key)
+  }
+
+  getMemoryVersion(memoryId: string, revision: number): ProjectMemoryVersionRow | undefined {
+    return this.get<ProjectMemoryVersionRow>(
+      'SELECT * FROM project_memory_versions WHERE memory_id = ? AND revision = ?',
+      memoryId,
+      revision,
+    )
+  }
+
+  listMemoryVersions(memoryId: string): ProjectMemoryVersionRow[] {
+    return this.all<ProjectMemoryVersionRow>(
+      'SELECT * FROM project_memory_versions WHERE memory_id = ? ORDER BY revision DESC',
+      memoryId,
+    )
+  }
+
+  writeMemory(input: MemoryWriteInput): MemoryWriteResult {
+    const at = nowIso()
+    return this.transaction<MemoryWriteResult>(() => {
+      const current = this.getMemory(input.repoId, input.key)
+      if (current === undefined) {
+        if (input.expectedRevision !== 0) {
+          return { ok: false, code: 'memory_not_found', current: null, revision: 0 }
+        }
+        const id = `mem_${randomBytes(8).toString('hex')}`
+        this.run(
+          `INSERT INTO project_memories
+            (id, repo_id, key, kind, status, verification, audience, scope, body, digest, sources_json,
+             owner_type, owner_id, source_job_id, revision, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+          id,
+          input.repoId,
+          input.key,
+          input.kind,
+          input.status,
+          input.verification,
+          input.audience,
+          input.scope,
+          input.body,
+          input.digest,
+          input.sourcesJson,
+          input.actorType,
+          input.actorId,
+          input.sourceJobId,
+          at,
+          at,
+        )
+        this.insertMemoryVersion(id, 1, input, at)
+        const row = this.getMemory(input.repoId, input.key)
+        if (row === undefined) throw new Error('memory entry disappeared inside its own insert')
+        return { ok: true, created: true, noop: false, row }
+      }
+      // A stale writer is refused by name and the current entry is untouched.
+      if (current.revision !== input.expectedRevision) {
+        return { ok: false, code: 'memory_revision_conflict', current, revision: current.revision }
+      }
+      const unchanged =
+        current.kind === input.kind &&
+        current.status === input.status &&
+        current.verification === input.verification &&
+        current.audience === input.audience &&
+        current.scope === input.scope &&
+        current.body === input.body &&
+        current.sources_json === input.sourcesJson
+      if (unchanged) return { ok: true, created: false, noop: true, row: current }
+      const next = current.revision + 1
+      this.run(
+        `UPDATE project_memories
+            SET kind = ?, status = ?, verification = ?, audience = ?, scope = ?, body = ?, digest = ?,
+                sources_json = ?, revision = ?, updated_at = ?
+          WHERE id = ? AND revision = ?`,
+        input.kind,
+        input.status,
+        input.verification,
+        input.audience,
+        input.scope,
+        input.body,
+        input.digest,
+        input.sourcesJson,
+        next,
+        at,
+        current.id,
+        current.revision,
+      )
+      this.insertMemoryVersion(current.id, next, input, at)
+      const row = this.getMemory(input.repoId, input.key)
+      if (row === undefined) throw new Error('memory entry disappeared inside its own update')
+      return { ok: true, created: false, noop: false, row }
+    })
+  }
+
+  private insertMemoryVersion(memoryId: string, revision: number, input: MemoryWriteInput, at: string): void {
+    this.run(
+      `INSERT INTO project_memory_versions
+        (memory_id, revision, kind, status, verification, audience, scope, body, digest, sources_json,
+         actor_type, actor_id, reason, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      memoryId,
+      revision,
+      input.kind,
+      input.status,
+      input.verification,
+      input.audience,
+      input.scope,
+      input.body,
+      input.digest,
+      input.sourcesJson,
+      input.actorType,
+      input.actorId,
+      input.reason,
+      at,
+    )
+  }
+
+  createPostmortemForJob(jobId: string): PostmortemRecord | undefined {
+    const job = this.getJob(jobId)
+    if (job === undefined) return undefined
+    if (job.status !== 'failed' && job.status !== 'cancelled') return undefined
+    const existing = this.getPostmortemForJob(jobId)
+    if (existing !== undefined) {
+      const recurrence = this.getPostmortemRecurrence(existing.recurrence_key)
+      return recurrence === undefined ? undefined : { postmortem: existing, recurrence, created: false, escalated: false }
+    }
+    const analysis = buildPostmortem({
+      job,
+      events: [...this.listJobEvents(jobId, 200)].reverse(),
+      instance: this.getRepoInstance(job.repo_id),
+    })
+    const repo = this.getRepo(job.repo_id)
+    const user = this.userById(job.user_id)
+    const owner = user?.login ?? repo?.owner ?? job.user_id
+    const at = nowIso()
+    return this.transaction(() => {
+      const raced = this.getPostmortemForJob(jobId)
+      if (raced !== undefined) {
+        const recurrence = this.getPostmortemRecurrence(raced.recurrence_key)!
+        return { postmortem: raced, recurrence, created: false, escalated: false }
+      }
+      const id = `pm_${randomBytes(6).toString('hex')}`
+      this.run(
+        `INSERT INTO postmortems (
+           id, job_id, repo_id, user_id, status, category, outcome, recurrence_key,
+           evidence_state, evidence_json, timeline_json, suspected_cause, owner,
+           preventive_action, preventive_kind, preventive_verified, preventive_verified_at,
+           first_seen_at, last_seen_at, closed_at, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, NULL, ?, ?, NULL, ?, ?)`,
+        id,
+        jobId,
+        job.repo_id,
+        job.user_id,
+        analysis.category,
+        analysis.outcome,
+        analysis.recurrenceKey,
+        analysis.evidenceState,
+        JSON.stringify(analysis.evidence),
+        JSON.stringify(analysis.evidence.timeline),
+        analysis.suspectedCause,
+        owner,
+        at,
+        at,
+        at,
+        at,
+      )
+      let recurrence = this.getPostmortemRecurrence(analysis.recurrenceKey)
+      let escalated = false
+      if (recurrence === undefined) {
+        this.run(
+          'INSERT INTO postmortem_recurrences (recurrence_key, category, count, first_seen_at, last_seen_at, repositories_json, escalated_at, representative_id, updated_at) VALUES (?, ?, 1, ?, ?, ?, NULL, ?, ?)',
+          analysis.recurrenceKey,
+          analysis.category,
+          at,
+          at,
+          JSON.stringify([job.repo_id]),
+          id,
+          at,
+        )
+        recurrence = this.getPostmortemRecurrence(analysis.recurrenceKey)!
+      } else {
+        const repositories = new Set(postmortemRepositories(recurrence.repositories_json))
+        repositories.add(job.repo_id)
+        this.run(
+          'UPDATE postmortem_recurrences SET category = ?, count = count + 1, last_seen_at = ?, repositories_json = ?, representative_id = COALESCE(representative_id, ?), updated_at = ? WHERE recurrence_key = ?',
+          analysis.category,
+          at,
+          JSON.stringify([...repositories]),
+          id,
+          at,
+          analysis.recurrenceKey,
+        )
+        recurrence = this.getPostmortemRecurrence(analysis.recurrenceKey)!
+        if (recurrence.count >= 2 && recurrence.escalated_at === null) {
+          this.run(
+            'UPDATE postmortem_recurrences SET escalated_at = ?, updated_at = ? WHERE recurrence_key = ?',
+            at,
+            at,
+            analysis.recurrenceKey,
+          )
+          escalated = true
+          recurrence = this.getPostmortemRecurrence(analysis.recurrenceKey)!
+          this.notify(
+            job.user_id,
+            'ops',
+            `重复故障复发：${analysis.category} 已在 ${recurrence.count} 个任务中复现（${analysis.recurrenceKey}），请先落实预防措施。`,
+            'POSTMORTEM_RECURRING',
+          )
+          this.audit(job.user_id, 'postmortem.escalated', `${analysis.recurrenceKey}: ${recurrence.count} occurrences`)
+          this.event('postmortem_escalated', { userId: job.user_id, repoId: job.repo_id, jobId, meta: analysis.recurrenceKey })
+        }
+      }
+      return { postmortem: this.getPostmortem(id)!, recurrence, created: true, escalated }
+    })
+  }
+
+  linkPreventiveAction(id: string, input: { kind: string; reference: string }): PostmortemRow | undefined {
+    const existing = this.getPostmortem(id)
+    if (existing === undefined) return undefined
+    const reference = input.reference.trim().slice(0, 1000)
+    if (reference === '' || !isPreventiveActionKind(input.kind)) return undefined
+    this.run(
+      'UPDATE postmortems SET preventive_kind = ?, preventive_action = ?, preventive_verified = 0, preventive_verified_at = NULL, updated_at = ? WHERE id = ?',
+      input.kind,
+      reference,
+      nowIso(),
+      id,
+    )
+    return this.getPostmortem(id)
+  }
+
+  verifyPreventiveAction(id: string, verifiedAt = nowIso()): { ok: boolean; error?: string; postmortem?: PostmortemRow } {
+    const existing = this.getPostmortem(id)
+    if (existing === undefined) return { ok: false, error: 'postmortem not found' }
+    if (existing.preventive_action === null || existing.preventive_kind === null) {
+      return { ok: false, error: 'a linked preventive action is required' }
+    }
+    this.run(
+      "UPDATE postmortems SET preventive_verified = 1, preventive_verified_at = ?, status = 'closed', closed_at = ?, updated_at = ? WHERE id = ?",
+      verifiedAt,
+      verifiedAt,
+      verifiedAt,
+      id,
+    )
+    return { ok: true, postmortem: this.getPostmortem(id) }
+  }
+
+  resolvePostmortem(id: string, input: { kind: PreventiveActionKind; reference: string; verifiedAt?: string }): { ok: boolean; error?: string; postmortem?: PostmortemRow } {
+    const linked = this.linkPreventiveAction(id, input)
+    if (linked === undefined) return { ok: false, error: 'a linked preventive action is required' }
+    return this.verifyPreventiveAction(id, input.verifiedAt)
+  }
+
   createArtifactVersion(input: {
     id: string
     artifact: string
@@ -1913,6 +2671,72 @@ export class Store {
     return artifactId === undefined
       ? this.all<PromotionRow>('SELECT * FROM promotions ORDER BY created_at DESC')
       : this.all<PromotionRow>('SELECT * FROM promotions WHERE artifact_id = ? ORDER BY created_at DESC', artifactId)
+  }
+
+  recordDeployment(input: DeploymentInput): DeploymentRow {
+    const id = `dep_${randomBytes(6).toString('hex')}`
+    this.run(
+      'INSERT INTO deployments (id, environment, version, commit_sha, image_digest, deployed_at, operator, healthz_ok, healthz_status, healthz_version, healthz_commit, readyz_ok, readyz_status, release_url, gate_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      id,
+      input.environment,
+      input.version,
+      input.commit,
+      input.imageDigest,
+      input.deployedAt,
+      input.operator,
+      input.healthz.ok ? 1 : 0,
+      input.healthz.status,
+      input.healthz.version ?? null,
+      input.healthz.commit ?? null,
+      input.readyz.ok ? 1 : 0,
+      input.readyz.status,
+      input.releaseUrl,
+      JSON.stringify(input.gate ?? null),
+      nowIso(),
+    )
+    return this.get<DeploymentRow>('SELECT * FROM deployments WHERE id = ?', id)!
+  }
+
+  listDeployments(environment: string | null = null, limit = 100): DeploymentRow[] {
+    return environment === null
+      ? this.all<DeploymentRow>('SELECT * FROM deployments ORDER BY created_at DESC, rowid DESC LIMIT ?', limit)
+      : this.all<DeploymentRow>('SELECT * FROM deployments WHERE environment = ? ORDER BY created_at DESC, rowid DESC LIMIT ?', environment, limit)
+  }
+
+  latestDeployment(environment: string): DeploymentRow | undefined {
+    return this.get<DeploymentRow>('SELECT * FROM deployments WHERE environment = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', environment)
+  }
+
+  listDeploymentEnvironments(): string[] {
+    return this.all<{ environment: string }>('SELECT DISTINCT environment FROM deployments ORDER BY environment').map((row) => row.environment)
+  }
+
+  recordDeploymentRollback(input: DeploymentRollbackInput): DeploymentRollbackRow {
+    const id = `rbk_${randomBytes(6).toString('hex')}`
+    this.run(
+      'INSERT INTO deployment_rollbacks (id, environment, from_deployment_id, previous_deployment_id, previous_digest, previous_commit, owner, command, decision, healthz_ok, healthz_status, healthz_commit, verified, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      id,
+      input.environment,
+      input.fromDeploymentId,
+      input.previousDeploymentId,
+      input.previousDigest,
+      input.previousCommit,
+      input.owner,
+      input.command,
+      input.decision,
+      input.healthz.ok ? 1 : 0,
+      input.healthz.status,
+      input.healthz.commit ?? null,
+      input.verified ? 1 : 0,
+      nowIso(),
+    )
+    return this.get<DeploymentRollbackRow>('SELECT * FROM deployment_rollbacks WHERE id = ?', id)!
+  }
+
+  listDeploymentRollbacks(environment: string | null = null, limit = 50): DeploymentRollbackRow[] {
+    return environment === null
+      ? this.all<DeploymentRollbackRow>('SELECT * FROM deployment_rollbacks ORDER BY created_at DESC, rowid DESC LIMIT ?', limit)
+      : this.all<DeploymentRollbackRow>('SELECT * FROM deployment_rollbacks WHERE environment = ? ORDER BY created_at DESC, rowid DESC LIMIT ?', environment, limit)
   }
 
   teamMetrics(sinceIso: string): {
@@ -2302,15 +3126,15 @@ export class Store {
     return this.get<ModelProviderRow>('SELECT * FROM model_providers WHERE id = ? AND user_id = ?', id, userId)
   }
 
-  createModelProvider(input: { id: string; userId: string; label: string; baseUrl: string; keyEnc: string; allowPrivate: boolean }): ModelProviderRow {
+  createModelProvider(input: { id: string; userId: string; label: string; baseUrl: string; keyEnc: string; allowPrivate: boolean; region?: string; dataPolicyUrl?: string; allowed?: boolean }): ModelProviderRow {
     this.run(
-      'INSERT INTO model_providers (id, user_id, label, base_url, key_enc, allow_private, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      input.id, input.userId, input.label, input.baseUrl, input.keyEnc, input.allowPrivate ? 1 : 0, nowIso(), nowIso(),
+      'INSERT INTO model_providers (id, user_id, label, base_url, key_enc, allow_private, region, data_policy_url, allowed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      input.id, input.userId, input.label, input.baseUrl, input.keyEnc, input.allowPrivate ? 1 : 0, input.region ?? '', input.dataPolicyUrl ?? '', input.allowed === false ? 0 : 1, nowIso(), nowIso(),
     )
     return this.get<ModelProviderRow>('SELECT * FROM model_providers WHERE id = ?', input.id)!
   }
 
-  updateModelProvider(id: string, userId: string, patch: Partial<Pick<ModelProviderRow, 'label' | 'base_url' | 'key_enc' | 'allow_private'>>): void {
+  updateModelProvider(id: string, userId: string, patch: Partial<Pick<ModelProviderRow, 'label' | 'base_url' | 'key_enc' | 'allow_private' | 'region' | 'data_policy_url' | 'allowed'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -2325,9 +3149,9 @@ export class Store {
     return this.all<ProviderModelRow>('SELECT * FROM provider_models WHERE provider_id = ? ORDER BY created_at ASC', providerId)
   }
 
-  listUserProviderModels(userId: string): Array<ProviderModelRow & { provider_label: string }> {
-    return this.all<ProviderModelRow & { provider_label: string }>(
-      'SELECT pm.*, mp.label AS provider_label FROM provider_models pm JOIN model_providers mp ON mp.id = pm.provider_id WHERE mp.user_id = ? ORDER BY mp.created_at ASC, pm.created_at ASC',
+  listUserProviderModels(userId: string): Array<ProviderModelRow & { provider_label: string; provider_region: string; provider_data_policy_url: string; provider_allowed: number }> {
+    return this.all<ProviderModelRow & { provider_label: string; provider_region: string; provider_data_policy_url: string; provider_allowed: number }>(
+      'SELECT pm.*, mp.label AS provider_label, mp.region AS provider_region, mp.data_policy_url AS provider_data_policy_url, mp.allowed AS provider_allowed FROM provider_models pm JOIN model_providers mp ON mp.id = pm.provider_id WHERE mp.user_id = ? ORDER BY mp.created_at ASC, pm.created_at ASC',
       userId,
     )
   }
@@ -2344,16 +3168,32 @@ export class Store {
     return true
   }
 
+  repoProviderPolicy(repoId: string): { allowlist: string[]; requiredRegion: string } {
+    const repo = this.getRepo(repoId)
+    return {
+      allowlist: parseProviderAllowlist(repo?.provider_allowlist),
+      requiredRegion: normalizeProviderRegion(repo?.required_region),
+    }
+  }
+
+  setRepoProviderPolicy(repoId: string, providerIds: string[], requiredRegion: string): void {
+    const allowlist = [...new Set(parseProviderAllowlist(providerIds.join(',')))]
+    this.updateRepo(repoId, {
+      provider_allowlist: allowlist.join(','),
+      required_region: normalizeProviderRegion(requiredRegion),
+    })
+  }
+
   listRepoModelSelection(repoId: string): RepoProviderModelRow[] {
     return this.all<RepoProviderModelRow>(
-      'SELECT pm.*, mp.label AS provider_label, mp.base_url, mp.key_enc, mp.allow_private, rms.is_default FROM repo_model_selection rms JOIN provider_models pm ON pm.id = rms.provider_model_id JOIN model_providers mp ON mp.id = pm.provider_id WHERE rms.repo_id = ? ORDER BY mp.created_at ASC, pm.created_at ASC',
+      'SELECT pm.*, mp.label AS provider_label, mp.region AS provider_region, mp.data_policy_url AS provider_data_policy_url, mp.allowed AS provider_allowed, mp.base_url, mp.key_enc, mp.allow_private, rms.is_default FROM repo_model_selection rms JOIN provider_models pm ON pm.id = rms.provider_model_id JOIN model_providers mp ON mp.id = pm.provider_id WHERE rms.repo_id = ? ORDER BY mp.created_at ASC, pm.created_at ASC',
       repoId,
     )
   }
 
   providerModelForRun(repoId: string, alias: string): RepoProviderModelRow | undefined {
     return this.get<RepoProviderModelRow>(
-      'SELECT pm.*, mp.label AS provider_label, mp.base_url, mp.key_enc, mp.allow_private, rms.is_default FROM repo_model_selection rms JOIN provider_models pm ON pm.id = rms.provider_model_id JOIN model_providers mp ON mp.id = pm.provider_id WHERE rms.repo_id = ? AND pm.id = ?',
+      'SELECT pm.*, mp.label AS provider_label, mp.region AS provider_region, mp.data_policy_url AS provider_data_policy_url, mp.allowed AS provider_allowed, mp.base_url, mp.key_enc, mp.allow_private, rms.is_default FROM repo_model_selection rms JOIN provider_models pm ON pm.id = rms.provider_model_id JOIN model_providers mp ON mp.id = pm.provider_id WHERE rms.repo_id = ? AND pm.id = ?',
       repoId, alias,
     )
   }
@@ -2579,7 +3419,7 @@ export class Store {
     return this.get<RepoRow>('SELECT * FROM repos WHERE user_id = ? AND lower(owner) = lower(?) AND lower(name) = lower(?)', userId, owner, name)
   }
 
-  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'plan_required' | 'allow_paths' | 'deny_paths' | 'merge_method' | 'require_protection' | 'stage_mode' | 'models_dirty' | 'credential_state' | 'consecutive_failures' | 'monthly_budget_cny' | 'job_budget_cny' | 'job_budget_action' | 'protection_state' | 'protection_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url'>>): void {
+  updateRepo(id: string, patch: Partial<Pick<RepoRow, 'goal' | 'enabled' | 'auto_iterate' | 'interval_minutes' | 'last_run_at' | 'last_status' | 'default_branch' | 'repo_role' | 'auto_merge' | 'role_checked_at' | 'plan_required' | 'allow_paths' | 'deny_paths' | 'merge_method' | 'require_protection' | 'stage_mode' | 'models_dirty' | 'credential_state' | 'consecutive_failures' | 'monthly_budget_cny' | 'job_budget_cny' | 'job_budget_action' | 'protection_state' | 'protection_checked_at' | 'permission' | 'can_review' | 'can_create_issue' | 'reviewer_enabled' | 'review_interval_minutes' | 'last_review_at' | 'last_review_status' | 'target_branch' | 'is_fork' | 'fork_created' | 'upstream_owner' | 'upstream_name' | 'fork_owner' | 'fork_name' | 'upstream_default_branch' | 'fork_default_branch' | 'upstream_html_url' | 'fork_html_url' | 'provider_allowlist' | 'required_region'>>): void {
     const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -2674,9 +3514,11 @@ export class Store {
   }
 
   createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; workType?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string }): JobRow {
+    // The ticket is taken inside the insert, so two jobs created at the same
+    // instant cannot be handed the same one (#545).
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, work_type, base_branch, work_item_id, priority, base_sha, retry_attempt, retry_of, owner_started, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, work_type, base_branch, work_item_id, priority, queue_seq, base_sha, retry_attempt, retry_of, owner_started, created_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs), ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -2742,6 +3584,59 @@ export class Store {
 
   getJobContextFile(jobId: string, path: string): JobContextFileRow | undefined {
     return this.get<JobContextFileRow>('SELECT * FROM job_context_files WHERE job_id = ? AND path = ?', jobId, path)
+  }
+
+  listRepoRuleOverrides(repoId: string): RepoRuleOverrideRow[] {
+    return this.all<RepoRuleOverrideRow>('SELECT * FROM repo_rule_overrides WHERE repo_id = ? ORDER BY path', repoId)
+  }
+
+  getRepoRuleOverride(repoId: string, path: string): RepoRuleOverrideRow | undefined {
+    return this.get<RepoRuleOverrideRow>('SELECT * FROM repo_rule_overrides WHERE repo_id = ? AND path = ?', repoId, path)
+  }
+
+  upsertRepoRuleOverride(input: {
+    repoId: string
+    path: string
+    content: string
+    updatedBy: string
+    expectedRevision: number
+  }): { ok: true; row: RepoRuleOverrideRow } | { ok: false; code: 'rule_override_conflict'; current: RepoRuleOverrideRow | null; revision: number } {
+    return this.transaction(() => {
+      const current = this.getRepoRuleOverride(input.repoId, input.path) ?? null
+      const revision = current?.revision ?? 0
+      if (input.expectedRevision !== revision) {
+        return { ok: false as const, code: 'rule_override_conflict' as const, current, revision }
+      }
+      const next = revision + 1
+      this.run(
+        `INSERT INTO repo_rule_overrides (repo_id, path, content, revision, updated_by, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(repo_id, path) DO UPDATE SET content = excluded.content, revision = excluded.revision, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
+        input.repoId,
+        input.path,
+        input.content,
+        next,
+        input.updatedBy,
+        nowIso(),
+      )
+      return { ok: true as const, row: this.getRepoRuleOverride(input.repoId, input.path)! }
+    })
+  }
+
+  deleteRepoRuleOverride(input: {
+    repoId: string
+    path: string
+    expectedRevision: number
+  }): { ok: true } | { ok: false; code: 'rule_override_conflict' | 'rule_override_missing'; current: RepoRuleOverrideRow | null; revision: number } {
+    return this.transaction(() => {
+      const current = this.getRepoRuleOverride(input.repoId, input.path) ?? null
+      if (current === null) return { ok: false as const, code: 'rule_override_missing' as const, current, revision: 0 }
+      if (input.expectedRevision !== current.revision) {
+        return { ok: false as const, code: 'rule_override_conflict' as const, current, revision: current.revision }
+      }
+      this.run('DELETE FROM repo_rule_overrides WHERE repo_id = ? AND path = ?', input.repoId, input.path)
+      return { ok: true as const }
+    })
   }
 
   listJobs(userId: string, limit = 20): JobRow[] {
@@ -2936,12 +3831,15 @@ export class Store {
     return this.all<JobRow>("SELECT * FROM jobs WHERE user_id = ? AND status IN ('queued','running') ORDER BY created_at DESC", userId)
   }
 
+  // Priority, then ticket, then id: the ticket is the arrival order inside a
+  // level, so two jobs created at the same instant still have a stable order and
+  // a priority change is visible as a move to the tail (#545).
   listActiveJobs(): JobRow[] {
-    return this.all<JobRow>("SELECT * FROM jobs WHERE status IN ('queued','running') ORDER BY priority DESC, created_at ASC")
+    return this.all<JobRow>("SELECT * FROM jobs WHERE status IN ('queued','running') ORDER BY priority DESC, queue_seq ASC, id ASC")
   }
 
   listQueuedJobs(): JobRow[] {
-    return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority DESC, created_at ASC")
+    return this.all<JobRow>("SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority DESC, queue_seq ASC, id ASC")
   }
 
   // Durable dispatch foundation: one worker claims one queued job. The guarded
@@ -2961,13 +3859,13 @@ export class Store {
                OR (x.status = 'queued' AND (
                  x.priority > j.priority
                  OR (x.priority = j.priority AND (
-                   x.created_at < j.created_at
-                   OR (x.created_at = j.created_at AND x.id < j.id)
+                   x.queue_seq < j.queue_seq
+                   OR (x.queue_seq = j.queue_seq AND x.id < j.id)
                  ))
                ))
              )
            )
-         ORDER BY j.priority DESC, j.created_at ASC LIMIT 1`,
+         ORDER BY j.priority DESC, j.queue_seq ASC, j.id ASC LIMIT 1`,
         now,
       )
       if (row === undefined) return undefined
@@ -3016,11 +3914,26 @@ export class Store {
   }
 
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'model_json' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
-    const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
+    const entries = Object.entries(redactJobText(patch as Record<string, unknown>)).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
-    const sets = entries.map(([key]) => `${key} = ?`).join(', ')
-    this.run(`UPDATE jobs SET ${sets} WHERE id = ?`, ...entries.map(([, value]) => value), id)
+    const sets: string[] = []
+    const values: unknown[] = []
+    for (const [key, value] of entries) {
+      // A real priority change is an arrival at the new level, so it takes a
+      // ticket at that level's tail; saving the same value again is not a move
+      // and keeps the ticket the row already holds (#545).
+      if (key === 'priority') {
+        const current = this.get<{ priority: number }>('SELECT priority FROM jobs WHERE id = ?', id)?.priority
+        sets.push('priority = ?')
+        values.push(value)
+        if (current !== undefined && current !== value) sets.push('queue_seq = (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs)')
+        continue
+      }
+      sets.push(`${key} = ?`)
+      values.push(value)
+    }
+    this.run(`UPDATE jobs SET ${sets.join(', ')} WHERE id = ?`, ...values, id)
   }
 
   // Returns the number of rows the statement changed, which is how a guarded
@@ -3032,7 +3945,7 @@ export class Store {
   // The terminal transition is the callback idempotency key: only the delivery
   // that moves the row out of queued/running may run side effects.
   claimJobTerminal(jobId: string, status: string, fingerprint: string | null, patch: Record<string, unknown>): boolean {
-    const entries = Object.entries({ ...patch, status, ...(fingerprint === null ? {} : { callback_fingerprint: fingerprint }) }).filter(([, value]) => value !== undefined)
+    const entries = Object.entries(redactJobText({ ...patch, status, ...(fingerprint === null ? {} : { callback_fingerprint: fingerprint }) })).filter(([, value]) => value !== undefined)
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
     const changes = this.runChanges(
       `UPDATE jobs SET ${sets} WHERE id = ? AND status IN ('queued','running')`,
@@ -3324,6 +4237,85 @@ export class Store {
 
   audit(userId: string | null, action: string, detail: string | null = null): void {
     this.run('INSERT INTO audit_log (at, user_id, action, detail) VALUES (?, ?, ?, ?)', nowIso(), userId, action, detail)
+  }
+
+  // #540: a resource's revision is 1 until something bumps it, so a page rendered
+  // for a row written before this table existed still carries a usable number.
+  revisionOf(resourceType: string, resourceId: string): number {
+    const row = this.get<{ revision: number }>('SELECT revision FROM resource_revisions WHERE resource_type = ? AND resource_id = ?', resourceType, resourceId)
+    return Number(row?.revision ?? 1)
+  }
+
+  // The first bump takes a resource from the implicit 1 to 2; later bumps add one.
+  // Called inside the write's transaction so a failed write cannot move the fence.
+  bumpRevision(resourceType: string, resourceId: string): number {
+    this.run(
+      `INSERT INTO resource_revisions (resource_type, resource_id, revision, updated_at) VALUES (?, ?, 2, ?)
+       ON CONFLICT(resource_type, resource_id) DO UPDATE SET revision = revision + 1, updated_at = excluded.updated_at`,
+      resourceType,
+      resourceId,
+      nowIso(),
+    )
+    return this.revisionOf(resourceType, resourceId)
+  }
+
+  insertCommandReceipt(input: {
+    id: string
+    principalId: string
+    channel: string
+    idempotencyScope: string
+    idempotencyKey: string
+    requestHash: string
+    operation: string
+    targetJson: string
+    argumentsJson: string
+    expectedRevision: number
+    beforeRevision: number | null
+    sourceConversation?: string | null
+    sourceMessage?: string | null
+  }): void {
+    const at = nowIso()
+    this.run(
+      `INSERT INTO management_commands (id, principal_id, channel, idempotency_scope, idempotency_key, request_hash, operation, target_json, arguments_json, expected_revision, before_revision, status, source_conversation, source_message, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?)`,
+      input.id,
+      input.principalId,
+      input.channel,
+      input.idempotencyScope,
+      input.idempotencyKey,
+      input.requestHash,
+      input.operation,
+      input.targetJson,
+      input.argumentsJson,
+      input.expectedRevision,
+      input.beforeRevision,
+      input.sourceConversation ?? null,
+      input.sourceMessage ?? null,
+      at,
+      at,
+    )
+  }
+
+  updateCommandReceipt(id: string, patch: Partial<Pick<ManagementCommandRow, 'status' | 'result_json' | 'error_code' | 'error_message' | 'after_revision' | 'before_revision'>>): void {
+    const columns = ['status', 'result_json', 'error_code', 'error_message', 'after_revision', 'before_revision'] as const
+    const entries = columns.filter((column) => patch[column] !== undefined)
+    if (entries.length === 0) return
+    const assignments = entries.map((column) => `${column} = ?`).join(', ')
+    this.run(`UPDATE management_commands SET ${assignments}, updated_at = ? WHERE id = ?`, ...entries.map((column) => patch[column] as string | number | null), nowIso(), id)
+  }
+
+  commandReceipt(id: string): ManagementCommandRow | undefined {
+    return this.get<ManagementCommandRow>('SELECT * FROM management_commands WHERE id = ?', id)
+  }
+
+  // The unique (scope, key) index is what makes a replay safe: two callers race
+  // to insert, one wins, and both read the winner's receipt.
+  commandReceiptByKey(scope: string, key: string): ManagementCommandRow | undefined {
+    return this.get<ManagementCommandRow>('SELECT * FROM management_commands WHERE idempotency_scope = ? AND idempotency_key = ?', scope, key)
+  }
+
+  listCommandReceipts(limit = 50): ManagementCommandRow[] {
+    return this.all<ManagementCommandRow>('SELECT * FROM management_commands ORDER BY created_at DESC, rowid DESC LIMIT ?', limit)
   }
 
   listAudit(limit = 100): AuditRow[] {

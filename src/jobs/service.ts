@@ -8,6 +8,7 @@ import { dailyDigestEmail, jobAttentionEmail, jobFailedEmail, jobSucceededEmail,
 import { notifyEmail, replyAddressFor } from '../email/recipient.js'
 import { sendNotificationWebhook } from '../lib/webhook.js'
 import { log } from '../lib/log.js'
+import { redact } from '../lib/secrets.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
@@ -20,6 +21,17 @@ import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
 import { reviewMergeBlock } from '../lib/mergeReview.js'
+import {
+  MAX_DIFF_CHARS,
+  adversarialMergeBlock,
+  adversarialPrompt,
+  assembleAdversarialPacket,
+  openAiAdversarialModel,
+  runAdversarialReview,
+  type AdversarialModel,
+  type AdversarialReview,
+  type AdversarialVerdict,
+} from '../lib/adversarialReview.js'
 import { evaluateTestEvidence, type VerificationResult } from '../lib/verification.js'
 import { observedAttribution } from '../lib/teamStats.js'
 import { reviewInstructionLine } from '../lib/followUpInstruction.js'
@@ -133,10 +145,10 @@ function progressSummary(value: unknown): string | undefined {
   if (text.startsWith('{')) {
     try {
       const parsed = JSON.parse(text) as { summary?: unknown }
-      if (typeof parsed.summary === 'string' && parsed.summary.trim() !== '') return parsed.summary.slice(0, 4000)
+      if (typeof parsed.summary === 'string' && parsed.summary.trim() !== '') return redact(parsed.summary).slice(0, 4000)
     } catch {}
   }
-  return value.slice(0, 4000)
+  return redact(value).slice(0, 4000)
 }
 
 // #251: the follow-up's duplicate key and parked key are both built from this,
@@ -197,6 +209,17 @@ function terminalFingerprint(input: {
   }))
 }
 
+// #556: the one class of patch-less file that may still merge. A screenshot or
+// font change must not be refused for a binary, and the exemption is assets
+// under public/ or docs/ only — code, config, lockfiles and scripts are exactly
+// what this gate exists to read, so a patch the API withheld for them is a
+// refusal, not an exemption. Widening this list needs a reason in the diff.
+const ADVERSARIAL_ASSET_EXEMPT = /^(?:public|docs)\/.+\.(?:png|jpe?g|gif|webp|ico|woff2?|ttf|eot)$/i
+
+function adversarialAssetExempt(filename: string): boolean {
+  return ADVERSARIAL_ASSET_EXEMPT.test(filename)
+}
+
 export class Jobs {
   private timer: NodeJS.Timeout | null = null
   private trialTimer: NodeJS.Timeout | null = null
@@ -208,6 +231,10 @@ export class Jobs {
   private readonly credentialCache = new Map<string, { at: number }>()
   private readonly leaseTimers = new Map<string, NodeJS.Timeout>()
   private readonly quotaNotifier: QuotaNotifier
+  // Tests inject a fake; production binds the platform model inside
+  // `adversarialPass`. Null means "use the configured platform model, or skip
+  // the pass when there is none".
+  adversarialModel: AdversarialModel | null = null
 
   constructor(
     private readonly store: Store,
@@ -272,16 +299,18 @@ export class Jobs {
     const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
     if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { trace: jobId, error: String(error) }))
-    this.store.updateJob(jobId, { status: 'cancelled', error: reason.slice(0, 1000), finished_at: nowIso() })
+    const cleanReason = redact(reason).slice(0, 1000)
+    this.store.updateJob(jobId, { status: 'cancelled', error: cleanReason, finished_at: nowIso() })
     if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_status: 'cancelled' })
     else this.store.updateRepo(job.repo_id, { last_status: 'cancelled' })
     if (job.work_item_id !== null) {
       const item = this.store.getWorkItem(job.work_item_id)
       if (item !== undefined) this.store.updateWorkItem(item.id, { state: 'closed' })
     }
-    this.store.audit(job.user_id, 'job.cancelled', `${jobId}: ${reason.slice(0, 300)}`)
+    this.store.audit(job.user_id, 'job.cancelled', `${jobId}: ${cleanReason.slice(0, 300)}`)
     this.store.event('job_cancelled', { userId: job.user_id, repoId: job.repo_id, jobId })
-    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.cancelled', meta: reason })
+    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.cancelled', meta: cleanReason })
+    this.notePostmortem(jobId)
     return { ok: true, ...stop }
   }
 
@@ -293,11 +322,12 @@ export class Jobs {
     const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
     if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { trace: jobId, error: String(error) }))
-    this.store.updateJob(jobId, { status: 'paused', error: reason.slice(0, 1000) })
+    const cleanReason = redact(reason).slice(0, 1000)
+    this.store.updateJob(jobId, { status: 'paused', error: cleanReason })
     this.store.updateRepo(job.repo_id, { last_status: 'paused', ...(job.kind === 'review' ? { last_review_status: 'paused' } : {}) })
     this.store.audit(job.user_id, 'job.paused', jobId)
     this.store.event('job_paused', { userId: job.user_id, repoId: job.repo_id, jobId })
-    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.paused', meta: reason })
+    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.paused', meta: cleanReason })
     return { ok: true, ...stop }
   }
 
@@ -353,7 +383,7 @@ export class Jobs {
       ...(resumePr ? { branch: job.branch ?? undefined, prUrl: job.pr_url ?? undefined, baseBranch: job.base_branch ?? undefined } : {}),
       ...(options.workItemId === undefined ? {} : { workItemId: options.workItemId }),
     })
-    this.store.audit(actorUserId, 'job.retried', `${jobId} -> ${result.job?.id ?? result.error ?? 'failed'}`)
+    this.store.audit(actorUserId, 'job.retried', `${jobId} -> ${result.job?.id ?? (result.error === undefined ? 'failed' : redact(result.error))}`)
     // The console banner builds its sentence from the enqueue code, so the
     // refusal has to travel with it rather than being flattened to one string.
     if (!result.ok || result.job === undefined) return { ok: false, error: result.error ?? '重试失败。', code: result.code, detail: result.detail }
@@ -489,7 +519,7 @@ export class Jobs {
     repo: RepoRow,
     baseBranch: string,
     preflightSha: string | null,
-  ): Promise<{ ok: true; rules?: RepoRules } | { ok: false; error: string; code: string; detail?: string }> {
+  ): Promise<{ ok: true; rules: RepoRules } | { ok: false; error: string; code: string; detail?: string }> {
     const owner = repo.upstream_owner || repo.owner
     const name = repo.upstream_name || repo.name
     try {
@@ -503,15 +533,16 @@ export class Jobs {
       if (commit === null) {
         return { ok: false, error: '无法确定仓库的基准提交，暂时不能读取仓库规则。', code: 'RULES_UNAVAILABLE' }
       }
-      const key = `${repo.id}:${commit}`
+      const overrides = this.store.listRepoRuleOverrides(repo.id).map((row) => ({ path: row.path, content: row.content, revision: row.revision }))
+      const key = `${repo.id}:${commit}:${overrides.map((override) => `${override.path}@${override.revision}`).join('|')}`
       const cached = this.rulesCache.get(key)
       if (cached !== undefined && Date.now() - cached.at < 5 * 60_000) {
-        return { ok: true, ...(cached.rules.files.length === 0 && cached.rules.skills.length === 0 ? {} : { rules: cached.rules }) }
+        return { ok: true, rules: cached.rules }
       }
-      const rules = await loadRepoRules(client, owner, name, commit)
+      const rules = await loadRepoRules(client, owner, name, commit, overrides)
       if (this.rulesCache.size > 100) this.rulesCache.clear()
       this.rulesCache.set(key, { at: Date.now(), rules })
-      return { ok: true, ...(rules.files.length === 0 && rules.skills.length === 0 ? {} : { rules }) }
+      return { ok: true, rules }
     } catch (error) {
       if (error instanceof RulesError) {
         return {
@@ -645,9 +676,9 @@ export class Jobs {
     const current = this.store.getRepo(repo.id)
     if (current !== undefined && current.auto_iterate === 1) this.store.updateRepo(repo.id, { auto_iterate: 0 })
     const message = error instanceof Error ? error.message : String(error)
-    this.store.audit(repo.user_id, 'repo.credential_invalid', `${repo.owner}/${repo.name}: ${message.slice(0, 200)}`)
+    this.store.audit(repo.user_id, 'repo.credential_invalid', `${repo.owner}/${repo.name}: ${redact(message).slice(0, 200)}`)
     this.store.notify(repo.user_id, 'job', `${repo.owner}/${repo.name} 的 GitHub token 权限不足，自动迭代已暂停；请重新授权后手动开启。`)
-    void sendNotificationWebhook(this.config, 'repo.credential_invalid', { text: `${repo.owner}/${repo.name}: GitHub token is invalid`, repoId: repo.id, error: message.slice(0, 300) })
+    void sendNotificationWebhook(this.config, 'repo.credential_invalid', { text: `${repo.owner}/${repo.name}: GitHub token is invalid`, repoId: repo.id, error: redact(message).slice(0, 300) })
   }
 
   /**
@@ -662,11 +693,13 @@ export class Jobs {
   }
 
   async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean; workType?: string } = {}): Promise<EnqueueResult> {
-    // #283: the platform stop outranks every other refusal. It is checked before
-    // the per-repository and per-role gates so the answer says the platform is
-    // stopped, not that this one repository is disabled, and it is checked in the
-    // admission path itself: a due repository reaches `enqueue` without a route.
-    // #390: the work type is resolved before anything else, and an unknown one is
+    // #283: the platform stop outranks every other refusal. It is checked first,
+    // above the work-type resolution and the per-repository and per-role gates, so
+    // the answer says the platform is stopped rather than naming a work type or
+    // implying this one repository is disabled, and it is checked in the admission
+    // path itself: a due repository reaches `enqueue` without a route.
+    if (this.platformStop() !== null) return { ok: false, error: '平台已紧急停止，暂不接受新任务。', code: 'PLATFORM_PAUSED' }
+    // #390: the work type is resolved before the gates, and an unknown one is
     // refused. A default here would run work under a contract nobody declared.
     const workType = resolveWorkType(options.workType ?? workTypeForKind(kind))
     if (workType === null) {
@@ -685,7 +718,6 @@ export class Jobs {
     if (kind !== 'triage' && workType.branch === false) {
       return { ok: false, error: `${workType.type} 工作类型不能创建分支或 PR。`, code: 'UNKNOWN_WORK_TYPE', detail: workType.type }
     }
-    if (this.platformStop() !== null) return { ok: false, error: '平台已紧急停止，暂不接受新任务。', code: 'PLATFORM_PAUSED' }
     if (repo.enabled !== 1) return { ok: false, error: '这个仓库已停用', code: 'REPO_DISABLED' }
     if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
       return { ok: false, error: '请先选择你在这个仓库的角色。', code: 'ROLE_REQUIRED' }
@@ -855,7 +887,8 @@ export class Jobs {
           commit: rules.commit,
           hash: rules.hash,
           effective: rules.effective,
-          files: rules.files.map((file) => ({ path: file.path, sha256: file.sha256, bytes: file.bytes })),
+          layers: rules.layers,
+          files: rules.files.map((file) => ({ path: file.path, sha256: file.sha256, bytes: file.bytes, layer: file.layer })),
           skills: rules.skills.map((skill) => ({ name: skill.name, path: skill.path, description: skill.description, sha256: skill.sha256, bytes: skill.bytes })),
         }),
         manifestJson: JSON.stringify([
@@ -964,13 +997,13 @@ export class Jobs {
       // retried twice as if the instance had been down. The refusal has its own
       // code; only a failure that names neither keeps the bridge category.
       const startCode: FailureCode = providerRefusalCode(message) ?? 'BRIDGE_ERROR'
-      this.store.updateJob(job.id, { status: 'failed', error: message.slice(0, 1000), error_code: startCode, finished_at: nowIso() })
+      this.store.updateJob(job.id, { status: 'failed', error: redact(message).slice(0, 1000), error_code: startCode, finished_at: nowIso() })
       this.store.releaseJobLease(job.id)
       this.clearLeaseHeartbeat(job.id)
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
       else this.store.updateRepo(repo.id, { last_status: 'failed' })
-      this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${message}`, startCode)
-      this.store.audit(user.id, 'job.failed', `${job.id}: ${message.slice(0, 300)}`)
+      this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${redact(message)}`, startCode)
+      this.store.audit(user.id, 'job.failed', `${job.id}: ${redact(message).slice(0, 300)}`)
       jobLog.error('job start failed', { error: message })
       return { ok: false, job: this.store.getJob(job.id), error: message, code: 'RUNNER_ERROR' }
     }
@@ -1026,6 +1059,11 @@ export class Jobs {
     const prUrl = result.prUrl === undefined ? job.pr_url : result.prUrl
     const issueUrl = result.issueUrl === undefined ? job.issue_url : result.issueUrl
     const reviewScore = result.reviewScore ?? job.review_score
+    // #458: redact before either cut. The same clean values go to the row, the
+    // digest and the notices; a secret cut in half is a fragment no later pass
+    // can recognise.
+    const summary = redact(result.summary ?? job.summary ?? '').slice(0, 4000)
+    const error = redact(result.error ?? job.error ?? '').slice(0, 2000)
     // The guarded transition is the idempotency key: a lost update means another
     // delivery already finalised the job and must own the side effects.
     const claimed = this.store.claimJobTerminal(jobId, result.status, fingerprint, {
@@ -1035,8 +1073,8 @@ export class Jobs {
       review_score: reviewScore,
       attribution_json: attribution === null ? job.attribution_json : JSON.stringify(attribution),
       evidence_json: evidence === null ? job.evidence_json : JSON.stringify(evidence),
-      summary: (result.summary ?? job.summary ?? '').slice(0, 4000),
-      error: (result.error ?? job.error ?? '').slice(0, 2000),
+      summary,
+      error,
       error_code: result.errorCode ?? job.error_code ?? null,
       finished_at: nowIso(),
     })
@@ -1049,7 +1087,7 @@ export class Jobs {
     if (Number.isFinite(started) && Number.isFinite(ended)) observeHistogram('fledge_job_seconds', Math.max(0, (ended - started) / 1000), { kind: job.kind, status: result.status }, 'Job duration')
     this.syncWorkItemForJob(job, { status: result.status, prUrl, issueUrl })
     const finalJob = this.store.getJob(jobId) ?? job
-    const digest = buildRunDigest(finalJob, { status: result.status, summary: result.summary, issueUrl, prUrl })
+    const digest = buildRunDigest(finalJob, { status: result.status, summary, issueUrl, prUrl })
     this.store.updateJob(jobId, { continuity_json: JSON.stringify(digest), output_kind: digest.output_kind })
     incCounter('fledge_job_output_total', { kind: job.kind, output: digest.output_kind }, 1, 'Scheduled output classification')
     if (digest.output_kind === 'meta') {
@@ -1068,11 +1106,19 @@ export class Jobs {
       log.warn('clear job model token failed', { trace: jobId, error: String(error) })
     })
     revoke()
-    this.store.audit(job.user_id, `job.${result.status}`, jobId)
+    const providerAudit = [finalJob.provider_label, finalJob.provider_region, finalJob.provider_model]
+      .filter((part): part is string => part !== null && part !== '')
+      .map((part) => part.replace(/[\r\n]+/g, ' ').slice(0, 120))
+    this.store.audit(job.user_id, `job.${result.status}`, providerAudit.length === 0 ? jobId : `${jobId} ${providerAudit.join(' · ')}`)
     this.store.event(`job_${result.status}`, { userId: job.user_id, repoId: job.repo_id, jobId })
-    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: `job.${result.status}`, step: job.kind, meta: result.error ?? result.summary ?? null })
+    // The event meta keeps its original choice of value (the payload's error,
+    // else its summary), redacted; the fallback to `job.error` stays local to the
+    // row and the notice.
+    const eventMeta = result.error ?? result.summary ?? null
+    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: `job.${result.status}`, step: job.kind, meta: eventMeta === null ? null : redact(eventMeta) })
+    if (result.status === 'failed') this.notePostmortem(jobId)
     if (result.status === 'succeeded' && prUrl !== null) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
-    if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${result.error ?? job.error ?? '未知原因'}`, this.store.getJob(jobId)?.error_code ?? null)
+    if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${redact(result.error ?? job.error ?? '未知原因')}`, this.store.getJob(jobId)?.error_code ?? null)
     if (result.status === 'succeeded' || result.status === 'failed') {
       // #353: a success has no retry behind it, so its mail is decided here; a
       // failure waits for the retry decision below.
@@ -1086,8 +1132,8 @@ export class Jobs {
         status: result.status,
         prUrl: prUrl,
         issueUrl: issueUrl,
-        summary: result.summary ?? job.summary ?? '',
-        error: result.error ?? job.error ?? '',
+        summary: redact(result.summary ?? job.summary ?? ''),
+        error: redact(result.error ?? job.error ?? ''),
       })
     }
     const repo = this.store.getRepo(job.repo_id)
@@ -1118,6 +1164,23 @@ export class Jobs {
       void this.captureTeamStats(jobId, attribution).catch((error) => log.warn('team stats capture failed', { trace: jobId, error: String(error) }))
     }
     return true
+  }
+
+  private notePostmortem(jobId: string): void {
+    try {
+      const record = this.store.createPostmortemForJob(jobId)
+      if (record?.escalated !== true) return
+      this.store.audit(record.postmortem.user_id, 'postmortem.recurrence_escalated', `${record.recurrence.recurrence_key}: ${record.recurrence.count}`)
+      void sendNotificationWebhook(this.config, 'postmortem.recurring', {
+        text: `recurring ${record.postmortem.category} failure ${record.recurrence.recurrence_key} seen ${record.recurrence.count} times`,
+        repoId: record.postmortem.repo_id,
+        jobId,
+        recurrenceKey: record.recurrence.recurrence_key,
+        count: record.recurrence.count,
+      })
+    } catch (error) {
+      log.warn('postmortem write failed', { trace: jobId, error: String(error) })
+    }
   }
 
   private scheduleRetry(job: JobRow): boolean {
@@ -1203,7 +1266,7 @@ export class Jobs {
         log.info('retry started', { trace: original.id, retry: result.job?.id })
       } else if (result.code !== 'JOB_ACTIVE' && result.code !== 'INSTANCE_NOT_READY') {
         this.store.deleteSetting(row.key)
-        this.store.audit(repo.user_id, 'job.retry_dropped', `${original.id}: ${result.code ?? result.error ?? 'unknown'}`)
+        this.store.audit(repo.user_id, 'job.retry_dropped', `${original.id}: ${result.code ?? (result.error === undefined ? 'unknown' : redact(result.error))}`)
       }
     }
   }
@@ -1439,6 +1502,239 @@ export class Jobs {
     return this.verifyPullRequest(job, job.pr_url)
   }
 
+  // The adversarial pass runs only on the automatic path: a maintainer merging by
+  // hand has read the change and owns that decision. It is a fresh model context
+  // over the packet, so its verdict can block the merge without ever seeing the
+  // author's summary or claimed test output. A missing pass never blocks: Fledge
+  // does not invent a risk, and only a concrete one stops the call below.
+  private async adversarialPass(
+    job: JobRow,
+    client: GithubClient,
+    owner: string,
+    name: string,
+    pr: { number: number; headSha: string; base: string; changedFiles: number },
+    checks: Array<{ name: string; status: string; conclusion: string | null }>,
+  ): Promise<{ block: { file: string; line: number } | null; reused: boolean; refusal: string | null }> {
+    const record = (status: string, detail: Record<string, unknown>): void => {
+      this.store.recordJobEvent({
+        jobId: job.id,
+        repoId: job.repo_id,
+        userId: job.user_id,
+        kind: 'job.adversarial',
+        step: status,
+        meta: JSON.stringify(detail).slice(0, 4000),
+      })
+    }
+    // One pass per tip. Auto-merge reconciliation re-reads a blocked PR every
+    // few minutes, so a stored verdict for this same head sha is reused instead
+    // of paying for the same review again; a new commit is what asks for a new
+    // one, and that is exactly the "until resolved" the gate means. `reused` is
+    // returned so the caller records the refusal once per tip: the audit row and
+    // the notification belong to the first sighting, not to every pass.
+    // `Store.listJobEvents` answers newest-first (`ORDER BY id DESC`), so the
+    // first match is the verdict for the newest tip; reversing it would read the
+    // first tip's verdict forever and never reuse a later one.
+    const previous = this.store.listJobEvents(job.id).find((event) => event.kind === 'job.adversarial' && event.step !== 'skipped' && event.step !== 'unavailable')
+    if (previous !== undefined) {
+      try {
+        const stored = JSON.parse(previous.meta ?? '') as { tipSha?: unknown; verdict?: unknown; status?: unknown; reason?: unknown }
+        if (stored.tipSha === pr.headSha && stored.verdict !== null && typeof stored.verdict === 'object') {
+          // A refusal re-read from the record still blocks, and still says it was
+          // a refusal: the notification must not present a fake file:line as a
+          // risk the model named.
+          const refusal = stored.status === 'incomplete' && typeof stored.reason === 'string' && stored.reason.trim() !== '' ? stored.reason : null
+          return { block: adversarialMergeBlock({ verdict: stored.verdict as AdversarialVerdict }), reused: true, refusal }
+        }
+      } catch {}
+    }
+    const model = this.adversarialModel
+    if (model === null && this.config.llm.key === '') {
+      record('skipped', { status: 'skipped', reason: 'platform model is not configured' })
+      return { block: null, reused: false, refusal: null }
+    }
+    const branch = await client.getBranch(owner, name, pr.base).catch(() => null)
+    const baseSha = job.base_sha ?? branch?.sha ?? ''
+    if (baseSha === '') {
+      record('skipped', { status: 'skipped', reason: 'base sha is unknown' })
+      return { block: null, reused: false, refusal: null }
+    }
+    const listed = await client.listPullRequestFiles(owner, name, pr.number, pr.changedFiles).catch((error) => {
+      record('unavailable', { status: 'unavailable', reason: String(error).slice(0, 300) })
+      return null
+    })
+    if (listed === null) return { block: null, reused: false, refusal: null }
+    // #556: a refusal names what it could not read and records the tip, so the
+    // next reconcile of the same tip reads the refusal instead of paying for a
+    // second model call. The stored verdict is risk-shaped because that is the
+    // shape the reuse path above reads; the reason carries the truth.
+    const refuse = (reason: string, target: string, detail: Record<string, unknown>): { block: { file: string; line: number }; reused: boolean; refusal: string } => {
+      record('incomplete', {
+        status: 'incomplete',
+        tipSha: pr.headSha,
+        reason,
+        ...detail,
+        verdict: { kind: 'risk', file: target, line: 0, failureMode: reason, repro: 'open the pull request files page and read the file named in the refusal', checks: [] },
+        target: `${target}:0`,
+      })
+      this.store.audit(job.user_id, 'job.adversarial_incomplete', `${job.id}: ${reason}`)
+      return { block: { file: target, line: 0 }, reused: false, refusal: reason }
+    }
+    if (!listed.complete) {
+      // The listing is the input to the review. A pass over the files it did
+      // reach, presented as a pass over the change, is the fail-open this card
+      // closes: it answers about a subset it was never told about.
+      return refuse(
+        `the changed-file list is truncated: ${listed.files.length} of ${pr.changedFiles} files were listed, so the rest were not read`,
+        '(changed-file list)',
+        { listed: listed.files.length, reported: pr.changedFiles },
+      )
+    }
+    // A file that arrives without a patch is unread, and an unread file outside
+    // the asset allowlist is a refusal. This runs before the empty-diff branch:
+    // a pull request whose every file is patch-less used to reach that branch and
+    // skip with no block at all. A 100 %-similarity rename is the one patch-less
+    // shape that is not unread — the API sends no hunks for it because there are
+    // none — but a pure path move is also how a change is disabled without a diff
+    // to read, so it keeps its own list and the nothing-readable branch refuses
+    // while it is non-empty. Otherwise the asset skip below would release it.
+    const isHunklessRename = (file: { status: string; additions: number; deletions: number }): boolean =>
+      file.status === 'renamed' && file.additions === 0 && file.deletions === 0
+    const renames = listed.files.filter(isHunklessRename).map((file) => file.filename)
+    const unread = listed.files
+      .filter((file) => (typeof file.patch !== 'string' || file.patch === '') && !isHunklessRename(file))
+      .map((file) => file.filename)
+    const unreadBeyondAssets = unread.filter((filename) => !adversarialAssetExempt(filename))
+    if (unreadBeyondAssets.length > 0) {
+      const named = unreadBeyondAssets.slice(0, 10).join(', ')
+      return refuse(
+        `a changed file arrived without a patch, so the pass could not read it: ${named}${unreadBeyondAssets.length > 10 ? ` and ${unreadBeyondAssets.length - 10} more` : ''}`,
+        unreadBeyondAssets[0]!,
+        { unread: unreadBeyondAssets.slice(0, 50) },
+      )
+    }
+    const readable = listed.files.filter((file) => typeof file.patch === 'string' && file.patch !== '')
+    if (readable.length === 0) {
+      if (renames.length > 0 || unread.length === 0) {
+        return refuse('the changed-file list reports no readable file, so there was nothing to review', '(changed-file list)', {})
+      }
+      // The one skip that survives: every unread file is an asset inside the
+      // allowlist, so there is no text to send and nothing a model could read.
+      // The assets are still named in the record — this merges as "unread", not
+      // as "reviewed".
+      record('skipped', { status: 'skipped', reason: 'every changed file is an unread binary asset inside the allowlist', unread: unread.slice(0, 50) })
+      return { block: null, reused: false, refusal: null }
+    }
+    // The cut is taken here, at the same point the packet applies, so the pass
+    // can name the files it left out. Then it stops instead of skipping the big
+    // file: a gap in the middle of a diff reads as if the omitted file was never
+    // part of the change.
+    let diff = ''
+    const omittedFiles: string[] = []
+    let omittedBytes = 0
+    for (const [index, file] of readable.entries()) {
+      const entry = `diff --git a/${file.filename} b/${file.filename}\n${file.patch}`
+      const candidate = diff === '' ? entry : `${diff}\n${entry}`
+      if (candidate.length <= MAX_DIFF_CHARS) {
+        diff = candidate
+        continue
+      }
+      // Keep the part that fits so the model still sees a change, and count the
+      // rest as unread. An oversized first file would otherwise leave an empty
+      // diff and no honest way to name what was dropped.
+      diff = candidate.slice(0, MAX_DIFF_CHARS)
+      omittedFiles.push(file.filename)
+      omittedBytes += candidate.length - MAX_DIFF_CHARS
+      for (const later of readable.slice(index + 1)) {
+        omittedBytes += `diff --git a/${later.filename} b/${later.filename}\n${later.patch}\n`.length
+        omittedFiles.push(later.filename)
+      }
+      break
+    }
+    const packet = assembleAdversarialPacket({
+      baseSha,
+      tipSha: pr.headSha,
+      diff,
+      truncated: omittedFiles.length > 0,
+      omittedFiles,
+      omittedBytes,
+      verifier: `checks at ${pr.headSha}: ${checks.map((run) => `${run.name}=${run.conclusion ?? run.status}`).join(', ')}`,
+      policy: [
+        'every check must be green at the tip',
+        `minimum review score ${this.config.autoMerge.minReviewScore}`,
+        'a T2 or T3 change needs a PASS at the same tip',
+      ],
+    })
+    // #556: a cut diff is a refusal the packet alone decides. The model is still
+    // asked so the record carries its answer, but the refusal is taken from the
+    // cut, not from the answer: letting an outage of the model decide is the same
+    // fail-open this card closes, reached through the one carve-out that stays.
+    // The prompt still carries the caveat, because a model asked about a partial
+    // diff must not report it as a whole one.
+    const refuseTruncated = (detail: { model: string; promptHash: string; checks: string[]; outage: string | null }): { block: { file: string; line: number }; reused: boolean; refusal: string } => {
+      const reason = `the diff was truncated at ${MAX_DIFF_CHARS} characters: ${packet.omittedBytes} bytes in ${packet.omittedFiles.length} file(s) were not read${detail.outage === null ? '' : ', and the model could not be asked'}`
+      const target = packet.omittedFiles[0] ?? '(diff cut)'
+      record('incomplete', {
+        status: 'incomplete',
+        tipSha: pr.headSha,
+        reason,
+        truncated: true,
+        omittedFiles: packet.omittedFiles.slice(0, 50),
+        omittedBytes: packet.omittedBytes,
+        model: detail.model,
+        promptHash: detail.promptHash,
+        ...(detail.outage === null ? {} : { outage: detail.outage }),
+        verdict: { kind: 'risk', file: target, line: 0, failureMode: reason, repro: 'open the pull request files page and read the files named in the refusal', checks: detail.checks },
+        target: `${target}:0`,
+      })
+      this.store.audit(job.user_id, 'job.adversarial_incomplete', `${job.id}: ${reason}`)
+      return { block: { file: target, line: 0 }, reused: false, refusal: reason }
+    }
+    let review: AdversarialReview
+    try {
+      review = await runAdversarialReview({
+        packet,
+        model: model ?? openAiAdversarialModel({
+          baseUrl: this.config.llm.baseUrl,
+          key: this.config.llm.key,
+          model: this.config.llm.model,
+        }),
+        modelId: this.config.llm.model,
+      })
+    } catch (error) {
+      if (packet.truncated) {
+        return refuseTruncated({ model: this.config.llm.model, promptHash: adversarialPrompt(packet).hash, checks: [], outage: String(error).slice(0, 300) })
+      }
+      record('unavailable', { status: 'unavailable', reason: String(error).slice(0, 300) })
+      return { block: null, reused: false, refusal: null }
+    }
+    if (packet.truncated) {
+      // The model was told the diff is partial; the block does not depend on it
+      // answering well. A cut diff is not a reviewed diff, and recording it as
+      // `skipped` (what this used to do) let the merge proceed.
+      return refuseTruncated({
+        model: review.model,
+        promptHash: review.promptHash,
+        checks: review.verdict.kind === 'none' ? review.verdict.checks : [],
+        outage: null,
+      })
+    }
+    const block = adversarialMergeBlock(review)
+    record(review.verdict.kind, {
+      ...review,
+      target: block === null ? null : `${block.file}:${block.line}`,
+      // #556 review finding 2: in a mixed change an allowlisted asset is left out
+      // of the packet, and the record has to name it — otherwise the docs' "is
+      // recorded as unread" is only true for the all-asset case.
+      ...(unread.length === 0 ? {} : { unread: unread.slice(0, 50) }),
+    })
+    if (block !== null) {
+      this.store.audit(job.user_id, 'job.adversarial_risk', `${job.id}: ${block.file}:${block.line}`)
+    } else if (review.verdict.kind === 'invalid') {
+      this.store.audit(job.user_id, 'job.adversarial_rejected', `${job.id}: ${review.verdict.reason}`)
+    }
+    return { block, reused: false, refusal: null }
+  }
+
   private async tryMerge(job: JobRow, prUrl: string, manual: boolean): Promise<{ ok: boolean; message?: string }> {
     if (job.kind !== 'iterate') return { ok: false, message: '只有 iterate 任务可以合并。' }
     let repo = this.store.getRepo(job.repo_id)
@@ -1594,6 +1890,36 @@ export class Jobs {
           if (approvals < protection.requiredApprovals) {
             this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: required approvals missing`)
             return { ok: false, message: '缺少 required approvals。' }
+          }
+        }
+      }
+      // #382: the last gate before the merge call is an independent read of the
+      // same diff. It sees the packet and the verifier, never the author's
+      // summary, and a concrete risk stops an automatic merge until a later run
+      // clears it. A maintainer merging by hand keeps that decision.
+      if (!manual) {
+        const adversarial = await this.adversarialPass(job, client, owner, name, pr, checks)
+        if (adversarial.block !== null) {
+          // One tip, one refusal. A reused verdict means this refusal was recorded
+          // and announced when the pass first ran; recording it again on every
+          // reconcile pass would grow the audit trail 1,2,3,4 and notify the same
+          // maintainer about the same commit every few minutes.
+          const where = `${adversarial.block.file}:${adversarial.block.line}`
+          // A refusal is not a risk the model named: it says the pass could not
+          // read the change. Same block, different sentence — a `:0` locator
+          // announced as a concrete risk is a report that invents evidence.
+          const refusal = adversarial.refusal
+          if (!adversarial.reused) {
+            this.store.audit(job.user_id, 'job.merge_adversarial_blocked', `${job.id}: ${refusal === null ? where : `incomplete: ${refusal.slice(0, 300)}`}`)
+            this.store.notify(job.user_id, 'job', refusal === null
+              ? `任务 ${job.id} 的独立对抗式审核指出了具体风险 ${where}，自动合并已阻止。`
+              : `任务 ${job.id} 的独立对抗式审核未能读完整改动（${refusal}），自动合并已阻止。`)
+          }
+          return {
+            ok: false,
+            message: refusal === null
+              ? `独立对抗式审核指出具体风险：${where}，自动合并已阻止。`
+              : `独立对抗式审核未能读完整改动：${refusal}，自动合并已阻止。`,
           }
         }
       }
@@ -1956,8 +2282,8 @@ export class Jobs {
       teamUrl: `${this.config.baseUrl}/repos/${repo.id}/jobs/${job.id}`,
       issueUrl: result.issueUrl === undefined ? job.issue_url : result.issueUrl,
       prUrl: result.prUrl === undefined ? job.pr_url : result.prUrl,
-      summary: result.summary ?? job.summary ?? '',
-      error: result.error ?? job.error ?? '',
+      summary: redact(result.summary ?? job.summary ?? ''),
+      error: redact(result.error ?? job.error ?? ''),
       reviewScore: result.reviewScore ?? job.review_score,
     }
     try {
@@ -2221,6 +2547,10 @@ export class Jobs {
     const modelLine = modelRun === null || modelRun.model === null
       ? []
       : [`- Model: ${modelRun.model.label}${modelRun.attempts.length === 0 ? '' : ` (tried ${modelRun.attempts.map((entry) => `${entry.label} ${entry.status}`).join(', ')})`}`]
+    const providerParts = [job.provider_label, job.provider_region, job.provider_model]
+      .filter((part): part is string => part !== null && part !== '')
+      .map((part) => part.replace(/[\r\n]+/g, ' ').slice(0, 120))
+    const providerLine = providerParts.length === 0 ? [] : [`- Provider: ${providerParts.join(' · ')}`]
     const body = [
       '<details>',
       `<summary>Fledge automation · ${teamLabel} · job <code>${job.id}</code> (${job.trigger}, ${job.kind})</summary>`,
@@ -2231,6 +2561,7 @@ export class Jobs {
       '',
       `- Issue: ${result.issueUrl ?? 'none'}`,
       ...modelLine,
+      ...providerLine,
       `- Fledge job: ${this.config.baseUrl}/repos/${job.repo_id}/jobs/${job.id}`,
       '</details>',
     ]
@@ -2278,10 +2609,10 @@ export class Jobs {
     const issueUrl = repoLink(payload.issueUrl, 'issues')
     const reviewScore = typeof payload.reviewScore === 'number' && Number.isFinite(payload.reviewScore) ? Math.max(0, Math.min(100, Math.round(payload.reviewScore))) : undefined
     const summary = progressSummary(payload.summary)
-    const error = typeof payload.error === 'string' ? payload.error.slice(0, 2000) : undefined
+    const error = typeof payload.error === 'string' ? redact(payload.error).slice(0, 2000) : undefined
     const attribution = parseAttribution(payload.attribution)
     const evidence = parseEvidence(payload.evidence)
-    const checkpoint = typeof payload.checkpoint === 'string' ? payload.checkpoint.trim().slice(0, 4000) : undefined
+    const checkpoint = typeof payload.checkpoint === 'string' ? redact(payload.checkpoint.trim()).slice(0, 4000) : undefined
     if (branch !== undefined && (!isValidBranchName(branch) || branch === job.base_branch)) {
       return { ok: false, status: 400, error: 'invalid branch' }
     }
@@ -2739,13 +3070,13 @@ export class Jobs {
       revoke()
       const message = String(error instanceof Error ? error.message : error)
       const startCode: FailureCode = providerRefusalCode(message) ?? 'BRIDGE_ERROR'
-      this.store.updateJob(job.id, { status: 'failed', error: message.slice(0, 1000), error_code: startCode, finished_at: nowIso() })
+      this.store.updateJob(job.id, { status: 'failed', error: redact(message).slice(0, 1000), error_code: startCode, finished_at: nowIso() })
       this.store.releaseJobLease(job.id)
       this.clearLeaseHeartbeat(job.id)
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
       else this.store.updateRepo(repo.id, { last_status: 'failed' })
-      this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${message}`, startCode)
-      this.store.audit(user.id, 'job.failed', `${job.id}: ${message.slice(0, 300)}`)
+      this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${redact(message)}`, startCode)
+      this.store.audit(user.id, 'job.failed', `${job.id}: ${redact(message).slice(0, 300)}`)
       jobLog.error('queued job start failed', { error: message })
     }
   }

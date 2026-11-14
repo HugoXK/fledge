@@ -22,7 +22,16 @@ permissions:
 concurrency:
   # A superseded pull request run is waste; a run on main is the record of a
   # commit, so it is never cancelled by a later one.
-  group: ci-${{ github.ref }}
+  #
+  # #574: GitHub keeps one running and one pending run per group, and a later
+  # arrival replaces the pending one — the replaced run is marked `cancelled`
+  # before any job is created, so its commit carries no `ci-ok` at all. Two
+  # merges landing seconds apart hit exactly that (runs 43435325525 and
+  # 43435335986, both `cancelled` with zero jobs), so a `main` push keys its
+  # group by the commit as well. A pull request and a merge queue entry keep
+  # the ref-only group: superseding is the point there, and `merge_group` must
+  # keep queueing behind its own ref.
+  group: ci-${{ github.ref }}${{ github.event_name == 'push' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

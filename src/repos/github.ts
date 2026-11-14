@@ -519,11 +519,11 @@ export class GithubClient {
     number: number,
     reportedFiles = 0,
     maxPages = 30,
-  ): Promise<{ files: Array<{ filename: string; status: string; additions: number; deletions: number }>; complete: boolean }> {
-    const files: Array<{ filename: string; status: string; additions: number; deletions: number }> = []
+  ): Promise<{ files: Array<{ filename: string; status: string; additions: number; deletions: number; patch?: string }>; complete: boolean }> {
+    const files: Array<{ filename: string; status: string; additions: number; deletions: number; patch?: string }> = []
     let capped = true
     for (let page = 1; page <= maxPages; page += 1) {
-      const batch = await this.request<Array<{ filename?: string; status?: string; additions?: number; deletions?: number }>>(
+      const batch = await this.request<Array<{ filename?: string; status?: string; additions?: number; deletions?: number; patch?: string }>>(
         'GET',
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/files?per_page=100&page=${page}`,
       )
@@ -533,7 +533,15 @@ export class GithubClient {
       }
       for (const file of batch) {
         if (typeof file.filename !== 'string' || file.filename === '') continue
-        files.push({ filename: file.filename, status: file.status ?? 'modified', additions: Number(file.additions ?? 0), deletions: Number(file.deletions ?? 0) })
+        files.push({
+          filename: file.filename,
+          status: file.status ?? 'modified',
+          additions: Number(file.additions ?? 0),
+          deletions: Number(file.deletions ?? 0),
+          // The patch is what an independent reviewer reads; the path guard only
+          // needs the name, so it ignores this field.
+          ...(typeof file.patch === 'string' && file.patch !== '' ? { patch: file.patch } : {}),
+        })
       }
       if (batch.length < 100) {
         capped = false

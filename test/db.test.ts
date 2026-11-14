@@ -151,10 +151,41 @@ test('the role backfill runs once and future schema versions are refused', () =>
     const reopened = new Store(path)
     assert.equal(reopened.getRepo(repo.id)?.repo_role, 'maintainer')
     assert.notEqual(reopened.getRepo(repo.id)?.role_checked_at, null)
-    reopened.db.exec('PRAGMA user_version = 34;')
+    reopened.db.exec('PRAGMA user_version = 36;')
     reopened.close()
 
     assert.throws(() => new Store(path), /newer than this build/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a database written before queue tickets backfills them in arrival order (#545)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-ticket-'))
+  const path = join(dir, 'fledge.db')
+  try {
+    const store = new Store(path)
+    const user = makeUser(store, { login: 'ticket-user', status: 'approved' })
+    const later = store.createRepo({ id: 'repo_ticket_late', userId: user.id, owner: 'o', name: 'late', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const earlier = store.createRepo({ id: 'repo_ticket_early', userId: user.id, owner: 'o', name: 'early', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_ticket_late', repoId: later.id, userId: user.id, trigger: 'schedule', goal: 'late', callbackHash: 'cb_late', platformTokenHash: '', createdAt: '2026-01-01T00:00:09.000Z' })
+    store.createJob({ id: 'job_ticket_early', repoId: earlier.id, userId: user.id, trigger: 'schedule', goal: 'early', callbackHash: 'cb_early', platformTokenHash: '', createdAt: '2026-01-01T00:00:01.000Z' })
+    // The shape of an older file: the column is absent, so every row ranks by
+    // the clock it was written with.
+    store.db.exec('ALTER TABLE jobs DROP COLUMN queue_seq')
+    store.close()
+
+    const reopened = new Store(path)
+    try {
+      assert.equal(reopened.getJob('job_ticket_early')?.queue_seq, 1, 'the older row takes the first ticket, not the rowid order')
+      assert.equal(reopened.getJob('job_ticket_late')?.queue_seq, 2)
+      // A new arrival goes behind both, so the upgraded queue keeps working.
+      const third = reopened.createRepo({ id: 'repo_ticket_new', userId: user.id, owner: 'o', name: 'new', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+      reopened.createJob({ id: 'job_ticket_new', repoId: third.id, userId: user.id, trigger: 'schedule', goal: 'new', callbackHash: 'cb_new', platformTokenHash: '' })
+      assert.equal(reopened.getJob('job_ticket_new')?.queue_seq, 3)
+    } finally {
+      reopened.close()
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

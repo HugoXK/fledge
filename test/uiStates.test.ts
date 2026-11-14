@@ -188,6 +188,65 @@ test('/search renders both empty branches through the shared icon, with no bare 
   }
 })
 
+// #568: `/search` applies the `kind` a person chose and answers nothing when it
+// matches no job — the documented rule. The control must still show that value,
+// so the page never reads 全部类型 / All kinds while narrowing by something else,
+// and both selects label every option through the shared helpers instead of
+// printing an enum token. The applied kind is an unvalidated query value, so the
+// extra option goes through `option()`, which escapes the attribute and the label.
+test('the search kind control shows the kind it applied, escaped, and offers no raw tokens', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'search-kind', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const empty = { rows: [], capped: false }
+    const results = { repos: empty, jobs: empty, workItems: empty, audit: empty }
+    const render = (kind: string, status = ''): string => searchPage({
+      config,
+      locale: 'zh',
+      viewer,
+      repos: [],
+      filters: { q: 'e', repo: '', status, kind, from: '', to: '' },
+      results,
+      cap: 20,
+    })
+    const select = (html: string, name: string): string => {
+      const match = new RegExp(`<select name="${name}">([\\s\\S]*?)</select>`).exec(html)
+      assert.ok(match !== null, `the ${name} select is rendered`)
+      return match[1] ?? ''
+    }
+    const selected = (html: string, name: string): string[] =>
+      [...select(html, name).matchAll(/<option value="([^"]*)" selected>/g)].map((match) => match[1] ?? '')
+
+    // (a) A kind the form does not offer is still the one applied.
+    const unknown = render('gossip')
+    assert.deepEqual(selected(unknown, 'kind'), ['gossip'], 'the applied kind is the selected option, not 全部类型')
+    assert.match(unknown, /当前类型：gossip。/, 'the zero-result page names the kind it applied')
+
+    // `discover` is left out of `JOB_FILTER_KINDS` on purpose, but an applied one
+    // must render with its translated label and be visible and clearable.
+    const discovery = render('discover')
+    assert.deepEqual(selected(discovery, 'kind'), ['discover'], 'an applied discover is selected')
+    assert.match(select(discovery, 'kind'), /<option value="discover" selected>发现<\/option>/, 'and reads 发现')
+
+    // (a2) The value is attacker-controlled: clipped, never validated.
+    const hostile = render('<b>x</b>')
+    assert.match(select(hostile, 'kind'), /<option value="&lt;b&gt;x&lt;\/b&gt;" selected>/, 'the applied kind is escaped')
+    assert.ok(!hostile.includes('<b>x</b>'), 'no raw element reaches the page')
+
+    // (b) Every offered option is labelled, and the status select has no literal list.
+    const offered = select(render(''), 'kind')
+    assert.match(offered, /<option value="triage">分诊<\/option>/, 'an offered kind reads its label')
+    assert.doesNotMatch(offered, /<option value="[a-z_]+">[a-z_]+<\/option>/, 'no option prints its enum token')
+    const quota = render('', 'quota_exhausted')
+    assert.deepEqual(selected(quota, 'status'), ['quota_exhausted'], 'the applied status is selected')
+    assert.match(select(quota, 'status'), /<option value="quota_exhausted" selected>额度用尽<\/option>/, 'and reads 额度用尽')
+  } finally {
+    store.close()
+  }
+})
+
 // 10. The icon span belongs to the renderer: a page that writes it by hand can
 // drift back to a glyph without any of the state tests above noticing.
 test('no page builds a .state-icon span by hand', () => {

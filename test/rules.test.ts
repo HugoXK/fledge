@@ -7,7 +7,7 @@ import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
 import { loadRepoRules, RulesError } from '../src/rules.js'
 import { GithubClient } from '../src/repos/github.js'
-import { json, makeUser, MemoryMailer, startFakeServer, testConfig } from './helpers.js'
+import { formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
 const COMMIT = 'a'.repeat(40)
 
@@ -15,7 +15,7 @@ function base64(text: string): string {
   return Buffer.from(text, 'utf8').toString('base64')
 }
 
-async function rulesGithub(options: { ruleType?: string; skillCount?: number } = {}): Promise<{ url: string; close: () => Promise<void> }> {
+async function rulesGithub(options: { ruleType?: string; skillCount?: number; hasRules?: boolean } = {}): Promise<{ url: string; close: () => Promise<void> }> {
   return startFakeServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
     if (url.pathname === '/repos/o/r/branches/main') {
@@ -27,6 +27,10 @@ async function rulesGithub(options: { ruleType?: string; skillCount?: number } =
       return
     }
     if (url.pathname === '/repos/o/r/contents/.fledge/rules.md') {
+      if (options.hasRules === false) {
+        json(response, 404, { message: 'Not Found' })
+        return
+      }
       if (options.ruleType !== undefined) {
         json(response, 200, { type: options.ruleType, sha: 'rulesha' })
         return
@@ -75,6 +79,53 @@ test('loadRepoRules reads rules and skills from a fixed commit', async () => {
     assert.equal(rules.skills[0]?.description, 'Release notes')
     assert.equal(rules.hash.length, 64)
     assert.equal(rules.totalBytes, rules.files[0]!.bytes + rules.skills[0]!.bytes)
+  } finally {
+    await server.close()
+  }
+})
+
+test('a console override supplies a rule file when the repository has none', async () => {
+  const server = await rulesGithub({ hasRules: false, skillCount: 0 })
+  try {
+    const client = new GithubClient('token', server.url)
+    const rules = await loadRepoRules(client, 'o', 'r', COMMIT, [
+      { path: '.fledge/rules.md', content: '# Console\nUse the override.\n', revision: 3 },
+    ])
+    assert.equal(rules.files.length, 1)
+    assert.equal(rules.files[0]?.layer, 'console')
+    assert.match(rules.effective, /Use the override/)
+    assert.deepEqual(rules.layers.find((layer) => layer.path === '.fledge/rules.md'), { path: '.fledge/rules.md', layer: 'console', revision: 3 })
+    assert.deepEqual(rules.layers.find((layer) => layer.path === '.fledge/review.md'), { path: '.fledge/review.md', layer: 'builtin', revision: null })
+  } finally {
+    await server.close()
+  }
+})
+
+test('a repository file wins over a console override for the same path', async () => {
+  const server = await rulesGithub()
+  try {
+    const client = new GithubClient('token', server.url)
+    const rules = await loadRepoRules(client, 'o', 'r', COMMIT, [
+      { path: '.fledge/rules.md', content: '# Console\nThis must not win.\n', revision: 2 },
+    ])
+    assert.equal(rules.files.length, 1)
+    assert.equal(rules.files[0]?.layer, 'repository')
+    assert.match(rules.effective, /Always test/)
+    assert.doesNotMatch(rules.effective, /This must not win/)
+    assert.deepEqual(rules.layers.find((layer) => layer.path === '.fledge/rules.md'), { path: '.fledge/rules.md', layer: 'repository', revision: null })
+  } finally {
+    await server.close()
+  }
+})
+
+test('an empty console override is refused instead of replacing the built-in layer', async () => {
+  const server = await rulesGithub({ hasRules: false, skillCount: 0 })
+  try {
+    const client = new GithubClient('token', server.url)
+    await assert.rejects(
+      () => loadRepoRules(client, 'o', 'r', COMMIT, [{ path: '.fledge/rules.md', content: '   ', revision: 1 }]),
+      (error: unknown) => error instanceof RulesError && error.code === 'rules_invalid' && error.path === '.fledge/rules.md',
+    )
   } finally {
     await server.close()
   }
@@ -151,6 +202,187 @@ test('enqueue stores the fixed-commit rule context and hands it to the runner', 
   } finally {
     await server.close()
     store.close()
+  }
+})
+
+test('console overrides bump the revision, refuse a stale write, and clear back to built-in', async () => {
+  const store = new Store(':memory:')
+  const config = testConfig()
+  const server = await rulesGithub({ hasRules: false, skillCount: 0 })
+  try {
+    const user = makeUser(store, { login: 'override-user', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_override',
+      userId: user.id,
+      owner: 'o',
+      name: 'r',
+      defaultBranch: 'main',
+      tokenEnc: encryptSecret('token', config.tokenEncryptionKey),
+      permission: 'admin',
+      repoRole: 'maintainer',
+      goal: '',
+      autoIterate: false,
+      intervalMinutes: 1440,
+    })
+    const created = store.upsertRepoRuleOverride({ repoId: repo.id, path: '.fledge/rules.md', content: '# First\n', updatedBy: user.id, expectedRevision: 0 })
+    assert.equal(created.ok, true)
+    if (!created.ok) throw new Error('expected the first override to be created')
+    assert.equal(created.row.revision, 1)
+
+    const stale = store.upsertRepoRuleOverride({ repoId: repo.id, path: '.fledge/rules.md', content: '# Stale\n', updatedBy: user.id, expectedRevision: 0 })
+    assert.equal(stale.ok, false)
+    if (stale.ok) throw new Error('expected the stale write to be refused')
+    assert.equal(stale.code, 'rule_override_conflict')
+    assert.equal(stale.revision, 1)
+    assert.equal(store.getRepoRuleOverride(repo.id, '.fledge/rules.md')?.content, '# First\n')
+
+    const updated = store.upsertRepoRuleOverride({ repoId: repo.id, path: '.fledge/rules.md', content: '# Second\n', updatedBy: user.id, expectedRevision: 1 })
+    assert.equal(updated.ok, true)
+    if (!updated.ok) throw new Error('expected the revision-fenced write to succeed')
+    assert.equal(updated.row.revision, 2)
+
+    const staleDelete = store.deleteRepoRuleOverride({ repoId: repo.id, path: '.fledge/rules.md', expectedRevision: 1 })
+    assert.equal(staleDelete.ok, false)
+    if (staleDelete.ok) throw new Error('expected the stale clear to be refused')
+    assert.equal(staleDelete.code, 'rule_override_conflict')
+    assert.equal(staleDelete.revision, 2)
+
+    const cleared = store.deleteRepoRuleOverride({ repoId: repo.id, path: '.fledge/rules.md', expectedRevision: 2 })
+    assert.equal(cleared.ok, true)
+    assert.equal(store.listRepoRuleOverrides(repo.id).length, 0)
+
+    const client = new GithubClient('token', server.url)
+    const rules = await loadRepoRules(client, 'o', 'r', COMMIT, store.listRepoRuleOverrides(repo.id).map((row) => ({ path: row.path, content: row.content, revision: row.revision })))
+    assert.deepEqual(rules.layers.find((layer) => layer.path === '.fledge/rules.md'), { path: '.fledge/rules.md', layer: 'builtin', revision: null })
+    assert.equal(rules.effective, '')
+  } finally {
+    await server.close()
+    store.close()
+  }
+})
+
+test('a console override is the effective layer in the job context when no repository file exists', async () => {
+  const server = await rulesGithub({ hasRules: false, skillCount: 0 })
+  const base = testConfig()
+  const config = testConfig({
+    github: { ...base.github, apiBase: server.url },
+    flybot: { ...base.flybot, instanceImage: '' },
+    runner: { ...base.runner, queueDispatch: false },
+  })
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = {
+    name: 'flybot',
+    async run(context) {
+      contexts.push(context)
+      return { status: 'running' }
+    },
+  }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'override-job-user', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_override_job',
+      userId: user.id,
+      owner: 'o',
+      name: 'r',
+      defaultBranch: 'main',
+      tokenEnc: encryptSecret('token', config.tokenEncryptionKey),
+      permission: 'admin',
+      repoRole: 'maintainer',
+      goal: '',
+      autoIterate: false,
+      intervalMinutes: 1440,
+    })
+    store.upsertRepoRuleOverride({ repoId: repo.id, path: '.fledge/rules.md', content: '# Console\nAlways use the console override.\n', updatedBy: user.id, expectedRevision: 0 })
+    const result = await jobs.enqueue(repo, 'manual', 'do the work', 'iterate')
+    assert.equal(result.ok, true, result.error ?? '')
+    const job = result.job!
+    assert.equal(contexts[0]?.rules?.files[0]?.layer, 'console')
+    assert.match(contexts[0]?.rules?.effective ?? '', /Always use the console override/)
+    const context = store.getJobContext(job.id)
+    const rulesJson = JSON.parse(context?.rules_json ?? '{}') as { layers?: Array<{ path: string; layer: string; revision: number | null }>; files?: Array<{ path: string; layer: string }> }
+    assert.deepEqual(rulesJson.layers?.find((layer) => layer.path === '.fledge/rules.md'), { path: '.fledge/rules.md', layer: 'console', revision: 1 })
+    assert.deepEqual(rulesJson.layers?.find((layer) => layer.path === '.fledge/review.md'), { path: '.fledge/review.md', layer: 'builtin', revision: null })
+    assert.equal(rulesJson.files?.[0]?.layer, 'console')
+    assert.equal(store.getJobContextFile(job.id, '.fledge/rules.md')?.content, '# Console\nAlways use the console override.\n')
+  } finally {
+    await server.close()
+    store.close()
+  }
+})
+
+test('the maintainer rule override form saves with a revision, refuses a stale write and clears', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'rules-maintainer', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_rules_form',
+      userId: user.id,
+      owner: 'o',
+      name: 'r',
+      defaultBranch: 'main',
+      tokenEnc: encryptSecret('token', config.tokenEncryptionKey),
+      permission: 'admin',
+      repoRole: 'maintainer',
+      goal: '',
+      autoIterate: false,
+      intervalMinutes: 1440,
+    })
+    const { cookie, csrf } = sessionFor(built, user)
+    const headers = { cookie, 'content-type': 'application/x-www-form-urlencoded' }
+
+    const saved = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/rules`,
+      headers,
+      payload: formBody({ csrf, path: '.fledge/rules.md', content: '# Console\n', expected_revision: '0' }),
+    })
+    assert.equal(saved.statusCode, 302)
+    assert.match(String(saved.headers.location), /saved=/)
+    assert.equal(store.getRepoRuleOverride(repo.id, '.fledge/rules.md')?.revision, 1)
+
+    const stale = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/rules`,
+      headers,
+      payload: formBody({ csrf, path: '.fledge/rules.md', content: '# Stale\n', expected_revision: '0' }),
+    })
+    assert.equal(stale.statusCode, 302)
+    assert.match(String(stale.headers.location), /conflictRevision=1/)
+    assert.equal(store.getRepoRuleOverride(repo.id, '.fledge/rules.md')?.content, '# Console\n')
+
+    const skills = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/rules`,
+      headers,
+      payload: formBody({ csrf, path: '.agents/skills', content: '# Nope\n', expected_revision: '0' }),
+    })
+    assert.equal(skills.statusCode, 302)
+    assert.match(String(skills.headers.location), /refused=path_invalid/)
+
+    const cleared = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/rules/delete`,
+      headers,
+      payload: formBody({ csrf, path: '.fledge/rules.md', expected_revision: '1' }),
+    })
+    assert.equal(cleared.statusCode, 302)
+    assert.match(String(cleared.headers.location), /cleared=/)
+    assert.equal(store.getRepoRuleOverride(repo.id, '.fledge/rules.md'), undefined)
+
+    const actions = store.listAudit(20).map((row) => row.action)
+    assert.ok(actions.includes('repo.rules_override_saved'))
+    assert.ok(actions.includes('repo.rules_override_refused'))
+    assert.ok(actions.includes('repo.rules_override_cleared'))
+
+    store.updateRepo(repo.id, { repo_role: 'developer' })
+    const denied = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/rules`, headers: { cookie } })
+    assert.equal(denied.statusCode, 403)
+  } finally {
+    await built.close()
   }
 })
 

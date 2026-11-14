@@ -40,6 +40,9 @@ const FORM_ACTIONS = [
   '/repos/:id/refresh',
   '/repos/:id/run',
   '/repos/:id/settings',
+  // #523: the triage start is a repository-page form like the run and plan
+  // starts, so the page's action inventory grows by exactly this one entry.
+  '/repos/:id/triage',
   '/repos/:id/work',
 ]
 

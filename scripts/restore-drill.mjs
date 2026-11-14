@@ -8,7 +8,8 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSyn
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
-import { manifestPath, readManifest, sha256File, writeManifest } from './lib/backup-manifest.mjs'
+import { decryptBackupFile, encryptBackupFile, loadBackupKey } from './lib/backup-crypto.mjs'
+import { databaseFacts, manifestPath, readManifest, sha256File, writeManifest } from './lib/backup-manifest.mjs'
 
 const require = createRequire(import.meta.url)
 const { DatabaseSync, backup } = require('node:sqlite')
@@ -108,36 +109,78 @@ function assertApplicationSchema(db, tables, backupPath, manifest) {
 function newestBackup(dir) {
   if (!existsSync(dir)) return null
   const files = readdirSync(dir)
-    .filter((name) => name.startsWith('fledge-') && name.endsWith('.db'))
+    .filter((name) => name.startsWith('fledge-') && (name.endsWith('.db') || name.endsWith('.db.enc')))
     .map((name) => join(dir, name))
     .map((path) => ({ path, mtime: statSync(path).mtimeMs }))
     .sort((left, right) => right.mtime - left.mtime)
   return files.length === 0 ? null : files[0].path
 }
 
-async function writeBackup(sourcePath, dir) {
+function configuredBackupKey() {
+  try {
+    return loadBackupKey(process.env)
+  } catch (error) {
+    fail(2, error instanceof Error ? error.message : String(error))
+  }
+}
+
+function encryptionKeyForDrill() {
+  // Restoring is not writing: a copy that already exists under a base64-shaped
+  // passphrase must stay readable, and the only way to read it is the derivation
+  // it actually used. GCM authentication and the key id decide whether the value
+  // reproduces it, so the 16–31 byte write-side window is not applied here.
+  let key
+  try {
+    key = loadBackupKey(process.env, { rejectTruncatedBase64Key: false })
+  } catch (error) {
+    fail(2, error instanceof Error ? error.message : String(error))
+  }
+  if (key === null) {
+    fail(1, 'the backup is encrypted but no backup encryption key is configured; without the key the copy cannot be restored (lost key). Set BACKUP_ENCRYPTION_KEY or BACKUP_ENCRYPTION_KEY_FILE to the key the copy was written with')
+  }
+  return key
+}
+
+async function writeBackup(sourcePath, dir, key) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  const target = join(dir, `fledge-${stamp}.db`)
+  const target = join(dir, `fledge-${stamp}.db${key === null ? '' : '.enc'}`)
+  // Same rule as the backup script: a plaintext intermediate never looks like a
+  // finished backup while the encrypted copy is being written.
+  const plaintextTarget = key === null ? target : `${target}.plaintext.tmp`
   const source = new DatabaseSync(sourcePath, { readOnly: true })
   try {
-    await backup(source, target)
+    await backup(source, plaintextTarget)
   } finally {
     source.close()
   }
-  chmodSync(target, 0o600)
-  // A copy taken by the drill is a normal backup: it gets the same manifest, so
-  // the checks below are exact on the very first run of an instance. The manifest
-  // records what this run wrote, so the copy is verified before it is described -
-  // a manifest over a file that cannot be opened would launder a bad backup - and
-  // an unreadable copy is removed rather than left looking usable.
+  chmodSync(plaintextTarget, 0o600)
+  let facts
+  // A copy taken by the drill is a normal backup: it is verified and gets the
+  // same manifest, so the checks below are exact on the very first run of an
+  // instance. The manifest records what this run wrote, so the copy is verified
+  // before it is described - a manifest over a file that cannot be opened would
+  // launder a bad backup - and an unreadable copy is removed rather than left
+  // looking usable.
   try {
-    const fresh = openRestored(target, target)
+    const fresh = openRestored(plaintextTarget, plaintextTarget)
     fresh.close()
+    facts = databaseFacts(plaintextTarget)
   } catch (error) {
-    rmSync(target, { force: true })
+    rmSync(plaintextTarget, { force: true })
     throw error
   }
-  await writeManifest(target)
+  let encryption
+  if (key !== null) {
+    try {
+      encryption = await encryptBackupFile(plaintextTarget, target, key)
+    } catch (error) {
+      rmSync(plaintextTarget, { force: true })
+      rmSync(target, { force: true })
+      throw error
+    }
+    rmSync(plaintextTarget, { force: true })
+  }
+  await writeManifest(target, { facts, encryption })
   return target
 }
 
@@ -302,7 +345,17 @@ async function main() {
   mkdirSync(backupDir, { recursive: true, mode: 0o700 })
   chmodSync(backupDir, 0o700)
   const existing = newestBackup(backupDir)
-  const backupPath = args.fresh || existing === null ? await writeBackup(dbPath, backupDir) : existing
+  let backupPath
+  if (args.fresh || existing === null) {
+    const key = configuredBackupKey()
+    const required = /^(1|true)$/i.test(process.env.BACKUP_ENCRYPTION_REQUIRED ?? '')
+    if (required && key === null) {
+      fail(2, 'BACKUP_ENCRYPTION_REQUIRED=true but no backup encryption key is configured; set BACKUP_ENCRYPTION_KEY or BACKUP_ENCRYPTION_KEY_FILE')
+    }
+    backupPath = await writeBackup(dbPath, backupDir, key)
+  } else {
+    backupPath = existing
+  }
   const backupAgeSeconds = Math.max(0, (Date.now() - statSync(backupPath).mtimeMs) / 1000)
 
   let workDir
@@ -325,13 +378,32 @@ async function main() {
   let succeeded = false
   try {
     const startedAt = process.hrtime.bigint()
-    copyFileSync(backupPath, restoredPath)
-    chmodSync(restoredPath, 0o600)
-    const copy = await verifyRestoredCopy(restoredPath, backupPath)
+    const encrypted = backupPath.endsWith('.enc')
     const manifest = readManifestOrFail(backupPath)
-    if (manifest !== null) {
-      process.stdout.write(`manifest=${manifestPath(backupPath)}\n`)
-      verifyManifestBytes(manifest, backupPath, copy)
+    if (encrypted) {
+      if (manifest !== null) {
+        process.stdout.write(`manifest=${manifestPath(backupPath)}\n`)
+        // The manifest hashes the encrypted file, not the plaintext it holds;
+        // check the copy on disk before spending the key on it.
+        const ciphertext = { size: statSync(backupPath).size, sha256: await sha256File(backupPath) }
+        verifyManifestBytes(manifest, backupPath, ciphertext)
+      }
+      const key = encryptionKeyForDrill()
+      let encryption
+      try {
+        encryption = await decryptBackupFile(backupPath, restoredPath, key)
+      } catch (error) {
+        fail(1, `cannot decrypt ${backupPath}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      process.stdout.write(`encryption=${encryption.algorithm} kdf=${String(encryption.kdf)} key_id=${encryption.keyId} key_version=${encryption.keyVersion}\n`)
+    } else {
+      copyFileSync(backupPath, restoredPath)
+      chmodSync(restoredPath, 0o600)
+      const copy = await verifyRestoredCopy(restoredPath, backupPath)
+      if (manifest !== null) {
+        process.stdout.write(`manifest=${manifestPath(backupPath)}\n`)
+        verifyManifestBytes(manifest, backupPath, copy)
+      }
     }
     restored = openRestored(restoredPath, backupPath)
     const restoredTables = tableNames(restored)

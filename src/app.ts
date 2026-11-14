@@ -2,11 +2,12 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import fastifyCookie from '@fastify/cookie'
 import fastifyFormbody from '@fastify/formbody'
 import fastifyStatic from '@fastify/static'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
-import { openStore, type JobRow, type RepoRow, type Store, type UserRow } from './db.js'
+import { openStore, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow } from './db.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
 import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions, type Viewer } from './auth/session.js'
@@ -16,12 +17,14 @@ import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
 import { notifyEmail } from './email/recipient.js'
 import { registerGateway } from './gateway/gateway.js'
-import { assertSafeModelUrl } from './gateway/modelUrl.js'
+import { assertSafeModelUrl, normalizeDataPolicyUrl, normalizeProviderRegion } from './gateway/modelUrl.js'
+import { assertSafeNotificationWebhook } from './lib/webhook.js'
 import { quotaView } from './gateway/quota.js'
 import { parseAttributionJson } from './lib/attribution.js'
 import { failureBreakdown } from './lib/failure.js'
 import { parseVerification } from './lib/verification.js'
-import { Jobs } from './jobs/service.js'
+import { DEFAULT_TRIAGE_GOAL, Jobs } from './jobs/service.js'
+import { parseIssueUrl } from './jobs/prUrl.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
 import fastifyRateLimit from '@fastify/rate-limit'
@@ -30,9 +33,9 @@ import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256H
 import { expiryFromDays, GATEWAY_SCOPE, isTokenScope, patExpiryDays } from './lib/tokens.js'
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
-import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale } from './i18n.js'
+import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale, type Translate } from './i18n.js'
 import { normalizeInterval } from './lib/intervals.js'
-import { parseJobFilters } from './lib/jobFilters.js'
+import { JOB_FILTER_STATUSES, parseJobFilters } from './lib/jobFilters.js'
 import { isValidBranchName } from './lib/branches.js'
 import { allowedRepoRoles, parseRepoRole, roleAllowed } from './lib/repoRole.js'
 import { isWorkItemState, MAINTAINER_ONLY_STATES, WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
@@ -42,6 +45,19 @@ import { parseIssueCommand } from './lib/issueCommands.js'
 import { VERSION } from './version.js'
 import { incCounter, observeHistogram, renderMetrics } from './lib/metrics.js'
 import { readReleaseStatus } from './lib/releaseStatus.js'
+import {
+  deploymentFromRow,
+  deploymentHealth,
+  deploymentReadiness,
+  environmentState,
+  latestReleaseFromStatus,
+  parsePromotionForm,
+  parseRollbackForm,
+  redactCommand,
+  type DeploymentRow,
+  type DriftAssessment,
+  type EnvironmentCurrent,
+} from './lib/deployments.js'
 import { configureOtel, endSpan, shutdownOtel, startSpan, type SpanHandle } from './lib/otel.js'
 import { configureGithubBudget } from './lib/githubBudget.js'
 import { normalizeReviewInstruction } from './lib/followUpInstruction.js'
@@ -52,6 +68,7 @@ import {
   adminTrialsPage,
   adminSearchPage,
   adminWebhooksPage,
+  adminDeploymentsPage,
   approvalPage,
   dashboardPage,
   landingPage,
@@ -72,12 +89,18 @@ import {
   type InboxQuestion,
 } from './views/pages.js'
 import { withDensity } from './views/layout.js'
+import { memoryMissingPage, memoryPage } from './views/memory.js'
+import { rulesOverridesPage } from './views/rules.js'
+import { isRulePath, MAX_RULE_FILE_BYTES } from './rules.js'
+import { memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from './lib/memory.js'
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
 import { GithubClient, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
 import { GithubApp } from './repos/app.js'
 import { repoGithubToken } from './repos/token.js'
 import { InstanceManager } from './flybot/instances.js'
 import { dshCookie, proxyWorkspaceHttp, proxyWorkspaceUpgrade } from './flybot/workspace.js'
+import { managementActor } from './management/actor.js'
+import { ManagementService, type ManagementCode } from './management/service.js'
 
 export interface BuildOptions {
   config: Config
@@ -151,6 +174,29 @@ function form(request: FastifyRequest): Record<string, string> {
   return out
 }
 
+// #540: the management codes are stable identifiers, so the sentence a person
+// reads is chosen here, once, in both languages.
+function managementRefusal(t: Translate, code: ManagementCode): string {
+  switch (code) {
+    case 'management_revision_conflict':
+      return t('这个任务在你打开页面之后已经变化，请重新打开任务后再操作。', 'This job changed after you opened the page; reopen it before acting.')
+    case 'idempotency_conflict':
+      return t('这个请求已经用不同的内容提交过，已拒绝。请刷新页面后重试。', 'That request was already submitted with different content; reload the page and try again.')
+    case 'authorization_revoked':
+      return t('你已经没有执行这个操作的权限。', 'You no longer have permission for this action.')
+    case 'job_not_cancellable':
+      return t('这个任务已经结束。', 'This job has already finished.')
+    case 'job_not_found':
+      return t('任务不存在。', 'The job does not exist.')
+    case 'actor_not_allowed':
+      return t('请求里不能包含身份或权限字段。', 'A request may not carry identity or permission fields.')
+    case 'unknown_operation':
+      return t('不支持的操作。', 'Unsupported operation.')
+    default:
+      return t('取消失败。', 'The cancel failed.')
+  }
+}
+
 function formList(request: FastifyRequest, key: string): string[] {
   const body = (request.body ?? {}) as Record<string, unknown>
   const value = body[key]
@@ -177,6 +223,17 @@ export function safeLocalPath(value: string | undefined, fallback: string): stri
   if (url.origin !== LOCAL_ORIGIN) return fallback
   // One leading slash, so nothing a client could read as a host survives folding.
   if (!url.pathname.startsWith('/') || url.pathname.startsWith('//')) return fallback
+  return `${url.pathname}${url.search}${url.hash}`
+}
+
+// #555: a page that just came out of a save already carries `notice=`, and a
+// Referer keeps it (only the fragment is dropped). Appending a second key makes
+// the query parse as an array, `queryText()` refuses a non-string, and the
+// console then shows nothing at all. Setting the key replaces the stale message
+// instead of stacking a second one next to it.
+function withMessageParam(page: string, key: 'notice' | 'error', message: string): string {
+  const url = new URL(page, LOCAL_ORIGIN)
+  url.searchParams.set(key, message)
   return `${url.pathname}${url.search}${url.hash}`
 }
 
@@ -224,6 +281,7 @@ function approvalMailFailed(user: UserRow, failures: Map<string, string>): boole
 export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const { config } = options
   assertProductionConfig(config)
+  await assertSafeNotificationWebhook(config)
   const store = options.store ?? openStore(config.dbPath)
   store.ensureSuperadmin(config.github.adminLogin)
   const orphans = store.cleanupOrphans()
@@ -241,6 +299,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   }
   const githubApp = new GithubApp(config)
   const jobs = new Jobs(store, config, runner, mailer, instances, githubApp)
+  // #540: one contract behind the console writes that have migrated. The first
+  // is the job cancel form; the rest still call their services directly.
+  const management = new ManagementService(store, jobs)
   const loginLimiter = new RateLimiter(30, 60_000)
   const apiLimiter = new RateLimiter(120, 60_000)
   // #460 review: the destructive actions below are rate-limited as well as
@@ -411,8 +472,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       `这个操作需要重新用 GitHub 确认身份（${config.recentAuthMinutes} 分钟内有效），确认后请再次提交。`,
       `This action needs a fresh GitHub confirmation (valid for ${config.recentAuthMinutes} minutes). Submit it again after confirming.`,
     )
-    const page = safeLocalPath(back, '/dashboard')
-    const target = `${page}${page.includes('?') ? '&' : '?'}notice=${encodeURIComponent(notice)}`
+    const target = withMessageParam(safeLocalPath(back, '/dashboard'), 'notice', notice)
     reply.redirect(`/auth/github/reauthorize?next=${encodeURIComponent(target)}`)
     return true
   }
@@ -870,6 +930,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       firstPrUrl: firstJob?.pr_url ?? null,
       repoHref: allRepos[0] === undefined ? null : `/repos/${allRepos[0].id}`,
     }
+    // #564: open work, an active job and a ready instance decide when a
+    // repository runs again, and none of them is on RepoRow.
+    const nextRunFacts = allRepos.map((repo) => ({
+      repoId: repo.id,
+      openWork: store.listOpenWorkItems(repo.id).length > 0,
+      activeJob: store.activeJobForRepo(repo.id) !== undefined,
+      instanceReady: store.getRepoInstance(repo.id)?.status === 'ready',
+    }))
     return reply.type('text/html').send(
       dashboardPage({
         config,
@@ -886,6 +954,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobFilter,
         repoOptions: allRepos.map((repo) => ({ id: repo.id, label: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}` })),
         allRepos,
+        nextRunFacts,
+        queued: store.listQueuedJobs(),
         questions,
         personal,
         windowDays,
@@ -952,7 +1022,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const filters = {
       q: clip('q', 200),
       repo: repos.some((row) => row.id === repo) ? repo : '',
-      status: ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted'].includes(status) ? status : '',
+      // #568: the same list the control renders, so a status the form offers can never be dropped here.
+      status: (JOB_FILTER_STATUSES as string[]).includes(status) ? status : '',
       kind,
       from: from === '' ? '' : `${from}T00:00:00.000Z`, to: to === '' ? '' : `${to}T23:59:59.999Z`,
     }
@@ -1311,6 +1382,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
           instancesCap: config.limits.instancesPerUser,
         },
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
+        queued: store.listQueuedJobs(),
         prJobs: store.listPrJobsForRepo(repo.id, 10),
         workItems: store.listWorkItems(repo.id),
         // #359: the page names the deadline and the way out, so an ignored plan
@@ -1323,7 +1395,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         }),
         ...(workState !== undefined && isWorkItemState(workState) ? { workState } : {}),
         reviewTrend,
+        postmortems: store.listPostmortemsForRepo(repo.id, { openOnly: true }),
+        recurrences: store.listPostmortemRecurrences(repo.id),
         models: store.listUserProviderModels(repo.user_id),
+        providers: store.listModelProviders(repo.user_id),
         repoModelIds: repoModels.map((model) => model.id),
         repoBotModels: store.listRepoBotModels(repo.id),
         repoDefaultModelId: repoModels.find((model) => model.is_default === 1)?.id ?? '',
@@ -1337,6 +1412,151 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         error: queryText(request, 'error'),
       }),
     )
+  })
+
+  // #539: project memory. This slice is one repository page — a bounded search,
+  // an exact-version read and a revision-fenced write. The reader's role is the
+  // repository's chosen role, so an administrator acting as a developer reads the
+  // developer view; a write for a role the actor cannot act as is refused before
+  // the store sees it.
+  app.get('/repos/:id/memory', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const role = parseRepoRole(repo.repo_role)
+    const entries = store.listMemoriesForRepo(repo.id)
+    const query = queryText(request, 'q') ?? ''
+    const search = searchMemories(entries, query, role)
+    const locale = request.locale ?? 'zh'
+    const key = queryText(request, 'key')
+    let detail
+    let versions: ProjectMemoryVersionRow[] = []
+    if (key !== undefined) {
+      const entry = visibleMemories(entries, role).find((row) => row.key === key)
+      if (entry === undefined) {
+        return htmlPage(reply, 404, memoryMissingPage({ config, locale, viewer: viewOf(viewer), repo }))
+      }
+      versions = store.listMemoryVersions(entry.id)
+      const rawRevision = queryText(request, 'rev')
+      const wanted = rawRevision === undefined ? entry.revision : Number(rawRevision)
+      const version = Number.isInteger(wanted) ? store.getMemoryVersion(entry.id, wanted) : undefined
+      if (version === undefined) {
+        return htmlPage(reply, 404, memoryMissingPage({ config, locale, viewer: viewOf(viewer), repo }))
+      }
+      detail = { entry, version, historical: version.revision !== entry.revision }
+    }
+    const conflict = queryText(request, 'conflict')
+    const refused = queryText(request, 'refused')
+    return reply.type('text/html').send(memoryPage({
+      config,
+      locale,
+      viewer: viewOf(viewer),
+      repo,
+      role,
+      search,
+      ...(detail === undefined ? {} : { detail }),
+      versions,
+      query,
+      saved: queryText(request, 'saved') !== undefined,
+      unchanged: queryText(request, 'unchanged') !== undefined,
+      ...(conflict === undefined ? {} : { conflictRevision: Number(conflict) }),
+      ...(refused === undefined ? {} : { refused }),
+    }))
+  })
+
+  app.post('/repos/:id/memory', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const role = parseRepoRole(repo.repo_role)
+    const parsed = parseMemoryInput(form(request), { role, allowedRoles: allowedRepoRoles(repo.permission) })
+    if (!parsed.ok) {
+      return reply.redirect(`/repos/${repo.id}/memory?refused=${encodeURIComponent(parsed.refused)}`)
+    }
+    const input = parsed.value
+    const result = store.writeMemory({
+      repoId: repo.id,
+      key: input.key,
+      kind: input.kind,
+      status: input.status,
+      verification: input.verification,
+      audience: input.audience,
+      scope: input.scope,
+      body: input.body,
+      digest: memoryDigest(input.body),
+      sourcesJson: input.sourcesJson,
+      actorType: 'human',
+      actorId: viewer.user.id,
+      sourceJobId: null,
+      reason: input.reason,
+      expectedRevision: input.expectedRevision,
+    })
+    if (!result.ok) {
+      // A write aimed at a revision that no longer exists has no key to show, so
+      // it names the refusal instead of landing on a page for an entry that is gone.
+      if (result.code === 'memory_not_found') return reply.redirect(`/repos/${repo.id}/memory?refused=memory_not_found`)
+      return reply.redirect(`/repos/${repo.id}/memory?key=${encodeURIComponent(input.key)}&conflict=${result.revision}`)
+    }
+    const base = `/repos/${repo.id}/memory?key=${encodeURIComponent(input.key)}`
+    return reply.redirect(result.noop ? `${base}&unchanged=1` : `${base}&saved=1`)
+  })
+
+  // #538: console overrides for the three rule files. A repository file stays
+  // the first layer, this row is the second, and the built-in behaviour is the
+  // implicit third. Writes carry the revision the form rendered, so a concurrent
+  // edit is refused instead of overwriting it.
+  app.get('/repos/:id/rules', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    if (repo.repo_role !== 'maintainer') throw httpError(403, '只有 maintainer 可以编辑规则覆盖。', 'MAINTAINER_ONLY')
+    const conflictPath = queryText(request, 'conflictPath')
+    const conflictRevision = Number.parseInt(queryText(request, 'conflictRevision') ?? '', 10)
+    return reply.type('text/html').send(rulesOverridesPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      repo,
+      overrides: store.listRepoRuleOverrides(repo.id),
+      saved: queryText(request, 'saved'),
+      cleared: queryText(request, 'cleared'),
+      ...(conflictPath === undefined ? {} : { conflictPath }),
+      ...(Number.isInteger(conflictRevision) ? { conflictRevision } : {}),
+      refused: queryText(request, 'refused'),
+    }))
+  })
+
+  app.post('/repos/:id/rules', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (repo.repo_role !== 'maintainer') throw httpError(403, '只有 maintainer 可以编辑规则覆盖。', 'MAINTAINER_ONLY')
+    const body = form(request)
+    const path = body.path ?? ''
+    if (!isRulePath(path)) return reply.redirect(`/repos/${repo.id}/rules?refused=path_invalid`)
+    const content = body.content ?? ''
+    if (content.trim() === '') return reply.redirect(`/repos/${repo.id}/rules?refused=content_empty`)
+    if (content.includes('\0')) return reply.redirect(`/repos/${repo.id}/rules?refused=content_invalid`)
+    if (Buffer.byteLength(content) > MAX_RULE_FILE_BYTES) return reply.redirect(`/repos/${repo.id}/rules?refused=content_too_large`)
+    const expectedRevision = Number.parseInt(body.expected_revision ?? '', 10)
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 0) return reply.redirect(`/repos/${repo.id}/rules?refused=revision_invalid`)
+    const result = store.upsertRepoRuleOverride({ repoId: repo.id, path, content, updatedBy: viewer.user.id, expectedRevision })
+    if (!result.ok) {
+      store.audit(viewer.user.id, 'repo.rules_override_refused', `${path}: expected ${expectedRevision}, current ${result.revision}`)
+      return reply.redirect(`/repos/${repo.id}/rules?conflictPath=${encodeURIComponent(path)}&conflictRevision=${result.revision}`)
+    }
+    store.audit(viewer.user.id, 'repo.rules_override_saved', `${path}: revision ${result.row.revision}, ${Buffer.byteLength(content)} bytes`)
+    return reply.redirect(`/repos/${repo.id}/rules?saved=${encodeURIComponent(path)}`)
+  })
+
+  app.post('/repos/:id/rules/delete', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (repo.repo_role !== 'maintainer') throw httpError(403, '只有 maintainer 可以编辑规则覆盖。', 'MAINTAINER_ONLY')
+    const body = form(request)
+    const path = body.path ?? ''
+    if (!isRulePath(path)) return reply.redirect(`/repos/${repo.id}/rules?refused=path_invalid`)
+    const expectedRevision = Number.parseInt(body.expected_revision ?? '', 10)
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 0) return reply.redirect(`/repos/${repo.id}/rules?refused=revision_invalid`)
+    const result = store.deleteRepoRuleOverride({ repoId: repo.id, path, expectedRevision })
+    if (!result.ok) {
+      store.audit(viewer.user.id, 'repo.rules_override_refused', `${path}: clear expected ${expectedRevision}, current ${result.revision}`)
+      if (result.code === 'rule_override_missing') return reply.redirect(`/repos/${repo.id}/rules?refused=rule_override_missing`)
+      return reply.redirect(`/repos/${repo.id}/rules?conflictPath=${encodeURIComponent(path)}&conflictRevision=${result.revision}`)
+    }
+    store.audit(viewer.user.id, 'repo.rules_override_cleared', path)
+    return reply.redirect(`/repos/${repo.id}/rules?cleared=${encodeURIComponent(path)}`)
   })
 
   app.get('/repos/:id/settings', async (request, reply) => {
@@ -1369,6 +1589,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       state,
       stateError,
       jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
+      queued: store.listQueuedJobs(),
       jobsPage,
       jobsTotal,
       notice: queryText(request, 'notice'),
@@ -1732,26 +1953,55 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const queued = store.listQueuedJobs()
-    const queueIndex = queued.findIndex((entry) => entry.id === job.id)
+    // #565: the queue is instance-wide, the ahead-list is the viewer's own. The
+    // label map keeps the viewer's own repositories readable without naming
+    // anybody else's.
+    const repoLabels = new Map(store.listRepos(viewer.user.id).map((entry) => [entry.id, `${entry.upstream_owner || entry.owner}/${entry.upstream_name || entry.name}`]))
     return reply.type('text/html').send(jobPage({
       config,
       locale: request.locale ?? 'zh',
       viewer: viewOf(viewer),
       repo,
       job,
-      queuePosition: queueIndex === -1 ? undefined : queueIndex + 1,
+      queued,
+      viewerActive: store.listActiveJobsForUser(viewer.user.id),
+      repoLabels,
       events: store.listJobEvents(job.id, 200),
+      postmortem: store.getPostmortemForJob(job.id) ?? null,
+      // #540: the cancel form carries the revision it rendered and a fresh key,
+      // so a double submit replays the same receipt and a stale page conflicts.
+      cancel: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
   })
 
+  // #540: the form route is an adapter over the management contract. It resolves
+  // the actor, hands over the revision and key the page rendered, and turns the
+  // receipt into a redirect. The cancel rules themselves live in Jobs.cancelJob.
   app.post('/repos/:id/jobs/:jobId/cancel', async (request, reply) => {
-    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
-    const result = await jobs.cancelJob(job.id, '用户取消任务')
-    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${result.ok ? 'notice' : 'error'}=${encodeURIComponent(result.ok ? '任务已取消。' : result.error ?? '取消失败。')}`)
+    const body = form(request)
+    const t = translator(request.locale ?? 'zh')
+    const current = management.revisionOf('job', job.id)
+    const rendered = Number.parseInt(body.expected_revision ?? '', 10)
+    const expectedRevision = Number.isFinite(rendered) && rendered >= 1 ? rendered : current
+    // A page cached before the hidden fields existed still cancels once: it just
+    // has no key to replay, so the server mints one for this one request.
+    const idempotencyKey = body.idempotency_key !== undefined && body.idempotency_key !== '' ? body.idempotency_key : randomId('cmd')
+    const actor = managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
+    const outcome = await management.run(actor, {
+      operation: 'task.cancel',
+      target: { projectId: repo.id, jobId: job.id },
+      arguments: {},
+      expectedRevision,
+      idempotencyKey,
+    })
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    if (outcome.ok) return reply.redirect(`${back}?notice=${encodeURIComponent(t('任务已取消。', 'Job cancelled.'))}`)
+    return reply.redirect(`${back}?error=${encodeURIComponent(managementRefusal(t, outcome.code))}&code=${outcome.code}`)
   })
 
   app.post('/repos/:id/jobs/:jobId/pause', async (request, reply) => {
@@ -2061,6 +2311,38 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}`)
   })
 
+  // #523: triage is repository-scoped, so its start belongs on the repository
+  // page behind `ownedRepo`, not on the admin console: an operator-only start
+  // would leave the repository's own owner unable to triage it. The one input the
+  // control accepts is an issue URL that focuses the board, and it is bound to
+  // this repository here, on the input side, with the same rule the callback
+  // applies — a foreign host or a foreign repository never reaches `enqueue`.
+  app.post('/repos/:id/triage', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const t = translator(request.locale ?? 'zh')
+    const issueInput = (form(request).issueUrl ?? '').trim()
+    const issue = issueInput === '' ? undefined : parseIssueUrl(repo, issueInput, config.github.apiBase)
+    if (issue !== undefined && !issue.ok) {
+      store.audit(viewer.user.id, 'triage.refused', `${repo.owner}/${repo.name}: ${issueInput.slice(0, 200)}`)
+      const message = t('这个 Issue 链接不属于当前仓库，分诊没有开始。', 'That issue link does not belong to this repository, so no triage job started.')
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(message)}#triage`)
+    }
+    // #595: this goal is instruction text. Name the issue by the URL the parser
+    // rebuilt from the parts it checked, never by what was pasted, so a query or
+    // fragment cannot ride into the prompt as attacker-authored instructions.
+    const goal = issue === undefined || !issue.ok ? undefined : `${DEFAULT_TRIAGE_GOAL}\n\nStart the board with the issue at ${issue.canonical}.`
+    const result = await jobs.enqueue(repo, 'manual', goal, 'triage')
+    store.audit(viewer.user.id, 'triage.enqueued', `${repo.owner}/${repo.name} ${result.ok ? 'ok' : result.error ?? 'failed'}`)
+    const key = result.ok ? 'notice' : 'error'
+    const message = result.ok
+      ? t('分诊任务已排队；只读，不会创建分支或 PR。', 'Triage job queued; it is read-only and opens no branch or pull request.')
+      : refusalValue(result, t('分诊任务启动失败。', 'The triage job did not start.'))
+    // A queued triage lands on its own job page, where the work-type contract and
+    // the empty board are visible without a second click.
+    if (result.ok && result.job !== undefined) return reply.redirect(`/repos/${repo.id}/jobs/${result.job.id}?${key}=${encodeURIComponent(message)}`)
+    return reply.redirect(`/repos/${repo.id}?${key}=${encodeURIComponent(message)}#triage`)
+  })
+
   app.post('/repos/:id/refresh', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     try {
@@ -2253,6 +2535,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       store.setRepoModelSelection(repo.id, requestedModels, effectiveDefault === '' ? null : effectiveDefault)
       store.audit(viewer.user.id, 'repo.models.changed', `${repo.owner}/${repo.name} models=${requestedModels.length} default=${effectiveDefault || 'none'}`)
     }
+    const ownedProviders = new Set(store.listModelProviders(viewer.user.id).map((provider) => provider.id))
+    const requestedProviders = [...new Set(formList(request, 'allowedProviderIds').filter((id) => ownedProviders.has(id)))]
+    const requiredRegion = normalizeProviderRegion(body.providerRegion)
+    const currentPolicy = store.repoProviderPolicy(repo.id)
+    if ([...currentPolicy.allowlist].sort().join(',') !== requestedProviders.sort().join(',') || currentPolicy.requiredRegion !== requiredRegion) {
+      store.setRepoProviderPolicy(repo.id, requestedProviders, requiredRegion)
+      store.audit(viewer.user.id, 'repo.provider_policy.changed', `${repo.owner}/${repo.name} providers=${requestedProviders.length} region=${requiredRegion || 'any'}`)
+    }
     if (repo.enabled === 1 && body.enabled !== '1') {
       await jobs.cancelRepoJobs(repo.id, '仓库已停用', 'REPO_DISABLED')
     }
@@ -2339,6 +2629,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const canPrivate = config.allowPrivateModelUrls || viewer.user.allow_private_models === 1 || viewer.user.role === 'superadmin'
       const allowPrivate = canPrivate && (config.allowPrivateModelUrls || body.allowPrivate === '1')
       const safeUrl = await assertSafeModelUrl(baseUrl, allowPrivate)
+      const region = normalizeProviderRegion(body.region)
+      const dataPolicyUrl = normalizeDataPolicyUrl(body.dataPolicyUrl)
+      const allowed = body.allowed !== '0'
       const provider = store.createModelProvider({
         id: randomId('prv'),
         userId: viewer.user.id,
@@ -2346,8 +2639,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         baseUrl: safeUrl,
         keyEnc: encryptSecret(key, config.tokenEncryptionKey),
         allowPrivate,
+        region,
+        dataPolicyUrl,
+        allowed,
       })
-      store.audit(viewer.user.id, 'model.provider.added', `${provider.id} ${label} private=${allowPrivate ? 'on' : 'off'}`)
+      store.audit(viewer.user.id, 'model.provider.added', `${provider.id} ${label} private=${allowPrivate ? 'on' : 'off'} region=${region || 'any'} allowed=${allowed ? 'on' : 'off'}`)
       return reply.redirect(`/settings?notice=${encodeURIComponent('模型提供方已添加。添加模型时会由 Fledge 测试连接。')}#model-providers`)
     } catch (error) {
       return reply.redirect(`/settings?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}#model-providers`)
@@ -2367,6 +2663,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const allowPrivate = canPrivate && body.allowPrivate === '1'
       const safeUrl = await assertSafeModelUrl(baseUrl, allowPrivate)
       const key = (body.apiKey ?? '').trim() !== '' ? (body.apiKey ?? '').trim() : decryptSecret(provider.key_enc, config.tokenEncryptionKey)
+      const region = body.region === undefined ? provider.region : normalizeProviderRegion(body.region)
+      const dataPolicyUrl = body.dataPolicyUrl === undefined ? provider.data_policy_url : normalizeDataPolicyUrl(body.dataPolicyUrl)
+      const allowed = body.allowed === undefined ? provider.allowed === 1 : body.allowed === '1'
       if (safeUrl !== provider.base_url || key !== decryptSecret(provider.key_enc, config.tokenEncryptionKey)) {
         for (const model of store.listProviderModels(provider.id)) {
           await testOwnModel(safeUrl, key, model.model)
@@ -2377,8 +2676,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         base_url: safeUrl,
         key_enc: encryptSecret(key, config.tokenEncryptionKey),
         allow_private: allowPrivate ? 1 : 0,
+        region,
+        data_policy_url: dataPolicyUrl,
+        allowed: allowed ? 1 : 0,
       })
-      store.audit(viewer.user.id, 'model.provider.updated', `${provider.id} ${label} private=${allowPrivate ? 'on' : 'off'}`)
+      store.audit(viewer.user.id, 'model.provider.updated', `${provider.id} ${label} private=${allowPrivate ? 'on' : 'off'} region=${region || 'any'} allowed=${allowed ? 'on' : 'off'}`)
       return reply.redirect(`/settings?notice=${encodeURIComponent('模型提供方已更新。')}#model-providers`)
     } catch (error) {
       return reply.redirect(`/settings?error=${encodeURIComponent(`提供方测试失败，未保存：${error instanceof Error ? error.message : String(error)}`)}#model-providers`)
@@ -2699,6 +3001,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repo,
       job,
       events: store.listJobEvents(job.id, 200),
+      postmortem: store.getPostmortemForJob(job.id) ?? null,
       supportMode: true,
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
@@ -2739,6 +3042,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       jobsTotal,
       auditPage, auditTotal,
       perPage,
+      lastJobsExport: lastExportOf(userIds, 'admin.jobs_export'),
+      lastAuditExport: lastExportOf(userIds, 'admin.audit_export'),
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
@@ -2771,6 +3076,58 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     ))
   }
 
+  // #459: the trail has to tie a file to its row and say how far the export
+  // reached. Allow-listed filters are codes and ISO dates, so they are echoed
+  // verbatim; `q` and `action` are free text (an admin may search by an address),
+  // so they are recorded lossily as length plus a digest prefix and never
+  // verbatim. No field may carry an address or a fragment of an exported row.
+  const lossyFilter = (name: string, value: string): string => {
+    const digest = createHash('sha256').update(value).digest('hex').slice(0, 8)
+    return `${name}=${String(value.length)}ch#${digest}`
+  }
+
+  const exportScope = (userIds: string[] | null): string => userIds === null ? 'scope=all' : `scope=users:${String(userIds.length)}`
+
+  const exportTrailDetail = (input: { filters: string[]; q: string; action?: string; rows: number; scope: string; sha256: string }): string => {
+    const parts: string[] = []
+    const echoed = input.filters.filter((value) => value !== '')
+    if (echoed.length > 0) parts.push(`filters=${echoed.join(',')}`)
+    if (input.q !== '') parts.push(lossyFilter('q', input.q))
+    if (input.action !== undefined && input.action !== '') parts.push(lossyFilter('action', input.action))
+    parts.push(`rows=${String(input.rows)}`, input.scope, `sha256=${input.sha256}`)
+    return parts.join(' ')
+  }
+
+  // The cap test asserts whole bodies, so the read is paged but the document is
+  // still assembled before sending: no single store call materialises the cap.
+  const EXPORT_PAGE_ROWS = 500
+  const assembleCsv = <T>(header: string, total: number, read: (limit: number, offset: number) => T[], line: (row: T) => string): { csv: string; rows: number } => {
+    const parts: string[] = [header]
+    let seen = 0
+    while (seen < total) {
+      const page = read(Math.min(EXPORT_PAGE_ROWS, total - seen), seen)
+      if (page.length === 0) break
+      for (const row of page) {
+        parts.push(line(row))
+        seen += 1
+      }
+    }
+    return { csv: parts.join('\n'), rows: seen }
+  }
+
+  // The newest completed export for the viewer's scope. A refused export keeps
+  // the pre-#459 `refused=too_large …` detail, so it is skipped: it has no file.
+  const lastExportOf = (userIds: string[] | null, action: 'admin.audit_export' | 'admin.jobs_export'): { at: string; rows: number; scope: string; sha256: string } | null => {
+    for (const row of store.searchAudit(userIds, { action }, 20, 0)) {
+      const detail = row.detail ?? ''
+      const rows = /(?:^|\s)rows=(\d+)(?:\s|$)/.exec(detail)
+      const scope = /(?:^|\s)(scope=all|scope=users:\d+)(?:\s|$)/.exec(detail)
+      const sha256 = /(?:^|\s)sha256=([0-9a-f]{64})(?:\s|$)/.exec(detail)
+      if (rows !== null && scope !== null && sha256 !== null) return { at: row.at, rows: Number(rows[1]), scope: scope[1] ?? '', sha256: sha256[1] ?? '' }
+    }
+    return null
+  }
+
   app.get('/admin/export/audit.csv', async (request, reply) => {
     const viewer = requireAdmin(request)
     if (viewer.preview === true) return reply.code(403).send({ error: 'preview' })
@@ -2779,10 +3136,21 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), action: (queryText(request, 'action') ?? '').slice(0, 80), from: (queryText(request, 'from') ?? '').slice(0, 20), to: to === '' ? '' : (to.length === 10 ? `${to}T23:59:59.999Z` : to) }
     const matched = store.countSearchAudit(userIds, filters)
     if (matched > EXPORT_ROW_CAP) return refuseLargeExport(request, reply, viewer, 'audit', matched)
-    const rows = store.searchAudit(userIds, filters, EXPORT_ROW_CAP, 0)
-    const csv = ['at,user_id,action,detail', ...rows.map((row) => [row.at, row.user_id ?? '', row.action, row.detail ?? ''].map(csvCell).join(','))].join('\n')
-    store.audit(viewer.user.id, 'admin.audit_export', `rows=${rows.length}`)
-    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-audit.csv"').send(csv)
+    const built = assembleCsv(
+      'at,user_id,action,detail',
+      matched,
+      (limit, offset) => store.searchAudit(userIds, filters, limit, offset),
+      (row) => [row.at, row.user_id ?? '', row.action, row.detail ?? ''].map(csvCell).join(','),
+    )
+    store.audit(viewer.user.id, 'admin.audit_export', exportTrailDetail({
+      filters: [filters.from === '' ? '' : `from=${filters.from}`, filters.to === '' ? '' : `to=${filters.to}`],
+      q: filters.q,
+      action: filters.action,
+      rows: built.rows,
+      scope: exportScope(userIds),
+      sha256: createHash('sha256').update(built.csv).digest('hex'),
+    }))
+    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-audit.csv"').send(built.csv)
   })
 
   app.get('/admin/export/jobs.csv', async (request, reply) => {
@@ -2792,10 +3160,20 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), status: (queryText(request, 'status') ?? '').slice(0, 30), kind: (queryText(request, 'kind') ?? '').slice(0, 30) }
     const matched = store.countSearchJobs(userIds, filters)
     if (matched > EXPORT_ROW_CAP) return refuseLargeExport(request, reply, viewer, 'jobs', matched)
-    const rows = store.searchJobs(userIds, filters, EXPORT_ROW_CAP, 0)
-    const csv = ['id,repo_id,user_id,status,kind,trigger,created_at,finished_at,pr_url,issue_url,cost_usd', ...rows.map((row) => [row.id, row.repo_id, row.user_id, row.status, row.kind, row.trigger, row.created_at, row.finished_at ?? '', row.pr_url ?? '', row.issue_url ?? '', row.cost_usd].map(csvCell).join(','))].join('\n')
-    store.audit(viewer.user.id, 'admin.jobs_export', `rows=${rows.length}`)
-    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-jobs.csv"').send(csv)
+    const built = assembleCsv(
+      'id,repo_id,user_id,status,kind,trigger,created_at,finished_at,pr_url,issue_url,cost_usd',
+      matched,
+      (limit, offset) => store.searchJobs(userIds, filters, limit, offset),
+      (row) => [row.id, row.repo_id, row.user_id, row.status, row.kind, row.trigger, row.created_at, row.finished_at ?? '', row.pr_url ?? '', row.issue_url ?? '', row.cost_usd].map(csvCell).join(','),
+    )
+    store.audit(viewer.user.id, 'admin.jobs_export', exportTrailDetail({
+      filters: [filters.status === '' ? '' : `status=${filters.status}`, filters.kind === '' ? '' : `kind=${filters.kind}`],
+      q: filters.q,
+      rows: built.rows,
+      scope: exportScope(userIds),
+      sha256: createHash('sha256').update(built.csv).digest('hex'),
+    }))
+    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="fledge-jobs.csv"').send(built.csv)
   })
 
   app.get('/admin/webhooks', async (request, reply) => {
@@ -2893,6 +3271,133 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         releaseStatus: readReleaseStatus(config.dataDir),
       }),
     )
+  })
+
+  // #395: the deployment read model. The latest release comes from the
+  // `verify-release.mjs` snapshot this instance already reads on /admin, and the
+  // running side is the recorded deployment row. Fledge never probes a host or
+  // runs a deploy here; an operator records what happened and this page judges
+  // the recorded facts.
+  const deploymentReadModel = (): {
+    release: ReturnType<typeof latestReleaseFromStatus>
+    environments: Array<{ environment: string; latest: DeploymentRow | null; current: EnvironmentCurrent; drift: DriftAssessment }>
+    deployments: DeploymentRow[]
+    rollbacks: ReturnType<Store['listDeploymentRollbacks']>
+  } => {
+    const release = latestReleaseFromStatus(readReleaseStatus(config.dataDir))
+    const deployments = store.listDeployments(null, 200)
+    // #395 review round 2: the environment row is the newest deployment *or* a
+    // rollback recorded after it, whichever actually says what production runs.
+    const environments = store.listDeploymentEnvironments().map((environment) => {
+      const latest = store.latestDeployment(environment) ?? null
+      const rollback = store.listDeploymentRollbacks(environment, 1)[0] ?? null
+      const state = environmentState(latest, rollback, release)
+      return { environment, latest, current: state.current, drift: state.drift }
+    })
+    return { release, environments, deployments, rollbacks: store.listDeploymentRollbacks(null, 100) }
+  }
+
+  app.get('/admin/deployments', async (request, reply) => {
+    const viewer = requireAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    const model = deploymentReadModel()
+    return reply.type('text/html').send(adminDeploymentsPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      release: model.release,
+      environments: model.environments,
+      deployments: model.deployments,
+      rollbacks: model.rollbacks,
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
+  })
+
+  app.get('/api/admin/deployments', async (request, reply) => {
+    const viewer = requireAdmin(request)
+    if (viewer.preview === true) throw httpError(403, '预览模式不可读取部署记录。', 'PREVIEW_READ_ONLY')
+    const model = deploymentReadModel()
+    return reply.send({
+      release: model.release,
+      environments: model.environments.map((entry) => ({
+        environment: entry.environment,
+        current: entry.current,
+        drift: { state: entry.drift.state, alert: entry.drift.alert, summary: entry.drift.summary },
+        latest: entry.latest === null ? null : {
+          ...deploymentFromRow(entry.latest),
+          healthz: deploymentHealth(entry.latest),
+          readyz: deploymentReadiness(entry.latest),
+        },
+      })),
+      deployments: model.deployments.map((row) => ({
+        ...deploymentFromRow(row),
+        healthz: deploymentHealth(row),
+        readyz: deploymentReadiness(row),
+      })),
+      rollbacks: model.rollbacks.map((row) => ({
+        id: row.id,
+        environment: row.environment,
+        previousDigest: row.previous_digest,
+        previousCommit: row.previous_commit,
+        owner: row.owner,
+        command: redactCommand(row.command),
+        decision: row.decision,
+        verified: row.verified === 1,
+        createdAt: row.created_at,
+      })),
+    })
+  })
+
+  app.post('/admin/deployments/promote', async (request, reply) => {
+    if (!loginLimiter.take(`deployment-promote:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    const viewer = approvedCsrfGuard(request)
+    if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以记录部署。', 'ADMIN_ONLY')
+    const parsed = parsePromotionForm(form(request), viewer.user.login)
+    if (!parsed.ok) return reply.redirect(`/admin/deployments?error=${encodeURIComponent(parsed.error)}`)
+    const input = parsed.value
+    if (!input.gateResult.ok) {
+      store.audit(viewer.user.id, 'deployment.promotion_blocked', `${input.environment} v${input.version}: ${input.gateResult.blocked.join('; ')}`)
+      return reply.redirect(`/admin/deployments?error=${encodeURIComponent(`Canary gate blocked the promotion: ${input.gateResult.blocked.join('; ')}`)}`)
+    }
+    const row = store.recordDeployment({
+      environment: input.environment,
+      version: input.version,
+      commit: input.commit,
+      imageDigest: input.imageDigest,
+      deployedAt: input.deployedAt,
+      operator: input.operator,
+      healthz: input.healthz,
+      readyz: input.readyz,
+      releaseUrl: input.releaseUrl === '' ? null : input.releaseUrl,
+      gate: input.gateResult,
+    })
+    store.audit(viewer.user.id, 'deployment.promoted', `${row.environment} v${row.version} ${row.commit_sha} ${row.image_digest}`)
+    return reply.redirect(`/admin/deployments?notice=${encodeURIComponent(`Recorded ${row.environment} v${row.version} at ${row.commit_sha} after the canary gate passed.`)}`)
+  })
+
+  app.post('/admin/deployments/rollback', async (request, reply) => {
+    if (!loginLimiter.take(`deployment-rollback:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    const viewer = approvedCsrfGuard(request)
+    if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以记录回滚。', 'ADMIN_ONLY')
+    const parsed = parseRollbackForm(form(request), store.listDeployments(null, 500), viewer.user.login)
+    if (!parsed.ok) return reply.redirect(`/admin/deployments?error=${encodeURIComponent(parsed.error)}`)
+    const input = parsed.value
+    const row = store.recordDeploymentRollback({
+      environment: input.environment,
+      fromDeploymentId: input.fromDeploymentId,
+      previousDeploymentId: input.previousDeploymentId,
+      previousDigest: input.previousDigest,
+      previousCommit: input.previousCommit,
+      owner: input.owner,
+      command: input.command,
+      decision: input.decision,
+      healthz: input.healthz,
+      verified: input.verified,
+    })
+    store.audit(viewer.user.id, 'deployment.rollback_recorded', `${row.environment} to ${row.previous_digest} verified=${row.verified}`)
+    const verification = row.verified === 1 ? 'the resulting /healthz matches the previous commit' : 'the resulting /healthz does not yet match the previous commit'
+    return reply.redirect(`/admin/deployments?notice=${encodeURIComponent(`Recorded the ${row.decision} decision to ${row.previous_digest}; ${verification}.`)}`)
   })
 
   // #283: the platform emergency stop. `isAdminRole` on purpose, not
