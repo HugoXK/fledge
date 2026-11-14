@@ -1,0 +1,50 @@
+name: Reviewer-authored commit
+
+# #598: the same condition `review-gate` refuses on, named at the push that makes
+# it true. The gate can only say it once a verdict is being read, which is a round
+# of review too late: `#532`, `#533` and `#618` each spent one on a tip that could
+# never merge. This job is not a required context — it is the early warning, and
+# `review-gate` stays the decision.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Default deny. Reading commits and the base-branch policy is all this needs.
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  reviewer-authored:
+    name: reviewer-authored
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # The base ref, never the pull request head: the policy and the script that
+      # reads it must be the ones the base branch trusts. A pull request that edits
+      # this workflow or the rule cannot run its own version here.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      # Bootstrap only: the pull request that first adds this script checks out a
+      # base that cannot contain it yet. Returning here is safe because the copy
+      # that decides is the base branch's, so after the merge a pull request can
+      # neither delete the script from the base it is checked out against nor use
+      # its absence to skip the check.
+      - name: Name a reviewer-authored commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ ! -f scripts/reviewer-commits.mjs ]; then
+            echo "reviewer-authored: not on the base branch yet"
+            exit 0
+          fi
+          node scripts/reviewer-commits.mjs --pr ${{ github.event.pull_request.number }}
