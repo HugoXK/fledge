@@ -378,6 +378,35 @@ export interface AuditRow {
   detail: string | null
 }
 
+// #540: one row per command a caller asked for. `accepted` is the reservation
+// (the receipt exists before any business write), `succeeded`/`failed` is the
+// outcome, and `unknown` is reserved for a write whose external response was
+// lost — no operation in this build can reach it yet.
+export type ManagementCommandStatus = 'accepted' | 'running' | 'succeeded' | 'failed' | 'unknown'
+
+export interface ManagementCommandRow {
+  id: string
+  principal_id: string
+  channel: string
+  idempotency_scope: string
+  idempotency_key: string
+  request_hash: string
+  operation: string
+  target_json: string
+  arguments_json: string
+  expected_revision: number
+  before_revision: number | null
+  after_revision: number | null
+  status: ManagementCommandStatus
+  result_json: string | null
+  error_code: string | null
+  error_message: string | null
+  source_conversation: string | null
+  source_message: string | null
+  created_at: string
+  updated_at: string
+}
+
 // #362: only the columns the owner search renders, so a row it returns can carry
 // no `token_enc`, `platform_token_hash` or email.
 export type SearchRepoRow = Pick<RepoRow, 'id' | 'owner' | 'name' | 'enabled'>
@@ -1253,6 +1282,45 @@ CREATE INDEX IF NOT EXISTS events_at_idx ON events(at);
 CREATE INDEX IF NOT EXISTS quota_ledger_at_idx ON quota_ledger(at);
 CREATE INDEX IF NOT EXISTS work_items_merged_idx ON work_items(merged_at);
 
+-- #540: the management contract's two durable pieces. A receipt records one
+-- command (what was asked, by whom, under which key, against which revision, and
+-- what happened); a revision row is the fence a command compares against, so a
+-- page rendered before someone else's write is refused instead of applied. Both
+-- are additive, so the version bump is a refusal boundary, not a backfill.
+CREATE TABLE IF NOT EXISTS resource_revisions (
+  resource_type TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (resource_type, resource_id)
+);
+
+CREATE TABLE IF NOT EXISTS management_commands (
+  id TEXT PRIMARY KEY,
+  principal_id TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  idempotency_scope TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  target_json TEXT NOT NULL,
+  arguments_json TEXT NOT NULL,
+  expected_revision INTEGER NOT NULL,
+  before_revision INTEGER,
+  after_revision INTEGER,
+  status TEXT NOT NULL,
+  result_json TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  source_conversation TEXT,
+  source_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(idempotency_scope, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS management_commands_principal_idx ON management_commands(principal_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS management_commands_status_idx ON management_commands(status, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS project_memories (
   id TEXT PRIMARY KEY,
   repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
@@ -1341,9 +1409,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 34) {
+    if (previousVersion > 35) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (34)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (35)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -1361,7 +1429,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 34)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 35)};`)
   }
 
   migrateIndexes(): void {
@@ -4017,6 +4085,85 @@ export class Store {
 
   audit(userId: string | null, action: string, detail: string | null = null): void {
     this.run('INSERT INTO audit_log (at, user_id, action, detail) VALUES (?, ?, ?, ?)', nowIso(), userId, action, detail)
+  }
+
+  // #540: a resource's revision is 1 until something bumps it, so a page rendered
+  // for a row written before this table existed still carries a usable number.
+  revisionOf(resourceType: string, resourceId: string): number {
+    const row = this.get<{ revision: number }>('SELECT revision FROM resource_revisions WHERE resource_type = ? AND resource_id = ?', resourceType, resourceId)
+    return Number(row?.revision ?? 1)
+  }
+
+  // The first bump takes a resource from the implicit 1 to 2; later bumps add one.
+  // Called inside the write's transaction so a failed write cannot move the fence.
+  bumpRevision(resourceType: string, resourceId: string): number {
+    this.run(
+      `INSERT INTO resource_revisions (resource_type, resource_id, revision, updated_at) VALUES (?, ?, 2, ?)
+       ON CONFLICT(resource_type, resource_id) DO UPDATE SET revision = revision + 1, updated_at = excluded.updated_at`,
+      resourceType,
+      resourceId,
+      nowIso(),
+    )
+    return this.revisionOf(resourceType, resourceId)
+  }
+
+  insertCommandReceipt(input: {
+    id: string
+    principalId: string
+    channel: string
+    idempotencyScope: string
+    idempotencyKey: string
+    requestHash: string
+    operation: string
+    targetJson: string
+    argumentsJson: string
+    expectedRevision: number
+    beforeRevision: number | null
+    sourceConversation?: string | null
+    sourceMessage?: string | null
+  }): void {
+    const at = nowIso()
+    this.run(
+      `INSERT INTO management_commands (id, principal_id, channel, idempotency_scope, idempotency_key, request_hash, operation, target_json, arguments_json, expected_revision, before_revision, status, source_conversation, source_message, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?)`,
+      input.id,
+      input.principalId,
+      input.channel,
+      input.idempotencyScope,
+      input.idempotencyKey,
+      input.requestHash,
+      input.operation,
+      input.targetJson,
+      input.argumentsJson,
+      input.expectedRevision,
+      input.beforeRevision,
+      input.sourceConversation ?? null,
+      input.sourceMessage ?? null,
+      at,
+      at,
+    )
+  }
+
+  updateCommandReceipt(id: string, patch: Partial<Pick<ManagementCommandRow, 'status' | 'result_json' | 'error_code' | 'error_message' | 'after_revision' | 'before_revision'>>): void {
+    const columns = ['status', 'result_json', 'error_code', 'error_message', 'after_revision', 'before_revision'] as const
+    const entries = columns.filter((column) => patch[column] !== undefined)
+    if (entries.length === 0) return
+    const assignments = entries.map((column) => `${column} = ?`).join(', ')
+    this.run(`UPDATE management_commands SET ${assignments}, updated_at = ? WHERE id = ?`, ...entries.map((column) => patch[column] as string | number | null), nowIso(), id)
+  }
+
+  commandReceipt(id: string): ManagementCommandRow | undefined {
+    return this.get<ManagementCommandRow>('SELECT * FROM management_commands WHERE id = ?', id)
+  }
+
+  // The unique (scope, key) index is what makes a replay safe: two callers race
+  // to insert, one wins, and both read the winner's receipt.
+  commandReceiptByKey(scope: string, key: string): ManagementCommandRow | undefined {
+    return this.get<ManagementCommandRow>('SELECT * FROM management_commands WHERE idempotency_scope = ? AND idempotency_key = ?', scope, key)
+  }
+
+  listCommandReceipts(limit = 50): ManagementCommandRow[] {
+    return this.all<ManagementCommandRow>('SELECT * FROM management_commands ORDER BY created_at DESC, rowid DESC LIMIT ?', limit)
   }
 
   listAudit(limit = 100): AuditRow[] {
