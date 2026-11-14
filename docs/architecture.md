@@ -622,7 +622,9 @@ and the job page shows the same per-role table.
 
 `jobs` remains the source of truth. Every lifecycle transition now also writes a
 `job_events` row (`job.enqueued`, `job.running`, `job.progress`, `job.succeeded`,
-`job.failed`, `job.merged`, `stage.missing`, `team.role`), so a job can be
+`job.failed`, `job.merged`, `job.postmortem_failed`, `job.after_commit_failed`,
+`stage.missing`, `team.role`),
+so a job can be
 replayed without reading DSH memory. `team.role` events persist the per-role
 calls, tool and last activity that used to exist only in the final
 `team_stats_json` snapshot.
@@ -792,6 +794,16 @@ transaction. The postmortem write opens a transaction of its own, so on that pat
 it runs as an after-commit step, once the receipt transaction has returned
 (#616): a cancel whose transaction rolls back writes no postmortem, and a
 committed cancel can no longer lose the row to a nested `BEGIN`.
+
+A postmortem write that still fails leaves a durable trace instead of only a log
+line (#666): `job.postmortem_failed` in the job timeline, naming the job and the
+error class, so a missing row is findable and repairable. The after-commit step
+itself is guarded at both call sites — `cancelJob`'s direct path as well as the
+management receipt path: a callback that throws cannot turn a command whose
+transaction has committed into an error for the caller, and the escape is
+recorded as the `management.command.after_commit_failed` audit action on that
+path and as `job.after_commit_failed` in the job timeline on the other. A trace
+that cannot be written is logged and never fails the command it describes.
 
 The recurrence key is a hash of the category and the stable error code, or of a
 normalised error sentence when no code exists (job ids, URLs and numbers are
