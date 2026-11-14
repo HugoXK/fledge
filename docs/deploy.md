@@ -558,22 +558,23 @@ starting a new key and keeping the old one for as long as its copies are
 retained; the manifest names the key id each copy needs (a per-copy id for a
 passphrase, a stable id for a base64 key).
 
-`/admin` shows what is in that directory, read-only: the newest copy with its
-size and age, whether that copy's manifest still matches (size and `sha256`),
-how many copies exist, and a warning when the newest copy is older than
-`BACKUP_EXPECTED_HOURS` (default 26) — a night that stopped running leaves no
-error anywhere, so the card can only show it as staleness. It never opens
-`fledge.db`, and it carries no backup, restore or delete control; those stay
-host commands. Hashing is bounded: the card hashes only the newest copy, and
-only when that copy is at most 4 MiB, so a page render cannot stall on a large
-dump; every older copy is compared by size only and reads `size matches, sha256
-not checked (only the newest copy is hashed)`. Above the cap the newest row says
-the `sha256` was not checked, which is not a pass — `npm run db:restore-drill` is
-the command that verifies a large copy. The copies line counts only copies a
-manifest contradicts and names the rest separately, so `0 copies · nothing to
-check` is what an empty directory says. The
-drill prints its verdict and records nothing, so the card says `none recorded`
-rather than showing a green it cannot prove.
+`/admin` shows what is in that directory, read-only: the newest plaintext copy
+with its size and age, whether that copy's manifest still matches (size and
+`sha256`), how many plaintext and encrypted copies exist, and a warning when the
+newest copy is older than `BACKUP_EXPECTED_HOURS` (default 26) — a night that
+stopped running leaves no error anywhere, so the card can only show it as
+staleness. It never opens `fledge.db`, and it carries no backup, restore or
+delete control; those stay host commands. Hashing is bounded: the card hashes
+only the newest copy, and only when that copy is at most 4 MiB, so a page render
+cannot stall on a large dump; every older copy is compared by size only. The
+copies line counts contradictions, names copies without a manifest in one
+clause, and counts encrypted copies beside the plaintext ones. Only a copy a
+manifest contradicts or one whose manifest cannot be read gets its own row, so
+a directory with legacy copies does not turn the card into a wall of
+"unchecked" rows. The restore drill writes `${DATA_DIR}/backup-drill.json` when
+`DATA_DIR` is set (or the path passed with `--status-file`), and the card shows
+that record's time, `ok`/`failed` and RTO/RPO. It says `none recorded` only when
+that file is absent or unreadable.
 
 Back up `.env` separately (it contains the encryption key). Without
 `TOKEN_ENCRYPTION_KEY`, stored GitHub/model tokens cannot be decrypted.
@@ -589,7 +590,7 @@ written `0600`, so the dump is not readable by other accounts on the host either
 Prove that the newest copy still restores, without touching the live database:
 
 ```sh
-npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR"
+npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --status-file "$DATA_DIR/backup-drill.json"
 # encrypted copy: prefix with BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key
 # manifest=/var/lib/fledge/backups/fledge-2026-11-06T09-44-53-448Z.db.json
 # table=jobs expected=5000 actual=5000        one line per table: copy vs manifest
@@ -610,6 +611,11 @@ How it works and how to read it:
   directory (write a fresh copy first with `--fresh`; with a key configured that
   fresh copy is encrypted too). Nothing is created if a copy already exists, so
   the RPO you see is the age of your real backup schedule.
+- `--status-file <path>` records the result for `/admin`: `{at, ok, detail}`,
+  mode `0600`, written atomically. With neither the flag nor `DATA_DIR` the drill
+  writes nothing, so a CI run cannot touch an operator's data directory. A failed
+  drill overwrites the last success with `ok:false`, so the card never shows a
+  stale green.
 - **An encrypted copy is decrypted with the configured key before the database
   checks.** The `.db.enc` extension selects the encrypted path; the ciphertext is
   checked against the manifest first, then decrypted with

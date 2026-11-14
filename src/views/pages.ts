@@ -27,7 +27,7 @@ import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verifi
 import { parseAdversarialRecord, type AdversarialRecord } from '../lib/adversarialReview.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
-import { readBackupStatus, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus } from '../lib/backupStatus.js'
+import { readBackupStatus, readRestoreDrill, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus, type RestoreDrillStatus } from '../lib/backupStatus.js'
 import { classifyFailure, failureLabel, failureSentence, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { filterTrials, trialCounts, trialStateOf, TRIAL_DAYS, type TrialCandidateSource, type TrialFilter } from '../lib/trials.js'
 import { STAGE_MODES } from '../lib/stages.js'
@@ -2098,6 +2098,8 @@ export function adminPage(input: {
   releaseStatus?: ReleaseStatusSnapshot | null
   /** Defaults to reading `config.backup.dir`; a test passes a fixture directory. */
   backup?: BackupStatus
+  /** Defaults to reading `<dataDir>/backup-drill.json`; a test passes a fixture record. */
+  drill?: RestoreDrillStatus | null
   /**
    * `jobs.platformStop()` read fresh for this request. Null means the platform is
    * running; `{at:'', by:'', reason:''}` means the row exists but cannot be parsed,
@@ -2108,6 +2110,7 @@ export function adminPage(input: {
   const { config, locale, viewer, users, jobs, jobsPage, jobsTotal, audit, auditPage, auditTotal, perPage, activity, notice, error } = input
   const release = input.release ?? releaseSurface()
   const backup = input.backup ?? readBackupStatus({ dir: config.backup.dir, expectedHours: config.backup.expectedIntervalHours })
+  const drill = input.drill === undefined ? readRestoreDrill(`${config.dataDir}/backup-drill.json`) : input.drill
   const mailFailedUsers = input.mailFailedUsers ?? new Set<string>()
   const superadmin = input.superadmin === true
   const preview = input.preview === true
@@ -2244,37 +2247,49 @@ export function adminPage(input: {
       ? t(`${backupHours(newest.ageHours)}，超过预期的 ${backup.expectedHours} 小时`, `${backupHours(newest.ageHours)}, older than the expected ${backup.expectedHours} hours`)
       : t(`${backupHours(newest.ageHours)}，在预期的 ${backup.expectedHours} 小时以内`, `${backupHours(newest.ageHours)}, within the expected ${backup.expectedHours} hours`)
   const copyCount = backup.copies.length === 1 ? t('1 个副本', '1 copy') : t(`${backup.copies.length} 个副本`, `${backup.copies.length} copies`)
+  const encryptedCount = backup.encrypted === 0
+    ? null
+    : backup.encrypted === 1
+      ? t('1 个加密副本', '1 encrypted copy')
+      : t(`${backup.encrypted} 个加密副本`, `${backup.encrypted} encrypted copies`)
   // One sentence per kind of fact, so a copy that was never compared is never
-  // summed into "does not match": only `differs` counts a contradiction, and
-  // copies without a manifest and copies whose sha256 was not read say so in
-  // their own words.
+  // summed into "does not match": only `differs` counts a contradiction. A
+  // missing manifest is a fact worth a clause, not a row per legacy copy;
+  // sha256 is only read on the newest copy, so it is not a warning for the rest.
   const differingText = backup.differing === 1
     ? t('1 个与清单不符', '1 differs from its manifest')
     : t(`${backup.differing} 个与清单不符`, `${backup.differing} differ from their manifest`)
-  const unmanifested = backup.copies.filter((copy) => copy.manifest === 'missing' || copy.manifest === 'unreadable').length
-  const unhashed = backup.copies.filter((copy) => copy.manifest === 'not-checked' || copy.manifest === 'size-only').length
+  const unmanifested = backup.copies.filter((copy) => copy.manifest === 'missing').length
   const copyAgreement = backup.copies.length === 0
     ? t('没有副本可核对', 'nothing to check')
     : [
         backup.differing === 0 ? t('没有副本与清单不符', 'no copy differs from its manifest') : differingText,
         unmanifested === 0 ? null : t(`${unmanifested} 个没有清单`, `${unmanifested} without a manifest`),
-        unhashed === 0 ? null : t(`${unhashed} 个未核对 sha256`, `${unhashed} with sha256 not checked`),
       ].filter((part): part is string => part !== null).join(' · ')
-  const mismatchRows = backup.copies
-    .filter((copy) => copy.manifest !== 'matches')
+  // Only a copy a manifest contradicts, or one whose manifest cannot be read,
+  // is a row. Size-only and legacy copies are summarised above: listing every
+  // one of them buried the two states an operator can act on.
+  const problemRows = backup.copies
+    .filter((copy) => copy.manifest === 'differs' || copy.manifest === 'unreadable')
     .map((copy) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(copy.name)}</strong><small>${escapeHtml(manifestText(copy))} · ${escapeHtml(backupSize(copy.sizeBytes))} · ${escapeHtml(humanTimeShort(copy.createdAt))}</small></div></div>`)
     .join('')
+  const copiesLine = [copyCount, encryptedCount, copyAgreement]
+    .filter((part): part is string => part !== null)
+    .join(' · ')
+  const drillText = drill === null
+    ? t('没有记录', 'none recorded')
+    : `${humanTimeShort(drill.at)} · ${drill.ok ? t('成功', 'ok') : t('失败', 'failed')}${drill.detail === null ? '' : ` · ${drill.detail}`}`
   const backupCard = `<section class="card" id="backups">
     <h2>${escapeHtml(t('备份', 'Backups'))}</h2>
     <div class="list">
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新副本', 'Newest copy'))}</strong><small>${newest === null ? escapeHtml(t('还没有记录备份副本', 'No backup copy recorded yet')) : `${escapeHtml(newest.name)} · ${escapeHtml(backupSize(newest.sizeBytes))} · ${escapeHtml(humanTimeShort(newest.createdAt))}`}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('新鲜度', 'Freshness'))}</strong><small>${escapeHtml(freshness)}</small></div></div>
-      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('副本数', 'Copies'))}</strong><small>${escapeHtml(copyCount)} · ${escapeHtml(copyAgreement)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('副本数', 'Copies'))}</strong><small>${escapeHtml(copiesLine)}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新副本的清单', 'Newest manifest'))}</strong><small>${newest === null ? escapeHtml('—') : escapeHtml(manifestText(newest))}</small></div></div>
-      ${mismatchRows}
-      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('恢复演练', 'Restore drill'))}</strong><small>${escapeHtml(t('没有记录', 'none recorded'))}</small></div></div>
+      ${problemRows}
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('恢复演练', 'Restore drill'))}</strong><small>${escapeHtml(drillText)}</small></div></div>
     </div>
-    <p class="muted">${escapeHtml(t('只读：本卡片列出备份目录并核对清单，不会打开正在备份的数据库，也没有备份、恢复或删除按钮。', 'Read-only: this card lists the backup directory and checks the manifests. It never opens the database being backed up, and carries no backup, restore or delete control.'))} ${escapeHtml(t('大小与每个副本核对；sha256 只核对最新副本。', 'Size is compared on every copy; sha256 only on the newest.'))}${newest === null ? ` ${escapeHtml(t('在主机上运行', 'Run'))} <code>npm run db:backup</code> ${escapeHtml(t('后，下一份副本会出现在这里。', 'on the host; the next copy appears here.'))}` : ''}</p>
+    <p class="muted">${escapeHtml(t('只读：本卡片列出备份目录并核对清单，不会打开正在备份的数据库，也没有备份、恢复或删除按钮。', 'Read-only: this card lists the backup directory and checks the manifests. It never opens the database being backed up, and carries no backup, restore or delete control.'))} ${escapeHtml(t('只列出真正不符或无法读取的副本；旧副本只按大小核对，sha256 只核对最新副本。', 'Only copies that differ or cannot be read are listed; older copies are compared by size, and sha256 only on the newest.'))}${newest === null ? ` ${escapeHtml(t('在主机上运行', 'Run'))} <code>npm run db:backup</code> ${escapeHtml(t('后，下一份副本会出现在这里。', 'on the host; the next copy appears here.'))}` : ''}</p>
   </section>`
   // #317: the stop route reports its result once in a redirect notice, and a
   // reload drops that line.
