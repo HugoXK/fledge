@@ -3,10 +3,11 @@ import https from 'node:https'
 import { StringDecoder } from 'node:string_decoder'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { Config } from '../config.js'
-import type { ApiTokenRow, RepoProviderModelRow, Store, UserRow } from '../db.js'
+import type { ApiTokenRow, RepoProviderModelRow, Store, UsageDetail, UserRow } from '../db.js'
 import { log } from '../lib/log.js'
 import { decryptSecret, sha256Hex } from '../lib/secrets.js'
-import { costUsdFromUsage, headerCost, quotaView } from './quota.js'
+import { headerCost, quotaView } from './quota.js'
+import { fallbackPriceTable, parsePriceTable, requestCost, type PriceTable } from '../metrics/cost.js'
 import { modelOrder, retryableModelFailure } from './modelFallback.js'
 import { parseProviderAllowlist, providerPolicyRefusal } from './modelUrl.js'
 import { parseModelRun } from '../lib/modelRun.js'
@@ -132,6 +133,10 @@ function sseUsage(line: string): unknown {
 export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
   const { config, store } = deps
   const limiter = new RateLimiter(240, 60_000)
+  // #636: resolved once per app. A configured table wins; the single
+  // per-token USD price is still the price of the platform model when the
+  // table names no entry for it.
+  const priceTable = priceTableFor(config)
 
   // #355: three answers, not two. A wrong scope is a 403 with a stable type and
   // is decided before `last_used_at` is written, so a refused token leaves no
@@ -387,8 +392,7 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
         const found = sseUsage(pending)
         if (found !== null) usage = found
         reply.raw.end()
-        const cost = costFromHeader ?? costUsdFromUsage(usage, config.llm.pricePerTokenUsd)
-        finishCost(cost, usage)
+        finishCost(usage)
       })
       upstream.res.on('error', (error) => {
         log.warn('gateway stream error', { error: String(error) })
@@ -407,21 +411,53 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
       const parsed = JSON.parse(text) as { usage?: unknown }
       usage = parsed.usage ?? null
     } catch {}
-    const cost = costFromHeader ?? costUsdFromUsage(usage, config.llm.pricePerTokenUsd)
-    if (upstream.status >= 200 && upstream.status < 300) finishCost(cost, usage)
+    if (upstream.status >= 200 && upstream.status < 300) finishCost(usage)
     reply
       .code(upstream.status)
       .headers(writeHeaders)
       .send(text)
 
-    function finishCost(costUsd: number, usageValue: unknown): void {
-      if (!funded || costUsd <= 0) return
-      store.recordUsage(authed.user.id, jobId, costUsd, JSON.stringify({ model: targetModel, usage: usageValue, ms: Date.now() - started }), authed.token.repo_id ?? null)
+    function finishCost(usageValue: unknown): void {
+      if (!funded) return
+      const repoId = authed.token.repo_id ?? null
+      const meta = JSON.stringify({ model: targetModel, usage: usageValue, ms: Date.now() - started })
+      if (costFromHeader !== null) {
+        // The provider's own figure is the charge; it carries no price table.
+        recordKnown(costFromHeader, meta, { currency: 'USD', model: targetModel, priceSnapshot: null })
+        return
+      }
+      const priced = requestCost(usageValue, targetModel, priceTable)
+      if (priced.known) {
+        recordKnown(priced.amount, meta, {
+          currency: priced.currency,
+          model: priced.model,
+          priceSnapshot: JSON.stringify(priced.snapshot),
+        })
+        return
+      }
+      // A call that cannot be priced is unknown, not free. The row is written so
+      // the spend stays a lower bound, and the refusal is named one level below
+      // the per-job one #357 already records.
+      store.recordUsage(authed.user.id, jobId, 0, JSON.stringify({ model: targetModel, usage: usageValue, ms: Date.now() - started, unknown: priced.reason }), repoId, {
+        currency: null,
+        model: targetModel,
+        priceSnapshot: null,
+        known: false,
+      })
+      store.audit(authed.user.id, 'request.cost_unknown', `${jobId ?? 'no-job'}: ${targetModel} ${priced.reason}`)
+      if (jobId !== null) {
+        store.recordJobEvent({ jobId, repoId, userId: authed.user.id, kind: 'request.cost_unknown', step: 'gateway', meta: priced.reason })
+      }
+      log.warn('gateway cost unknown', { user: authed.user.login, model: targetModel, reason: priced.reason, ...(jobId === null ? {} : { trace: jobId }) })
+    }
+
+    function recordKnown(costUsd: number, meta: string, detail: UsageDetail): void {
+      store.recordUsage(authed.user.id, jobId, costUsd, meta, authed.token.repo_id ?? null, detail)
       if (jobId !== null) store.addJobCost(jobId, costUsd)
       // #100: a call made with a job token is that job's spend; name the job
       // under the same key every other job line uses. A call without a job in
       // scope (a user's own PAT) carries no trace at all rather than a null one.
-      log.info('gateway usage', { user: authed.user.login, costUsd, model: targetModel, ...(jobId === null ? {} : { trace: jobId }) })
+      log.info('gateway usage', { user: authed.user.login, costUsd, model: targetModel, currency: detail.currency, ...(jobId === null ? {} : { trace: jobId }) })
       const updated = store.userById(authed.user.id)
       if (updated !== undefined && quotaView(updated, config).exhausted) {
         store.notify(updated.id, 'quota', '平台额度已用完，请到 Settings → Model 配置你自己的模型 API。')
@@ -429,6 +465,15 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
       }
     }
   })
+}
+
+function priceTableFor(config: Config): PriceTable {
+  const table = parsePriceTable(config.llm.priceTable ?? '')
+  // A configured table is the whole truth: a model it does not list is unknown,
+  // not priced at some other model's number. The single per-token price is used
+  // only for a deployment that has no table yet, so an upgrade keeps metering.
+  if (table.size > 0) return table
+  return fallbackPriceTable(config.llm.model, config.llm.pricePerTokenUsd)
 }
 
 export function modelGatewayInfo(config: Config): { baseUrl: string; model: string } {

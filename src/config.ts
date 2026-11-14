@@ -68,6 +68,8 @@ export interface Config {
     key: string
     model: string
     pricePerTokenUsd: number
+    /** #636: JSON price table per model; empty means the single USD price above. */
+    priceTable?: string
   }
   quota: {
     initialCny: number
@@ -305,6 +307,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       key: text('PLATFORM_LLM_KEY'),
       model: text('PLATFORM_LLM_MODEL', 'your-model'),
       pricePerTokenUsd: number('PLATFORM_LLM_PRICE_PER_TOKEN', 0.0000002),
+      priceTable: text('PLATFORM_LLM_PRICE_TABLE'),
     },
     quota: {
       initialCny: number('INITIAL_QUOTA_CNY', 1),

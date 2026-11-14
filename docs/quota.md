@@ -9,17 +9,47 @@ on their key, with no platform metering.
 
 ## Units
 
-- Ledger and provider cost: **USD**.
-- User-facing quota: **CNY**.
+- Ledger: the provider's own **currency**, one bucket per currency (`USD`,
+  `CNY`, …). There is no exchange rate between buckets.
+- User-facing quota: **CNY**, computed from the USD bucket.
 - `remaining_cny = quota_cny - quota_used_usd * USD_CNY_RATE`.
 - `USD_CNY_RATE` defaults to `7.2`; change it in `.env`.
 
 ## Cost source
 
-1. `x-litellm-response-cost` response header (USD), when present. This is the
-   gateway's actual charge and includes retries/discounts.
-2. Otherwise `usage.total_tokens` (or prompt + completion) ×
-   `PLATFORM_LLM_PRICE_PER_TOKEN` (default `0.0000002` USD/token).
+1. `x-litellm-response-cost` response header, when present. This is the
+   gateway's actual charge and includes retries/discounts; it is recorded in
+   **USD** because that header is denominated in USD.
+2. Otherwise the model's own price entry, multiplied by its token counts. Each
+   entry carries input, output and cached-input prices per token:
+
+   ```sh
+   PLATFORM_LLM_PRICE_TABLE='[
+     {"model":"deepseek-chat","currency":"CNY","inputPerToken":0.000002,"outputPerToken":0.000008,"cachedInputPerToken":0.0000005}
+   ]'
+   ```
+
+   A model the table does not list is **unknown**, never a guess: the table is
+   the whole truth once it is set. With no table at all, the single
+   `PLATFORM_LLM_PRICE_PER_TOKEN` (default `0.0000002` USD/token) still prices the
+   platform model, so an upgrade keeps metering.
+
+Every ledger row records the **snapshot** it was charged at — model, currency
+and the three per-token prices — so changing the table never rewrites history.
+A cached token is a subset of the input tokens and is charged at the cached
+price instead of the input price; both `prompt_tokens_details.cached_tokens` and
+DeepSeek's `prompt_cache_hit_tokens` are read. Charging both would bill it twice.
+
+### Unknown cost is not free cost
+
+A call that cannot be priced — no table entry for the model, no `usage` block, or
+a usage block with no token count — writes a ledger row with `cost_known = 0` and
+`cost_usd = 0`, plus one `request.cost_unknown` audit entry (and a
+`request.cost_unknown` job event when a job token is in scope). It does not
+increment `users.quota_used_usd`, because adding zero would claim the call was
+free. `Store.costByCurrency()` therefore reports `unknownRequests`, and its
+`semantics` is `lower_bound` while any request in the window is unknown — the
+spend it shows is a floor, not the whole bill.
 
 For streaming requests Fledge adds `stream_options.include_usage = true` and
 parses each SSE `data:` line. It keeps the last `usage` object, including nested
@@ -89,10 +119,11 @@ settings:
 
   A terminal callback that arrives after a `pause` or `cancel` is refused, so a
   late result cannot revive a job the budget stopped. The threshold is never
-  compared against an unknown cost: a job with no `quota_ledger` row yet (a
-  provider error deducts nothing, so there may be none) is left running and the
-  checkpoint writes one `job.budget_unknown` audit entry instead of treating the
-  unknown as zero.
+  compared against an unknown cost: a job with no **priced** `quota_ledger` row
+  yet (a provider error deducts nothing, so there may be none) is left running
+  and the checkpoint writes one `job.budget_unknown` audit entry instead of
+  treating the unknown as zero. Rows with `cost_known = 0` do not count as a
+  priced row, so a job whose only calls are unknown keeps that refusal.
 
 Cost is attributed through `quota_ledger.repo_id`; rows written before that
 column existed fall back to the job's `repo_id` when they can be joined. Both
