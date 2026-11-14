@@ -97,6 +97,7 @@ import { planHash, validateGatePlan } from './gates/plan.js'
 import { memoryMissingPage, memoryPage } from './views/memory.js'
 import { memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from './lib/memory.js'
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
+import { THEME_COOKIE, isTheme, resolveTheme, withTheme } from './views/theme.js'
 import { GithubClient, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
 import { GithubApp } from './repos/app.js'
 import { repoGithubToken } from './repos/token.js'
@@ -566,8 +567,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // #473: the density is request state, so the rendered document is completed
     // here rather than in a page builder that has no request. Only an HTML body
     // is touched; every JSON, CSS and text response passes through unchanged.
+    // #657: the theme is request state for the same reason, and it runs after
+    // the density rewrite so both attributes survive on the one `<html>` tag.
     if (typeof payload === 'string' && String(reply.getHeader('content-type') ?? '').startsWith('text/html')) {
-      return withDensity(payload, resolveDensity(request))
+      return withTheme(withDensity(payload, resolveDensity(request)), resolveTheme(request))
     }
     return payload
   })
@@ -851,6 +854,23 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const requested = String((request.params as Record<string, string>).mode)
     if (!isDensity(requested)) return htmlPage(reply, 404, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。', request.locale))
     reply.setCookie(DENSITY_COOKIE, requested, {
+      path: '/',
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: config.baseUrl.startsWith('https://'),
+      maxAge: 365 * 86_400,
+    })
+    return reply.redirect(safeLocalPath(queryText(request, 'next'), '/'))
+  })
+
+  // #657: the palette is saved the way the language and the density are, because
+  // it is painted by the response — a client-side flip would show the other
+  // palette first. An unknown mode is a 404, never a silent default, and `next`
+  // goes through the same same-origin contract as `/lang` and `/density`.
+  app.get('/theme/:mode', async (request, reply) => {
+    const requested = String((request.params as Record<string, string>).mode)
+    if (!isTheme(requested)) return htmlPage(reply, 404, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。', request.locale))
+    reply.setCookie(THEME_COOKIE, requested, {
       path: '/',
       httpOnly: true,
       sameSite: 'lax',

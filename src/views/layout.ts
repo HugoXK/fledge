@@ -5,6 +5,7 @@ import { localizeMessage, translator, type Locale, type Translate } from '../i18
 import { refusalBanner } from '../lib/failure.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import type { Density } from './density.js'
+import { themeMeta, type Theme } from './theme.js'
 
 export function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch)
@@ -57,6 +58,19 @@ function languageSwitch(locale: Locale, path: string): string {
   const item = (value: Locale, label: string) =>
     `<a href="/lang/${value}?next=${encoded}" data-lang-btn="${value}" aria-pressed="${value === locale}"${value === locale ? ' aria-current="true"' : ''}>${label}</a>`
   return `<div class="lang" role="group" aria-label="Language">${item('zh', '中')}${item('en', 'EN')}</div>`
+}
+
+// #657: the palette is a preference like the language, so it is a plain list of
+// links and works with JavaScript off. It rides inside `#main-nav` on purpose:
+// at 960px and below that element is the compact header's panel, so the chooser
+// costs the phone row nothing and cannot overflow it at 360px (#133), while
+// above 960px it sits in the row after the navigation.
+function themeSwitch(locale: Locale, path: string, theme: Theme): string {
+  const t = translator(locale)
+  const encoded = encodeURIComponent(path)
+  const item = (value: Theme, label: string) =>
+    `<a href="/theme/${value}?next=${encoded}" data-theme-btn="${value}" aria-current="${value === theme ? 'true' : 'false'}">${escapeHtml(label)}</a>`
+  return `<div class="theme" role="group" aria-label="${escapeHtml(t('主题', 'Theme'))}">${item('system', t('自动', 'Auto'))}${item('light', t('浅色', 'Light'))}${item('dark', t('深色', 'Dark'))}</div>`
 }
 
 export function quotaPill(user: UserRow, config: Config, locale: Locale = 'zh'): string {
@@ -133,6 +147,7 @@ export function layout(options: LayoutOptions): string {
         ${navItem('schedule', '/schedule', t('排期', 'Schedule'))}
         ${navItem('settings', '/settings', t('设置', 'Settings'))}
         ${!preview && (viewer.user.role === 'admin' || viewer.user.role === 'superadmin') ? navItem('admin', '/admin', t('管理', 'Admin')) : ''}
+        ${themeSwitch(locale, path, 'system')}
       </nav>`
   // A phone header is one fixed row (#133), so the navigation collapses behind
   // this toggle instead of wrapping. It is rendered only when there is a nav to
@@ -164,12 +179,11 @@ export function layout(options: LayoutOptions): string {
     </nav>
   </footer>`
   return `<!doctype html>
-<html lang="${locale === 'en' ? 'en' : 'zh-CN'}" data-locale="${locale}" data-density="comfortable">
+<html lang="${locale === 'en' ? 'en' : 'zh-CN'}" data-locale="${locale}" data-density="comfortable" data-theme="system">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="color-scheme" content="dark" />
-  <meta name="theme-color" content="#07090d" />
+  ${themeMeta('system')}
   <title>${escapeHtml(title)} · Fledge</title>
   <link rel="stylesheet" href="/assets/app.css" />
 </head>

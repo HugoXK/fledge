@@ -8,12 +8,13 @@ const doc = readFileSync(new URL('../docs/ui.md', import.meta.url), 'utf8')
 const rules = parseRules(cssSource)
 
 // Colour tokens are the ones a palette has to redefine: every name whose dark
-// value is a solid hex colour, plus the shadow (rgba by design). Space, type,
+// value is a solid hex colour, plus the translucent ones that are rgba by design
+// (the shadow, and since #657 the header and chip surfaces). Space, type,
 // radius, motion and layout tokens are shared by both palettes.
 const colourTokens = [
   '--bg', '--bg-soft', '--panel', '--panel-2', '--surface-sunken', '--surface-inset',
   '--surface-raised', '--field', '--track', '--row-line', '--raised-top', '--raised-bottom',
-  '--line', '--field-line', '--line-strong', '--scroll-track', '--scroll-thumb', '--text', '--muted',
+  '--line', '--field-line', '--line-strong', '--header-bg', '--chip-bg', '--scroll-track', '--scroll-thumb', '--text', '--muted',
   '--muted-2', '--brand', '--brand-2', '--accent', '--accent-strong', '--accent-hover',
   '--accent-ink', '--good', '--warn', '--danger', '--mint', '--blue', '--violet',
   '--mark-ink', '--badge-bg', '--badge-ink', '--lede-ink', '--tip-ink', '--paper',
@@ -105,6 +106,13 @@ test('the light palette is complete in the media query and under data-theme="lig
     for (const [token, value] of palette) {
       if (token === '--shadow') {
         assert.match(value, /^0 \d+px \d+px rgba\(/, `--shadow in ${name} must stay a soft rgba shadow, got ${value}`)
+        continue
+      }
+      // #657: the header and chip surfaces are translucent in both palettes, so
+      // they cannot be a hex value; their contrast is carried by what sits on
+      // them, which test/uiTokens.test.ts keeps at the AA floor.
+      if (token === '--header-bg' || token === '--chip-bg') {
+        assert.match(value, /^rgba\(/, `${token} in ${name} must stay translucent, got ${value}`)
         continue
       }
       assert.ok(channels(value) !== null, `${token} in ${name} must be a hex colour, got ${value}`)
