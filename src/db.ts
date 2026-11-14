@@ -11,6 +11,7 @@ import { redact } from './lib/secrets.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 import { buildPostmortem, isPreventiveActionKind, type PreventiveActionKind } from './lib/postmortem.js'
 import { artifactKey, candidateRefusal, type CandidateRefusal } from './lib/evolution/artifacts.js'
+import { capabilitiesForRole, deriveRepoRole, identityPrincipalId, legacyTenantId } from './identity/authorization.js'
 
 // #355: one settings row marks the PAT expiry backfill as done, so a later
 // operator token (explicitly minted without an expiry) is never given one by a
@@ -151,6 +152,74 @@ export interface RepoRow {
   fork_html_url: string | null
   provider_allowlist: string
   required_region: string
+}
+
+export interface TenantRow {
+  id: string
+  provider: string
+  host: string
+  owner_id: string
+  login: string
+  created_at: string
+}
+
+export interface ProjectRow {
+  id: string
+  tenant_id: string
+  repo_id: string
+  created_at: string
+}
+
+export interface PrincipalRow {
+  id: string
+  kind: string
+  user_id: string | null
+  tenant_id: string | null
+  authorization_revision: number
+  created_at: string
+}
+
+export interface ScopedGrantRow {
+  id: string
+  principal_id: string
+  tenant_id: string
+  project_id: string | null
+  source: string
+  capabilities_json: string
+  grantor_id: string | null
+  evidence_json: string | null
+  verified_at: string | null
+  expires_at: string | null
+  revoked_at: string | null
+  revision: number
+  created_at: string
+}
+
+export interface RepoMemberRow {
+  repo_id: string
+  user_id: string
+  role: string
+  granted_by: string | null
+  created_at: string
+  revoked_at: string | null
+}
+
+export interface IdentityMigrationRow {
+  id: number
+  version: number
+  report_json: string
+  created_at: string
+}
+
+export interface IdentityMigrationReport {
+  version: number
+  tenants: number
+  projects: number
+  principals: number
+  repoMembers: number
+  grants: number
+  users: number
+  repos: number
 }
 
 // #544 slice 3A. One row per repository; see the `schedules` DDL for why the
@@ -1520,6 +1589,75 @@ CREATE TABLE IF NOT EXISTS gate_sessions (
 );
 CREATE INDEX IF NOT EXISTS gate_sessions_repo_idx ON gate_sessions(repo_id, created_at DESC);
 
+-- #541: the stable identity rows behind capability resolution. The first slice
+-- backfills one tenant per legacy repository owner, one project per repository,
+-- one human principal per user, one member and one explicit grant for the
+-- connection owner. Enforcement is a later slice; the rows are additive.
+CREATE TABLE IF NOT EXISTS tenants (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  host TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  login TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS tenants_provider_host_owner_idx ON tenants(provider, host, owner_id);
+
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  repo_id TEXT NOT NULL UNIQUE REFERENCES repos(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS projects_tenant_idx ON projects(tenant_id);
+
+CREATE TABLE IF NOT EXISTS principals (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+  tenant_id TEXT REFERENCES tenants(id),
+  authorization_revision INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS principals_user_idx ON principals(user_id) WHERE user_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS scoped_grants (
+  id TEXT PRIMARY KEY,
+  principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+  tenant_id TEXT NOT NULL,
+  project_id TEXT,
+  source TEXT NOT NULL,
+  capabilities_json TEXT NOT NULL,
+  grantor_id TEXT,
+  evidence_json TEXT,
+  verified_at TEXT,
+  expires_at TEXT,
+  revoked_at TEXT,
+  revision INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS scoped_grants_principal_idx ON scoped_grants(principal_id, project_id);
+CREATE INDEX IF NOT EXISTS scoped_grants_project_idx ON scoped_grants(project_id, source);
+
+CREATE TABLE IF NOT EXISTS repo_members (
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,
+  granted_by TEXT,
+  created_at TEXT NOT NULL,
+  revoked_at TEXT,
+  PRIMARY KEY (repo_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS repo_members_user_idx ON repo_members(user_id, revoked_at);
+
+CREATE TABLE IF NOT EXISTS identity_migrations (
+  id INTEGER PRIMARY KEY,
+  version INTEGER NOT NULL,
+  report_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS identity_migrations_version_idx ON identity_migrations(version);
+
 -- #544 slice 3A: one schedule per repository. When a row exists it owns the
 -- repository's cadence and repos.interval_minutes stops deciding when a run is
 -- due; a repository without a row keeps the legacy interval untouched.
@@ -1660,6 +1798,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
+    this.migrateIdentity()
     this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 37)};`)
   }
 
@@ -2031,6 +2170,88 @@ export class Store {
     }
   }
 
+  // #541: one idempotent backfill for the identity rows this slice reads. The
+  // report is rewritten on every call, so it describes the database the process
+  // actually opened rather than the first moment the table was created.
+  migrateIdentity(): IdentityMigrationReport {
+    return this.transaction(() => {
+      const at = nowIso()
+      for (const user of this.all<UserRow>('SELECT * FROM users')) this.ensureIdentityForUser(user, at)
+      for (const repo of this.all<RepoRow>('SELECT * FROM repos')) this.ensureIdentityForRepo(repo, at)
+      const report: IdentityMigrationReport = {
+        version: 1,
+        tenants: Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM tenants')?.n ?? 0),
+        projects: Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM projects')?.n ?? 0),
+        principals: Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM principals')?.n ?? 0),
+        repoMembers: Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM repo_members')?.n ?? 0),
+        grants: Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM scoped_grants')?.n ?? 0),
+        users: Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM users')?.n ?? 0),
+        repos: Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM repos')?.n ?? 0),
+      }
+      const existing = this.get<IdentityMigrationRow>('SELECT * FROM identity_migrations WHERE version = 1 ORDER BY id LIMIT 1')
+      if (existing === undefined) {
+        const id = Number(this.get<{ next: number }>('SELECT COALESCE(MAX(id), 0) + 1 AS next FROM identity_migrations')?.next ?? 1)
+        this.run('INSERT INTO identity_migrations (id, version, report_json, created_at) VALUES (?, 1, ?, ?)', id, JSON.stringify(report), at)
+      } else {
+        this.run('UPDATE identity_migrations SET report_json = ? WHERE id = ?', JSON.stringify(report), existing.id)
+      }
+      return report
+    })
+  }
+
+  ensureIdentityForUser(user: UserRow, at = nowIso()): void {
+    this.run(
+      'INSERT OR IGNORE INTO principals (id, kind, user_id, tenant_id, authorization_revision, created_at) VALUES (?, ?, ?, NULL, 0, ?)',
+      identityPrincipalId(user.id),
+      'human',
+      user.id,
+      at,
+    )
+  }
+
+  // The tenant id is legacy because the login is the only stable owner name the
+  // existing repos row carries. A numeric owner id is a later rekey; the project
+  // id is the repository id and does not move.
+  private ensureIdentityForRepo(repo: RepoRow, at = nowIso()): void {
+    const tenantId = legacyTenantId(repo.owner)
+    this.run(
+      'INSERT OR IGNORE INTO tenants (id, provider, host, owner_id, login, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      tenantId,
+      'github',
+      'github.com',
+      repo.owner.toLowerCase(),
+      repo.owner,
+      at,
+    )
+    this.run('INSERT OR IGNORE INTO projects (id, tenant_id, repo_id, created_at) VALUES (?, ?, ?, ?)', repo.id, tenantId, repo.id, at)
+    const user = this.userById(repo.user_id)
+    if (user !== undefined) this.ensureIdentityForUser(user, at)
+    const role = deriveRepoRole(repo)
+    this.run(
+      'INSERT OR IGNORE INTO repo_members (repo_id, user_id, role, granted_by, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, NULL)',
+      repo.id,
+      repo.user_id,
+      role,
+      'system:identity',
+      at,
+    )
+    this.run(
+      `INSERT OR IGNORE INTO scoped_grants
+         (id, principal_id, tenant_id, project_id, source, capabilities_json, grantor_id, evidence_json, verified_at, expires_at, revoked_at, revision, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?)`,
+      `grant:repo:${repo.id}:owner`,
+      identityPrincipalId(repo.user_id),
+      tenantId,
+      repo.id,
+      'explicit_delegation',
+      JSON.stringify(capabilitiesForRole(role)),
+      'system:identity',
+      JSON.stringify({ reason: 'identity_backfill', repoId: repo.id, role }),
+      at,
+      at,
+    )
+  }
+
   upsertGithubUser(input: {
     id: string
     githubId: number
@@ -2056,7 +2277,9 @@ export class Store {
         role ?? existing.role,
         existing.id,
       )
-      return this.userById(existing.id)!
+      const updated = this.userById(existing.id)!
+      this.ensureIdentityForUser(updated)
+      return updated
     }
     const privileged = role !== undefined
     this.run(
@@ -2076,7 +2299,9 @@ export class Store {
       privileged ? 'system' : null,
       at,
     )
-    return this.userById(input.id)!
+    const created = this.userById(input.id)!
+    this.ensureIdentityForUser(created)
+    return created
   }
 
   userById(id: string): UserRow | undefined {
@@ -3722,7 +3947,9 @@ export class Store {
       input.upstreamHtmlUrl ?? null,
       input.forkHtmlUrl ?? null,
     )
-    return this.getRepo(input.id)!
+    const repo = this.getRepo(input.id)!
+    this.ensureIdentityForRepo(repo)
+    return repo
   }
 
   listRepos(userId: string): RepoRow[] {

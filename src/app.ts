@@ -103,8 +103,9 @@ import { repoGithubToken } from './repos/token.js'
 import { InstanceManager } from './flybot/instances.js'
 import { dshCookie, proxyWorkspaceHttp, proxyWorkspaceUpgrade } from './flybot/workspace.js'
 import { managementActor } from './management/actor.js'
-import { ManagementService, type CommandOutcome } from './management/service.js'
+import { ManagementService, type CommandOutcome, type ManagementCode } from './management/service.js'
 import type { JobKind } from './jobs/runner.js'
+import { listEffectiveScopes, platformCapabilitiesForRole, resolveUserActor, type Capability } from './identity/authorization.js'
 
 export interface BuildOptions {
   config: Config
@@ -1062,6 +1063,55 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       pending: store.pendingTotal(),
       submittedAt: viewer.user.application_submitted_at,
       reviewedAt: viewer.user.reviewed_at,
+    }
+  })
+
+  // #541: the first read of the identity rows. It describes the caller's own
+  // capabilities and never selects a token, a key or any other secret column.
+  app.get('/api/auth/me', async (request, reply) => {
+    const viewer = requireApproved(request)
+    reply.header('cache-control', 'no-store')
+    const actor = resolveUserActor(store, viewer.user.id, { channel: 'api', requestId: request.id })
+    const roleRank: Record<string, number> = { viewer: 1, developer: 2, maintainer: 3 }
+    const byProject = new Map<string, { tenantId: string | null; role: string | null; capabilities: Set<Capability> }>()
+    for (const scope of listEffectiveScopes(store, viewer.user.id)) {
+      if (scope.projectId === null) continue
+      let entry = byProject.get(scope.projectId)
+      if (entry === undefined) {
+        entry = { tenantId: scope.tenantId, role: scope.role, capabilities: new Set<Capability>() }
+        byProject.set(scope.projectId, entry)
+      }
+      if (entry.tenantId === null) entry.tenantId = scope.tenantId
+      if (scope.role !== null && (entry.role === null || (roleRank[scope.role] ?? 0) > (roleRank[entry.role] ?? 0))) entry.role = scope.role
+      for (const capability of scope.capabilities) entry.capabilities.add(capability)
+    }
+    const projects = [...byProject.entries()]
+      .map(([projectId, entry]) => {
+        const repo = store.getRepo(projectId)
+        return {
+          id: projectId,
+          repoId: projectId,
+          tenantId: entry.tenantId,
+          role: entry.role,
+          owner: repo?.owner ?? null,
+          name: repo?.name ?? null,
+          fullName: repo === undefined ? null : `${repo.owner}/${repo.name}`,
+          capabilities: [...entry.capabilities].sort(),
+        }
+      })
+      .sort((left, right) => (left.fullName ?? left.id).localeCompare(right.fullName ?? right.id))
+    return {
+      user: {
+        id: viewer.user.id,
+        login: viewer.user.login,
+        name: viewer.user.name,
+        role: viewer.user.role,
+        status: viewer.user.status,
+      },
+      tenantIds: [...new Set(projects.map((project) => project.tenantId).filter((tenantId): tenantId is string => tenantId !== null))].sort(),
+      platformCapabilities: [...platformCapabilitiesForRole(viewer.user.role)].sort(),
+      capabilities: [...actor.capabilities].sort(),
+      projects,
     }
   })
 
@@ -2337,7 +2387,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const t = translator(request.locale ?? 'zh')
     const parts = commandParts(form(request), management.revisionOf('job', job.id))
-    const actor = managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
+    const actor = managementActor({ store, userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
     const outcome = await management.run(actor, {
       operation: 'task.cancel',
       target: { projectId: repo.id, jobId: job.id },
@@ -2371,7 +2421,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (config.managementService === 'off') return answer(await today())
 
     const parts = commandParts(form(request), management.revisionOf('job', job.id))
-    const actor = managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
+    const actor = managementActor({ store, userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
     const envelope = {
       operation: 'task.pause',
       target: { projectId: repo.id, jobId: job.id },
