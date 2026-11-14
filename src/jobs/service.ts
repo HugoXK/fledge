@@ -8,6 +8,7 @@ import { dailyDigestEmail, jobAttentionEmail, jobFailedEmail, jobSucceededEmail,
 import { notifyEmail, replyAddressFor } from '../email/recipient.js'
 import { sendNotificationWebhook } from '../lib/webhook.js'
 import { log } from '../lib/log.js'
+import { errorClass, errorMessage } from '../lib/errorText.js'
 import { redact } from '../lib/secrets.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
@@ -389,8 +390,8 @@ export class Jobs {
     try {
       prepared.afterCommit?.()
     } catch (error) {
-      const name = error instanceof Error ? error.name : typeof error
-      const text = error instanceof Error ? error.message : String(error)
+      const name = errorClass(error)
+      const text = errorMessage(error)
       log.warn('after-commit callback failed', { trace: jobId, error: `${name}: ${text}` })
       try {
         const job = this.store.getJob(jobId)
@@ -1199,8 +1200,8 @@ export class Jobs {
       // the loss gets its own durable row instead of living only in a process
       // log. The cancel has committed by the time this runs: a trace that cannot
       // be written must never become an error the caller can see.
-      const name = error instanceof Error ? error.name : typeof error
-      const reason = error instanceof Error ? error.message : String(error)
+      const name = errorClass(error)
+      const reason = errorMessage(error)
       try {
         const job = this.store.getJob(jobId)
         this.store.recordJobEvent({
