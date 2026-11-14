@@ -195,6 +195,11 @@ export class ManagementService {
   settle(receiptId: string, outcome: { ok: true; result?: Record<string, unknown> } | { ok: false; code: ManagementCode; message: string }): CommandOutcome {
     const receipt = this.store.commandReceipt(receiptId)
     if (receipt === undefined) return { ok: false, code: 'not_accepted', message: 'the command does not exist' }
+    // A receipt that already answered is the record of what happened, and one
+    // command moves the revision once. A later settle — the shape a resubmitted
+    // form produces — replays it instead of overwriting a success with a failure
+    // and bumping the revision a second time.
+    if (receipt.status !== 'accepted') return this.replay(receipt)
     if (!outcome.ok) return this.failReceipt(receipt, outcome.code, outcome.message)
     const operation = operationFor(receipt.operation)
     if (operation === undefined) return this.failReceipt(receipt, 'unknown_operation', `unknown operation: ${receipt.operation}`)

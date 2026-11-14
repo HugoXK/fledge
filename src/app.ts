@@ -1986,7 +1986,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       // of shadow — a divergence shows up in the receipt, not in the UI.
       const begun = management.begin(actor, envelope)
       const result = await today()
-      if (begun.ok) {
+      // A replayed command already has its receipt, and a replay must never
+      // rewrite it: the second submit of the same form runs today's route again
+      // (which refuses), but the ledger keeps the success it recorded first.
+      if (begun.ok && !begun.replayed) {
         management.settle(begun.receipt.id, 'notice' in result
           ? { ok: true, result: { jobId: job.id, shadow: true } }
           : { ok: false, code: 'job_not_pausable', message: 'the route refused the pause' })

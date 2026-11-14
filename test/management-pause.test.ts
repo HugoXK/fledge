@@ -196,6 +196,71 @@ test('an in-progress receipt says it is still processing, never "the cancel fail
   }
 })
 
+// The reviewer's blocking finding on the `shadow` path: a resubmitted form
+// replays `begin`, today's route refuses the second pause, and the settle that
+// followed rewrote a receipt that had already succeeded — the one ledger shadow
+// exists to make trustworthy.
+test('a replayed shadow pause never rewrites the receipt it already finished', async () => {
+  const f = await fixture('shadow')
+  try {
+    const first = await pausePost(f, { expected_revision: '1', idempotency_key: 'shadow-double' })
+    assert.equal(first.statusCode, 302)
+    assert.match(first.location, /notice=/)
+    const settled = f.built.store.listCommandReceipts(50).filter((row) => row.operation === 'task.pause')
+    assert.equal(settled.length, 1)
+    assert.equal(settled[0]?.status, 'succeeded', 'shadow recorded the pause it let through')
+    assert.equal(f.built.store.revisionOf('job', f.jobId), 2)
+
+    const replay = await pausePost(f, { expected_revision: '1', idempotency_key: 'shadow-double' })
+    assert.equal(replay.statusCode, 302)
+    assert.match(replay.location, /error=/, 'shadow still answers with the route a person knows')
+
+    const after = f.built.store.listCommandReceipts(50).filter((row) => row.operation === 'task.pause')
+    assert.equal(after.length, 1, 'a replay is not a second command')
+    assert.equal(after[0]?.status, 'succeeded', 'a replay never turns a success into a failure')
+    assert.equal(f.built.store.revisionOf('job', f.jobId), 2, 'one command, one revision bump')
+    assert.equal(f.built.store.listAudit(200).filter((row) => row.action === 'management.command').length, 1, 'one command, one ledger row')
+  } finally {
+    await f.close()
+  }
+})
+
+test('settle never rewrites a receipt that already finished', async () => {
+  const f = await fixture('shadow')
+  try {
+    const service = new ManagementService(f.built.store, f.built.jobs)
+    const repo = f.built.store.getRepo(f.repoId)
+    assert.notEqual(repo, undefined)
+    if (repo === undefined) return
+    const begun = service.begin(managementActor({ userId: f.user.id, repo, channel: 'web', requestId: 'req-settle-guard' }), {
+      operation: 'task.pause',
+      target: { projectId: f.repoId, jobId: f.jobId },
+      arguments: {},
+      expectedRevision: 1,
+      idempotencyKey: 'settle-guard',
+    })
+    assert.equal(begun.ok, true, 'the command is reserved')
+    if (!begun.ok) return
+    const done = service.settle(begun.receipt.id, { ok: true, result: { jobId: f.jobId } })
+    assert.equal(done.ok, true)
+    const revision = f.built.store.revisionOf('job', f.jobId)
+
+    // A later report about the same command — the shape a resubmitted form
+    // produces — answers with the record that exists instead of overwriting it.
+    const late = service.settle(begun.receipt.id, { ok: false, code: 'job_not_pausable', message: 'the route refused the pause' })
+    assert.equal(late.ok, true, 'the stored success is the answer, not a new failure')
+    assert.equal(f.built.store.commandReceipt(begun.receipt.id)?.status, 'succeeded')
+    assert.equal(f.built.store.revisionOf('job', f.jobId), revision, 'the revision moved once for one command')
+    assert.equal(f.built.store.listAudit(200).filter((row) => row.action === 'management.command').length, 1)
+
+    const again = service.settle(begun.receipt.id, { ok: true, result: { jobId: f.jobId } })
+    assert.equal(again.ok, true)
+    assert.equal(f.built.store.revisionOf('job', f.jobId), revision, 'and a repeated success is a replay, not a third bump')
+  } finally {
+    await f.close()
+  }
+})
+
 test('the mode parser defaults to off and never guesses', () => {
   assert.equal(parseManagementService(''), 'off')
   assert.equal(parseManagementService('off'), 'off')

@@ -124,11 +124,14 @@ unknown operation is `unknown_operation`, never a fallback.
 
 `MANAGEMENT_SERVICE=off|shadow|on` decides how far the adapters added after
 `task.cancel` go. `off` (the default) registers the command but keeps the route
-that existed before it; `shadow` reserves the receipt and then runs that same
+that existed before it — the same writes and the same answers, with the notice now
+in the reader's language; `shadow` reserves the receipt and then runs that same
 route, recording what the contract would have decided, so a divergence is visible
 in `management_commands` and not in the page; `on` runs the command and turns its
 receipt into the response. A stale page in `shadow` still writes no receipt — the
-revision fence runs before the receipt insert, as it does everywhere else.
+revision fence runs before the receipt insert, as it does everywhere else — and a
+replayed key settles nothing, so a receipt that already answered is never
+rewritten and the revision moves once per command.
 
 ## Read-only metrics
 

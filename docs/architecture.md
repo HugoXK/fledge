@@ -1519,9 +1519,20 @@ never duplicate them. Everything that changes state — the job row, the reposit
 status, the work item, the audit and job-event rows, the receipt, the revision
 bump — is handed back as the operation's `commit` callback and runs inside a
 single SQLite transaction. A crash therefore leaves either both the effect and its
-receipt, or neither: the receipt stays `accepted`, which is the truth, and
+receipt, or neither: the receipt stays `accepted`, which is the truth.
+
+The platform-token revocation is the one local write that is not in that
+transaction: it happens with the awaited work, before the commit, so a command
+whose transaction fails leaves the job queued or running with its token already
+revoked. Closing that gap means moving the revocation into the `commit` callback,
+which this slice does not do.
 `Jobs.prepareCancel`/`preparePause` put the awaited work in one place so the
 legacy `cancelJob`/`pauseJob` and the command cannot drift apart.
+
+A receipt that has already answered is never rewritten. In `shadow` the route
+reserves the receipt, runs today's path and settles it; the same key submitted
+again replays that receipt and settles nothing, so one command moves the revision
+once and a resubmitted page cannot turn a recorded success into a failure.
 
 That split is why these two commands never need the `unknown` state. The first
 operation that does — a release, or a resume that enqueues through an external
