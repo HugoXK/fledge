@@ -144,6 +144,21 @@ test('tag creation writes an annotated tag object and then its ref, and a 422 is
   assert.equal(refused.code, 'tag_exists')
 })
 
+test('a non-422 ref refusal names only the HTTP status, never the upstream message', async () => {
+  const plan = { ok: true as const, tagName: 'v1.5.0', version: 'v1.5.0', targetSha: target, prerelease: false, previousTag: null, commitsAfter: null, message: 'release v1.5.0' }
+  const upstream = 'Protected branch update failed for refs/tags/v1.5.0'
+  const client = {
+    async createAnnotatedTag() { return { sha: 'c'.repeat(40) } },
+    async createTagRef() { return { ok: false as const, status: 500, message: upstream } },
+  }
+  const created = await createAnnotatedTag(client as never, { owner: 'acme', name: 'widget', plan })
+  assert.equal(created.ok, false)
+  assert.equal((created as { code?: string }).code, 'tag_ref_failed')
+  const message = (created as { message: string }).message
+  assert.match(message, /tag reference was refused by GitHub \(HTTP 500\); nothing was moved or deleted/)
+  assert.doesNotMatch(message, new RegExp(upstream))
+})
+
 test('only a tags: entry inside the on: block counts as a tag-triggered workflow', async () => {
   assert.equal(hasTagTriggeredWorkflow('on:\n  push:\n    tags: [\'v*\']\n'), true)
   assert.equal(hasTagTriggeredWorkflow('on: { push: { tags: [\'v*\'] } }\n'), true)
@@ -213,6 +228,9 @@ interface ReleaseRouteOptions {
   tags?: Array<{ name: string; sha: string; commit: { sha: string } }>
   tagWriteStatus?: number
   refWriteStatus?: number
+  refWriteBody?: unknown
+  refWriteRaw?: string
+  refWriteContentType?: string
   commitStatus?: number
 }
 
@@ -246,7 +264,13 @@ async function releaseRouteHarness(options: ReleaseRouteOptions = {}) {
     }
     if (method === 'POST' && url === '/repos/o/r/git/refs') {
       const status = options.refWriteStatus ?? 201
-      return json(response, status, status === 201 ? { ref: 'refs/tags/v1.4.0' } : { message: 'Reference already exists' })
+      if (status === 201) return json(response, 201, { ref: 'refs/tags/v1.4.0' })
+      if (options.refWriteRaw !== undefined) {
+        response.writeHead(status, { 'content-type': options.refWriteContentType ?? 'text/plain' })
+        response.end(options.refWriteRaw)
+        return
+      }
+      return json(response, status, options.refWriteBody ?? { message: 'Reference already exists' })
     }
     return json(response, 404, { message: 'Not Found' })
   })
@@ -373,16 +397,99 @@ test('a successful tag is confirmed on the page and the ref points at the tag ob
   }
 })
 
-test('a duplicate release record is reported instead of the page claiming a clean tag', async () => {
+test('a re-tag updates the recorded row and is confirmed as an existing tag, not a refusal', async () => {
   const h = await releaseRouteHarness()
   try {
-    h.store.recordRelease({ repoId: h.repo.id, userId: h.repo.user_id, version: 'v1.4.0', tagName: 'v1.4.0', targetSha: ROUTE_TARGET, tagObjectSha: ROUTE_TAG_OBJECT, previousTag: null, actor: 'release-route-user' })
+    const OLD_TARGET = 'b'.repeat(40)
+    const OLD_TAG_OBJECT = 'd'.repeat(40)
+    const oldAt = '2026-01-02T03:04:05.000Z'
+    h.store.recordRelease({ repoId: h.repo.id, userId: h.repo.user_id, version: 'v1.4.0', tagName: 'v1.4.0', targetSha: OLD_TARGET, tagObjectSha: OLD_TAG_OBJECT, previousTag: null, actor: 'release-route-user' })
+    h.store.run('UPDATE repo_releases SET created_at = ?, updated_at = ? WHERE repo_id = ? AND tag_name = ?', oldAt, oldAt, h.repo.id, 'v1.4.0')
+    h.store.audit(h.repo.user_id, 'release.tagged', `${h.repo.id}: v1.4.0@${OLD_TARGET}`)
+
+    const posted = await h.post()
+    assert.equal(posted.statusCode, 302)
+    const location = String(posted.headers.location)
+    assert.match(location, /tagged=v1\.4\.0/)
+    assert.doesNotMatch(location, /refused=/)
+    assert.match(decodeURIComponent(location), /retagged=1/, 'the page distinguishes a re-tag from a created tag')
+
+    const releases = h.store.listReleasesForRepo(h.repo.id)
+    assert.equal(releases.length, 1, 'a re-tag keeps exactly one row for the tag name')
+    const row = releases[0]!
+    assert.equal(row.tag_name, 'v1.4.0')
+    assert.equal(row.target_sha, ROUTE_TARGET)
+    assert.equal(row.tag_object_sha, ROUTE_TAG_OBJECT)
+    assert.equal(row.status, 'tagged')
+    assert.ok(row.updated_at > oldAt, 'the row is updated after the one it replaces')
+    assert.equal(row.created_at, oldAt, 'the original row is updated, not replaced')
+
+    const page = await h.page(location)
+    assert.equal(page.statusCode, 200)
+    assert.doesNotMatch(page.body, /No tag was created/)
+    assert.doesNotMatch(page.body, /没有打标签/)
+    assert.match(page.body, /id="release-retagged"/)
+    assert.match(page.body, /already existed/i)
+    assert.match(page.body, /updated/i)
+    assert.match(page.body, new RegExp(ROUTE_TARGET.slice(0, 12)), 'the page shows where the re-tag now points')
+    assert.doesNotMatch(page.body, /id="release-refused"/)
+
+    const audits = h.store.listAudit().filter((entry) => entry.action === 'release.tagged')
+    assert.equal(audits.length, 2, 'the earlier audit row stays and the re-tag adds one')
+    assert.ok(audits.some((entry) => entry.detail?.includes(OLD_TARGET)), 'the earlier release.tagged row is kept')
+    assert.ok(audits.some((entry) => entry.detail?.includes(ROUTE_TARGET)), 'the new audit row names the new SHA')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a 500 from the ref write names the HTTP status and never quotes the upstream body', async () => {
+  const upstream = 'Protected branch update failed for refs/tags/v1.4.0'
+  const h = await releaseRouteHarness({ refWriteStatus: 500, refWriteBody: { message: upstream } })
+  try {
     const posted = await h.post()
     assert.equal(posted.statusCode, 302)
     const location = decodeURIComponent(String(posted.headers.location))
     assert.match(location, /refused=/)
-    assert.match(location, /already recorded/i)
-    assert.equal(h.store.listReleasesForRepo(h.repo.id).length, 1, 'a second row is never written for one tag')
+    assert.match(location, /tag reference was refused by GitHub \(HTTP 500\)/)
+    assert.doesNotMatch(location, new RegExp(upstream))
+    assert.equal(h.store.listReleasesForRepo(h.repo.id).length, 0, 'a refused ref writes no release row')
+
+    const page = await h.page(String(posted.headers.location))
+    assert.match(page.body, /tag reference was refused by GitHub \(HTTP 500\)/)
+    assert.doesNotMatch(page.body, new RegExp(upstream))
+  } finally {
+    await h.close()
+  }
+})
+
+test('a non-JSON 403 from the ref write still produces the fixed sentence and no body excerpt', async () => {
+  const upstream = 'PROXY-BODY-9e7c-must-not-render'
+  const h = await releaseRouteHarness({ refWriteStatus: 403, refWriteRaw: `<html><body>${upstream}</body></html>`, refWriteContentType: 'text/html' })
+  try {
+    const posted = await h.post()
+    assert.equal(posted.statusCode, 302)
+    const location = decodeURIComponent(String(posted.headers.location))
+    assert.match(location, /tag reference was refused by GitHub \(HTTP 403\)/)
+    assert.doesNotMatch(location, new RegExp(upstream))
+
+    const page = await h.page(String(posted.headers.location))
+    assert.match(page.body, /tag reference was refused by GitHub \(HTTP 403\)/)
+    assert.doesNotMatch(page.body, new RegExp(upstream))
+  } finally {
+    await h.close()
+  }
+})
+
+test('a 422 from the ref write stays the tag_exists sentence, not the fixed ref refusal', async () => {
+  const h = await releaseRouteHarness({ refWriteStatus: 422 })
+  try {
+    const posted = await h.post()
+    assert.equal(posted.statusCode, 302)
+    const location = decodeURIComponent(String(posted.headers.location))
+    assert.match(location, /tag v1\.4\.0 already exists; nothing was moved or deleted/)
+    assert.doesNotMatch(location, /tag reference was refused by GitHub/)
+    assert.equal(h.store.listReleasesForRepo(h.repo.id).length, 0)
   } finally {
     await h.close()
   }

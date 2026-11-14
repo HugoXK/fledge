@@ -2818,9 +2818,10 @@ export class Store {
     )
   }
 
-  // #546: one row per created tag. The UNIQUE(repo_id, tag_name) constraint is the
-  // second guard against a duplicate tag; a second insert returns undefined so the
-  // caller reports it instead of writing a second row for one tag.
+  // #546: one row per tag name. A first insert records the release; a duplicate
+  // is a re-tag of the same name, so the existing row follows the tag that now
+  // exists instead of leaving the console on the old target. The row is updated
+  // in place, so `created_at` stays the first release's time.
   recordRelease(input: { repoId: string; userId: string; version: string; tagName: string; targetSha: string; tagObjectSha: string; previousTag: string | null; actor: string }): ReleaseRow | undefined {
     const at = nowIso()
     try {
@@ -2839,8 +2840,21 @@ export class Store {
         at,
       )
     } catch (error) {
-      if (/UNIQUE constraint failed/i.test(String(error))) return undefined
-      throw error
+      if (!/UNIQUE constraint failed/i.test(String(error))) throw error
+      const previous = this.releaseByTag(input.repoId, input.tagName)
+      if (previous === undefined) throw error
+      const parsed = Date.parse(previous.updated_at)
+      const later = at > previous.updated_at
+        ? at
+        : Number.isFinite(parsed) ? new Date(parsed + 1).toISOString() : at
+      this.run(
+        `UPDATE repo_releases SET target_sha = ?, tag_object_sha = ?, status = 'tagged', updated_at = ? WHERE repo_id = ? AND tag_name = ?`,
+        input.targetSha,
+        input.tagObjectSha,
+        later,
+        input.repoId,
+        input.tagName,
+      )
     }
     return this.releaseByTag(input.repoId, input.tagName)
   }

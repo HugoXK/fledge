@@ -653,12 +653,16 @@ named refusal instead of a crash), `listTags` (paginated tags with their commit)
 `compareCommits` (status and `ahead_by` for `GET /compare/{base}...{head}`),
 `getRepoFile` (one file at a ref, `null` on 404), `createAnnotatedTag`
 (`POST /git/tags`, `object` = the confirmed commit) and `createTagRef`
-(`POST /git/refs`). `createTagRef` returns `{ ok: false, status: 422 }` when the
-ref exists instead of forcing it; the caller turns that into a refusal, and a 422
-from `createAnnotatedTag` is the `target_missing` refusal rather than an
-exception. No call here updates or deletes a ref.
+(`POST /git/refs`). `createTagRef` returns `{ ok: false, status, message }` when
+the ref is refused instead of forcing it; a 422 becomes the `tag_exists` refusal,
+while any other status becomes the fixed `the tag reference was refused by GitHub
+(HTTP <status>); nothing was moved or deleted`, so no upstream body text reaches
+the page. A 422 from `createAnnotatedTag` is the `target_missing` refusal rather
+than an exception. No call here updates or deletes a ref.
 
 `POST /repos/:id/release` (owner only, CSRF) redirects to
 `/repos/:id?release=1&refused=<reason>` on a refusal and
-`?release=1&tagged=<tag>` on success; the page renders whichever is present above
-the form.
+`?release=1&tagged=<tag>` on success; a re-tag of a name that already has a
+`repo_releases` row updates that row and adds `&retagged=1` so the page says the
+tag already existed and the record was updated. The page renders whichever
+outcome is present above the form.

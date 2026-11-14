@@ -1876,12 +1876,18 @@ never publishes a Release. The write uses the token Fledge already holds for the
 repository: the GitHub App installation token when the repository is installed,
 otherwise the connected account's repo-scoped OAuth token.
 
-The page is the only surface a maintainer reads, so both outcomes land there:
+The page is the only surface a maintainer reads, so every outcome lands there:
 `?release=1&refused=<reason>` renders the refusal (with the suggested version)
 above the form, and `?release=1&tagged=<tag>` confirms the tag that was created.
-When the tag exists but the `repo_releases` row cannot be written (a duplicate
-`UNIQUE(repo_id, tag_name)`), the audit still records `release.tagged` and the
-page says so instead of claiming a clean tag.
+A name that already has a `repo_releases` row is a re-tag: the row is updated in
+place to the new `target_sha` and `tag_object_sha` (keeping its `created_at`),
+`status` stays `tagged`, `updated_at` moves forward, the audit appends a new
+`release.tagged` row, and `?release=1&tagged=<tag>&retagged=1` renders the
+re-tag wording instead of the created-tag banner or a refusal. A refusal from
+the ref write that is not a 422 reports only `the tag reference was refused by
+GitHub (HTTP <status>); nothing was moved or deleted`; the upstream body text is
+never quoted. A 422 keeps its own `tag v1.2.3 already exists; nothing was moved or
+deleted` sentence, so the race and the generic refusal do not merge.
 
 `repo_releases` records one row per created tag (`UNIQUE(repo_id, tag_name)`), with
 the tag object SHA, the target commit, the previous tag and the actor, so the
