@@ -219,6 +219,10 @@ function adversarialAssetExempt(filename: string): boolean {
   return ADVERSARIAL_ASSET_EXEMPT.test(filename)
 }
 
+export type PreparedStop =
+  | { ok: true; stop: { sent?: boolean; stopped?: number; requested?: number }; apply: () => void }
+  | { ok: false; error: string }
+
 export class Jobs {
   private timer: NodeJS.Timeout | null = null
   private trialTimer: NodeJS.Timeout | null = null
@@ -290,7 +294,13 @@ export class Jobs {
     }
   }
 
-  async cancelJob(jobId: string, reason: string): Promise<{ ok: boolean; error?: string; sent?: boolean; stopped?: number; requested?: number }> {
+  // #540 slice 2: a stop's local writes are synchronous, so a management command
+  // can commit them in the same transaction as its receipt. Everything that has
+  // to await — stopping live sessions over the bridge, clearing the instance's
+  // job token — happens first, is best-effort and is safe to repeat. If the
+  // command's transaction then fails, the effect rolls back with it and the
+  // receipt still says `accepted`, which is the truth: nothing landed.
+  private async prepareStop(jobId: string, reason: string, status: 'cancelled' | 'paused'): Promise<PreparedStop> {
     const job = this.store.getJob(jobId)
     if (job === undefined) return { ok: false, error: '任务不存在。' }
     if (job.status !== 'queued' && job.status !== 'running') return { ok: false, error: '这个任务已经结束。' }
@@ -299,35 +309,54 @@ export class Jobs {
     if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
     await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { trace: jobId, error: String(error) }))
     const cleanReason = redact(reason).slice(0, 1000)
-    this.store.updateJob(jobId, { status: 'cancelled', error: cleanReason, finished_at: nowIso() })
-    if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_status: 'cancelled' })
-    else this.store.updateRepo(job.repo_id, { last_status: 'cancelled' })
-    if (job.work_item_id !== null) {
-      const item = this.store.getWorkItem(job.work_item_id)
-      if (item !== undefined) this.store.updateWorkItem(item.id, { state: 'closed' })
+    const apply = (): void => {
+      if (status === 'cancelled') {
+        this.store.updateJob(jobId, { status: 'cancelled', error: cleanReason, finished_at: nowIso() })
+        if (job.kind === 'review') this.store.updateRepo(job.repo_id, { last_review_status: 'cancelled' })
+        else this.store.updateRepo(job.repo_id, { last_status: 'cancelled' })
+        if (job.work_item_id !== null) {
+          const item = this.store.getWorkItem(job.work_item_id)
+          if (item !== undefined) this.store.updateWorkItem(item.id, { state: 'closed' })
+        }
+        this.store.audit(job.user_id, 'job.cancelled', `${jobId}: ${cleanReason.slice(0, 300)}`)
+        this.store.event('job_cancelled', { userId: job.user_id, repoId: job.repo_id, jobId })
+        this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.cancelled', meta: cleanReason })
+        this.notePostmortem(jobId)
+        return
+      }
+      this.store.updateJob(jobId, { status: 'paused', error: cleanReason })
+      this.store.updateRepo(job.repo_id, { last_status: 'paused', ...(job.kind === 'review' ? { last_review_status: 'paused' } : {}) })
+      this.store.audit(job.user_id, 'job.paused', jobId)
+      this.store.event('job_paused', { userId: job.user_id, repoId: job.repo_id, jobId })
+      this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.paused', meta: cleanReason })
     }
-    this.store.audit(job.user_id, 'job.cancelled', `${jobId}: ${cleanReason.slice(0, 300)}`)
-    this.store.event('job_cancelled', { userId: job.user_id, repoId: job.repo_id, jobId })
-    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.cancelled', meta: cleanReason })
-    this.notePostmortem(jobId)
-    return { ok: true, ...stop }
+    return { ok: true, stop, apply }
+  }
+
+  // The command adapters use these two: prepare performs the awaited, repeatable
+  // work and hands back the local write, which the service runs inside its
+  // receipt transaction. `cancelJob` and `pauseJob` keep their behaviour for
+  // every caller that is not a command.
+  prepareCancel(jobId: string, reason: string): Promise<PreparedStop> {
+    return this.prepareStop(jobId, reason, 'cancelled')
+  }
+
+  preparePause(jobId: string, reason = '任务已暂停'): Promise<PreparedStop> {
+    return this.prepareStop(jobId, reason, 'paused')
+  }
+
+  async cancelJob(jobId: string, reason: string): Promise<{ ok: boolean; error?: string; sent?: boolean; stopped?: number; requested?: number }> {
+    const prepared = await this.prepareStop(jobId, reason, 'cancelled')
+    if (!prepared.ok) return prepared
+    prepared.apply()
+    return { ok: true, ...prepared.stop }
   }
 
   async pauseJob(jobId: string, reason = '任务已暂停'): Promise<{ ok: boolean; error?: string; sent?: boolean; stopped?: number; requested?: number }> {
-    const job = this.store.getJob(jobId)
-    if (job === undefined) return { ok: false, error: '任务不存在。' }
-    if (job.status !== 'queued' && job.status !== 'running') return { ok: false, error: '这个任务已经结束。' }
-    const stop = job.status === 'running' ? await this.stopLiveSessions(job.repo_id, jobId) : {}
-    const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
-    if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
-    await this.instances?.clearJobToken(job.repo_id, jobId).catch((error) => log.warn('clear job token failed', { trace: jobId, error: String(error) }))
-    const cleanReason = redact(reason).slice(0, 1000)
-    this.store.updateJob(jobId, { status: 'paused', error: cleanReason })
-    this.store.updateRepo(job.repo_id, { last_status: 'paused', ...(job.kind === 'review' ? { last_review_status: 'paused' } : {}) })
-    this.store.audit(job.user_id, 'job.paused', jobId)
-    this.store.event('job_paused', { userId: job.user_id, repoId: job.repo_id, jobId })
-    this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: 'job.paused', meta: cleanReason })
-    return { ok: true, ...stop }
+    const prepared = await this.prepareStop(jobId, reason, 'paused')
+    if (!prepared.ok) return prepared
+    prepared.apply()
+    return { ok: true, ...prepared.stop }
   }
 
   async resumeJob(jobId: string): Promise<{ ok: boolean; job?: JobRow; error?: string }> {
