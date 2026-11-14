@@ -588,7 +588,23 @@ saved preference: `/density/:mode` writes the `fledge_density` cookie the way
 response hook fills it in from the cookie, so no page builder has to remember),
 and `<html data-density="compact">` trims only the cell box. Below 641px the
 bounded scroller and the density do not apply: the tables are the card stack and
-the 44px touch floor stays. Between 641px and 960px a wide table (the
+the 44px touch floor stays.
+
+The palette is request state for the same reason. `/theme/:mode` writes the
+`fledge_theme` cookie the way `/density/:mode` writes the density one, the
+response hook rewrites `<html data-theme>` and the `<head>` metas from it, and a
+page builder therefore renders the inherited `system` default and nothing else.
+The three choices are `system` (inherit the operating system), `light` and `dark`,
+and `system` ships two media-scoped `theme-color` metas plus
+`color-scheme: light dark` rather than one resolved colour, because the browser
+chrome colour is chosen by a media query the server cannot evaluate. An explicit
+choice pins one meta and one scheme. `src/views/theme.ts` owns the type, the
+cookie name and the rewrite; `test/theme.test.ts` asserts the route, both
+attribute states, the meta shapes, the 44px control and the two palette tokens
+the sticky header and the account pill used to hardcode. Signed-out pages honour
+the saved palette but render no control: the chooser rides inside `#main-nav`, so
+below 961px the compact header's panel carries it and the phone row gains no
+child. Between 641px and 960px a wide table (the
 delivery board is 952px wide at 768) can still be wider than its `.table-scroll`
 box, so that band draws an always-present classic scrollbar — an explicit track
 plus `scrollbar-width`/`scrollbar-color` for Firefox — instead of relying on a

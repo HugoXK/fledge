@@ -28,6 +28,13 @@
   --line: #1c232d;
   --field-line: #5a6680;
   --line-strong: #2a3545;
+  /* #657: the two surfaces the palette used to hardcode. The sticky header is
+     translucent so content scrolls under it, and the account pill is barely
+     tinted; both are rgba because a palette colour with alpha cannot be a hex
+     literal, and both are redefined in the light block so a light page does not
+     carry a dark bar over light content. */
+  --header-bg: rgba(7, 9, 13, 0.78);
+  --chip-bg: rgba(255, 255, 255, 0.02);
   --scroll-track: #5b6779;
   --scroll-thumb: #c8d2de;
   --text: #f2f5f9;
@@ -141,6 +148,8 @@
     --line: #dbe1e9;
     --field-line: #7c8794;
     --line-strong: #b9c2cf;
+    --header-bg: rgba(244, 246, 249, 0.86);
+    --chip-bg: rgba(16, 22, 31, 0.04);
     --scroll-track: #828c9a;
     --scroll-thumb: #333c48;
     --text: #10161f;
@@ -185,6 +194,8 @@
   --line: #dbe1e9;
   --field-line: #7c8794;
   --line-strong: #b9c2cf;
+  --header-bg: rgba(244, 246, 249, 0.86);
+  --chip-bg: rgba(16, 22, 31, 0.04);
   --scroll-track: #828c9a;
   --scroll-thumb: #333c48;
   --text: #10161f;
@@ -283,7 +294,7 @@ p { margin: 0 0 12px; }
 .top {
   position: sticky; top: 0; z-index: 20;
   border-bottom: 1px solid var(--line);
-  background: rgba(7, 9, 13, 0.78);
+  background: var(--header-bg);
   backdrop-filter: blur(18px);
 }
 .top-inner {
@@ -318,7 +329,7 @@ p { margin: 0 0 12px; }
 .account {
   display: flex; align-items: center; gap: 9px; font-size: 12.5px;
   padding: 4px 4px 4px 8px; border: 1px solid var(--line); border-radius: var(--radius-pill);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--chip-bg);
 }
 .account img, .account-avatar { width: 24px; height: 24px; border-radius: 50%; background: var(--panel-2); flex: none; }
 .account-avatar { display: grid; place-items: center; color: var(--accent); font-size: 11px; font-weight: 800; }
@@ -336,6 +347,24 @@ p { margin: 0 0 12px; }
 }
 .lang a:hover { color: var(--text); text-decoration: none; }
 .lang a[aria-pressed="true"] { background: rgba(123, 149, 255, 0.16); color: var(--accent); }
+/* Issue 657: the palette choice is a three-way segmented control, the same shape as
+   the language switch next to it, so the two preferences do not look like
+   different kinds of thing. Every choice keeps the 44px touch floor; the current
+   one is marked by fill, ink and an inset ring, not by colour alone. */
+.theme {
+  display: inline-flex; align-items: center; gap: 2px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 2px;
+}
+.theme a {
+  min-width: var(--touch); min-height: var(--touch); text-align: center; padding: 4px 7px;
+  border-radius: var(--radius-xs); display: grid; place-items: center;
+  color: var(--muted-2); font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
+}
+.theme a:hover { color: var(--text); text-decoration: none; }
+.theme a[aria-current="true"] {
+  background: rgba(123, 149, 255, 0.16); color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
 
 .wrap {
   max-width: var(--content); margin: 0 auto;
@@ -818,6 +847,19 @@ a.list-row:hover strong { color: var(--accent); }
    navigation. */
 .nav-toggle { display: none; }
 
+/* Issue 657: from 961px up to the sheet's 1180px content width, the row has to hold
+   the same items plus the palette chooser. It must not wrap: a two-row header
+   parks the sticky bar over the anchors `scroll-margin-top: var(--header-h)`
+   promises (#133, #233). The account's display name is the widest optional
+   label, it is already hidden below 641px, and the login still reads from the
+   avatar and the sign-out form, so it steps aside first while the gaps tighten.
+   Above 1180px the row has the room and none of this applies. */
+@media (min-width: 961px) and (max-width: 1179px) {
+  .top-inner { gap: 10px 12px; }
+  .nav { gap: 12px; }
+  .account-name { display: none; }
+}
+
 @media (max-width: 960px) {
   .hero { grid-template-columns: 1fr; gap: 26px; padding: 56px 0 42px; }
   .hero-copy, .loop-card, .hero-note { grid-column: 1; grid-row: auto; max-width: 760px; }
@@ -866,6 +908,15 @@ a.list-row:hover strong { color: var(--accent); }
      tablet reaches every destination with a finger, not only with a cursor. */
   .top .nav a { padding: 0; min-height: var(--touch); border-bottom: 1px solid var(--row-line); }
   .top .nav a:last-child { border-bottom: 0; }
+  /* Issue 657: inside the panel the chooser is one row of three equal targets under a
+     divider, so it cannot wrap and the row above stays the fixed one-row header
+     #133 pinned. */
+  .theme {
+    display: flex; width: 100%; gap: 4px; margin-top: 4px; padding: 8px 0 4px;
+    border: 0; border-top: 1px solid var(--line); border-radius: 0;
+  }
+  .theme a { flex: 1; padding: 4px 7px; }
+  .top .nav .theme a { padding: 4px 7px; border-bottom: 0; }
   .wrap { padding: 28px 16px 72px; }
   @supports (padding: env(safe-area-inset-top)) {
     .wrap { padding: 28px calc(16px + env(safe-area-inset-right)) calc(72px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
