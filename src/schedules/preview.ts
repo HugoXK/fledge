@@ -130,32 +130,130 @@ function parseCount(text: string, t: Translate): { ok: true; count: number } | {
   return { ok: true, count }
 }
 
+const MODES = new Set(['interval', 'daily', 'weekdays', 'weekly', 'monthly', 'custom'])
+
+function parseClock(text: string, t: Translate): { ok: true; hour: number; minute: number } | { ok: false; reason: string } {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(text.trim())
+  if (match === null) {
+    return refuse(t(
+      `时间 "${text}" 必须是 HH:MM，例如 09:30`,
+      `time "${text}" must be HH:MM, such as 09:30`,
+    ))
+  }
+  const hour = Number(match[1])
+  const minute = Number(match[2])
+  if (hour > 23 || minute > 59) {
+    return refuse(t(
+      `时间 "${text}" 不是有效时刻`,
+      `time "${text}" is not a valid clock time`,
+    ))
+  }
+  return { ok: true, hour, minute }
+}
+
+function integerInRange(text: string, min: number, max: number, label: string, t: Translate): { ok: true; value: number } | { ok: false; reason: string } {
+  if (!digitsOnly(text)) {
+    return refuse(t(
+      `${label} "${text}" 必须是 ${min} 到 ${max} 之间的整数`,
+      `${label} "${text}" must be a whole number between ${min} and ${max}`,
+    ))
+  }
+  const value = Number(text)
+  if (value < min || value > max) {
+    return refuse(t(
+      `${label} "${text}" 必须是 ${min} 到 ${max} 之间的整数`,
+      `${label} "${text}" must be a whole number between ${min} and ${max}`,
+    ))
+  }
+  return { ok: true, value }
+}
+
+// The friendly mode builds the same five-field expression the planner already
+// accepts. Keeping it here means the JSON API and the console page cannot
+// disagree about what "weekdays at 09:30" means.
+function modeSchedule(mode: string, query: Record<string, string | undefined>, t: Translate): { ok: true; cron: string; every: string; timezone: string } | { ok: false; reason: string } {
+  if (!MODES.has(mode)) {
+    return refuse(t(
+      `未知的排期方式 "${mode}"`,
+      `unknown schedule mode "${mode}"`,
+    ))
+  }
+  if (mode === 'interval') {
+    const amount = (query.every_amount ?? '15').trim()
+    const unit = (query.every_unit ?? 'm').trim()
+    if (!['m', 'h', 'd'].includes(unit)) {
+      return refuse(t(
+        `间隔单位 "${unit}" 必须是 m、h 或 d`,
+        `interval unit "${unit}" must be m, h or d`,
+      ))
+    }
+    const parsed = integerInRange(amount, 1, 10_080, 'every_amount', t)
+    if (!parsed.ok) return parsed
+    return { ok: true, cron: '', every: `${parsed.value}${unit}`, timezone: '' }
+  }
+  if (mode === 'custom') {
+    const cron = (query.cron ?? '').trim()
+    if (cron === '') {
+      return refuse(t('自定义 cron 表达式不能为空', 'the custom cron expression is required'))
+    }
+    return { ok: true, cron, every: '', timezone: (query.timezone ?? '').trim() || 'Asia/Shanghai' }
+  }
+  // #677: the page names each panel's clock `<mode>_time`, so a request from the
+  // form can only carry the value the person edited. `time` remains the name for
+  // API callers, and it is the fallback when the mode's own field is absent.
+  const parsedTime = parseClock(query[`${mode}_time`] ?? query.time ?? '09:00', t)
+  if (!parsedTime.ok) return parsedTime
+  const hour = parsedTime.hour
+  const minute = parsedTime.minute
+  const timezone = (query.timezone ?? '').trim() || 'Asia/Shanghai'
+  if (mode === 'daily') return { ok: true, cron: `${minute} ${hour} * * *`, every: '', timezone }
+  if (mode === 'weekdays') return { ok: true, cron: `${minute} ${hour} * * 1-5`, every: '', timezone }
+  if (mode === 'weekly') {
+    const weekday = integerInRange((query.weekday ?? '1').trim(), 0, 6, 'weekday', t)
+    if (!weekday.ok) return weekday
+    return { ok: true, cron: `${minute} ${hour} * * ${weekday.value}`, every: '', timezone }
+  }
+  const day = integerInRange((query.month_day ?? '1').trim(), 1, 31, 'month_day', t)
+  if (!day.ok) return day
+  return { ok: true, cron: `${minute} ${hour} ${day.value} * *`, every: '', timezone }
+}
+
 /**
  * Query/form input to a preview request, refusing by name:
- * `cron` XOR `every`, an IANA `timezone` for cron only, ISO `start_at`/`end_at`/
- * `from` with an offset, and `count` in 1..20. `now` is the default `from`, so
- * the result is a pure function of its arguments.
+ * `cron` XOR `every` (legacy) or a friendly `mode` that builds one of them,
+ * an IANA `timezone` for cron only, ISO `start_at`/`end_at`/`from` with an
+ * offset, and `count` in 1..20. `now` is the default `from`, so the result is a
+ * pure function of its arguments.
  */
 export function parsePreviewQuery(query: Record<string, string | undefined>, now: number, t: Translate = ENGLISH): PreviewQuery {
-  const cron = (query.cron ?? '').trim()
-  const every = (query.every ?? '').trim()
-  const timezone = (query.timezone ?? '').trim()
+  const requestedMode = (query.mode ?? '').trim()
+  let cron = (query.cron ?? '').trim()
+  let every = (query.every ?? '').trim()
+  let timezone = (query.timezone ?? '').trim()
   const startAtText = (query.start_at ?? '').trim()
   const endAtText = (query.end_at ?? '').trim()
   const fromText = (query.from ?? '').trim()
   const countText = (query.count ?? '').trim()
 
-  if (cron !== '' && every !== '') {
-    return refuse(t(
-      `请只给 "cron" 或 "every" 中的一个，不能同时给：两个排期会让预览有歧义`,
-      `give either "cron" or "every", not both: two schedules make the preview ambiguous`,
-    ))
-  }
-  if (cron === '' && every === '') {
-    return refuse(t(
-      `请给出 "cron"（五字段表达式）或 "every"（例如 15m 的间隔）`,
-      `give "cron" (a five-field expression) or "every" (an interval such as 15m)`,
-    ))
+  if (requestedMode !== '') {
+    const built = modeSchedule(requestedMode, query, t)
+    if (!built.ok) return built
+    cron = built.cron
+    every = built.every
+    timezone = built.timezone
+  } else {
+    if (cron !== '' && every !== '') {
+      return refuse(t(
+        `请只给 "cron" 或 "every" 中的一个，不能同时给：两个排期会让预览有歧义`,
+        `give either "cron" or "every", not both: two schedules make the preview ambiguous`,
+      ))
+    }
+    if (cron === '' && every === '') {
+      return refuse(t(
+        `请给出 "cron"（五字段表达式）或 "every"（例如 15m 的间隔）`,
+        `give "cron" (a five-field expression) or "every" (an interval such as 15m)`,
+      ))
+    }
   }
 
   let startAt: number | null = null

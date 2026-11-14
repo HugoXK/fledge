@@ -290,6 +290,28 @@ an `Advanced` disclosure: the region is a label used only when a repository sets
 a region constraint, and the data-policy link is recorded for review, not
 fetched. Empty values mean the provider does not declare them.
 
+## Schedule builder (排期构建器)
+
+`/schedule` is a product surface, not an operator console. The primary path is a
+mode picker:
+
+- Every N minutes/hours (`interval`), Every day at a time (`daily`), Weekdays at
+  a time (`weekdays`), Weekly on a weekday (`weekly`), Monthly on a day
+  (`monthly`) and Advanced cron (`custom`).
+- Time uses a native `time` input; interval uses a number plus a unit select;
+  weekday and day-of-month are selects; the timezone is a select of common IANA
+  zones and the browser's zone is selected when script is available.
+- `from`, `start_at` and `end_at` live under an optional advanced disclosure. A
+  reader who only wants "every weekday at 09:30" never sees cron syntax or an
+  ISO offset.
+- Advanced cron remains available with the existing planner validation and the
+  same local/UTC/offset/skipped preview table.
+
+The server builds the planner input from `mode`, so the JSON preview and the page
+cannot disagree, and JavaScript only hides the groups that do not match the
+selected mode. With script off every group renders and the server still builds
+from the selected mode.
+
 ## Console states (控制台状态)
 
 Every list, panel and stream in the console renders through `renderState` in
