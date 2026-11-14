@@ -339,8 +339,10 @@ function nextCron(schedule: CronSchedule, from: number): NextOccurrence {
   const endAt = schedule.endAt
   const cursor = startAt !== null && startAt > from ? startAt : from
   if (endAt !== null && cursor >= endAt) return { at: null, skipped }
-  // Strictly after `from`, so a caller that passes the instant it dispatched
-  // cannot be handed the same instant again.
+  // `from` is the exclusive side of the boundary and `start_at` the inclusive
+  // one: strictly after `from`, so a caller that passes the instant it dispatched
+  // cannot be handed the same instant again, and an occurrence that falls exactly
+  // on `start_at` is inside the window and is the next run.
   const first = wallPartsAt(schedule.timezone, cursor)
   for (let offset = 0; offset < MAX_DAYS; offset += 1) {
     const day = addDays(first.year, first.month, first.day, offset)
@@ -348,9 +350,13 @@ function nextCron(schedule: CronSchedule, from: number): NextOccurrence {
     for (const hour of fields.hours) {
       if (offset === 0 && hour < first.hour) continue
       for (const minute of fields.minutes) {
-        // On the first day the search starts at `cursor`, so earlier wall times
-        // are behind us; on later days the whole day is in play.
-        if (offset === 0 && (hour < first.hour || (hour === first.hour && minute <= first.minute))) continue
+        // On the first day the search starts at `cursor`: a wall time strictly
+        // before it is behind us, while one on the same minute is not, because
+        // `cursor` can be `start_at` and that occurrence opens the window. The
+        // `instant <= from` test below keeps `from` exclusive, so the minute at
+        // `cursor` is returned only when `cursor` is `start_at` and `from` is
+        // earlier. On later days the whole day is in play.
+        if (offset === 0 && (hour < first.hour || (hour === first.hour && minute < first.minute))) continue
         const instant = instantForWall(schedule.timezone, { ...day, hour, minute })
         // No instant: the local time does not exist that day. Skipped, not moved.
         // Recorded so a preview can say so, because a person reading two runs a

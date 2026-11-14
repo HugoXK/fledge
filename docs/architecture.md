@@ -299,7 +299,10 @@ defect.
   30 days. The cron form names an IANA timezone; a fixed UTC offset is refused.
   The interval form has no timezone and fires on whole multiples of its length
   from the epoch, so every gap is exactly that length whatever the poll cadence.
-  Both forms take an optional `[start_at, end_at)` window.
+  Both forms take an optional `[start_at, end_at)` window. An occurrence that
+  falls exactly on `start_at` is inside the window and is the next run, while an
+  instant equal to the caller's `from` is not, so a caller that passes the instant
+  it dispatched is handed the following occurrence.
   `nextTime` is where DST is decided once: a local time that does not exist in
   the spring-forward gap is skipped rather than shifted, and a local time that
   occurs twice in the fall-back hour fires once, at the earlier instant, so a
@@ -311,7 +314,28 @@ defect.
   interval that arrives with one is refused by name instead of being accepted and
   shown as if a zone applied. A preview stores nothing and creates no job.
   Occurrence rows, leases, misfire policies, layered budgets and the notification
-  outbox are not built yet; the tick still runs on `repos.interval_minutes`.
+  outbox are not built yet.
+- **The tick consumes the planner** (#544, third slice): a `schedules` row — at
+  most one per repository — makes `nextTime` the only rule for when a work run is
+  due, and `repos.interval_minutes` stops deciding for that repository. A
+  repository without a row keeps the interval path untouched, so nothing changes
+  for a repository that has not opted in. `src/schedules/tick.ts` (`planTick`)
+  answers the tick's question: which logical instant is due now, how many were
+  passed over, and when is the next one. Boundaries are part of that answer:
+  `start_at` is inclusive, the caller's `from` is exclusive, and `end_at` is
+  exclusive. `last_occurrence_at` is the high water mark in epoch milliseconds and
+  never moves backwards, so one instant is dispatched once; `timing_revision`
+  moves only when a field that changes *when* the schedule fires changes (the
+  expression, the interval, the zone or the window), never for a display edit.
+  `misfire: 'skip'` is the only policy in this slice: a due instant that cannot
+  run is written to `audit_log` with a reason (`active-job`, `idle`, `not-due`, a
+  dispatch refusal) and is not made up later. The table, not the audit line, is
+  the missing half: slice A stores no occurrence row, so a skip has no lease, no
+  attempt count and no console field, and a stale worker's result cannot yet be
+  rejected. Occurrence identity at
+  `UNIQUE(schedule_id, logical_time, plan_revision)`, the lease and the
+  stale-result rejection are the next slice. Reviews keep their own cadence
+  (`review_interval_minutes`): this slice switches the work loop only.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR

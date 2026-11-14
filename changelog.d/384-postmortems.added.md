@@ -1,1 +1,0 @@
-Failed, stalled and cancelled jobs now produce one evidence-backed postmortem with a deterministic recurrence key and a preventive action; the repository page shows open postmortems and recurrence, a repeated cause escalates once, and a postmortem closes only after its linked fix is verified.

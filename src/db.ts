@@ -153,6 +153,24 @@ export interface RepoRow {
   required_region: string
 }
 
+// #544 slice 3A. One row per repository; see the `schedules` DDL for why the
+// logical time is epoch milliseconds and what `timing_revision` counts.
+export interface ScheduleRow {
+  id: string
+  repo_id: string
+  kind: string
+  expression: string | null
+  every_ms: number | null
+  timezone: string | null
+  start_at: number | null
+  end_at: number | null
+  timing_revision: number
+  misfire: string
+  last_occurrence_at: number | null
+  created_at: string
+  updated_at: string
+}
+
 export interface UserModelRow {
   id: string
   user_id: string
@@ -1456,6 +1474,34 @@ CREATE TABLE IF NOT EXISTS gate_sessions (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS gate_sessions_repo_idx ON gate_sessions(repo_id, created_at DESC);
+
+-- #544 slice 3A: one schedule per repository. When a row exists it owns the
+-- repository's cadence and repos.interval_minutes stops deciding when a run is
+-- due; a repository without a row keeps the legacy interval untouched.
+--
+-- last_occurrence_at is the high water mark, stored as epoch milliseconds because
+-- that is the unit nextTime speaks; a formatted string would let two spellings of
+-- one instant look like two occurrences.
+--
+-- timing_revision counts changes to the fields that decide *when* a schedule
+-- fires. misfire is 'skip' only in this slice: a passed-over instant is recorded
+-- with a reason and never made up. Slice B adds occurrence rows, the lease and
+-- the stale-result rejection on top of this row; it is not here yet.
+CREATE TABLE IF NOT EXISTS schedules (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL UNIQUE REFERENCES repos(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  expression TEXT,
+  every_ms INTEGER,
+  timezone TEXT,
+  start_at INTEGER,
+  end_at INTEGER,
+  timing_revision INTEGER NOT NULL DEFAULT 1,
+  misfire TEXT NOT NULL DEFAULT 'skip',
+  last_occurrence_at INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `
 
 function clean(params: unknown[]): unknown[] {
@@ -1505,9 +1551,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 35) {
+    if (previousVersion > 36) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (35)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (36)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -1525,7 +1571,7 @@ export class Store {
     if (previousVersion < 16) {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 35)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 36)};`)
   }
 
   migrateIndexes(): void {
@@ -3581,6 +3627,77 @@ export class Store {
 
   listReviewRepos(): RepoRow[] {
     return this.all<RepoRow>("SELECT * FROM repos WHERE enabled = 1 AND reviewer_enabled = 1 AND can_review = 1 AND repo_role = 'maintainer' ORDER BY CASE WHEN last_review_at IS NULL THEN 0 ELSE 1 END, last_review_at ASC, created_at ASC")
+  }
+
+  // #544 slice 3A. A repository has at most one schedule; the row, when it
+  // exists, owns that repository's cadence.
+  scheduleForRepo(repoId: string): ScheduleRow | undefined {
+    return this.get<ScheduleRow>('SELECT * FROM schedules WHERE repo_id = ?', repoId)
+  }
+
+  listSchedules(): ScheduleRow[] {
+    return this.all<ScheduleRow>('SELECT * FROM schedules ORDER BY created_at ASC')
+  }
+
+  // `timing_revision` moves only when a field that decides *when* the schedule
+  // fires changes: the expression, the interval, the zone or the window. A
+  // display-only edit keeps the revision, so it does not orphan logical times
+  // that were already dispatched under the old row.
+  saveSchedule(input: {
+    id: string
+    repoId: string
+    kind: 'cron' | 'interval'
+    expression?: string | null
+    everyMs?: number | null
+    timezone?: string | null
+    startAt?: number | null
+    endAt?: number | null
+    misfire?: string
+  }): ScheduleRow {
+    const existing = this.scheduleForRepo(input.repoId)
+    const timingChanged = existing !== undefined && (
+      existing.kind !== input.kind
+      || existing.expression !== (input.expression ?? null)
+      || existing.every_ms !== (input.everyMs ?? null)
+      || existing.timezone !== (input.timezone ?? null)
+      || existing.start_at !== (input.startAt ?? null)
+      || existing.end_at !== (input.endAt ?? null)
+    )
+    const at = nowIso()
+    if (existing === undefined) {
+      this.run(
+        `INSERT INTO schedules (id, repo_id, kind, expression, every_ms, timezone, start_at, end_at, timing_revision, misfire, last_occurrence_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, ?, ?)`,
+        input.id, input.repoId, input.kind, input.expression ?? null, input.everyMs ?? null, input.timezone ?? null,
+        input.startAt ?? null, input.endAt ?? null, input.misfire ?? 'skip', at, at,
+      )
+    } else {
+      this.run(
+        `UPDATE schedules SET kind = ?, expression = ?, every_ms = ?, timezone = ?, start_at = ?, end_at = ?,
+           timing_revision = ?, misfire = ?, updated_at = ? WHERE repo_id = ?`,
+        input.kind, input.expression ?? null, input.everyMs ?? null, input.timezone ?? null,
+        input.startAt ?? null, input.endAt ?? null,
+        timingChanged ? existing.timing_revision + 1 : existing.timing_revision,
+        input.misfire ?? existing.misfire, at, input.repoId,
+      )
+    }
+    const row = this.scheduleForRepo(input.repoId)
+    if (row === undefined) throw new Error(`schedule for ${input.repoId} disappeared after save`)
+    return row
+  }
+
+  // The high water mark. Advancing never moves backwards, so two ticks that both
+  // decide about the same instant cannot rewind each other, and the next tick
+  // cannot be handed that instant again.
+  advanceScheduleOccurrence(repoId: string, at: number): void {
+    this.run(
+      'UPDATE schedules SET last_occurrence_at = ?, updated_at = ? WHERE repo_id = ? AND (last_occurrence_at IS NULL OR last_occurrence_at < ?)',
+      at, nowIso(), repoId, at,
+    )
+  }
+
+  deleteSchedule(repoId: string): void {
+    this.run('DELETE FROM schedules WHERE repo_id = ?', repoId)
   }
 
   getRepoInstance(repoId: string): RepoInstanceRow | undefined {

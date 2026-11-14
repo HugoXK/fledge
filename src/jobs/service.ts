@@ -42,6 +42,8 @@ import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, re
 import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
 import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES } from './continuity.js'
+import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
+import type { ScheduleRow } from '../db.js'
 import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTypeForKind, workTypeMayAutoMerge } from '../lib/workTypes.js'
 import { parseTriage } from '../lib/triage.js'
 import { repoGithubToken, ReadOnlyTokenUnavailable, triageReadOnlyToken } from '../repos/token.js'
@@ -75,6 +77,20 @@ export interface EnqueueResult {
   // The value a refusal names, such as the missing target branch, so the banner
   // can say which one instead of a bare sentence.
   detail?: string
+}
+
+// #544 slice 3A: where a schedule's search starts when it has never fired. The
+// row's own `created_at` is the natural anchor (a schedule installed today must
+// not fire for yesterday); the repository's creation is the fallback for a row
+// written by hand before that column existed, and `now` the last resort. The
+// high water mark wins as soon as it exists, so a schedule is evaluated from the
+// last instant it decided about, not from a wall clock.
+function scheduleAnchor(row: ScheduleRow, repo: RepoRow): number {
+  if (row.last_occurrence_at !== null) return row.last_occurrence_at
+  const created = Date.parse(row.created_at)
+  if (Number.isFinite(created)) return created
+  const repoCreated = Date.parse(repo.created_at)
+  return Number.isFinite(repoCreated) ? repoCreated : Date.now()
 }
 
 // #283: the whole platform stop is one `settings` row, and every reader goes back
@@ -3156,15 +3172,33 @@ export class Jobs {
       if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') continue
       if (!this.userReadyForScheduling(repo.user_id)) continue
       if (!this.instanceReady(repo.id)) continue
-      if (this.store.activeJobForRepo(repo.id) !== undefined) continue
+      // #544 slice 3A: when a schedule row exists it owns the repository's
+      // cadence, and `nextTime` decides when a run is due. A repository without a
+      // row keeps `interval_minutes` exactly as before, so nothing changes for
+      // every repository that has not opted in.
+      const scheduleRow = this.store.scheduleForRepo(repo.id)
+      const schedule = scheduleRow === undefined ? null : scheduleFromRow(scheduleRow)
+      const now = Date.now()
+      const plan = schedule === null || scheduleRow === undefined
+        ? null
+        : planTick(schedule, scheduleAnchor(scheduleRow, repo), now)
+      if (plan !== null && plan.dueAt === null) continue
+      if (this.store.activeJobForRepo(repo.id) !== undefined) {
+        // A due instant that cannot run now is the misfire case: skip it with a
+        // reason rather than queue a second run behind the active one.
+        if (plan !== null) this.skipScheduledOccurrence(repo, plan, 'active-job')
+        continue
+      }
       const recent = this.store.listJobsForRepo(repo.id, 6)
       const next = decideNextJob({
         repo,
-        now: Date.now(),
+        now,
         lastRunAt: repo.last_run_at,
         // #478: a work item may start after the short cooldown, not after the
         // repository's legacy interval. The interval is only an upper bound.
-        intervalMinutes: Math.min(repo.interval_minutes, this.config.runner.workCooldownMinutes),
+        // #544: with a schedule row the due-ness above is the only gate, so the
+        // legacy interval is not a second, weaker gate underneath it.
+        intervalMinutes: plan === null ? Math.min(repo.interval_minutes, this.config.runner.workCooldownMinutes) : 0,
         lastDurationMs: lastDurationMs(recent),
         failureStreak: failureStreak(recent),
         openWork: this.store.listOpenWorkItems(repo.id),
@@ -3172,7 +3206,7 @@ export class Jobs {
         reviewDue: this.dueReview(repo),
         lastDiscoverAt: this.store.getSetting(`discover:${repo.id}`),
         discoverIntervalMinutes: Math.max(MIN_DISCOVERY_INTERVAL_MINUTES, repo.interval_minutes),
-      })
+      }, plan === null ? {} : { cooldownMs: 0 })
       if (next.kind === 'none') {
         // #478: an empty backlog is not a reason to create a job. Keep the
         // repository idle and do not advance last_run_at, so a newly created
@@ -3181,6 +3215,7 @@ export class Jobs {
           this.store.updateRepo(repo.id, { last_status: 'idle' })
           log.info('scheduled idle', { repo: `${repo.owner}/${repo.name}` })
         }
+        if (plan !== null) this.skipScheduledOccurrence(repo, plan, next.reason === 'idle' ? 'idle' : 'not-due')
         continue
       }
       const result = next.kind === 'review'
@@ -3193,6 +3228,10 @@ export class Jobs {
               ...(next.branch === undefined ? {} : { branch: next.branch }),
             })
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
+      if (plan !== null) {
+        if (result.ok) this.dispatchedScheduledOccurrence(repo, plan, result.job?.id)
+        else this.skipScheduledOccurrence(repo, plan, result.code ?? 'dispatch-refused')
+      }
       log.info('scheduled job', {
         repo: `${repo.owner}/${repo.name}`,
         ok: result.ok,
@@ -3233,6 +3272,39 @@ export class Jobs {
     const last = Date.parse(repo.last_review_at)
     if (!Number.isFinite(last)) return true
     return Date.now() - last >= Math.max(15, repo.review_interval_minutes) * 60_000
+  }
+
+  // #544 slice 3A, `misfire: 'skip'`: a logical instant that is due but does not
+  // run is recorded with a reason and the high water mark moves past it. Slice A
+  // has no occurrence row, so the audit line is the whole record — no lease, no
+  // attempt count, no console field. Slice B gives the same instant a row.
+  private skipScheduledOccurrence(repo: RepoRow, plan: TickPlan, reason: string): void {
+    if (plan.dueAt === null) return
+    this.store.audit(repo.user_id, 'schedule.skipped', JSON.stringify({
+      repo: `${repo.owner}/${repo.name}`,
+      occurrence_at: plan.dueAt,
+      decided_at: Date.now(),
+      missed: plan.missed,
+      reason,
+    }))
+    this.store.advanceScheduleOccurrence(repo.id, plan.dueAt)
+    log.info('scheduled occurrence skipped', { repo: `${repo.owner}/${repo.name}`, reason, at: plan.dueAt, missed: plan.missed })
+  }
+
+  // A due instant that did become a job. The logical time is what is stored; the
+  // dispatch time and the lag only ever live in this audit line in slice A.
+  private dispatchedScheduledOccurrence(repo: RepoRow, plan: TickPlan, jobId: string | undefined): void {
+    if (plan.dueAt === null) return
+    const at = Date.now()
+    this.store.audit(repo.user_id, 'schedule.dispatched', JSON.stringify({
+      repo: `${repo.owner}/${repo.name}`,
+      occurrence_at: plan.dueAt,
+      dispatched_at: at,
+      lag_ms: at - plan.dueAt,
+      missed: plan.missed,
+      job: jobId ?? null,
+    }))
+    this.store.advanceScheduleOccurrence(repo.id, plan.dueAt)
   }
 
   // #265: the preview-trial sweep runs on its own clock rather than inside the
