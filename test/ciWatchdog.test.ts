@@ -52,11 +52,11 @@ test('a fork pull request is skipped, because its ref cannot be dispatched', () 
   assert.equal(plan.decisions[0]?.reason, 'fork')
 })
 
-test('a pull request that already has a check run is skipped', () => {
-  const checks: WatchdogCheckRun[] = [{ name: 'ci-ok', status: 'completed', conclusion: 'failure' }]
+test('a non-CI check run does not hide a missing CI run', () => {
+  const checks: WatchdogCheckRun[] = [{ name: 'Analyze JavaScript/TypeScript', status: 'completed', conclusion: 'success' }]
   const plan = planCiWatchdog({ entries: [entry(sameRepoPr(8), checks)] })
-  assert.deepEqual(plan.dispatches, [])
-  assert.equal(plan.decisions[0]?.reason, 'has-checks')
+  assert.deepEqual(plan.dispatches, [{ number: 8, branch: 'feature/8', sha: SHA }])
+  assert.equal(plan.decisions[0]?.reason, 'no-ci-run')
 })
 
 test('a pull request with a queued or in-progress CI run is skipped', () => {
@@ -68,10 +68,11 @@ test('a pull request with a queued or in-progress CI run is skipped', () => {
   }
 })
 
-test('a completed CI run is not active, so a zero-check pull request is still selected', () => {
-  const runs: WatchdogWorkflowRun[] = [{ name: 'CI', status: 'completed', conclusion: 'success' }]
+test('a completed CI run is not re-dispatched, even when it produced no checks', () => {
+  const runs: WatchdogWorkflowRun[] = [{ name: 'CI', status: 'completed', conclusion: 'failure' }]
   const plan = planCiWatchdog({ entries: [entry(sameRepoPr(10), [], runs)] })
-  assert.deepEqual(plan.dispatches, [{ number: 10, branch: 'feature/10', sha: SHA }])
+  assert.deepEqual(plan.dispatches, [])
+  assert.equal(plan.decisions[0]?.reason, 'has-ci-run')
 })
 
 test('a pull request for another workflow run is not treated as active CI', () => {
@@ -99,7 +100,7 @@ test('the watchdog workflow runs on a schedule and a manual dispatch with the na
   const workflow = readFileSync('.github/workflows/ci-watchdog.yml', 'utf8')
   assert.match(workflow, /^name: CI watchdog$/m)
   assert.match(workflow, /schedule:/)
-  assert.match(workflow, /- cron: '\*\/10 \* \* \* \*'/)
+  assert.match(workflow, /- cron: '0 \* \* \* \*'/)
   assert.match(workflow, /workflow_dispatch:/)
   assert.match(workflow, /^permissions:\s*\n\s*contents: read$/m)
   assert.match(workflow, /pull-requests: read/)

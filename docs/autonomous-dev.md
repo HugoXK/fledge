@@ -108,7 +108,7 @@ Add a changelog fragment for a user-visible change. Update the owned doc or add
 
 ### Missing CI backstop
 
-`.github/workflows/ci-watchdog.yml` runs every 10 minutes and on
+`.github/workflows/ci-watchdog.yml` runs hourly and on
 `workflow_dispatch`. It lists open same-repo, non-fork pull requests and, for each
 head SHA with zero check runs and no `CI` run that is queued or in progress,
 dispatches `ci.yml` on the head branch. The run is a backstop, not the primary

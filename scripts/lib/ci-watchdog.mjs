@@ -15,9 +15,12 @@
 // Invariants:
 //   - only a same-repo pull request is a target. A fork ref is not a ref this
 //     repository's token can dispatch against.
-//   - any check run at the head SHA means a workflow already reached the tip, so
-//     the watchdog leaves it alone even when the conclusion is red.
+//   - any `CI` run at the head SHA means CI already reached the tip, even when
+//     the conclusion is red or the run was cancelled: the watchdog leaves it
+//     alone. Re-dispatching a completed run that produced no checks would loop.
 //   - a queued or in-progress `CI` run is not duplicated.
+//   - another workflow's check run (CodeQL, a review bot) does not mean CI ran;
+//     the decision is based on `CI` workflow runs, not on the check-run count.
 //   - the dispatch list is capped per tick, so a repository-wide outage cannot
 //     start an unbounded number of full CI runs from one pass.
 
@@ -60,17 +63,18 @@ function decision(pr, action, reason, extra = {}) {
   }
 }
 
-export function classifyPullRequest({ pr, checks = [], runs = [] } = {}) {
+export function classifyPullRequest({ pr, runs = [] } = {}) {
   if (pr?.state !== undefined && String(pr.state) !== 'open') return decision(pr, 'skip', 'not-open')
   if (!isSameRepoPullRequest(pr)) return decision(pr, 'skip', 'fork')
   if (!Number.isInteger(Number(pr?.number)) || Number(pr?.number) <= 0) return decision(pr, 'skip', 'no-number')
   if (!SHA.test(String(pr?.head?.sha ?? '')) || String(pr?.head?.ref ?? '') === '') {
     return decision(pr, 'skip', 'no-head')
   }
-  if (Array.isArray(checks) && checks.length > 0) return decision(pr, 'skip', 'has-checks')
   const active = activeCiRun(runs)
   if (active !== null) return decision(pr, 'skip', 'active-ci', { activeRunId: Number(active?.id ?? 0) })
-  return decision(pr, 'dispatch', 'no-checks')
+  const previous = (Array.isArray(runs) ? runs : []).find((run) => isCiRun(run)) ?? null
+  if (previous !== null) return decision(pr, 'skip', 'has-ci-run', { previousRunId: Number(previous?.id ?? 0) })
+  return decision(pr, 'dispatch', 'no-ci-run')
 }
 
 function capOf(limit) {

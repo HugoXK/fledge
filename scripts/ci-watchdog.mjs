@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Dispatch `ci.yml` at the head of an open same-repo pull request that has no
-// check runs and no `CI` run queued or in progress.
+// `CI` workflow run at all (neither active nor completed).
 //
 //   GITHUB_TOKEN=... GITHUB_REPOSITORY=owner/repo node scripts/ci-watchdog.mjs
 //   GITHUB_TOKEN=... GITHUB_REPOSITORY=owner/repo node scripts/ci-watchdog.mjs --dry-run
@@ -11,9 +11,10 @@
 // header; it is never printed. `workflow_dispatch` is the documented exception to
 // the token-suppression rule, which is why a dispatched run still starts.
 //
-// One pass reads the open pull requests, then only the check runs for a same-repo
-// head (a fork has nothing to dispatch). Workflow runs are read only when the
-// head has zero checks, because a check already means CI reached that tip.
+// One pass reads the open pull requests, then the workflow runs for each
+// same-repo head (a fork has nothing to dispatch). The decision is based on the
+// `CI` workflow, not on check runs: CodeQL or a review bot can leave a check on
+// a tip that CI never visited.
 
 import {
   CI_WORKFLOW_FILE,
@@ -73,11 +74,6 @@ async function openPullRequests() {
   return pullRequests
 }
 
-async function checkRuns(sha) {
-  const body = await api(`/repos/${REPO}/commits/${sha}/check-runs?filter=all&per_page=100`)
-  return Array.isArray(body?.check_runs) ? body.check_runs : []
-}
-
 async function workflowRuns(sha) {
   const body = await api(`/repos/${REPO}/actions/runs?head_sha=${sha}&per_page=100`)
   return Array.isArray(body?.workflow_runs) ? body.workflow_runs : []
@@ -105,12 +101,10 @@ async function main() {
   for (const pr of pullRequests) {
     const sha = String(pr?.head?.sha ?? '')
     if (!isSameRepoPullRequest(pr) || sha === '') {
-      entries.push({ pr, checks: [], runs: [] })
+      entries.push({ pr, runs: [] })
       continue
     }
-    const checks = await checkRuns(sha)
-    const runs = checks.length === 0 ? await workflowRuns(sha) : []
-    entries.push({ pr, checks, runs })
+    entries.push({ pr, runs: await workflowRuns(sha) })
   }
 
   const plan = planCiWatchdog({ entries, limit: LIMIT })

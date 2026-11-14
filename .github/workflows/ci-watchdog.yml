@@ -13,9 +13,11 @@ name: CI watchdog
 
 on:
   schedule:
-    # Every 10 minutes. GitHub can delay a scheduled run under load; the window
-    # where a pull request has no CI is therefore at least one tick, not zero.
-    - cron: '*/10 * * * *'
+    # Hourly. The repair is a backstop, not a hot path: a missing run can wait
+    # for one tick, and an every-10-minute schedule would add more runs than the
+    # release workflow this watchdog exists to keep quiet. GitHub can delay a
+    # scheduled run under load; the window is therefore one tick or more.
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 permissions:

@@ -37,9 +37,9 @@ export type WatchdogReason =
   | 'fork'
   | 'no-number'
   | 'no-head'
-  | 'has-checks'
   | 'active-ci'
-  | 'no-checks'
+  | 'has-ci-run'
+  | 'no-ci-run'
 
 export interface WatchdogDecision {
   action: WatchdogAction
@@ -48,6 +48,7 @@ export interface WatchdogDecision {
   branch: string
   sha: string
   activeRunId?: number
+  previousRunId?: number
 }
 
 export interface WatchdogDispatch {
