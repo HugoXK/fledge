@@ -215,10 +215,16 @@ A default-branch `workflow_run.completed` failure is ingested from that same
 signed webhook. The payload is untrusted: only the workflow name, run id,
 attempt, branch, SHA and `html_url` are read, each is length-bounded, they are
 escaped where the console renders them, and `html_url` must start with
-`https://` before it becomes a link. Intake stores the failure and the reason it
-will not be triaged; it does not read job logs, so no log content can reach a
-model, a report or the database in this slice. A later slice that fetches a log
-must redact it before any slice or model input.
+`https://` before it becomes a link. For a queued failure the intake also reads
+the failed job's log through the repository token, bounded to 8 MiB, and follows
+a redirect to the signed storage URL without the GitHub token. The log is
+untrusted: it goes through `redact()` before any storage, and only a
+4,000-character redacted excerpt is written to `workflow_failures.log_excerpt`.
+The raw log is never stored, rendered, sent to a model or put in a report. A
+failed fetch writes a redacted reason to `log_error` and keeps the intake row.
+The cited-line verifier ignores whitespace and leading timestamps; a quote that
+is not found cannot support a classification and is downgraded to `unknown`.
+This slice still reruns nothing and opens no issue or comment.
 
 ### Job cost, evidence and metrics
 

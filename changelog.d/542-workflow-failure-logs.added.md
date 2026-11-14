@@ -1,0 +1,1 @@
+Failed default-branch runs now keep a redacted, bounded excerpt of the failed job log next to the intake record, and the console says whether the log was stored or why it could not be read. Log fetching is best-effort: a token or GitHub failure never drops the intake. This slice still reruns nothing and opens no issue.

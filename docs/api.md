@@ -272,6 +272,14 @@ commit are two follow-ups while the same review twice is still a duplicate; a
 repo with an active job parks each pending request separately instead of
 overwriting it. Arbitrary PRs with no Fledge job are ignored.
 
+A default-branch `workflow_run.completed` failure is recorded in
+`workflow_failures`. For a queued row, Fledge lists the run's jobs
+(`GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs`) and reads the failed
+job's log (`GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs`), capping the
+body at 8 MiB and following a signed redirect without the GitHub token. Only a
+redacted 4,000-character excerpt is stored; a fetch failure is stored as a reason
+on the row and the intake stays. This path reruns nothing and opens no issue.
+
 ## Duplicate-work preflight
 
 Before an iterate job is enqueued, Fledge reads the upstream repository's open

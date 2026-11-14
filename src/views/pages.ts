@@ -1144,18 +1144,24 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       : reason === 'not_default_branch'
         ? t('不在默认分支（标签或其它分支）', 'Not on the default branch (a tag or another branch)')
         : t('等待分析', 'Awaiting analysis')
+  const workflowFailureLog = (row: WorkflowFailureRow): string => {
+    if (row.log_error !== null && row.log_error !== '') return t(`日志不可用：${row.log_error}`, `Log unavailable: ${row.log_error}`)
+    if (row.log_excerpt !== null && row.log_excerpt !== '') return t(`日志摘录已保存（已脱敏，${row.log_excerpt.length} 字符）`, `Log excerpt stored (redacted, ${row.log_excerpt.length} chars)`)
+    return t('未读取日志', 'No log stored')
+  }
   const workflowFailureRows = workflowFailures.map((row) => `<tr data-workflow-failure="${escapeHtml(row.status)}">
       <td data-label="${escapeHtml(t('工作流', 'Workflow'))}">${escapeHtml(row.workflow_name)}<br /><small class="muted"><a class="link" href="${escapeHtml(row.run_url)}" rel="noopener">#${row.run_id}</a> · <code>${escapeHtml(row.head_sha.slice(0, 7))}</code></small></td>
       <td data-label="${escapeHtml(t('分支 / 事件', 'Branch / event'))}"><code>${escapeHtml(row.head_branch === '' ? '—' : row.head_branch)}</code><br /><small class="muted">${escapeHtml(row.event === '' ? '—' : row.event)} · ${escapeHtml(t(`第 ${row.attempt} 次尝试`, `attempt ${row.attempt}`))}</small></td>
       <td data-label="${escapeHtml(t('状态', 'Status'))}">${escapeHtml(workflowFailureStatus(row.status))}</td>
       <td data-label="${escapeHtml(t('原因', 'Reason'))}">${escapeHtml(workflowFailureReason(row.reason))}</td>
+      <td data-label="${escapeHtml(t('日志', 'Log'))}"><small class="muted">${escapeHtml(workflowFailureLog(row))}</small></td>
       <td data-label="${escapeHtml(t('记录时间', 'Recorded'))}"><small class="muted">${escapeHtml(humanTimeShort(row.created_at))}</small></td>
     </tr>`).join('')
   const workflowFailuresCard = `<section class="card" id="workflow-failures">
-    <div class="row between"><div><div class="eyebrow">${escapeHtml(t('默认分支失败', 'DEFAULT-BRANCH FAILURES'))}</div><h2>${escapeHtml(t('失败的运行', 'Failed workflow runs'))}</h2><p class="muted">${escapeHtml(t('默认分支上失败的运行记录在这里；PR 运行仍由 PR 跟进处理。这一版只记录决定：不读日志、不重跑、不建 issue，所以“没有动作”也是一条有原因的记录。', 'Failed runs on the default branch are recorded here; pull-request runs stay with the PR follow-up. This slice records the decision only — it reads no logs, reruns nothing and opens no issue, so "no action" is a recorded reason rather than silence.'))}</p></div><span class="fine">${escapeHtml(t(`${workflowFailures.length} 条记录`, `${workflowFailures.length} recorded`))}</span></div>
+    <div class="row between"><div><div class="eyebrow">${escapeHtml(t('默认分支失败', 'DEFAULT-BRANCH FAILURES'))}</div><h2>${escapeHtml(t('失败的运行', 'Failed workflow runs'))}</h2><p class="muted">${escapeHtml(t('默认分支上失败的运行记录在这里；PR 运行仍由 PR 跟进处理。本版会读取失败 job 的日志，先脱敏再保存一个有长度上限的摘录；不重跑、不建 issue，日志读失败也会保留记录并写明原因。', 'Failed runs on the default branch are recorded here; pull-request runs stay with the PR follow-up. This slice reads the failed job log, redacts it before storing a bounded excerpt, and reruns nothing and opens no issue; a failed log read keeps the record and names the reason.'))}</p></div><span class="fine">${escapeHtml(t(`${workflowFailures.length} 条记录`, `${workflowFailures.length} recorded`))}</span></div>
     ${workflowFailures.length === 0
       ? `<p class="muted">${escapeHtml(t('还没有记录到默认分支失败。', 'No default-branch failure has been recorded yet.'))}</p>`
-      : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('工作流', 'Workflow'))}</th><th>${escapeHtml(t('分支 / 事件', 'Branch / event'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('原因', 'Reason'))}</th><th>${escapeHtml(t('记录时间', 'Recorded'))}</th></tr></thead><tbody>${workflowFailureRows}</tbody></table></div>`}
+      : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('工作流', 'Workflow'))}</th><th>${escapeHtml(t('分支 / 事件', 'Branch / event'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('原因', 'Reason'))}</th><th>${escapeHtml(t('日志', 'Log'))}</th><th>${escapeHtml(t('记录时间', 'Recorded'))}</th></tr></thead><tbody>${workflowFailureRows}</tbody></table></div>`}
   </section>`
   const postmortemCard = `<section class="card" id="postmortems">
     <div class="row between"><div><div class="eyebrow">${escapeHtml(t('故障复盘', 'INCIDENTS'))}</div><h2>${escapeHtml(t('未关闭的复盘', 'Open postmortems'))}</h2><p class="muted">${escapeHtml(t('每个失败、停滞或取消的任务有一条复盘；同一复发键只保留一个计数，并在第二次出现时升级一次。缺少证据时标记为未核实，不猜原因。', 'One postmortem per failed, stalled or cancelled job; one recurrence key counts the same cause and escalates once on its second sighting. Missing evidence is unverified, never a guessed cause.'))}</p></div><span class="fine">${escapeHtml(t(`${openPostmortems.length} 个未关闭`, `${openPostmortems.length} open`))}</span></div>
