@@ -1041,6 +1041,32 @@ active job; requests are parked per fingerprint, so two different reviews on one
 commit are two follow-ups rather than one overwritten entry. A follow-up does not
 receive a second automation comment; the job list labels it "Follow-up".
 
+### Default-branch failure intake
+
+A `workflow_run.completed` webhook is read as well, but only as intake: the
+repository is resolved from the installation, and a run is considered only when
+its conclusion is `failure`. A run whose `pull_requests` list is non-empty (or
+whose event is a pull-request event) is recorded as `ignored` with reason
+`pull_request`; a run whose `head_branch` is not one of the repository's
+default-branch names is recorded as `ignored` with reason `not_default_branch`,
+which is how a tag run is kept out until a later slice proves the SHA is an
+ancestor. A green, cancelled or skipped run is not a failed run, so it stores
+nothing.
+
+One row per `repository + run_id + attempt` lives in `workflow_failures`: a
+redelivered webhook or a restarted process cannot double-count, and a rerun of
+the same run is a new attempt rather than a second row for the old one. The
+repository page's delivery tab lists the recorded failures with the workflow, the
+branch and event, the attempt and the run link, so a red default branch is
+visible where the other work is instead of only in GitHub.
+
+This is intake only. No job log is fetched, no model is called, no run is rerun
+and no issue is opened: `queued` means the failure is recorded for the analysis
+slice, and `ignored` carries the reason no action will be taken. Everything that
+reads the log, classifies the failure, spends the one rerun or opens a report is
+a later slice of the same card, so a `queued` row is a decision about visibility,
+not a promise of an automatic fix.
+
 ### Plan-first-lite, checkpoints and templates
 
 A manual "plan only" job uses the same team and repository context but the
