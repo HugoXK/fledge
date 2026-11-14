@@ -27,6 +27,8 @@ export interface WatchdogWorkflowRun {
 
 export interface WatchdogEntry {
   pr?: WatchdogPullRequest
+  // Declared but never read by the planner: it stays as the witness that a check
+  // run from another workflow is not evidence that `CI` reached the tip.
   checks?: WatchdogCheckRun[]
   runs?: WatchdogWorkflowRun[]
 }

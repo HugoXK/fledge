@@ -9,7 +9,7 @@
 // This is a backstop, not the primary path. A branch pushed or a pull request
 // opened with the automatic `GITHUB_TOKEN` starts no `push` or `pull_request`
 // workflow; a ref written through the Git data API can leave the same shape. A
-// pull request with zero check runs and no live `CI` run is the signature, and
+// pull request with no `CI` run at all at its head SHA is the signature, and
 // dispatching `ci.yml` at its head branch is the repair.
 //
 // Invariants:

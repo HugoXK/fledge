@@ -43,7 +43,8 @@ predates this inventory — it is not a value.
   the exceptions. Automation that pushes branches or opens PRs therefore uses a
   PAT or a GitHub App installation token, not this per-run token.
   `.github/workflows/ci-watchdog.yml` is the backstop: it dispatches `ci.yml` on a
-  head branch whose pull request still has zero check runs and no live `CI` run.
+  head branch whose pull request has no `CI` run at all at its head SHA — a check
+  run from another workflow does not count — and no live `CI` run.
 
 - Per-user OAuth tokens and per-repository fine-grained tokens: they live in the
   database encrypted with `TOKEN_ENCRYPTION_KEY` and are rotated by their owner

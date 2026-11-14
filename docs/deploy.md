@@ -267,8 +267,9 @@ The nightly workflow pushes `release/v<next>` and then opens exactly one release
 pull request for it, because a pull request opened with `GITHUB_TOKEN` starts no
 `pull_request` workflow and would never get a `ci-ok`. The opener uses a real
 token for that reason. `.github/workflows/ci-watchdog.yml` is the scheduled
-backstop: it dispatches `ci.yml` when an open same-repo pull request still has
-zero check runs, and it does not replace opening the PR with a real identity.
+backstop: it dispatches `ci.yml` when an open same-repo pull request has no `CI`
+run at all at its head SHA, and it does not replace opening the PR with a real
+identity.
 
 The opener runs on the repository secret **`RELEASE_OPEN_TOKEN`** (Settings →
 Secrets and variables → Actions). Set it to a token for the team account —
