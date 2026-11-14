@@ -57,6 +57,14 @@ header, not a section — so at the top of that page nothing has passed and
 `#release`, the first chip, is marked. That fallback is the accepted state, not a
 defect.
 
+The admin backup card has two read-only sources: `readBackupStatus()` lists the
+plaintext copies in `config.backup.dir` and counts the encrypted copies beside
+them, and `readRestoreDrill()` reads `<dataDir>/backup-drill.json`. The card
+never opens the database or a copy. It hashes only the newest plaintext copy
+under the 4 MiB cap, gives a row only to a copy that differs or whose manifest
+cannot be read, and reports the drill record rather than a fixed "none
+recorded". `scripts/restore-drill.mjs --status-file` is the writer.
+
 ## Components
 
 ```

@@ -4,7 +4,7 @@
 // still holds what its manifest recorded. The live source is read read-only and
 // only reported on: drift since the copy was taken is normal and is never a
 // failure.
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -14,7 +14,22 @@ import { databaseFacts, manifestPath, readManifest, sha256File, writeManifest } 
 const require = createRequire(import.meta.url)
 const { DatabaseSync, backup } = require('node:sqlite')
 
-const USAGE = 'usage: node scripts/restore-drill.mjs [--db <path>] [--backup-dir <dir>] [--work-dir <dir>] [--fresh] [--keep]'
+const USAGE = 'usage: node scripts/restore-drill.mjs [--db <path>] [--backup-dir <dir>] [--work-dir <dir>] [--status-file <path>] [--fresh] [--keep]'
+
+// Where the last drill result is recorded for `/admin`. The host passes an
+// explicit path; with only DATA_DIR set, the default is the same file the card
+// reads. CI and unit runs with neither write nothing.
+let statusTarget = null
+
+function writeDrillStatus(ok, detail) {
+  if (statusTarget === null) return
+  const record = { at: new Date().toISOString(), ok, detail: String(detail).slice(0, 500) }
+  const temp = `${statusTarget}.tmp`
+  mkdirSync(dirname(statusTarget), { recursive: true, mode: 0o700 })
+  writeFileSync(temp, `${JSON.stringify(record)}\n`, { mode: 0o600 })
+  chmodSync(temp, 0o600)
+  renameSync(temp, statusTarget)
+}
 
 // A drift failure is thrown rather than exited on, so every try/finally between
 // the failure and the entry point still runs its cleanup.
@@ -39,6 +54,7 @@ function parseArgs(argv) {
     else if (arg === '--db') { index += 1; parsed.db = argv[index] }
     else if (arg === '--backup-dir') { index += 1; parsed.backupDir = argv[index] }
     else if (arg === '--work-dir') { index += 1; parsed.workDir = argv[index] }
+    else if (arg === '--status-file') { index += 1; parsed.statusFile = argv[index] }
     else fail(2, `unknown argument ${arg}\n${USAGE}`)
   }
   return parsed
@@ -315,6 +331,10 @@ async function main() {
   const dbPath = resolve(args.db ?? process.env.DB_PATH ?? join(process.env.DATA_DIR ?? './data', 'fledge.db'))
   const backupDir = resolve(args.backupDir ?? process.env.BACKUP_DIR ?? join(process.env.DATA_DIR ?? './data', 'backups'))
   const dataDir = resolve(process.env.DATA_DIR ?? './data')
+  const statusDir = process.env.DATA_DIR?.trim()
+  statusTarget = args.statusFile === undefined
+    ? (statusDir ? join(resolve(statusDir), 'backup-drill.json') : null)
+    : resolve(args.statusFile)
   if (!existsSync(dbPath)) fail(2, `source database not found: ${dbPath}`)
   const realDbPath = realTarget(dbPath)
   const realBackupDir = realTarget(backupDir)
@@ -423,6 +443,13 @@ async function main() {
     process.stdout.write(`RTO=${rtoSeconds.toFixed(3)}s\n`)
     process.stdout.write(`RPO=${backupAgeSeconds.toFixed(3)}s\n`)
     process.stdout.write('restore-drill: OK\n')
+    try {
+      writeDrillStatus(true, `RTO=${rtoSeconds.toFixed(3)}s RPO=${backupAgeSeconds.toFixed(3)}s`)
+    } catch (error) {
+      // A status write is for the console; it must not turn a successful restore
+      // into a failed drill.
+      process.stderr.write(`restore-drill: could not write ${statusTarget}: ${error instanceof Error ? error.message : String(error)}\n`)
+    }
     succeeded = true
   } finally {
     if (restored !== undefined) restored.close()
@@ -440,11 +467,17 @@ async function main() {
 try {
   await main()
 } catch (error) {
+  const message = error instanceof Error ? error.message : String(error)
+  try {
+    writeDrillStatus(false, message)
+  } catch {
+    // The drill failure is the fact to report; a broken status path must not hide it.
+  }
   if (error instanceof DrillError) {
-    process.stderr.write(`restore-drill: ${error.message}\n`)
+    process.stderr.write(`restore-drill: ${message}\n`)
     process.exitCode = error.code
   } else {
-    process.stderr.write(`restore-drill: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`)
+    process.stderr.write(`restore-drill: ${error instanceof Error ? error.stack ?? message : message}\n`)
     process.exitCode = 1
   }
 }

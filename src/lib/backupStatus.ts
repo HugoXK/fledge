@@ -10,9 +10,8 @@ export const DEFAULT_EXPECTED_HOURS = 26
 
 // Hashing is the only read of a copy's bytes on a render path, so it is bounded
 // twice: only the newest copy is hashed, and only while that copy is at most
-// 4 MiB. `scripts/backup.mjs` keeps 14 copies, so hashing every copy would turn
-// each `/admin` render into up to ~56 MiB of reads, for manifests the page does
-// not need to answer "is the newest copy the file the writer recorded?".
+// 4 MiB. The host backup job keeps one plaintext copy for this page and the
+// restore drill, so hashing every copy would read bytes no one asked about.
 // `npm run db:restore-drill` is what verifies a large or older copy; this page
 // must not stall to repeat it.
 export const SHA256_MAX_BYTES = 4 * 1024 * 1024
@@ -61,6 +60,34 @@ export interface BackupStatus {
    * view, so this number never stands for a check that did not happen.
    */
   differing: number
+  /**
+   * Encrypted copies (`*.db.enc`, `*.db.zst.enc`) kept beside the plaintext
+   * copies. The card counts them but never opens them: decrypting needs the key
+   * only the host holds, and this module stays read-only.
+   */
+  encrypted: number
+}
+
+export interface RestoreDrillStatus {
+  at: string
+  ok: boolean
+  detail: string | null
+}
+
+/**
+ * The drill writes `backup-drill.json` next to the backup directory after it
+ * finishes, so the card can show the last real run instead of a fixed "none
+ * recorded". A missing, unreadable or malformed file means "no record", never a
+ * guessed verdict.
+ */
+export function readRestoreDrill(path: string): RestoreDrillStatus | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<RestoreDrillStatus>
+    if (typeof parsed.at !== 'string' || parsed.at === '' || typeof parsed.ok !== 'boolean') return null
+    return { at: parsed.at, ok: parsed.ok, detail: typeof parsed.detail === 'string' ? parsed.detail : null }
+  } catch {
+    return null
+  }
 }
 
 // `fledge-2026-11-09T02-00-00-000Z.db`: the writer's ISO stamp with the colons
@@ -187,8 +214,13 @@ export function readBackupStatus(input: {
   const now = input.now ?? Date.now()
   const expectedHours = input.expectedHours ?? DEFAULT_EXPECTED_HOURS
   let names: string[]
+  let encrypted = 0
   try {
-    names = readdirSync(input.dir).filter((name) => name.endsWith('.db') && name.startsWith('fledge-'))
+    const entries = readdirSync(input.dir)
+    names = entries.filter((name) => name.endsWith('.db') && name.startsWith('fledge-'))
+    encrypted = entries.filter(
+      (name) => name.startsWith('fledge-') && (name.endsWith('.db.enc') || name.endsWith('.db.zst.enc')),
+    ).length
   } catch {
     return {
       dir: input.dir,
@@ -199,6 +231,7 @@ export function readBackupStatus(input: {
       expectedHours,
       matching: 0,
       differing: 0,
+      encrypted: 0,
     }
   }
   const inspected = names
@@ -219,5 +252,6 @@ export function readBackupStatus(input: {
     expectedHours,
     matching: copies.filter((copy) => copy.manifest === 'matches').length,
     differing: copies.filter((copy) => copy.manifest === 'differs').length,
+    encrypted,
   }
 }
