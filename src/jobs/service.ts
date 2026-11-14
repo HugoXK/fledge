@@ -104,6 +104,11 @@ export type FollowUpResult = Omit<EnqueueResult, 'code'> & { code?: EnqueueRefus
 // to the row instead of to a field on this object. A cached copy is exactly how a
 // restart, or a second process, would silently resume scheduling.
 const PLATFORM_STOP_KEY = 'platform.stop'
+// #544 slice 3B-B2: how long a worker may hold a claimed occurrence before the
+// sweep treats it as dead. It is longer than one tick, so a slow dispatch inside
+// a pass is not stolen from itself, and short enough that a crashed worker's
+// instant is recovered by the next couple of passes rather than the next day.
+const SCHEDULE_LEASE_MS = 5 * 60_000
 // #283 review: one operator action has to finish, so the drain is bounded in two
 // places. The inline pass runs while the operator is waiting on a form post, so it
 // takes a small slice; the tick then finishes the drain at the per-pass bound and
@@ -3142,6 +3147,11 @@ export class Jobs {
       return
     }
     await this.expirePlans().catch((error) => log.warn('plan expiry pass failed', { error: String(error) }))
+    // #544 slice 3B-B2: a lease that lapsed before its holder settled the
+    // occurrence is freed before the scheduling loops read rows, so a crashed
+    // worker's instant is claimable again in the same pass that notices it.
+    const sweptLeases = this.store.sweepScheduleLeases()
+    if (sweptLeases.freed > 0) log.info('schedule leases expired', { freed: sweptLeases.freed })
     await this.releaseAllPendingFollowups().catch((error) => log.warn('pending follow-up recovery failed', { error: String(error) }))
     await this.releaseDueRetries().catch((error) => log.warn('due retry release failed', { error: String(error) }))
     await this.reconcileAutoMerge().catch((error) => log.warn('auto-merge reconcile failed', { error: String(error) }))
@@ -3230,6 +3240,14 @@ export class Jobs {
         if (plan !== null) this.skipScheduledOccurrence(repo, plan, next.reason === 'idle' ? 'idle' : 'not-due')
         continue
       }
+      // #544 slice 3B-B2: the lease is taken before the job is created, not
+      // after. A worker that reaches this instant while another holds it loses
+      // the claim and does nothing, so the instant is dispatched once. A worker
+      // that dies mid-dispatch leaves a lease that lapses; the sweep marks the
+      // row `expired` and the next tick claims the same occurrence id again,
+      // which is why the id is not derived from the attempt.
+      const lease = plan === null ? null : this.claimScheduledOccurrence(repo, plan)
+      if (plan !== null && lease === null) continue
       const result = next.kind === 'review'
         ? await this.enqueue(repo, 'schedule', undefined, 'review', { workItemId: next.workItemId, prUrl: next.prUrl })
         : next.kind === 'discover'
@@ -3239,10 +3257,24 @@ export class Jobs {
               ...(next.prUrl === undefined ? {} : { prUrl: next.prUrl }),
               ...(next.branch === undefined ? {} : { branch: next.branch }),
             })
-      if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
-      if (plan !== null) {
-        if (result.ok) this.dispatchedScheduledOccurrence(repo, plan, result.job?.id)
-        else this.skipScheduledOccurrence(repo, plan, result.code ?? 'dispatch-refused')
+      if (!result.ok && result.code === 'QUOTA_EXHAUSTED') {
+        // Nothing was decided: release the lease so the next pass can take this
+        // instant immediately instead of waiting for it to lapse.
+        if (plan !== null && lease !== null) this.releaseScheduledOccurrence(repo, plan, lease, 'quota-exhausted')
+        break
+      }
+      if (plan !== null && lease !== null) {
+        const dueAt = plan.dueAt
+        if (dueAt === null) {
+          // Only reachable if the plan changed under us; the lease is released so
+          // the instant is not held by a worker with nothing to settle.
+          this.releaseScheduledOccurrence(repo, plan, lease, 'no-due-instant')
+        } else if (result.ok) {
+          const at = Date.now()
+          this.settleScheduledOccurrence(repo, plan, lease, 'dispatched', { jobId: result.job?.id, dispatchedAt: at, lagMs: at - dueAt })
+        } else {
+          this.settleScheduledOccurrence(repo, plan, lease, 'skipped', { reason: result.code ?? 'dispatch-refused' })
+        }
       }
       log.info('scheduled job', {
         repo: `${repo.owner}/${repo.name}`,
@@ -3289,9 +3321,9 @@ export class Jobs {
   // #544 slice 3B, `misfire: 'skip'`: a logical instant that is due but does not
   // run gets a skipped row carrying its reason, and the high water mark moves
   // past it. The row is the decision; the audit line stays for operators and
-  // names the row, so the two records can be joined. The lease and the stale
-  // result rejection are the next slice: a decided instant already has the
-  // identity they will answer against.
+  // names the row, so the two records can be joined. A skip is decided here and
+  // now, so it needs no lease: recording it is already idempotent on the row's
+  // unique key.
   private skipScheduledOccurrence(repo: RepoRow, plan: TickPlan, reason: string): void {
     if (plan.dueAt === null) return
     const at = Date.now()
@@ -3308,22 +3340,95 @@ export class Jobs {
     log.info('scheduled occurrence skipped', { repo: `${repo.owner}/${repo.name}`, reason, at: plan.dueAt, missed: plan.missed })
   }
 
-  // A due instant that did become a job. The row keeps the logical time, the
-  // dispatch time and the lag; the audit line keeps both for operators.
-  private dispatchedScheduledOccurrence(repo: RepoRow, plan: TickPlan, jobId: string | undefined): void {
+  // #544 slice 3B-B2. The lease is taken before the dispatch, so the decision to
+  // run is not made twice: null means another worker holds this instant and this
+  // pass leaves it alone. The token is opaque and short-lived; nothing derives
+  // it from the attempt count.
+  private claimScheduledOccurrence(repo: RepoRow, plan: TickPlan): string | null {
+    if (plan.dueAt === null) return null
+    const schedule = this.store.scheduleForRepo(repo.id)
+    if (schedule === undefined) return null
+    const leaseToken = randomToken(16)
+    const claim = this.store.claimScheduleOccurrence({
+      id: randomId('occ'),
+      scheduleId: schedule.id,
+      repoId: repo.id,
+      logicalTime: plan.dueAt,
+      timingRevision: schedule.timing_revision,
+      leaseToken,
+      leaseMs: SCHEDULE_LEASE_MS,
+    })
+    if (!claim.claimed) {
+      log.info('scheduled occurrence not claimed', {
+        repo: `${repo.owner}/${repo.name}`, at: plan.dueAt, reason: claim.reason, attempts: claim.row.attempts,
+      })
+      return null
+    }
+    return leaseToken
+  }
+
+  // A due instant that did become a job, or was skipped by the dispatch result.
+  // The row keeps the logical time, the dispatch time and the lag; the audit line
+  // keeps both for operators. A rejected settle means the lease was recovered by
+  // someone else, so this worker's result is not written.
+  private settleScheduledOccurrence(
+    repo: RepoRow,
+    plan: TickPlan,
+    leaseToken: string,
+    state: 'dispatched' | 'skipped',
+    detail: { jobId?: string; reason?: string; dispatchedAt?: number; lagMs?: number },
+  ): void {
     if (plan.dueAt === null) return
-    const at = Date.now()
-    const occurrence = this.recordScheduledOccurrence(repo, plan, 'dispatched', { jobId, dispatchedAt: at, lagMs: at - plan.dueAt })
-    this.store.audit(repo.user_id, 'schedule.dispatched', JSON.stringify({
+    const schedule = this.store.scheduleForRepo(repo.id)
+    if (schedule === undefined) return
+    const settled = this.store.settleScheduleOccurrence({
+      scheduleId: schedule.id,
+      logicalTime: plan.dueAt,
+      timingRevision: schedule.timing_revision,
+      leaseToken,
+      state,
+      reason: detail.reason ?? null,
+      missed: plan.missed,
+      jobId: detail.jobId ?? null,
+      dispatchedAt: detail.dispatchedAt ?? null,
+      lagMs: detail.lagMs ?? null,
+    })
+    if (!settled.settled) {
+      log.warn('scheduled occurrence settle rejected', {
+        repo: `${repo.owner}/${repo.name}`, at: plan.dueAt, reason: settled.reason,
+      })
+      return
+    }
+    const at = detail.dispatchedAt ?? Date.now()
+    this.store.audit(repo.user_id, state === 'dispatched' ? 'schedule.dispatched' : 'schedule.skipped', JSON.stringify({
       repo: `${repo.owner}/${repo.name}`,
       occurrence_at: plan.dueAt,
-      dispatched_at: at,
-      lag_ms: at - plan.dueAt,
+      decided_at: at,
+      ...(state === 'dispatched' ? { dispatched_at: at, lag_ms: detail.lagMs ?? null, job: detail.jobId ?? null } : {}),
+      ...(detail.reason === undefined ? {} : { reason: detail.reason }),
       missed: plan.missed,
-      job: jobId ?? null,
-      occurrence: occurrence?.id ?? null,
+      attempts: settled.row.attempts,
+      occurrence: settled.row.id,
     }))
     this.store.advanceScheduleOccurrence(repo.id, plan.dueAt)
+    log.info('scheduled occurrence settled', {
+      repo: `${repo.owner}/${repo.name}`, at: plan.dueAt, state, attempts: settled.row.attempts,
+    })
+  }
+
+  // A worker that gives up before deciding hands the instant back rather than
+  // sitting on the lease until it lapses.
+  private releaseScheduledOccurrence(repo: RepoRow, plan: TickPlan, leaseToken: string, reason: string): void {
+    if (plan.dueAt === null) return
+    const schedule = this.store.scheduleForRepo(repo.id)
+    if (schedule === undefined) return
+    const released = this.store.releaseScheduleLease({
+      scheduleId: schedule.id, logicalTime: plan.dueAt, timingRevision: schedule.timing_revision,
+      leaseToken, reason,
+    })
+    log.info('scheduled occurrence lease released', {
+      repo: `${repo.owner}/${repo.name}`, at: plan.dueAt, reason, released: released.released,
+    })
   }
 
   // One row per decided instant. A schedule deleted between the plan and this

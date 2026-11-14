@@ -56,11 +56,11 @@ function audits(store: Store, action: string): string[] {
 
 // -- the table -------------------------------------------------------------
 
-test('the occurrence table is part of the schema at user_version 37', () => {
+test('the occurrence table is part of the schema at user_version 38', () => {
   const store = new Store(':memory:')
   try {
     const version = store.get<{ user_version: number }>('PRAGMA user_version')
-    assert.equal(Number(version?.user_version), 37, 'a second table moves the refusal boundary from 36 to 37')
+    assert.equal(Number(version?.user_version), 38, 'the lease columns of slice B2 move the refusal boundary from 37 to 38')
 
     const table = store.get<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schedule_occurrences'")
     assert.equal(table?.name, 'schedule_occurrences')
@@ -69,6 +69,7 @@ test('the occurrence table is part of the schema at user_version 37', () => {
     assert.deepEqual(columns, [
       'id', 'schedule_id', 'repo_id', 'logical_time', 'timing_revision',
       'state', 'reason', 'missed', 'job_id', 'decided_at', 'dispatched_at', 'lag_ms',
+      'attempts', 'lease_token', 'lease_expires_at',
     ])
 
     // The identity of a decision is the row's own uniqueness constraint, not a

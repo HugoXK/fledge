@@ -251,7 +251,11 @@ export interface ScheduleOccurrenceRow {
   repo_id: string
   logical_time: number
   timing_revision: number
-  /** `dispatched` when the instant became a job, `skipped` when it did not. */
+  /**
+   * `claimed` while a worker holds the row, `dispatched` when the instant
+   * became a job, `skipped` when it did not, `expired` when a lease lapsed
+   * before the holder settled it.
+   */
   state: string
   /** Why a `skipped` instant did not run; null on a dispatched one. */
   reason: string | null
@@ -261,6 +265,12 @@ export interface ScheduleOccurrenceRow {
   decided_at: string
   dispatched_at: number | null
   lag_ms: number | null
+  /** How many times a worker has claimed this instant. Counted, never compared. */
+  attempts: number
+  /** The lease the current holder was given; null when nobody holds the row. */
+  lease_token: string | null
+  /** Epoch milliseconds at which the lease lapses; null when nobody holds it. */
+  lease_expires_at: number | null
 }
 
 export interface UserModelRow {
@@ -1695,8 +1705,15 @@ CREATE TABLE IF NOT EXISTS schedules (
 --
 -- missed counts the instants passed over on the way to this one; under
 -- misfire = 'skip' they are counted, never written as their own rows, so a year
--- of missed hourly instants stays one row instead of 9k. The lease and the
--- stale-result rejection are the next slice; they answer against these rows.
+-- of missed hourly instants stays one row instead of 9k.
+--
+-- Slice B2 adds the lease. state is one of 'claimed' (a worker holds the row
+-- while it decides or dispatches it), 'dispatched', 'skipped', or 'expired' (the
+-- lease lapsed before the row settled). lease_token is what makes a worker's
+-- result land: it is compared, never derived from attempts, which only counts.
+-- A live lease cannot be claimed twice; an expired one is recovered under the
+-- same row, so the occurrence id survives a dead worker; a settled row holds no
+-- lease and is never claimable again.
 CREATE TABLE IF NOT EXISTS schedule_occurrences (
   id TEXT PRIMARY KEY,
   schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
@@ -1710,8 +1727,12 @@ CREATE TABLE IF NOT EXISTS schedule_occurrences (
   decided_at TEXT NOT NULL,
   dispatched_at INTEGER,
   lag_ms INTEGER,
+  attempts INTEGER NOT NULL DEFAULT 1,
+  lease_token TEXT,
+  lease_expires_at INTEGER,
   UNIQUE(schedule_id, logical_time, timing_revision)
 );
+CREATE INDEX IF NOT EXISTS schedule_occurrences_lease_idx ON schedule_occurrences(state, lease_expires_at);
 CREATE INDEX IF NOT EXISTS schedule_occurrences_repo_idx ON schedule_occurrences(repo_id, logical_time DESC);
 CREATE INDEX IF NOT EXISTS schedule_occurrences_schedule_idx ON schedule_occurrences(schedule_id, logical_time DESC);
 `
@@ -1777,9 +1798,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 37) {
+    if (previousVersion > 38) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (37)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (38)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -1788,6 +1809,7 @@ export class Store {
     this.migrateWebhookColumns()
     this.migrateArtifactColumns()
     this.migrateManagementColumns()
+    this.migrateScheduleOccurrenceColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
     this.migrateModelsV2()
@@ -1799,7 +1821,24 @@ export class Store {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
     this.migrateIdentity()
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 37)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 38)};`)
+  }
+
+  // #544 slice 3B-B2: a database written by slice B1 already has the occurrence
+  // table, so the lease columns are added to it rather than assumed. A row that
+  // predates the lease has no holder: `attempts` 1 is the decision it already
+  // records, and a null token cannot match anything, so an old row is never
+  // settled by a worker that never held it.
+  private migrateScheduleOccurrenceColumns(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(schedule_occurrences)').map((row) => row.name))
+    const additions: Array<[string, string]> = [
+      ['attempts', 'INTEGER NOT NULL DEFAULT 1'],
+      ['lease_token', 'TEXT'],
+      ['lease_expires_at', 'INTEGER'],
+    ]
+    for (const [name, type] of additions) {
+      if (!columns.has(name)) this.run(`ALTER TABLE schedule_occurrences ADD COLUMN ${name} ${type}`)
+    }
   }
 
   migrateIndexes(): void {
@@ -4134,6 +4173,150 @@ export class Store {
       'SELECT * FROM schedule_occurrences WHERE repo_id = ? ORDER BY logical_time DESC, decided_at DESC LIMIT ?',
       repoId, limit,
     )
+  }
+
+  // #544 slice 3B-B2. Claiming is one transaction so two workers cannot both
+  // win: the insert and the reclaim both read the row they are about to take.
+  // A live lease is refused; a lapsed one is recovered under the same row, which
+  // is why the occurrence id outlives the worker holding it. `attempts` counts
+  // claims, so a recovered instant says how many workers have held it.
+  claimScheduleOccurrence(input: {
+    id: string
+    scheduleId: string
+    repoId: string
+    logicalTime: number
+    timingRevision: number
+    leaseToken: string
+    leaseMs: number
+    now?: number
+  }): { row: ScheduleOccurrenceRow; claimed: boolean; reason: 'leased' | 'settled' | null } {
+    const now = input.now ?? Date.now()
+    return this.transaction(() => {
+      const existing = this.findScheduleOccurrence(input.scheduleId, input.logicalTime, input.timingRevision)
+      if (existing === undefined) {
+        this.run(
+          `INSERT INTO schedule_occurrences
+             (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms, attempts, lease_token, lease_expires_at)
+           VALUES (?, ?, ?, ?, ?, 'claimed', NULL, 0, NULL, ?, NULL, NULL, 1, ?, ?)`,
+          input.id, input.scheduleId, input.repoId, input.logicalTime, input.timingRevision,
+          nowIso(), input.leaseToken, now + input.leaseMs,
+        )
+        const row = this.findScheduleOccurrence(input.scheduleId, input.logicalTime, input.timingRevision)
+        if (row === undefined) throw new Error(`occurrence ${input.scheduleId}@${input.logicalTime}/${input.timingRevision} disappeared after claim`)
+        return { row, claimed: true, reason: null }
+      }
+      // A settled instant is a decision and is never re-opened, however old its
+      // lease looks: the lease lapsed before the row was written, not after.
+      if (existing.state === 'dispatched' || existing.state === 'skipped') {
+        return { row: existing, claimed: false, reason: 'settled' as const }
+      }
+      const liveLease = existing.lease_expires_at !== null && existing.lease_expires_at > now
+      if (liveLease) return { row: existing, claimed: false, reason: 'leased' as const }
+      this.run(
+        `UPDATE schedule_occurrences
+            SET state = 'claimed', reason = NULL, job_id = NULL, dispatched_at = NULL, lag_ms = NULL,
+                attempts = attempts + 1, lease_token = ?, lease_expires_at = ?, decided_at = ?
+          WHERE id = ?`,
+        input.leaseToken, now + input.leaseMs, nowIso(), existing.id,
+      )
+      const row = this.findScheduleOccurrence(input.scheduleId, input.logicalTime, input.timingRevision)
+      if (row === undefined) throw new Error(`occurrence ${existing.id} disappeared after claim`)
+      return { row, claimed: true, reason: null }
+    })
+  }
+
+  // The token is the whole check. A worker whose lease was recovered by someone
+  // else still has a token, but it is no longer the row's, so its result cannot
+  // overwrite the current holder's. `settled: false` is not an error: the row
+  // moved on and the caller reports it.
+  settleScheduleOccurrence(input: {
+    scheduleId: string
+    logicalTime: number
+    timingRevision: number
+    leaseToken: string
+    state: 'dispatched' | 'skipped'
+    reason?: string | null
+    missed?: number
+    jobId?: string | null
+    dispatchedAt?: number | null
+    lagMs?: number | null
+    now?: number
+  }): { row: ScheduleOccurrenceRow; settled: boolean; reason: 'stale-lease' | null } {
+    return this.transaction(() => {
+      const existing = this.findScheduleOccurrence(input.scheduleId, input.logicalTime, input.timingRevision)
+      if (existing === undefined) throw new Error(`occurrence ${input.scheduleId}@${input.logicalTime}/${input.timingRevision} is not claimed`)
+      if (existing.lease_token !== input.leaseToken) {
+        return { row: existing, settled: false, reason: 'stale-lease' as const }
+      }
+      this.run(
+        `UPDATE schedule_occurrences
+            SET state = ?, reason = ?, missed = ?, job_id = ?, dispatched_at = ?, lag_ms = ?,
+                lease_token = NULL, lease_expires_at = NULL, decided_at = ?
+          WHERE id = ?`,
+        input.state, input.reason ?? null, input.missed ?? existing.missed, input.jobId ?? null,
+        input.dispatchedAt ?? null, input.lagMs ?? null, nowIso(), existing.id,
+      )
+      const row = this.findScheduleOccurrence(input.scheduleId, input.logicalTime, input.timingRevision)
+      if (row === undefined) throw new Error(`occurrence ${existing.id} disappeared after settle`)
+      return { row, settled: true, reason: null }
+    })
+  }
+
+  // A worker that gives up before deciding — quota, a refused dispatch it wants
+  // to retry next pass — must not sit on the lease until it lapses. Releasing is
+  // token-checked like settling, and it leaves the row claimable rather than
+  // settled, because no decision was taken.
+  releaseScheduleLease(input: {
+    scheduleId: string
+    logicalTime: number
+    timingRevision: number
+    leaseToken: string
+    reason?: string
+  }): { row: ScheduleOccurrenceRow; released: boolean } {
+    return this.transaction(() => {
+      const existing = this.findScheduleOccurrence(input.scheduleId, input.logicalTime, input.timingRevision)
+      if (existing === undefined) throw new Error(`occurrence ${input.scheduleId}@${input.logicalTime}/${input.timingRevision} is not claimed`)
+      if (existing.lease_token !== input.leaseToken) return { row: existing, released: false }
+      this.run(
+        `UPDATE schedule_occurrences
+            SET state = 'expired', reason = ?, lease_token = NULL, lease_expires_at = NULL
+          WHERE id = ?`,
+        input.reason ?? 'released', existing.id,
+      )
+      const row = this.findScheduleOccurrence(input.scheduleId, input.logicalTime, input.timingRevision)
+      if (row === undefined) throw new Error(`occurrence ${existing.id} disappeared after release`)
+      return { row, released: true }
+    })
+  }
+
+  // The sweep is what turns a dead worker's lease into a recoverable instant.
+  // It frees the row and leaves it `expired`, so the next claim can take it. It
+  // never touches a settled row: those hold no lease in the first place.
+  sweepScheduleLeases(now = Date.now(), limit = 100): { freed: number; ids: string[] } {
+    return this.transaction(() => {
+      const expired = this.all<{ id: string }>(
+        `SELECT id FROM schedule_occurrences
+          WHERE state = 'claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+          ORDER BY lease_expires_at ASC LIMIT ?`,
+        now, limit,
+      )
+      for (const row of expired) {
+        this.run(
+          `UPDATE schedule_occurrences
+              SET state = 'expired', reason = 'lease-expired', lease_token = NULL, lease_expires_at = NULL
+            WHERE id = ? AND state = 'claimed'`,
+          row.id,
+        )
+      }
+      return { freed: expired.length, ids: expired.map((row) => row.id) }
+    })
+  }
+
+  // Readable so a worker can ask "is this instant someone else's right now"
+  // without writing.
+  scheduleLeaseHeld(scheduleId: string, logicalTime: number, timingRevision: number, now = Date.now()): boolean {
+    const row = this.findScheduleOccurrence(scheduleId, logicalTime, timingRevision)
+    return row !== undefined && row.lease_token !== null && row.lease_expires_at !== null && row.lease_expires_at > now
   }
 
   getRepoInstance(repoId: string): RepoInstanceRow | undefined {
