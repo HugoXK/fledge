@@ -160,7 +160,10 @@ defect.
   open. The toggle itself is hidden outside the phone band by a base rule, so
   the desktop header never shows a control whose panel does not exist there.
   Every destination the wide header lists is still rendered in the panel,
-  so a phone loses no route. Below 420px the row also drops the wordmark (the
+  so a phone loses no route. The theme control is one 44px icon summary in the
+  header, not a text group: its `<details>` menu carries the three choices, is
+  available signed-out, and on a phone is pinned under the header so it cannot
+  overflow either edge. Below 420px the row also drops the wordmark (the
   mark and its own `aria-label` stay) and tightens its padding and gaps: at a
   360px viewport with a classic 15px scrollbar the row has 301px of usable
   width, and the wordmark is the one child that can leave without taking a

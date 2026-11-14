@@ -272,14 +272,15 @@ How it is selected:
   property, so the two colours are the palette's `--bg` values in
   `src/views/theme.ts`, and `test/theme.test.ts` keeps them equal to the
   stylesheet's `--bg`.
-- The control is three links at the end of `#main-nav`, one per choice, with the
-  current one marked `aria-current="true"`. Inside the compact header that
-  element is the panel, so the 360px row gains no child and cannot overflow
-  (#133); above 960px the links sit in the row, and between 961px and the sheet's
-  1180px content width the account's display name steps aside instead of the row
-  wrapping. Every choice keeps the 44px touch floor. Signed-out pages honour the
-  saved palette but do not show the control, because their header has no panel to
-  put it in.
+- The control is one 44px icon button in the header, not three text links
+  reading as `AutoLightDark`. Its `<summary>` shows the saved mode (auto/sun/moon
+  through `data-theme`) and opens a `<details>` menu with the three choices. Each
+  option is an icon plus a label and keeps the 44px touch floor; the saved choice
+  carries `aria-current="true"`. The menu is plain links, so it works without
+  JavaScript, and it is available signed-out because it no longer lives inside
+  the signed-in navigation panel. On a phone the popover is pinned to the viewport under the header,
+  so it cannot open past either edge whichever side the summary sits on; the
+  quota pill is the one item that may leave the 420px row, never a 44px target.
 
 ## Console states (控制台状态)
 
