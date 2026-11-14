@@ -670,9 +670,26 @@ while any other status becomes the fixed `the tag reference was refused by GitHu
 the page. A 422 from `createAnnotatedTag` is the `target_missing` refusal rather
 than an exception. No call here updates or deletes a ref.
 
+Workflow tracking uses bounded reads and one draft-only write:
+`listWorkflowRunsForRef` (up to three pages of `GET /actions/runs?branch=<tag>`,
+so other workflows cannot push the tag's run out of the window),
+`listWorkflowJobs` (up to three pages of `GET /actions/runs/{id}/jobs`),
+`getReleaseByTag` (`GET /releases/tags/{tag}`, `null` on 404), `createRelease`
+(`POST /releases`, `draft` fixed `true`, so this client cannot publish) and
+`updateRelease` (`PATCH /releases/{id}`). Only a run whose head is the tag commit
+and whose path is the release workflow can produce a draft; a tag without such a
+run is `run_missing`. The tracker reads an existing Release before the run: the id
+the row recorded is `draft_exists` while it is a draft and `draft_published` once
+the human publishes it, and every other Release is `external_release` and is never
+duplicated.
+
 `POST /repos/:id/release` (owner only, CSRF) redirects to
 `/repos/:id?release=1&refused=<reason>` on a refusal and
 `?release=1&tagged=<tag>` on success; a re-tag of a name that already has a
 `repo_releases` row updates that row and adds `&retagged=1` so the page says the
 tag already existed and the record was updated. The page renders whichever
-outcome is present above the form.
+outcome is present above the form. The first workflow observation is recorded
+against the same row, and
+`POST /repos/:id/releases/:releaseId/check` (owner only, CSRF, maintainer role)
+repeats it, then redirects to `?release=1&checked=<message>`. The check may
+prepare a draft Release; it never publishes, reruns, deletes or moves anything.

@@ -8,7 +8,8 @@ import { Readable } from 'node:stream'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
 import { openStore, type GateSessionRow, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
-import { createAnnotatedTag, releasePreflight } from './releases/release.js'
+import { createAnnotatedTag, parseVersion, releasePreflight } from './releases/release.js'
+import { reconcileRelease, trackingUpdate } from './releases/tracking.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
 import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions, type Viewer } from './auth/session.js'
@@ -1877,6 +1878,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         releaseRefused: queryText(request, 'refused'),
         releaseTagged: queryText(request, 'tagged'),
         releaseRetagged: queryText(request, 'retagged'),
+        releaseChecked: queryText(request, 'checked'),
       }),
     )
   })
@@ -1961,8 +1963,67 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const recorded = store.recordRelease({ repoId: repo.id, userId: viewer.user.id, version: plan.version, tagName: plan.tagName, targetSha: plan.targetSha, tagObjectSha: created.tagObjectSha, previousTag: plan.previousTag, actor: viewer.user.login })
     store.audit(viewer.user.id, 'release.tagged', `${repo.id}: ${plan.tagName}@${plan.targetSha}`)
     if (recorded === undefined) return reply.redirect(`${back}&refused=${encodeURIComponent(`tag ${plan.tagName} was created, but its release record could not be updated; Fledge moved nothing`)}`)
+    // The run may not exist yet; the first observation is still recorded, and
+    // the check route repeats it later. A failed check never turns a created tag
+    // into a refusal. The recorded draft pointer travels into the reconcile: on a
+    // re-tag the row still owns the Release it prepared, and without the pointer
+    // that Release would be misread as someone else's.
+    try {
+      const tracked = await reconcileRelease(client, {
+        owner,
+        name,
+        tagName: plan.tagName,
+        targetSha: plan.targetSha,
+        prerelease: plan.prerelease,
+        draftReleaseId: recorded.draft_release_id === null ? null : Number(recorded.draft_release_id),
+      })
+      store.updateReleaseTracking(recorded.id, trackingUpdate(tracked, {
+        draftReleaseId: recorded.draft_release_id,
+        draftUrl: recorded.draft_url,
+      }))
+    } catch (error) {
+      log.warn('release run check after tag failed', { repo: repo.id, tag: plan.tagName, error: String(error) })
+    }
     if (retagged) return reply.redirect(`${back}&tagged=${encodeURIComponent(plan.tagName)}&retagged=1`)
     return reply.redirect(`${back}&tagged=${encodeURIComponent(plan.tagName)}`)
+  })
+
+  // #546: the read/reconcile surface. It observes the tag's workflow run again
+  // and may prepare a draft Release; it never publishes, reruns, deletes or moves
+  // anything, and the owner's maintainer role is the precondition.
+  app.post('/repos/:id/releases/:releaseId/check', async (request, reply) => {
+    const params = request.params as Record<string, string>
+    const { viewer, repo } = ownedRepo(request, String(params.id), true)
+    const back = `/repos/${repo.id}?release=1`
+    if (repo.repo_role !== 'maintainer') {
+      return reply.redirect(`${back}&error=${encodeURIComponent('只有 maintainer 可以检查发布工作流。')}`)
+    }
+    const release = store.releaseById(String(params.releaseId))
+    if (release === undefined || release.repo_id !== repo.id) throw httpError(404, '发布记录不存在。', 'RELEASE_NOT_FOUND')
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    const token = await repoGithubToken(repo, config, githubApp, store)
+    const client = new GithubClient(token, config.github.apiBase)
+    let result: Awaited<ReturnType<typeof reconcileRelease>>
+    try {
+      result = await reconcileRelease(client, {
+        owner,
+        name,
+        tagName: release.tag_name,
+        targetSha: release.target_sha,
+        prerelease: (parseVersion(release.version)?.prerelease.length ?? 0) > 0,
+        draftReleaseId: release.draft_release_id === null ? null : Number(release.draft_release_id),
+      })
+    } catch (error) {
+      log.warn('release run check failed', { repo: repo.id, tag: release.tag_name, error: String(error) })
+      return reply.redirect(`${back}&error=${encodeURIComponent('the workflow run could not be read from GitHub; no Release was created')}`)
+    }
+    store.updateReleaseTracking(release.id, trackingUpdate(result, {
+      draftReleaseId: release.draft_release_id,
+      draftUrl: release.draft_url,
+    }))
+    store.audit(viewer.user.id, 'release.checked', `${repo.id}: ${release.tag_name} ${result.status}`)
+    return reply.redirect(`${back}&checked=${encodeURIComponent(result.message)}`)
   })
 
   app.post('/repos/:id/memory', async (request, reply) => {

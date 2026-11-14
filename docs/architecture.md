@@ -1965,7 +1965,47 @@ never quoted. A 422 keeps its own `tag v1.2.3 already exists; nothing was moved 
 deleted` sentence, so the race and the generic refusal do not merge.
 
 `repo_releases` records one row per created tag (`UNIQUE(repo_id, tag_name)`), with
-the tag object SHA, the target commit, the previous tag and the actor, so the
-workflow tracking and draft-release slices (#546's steps 3-7) can build on the
-record instead of re-running the preflight. `release_sources` from the issue is
-deliberately not created yet: it belongs to the notes slice.
+the tag object SHA, the target commit, the previous tag and the actor. The
+workflow-run slice adds its observation to that same row (additive columns, no
+second table): `run_id`, `run_attempt`, `status`, `conclusion`, `workflow_name`,
+`draft_release_id`, `draft_url`, `external_release_id` and `last_checked_at`.
+`release_sources` from the issue is deliberately not created yet: it belongs to
+the notes slice.
+
+## Following the release workflow and preparing a draft
+
+`src/releases/tracking.ts` observes the workflow a tag fires and stops at a draft
+Release — a human still edits and publishes it. The reconcile is bounded: three
+pages of runs (`GET /actions/runs?branch=<tag>`, so another workflow's traffic
+cannot push the tag's run out of the window), three pages of jobs
+(`GET /actions/runs/{id}/jobs`), and no history crawl. The selected run must match
+twice: its head is the tag commit, and its path is the release workflow
+(`.github/workflows/release.yml` or `.yaml`). Neither match is a preference with a
+fallback — a tag whose release workflow has not appeared yet is `run_missing`,
+because a draft body that says the release workflow succeeded has to be true.
+Among the runs that do match, the newest run and highest attempt win.
+
+A draft is prepared only when the run is completed with conclusion `success` and
+every job is `success`, `neutral` or `skipped`. An in-progress run or job keeps
+the row at `running`; a `failure`, `cancelled`, `timed_out`, `startup_failure`,
+`action_required` or `stale` run, or one failed job under a green run, records
+`run_failed` and creates nothing. Fledge never reruns the workflow.
+
+Before the run is read, `GET /releases/tags/{tag}` answers whether the repository
+already has a Release for this tag. The id this row recorded is its own: still a
+draft is `draft_exists`, and once the human published it the same id is
+`draft_published` — the pointer and the page link are kept either way, because
+publishing is the documented end state. Any other Release is `external_release`:
+the row stores its id and no second Release is created. A Release that appears
+between the read and the write is caught as a 422 on `POST /releases`, re-read by
+tag, and recorded as external instead of retried. `POST /releases` is fixed to
+`draft: true` in the client, so this path cannot publish.
+
+The first observation happens once after a successful tag write and is recorded
+even when no run exists yet (`run_missing`); a failed observation is logged and
+never turns the created tag into a refusal. The maintainer repeats it from the
+repository page with `POST /repos/:id/releases/:releaseId/check` (owner only,
+CSRF, maintainer role), which re-reads the run, writes the tracking columns and
+audits `release.checked`. The page shows the status, run id, conclusion, draft
+link or external marker, and the check button. Nothing in this slice publishes a
+Release, deletes or moves a tag, or starts a workflow.
