@@ -147,6 +147,74 @@ test('strictly after from still holds when from is an occurrence', () => {
   )
 })
 
+// The rows below reach the same boundary through a different input each time, so
+// a fix that special-cases `start_at` instead of loosening the first-day filter
+// fails one of them rather than passing all of them by accident.
+
+test('a from one millisecond before start_at still lands on the occurrence', () => {
+  const startAt = Date.parse('2026-11-17T01:00:00Z')
+  const schedule = parse({ cron: '0 9 * * *', timezone: 'Asia/Shanghai', startAt })
+  assert.equal(
+    nextTime(schedule, startAt - 1),
+    startAt,
+    'the same boundary reached from the from side must give the same answer',
+  )
+})
+
+test('a quarter-hour expression keeps its own step at start_at', () => {
+  const schedule = parse({
+    cron: '*/15 * * * *',
+    timezone: 'Asia/Shanghai',
+    startAt: Date.parse('2026-11-17T01:15:00Z'),
+  })
+  assert.equal(
+    nextTime(schedule, Date.parse('2026-11-15T00:00:00Z')),
+    Date.parse('2026-11-17T01:15:00Z'),
+    'a skipped candidate must not advance the search to the next step',
+  )
+})
+
+test('a list of hours does not advance to the next same-day occurrence', () => {
+  const schedule = parse({
+    cron: '0 9,15 * * *',
+    timezone: 'Asia/Shanghai',
+    startAt: Date.parse('2026-11-17T01:00:00Z'),
+  })
+  assert.equal(
+    nextTime(schedule, Date.parse('2026-11-15T00:00:00Z')),
+    Date.parse('2026-11-17T01:00:00Z'),
+    '09:00 at start_at beats 15:00 the same day',
+  )
+})
+
+test('the fall-back occurrence at start_at is the earlier instant, not the next day', () => {
+  const schedule = parse({
+    cron: '30 1 * * *',
+    timezone: 'America/New_York',
+    startAt: Date.parse('2026-11-01T01:30:00-04:00'),
+  })
+  assert.equal(
+    nextTime(schedule, Date.parse('2026-10-31T00:00:00Z')),
+    Date.parse('2026-11-01T05:30:00Z'),
+    'the repeated local time at start_at fires once, at the earlier instant',
+  )
+})
+
+test('an end_at one millisecond after the occurrence leaves it in the window', () => {
+  const occurrence = Date.parse('2026-11-17T01:00:00Z')
+  const schedule = parse({
+    cron: '0 9 * * *',
+    timezone: 'Asia/Shanghai',
+    startAt: occurrence,
+    endAt: occurrence + 1,
+  })
+  assert.equal(
+    nextTime(schedule, Date.parse('2026-11-15T00:00:00Z')),
+    occurrence,
+    'end_at is exclusive, so one millisecond past the occurrence still admits it',
+  )
+})
+
 test('an expression the schedule does not support is refused with a reason', () => {
   const cases: Array<[string, string, string]> = [
     ['0 9 * * * *', 'a six-field form means a leading seconds field', 'seconds'],
