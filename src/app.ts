@@ -4088,9 +4088,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // #283: the platform emergency stop. `isAdminRole` on purpose, not
   // `requireAdmin`, and no `preview` rejection: the preview cookie is how the
   // admin panel degrades to read-only, and the one action that must still work in
-  // that state is stopping everything. The stop is a persisted `settings` row, so
-  // it survives a restart, and this route reports what the drain did rather than
-  // a bare "stopped".
+  // that state is stopping everything. The recency gate still applies in preview,
+  // because a read-only panel is exactly where a stale cookie must not act. The
+  // stop is a persisted `settings` row, so it survives a restart, and this route
+  // reports what the drain did rather than a bare "stopped".
   app.post('/admin/platform/stop', async (request, reply) => {
     // Same limiter and window as the other mutating form (`/approve/:token`), and
     // an HTML page rather than the JSON 429 the API routes send: this is a form
