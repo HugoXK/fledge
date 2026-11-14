@@ -33,6 +33,8 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/readyz` | public | Database and per-repository instance readiness summary |
 | GET | `/metrics` | `Authorization: Bearer <METRICS_TOKEN>` only | Prometheus metrics; a production start refuses an empty `METRICS_TOKEN`, so there is no unauthenticated production path, and a `?token=` query value is not accepted |
 | GET | `/api/read/metrics` | approved | Read-only metrics: a super admin gets the global window, users get their own personal window (`?window=7 or 30`) |
+| GET | `/schedule` | approved | Schedule preview page: the next runs of a cron expression or interval, with local times and DST skips |
+| GET | `/api/schedule/preview` | approved | The same preview as JSON |
 | POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job; plan-first repositories enqueue a plan |
 | POST | `/repos/:id/work` | owner + CSRF | Create a work item |
 | POST | `/repos/:id/work/:workItemId/state` | owner + CSRF | Move a work item through the triage/assignment/review state machine |
@@ -128,6 +130,30 @@ room. `window=7` (default) or `window=30` selects the time window. A normal user
 receives only `personal` metrics for their own account. A super admin
 receives the global `product`, `delivery`, `daily`, `team`, `repoCosts`, `modelCosts`
 and `alerts` sections. The route never mutates state.
+
+## Schedule preview
+
+### `GET /api/schedule/preview`
+
+Session-authenticated and read-only: it walks the planner and stores nothing.
+Query parameters:
+
+- `cron` or `every` — exactly one. `cron` is a five-field expression; `every` is
+  an interval with a unit, such as `90s`, `15m`, `2h` or `1d`, between one minute
+  and 30 days.
+- `timezone` — an IANA zone, required for `cron` and refused for `every`, because
+  the interval form has no timezone and is absolute time.
+- `from` — an ISO 8601 instant with an offset; defaults to now.
+- `start_at`, `end_at` — optional `[start_at, end_at)` window, same shape as `from`.
+- `count` — 1..20, default 5.
+
+A bare date and time without an offset is refused: it names a different instant
+in each zone. A refusal is HTTP 400 with `{ "error": "<reason naming the
+field>" }`. Success is `{ schedule, from, count, times, truncated }`, where each
+entry carries `at` (ISO), `atMs`, `local`, `offset`, `timezone` and `skipped` —
+the wall times that did not exist on the way there, which the planner skipped
+rather than shifted. `local`, `offset` and `timezone` are `null` for an interval,
+and `truncated` is true when the window ended before `count`.
 
 ## Email notifications
 
