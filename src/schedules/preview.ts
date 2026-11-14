@@ -198,7 +198,10 @@ function modeSchedule(mode: string, query: Record<string, string | undefined>, t
     }
     return { ok: true, cron, every: '', timezone: (query.timezone ?? '').trim() || 'Asia/Shanghai' }
   }
-  const parsedTime = parseClock(query.time ?? '09:00', t)
+  // #677: the page names each panel's clock `<mode>_time`, so a request from the
+  // form can only carry the value the person edited. `time` remains the name for
+  // API callers, and it is the fallback when the mode's own field is absent.
+  const parsedTime = parseClock(query[`${mode}_time`] ?? query.time ?? '09:00', t)
   if (!parsedTime.ok) return parsedTime
   const hour = parsedTime.hour
   const minute = parsedTime.minute

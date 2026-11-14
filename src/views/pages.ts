@@ -3553,8 +3553,13 @@ export function schedulePage(input: {
   const t = translator(locale)
   const field = (name: string, label: string, value: string, placeholder: string, hint = ''): string =>
     `<label>${escapeHtml(label)} <input name="${escapeHtml(name)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" />${hint === '' ? '' : ` <span class="fine">${escapeHtml(hint)}</span>`}</label>`
-  const timeField = (): string =>
-    `<label>${escapeHtml(t('时间', 'Time'))} <input type="time" name="time" value="${escapeHtml(form.time === '' ? '09:00' : form.time)}" step="60" required /></label>`
+  // #677: one clock input per mode, each under its own name. All four panels are
+  // in the form at once (the script only hides them, and a browser still submits
+  // a hidden input), so a shared `time` name arrived as an array and the server
+  // dropped it, previewing 09:00 for every pick. Only the panel the mode selects
+  // is required, so an empty hidden field cannot block the submit.
+  const timeField = (mode: string): string =>
+    `<label>${escapeHtml(t('时间', 'Time'))} <input type="time" name="${mode}_time" value="${escapeHtml(form.time === '' ? '09:00' : form.time)}" step="60"${form.mode === mode ? ' required' : ''} /></label>`
   const zoneOptions = ['Asia/Shanghai', 'Asia/Tokyo', 'Asia/Singapore', 'Asia/Kolkata', 'Europe/London', 'Europe/Berlin', 'Europe/Paris', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'Australia/Sydney', 'UTC']
   if (form.timezone !== '' && !zoneOptions.includes(form.timezone)) zoneOptions.push(form.timezone)
   const timezoneSelect = `<select name="timezone" data-schedule-timezone data-auto="${form.timezone === '' ? '1' : '0'}">${zoneOptions.map((zone) => `<option value="${escapeHtml(zone)}"${form.timezone === zone || (form.timezone === '' && zone === 'Asia/Shanghai') ? ' selected' : ''}>${escapeHtml(zone)}</option>`).join('')}</select>`
@@ -3611,10 +3616,10 @@ export function schedulePage(input: {
       <form method="get" action="/schedule" class="form" data-schedule-form>
         <div class="row">${modeSelect}<label data-schedule-timezone-wrap>${escapeHtml(t('时区', 'Timezone'))} ${timezoneSelect}</label><label>${escapeHtml(t('预览条数', 'Runs to show'))} <input type="number" name="count" min="1" max="20" value="${escapeHtml(form.count === '' ? '5' : form.count)}" inputmode="numeric" /></label></div>
         ${panel('interval', `<label>${escapeHtml(t('每', 'Every'))} <input type="number" name="every_amount" min="1" max="10080" value="${escapeHtml(form.everyAmount === '' ? '15' : form.everyAmount)}" inputmode="numeric" /> <select name="every_unit"><option value="m"${form.everyUnit !== 'h' && form.everyUnit !== 'd' ? ' selected' : ''}>${escapeHtml(t('分钟', 'minutes'))}</option><option value="h"${form.everyUnit === 'h' ? ' selected' : ''}>${escapeHtml(t('小时', 'hours'))}</option><option value="d"${form.everyUnit === 'd' ? ' selected' : ''}>${escapeHtml(t('天', 'days'))}</option></select></label>`)}
-        ${panel('daily', timeField())}
-        ${panel('weekdays', `${timeField()}<p class="fine">${escapeHtml(t('周一到周五，按上面的时区。', 'Monday through Friday in the timezone above.'))}</p>`)}
-        ${panel('weekly', `${weekdaySelect}${timeField()}`)}
-        ${panel('monthly', `${monthDaySelect}${timeField()}<p class="fine">${escapeHtml(t('每月这一天；不存在的日期会按规划器规则处理。', 'This day of the month; a missing date follows the planner rules.'))}</p>`)}
+        ${panel('daily', timeField('daily'))}
+        ${panel('weekdays', `${timeField('weekdays')}<p class="fine">${escapeHtml(t('周一到周五，按上面的时区。', 'Monday through Friday in the timezone above.'))}</p>`)}
+        ${panel('weekly', `${weekdaySelect}${timeField('weekly')}`)}
+        ${panel('monthly', `${monthDaySelect}${timeField('monthly')}<p class="fine">${escapeHtml(t('每月这一天；不存在的日期会按规划器规则处理。', 'This day of the month; a missing date follows the planner rules.'))}</p>`)}
         ${panel('custom', `<label class="grow">${escapeHtml(t('cron 表达式', 'cron expression'))} <input name="cron" value="${escapeHtml(form.cron)}" placeholder="0 9 * * 1-5" /></label><p class="fine">${escapeHtml(t('五个字段：分 时 日 月 周。给熟悉 cron 的人使用。', 'Five fields: minute hour day month weekday. For people who already know cron.'))}</p>`)}
         <details class="advanced-help"><summary>${escapeHtml(t('高级：起止时间 / 从哪个时刻开始预览', 'Advanced: start, end and preview from'))}</summary>
           <div class="row">${field('from', t('从', 'From'), form.from, '2026-11-16T00:00:00Z', t('留空=现在', 'empty = now'))}${field('start_at', t('生效时间', 'Start at'), form.startAt, '2026-11-16T00:00:00Z', '')}${field('end_at', t('结束时间', 'End at'), form.endAt, '', '')}</div>

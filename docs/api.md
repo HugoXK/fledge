@@ -194,7 +194,11 @@ Query parameters:
     and ignores `timezone`, because an interval is absolute time.
   - `daily`, `weekdays`, `weekly` and `monthly` read `time` as `HH:MM`,
     `timezone` (default `Asia/Shanghai`), and `weekday` (0=Sunday..6=Saturday)
-    or `month_day` (1..31) where the mode needs one.
+    or `month_day` (1..31) where the mode needs one. The page itself names each
+    panel's clock after its mode — `daily_time`, `weekdays_time`, `weekly_time`,
+    `monthly_time` — because all four panels are in one form and a shared name
+    would arrive as an array; the mode's own field wins, and `time` is the
+    fallback and the name for API callers.
   - `custom` reads `cron`; the timezone defaults to `Asia/Shanghai` when omitted.
   A mode ignores the legacy `cron`/`every` values, so switching between modes in
   the page cannot leave a stale expression in the request.
