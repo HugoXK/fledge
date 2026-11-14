@@ -62,7 +62,9 @@ function fixture(lastRunAt = LAST_RUN_AT) {
 }
 
 function repoLine(html: string): string {
-  const match = /<span data-next-run>([^<]*)<\/span>/.exec(html)
+  // The element also carries `data-next-source` (#544): the page says whether the
+  // line came from the legacy interval rule or from the schedule planner.
+  const match = /<span data-next-run[^>]*>([^<]*)<\/span>/.exec(html)
   assert.ok(match, 'the repository page renders its next-run line in one element')
   return match[1]!
 }

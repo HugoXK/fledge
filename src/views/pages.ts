@@ -1,4 +1,5 @@
 import type { Config } from '../config.js'
+import type { CostReport } from '../metrics/cost.js'
 import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow } from '../db.js'
 import { redactCommand, type DriftAssessment, type EnvironmentCurrent, type ReleaseSnapshot } from '../lib/deployments.js'
 import { agreementContent } from '../users/agreements.js'
@@ -19,6 +20,7 @@ import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
 import type { PreviewResult } from '../schedules/preview.js'
+import { intervalFieldText, type ScheduleConsoleState } from '../schedules/console.js'
 import { contractOf, resolveWorkType, workTypeLabel, workTypePurpose } from '../lib/workTypes.js'
 import { parseTriageJson, triageSummaryLine } from '../lib/triage.js'
 import { parseModelRun } from '../lib/modelRun.js'
@@ -1073,7 +1075,7 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number } }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: { kind: 'cron' | 'interval' | 'unreadable'; at: number | null } }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const workItems = input.workItems ?? []
@@ -1201,8 +1203,10 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const reviewStatus = repo.last_review_status === null ? '' : ` · ${badge(t, repo.last_review_status)}`
   const activeJob = input.activeJob ?? jobs.some((job) => job.status === 'queued' || job.status === 'running')
   const openWork = workItems.some((item) => item.state !== 'merged' && item.state !== 'closed')
-  // #564: the same rule the worker applies, so this page and the dashboard
-  // cannot disagree about when the repository runs again.
+  // #564: this is the legacy interval path, and it answers only for a repository
+  // with no schedule row. A repository that has one is answered by the planner
+  // (`src/schedules/next.ts`) through `input.scheduledNext`, so the page prints
+  // that number instead of a second, weaker one (#544).
   const nextRunState = nextRun({
     lastRunAt: repo.last_run_at,
     intervalMinutes: repo.interval_minutes,
@@ -1213,7 +1217,14 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     repoEnabled: repo.enabled === 1,
     instanceReady: config.flybot.instanceImage === '' ? true : instance?.status === 'ready',
   })
-  const nextRunText = nextRunLine(nextRunState, t)
+  const scheduledNext = input.scheduledNext
+  const nextRunText = scheduledNext === undefined
+    ? nextRunLine(nextRunState, t)
+    : scheduledNext.kind === 'unreadable'
+      ? t('unknown（排期无法解析）', 'unknown (the schedule cannot be read)')
+      : scheduledNext.at === null
+        ? t('unknown（排期窗口已结束）', 'unknown (the schedule window has closed)')
+        : nextRunLine({ at: scheduledNext.at, state: scheduledNext.at <= Date.now() ? 'due' : 'scheduled' }, t)
   const instanceTeam = instance === undefined ? null : parseTeam(instance.team_json)
   const instanceReady = instance?.status === 'ready' && instanceTeam !== null
   const flybotAvailable = config.flybot.instanceImage !== ''
@@ -1266,7 +1277,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <div>
         <div class="eyebrow">${escapeHtml(t('仓库', 'REPOSITORY'))}</div>
         <h1>${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</h1>
-        <p class="muted">${escapeHtml(t('目标分支', 'Target branch'))} <code>${escapeHtml(targetBranch)}</code>${targetBranch === defaultBranch ? '' : ` · ${escapeHtml(t('默认分支', 'Default branch'))} <code>${escapeHtml(defaultBranch)}</code>`} · ${escapeHtml(repo.auto_iterate === 1 ? t('自动迭代已开启', 'Auto-iteration on') : t('仅手动运行', 'Manual runs only'))} · ${escapeHtml(t('自动间隔', 'Auto every'))} <b>${escapeHtml(intervalLabel(repo.interval_minutes, t))}</b> · ${escapeHtml(t('下次约', 'Next'))} <span data-next-run>${escapeHtml(nextRunText)}</span> · ${badge(t, repo.last_status ?? 'idle')}</p>
+        <p class="muted">${escapeHtml(t('目标分支', 'Target branch'))} <code>${escapeHtml(targetBranch)}</code>${targetBranch === defaultBranch ? '' : ` · ${escapeHtml(t('默认分支', 'Default branch'))} <code>${escapeHtml(defaultBranch)}</code>`} · ${escapeHtml(repo.auto_iterate === 1 ? t('自动迭代已开启', 'Auto-iteration on') : t('仅手动运行', 'Manual runs only'))} · ${escapeHtml(t('自动间隔', 'Auto every'))} <b>${escapeHtml(intervalLabel(repo.interval_minutes, t))}</b> · ${escapeHtml(t('下次约', 'Next'))} <span data-next-run data-next-source="${escapeHtml(scheduledNext === undefined ? 'interval' : 'schedule')}">${escapeHtml(nextRunText)}</span> · <a href="/repos/${escapeHtml(repo.id)}/schedule">${escapeHtml(t('排期控制台', 'Schedule console'))}</a> · ${badge(t, repo.last_status ?? 'idle')}</p>
         <p class="fine">${escapeHtml(t('上游', 'Upstream'))} <a href="${escapeHtml(upstreamUrl)}" target="_blank" rel="noreferrer">${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</a> · ${repo.is_fork === 1 ? `${escapeHtml(t('Fork', 'Fork'))} <a href="${escapeHtml(forkUrl)}" target="_blank" rel="noreferrer">${escapeHtml(forkOwner)}/${escapeHtml(forkName)}</a>` : escapeHtml(t('自有仓库，无需 fork', 'Own repository, no fork'))} · ${escapeHtml(t('GitHub 权限', 'GitHub permission'))} <code>${escapeHtml(permission)}</code> · ${escapeHtml(t('你的角色', 'Your role'))} <code>${escapeHtml(repoRoleLabel(t, repoRole))}</code> · ${escapeHtml(reviewerLabel)}</p>
       </div>
       <div class="row">
@@ -1571,6 +1582,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     ${input.releaseRetagged !== undefined
       ? `<p class="banner ok" id="release-retagged">${escapeHtml(t('标签已存在，记录已更新', 'Tag already existed; the recorded row was updated'))} / ${escapeHtml(t('Tag already existed; the recorded row was updated', '标签已存在，记录已更新'))}: <code>${escapeHtml(input.releaseTagged ?? '')}</code> · ${escapeHtml(t('没有新建或移动标签。', 'Nothing was moved or deleted.'))}</p>`
       : input.releaseTagged === undefined ? '' : `<p class="banner ok" id="release-tagged">${escapeHtml(t('已创建标签', 'Created tag'))} / ${escapeHtml(t('Created tag', '已创建标签'))}: <code>${escapeHtml(input.releaseTagged)}</code> · ${escapeHtml(t('仓库自己的 release.yml 负责发布。', "The repository's own release.yml does the release."))}</p>`}
+    ${input.releaseChecked === undefined ? '' : `<p class="banner ok" id="release-checked">${escapeHtml(t('已检查工作流', 'Workflow checked'))} / ${escapeHtml(t('Workflow checked', '已检查工作流'))}: ${escapeHtml(input.releaseChecked)}</p>`}
     <form method="post" action="/repos/${escapeHtml(repo.id)}/release" class="form">
       ${csrf(viewer)}
       <label for="release-version-${escapeHtml(repo.id)}">${escapeHtml(t('版本（SemVer）', 'Version (SemVer)'))}
@@ -1582,7 +1594,16 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       <label class="row"><input type="checkbox" name="confirm" value="1" required /> ${escapeHtml(t('我确认版本和提交，标签创建后不会移动', 'I confirm the version and commit; the tag will not be moved'))}</label>
       <div class="row"><button class="btn" type="submit">${escapeHtml(t('校验并打标签', 'Preflight and tag'))}</button></div>
     </form>
-    ${releases.length === 0 ? `<p class="fine">${escapeHtml(t('还没有由 Fledge 创建的版本标签。', 'No release tag created by Fledge yet.'))}</p>` : `<ul class="list">${releases.map((release) => `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}</span></li>`).join('')}</ul>`}
+    ${releases.length === 0 ? `<p class="fine">${escapeHtml(t('还没有由 Fledge 创建的版本标签。', 'No release tag created by Fledge yet.'))}</p>` : `<ul class="list">${releases.map((release) => {
+      const draft = release.draft_url === null || !/^https?:\/\//.test(release.draft_url)
+        ? ''
+        : ` · <a class="link" href="${escapeHtml(release.draft_url)}" target="_blank" rel="noreferrer">${escapeHtml(release.status === 'draft_published' ? t('已发布的 Release', 'published Release') : t('草稿 Release', 'draft Release'))}</a>`
+      const external = release.external_release_id === null ? '' : ` · ${escapeHtml(t('外部 Release', 'external Release'))}`
+      const run = release.run_id === null
+        ? ''
+        : ` · run ${escapeHtml(release.run_id)}${release.conclusion === null ? '' : ` / ${escapeHtml(release.conclusion)}`}`
+      return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}</span> <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form></li>`
+    }).join('')}</ul>`}
   </section>`
   const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${planBanner}${lifecycleBanner}${triageCard}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceNotice}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : '<script src="/assets/chief.js" defer></script>'}<script src="/assets/repoTabs.js" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
@@ -1964,6 +1985,8 @@ const AUDIT_ACTIONS: Record<string, [string, string]> = {
   'repo.settings': ['仓库设置', 'Repository settings'],
   'repo.deleted': ['删除仓库', 'Repository deleted'],
   'repo.refreshed': ['刷新仓库', 'Repository refreshed'],
+  'schedule.saved': ['保存排期', 'Schedule saved'],
+  'schedule.removed': ['删除排期', 'Schedule deleted'],
   'job.enqueued': ['任务入队', 'Job queued'],
   'job.succeeded': ['任务成功', 'Job succeeded'],
   'job.failed': ['任务失败', 'Job failed'],
@@ -2850,6 +2873,12 @@ export function jobPage(input: {
   return layout({ title: `${t('任务', 'Job')} ${job.id}`, viewer, body, config, locale, path: `/repos/${repo.id}/jobs/${job.id}`, active: 'dashboard', notice, error })
 }
 
+// #636: a foreign bucket has no CNY conversion — show the amount with its code.
+function currencyAmount(amount: number, currency: string): string {
+  const digits = amount !== 0 && Math.abs(amount) < 0.01 ? 6 : 4
+  return `${amount.toFixed(digits)} ${currency}`
+}
+
 export function metricsPage(input: {
   config: Config
   locale: Locale
@@ -2888,6 +2917,7 @@ export function metricsPage(input: {
   daily: Array<{ day: string; jobs: number; succeeded: number; failed: number; merged: number }>
   repoCosts: Array<{ repoId: string; label: string; costUsd: number; calls: number }>
   modelCosts: Array<{ model: string; costUsd: number; calls: number }>
+  currency: CostReport
   alerts: AlertView[]
   windowDays?: number
   failures: Array<{ kind: FailureKind; count: number }>
@@ -2895,7 +2925,7 @@ export function metricsPage(input: {
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, metrics, team, workItems, attribution, stages, delivery, daily, repoCosts, modelCosts, alerts, failures, since, notice, error } = input
+  const { config, locale, viewer, metrics, team, workItems, attribution, stages, delivery, daily, repoCosts, modelCosts, currency, alerts, failures, since, notice, error } = input
   const windowDays = input.windowDays ?? 30
   const t = translator(locale)
   const successRate = metrics.jobs === 0 ? null : Math.round((metrics.succeeded / metrics.jobs) * 1000) / 10
@@ -2973,6 +3003,9 @@ export function metricsPage(input: {
       <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th></tr></thead><tbody>${repoCosts.length === 0 ? stateCell(3, { kind: 'empty', title: t('还没有仓库成本数据。', 'No repository cost data yet.'), body: t('窗口内没有产生计费调用。', 'No billed calls in this window.'), action: { href: '/dashboard', label: t('回到仓库', 'Back to repositories') } }) : repoCosts.map((row) => `<tr><td>${escapeHtml(row.label)}</td><td>${row.calls}</td><td>${escapeHtml(quotaMoney(row.costUsd * config.quota.usdCny))}</td></tr>`).join('')}</tbody></table></div>
     </div>
     <div class="card">
+      <h2>${escapeHtml(t('按币种成本', 'Cost by currency'))}</h2>
+      <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('币种', 'Currency'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th></tr></thead><tbody>${currency.buckets.length === 0 && currency.unknownRequests === 0 ? stateCell(3, { kind: 'empty', title: t('还没有计费调用。', 'No billed calls yet.'), body: t('窗口内没有产生计费请求。', 'No priced requests in this window.'), action: { href: '/dashboard', label: t('回到仓库', 'Back to repositories') } }) : `${currency.buckets.map((row) => `<tr><td><code>${escapeHtml(row.currency)}</code></td><td>${row.requests}</td><td>${escapeHtml(currencyAmount(row.amount, row.currency))}</td></tr>`).join('')}${currency.unknownRequests === 0 ? '' : `<tr><td><code>${escapeHtml(t('未知', 'Unknown'))}</code></td><td>${currency.unknownRequests}</td><td>${escapeHtml(t('未计价', 'Not priced'))}</td></tr>`}`}</tbody></table></div>
+      ${currency.semantics === 'lower_bound' ? `<p class="fine">${escapeHtml(t('有请求未能计价，这里的金额是下限，不是全部花费。', 'Some requests could not be priced, so these totals are a lower bound, not the whole spend.'))}</p>` : ''}
       <h2>${escapeHtml(t('模型成本', 'Cost by model'))}</h2>
       <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('模型', 'Model'))}</th><th>${escapeHtml(t('调用', 'Calls'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th></tr></thead><tbody>${modelCosts.length === 0 ? stateCell(3, { kind: 'empty', title: t('还没有模型成本数据。', 'No model cost data yet.'), body: t('窗口内没有模型调用。', 'No model calls in this window.'), action: { href: '/settings', label: t('检查模型配置', 'Check the model setup') } }) : modelCosts.map((row) => `<tr><td><code>${escapeHtml(row.model)}</code></td><td>${row.calls}</td><td>${escapeHtml(quotaMoney(row.costUsd * config.quota.usdCny))}</td></tr>`).join('')}</tbody></table></div>
     </div>
@@ -3582,4 +3615,89 @@ export function schedulePage(input: {
     </section>
     ${preview === null ? '' : `<section class="card"><h2>${escapeHtml(t('接下来的运行', 'Next runs'))}</h2><p class="muted">${scheduleLine}</p><div class="table-scroll"><table><thead><tr><th>#</th><th>${escapeHtml(t('本地时间', 'Local time'))}</th><th>UTC</th><th>${escapeHtml(t('偏移', 'Offset'))}</th><th>${escapeHtml(t('已跳过', 'Skipped'))}</th></tr></thead><tbody>${rows}</tbody></table></div>${intervalNote}${skipNote}${truncatedNote}</section>`}`
   return layout({ title: t('排期预览', 'Schedule preview'), viewer, body, config, locale, path: '/schedule', active: 'schedule', error })
+}
+
+// #544 slice 3A/3B: the schedule console. It reads the stored row through the
+// planner rather than restating it, so the page cannot disagree with the worker
+// about the next run. A value nobody recorded prints `unknown`; a zero would be a
+// claim the platform cannot make.
+export function scheduleConsolePage(input: {
+  config: Config
+  locale: Locale
+  viewer: Viewer
+  repo: RepoRow
+  state: ScheduleConsoleState
+  form: { cron: string; every: string; timezone: string; startAt: string; endAt: string }
+  notice?: string
+  error?: string
+}): string {
+  const { config, locale, viewer, repo, state, form, notice, error } = input
+  const t = translator(locale)
+  const iso = (at: number | null): string => (at === null ? 'unknown' : new Date(at).toISOString())
+  const shown = (at: number | null): string => (at === null ? t('unknown', 'unknown') : humanTimeShort(new Date(at).toISOString()))
+  const scheduleLine = state.schedule === null
+    ? t('unknown', 'unknown')
+    : state.schedule.kind === 'cron'
+      ? `cron <code>${escapeHtml(state.schedule.expression)}</code> · ${escapeHtml(state.schedule.timezone)}`
+      : `${escapeHtml(t('间隔', 'interval'))} <code>${escapeHtml(intervalFieldText(state.schedule.everyMs))}</code>`
+  const window = state.schedule === null
+    ? t('unknown', 'unknown')
+    : `${state.schedule.startAt === null ? t('不限', 'open') : escapeHtml(new Date(state.schedule.startAt).toISOString())} → ${state.schedule.endAt === null ? t('不限', 'open') : escapeHtml(new Date(state.schedule.endAt).toISOString())}`
+  const last = state.last
+  const lastLine = last === null
+    ? t('unknown', 'unknown')
+    : `${escapeHtml(last.state)}${last.reason === null ? '' : ` · ${escapeHtml(last.reason)}`}${last.missed === 0 ? '' : ` · ${escapeHtml(t(`跨过 ${last.missed} 次`, `${last.missed} passed over`))}`}`
+  const leaseLine = last === null
+    ? t('unknown', 'unknown')
+    : last.leaseHeld
+      ? t(`持有中，至 ${shown(last.leaseExpiresAt)}`, `held until ${shown(last.leaseExpiresAt)}`)
+      : t(`未被持有（尝试 ${last.attempts} 次）`, `not held (${last.attempts} attempt${last.attempts === 1 ? '' : 's'})`)
+  const occurrenceRows = state.occurrences.length === 0
+    ? `<tr><td colspan="6" class="muted">${escapeHtml(t('还没有决定过任何时刻。', 'No instant has been decided yet.'))}</td></tr>`
+    : state.occurrences.map((occurrence) => `<tr>
+        <td>${escapeHtml(shown(occurrence.logicalTime))}</td>
+        <td>${escapeHtml(occurrence.state)}</td>
+        <td>${occurrence.reason === null ? '—' : escapeHtml(occurrence.reason)}</td>
+        <td>${escapeHtml(String(occurrence.attempts))}</td>
+        <td>${occurrence.leaseHeld ? escapeHtml(t(`至 ${shown(occurrence.leaseExpiresAt)}`, `until ${shown(occurrence.leaseExpiresAt)}`)) : '—'}</td>
+        <td>${occurrence.jobId === null ? '—' : `<a href="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(occurrence.jobId)}">${escapeHtml(occurrence.jobId)}</a>`}</td>
+      </tr>`).join('')
+  const field = (name: string, label: string, value: string, placeholder: string): string =>
+    `<label>${escapeHtml(label)} <input name="${escapeHtml(name)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" /></label>`
+  const kindNote = state.kind === 'none'
+    ? `<p class="muted">${escapeHtml(t('这个仓库还没有排期；它仍按旧的自动间隔运行。保存一个排期后，由排期决定何时运行。', 'This repository has no schedule yet and still runs on the legacy interval. Once a schedule is saved, the schedule decides when it runs.'))}</p>`
+    : state.kind === 'unreadable'
+      ? `<p class="banner bad">${escapeHtml(t('这个排期读不出来（cron 行缺少表达式或时区），worker 会跳过它。请重新保存。', 'This schedule cannot be read (a cron row is missing its expression or zone), so the worker skips it. Save it again.'))}</p>`
+      : ''
+  const body = `<a class="back" href="/repos/${escapeHtml(repo.id)}">← ${escapeHtml(t('返回仓库', 'Back to repository'))}</a>
+    <section class="card"><div class="eyebrow">${escapeHtml(t('排期控制台', 'SCHEDULE CONSOLE'))}</div><h1>${escapeHtml(`${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`)}</h1>
+      ${kindNote}
+      <dl>
+        <dt>${escapeHtml(t('排期', 'Schedule'))}</dt><dd data-schedule-kind="${escapeHtml(state.kind)}">${scheduleLine}</dd>
+        <dt>${escapeHtml(t('下次运行', 'Next run'))}</dt><dd data-schedule-next="${escapeHtml(iso(state.nextAt))}">${escapeHtml(shown(state.nextAt))}</dd>
+        <dt>${escapeHtml(t('上次成功', 'Last success'))}</dt><dd data-last-success="${escapeHtml(iso(state.lastSuccess?.logicalTime ?? null))}">${escapeHtml(shown(state.lastSuccess?.logicalTime ?? null))}</dd>
+        <dt>${escapeHtml(t('最后决定', 'Last decision'))}</dt><dd>${lastLine}</dd>
+        <dt>${escapeHtml(t('租约', 'Lease'))}</dt><dd>${leaseLine}</dd>
+        <dt>${escapeHtml(t('投递结果', 'Delivery'))}</dt><dd data-delivery="${escapeHtml(state.delivery)}">${escapeHtml(t('unknown（这一片还没有投递箱）', 'unknown (no delivery outbox in this slice)'))}</dd>
+        <dt>${escapeHtml(t('有效期', 'Window'))}</dt><dd>${window}</dd>
+        <dt>${escapeHtml(t('时序版本', 'Timing revision'))}</dt><dd>${escapeHtml(state.timingRevision === null ? t('unknown', 'unknown') : String(state.timingRevision))} · ${escapeHtml(state.misfire === null ? t('unknown', 'unknown') : state.misfire)}</dd>
+      </dl>
+    </section>
+    <section class="card"><h2>${escapeHtml(t('编辑排期', 'Edit the schedule'))}</h2>
+      <p class="muted">${escapeHtml(t('排期是五字段 cron 或固定间隔，二选一；cron 需要 IANA 时区。开始/结束时间要带偏移。', 'A schedule is a five-field cron or a fixed interval, one of the two; cron needs an IANA zone. The start/end instants need an offset.'))}</p>
+      <form method="post" action="/repos/${escapeHtml(repo.id)}/schedule" class="form">${csrf(viewer)}<div class="row">
+        ${field('cron', t('cron 表达式', 'cron expression'), form.cron, '0 9 * * 1-5')}
+        ${field('every', t('或固定间隔', 'or interval'), form.every, '15m')}
+        ${field('timezone', t('时区（仅 cron）', 'timezone (cron only)'), form.timezone, 'Asia/Shanghai')}
+        ${field('start_at', t('开始 start_at', 'start_at'), form.startAt, '2026-11-16T00:00:00Z')}
+        ${field('end_at', t('结束 end_at', 'end_at'), form.endAt, '')}
+        <button class="btn" type="submit">${escapeHtml(t('保存排期', 'Save schedule'))}</button>
+      </div></form>
+      ${state.kind === 'none' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/remove" data-confirm="${escapeHtml(t('删除这个排期？仓库将回到旧的自动间隔。', 'Delete this schedule? The repository returns to the legacy interval.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('删除排期', 'Delete schedule'))}</button></form>`}
+      <p class="fine">${escapeHtml(t('改动运行时字段（表达式、间隔、时区、窗口）会让时序版本加一；已经决定过的时刻保留在原版本下可读。', 'Changing a field that decides when it fires (expression, interval, zone, window) moves the timing revision; instants already decided stay readable under the old revision.'))}</p>
+    </section>
+    <section class="card"><h2>${escapeHtml(t('最近的时刻', 'Recent instants'))}</h2>
+      <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('逻辑时间', 'Logical time'))}</th><th>${escapeHtml(t('状态', 'State'))}</th><th>${escapeHtml(t('原因', 'Reason'))}</th><th>${escapeHtml(t('尝试', 'Attempts'))}</th><th>${escapeHtml(t('租约', 'Lease'))}</th><th>${escapeHtml(t('任务', 'Job'))}</th></tr></thead><tbody>${occurrenceRows}</tbody></table></div>
+    </section>`
+  return layout({ title: t('排期控制台', 'Schedule console'), viewer, body, config, locale, path: `/repos/${repo.id}/schedule`, active: 'schedule', notice, error })
 }

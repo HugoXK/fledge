@@ -1,1 +1,0 @@
-A cancel that lands but cannot write its postmortem now leaves a durable audit row naming the job and the error, instead of only a log line. The cancel itself still succeeds and the job stays cancelled, so a missing postmortem can be found later and rewritten rather than disappearing from the recurrence ledger.

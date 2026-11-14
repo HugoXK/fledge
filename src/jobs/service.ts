@@ -8,7 +8,6 @@ import { dailyDigestEmail, jobAttentionEmail, jobFailedEmail, jobSucceededEmail,
 import { notifyEmail, replyAddressFor } from '../email/recipient.js'
 import { sendNotificationWebhook } from '../lib/webhook.js'
 import { log } from '../lib/log.js'
-import { errorClass, errorMessage } from '../lib/errorText.js'
 import { redact } from '../lib/secrets.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
@@ -382,16 +381,30 @@ export class Jobs {
     const prepared = await this.prepareStop(jobId, reason, 'cancelled')
     if (!prepared.ok) return prepared
     prepared.apply()
-    // #666: the status write has landed by now, so the answer this method returns
-    // must say so. A post-commit callback that throws is a defect worth finding,
-    // but it is not a failed cancel, and letting it escape here would turn a
-    // landed `/fledge cancel` into a 500 with the claim released and the delivery
-    // marked failed.
+    // #666: the second after-commit site. The management path guards this call in
+    // `commitSucceeded`, but this one is reached directly by callers that are not
+    // commands, and a cancel that has landed must not report an error because its
+    // after-commit write escaped. The callback owns its own catch as well; the
+    // guard here is the one that survives a callback that does not.
     try {
       prepared.afterCommit?.()
     } catch (error) {
-      log.warn('after-commit callback failed', { trace: jobId, error: redact(String(error)).slice(0, 300) })
-      this.recordDurableFailure('job.after_commit_failed', jobId, error)
+      const name = error instanceof Error ? error.name : typeof error
+      const text = error instanceof Error ? error.message : String(error)
+      log.warn('after-commit callback failed', { trace: jobId, error: `${name}: ${text}` })
+      try {
+        const job = this.store.getJob(jobId)
+        this.store.recordJobEvent({
+          jobId,
+          repoId: job?.repo_id ?? null,
+          userId: job?.user_id ?? null,
+          kind: 'job.after_commit_failed',
+          step: job?.kind ?? null,
+          meta: `${jobId} ${name}: ${redact(text)}`,
+        })
+      } catch (traceError) {
+        log.warn('after-commit failure trace could not be written', { trace: jobId, error: String(traceError) })
+      }
     }
     return { ok: true, ...prepared.stop }
   }
@@ -447,6 +460,11 @@ export class Jobs {
     const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
     const resumePr = kind === 'iterate' && job.pr_url !== null
     const result = await this.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, {
+      // #636: the retry continues the same budget, so it names the attempt it
+      // continues; a fresh id would reset the per-job spend to zero. The chain is
+      // the immediate parent every time — naming the grandparent skipped the
+      // middle attempt's rows when a retry was retried (#676 review).
+      retryOf: job.id,
       // #353: both callers are a person — the console's retry button and an
       // issue-thread `/fledge retry` — so the run is theirs. The trigger alone
       // cannot say that: `followup` is also what `tick()` enqueues.
@@ -1133,7 +1151,9 @@ export class Jobs {
     }
     const repo = this.store.getRepo(job.repo_id)
     if (repo !== undefined && repo.job_budget_cny > 0) {
-      const jobCostCny = this.store.usageForJob(jobId) * this.config.quota.usdCny
+      // #636 review: the post-finish notice sums the chain, like the checkpoint
+      // that may already have stopped the job, so both name the same figure.
+      const jobCostCny = this.store.usageForJobChain(jobId) * this.config.quota.usdCny
       if (jobCostCny > repo.job_budget_cny) {
         this.store.audit(job.user_id, 'job.budget_exceeded', `${jobId}: ${jobCostCny.toFixed(4)} > ${repo.job_budget_cny}`)
         this.store.notify(job.user_id, 'quota', `任务 ${jobId} 成本 ${jobCostCny.toFixed(2)} 元，超过单任务预算 ${repo.job_budget_cny.toFixed(2)} 元。`)
@@ -1174,26 +1194,26 @@ export class Jobs {
         count: record.recurrence.count,
       })
     } catch (error) {
-      log.warn('postmortem write failed', { trace: jobId, error: redact(String(error)).slice(0, 300) })
-      this.recordDurableFailure('postmortem.write_failed', jobId, error)
-    }
-  }
-
-  // #666: a failure that happens after the command committed must not fail the
-  // command — but it cannot be invisible either. `src/lib/log.ts` writes to
-  // stdout and nowhere else, so a warning dies with the process; an audit row is
-  // the record an operator can query later, and its detail names the job, the
-  // error class and the message. Both cancel paths (`task.cancel` through the
-  // management contract and `/fledge cancel`) reach `notePostmortem`, so one row
-  // there covers a lost postmortem on either of them, and the same helper records
-  // a callback that throws before it ever reaches that write.
-  private recordDurableFailure(action: string, jobId: string, error: unknown): void {
-    try {
-      const job = this.store.getJob(jobId)
-      const detail = redact(`${jobId}: ${errorClass(error)}: ${errorMessage(error)}`).slice(0, 1000)
-      this.store.audit(job?.user_id ?? null, action, detail)
-    } catch (traceError) {
-      log.warn('durable failure trace failed', { trace: jobId, action, error: String(traceError) })
+      log.warn('postmortem write failed', { trace: jobId, error: String(error) })
+      // #666: a postmortem that was not written is a repair job, not a no-op, so
+      // the loss gets its own durable row instead of living only in a process
+      // log. The cancel has committed by the time this runs: a trace that cannot
+      // be written must never become an error the caller can see.
+      const name = error instanceof Error ? error.name : typeof error
+      const reason = error instanceof Error ? error.message : String(error)
+      try {
+        const job = this.store.getJob(jobId)
+        this.store.recordJobEvent({
+          jobId,
+          repoId: job?.repo_id ?? null,
+          userId: job?.user_id ?? null,
+          kind: 'job.postmortem_failed',
+          step: job?.kind ?? null,
+          meta: `${jobId} ${name}: ${redact(reason)}`,
+        })
+      } catch (traceError) {
+        log.warn('postmortem failure trace could not be written', { trace: jobId, error: String(traceError) })
+      }
     }
   }
 
@@ -2211,7 +2231,7 @@ export class Jobs {
     if (action !== 'pause' && action !== 'cancel') return
     // No ledger row is an unknown cost, not a zero one: a provider error
     // deducts nothing, and reading that as "fits the budget" would be a lie.
-    if (this.store.usageCountForJob(job.id) === 0) {
+    if (this.store.usageCountForJobChain(job.id) === 0) {
       const key = `job_budget_unknown:${job.id}`
       if (this.store.getSetting(key) === undefined) {
         this.store.setSetting(key, nowIso())
@@ -2220,7 +2240,7 @@ export class Jobs {
       }
       return
     }
-    const costCny = this.store.usageForJob(job.id) * this.config.quota.usdCny
+    const costCny = this.store.usageForJobChain(job.id) * this.config.quota.usdCny
     if (!(costCny > repo.job_budget_cny)) return
     const cancel = action === 'cancel'
     const code = cancel ? 'JOB_BUDGET_CANCELLED' : 'JOB_BUDGET_PAUSED'

@@ -56,8 +56,8 @@ them; this page only fixes the names and the values.
 | Spacing | `--space-6` | `32px` | block gap |
 | Spacing | `--space-7` | `48px` | page section |
 | Spacing | `--space-8` | `64px` | hero spacing |
-| Type | `--text-xs` | `11px` | eyebrow, table header, badge |
-| Type | `--text-sm` | `12.5px` | `.fine`, meta lines |
+| Type | `--text-xs` | `12px` | eyebrow, table header, badge |
+| Type | `--text-sm` | `13px` | `.fine`, meta lines |
 | Type | `--text-md` | `14px` | table cell, list item |
 | Type | `--text-lg` | `16px` | card heading |
 | Type | `--text-xl` | `19px` | section heading |
@@ -227,6 +227,8 @@ default; the light palette redefines the same colour names:
 | Line | `--field-line` | `#5a6680` | `#7c8794` | 3.65:1 on `--field`, 3.46:1 on `--panel-2` |
 | Line | `--scroll-track` | `#5b6779` | `#828c9a` | 3.4:1 on `--panel`, 3.3:1 on `--scroll-thumb` |
 | Line | `--scroll-thumb` | `#c8d2de` | `#333c48` | 11.2:1 on `--panel` |
+| Surface | `--header-bg` | `rgba(7, 9, 13, 0.78)` | `rgba(244, 246, 249, 0.86)` | translucent sticky row; its ink is `--text`/`--muted` at the ratios above |
+| Surface | `--chip-bg` | `rgba(255, 255, 255, 0.02)` | `rgba(16, 22, 31, 0.04)` | translucent account pill; its ink is `--muted`/`--muted-2` |
 | Text | `--text` | `#f2f5f9` | `#10161f` | 16.8:1 on `--bg` |
 | Text | `--muted` | `#98a2b3` | `#47515f` | 8.1:1 on `--panel` |
 | Text | `--muted-2` | `#8b96a6` | `#59636f` | 6.1:1 on `--panel`, 5.8:1 on `--panel-2` |
@@ -259,6 +261,25 @@ How it is selected:
   the same WCAG formula as `test/uiTokens.test.ts`.
 - `--shadow` softens to `rgba(15, 23, 42, 0.14)`; it is a shadow, not text, so it
   carries no contrast requirement.
+- **The reader can choose** (#657). The preference is the `fledge_theme` cookie,
+  saved by `GET /theme/system|light|dark` (an unknown mode is a 404 and `next` is
+  same-origin only), so the server renders the palette on the first frame — no
+  class is added after load and there is no flash. `data-theme` on `<html>` is
+  always present: `system` inherits, `light` and `dark` override.
+- `system` is announced as **two** `<meta name="theme-color">` tags, one per
+  `(prefers-color-scheme: …)` value, plus `color-scheme: light dark`; an explicit
+  choice pins one colour and its scheme. A media query cannot read a custom
+  property, so the two colours are the palette's `--bg` values in
+  `src/views/theme.ts`, and `test/theme.test.ts` keeps them equal to the
+  stylesheet's `--bg`.
+- The control is three links at the end of `#main-nav`, one per choice, with the
+  current one marked `aria-current="true"`. Inside the compact header that
+  element is the panel, so the 360px row gains no child and cannot overflow
+  (#133); above 960px the links sit in the row, and between 961px and the sheet's
+  1180px content width the account's display name steps aside instead of the row
+  wrapping. Every choice keeps the 44px touch floor. Signed-out pages honour the
+  saved palette but do not show the control, because their header has no panel to
+  put it in.
 
 ## Console states (控制台状态)
 

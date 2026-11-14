@@ -1,0 +1,1 @@
+The console's smallest metadata text now has a 12px floor and the reading scale moves up one step: eyebrows, badges, counts, table meta, filter labels and form labels no longer render at 10-13.5px, headings balance their lines and form controls follow the active palette through `accent-color`.
