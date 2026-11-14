@@ -35,6 +35,9 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/api/read/metrics` | approved | Read-only metrics: a super admin gets the global window, users get their own personal window (`?window=7 or 30`) |
 | GET | `/schedule` | approved | Schedule preview page: the next runs of a cron expression or interval, with local times and DST skips |
 | GET | `/api/schedule/preview` | approved | The same preview as JSON |
+| GET | `/repos/:id/schedule` | owner | Schedule console: the stored schedule, the planner's next run, the newest decided instant (state, reason, attempts, lease) and the last success; an unknown value prints `unknown` |
+| POST | `/repos/:id/schedule` | owner + CSRF | Save the console form (cron or interval, zone, window); audits `schedule.saved` and writes nothing when the form is refused |
+| POST | `/repos/:id/schedule/remove` | owner + CSRF | Delete the schedule so the repository returns to its legacy interval; audits `schedule.removed` |
 | POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job; plan-first repositories enqueue a plan |
 | POST | `/repos/:id/work` | owner + CSRF | Create a work item |
 | POST | `/repos/:id/work/:workItemId/state` | owner + CSRF | Move a work item through the triage/assignment/review state machine |
