@@ -8,6 +8,7 @@ import { dailyDigestEmail, jobAttentionEmail, jobFailedEmail, jobSucceededEmail,
 import { notifyEmail, replyAddressFor } from '../email/recipient.js'
 import { sendNotificationWebhook } from '../lib/webhook.js'
 import { log } from '../lib/log.js'
+import { errorClass, errorMessage } from '../lib/errorText.js'
 import { redact } from '../lib/secrets.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
@@ -381,7 +382,17 @@ export class Jobs {
     const prepared = await this.prepareStop(jobId, reason, 'cancelled')
     if (!prepared.ok) return prepared
     prepared.apply()
-    prepared.afterCommit?.()
+    // #666: the status write has landed by now, so the answer this method returns
+    // must say so. A post-commit callback that throws is a defect worth finding,
+    // but it is not a failed cancel, and letting it escape here would turn a
+    // landed `/fledge cancel` into a 500 with the claim released and the delivery
+    // marked failed.
+    try {
+      prepared.afterCommit?.()
+    } catch (error) {
+      log.warn('after-commit callback failed', { trace: jobId, error: redact(String(error)).slice(0, 300) })
+      this.recordDurableFailure('job.after_commit_failed', jobId, error)
+    }
     return { ok: true, ...prepared.stop }
   }
 
@@ -1163,7 +1174,26 @@ export class Jobs {
         count: record.recurrence.count,
       })
     } catch (error) {
-      log.warn('postmortem write failed', { trace: jobId, error: String(error) })
+      log.warn('postmortem write failed', { trace: jobId, error: redact(String(error)).slice(0, 300) })
+      this.recordDurableFailure('postmortem.write_failed', jobId, error)
+    }
+  }
+
+  // #666: a failure that happens after the command committed must not fail the
+  // command — but it cannot be invisible either. `src/lib/log.ts` writes to
+  // stdout and nowhere else, so a warning dies with the process; an audit row is
+  // the record an operator can query later, and its detail names the job, the
+  // error class and the message. Both cancel paths (`task.cancel` through the
+  // management contract and `/fledge cancel`) reach `notePostmortem`, so one row
+  // there covers a lost postmortem on either of them, and the same helper records
+  // a callback that throws before it ever reaches that write.
+  private recordDurableFailure(action: string, jobId: string, error: unknown): void {
+    try {
+      const job = this.store.getJob(jobId)
+      const detail = redact(`${jobId}: ${errorClass(error)}: ${errorMessage(error)}`).slice(0, 1000)
+      this.store.audit(job?.user_id ?? null, action, detail)
+    } catch (traceError) {
+      log.warn('durable failure trace failed', { trace: jobId, action, error: String(traceError) })
     }
   }
 

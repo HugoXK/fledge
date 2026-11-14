@@ -156,3 +156,161 @@ test('a cancel whose receipt cannot commit leaves no postmortem behind', async (
     await f.close()
   }
 })
+
+// #666: the postmortem write runs after the receipt committed, so its failure
+// cannot fail the command — but it also must not be invisible. A log line is not
+// a record: `src/lib/log.ts` writes to stdout and nowhere else, so the loss has
+// to land in the database. This is the same choke point both cancel paths pass
+// through, so one write covers the web form and `/fledge cancel`.
+test('a cancel whose postmortem write fails still succeeds and leaves a durable trace', async () => {
+  const f = await fixture('postmortem-failure')
+  const captured = captureLog()
+  try {
+    const store = f.built.store
+    store.createPostmortemForJob = (() => {
+      throw new Error('postmortem insert failed')
+    }) as typeof store.createPostmortemForJob
+
+    const response = await cancelPost(f, { expected_revision: '1', idempotency_key: 'cancel-postmortem-failure' })
+    assert.equal(response.statusCode, 302, 'a landed cancel is not reported as an error')
+    assert.match(response.location, /notice=/)
+    assert.equal(store.getJob(f.jobId)?.status, 'cancelled')
+    assert.equal(store.getPostmortemForJob(f.jobId), undefined, 'the failed write left no row; that is the loss being recorded')
+
+    const trace = store.listAudit(200).filter((row) => row.action === 'postmortem.write_failed')
+    assert.equal(trace.length, 1, 'the loss is retrievable from the database, not only from a log line')
+    assert.match(String(trace[0]?.detail), new RegExp(f.jobId), 'the trace names the job')
+    assert.match(String(trace[0]?.detail), /postmortem insert failed/, 'the trace names the error')
+    assert.equal(trace[0]?.user_id, f.user.id, 'the trace belongs to the user whose job lost its postmortem')
+  } finally {
+    captured.restore()
+    await f.close()
+  }
+})
+
+test('the /fledge cancel path records the same trace when the postmortem write fails', async () => {
+  const f = await fixture('postmortem-failure-fledge')
+  try {
+    const store = f.built.store
+    store.createPostmortemForJob = (() => {
+      throw new Error('postmortem insert failed')
+    }) as typeof store.createPostmortemForJob
+
+    const result = await f.built.jobs.cancelJob(f.jobId, 'stop')
+    assert.equal(result.ok, true, 'the cancel already landed, so it is not an error')
+    assert.equal(store.getJob(f.jobId)?.status, 'cancelled')
+
+    const trace = store.listAudit(200).filter((row) => row.action === 'postmortem.write_failed')
+    assert.equal(trace.length, 1, 'the second call site passes through the same choke point')
+    assert.match(String(trace[0]?.detail), /postmortem insert failed/)
+  } finally {
+    await f.close()
+  }
+})
+
+// #666, second half: the callback runs after `COMMIT`, so it cannot decide
+// whether the command succeeded. Today's only callback catches its own errors,
+// which is why the unguarded call is invisible; the contract has to hold for the
+// next one too. A throwing callback is planted on the prepared stop so the real
+// web route and the real receipt transaction carry it.
+async function cancelWithThrowingCallback(f: Fixture): Promise<void> {
+  const jobs = f.built.jobs
+  const original = jobs.prepareCancel.bind(jobs)
+  jobs.prepareCancel = async (jobId: string, reason: string) => {
+    const prepared = await original(jobId, reason)
+    if (!prepared.ok) return prepared
+    return { ...prepared, afterCommit: () => { throw new Error('post-commit callback exploded') } }
+  }
+}
+
+test('an after-commit callback that throws cannot turn a landed cancel into an error', async () => {
+  const f = await fixture('after-commit-throw')
+  const captured = captureLog()
+  try {
+    await cancelWithThrowingCallback(f)
+
+    const response = await cancelPost(f, { expected_revision: '1', idempotency_key: 'cancel-after-commit-throw' })
+    assert.equal(response.statusCode, 302, 'the commit returned, so the command reports success')
+    assert.match(response.location, /notice=/)
+    assert.equal(f.built.store.getJob(f.jobId)?.status, 'cancelled')
+
+    const trace = f.built.store.listAudit(200).filter((row) => row.action === 'management.after_commit_failed')
+    assert.equal(trace.length, 1, 'the throwing callback leaves a durable record instead of a 500')
+    assert.match(String(trace[0]?.detail), new RegExp(f.jobId), 'the record names the job the command moved')
+    assert.match(String(trace[0]?.detail), /Error: post-commit callback exploded/, 'the record names the error class and its message')
+  } finally {
+    captured.restore()
+    await f.close()
+  }
+})
+
+test('the /fledge cancel path also survives a throwing after-commit callback', async () => {
+  const f = await fixture('after-commit-throw-fledge')
+  const captured = captureLog()
+  try {
+    const jobs = f.built.jobs
+    const internal = jobs as unknown as { prepareStop: (jobId: string, reason: string, status: 'cancelled') => ReturnType<typeof jobs.prepareCancel> }
+    const original = internal.prepareStop.bind(jobs)
+    internal.prepareStop = async (jobId, reason, status) => {
+      const prepared = await original(jobId, reason, status)
+      if (!prepared.ok) return prepared
+      return { ...prepared, afterCommit: () => { throw new Error('post-commit callback exploded') } }
+    }
+
+    const result = await jobs.cancelJob(f.jobId, 'stop')
+    assert.equal(result.ok, true, 'the landed cancel is reported as a success, not a throw')
+    assert.equal(f.built.store.getJob(f.jobId)?.status, 'cancelled')
+
+    const trace = f.built.store.listAudit(200).filter((row) => row.action === 'job.after_commit_failed')
+    assert.equal(trace.length, 1, 'the second call site records the throw too')
+    assert.match(String(trace[0]?.detail), new RegExp(f.jobId))
+    assert.match(String(trace[0]?.detail), /Error: post-commit callback exploded/)
+  } finally {
+    captured.restore()
+    await f.close()
+  }
+})
+
+// #666's second half: both call sites of the after-commit callback run outside
+// the receipt transaction, so a callback that throws must not turn a landed
+// cancel into a 500 — but it must be findable too, under the path that owned it.
+function failAfterCommit(f: Fixture): void {
+  const jobs = f.built.jobs as unknown as { notePostmortem: (jobId: string) => void }
+  jobs.notePostmortem = () => {
+    throw new Error('after-commit boom')
+  }
+}
+
+test('a throwing after-commit callback does not fail the web cancel and leaves a trace', async () => {
+  const f = await fixture('after-commit-web')
+  try {
+    failAfterCommit(f)
+    const response = await cancelPost(f, { expected_revision: '1', idempotency_key: 'cancel-after-commit-web' })
+    assert.equal(response.statusCode, 302, 'the landed cancel is not reported as an error')
+    assert.match(response.location, /notice=/)
+    assert.equal(f.built.store.getJob(f.jobId)?.status, 'cancelled')
+
+    const trace = f.built.store.listAudit(200).filter((row) => row.action === 'management.after_commit_failed')
+    assert.equal(trace.length, 1, 'the management path records the callback failure')
+    assert.match(String(trace[0]?.detail), new RegExp(f.jobId), 'the trace names the job the command moved')
+    assert.match(String(trace[0]?.detail), /after-commit boom/)
+  } finally {
+    await f.close()
+  }
+})
+
+test('a throwing after-commit callback does not fail /fledge cancel and leaves a trace', async () => {
+  const f = await fixture('after-commit-fledge')
+  try {
+    failAfterCommit(f)
+    const result = await f.built.jobs.cancelJob(f.jobId, 'stop')
+    assert.equal(result.ok, true, 'the cancel already landed, so it is not an error')
+    assert.equal(f.built.store.getJob(f.jobId)?.status, 'cancelled')
+
+    const trace = f.built.store.listAudit(200).filter((row) => row.action === 'job.after_commit_failed')
+    assert.equal(trace.length, 1, 'the direct path records the callback failure')
+    assert.match(String(trace[0]?.detail), /after-commit boom/)
+  } finally {
+    await f.close()
+  }
+})

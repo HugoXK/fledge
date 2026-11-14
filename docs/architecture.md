@@ -793,6 +793,17 @@ it runs as an after-commit step, once the receipt transaction has returned
 (#616): a cancel whose transaction rolls back writes no postmortem, and a
 committed cancel can no longer lose the row to a nested `BEGIN`.
 
+Because that write now runs after the command committed, it cannot fail the
+cancel: the caller still gets its success notice and the job stays cancelled. The
+failure is therefore recorded instead of raised — `notePostmortem` writes one
+`audit_log` row per failure, action `postmortem.write_failed`, naming the job id
+and the redacted error. A log line alone is not a record: `src/lib/log.ts` writes
+to stdout and nowhere else, so a person could not later find which job lost its
+write-up and rewrite it, and the recurrence escalation that reads the postmortem
+would stay silent with no trace of why. Both cancel paths — `task.cancel` through
+the management contract and `/fledge cancel` — reach the same method, so the one
+row covers both (#666).
+
 The recurrence key is a hash of the category and the stable error code, or of a
 normalised error sentence when no code exists (job ids, URLs and numbers are
 removed so two sightings of one cause land on one key). `postmortem_recurrences`

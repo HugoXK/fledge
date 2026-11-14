@@ -1,6 +1,8 @@
 import type { ManagementCommandRow, Store } from '../db.js'
 import type { Jobs } from '../jobs/service.js'
-import { randomId, sha256Hex } from '../lib/secrets.js'
+import { randomId, sha256Hex, redact } from '../lib/secrets.js'
+import { errorClass, errorMessage } from '../lib/errorText.js'
+import { log } from '../lib/log.js'
 import { capabilitiesForRepo, FORBIDDEN_ARGUMENT_KEYS, type ActorContext } from './actor.js'
 import { operationFor, type CommandTarget } from './catalog.js'
 
@@ -259,12 +261,35 @@ export class ManagementService {
     })
     // #616: a write that opens its own transaction cannot run inside this one, so
     // it runs here — only after the commit returned, never for a rolled-back
-    // command. A failure there must not turn a committed command into an error,
-    // which is why the landing write owns its own error handling.
-    afterCommit?.()
+    // command. #666: a failure there must not turn a committed command into an
+    // error, and "the callback handles itself" is not a guarantee the service can
+    // rely on: `COMMIT` has returned, so a throw released here would tell the
+    // caller a landed cancel had failed. The callback is guarded, and what it
+    // threw is recorded durably instead of only logged, because a callback whose
+    // effect went missing is exactly what someone has to find later.
+    try {
+      afterCommit?.()
+    } catch (error) {
+      this.recordAfterCommitFailure(receipt, resourceId, error)
+    }
     const updated = this.store.commandReceipt(receipt.id)
     if (updated === undefined) return { ok: false, code: 'corrupt_receipt', message: 'the receipt disappeared after completion' }
     return { ok: true, receipt: updated, replayed: false, result }
+  }
+
+  // #666: the audit row is the durable half of the guard above. It names the
+  // receipt, the operation, the resource the command moved (the job id, for a
+  // cancel) and the error class, which is what makes "the command succeeded but
+  // its post-commit write did not" answerable from the database. The write itself
+  // cannot escape either: it happens after `COMMIT`, so throwing here would put
+  // the inversion back one line further down.
+  private recordAfterCommitFailure(receipt: ManagementCommandRow, resourceId: string, error: unknown): void {
+    const detail = redact(`${receipt.id} ${receipt.operation} ${resourceId}: ${errorClass(error)}: ${errorMessage(error)}`).slice(0, 1000)
+    try {
+      this.store.audit(receipt.principal_id, 'management.after_commit_failed', detail)
+    } catch (traceError) {
+      log.warn('after-commit failure trace failed', { trace: receipt.id, error: String(traceError) })
+    }
   }
 
   // A replay answers with what the first attempt stored. Only a succeeded
