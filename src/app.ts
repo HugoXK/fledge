@@ -3935,6 +3935,24 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const reply = async (message: string): Promise<void> => {
       await client.comment(owner, name, number, `${message}\n\n<sub>Fledge · issue command</sub>`)
     }
+
+  // #540 slice 6: the chat half. An issue comment is a third surface on the same
+  // command contract as the console forms, so the reply is built from the receipt
+  // and the audit row, the revision fence and the refusal codes are the same ones.
+  // A chat message has no rendered page to go stale, so the revision is read as the
+  // event is handled; the comment id is the idempotency key, which is what makes a
+  // redelivered webhook answer the receipt it already has instead of queueing again.
+  const runChatCreate = async (kind: JobKind, goal: string, itemId: string): Promise<CommandOutcome> => {
+    const actor = managementActor({ userId: repo.user_id, repo, channel: 'chat', requestId: `issue_command:${parsed.commentId}` })
+    return management.run(actor, {
+      operation: 'task.create',
+      target: { projectId: repo.id },
+      arguments: { kind, goal, workItemId: itemId },
+      expectedRevision: management.revisionOf('project', repo.id),
+      idempotencyKey: `issue_command:${parsed.commentId}`,
+    })
+  }
+
     // The four job verbs act on the job attached to the issue's work item. They
     // never create that item: with no item — or no job on it — the answer is a
     // refusal, because a control command that starts work is a surprise, not a
@@ -4020,8 +4038,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     if (command === 'plan') {
       const goal = `Issue ${issueUrl}\nTitle: ${title}\n${detail}\n\nProduce one concrete plan only; do not write code, create a branch or open a PR.`
-      const result = await jobs.enqueue(repo, 'manual', goal, 'plan', { workItemId: item.id })
-      await reply(result.ok ? `Plan job ${result.job?.id ?? ''} queued.` : `Could not queue a plan: ${result.error ?? 'unknown error'}`)
+      const outcome = await runChatCreate('plan', goal, item.id)
+      await reply(outcome.ok ? `Plan job ${commandJobId(outcome) ?? ''} queued.` : `Could not queue a plan: ${outcome.message}`)
       return
     }
     if (repo.plan_required === 1 && item.state !== 'approved' && item.state !== 'assigned' && item.state !== 'pr_ready') {
@@ -4029,8 +4047,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return
     }
     const goal = `Issue ${issueUrl}\nTitle: ${title}\n${detail}\n\nImplement one focused fix for this issue.`
-    const result = await jobs.enqueue(repo, 'manual', goal, 'iterate', { workItemId: item.id })
-    await reply(result.ok ? `Implementation job ${result.job?.id ?? ''} queued.` : `Could not queue a fix: ${result.error ?? 'unknown error'}`)
+    const outcome = await runChatCreate('iterate', goal, item.id)
+    await reply(outcome.ok ? `Implementation job ${commandJobId(outcome) ?? ''} queued.` : `Could not queue a fix: ${outcome.message}`)
   }
 
   const handleWorkItemEvent = async (event: string, body: Record<string, unknown>): Promise<void> => {

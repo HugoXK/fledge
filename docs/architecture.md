@@ -1137,7 +1137,10 @@ templates (bug, tests, docs, dependency) that fill the goal text.
 A collaborator can drive a work item from the issue thread with `/fledge status`,
 `/fledge plan`, `/fledge approve` or `/fledge fix`. The webhook checks the author
 association, dedupes by comment id, creates or reuses the work item, and replies
-on the issue with the work-item/job/PR state. `/fledge approve` is maintainer-only
+on the issue with the work-item/job/PR state. `plan` and `fix` reach the job
+through `ManagementService` (`task.create` on the `chat` channel), so the
+receipt, the revision fence and the refusal codes are the console's, not a
+second copy. `/fledge approve` is maintainer-only
 and approves the latest completed plan.
 
 Four verbs act on the job the work item already has: `/fledge retry`,
@@ -1635,12 +1638,16 @@ unknown value is `off`: a typo must not start enforcing.
 The rest of the write surface — repository settings, releases, member grants —
 still calls its service directly. Each migrates by registering one operation and
 leaving its route as an adapter; none of them may keep a second copy of the rules.
-The issue-thread `/fledge plan` and `/fledge fix` commands also still call `Jobs`
-directly: they are a chat surface, not a console form, and they migrate with the
-chat adapter. The refusal mapping that blocked this slice is in place: an
-operation hands its service's enqueue code back as the receipt's `error_code`
-(with `error_detail` when a sentence interpolates it), and the console builds the
-bilingual sentence from the one banner table rather than inventing text.
+The issue-thread `/fledge plan` and `/fledge fix` commands are the chat adapter:
+they register a `task.create` receipt in the `chat` channel instead of calling
+`Jobs.enqueue` themselves. The comment id is the idempotency key, so a
+redelivered webhook answers the receipt it already has and queues nothing twice;
+a chat message has no rendered page, so the revision fence is read as the event is
+handled rather than posted back by a form. The refusal mapping that made this
+possible is the same one the console uses: an operation hands its service's
+enqueue code back as the receipt's `error_code`, with `error_detail` carrying the
+value the service named, and the surface builds its sentence from the one banner
+table rather than inventing text.
 
 ## Notification webhook egress
 
