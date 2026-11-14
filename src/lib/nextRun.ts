@@ -1,8 +1,11 @@
-// One rule for "when does this repository run again?", copied from the worker
-// so the console cannot answer with a second formula (#564). The worker is due
-// after `max(15, min(interval, workCooldown))` (src/jobs/service.ts:3004-3005):
-// a repository with open work is due after the short work cooldown, never after
-// its discovery interval, and 15 minutes is the floor the UI already renders.
+// The legacy interval rule: "when does a repository with no schedule run again?".
+//
+// This answers only for a repository that has saved no schedule row. A repository
+// that has one is answered by the planner in `src/schedules/next.ts`, and the page
+// reads that number instead (#544). The claim this file used to make — that it
+// restates the worker's formula — is gone with the citation it rested on: the
+// worker's scheduled path no longer evaluates this expression for a scheduled
+// repository, so a second copy of it would be a second answer, not the same one.
 export type NextRunState =
   | 'disabled'
   | 'not-ready'
