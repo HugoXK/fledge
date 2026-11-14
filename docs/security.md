@@ -157,6 +157,45 @@ an installation bound to another user.
   before parsing. A bad signature is 401; an unconfigured webhook is 503.
   Verified event metadata is stored without payload secrets.
 
+### GitHub App webhook secret rotation
+
+`GITHUB_APP_WEBHOOK_SECRET` is still the value the App signs with, and rotation
+keeps an overlap window instead of a flag day (#466):
+
+- `GITHUB_APP_WEBHOOK_SECRET_PREVIOUS` is the retired value. Empty means no
+  overlap, which is the default.
+- `GITHUB_APP_WEBHOOK_SECRET_PREVIOUS_UNTIL` is the ISO 8601 instant the retired
+  value stops being accepted. Verification tries the current value first, then
+  the previous one only while `now <= _PREVIOUS_UNTIL`.
+- A `_PREVIOUS` with an empty or unparseable `_UNTIL` **refuses to boot** and
+  names the variable. An overlap with no clock would accept a retired secret
+  forever, so it is a startup error and not a warning. The undo is one edit and
+  it is safe mid-rotation: unset `GITHUB_APP_WEBHOOK_SECRET_PREVIOUS` (leave
+  `_UNTIL` empty) and restart; deliveries then only need the current value.
+- After the window a delivery signed with the retired value is refused by the
+  same 401 guard as any bad signature, and one `app.webhook_secret_superseded`
+  audit row records it. The row names the closed instant and never the secret,
+  so a stale deployment still signing with the old value is visible instead of
+  looking like random noise.
+- The diagnostics fields of `GET /healthz` report `webhookSecretSlot` as
+  `current`, `previous` or `none`, read from the same pair the verifier reads. It
+  is gated exactly like `commit` and `builtAt`: a caller without the
+  `METRICS_TOKEN` credential (or loopback in a development build) never sees it.
+  It is a slot name, never a value and never a fingerprint.
+
+The rotation is the owner's action and it is not done by an agent:
+
+1. Create the new secret in the GitHub App settings; leave the old one active.
+2. `printf '%s\n' "$NEW" | node scripts/rotate-webhook-secret.mjs --env-file /etc/fledge/fledge.env --window-hours 24`
+   — the new value comes from stdin or `GITHUB_APP_WEBHOOK_SECRET_NEW`, never
+   from argv, and the file is rewritten atomically at mode 0600 with
+   `_PREVIOUS` set to the old value.
+3. Restart `fledge.service`. `/healthz` reports `previous` while the window is
+   open, so the operator can see the overlap is live.
+4. Confirm a real GitHub App delivery succeeds, then clear
+   `GITHUB_APP_WEBHOOK_SECRET_PREVIOUS` from the env file and restart; `/healthz`
+   returns to `current`. Revoke the old secret in GitHub settings.
+
 ### Notification email display
 
 The settings page masks the notification and GitHub email (for example
