@@ -1872,11 +1872,14 @@ export function settingsPage(input: {
                 <label class="grow">Base URL <input name="baseUrl" value="${escapeHtml(provider.base_url)}" /></label>
               </div>
               <label>API Key <input name="apiKey" type="password" placeholder="${escapeHtml(t('留空不修改', 'Leave blank to keep'))}" autocomplete="off" /></label>
-              <div class="row">
-                <label class="grow">${escapeHtml(t('区域 / 司法辖区', 'Region / jurisdiction'))} <input name="region" value="${escapeHtml(provider.region)}" maxlength="80" placeholder="eu" /></label>
-                <label class="grow">${escapeHtml(t('数据政策 URL', 'Data-policy URL'))} <input name="dataPolicyUrl" value="${escapeHtml(provider.data_policy_url)}" maxlength="2048" placeholder="https://…" /></label>
-              </div>
               <label>${escapeHtml(t('提供方状态', 'Provider status'))} <select name="allowed"><option value="1"${provider.allowed === 1 ? ' selected' : ''}>${escapeHtml(t('允许使用', 'Allowed'))}</option><option value="0"${provider.allowed === 0 ? ' selected' : ''}>${escapeHtml(t('停用', 'Disabled'))}</option></select></label>
+              <details class="advanced-help"><summary>${escapeHtml(t('高级：区域与数据政策（可选）', 'Advanced: region and data policy (optional)'))}</summary>
+                <div class="row">
+                  <label class="grow">${escapeHtml(t('区域标签（可选）', 'Provider region (optional)'))} <input name="region" value="${escapeHtml(provider.region)}" maxlength="80" placeholder="eu" /></label>
+                  <label class="grow">${escapeHtml(t('数据政策链接（可选）', 'Data-policy link (optional)'))} <input name="dataPolicyUrl" value="${escapeHtml(provider.data_policy_url)}" maxlength="2048" placeholder="https://…" /></label>
+                </div>
+                <p class="fine">${escapeHtml(t('区域只是你给这个服务商打的标签（例如 eu、us、cn），只有仓库设置了区域约束时才参与匹配；留空表示不声明。数据政策链接是服务商的隐私/数据处理条款，只用于记录和审核，Fledge 不会抓取它。', 'Region is a label you give this provider (for example eu, us or cn). It only participates when a repository sets a region constraint; empty means not declared. The data-policy link is the provider’s privacy/data-processing terms, recorded for review and audit only; Fledge does not fetch it.'))}</p>
+              </details>
               ${canPrivate ? `<label class="check"><input type="checkbox" name="allowPrivate" value="1"${provider.allow_private === 1 ? ' checked' : ''} /> ${escapeHtml(t('允许 HTTP / 内网地址', 'Allow HTTP / private address'))}</label>` : ''}
               <button class="btn btn-ghost" type="submit">${escapeHtml(t('保存提供方', 'Save provider'))}</button>
             </form>
@@ -1890,11 +1893,14 @@ export function settingsPage(input: {
         <label class="grow">Base URL <input name="baseUrl" required placeholder="https://api.example.com/v1" autocomplete="off" /></label>
       </div>
       <label>API Key <input name="apiKey" required type="password" placeholder="sk-…" autocomplete="off" /></label>
-      <div class="row">
-        <label class="grow">${escapeHtml(t('区域 / 司法辖区', 'Region / jurisdiction'))} <input name="region" maxlength="80" placeholder="eu" /></label>
-        <label class="grow">${escapeHtml(t('数据政策 URL', 'Data-policy URL'))} <input name="dataPolicyUrl" maxlength="2048" placeholder="https://…" /></label>
-        <label>${escapeHtml(t('提供方状态', 'Provider status'))} <select name="allowed"><option value="1">${escapeHtml(t('允许使用', 'Allowed'))}</option><option value="0">${escapeHtml(t('停用', 'Disabled'))}</option></select></label>
-      </div>
+      <label>${escapeHtml(t('提供方状态', 'Provider status'))} <select name="allowed"><option value="1">${escapeHtml(t('允许使用', 'Allowed'))}</option><option value="0">${escapeHtml(t('停用', 'Disabled'))}</option></select></label>
+      <details class="advanced-help"><summary>${escapeHtml(t('高级：区域与数据政策（可选）', 'Advanced: region and data policy (optional)'))}</summary>
+        <div class="row">
+          <label class="grow">${escapeHtml(t('区域标签（可选）', 'Provider region (optional)'))} <input name="region" maxlength="80" placeholder="eu" /></label>
+          <label class="grow">${escapeHtml(t('数据政策链接（可选）', 'Data-policy link (optional)'))} <input name="dataPolicyUrl" maxlength="2048" placeholder="https://…" /></label>
+        </div>
+        <p class="fine">${escapeHtml(t('区域只是你给这个服务商打的标签（例如 eu、us、cn），只有仓库设置了区域约束时才参与匹配；留空表示不声明。数据政策链接是服务商的隐私/数据处理条款，只用于记录和审核，Fledge 不会抓取它。', 'Region is a label you give this provider (for example eu, us or cn). It only participates when a repository sets a region constraint; empty means not declared. The data-policy link is the provider’s privacy/data-processing terms, recorded for review and audit only; Fledge does not fetch it.'))}</p>
+      </details>
       ${config.allowPrivateModelUrls || viewer.user.allow_private_models === 1 || viewer.user.role === 'superadmin' ? `<label class="check"><input type="checkbox" name="allowPrivate" value="1" /> ${escapeHtml(t('允许 HTTP / 内网地址（Fledge 必须能访问）', 'Allow HTTP / private address (Fledge must be able to reach it)'))}</label>` : `<p class="fine">${escapeHtml(t('需要管理员在 Admin 中为你的账号开启“内网模型”权限，或由运维设置 ALLOW_PRIVATE_MODEL_URLS=true。', 'An admin must enable private models for your account in Admin, or the operator must set ALLOW_PRIVATE_MODEL_URLS=true.'))}</p>`}
       <button class="btn" type="submit">${escapeHtml(t('添加提供方', 'Add provider'))}</button>
     </form>

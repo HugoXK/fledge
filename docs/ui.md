@@ -281,6 +281,14 @@ How it is selected:
   saved palette but do not show the control, because their header has no panel to
   put it in.
 
+### Provider metadata (提供方元数据)
+
+The provider add/edit form keeps the primary path to label, Base URL, API key and
+provider status. Region and data-policy URL are optional advanced metadata under
+an `Advanced` disclosure: the region is a label used only when a repository sets
+a region constraint, and the data-policy link is recorded for review, not
+fetched. Empty values mean the provider does not declare them.
+
 ## Console states (控制台状态)
 
 Every list, panel and stream in the console renders through `renderState` in
