@@ -6,8 +6,9 @@
   or with one that disagrees with `/opt/fledge` or with the image digest it
   records, does not start. The file is written by the release step, never by
   hand — `node scripts/verify-release.mjs --version X.Y.Z --local-image-digest
-  sha256:… --write /etc/fledge/release-status.json`, then `chmod 600`; the
-  command and the expected output for each refusal are in
+  sha256:… --write /etc/fledge/release-status.json`, then `chown root:fledge` and
+  `chmod 0640` so the service user can read it (`0600` root-owned would make the
+  hook exit `2`); the command and the expected output for each refusal are in
   [../docs/deploy.md](../docs/deploy.md#required-before-start). The hook is
   offline: no token, no API, no docker.
 - `nginx.conf.example` — TLS reverse proxy with SSE buffering disabled for
@@ -22,7 +23,7 @@ Typical layout:
 ```
 /opt/fledge                     # this repository, built (dist/)
 /etc/fledge/fledge.env          # mode 600, see ../.env.example
-/etc/fledge/release-status.json # mode 600, written by the release step
+/etc/fledge/release-status.json # root:fledge 0640, written by the release step
 /var/lib/fledge                 # DATA_DIR / DB_PATH
 ```
 

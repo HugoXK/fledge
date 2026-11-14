@@ -223,6 +223,14 @@ async function main() {
   const deploymentPath = argument('--deployment')
   const write = argument('--write')
   const localDigest = argument('--local-image-digest')
+  // A present-but-empty value is not "nothing to compare": the documented
+  // recording command substitutes the output of `docker image inspect`, which is
+  // empty when the image carries no RepoDigests or the inspect fails. Passing
+  // that through as `skipped` would write a green record whose one new link was
+  // never made, so it is a usage error like any other unreadable input.
+  if (localDigest === '' && has('--local-image-digest')) {
+    throw new UsageError('--local-image-digest needs a sha256:… digest; an empty value cannot be recorded')
+  }
   const json = has('--json')
   const packagePath = argument('--package')
 

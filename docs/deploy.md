@@ -348,13 +348,27 @@ host first, with the digest the machine actually has:
 
 ```sh
 # the API half: the chain, and the digest this host would run
+digest="$(sudo docker image inspect ghcr.io/hugoxk/fledge:v0.3.2 \
+  --format '{{index .RepoDigests 0}}' | cut -d@ -f2)"
+: "${digest:?docker image inspect returned no digest — pull the released tag by digest first}"
 GITHUB_TOKEN=… METRICS_TOKEN=… sudo node scripts/verify-release.mjs --version 0.3.2 \
   --base-url https://fledge.hugoxk.online \
-  --local-image-digest "$(sudo docker image inspect ghcr.io/hugoxk/fledge:v0.3.2 \
-    --format '{{index .RepoDigests 0}}' | cut -d@ -f2)" \
+  --local-image-digest "$digest" \
   --write /etc/fledge/release-status.json
-sudo chmod 600 /etc/fledge/release-status.json
+# the hook runs as User=fledge, so a root:root 0600 record is unreadable to it
+sudo chown root:fledge /etc/fledge/release-status.json
+sudo chmod 0640 /etc/fledge/release-status.json
 ```
+
+The group ownership is the part that is easy to miss: `EnvironmentFile=` is read
+by systemd as root *before* privileges drop, so root-only `0600` is right for
+`fledge.env`, but `ExecStartPre=` runs as the unit's `User=fledge`. Hand the
+record to the group the unit runs as — `root:fledge` with mode `0640` — and the
+hook can read it without the record being world-readable. An image with no
+`RepoDigests` entry (built locally, `docker load`ed, a tag never pulled by
+digest) makes the substitution empty; the `: "${digest:?…}"` line above stops
+before the record is written, and passing an empty `--local-image-digest` at all
+is refused with exit `2` rather than recorded as a skipped link.
 
 `--local-image-digest` is the one comparison the API cannot make: the digest
 `docker image inspect` reports for the tag on this host, compared with the digest
@@ -366,9 +380,14 @@ The file the command writes is also the record the unit starts from. `ExecStartP
 replays it with `--fixtures /etc/fledge/release-status.json --package
 /opt/fledge/package.json`: no token, no API call, no docker. It re-checks the
 recorded chain, the recorded digest and the version of the tree that will
-actually run, so a host upgraded without re-recording does not start. **A host
-with no `/etc/fledge/release-status.json` does not start** — that is the hook
-doing its job, not a bug.
+actually run. What it catches is a record that disagrees with itself or with
+`/opt/fledge`: a changed `package.json` version, a mangled or hand-edited
+record. The image comparison happens at recording time — the boot hook has no
+docker, so at start the recorded digest is compared with the recorded image
+digest, which is a self-consistency check, and a same-version image swap on the
+host is not caught by it; re-record after such a swap. **A host with no
+`/etc/fledge/release-status.json` does not start** — that is the hook doing its
+job, not a bug.
 
 The console's copy of the same snapshot lives under `${DATA_DIR}`; run the
 command a second time with `--write "${DATA_DIR}/release-status.json"` if the
@@ -380,6 +399,7 @@ A non-zero exit means **do not start**. Read the failing row in
 | Exit | Row | Meaning | Action |
 |---|---|---|---|
 | `2` | `verify-release: cannot read /etc/fledge/release-status.json: ENOENT…` | nothing was recorded on this host | run the recording command above on this host; never hand-write the file |
+| `2` | `verify-release: cannot read /etc/fledge/release-status.json: EACCES…` | the file exists but `User=fledge` may not read it | `chown root:fledge` and `chmod 0640` the record, as in the recording command; do not widen it to `0644` |
 | `2` | `verify-release: /opt/fledge/package.json has no readable version` | the installed tree is incomplete | finish the install, then start |
 | `1` | `local mismatch the local image sha256:… is not the attested digest sha256:…` | the image on this host is not the released one | pull the tag the chain names; do not start |
 | `1` | `version mismatch package.json is at vX, the chain is for vY` | `/opt/fledge` is not the recorded release | install the recorded version, or re-record if the new version really is the release |

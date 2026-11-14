@@ -389,6 +389,39 @@ test('--local-image-digest without a value is a usage error, exit 2, not a green
   assert.match(run.stderr, /--local-image-digest needs a value/)
 })
 
+test('an empty --local-image-digest is a usage error, exit 2, and writes no green record', () => {
+  // The documented recording command builds the digest from
+  // `docker image inspect … | cut -d@ -f2`, which is empty when the image
+  // carries no RepoDigests. An empty value must not read like "no comparison
+  // asked for": the boot hook would then accept a record whose one new link was
+  // never made (#462 review).
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-empty-digest-'))
+  const out = join(dir, 'release-status.json')
+  const run = runCli(['--fixtures', fixtureFile(chain()), '--version', '0.3.2', '--local-image-digest', '', '--write', out])
+  assert.equal(run.status, 2, run.stdout + run.stderr)
+  assert.match(run.stderr, /--local-image-digest/)
+  assert.doesNotMatch(run.stdout, /release-status: ok/)
+  assert.throws(() => readFileSync(out, 'utf8'), /ENOENT/)
+})
+
+test('the runbook writes the record for the user the unit runs the hook as', () => {
+  // deploy/fledge.service runs the service and its ExecStartPre as `User=`; a
+  // root:root 0600 record is unreadable to that user, so the unit would refuse
+  // to start a host recorded exactly as documented (#462 review). The docs and
+  // the README must hand the file to that group with group read, and the
+  // permission failure must not read like the empty case.
+  const unit = readFileSync('deploy/fledge.service', 'utf8')
+  const user = /^User=(\S+)$/m.exec(unit)?.[1] ?? ''
+  assert.ok(user !== '', 'deploy/fledge.service names no User=')
+  const deploy = readFileSync('docs/deploy.md', 'utf8')
+  const readme = readFileSync('deploy/README.md', 'utf8')
+  const section = deploy.slice(deploy.indexOf('### Required before start'))
+  assert.ok(section.includes(`chown root:${user}`), `docs/deploy.md does not hand the record to root:${user}`)
+  assert.ok(section.includes('chmod 0640'), 'docs/deploy.md does not make the record group-readable')
+  assert.match(section, /EACCES/, 'docs/deploy.md does not name the permission failure as its own case')
+  assert.ok(readme.includes(`root:${user}`) && readme.includes('0640'), `deploy/README.md does not describe the record as root:${user} 0640`)
+})
+
 test('the check never prints the token it was given', () => {
   const token = `ghp_${'x'.repeat(36)}`
   const run = runCli(['--fixtures', fixtureFile(chain()), '--version', '0.3.2', '--local-image-digest', DIGEST], {
