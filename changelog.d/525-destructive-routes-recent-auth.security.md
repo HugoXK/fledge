@@ -1,0 +1,1 @@
+Promoting a user's platform role, stopping the platform, and deleting a model provider now require the same recent GitHub confirmation as the other destructive writes: a session that has not re-authenticated is refused, the refusal is audited as `recent_auth_required` with the route's action name, and nothing changes. A fresh session behaves as before.
