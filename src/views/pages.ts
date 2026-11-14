@@ -705,6 +705,14 @@ export interface NextActionView {
   nextRunLine?: string
 }
 
+// The planner's answer for a repository that has saved a schedule row (#544).
+// The route computes it once per repository, and both surfaces render it through
+// `plannedNextLine`, so one repository cannot be given two next-run times (#688).
+export interface ScheduledNext {
+  kind: 'cron' | 'interval' | 'unreadable'
+  at: number | null
+}
+
 // The scheduler's inputs are not all on RepoRow: whether there is open work, an
 // active job and a ready instance come from other tables the route reads.
 export interface NextRunFact {
@@ -712,6 +720,9 @@ export interface NextRunFact {
   openWork: boolean
   activeJob: boolean
   instanceReady: boolean
+  // Present only when the repository has a schedule row; absent means the legacy
+  // interval rule still owns this repository's cadence (#688).
+  scheduledNext?: ScheduledNext
 }
 
 function nextRunLine(next: NextRun, t: Translate): string {
@@ -727,6 +738,16 @@ function nextRunLine(next: NextRun, t: Translate): string {
   }
 }
 
+// One rendering of a schedule row's answer, shared by the repository page's
+// next-run line and the dashboard's all-clear card. A row that cannot be read and
+// a closed window have no instant to name, and the two surfaces say that in the
+// same words instead of formatting the same state twice (#688).
+function plannedNextLine(scheduled: ScheduledNext, t: Translate): string {
+  if (scheduled.kind === 'unreadable') return t('unknown（排期无法解析）', 'unknown (the schedule cannot be read)')
+  if (scheduled.at === null) return t('unknown（排期窗口已结束）', 'unknown (the schedule window has closed)')
+  return nextRunLine({ at: scheduled.at, state: scheduled.at <= Date.now() ? 'due' : 'scheduled' }, t)
+}
+
 // One sentence per repository, computed by the rule the worker uses (#564). The
 // old dashboard answered `last_run_at + interval_minutes`, which for a default
 // 1440-minute repository with open work was 23h45m away from the truth.
@@ -737,6 +758,19 @@ function nextScheduledRun(input: { repos: RepoRow[]; facts: NextRunFact[]; confi
   const flybotAvailable = config.flybot.instanceImage !== ''
   const rows = automatic.map((repo) => {
     const fact = facts.find((entry) => entry.repoId === repo.id)
+    // A schedule row owns this repository's cadence (#544), so the card prints the
+    // planner's instant the repository page prints and never the interval answer
+    // (#688). The row's own answers — a closed window, an unreadable row — are the
+    // only ones left out of the "runs next" choice, exactly as on the page.
+    const scheduled = fact?.scheduledNext
+    if (scheduled !== undefined) {
+      return {
+        repo,
+        line: plannedNextLine(scheduled, t),
+        at: scheduled.at,
+        runnable: scheduled.kind !== 'unreadable' && scheduled.at !== null,
+      }
+    }
     const state = nextRun({
       lastRunAt: repo.last_run_at,
       intervalMinutes: repo.interval_minutes,
@@ -747,17 +781,21 @@ function nextScheduledRun(input: { repos: RepoRow[]; facts: NextRunFact[]; confi
       repoEnabled: repo.enabled === 1,
       instanceReady: flybotAvailable && fact !== undefined ? fact.instanceReady : true,
     })
-    return { repo, state }
+    return {
+      repo,
+      line: nextRunLine(state, t),
+      at: state.at,
+      runnable: state.state === 'scheduled' || state.state === 'due',
+    }
   })
-  const runnable = rows.filter((row) => row.state.state === 'scheduled' || row.state.state === 'due')
+  const runnable = rows.filter((row) => row.runnable)
   // A repository the scheduler knows nothing about must not shadow one it does.
-  const chosen = runnable.length === 0 ? rows[0]! : runnable.reduce((a, b) => ((b.state.at ?? 0) < (a.state.at ?? 0) ? b : a))
+  const chosen = runnable.length === 0 ? rows[0]! : runnable.reduce((a, b) => ((b.at ?? 0) < (a.at ?? 0) ? b : a))
   const label = `${chosen.repo.upstream_owner || chosen.repo.owner}/${chosen.repo.upstream_name || chosen.repo.name}`
-  const line = nextRunLine(chosen.state, t)
-  const text = chosen.state.state === 'scheduled' || chosen.state.state === 'due'
-    ? t(`下次自动运行：${label} · ${line}`, `Next automatic run: ${label} · ${line}`)
-    : t(`自动运行暂停：${label} · ${line}`, `Automatic run paused: ${label} · ${line}`)
-  return { text, line }
+  const text = chosen.runnable
+    ? t(`下次自动运行：${label} · ${chosen.line}`, `Next automatic run: ${label} · ${chosen.line}`)
+    : t(`自动运行暂停：${label} · ${chosen.line}`, `Automatic run paused: ${label} · ${chosen.line}`)
+  return { text, line: chosen.line }
 }
 
 // An English page must not lead with a sentence only the platform writes in
@@ -1075,7 +1113,7 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: { kind: 'cron' | 'interval' | 'unreadable'; at: number | null } }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: ScheduledNext }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const workItems = input.workItems ?? []
@@ -1218,13 +1256,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     instanceReady: config.flybot.instanceImage === '' ? true : instance?.status === 'ready',
   })
   const scheduledNext = input.scheduledNext
-  const nextRunText = scheduledNext === undefined
-    ? nextRunLine(nextRunState, t)
-    : scheduledNext.kind === 'unreadable'
-      ? t('unknown（排期无法解析）', 'unknown (the schedule cannot be read)')
-      : scheduledNext.at === null
-        ? t('unknown（排期窗口已结束）', 'unknown (the schedule window has closed)')
-        : nextRunLine({ at: scheduledNext.at, state: scheduledNext.at <= Date.now() ? 'due' : 'scheduled' }, t)
+  const nextRunText = scheduledNext === undefined ? nextRunLine(nextRunState, t) : plannedNextLine(scheduledNext, t)
   const instanceTeam = instance === undefined ? null : parseTeam(instance.team_json)
   const instanceReady = instance?.status === 'ready' && instanceTeam !== null
   const flybotAvailable = config.flybot.instanceImage !== ''

@@ -1241,12 +1241,24 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     // #564: open work, an active job and a ready instance decide when a
     // repository runs again, and none of them is on RepoRow.
-    const nextRunFacts = allRepos.map((repo) => ({
-      repoId: repo.id,
-      openWork: store.listOpenWorkItems(repo.id).length > 0,
-      activeJob: store.activeJobForRepo(repo.id) !== undefined,
-      instanceReady: store.getRepoInstance(repo.id)?.status === 'ready',
-    }))
+    // #688: a repository that has saved a schedule row is answered by the planner,
+    // so its answer travels with the facts instead of being re-derived from the
+    // interval rule the card used to apply to every repository.
+    const nextRunFacts = allRepos.map((repo) => {
+      const scheduleRow = store.scheduleForRepo(repo.id)
+      const schedule = scheduleRow === undefined ? null : scheduleFromRow(scheduleRow)
+      return {
+        repoId: repo.id,
+        openWork: store.listOpenWorkItems(repo.id).length > 0,
+        activeJob: store.activeJobForRepo(repo.id) !== undefined,
+        instanceReady: store.getRepoInstance(repo.id)?.status === 'ready',
+        ...(scheduleRow === undefined ? {} : {
+          scheduledNext: schedule === null
+            ? { kind: 'unreadable' as const, at: null }
+            : { kind: schedule.kind, at: nextTime(schedule, Date.now()) },
+        }),
+      }
+    })
     return reply.type('text/html').send(
       dashboardPage({
         config,
