@@ -19,7 +19,7 @@ import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
 import type { PreviewResult } from '../schedules/preview.js'
-import type { ScheduleConsoleState } from '../schedules/console.js'
+import { intervalFieldText, type ScheduleConsoleState } from '../schedules/console.js'
 import { contractOf, resolveWorkType, workTypeLabel, workTypePurpose } from '../lib/workTypes.js'
 import { parseTriageJson, triageSummaryLine } from '../lib/triage.js'
 import { parseModelRun } from '../lib/modelRun.js'
@@ -3618,7 +3618,7 @@ export function scheduleConsolePage(input: {
     ? t('unknown', 'unknown')
     : state.schedule.kind === 'cron'
       ? `cron <code>${escapeHtml(state.schedule.expression)}</code> · ${escapeHtml(state.schedule.timezone)}`
-      : `${escapeHtml(t('间隔', 'interval'))} <code>${escapeHtml(String(Math.round(state.schedule.everyMs / 60_000)))} min</code>`
+      : `${escapeHtml(t('间隔', 'interval'))} <code>${escapeHtml(intervalFieldText(state.schedule.everyMs))}</code>`
   const window = state.schedule === null
     ? t('unknown', 'unknown')
     : `${state.schedule.startAt === null ? t('不限', 'open') : escapeHtml(new Date(state.schedule.startAt).toISOString())} → ${state.schedule.endAt === null ? t('不限', 'open') : escapeHtml(new Date(state.schedule.endAt).toISOString())}`

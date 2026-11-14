@@ -95,3 +95,13 @@ export function scheduleConsole(input: {
     occurrences,
   }
 }
+
+// The stored interval is exact, so every surface that prints it or pre-fills it
+// echoes it exactly. `90s` is legal (`parseEvery`), and rounding it to `2m`
+// would make one unmodified click on Save rewrite 90000 to 120000: a data change
+// on a click. Minutes are used only when the value divides evenly by a minute.
+export function intervalFieldText(ms: number): string {
+  if (ms % 60_000 === 0) return `${ms / 60_000}m`
+  if (ms % 1000 === 0) return `${ms / 1000}s`
+  return `${ms}ms`
+}

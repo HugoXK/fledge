@@ -63,7 +63,7 @@ import { configureOtel, endSpan, shutdownOtel, startSpan, type SpanHandle } from
 import { configureGithubBudget } from './lib/githubBudget.js'
 import { normalizeReviewInstruction } from './lib/followUpInstruction.js'
 import { parsePreviewQuery, previewSchedule, type PreviewResult } from './schedules/preview.js'
-import { scheduleConsole } from './schedules/console.js'
+import { intervalFieldText, scheduleConsole } from './schedules/console.js'
 import { nextTime } from './schedules/next.js'
 import { scheduleFromRow } from './schedules/tick.js'
 import { Approvals } from './users/approval.js'
@@ -1391,7 +1391,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       state,
       form: {
         cron: row?.expression ?? '',
-        every: row?.every_ms === null || row?.every_ms === undefined ? '' : `${Math.round(row.every_ms / 60_000)}m`,
+        every: row?.every_ms === null || row?.every_ms === undefined ? '' : intervalFieldText(row.every_ms),
         timezone: row?.timezone ?? '',
         startAt: instant(row?.start_at),
         endAt: instant(row?.end_at),
@@ -1431,7 +1431,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     })
     const label = schedule.kind === 'cron'
       ? `${schedule.expression} ${schedule.timezone}`
-      : `every ${Math.round(schedule.everyMs / 60_000)}m`
+      : `every ${intervalFieldText(schedule.everyMs)}`
     store.audit(viewer.user.id, 'schedule.saved', `${repo.id}: ${label}`)
     return reply.redirect(`${back}?saved=1`)
   })

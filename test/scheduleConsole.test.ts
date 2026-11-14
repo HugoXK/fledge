@@ -231,3 +231,65 @@ test('the repository page reads the planner for a scheduled repository', async (
     assert.match(broken.body, /unknown/, 'an unreadable schedule prints unknown instead of a guessed time')
   } finally { await f.close() }
 })
+
+// The stored interval is exact — `parseEvery` takes `90s` and the page's own
+// example advertises it — so the form has to echo it exactly. Rounding it to
+// `2m` would make one click on Save rewrite 90000 to 120000: a data change on a
+// click, which is why this is a blocking case and not a cosmetic one.
+test('a sub-minute interval is echoed exactly and survives an unchanged save', async () => {
+  const f = await fixture('console-exact')
+  try {
+    const saved = await saveSchedule(f.built, f.user, f.repoId, { every: '90s' })
+    assert.equal(saved.statusCode, 302)
+    assert.match(saved.location, /saved=1/)
+    assert.equal(f.built.store.scheduleForRepo(f.repoId)?.every_ms, 90_000, '90s is stored as 90000ms')
+
+    const session = sessionFor(f.built, f.user)
+    const page = await f.built.app.inject({ method: 'GET', url: `/repos/${f.repoId}/schedule`, headers: { cookie: session.cookie } })
+    assert.equal(page.statusCode, 200)
+    const field = page.body.match(/name="every" value="([^"]*)"/)
+    assert.notEqual(field, null, 'the console has the interval field')
+    assert.equal(field?.[1], '90s', 'the field echoes the stored value instead of a rounded one')
+    assert.match(page.body, /<code>90s<\/code>/, 'the stored-schedule line reads the interval exactly too')
+
+    const again = await saveSchedule(f.built, f.user, f.repoId, { every: String(field?.[1] ?? '') })
+    assert.match(again.location, /saved=1/)
+    assert.equal(f.built.store.scheduleForRepo(f.repoId)?.every_ms, 90_000, 'saving the page unchanged rewrites nothing')
+  } finally { await f.close() }
+})
+
+// The page says a repository it does not own answers 404; until now only the GET
+// was asserted. Both writes and the CSRF guard are refused here, and the row is
+// read back afterwards so a refused write is proved not to have half-written.
+test('a stranger cannot write the schedule and a bad CSRF token writes nothing', async () => {
+  const f = await fixture('console-write-guard')
+  try {
+    cronRow(f.built.store, f.repoId)
+    const post = (url: string, session: { cookie: string; csrf: string }, payload: Record<string, string>) => f.built.app.inject({
+      method: 'POST',
+      url,
+      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: session.cookie },
+      payload: formBody({ csrf: session.csrf, ...payload }),
+    })
+
+    const stranger = makeUser(f.built.store, { login: 'console-write-stranger', status: 'approved' })
+    const strangerSession = sessionFor(f.built, stranger)
+    const strangerSave = await post(`/repos/${f.repoId}/schedule`, strangerSession, { cron: '0 3 * * *', timezone: 'UTC' })
+    assert.equal(strangerSave.statusCode, 404, 'a stranger cannot save a schedule')
+    const strangerRemove = await post(`/repos/${f.repoId}/schedule/remove`, strangerSession, {})
+    assert.equal(strangerRemove.statusCode, 404, 'a stranger cannot delete a schedule')
+
+    const ownerSession = sessionFor(f.built, f.user)
+    const badCsrf = await f.built.app.inject({
+      method: 'POST',
+      url: `/repos/${f.repoId}/schedule`,
+      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: ownerSession.cookie },
+      payload: formBody({ csrf: 'not-the-session-token', cron: '0 4 * * *', timezone: 'UTC' }),
+    })
+    assert.equal(badCsrf.statusCode, 403, 'a write without the session token is refused')
+
+    const row = f.built.store.scheduleForRepo(f.repoId)
+    assert.equal(row?.expression, '0 9 * * 1-5', 'none of the refused writes changed the row')
+    assert.equal(row?.timezone, 'Asia/Shanghai')
+  } finally { await f.close() }
+})
