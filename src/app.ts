@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
-import { openStore, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow } from './db.js'
+import { openStore, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
 import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions, type Viewer } from './auth/session.js'
@@ -60,6 +60,7 @@ import {
 import { configureOtel, endSpan, shutdownOtel, startSpan, type SpanHandle } from './lib/otel.js'
 import { configureGithubBudget } from './lib/githubBudget.js'
 import { normalizeReviewInstruction } from './lib/followUpInstruction.js'
+import { parsePreviewQuery, previewSchedule, type PreviewResult } from './schedules/preview.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -81,6 +82,7 @@ import {
   appReposPage,
   workspacePage,
   searchPage,
+  schedulePage,
   agentWorkspacePage,
   settingsPage,
   inboxSection,
@@ -160,6 +162,28 @@ function queryText(request: FastifyRequest, name: string): string | undefined {
   return typeof value === 'string' && value !== '' ? value.slice(0, 500) : undefined
 }
 
+// The preview's query is a closed set of names, so it is read into a literal:
+// a user-supplied key never becomes a property name. A loop over
+// `Object.entries(query)` did, which is remote property injection (CodeQL
+// `js/remote-property-injection` at this helper), and the allowlist is the same
+// shape `form()` already uses below.
+function queryTextOf(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value.slice(0, 500) : undefined
+}
+
+function previewQuery(request: FastifyRequest): Record<string, string | undefined> {
+  const query = (request.query as Record<string, unknown> | undefined) ?? {}
+  return {
+    cron: queryTextOf(query.cron),
+    every: queryTextOf(query.every),
+    timezone: queryTextOf(query.timezone),
+    from: queryTextOf(query.from),
+    start_at: queryTextOf(query.start_at),
+    end_at: queryTextOf(query.end_at),
+    count: queryTextOf(query.count),
+  }
+}
+
 const FORM_KEY = /^[A-Za-z0-9_-]{1,80}$/
 
 function form(request: FastifyRequest): Record<string, string> {
@@ -172,17 +196,23 @@ function form(request: FastifyRequest): Record<string, string> {
 }
 
 // #540: the management codes are stable identifiers, so the sentence a person
-// reads is chosen here, once, in both languages.
-function managementRefusal(t: Translate, code: ManagementCode): string {
+// reads is chosen here, once, in both languages. The last line is the caller's
+// own sentence: "the cancel failed" is wrong on a pause, and a code we have not
+// taught this switch yet must not borrow another operation's words.
+function managementRefusal(t: Translate, code: ManagementCode, fallback: string): string {
   switch (code) {
     case 'management_revision_conflict':
       return t('这个任务在你打开页面之后已经变化，请重新打开任务后再操作。', 'This job changed after you opened the page; reopen it before acting.')
     case 'idempotency_conflict':
       return t('这个请求已经用不同的内容提交过，已拒绝。请刷新页面后重试。', 'That request was already submitted with different content; reload the page and try again.')
+    case 'command_in_progress':
+      return t('这个操作还在处理中，请刷新页面查看结果。', 'This action is still being processed; reload to see the result.')
     case 'authorization_revoked':
       return t('你已经没有执行这个操作的权限。', 'You no longer have permission for this action.')
     case 'job_not_cancellable':
       return t('这个任务已经结束。', 'This job has already finished.')
+    case 'job_not_pausable':
+      return t('这个任务已经结束，不能再暂停。', 'This job has already finished and cannot be paused.')
     case 'job_not_found':
       return t('任务不存在。', 'The job does not exist.')
     case 'actor_not_allowed':
@@ -190,7 +220,7 @@ function managementRefusal(t: Translate, code: ManagementCode): string {
     case 'unknown_operation':
       return t('不支持的操作。', 'Unsupported operation.')
     default:
-      return t('取消失败。', 'The cancel failed.')
+      return fallback
   }
 }
 
@@ -1038,6 +1068,55 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }))
   })
 
+  // #544, second slice: the planner's first surface a person can reach. The page
+  // and the JSON below take the same query names and call the same planner, so
+  // what a maintainer reads on the page is what an integration would get.
+  app.get('/api/schedule/preview', async (request, reply) => {
+    requireApproved(request)
+    const parsed = parsePreviewQuery(previewQuery(request), Date.now())
+    if (!parsed.ok) return reply.code(400).send({ error: parsed.reason })
+    const preview = previewSchedule(parsed.request)
+    if (!preview.ok) return reply.code(400).send({ error: preview.reason })
+    return preview
+  })
+
+  app.get('/schedule', async (request, reply) => {
+    const viewer = requireApproved(request)
+    const query = previewQuery(request)
+    // No query at all is the empty form, not a refusal: opening the page should
+    // not look like an error.
+    const asked = Object.values(query).some((value) => value !== undefined)
+    const parsed = asked ? parsePreviewQuery(query, Date.now()) : null
+    let preview: Extract<PreviewResult, { ok: true }> | null = null
+    let error: string | undefined
+    if (parsed !== null) {
+      if (!parsed.ok) {
+        error = parsed.reason
+      } else {
+        const result = previewSchedule(parsed.request)
+        if (result.ok) preview = result
+        else error = result.reason
+      }
+    }
+    const page = schedulePage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      form: {
+        cron: query.cron ?? '',
+        every: query.every ?? '',
+        timezone: query.timezone ?? '',
+        startAt: query.start_at ?? '',
+        endAt: query.end_at ?? '',
+        from: query.from ?? '',
+        count: query.count ?? '',
+      },
+      preview,
+      error,
+    })
+    return htmlPage(reply, error === undefined ? 200 : 400, page)
+  })
+
   app.get('/repos', async (_request, reply) => {
     return reply.redirect('/dashboard#add-repo')
   })
@@ -1392,6 +1471,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         }),
         ...(workState !== undefined && isWorkItemState(workState) ? { workState } : {}),
         reviewTrend,
+        workflowFailures: store.listWorkflowFailuresForRepo(repo.id, 10),
         postmortems: store.listPostmortemsForRepo(repo.id, { openOnly: true }),
         recurrences: store.listPostmortemRecurrences(repo.id),
         models: store.listUserProviderModels(repo.user_id),
@@ -1906,6 +1986,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       // #540: the cancel form carries the revision it rendered and a fresh key,
       // so a double submit replays the same receipt and a stale page conflicts.
       cancel: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
+      pause: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
@@ -1936,15 +2017,63 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     })
     const back = `/repos/${repo.id}/jobs/${job.id}`
     if (outcome.ok) return reply.redirect(`${back}?notice=${encodeURIComponent(t('任务已取消。', 'Job cancelled.'))}`)
-    return reply.redirect(`${back}?error=${encodeURIComponent(managementRefusal(t, outcome.code))}&code=${outcome.code}`)
+    return reply.redirect(`${back}?error=${encodeURIComponent(managementRefusal(t, outcome.code, t('取消失败。', 'The cancel failed.')))}&code=${outcome.code}`)
   })
 
+  // #540 slice 2: pausing goes through the same contract as cancelling. The
+  // switch decides how far — `off` is the route that existed before this slice,
+  // `shadow` reserves and records the command but keeps that route, and `on`
+  // runs the command and turns its receipt into the redirect.
   app.post('/repos/:id/jobs/:jobId/pause', async (request, reply) => {
-    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
-    const result = await jobs.pauseJob(job.id)
-    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${result.ok ? 'notice' : 'error'}=${encodeURIComponent(result.ok ? '任务已暂停。' : result.error ?? '暂停失败。')}`)
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    const t = translator(request.locale ?? 'zh')
+    const today = async (): Promise<{ notice: string } | { error: string }> => {
+      const result = await jobs.pauseJob(job.id)
+      return result.ok ? { notice: t('任务已暂停。', 'Job paused.') } : { error: result.error ?? t('暂停失败。', 'The pause failed.') }
+    }
+    const answer = (result: { notice: string } | { error: string }) => ('notice' in result
+      ? reply.redirect(`${back}?notice=${encodeURIComponent(result.notice)}`)
+      : reply.redirect(`${back}?error=${encodeURIComponent(result.error)}`))
+
+    if (config.managementService === 'off') return answer(await today())
+
+    const body = form(request)
+    const current = management.revisionOf('job', job.id)
+    const rendered = Number.parseInt(body.expected_revision ?? '', 10)
+    const expectedRevision = Number.isFinite(rendered) && rendered >= 1 ? rendered : current
+    const idempotencyKey = body.idempotency_key !== undefined && body.idempotency_key !== '' ? body.idempotency_key : randomId('cmd')
+    const actor = managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
+    const envelope = {
+      operation: 'task.pause',
+      target: { projectId: repo.id, jobId: job.id },
+      arguments: {},
+      expectedRevision,
+      idempotencyKey,
+    }
+
+    if (config.managementService === 'shadow') {
+      // The person keeps today's route and its sentence; the receipt records what
+      // the contract would have done with the very same form, which is the point
+      // of shadow — a divergence shows up in the receipt, not in the UI.
+      const begun = management.begin(actor, envelope)
+      const result = await today()
+      // A replayed command already has its receipt, and a replay must never
+      // rewrite it: the second submit of the same form runs today's route again
+      // (which refuses), but the ledger keeps the success it recorded first.
+      if (begun.ok && !begun.replayed) {
+        management.settle(begun.receipt.id, 'notice' in result
+          ? { ok: true, result: { jobId: job.id, shadow: true } }
+          : { ok: false, code: 'job_not_pausable', message: 'the route refused the pause' })
+      }
+      return answer(result)
+    }
+
+    const outcome = await management.run(actor, envelope)
+    if (outcome.ok) return answer({ notice: t('任务已暂停。', 'Job paused.') })
+    return reply.redirect(`${back}?error=${encodeURIComponent(managementRefusal(t, outcome.code, t('暂停失败。', 'The pause failed.')))}&code=${outcome.code}`)
   })
 
   app.post('/repos/:id/jobs/:jobId/resume', async (request, reply) => {
@@ -3517,6 +3646,68 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
 
+  // #542 slice 1: a red default branch used to be invisible, because the
+  // follow-up path needs a Fledge job on that exact PR. Intake records the
+  // failure and the decision about it — `queued` for a failure on the default
+  // branch, `ignored` with its reason for one this path will not triage — and
+  // stops there: no log read, no model call, no rerun, no issue. A green or
+  // cancelled run is not a failed run, so it stores nothing.
+  const handleWorkflowRun = async (event: string, body: Record<string, unknown>): Promise<void> => {
+    if (event !== 'workflow_run' || body.action !== 'completed') return
+    const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
+    const installationId = Number(installation.id)
+    const repository = typeof body.repository === 'object' && body.repository !== null ? (body.repository as Record<string, unknown>) : {}
+    const fullName = typeof repository.full_name === 'string' ? repository.full_name : ''
+    if (!Number.isFinite(installationId) || fullName === '') return
+    const repo = store.findRepoByInstallationAndFullName(installationId, fullName)
+    if (repo === undefined) return
+    const run = typeof body.workflow_run === 'object' && body.workflow_run !== null ? (body.workflow_run as Record<string, unknown>) : {}
+    if (String(run.conclusion ?? '') !== 'failure') return
+    const runId = Number(run.id)
+    const attempt = Number(run.run_attempt ?? 1)
+    if (!Number.isInteger(runId) || runId <= 0 || !Number.isInteger(attempt) || attempt <= 0) return
+    const runUrl = typeof run.html_url === 'string' ? run.html_url : ''
+    const workflowName = typeof run.name === 'string' && run.name !== '' ? run.name : ''
+    // GitHub always sends https here; refusing anything else keeps the console's
+    // link from becoming a scheme the payload chose.
+    if (!runUrl.startsWith('https://') || workflowName === '') return
+    const headBranch = typeof run.head_branch === 'string' ? run.head_branch : ''
+    const headSha = typeof run.head_sha === 'string' ? run.head_sha : ''
+    const runEvent = typeof run.event === 'string' ? run.event : ''
+    // A fork can carry a different default branch name on each side, so any of
+    // the three names counts; a tag run reports the tag as `head_branch` and is
+    // therefore not a default-branch run until a later slice proves ancestry.
+    const defaultBranches = new Set(
+      [repo.default_branch, repo.upstream_default_branch, repo.fork_default_branch]
+        .filter((branch) => typeof branch === 'string' && branch !== '')
+        .map((branch) => branch.toLowerCase()),
+    )
+    const pullRequestRun = (Array.isArray(run.pull_requests) && run.pull_requests.length > 0) || runEvent === 'pull_request' || runEvent === 'pull_request_target'
+    const onDefaultBranch = headBranch !== '' && defaultBranches.has(headBranch.toLowerCase())
+    const reason = pullRequestRun ? 'pull_request' : !onDefaultBranch ? 'not_default_branch' : null
+    const status: WorkflowFailureStatus = reason === null ? 'queued' : 'ignored'
+    const stored = store.recordWorkflowFailure({
+      id: randomId('wf'),
+      repoId: repo.id,
+      runId,
+      attempt,
+      workflowName: workflowName.slice(0, 200),
+      headSha: headSha.slice(0, 64),
+      headBranch: headBranch.slice(0, 200),
+      event: runEvent.slice(0, 40),
+      status,
+      reason,
+      runUrl: runUrl.slice(0, 500),
+    })
+    if (!stored.created) return
+    store.event('workflow_failure', {
+      userId: repo.user_id,
+      repoId: repo.id,
+      meta: `${status}:${reason ?? 'analysis_pending'}:${runId}:${attempt}:${headSha.slice(0, 12)}`.slice(0, 300),
+    })
+    log.info('workflow failure intake', { repo: `${repo.owner}/${repo.name}`, run: runId, attempt, status, reason })
+  }
+
   const handleGithubFollowup = async (event: string, body: Record<string, unknown>): Promise<void> => {
     const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
     const installationId = Number(installation.id)
@@ -3787,6 +3978,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     try {
       await handleWorkItemEvent(event, body)
+      await handleWorkflowRun(event, body)
       await handleIssueCommand(event, body)
       await handleGithubFollowup(event, body)
       if (delivery !== '') store.finishWebhookDelivery(delivery, 'processed')

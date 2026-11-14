@@ -209,13 +209,26 @@ export function parseSchedule(input: ScheduleInput): ScheduleParse {
   return { ok: true, schedule: { kind: 'interval', everyMs, startAt, endAt } }
 }
 
-interface WallParts {
+export interface WallTime {
   year: number
   month: number
   day: number
   hour: number
   minute: number
 }
+
+// The next instant and, on the way there, the local times that did not exist.
+// `nextTime` keeps answering one instant; `nextOccurrence` is what a preview
+// needs so it can show a spring-forward skip instead of hiding it.
+export interface NextOccurrence {
+  at: number | null
+  skipped: WallTime[]
+}
+
+// A whole day can be missing (`Pacific/Apia`, 2011-12-30), and an hourly cron
+// would then list 24 skipped wall times per day. The preview needs to say that a
+// skip happened, not to enumerate every minute of it.
+const MAX_SKIPPED = 8
 
 const formatters = new Map<string, Intl.DateTimeFormat>()
 
@@ -237,7 +250,7 @@ function formatterFor(timezone: string): Intl.DateTimeFormat {
 
 // The zone's wall clock at an instant, as numbers. `hourCycle: 'h23'` is what
 // keeps midnight `00` instead of `24`.
-function wallPartsAt(timezone: string, instant: number): WallParts {
+function wallPartsAt(timezone: string, instant: number): WallTime {
   const parts = formatterFor(timezone).formatToParts(new Date(instant))
   const read = (type: string): number => {
     const part = parts.find((candidate) => candidate.type === type)
@@ -261,7 +274,7 @@ function offsetAt(timezone: string, instant: number): number {
 // `undefined` means the local time does not exist that day (the spring-forward
 // gap). For a repeated local time the earlier of the two instants wins, which is
 // what makes a fall-back run happen once.
-function instantForWall(timezone: string, wall: WallParts): number | undefined {
+function instantForWall(timezone: string, wall: WallTime): number | undefined {
   const guess = Date.UTC(wall.year, wall.month - 1, wall.day, wall.hour, wall.minute)
   const offsets = new Set<number>()
   for (const probe of [guess - 26 * 3_600_000, guess, guess + 26 * 3_600_000]) offsets.add(offsetAt(timezone, probe))
@@ -280,7 +293,7 @@ function weekdayOf(year: number, month: number, day: number): number {
   return new Date(Date.UTC(year, month - 1, day)).getUTCDay()
 }
 
-function addDays(year: number, month: number, day: number, days: number): WallParts {
+function addDays(year: number, month: number, day: number, days: number): WallTime {
   const shifted = new Date(Date.UTC(year, month - 1, day) + days * DAY)
   return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1, day: shifted.getUTCDate(), hour: 0, minute: 0 }
 }
@@ -297,7 +310,7 @@ function dayMatches(fields: CronFields, year: number, month: number, day: number
   return domMatches || dowMatches
 }
 
-function nextInterval(schedule: IntervalSchedule, from: number): number | null {
+function nextInterval(schedule: IntervalSchedule, from: number): NextOccurrence {
   const startAt = schedule.startAt
   const endAt = schedule.endAt
   let candidate: number
@@ -313,18 +326,19 @@ function nextInterval(schedule: IntervalSchedule, from: number): number | null {
   } else {
     candidate = startAt + (Math.floor((from - startAt) / schedule.everyMs) + 1) * schedule.everyMs
   }
-  if (endAt !== null && candidate >= endAt) return null
-  return candidate
+  if (endAt !== null && candidate >= endAt) return { at: null, skipped: [] }
+  return { at: candidate, skipped: [] }
 }
 
-function nextCron(schedule: CronSchedule, from: number): number | null {
+function nextCron(schedule: CronSchedule, from: number): NextOccurrence {
+  const skipped: WallTime[] = []
   const parsed = parseCron(schedule.expression)
-  if (!parsed.ok) return null
+  if (!parsed.ok) return { at: null, skipped }
   const fields = parsed.fields
   const startAt = schedule.startAt
   const endAt = schedule.endAt
   const cursor = startAt !== null && startAt > from ? startAt : from
-  if (endAt !== null && cursor >= endAt) return null
+  if (endAt !== null && cursor >= endAt) return { at: null, skipped }
   // `from` is the exclusive side of the boundary and `start_at` the inclusive
   // one: strictly after `from`, so a caller that passes the instant it dispatched
   // cannot be handed the same instant again, and an occurrence that falls exactly
@@ -345,18 +359,29 @@ function nextCron(schedule: CronSchedule, from: number): number | null {
         if (offset === 0 && (hour < first.hour || (hour === first.hour && minute < first.minute))) continue
         const instant = instantForWall(schedule.timezone, { ...day, hour, minute })
         // No instant: the local time does not exist that day. Skipped, not moved.
-        if (instant === undefined) continue
+        // Recorded so a preview can say so, because a person reading two runs a
+        // day apart should see the gap rather than a silent jump.
+        if (instant === undefined) {
+          if (skipped.length < MAX_SKIPPED) skipped.push({ ...day, hour, minute })
+          continue
+        }
         if (instant <= from) continue
         if (startAt !== null && instant < startAt) continue
-        if (endAt !== null && instant >= endAt) return null
-        return instant
+        if (endAt !== null && instant >= endAt) return { at: null, skipped }
+        return { at: instant, skipped }
       }
     }
   }
-  return null
+  return { at: null, skipped }
 }
 
-export function nextTime(schedule: Schedule, from: number): number | null {
-  if (!Number.isFinite(from)) return null
+export function nextOccurrence(schedule: Schedule, from: number): NextOccurrence {
+  if (!Number.isFinite(from)) return { at: null, skipped: [] }
   return schedule.kind === 'interval' ? nextInterval(schedule, from) : nextCron(schedule, from)
+}
+
+// The one instant a caller acts on. The preview uses `nextOccurrence` because it
+// also needs the wall times that were skipped.
+export function nextTime(schedule: Schedule, from: number): number | null {
+  return nextOccurrence(schedule, from).at
 }
