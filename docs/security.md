@@ -211,6 +211,15 @@ job are followed up, and a repo with an active job is skipped. Follow-up jobs
 reuse the original branch and PR; they never create a second PR or issue. The
 webhook signature is verified before any parsing or enqueue.
 
+A default-branch `workflow_run.completed` failure is ingested from that same
+signed webhook. The payload is untrusted: only the workflow name, run id,
+attempt, branch, SHA and `html_url` are read, each is length-bounded, they are
+escaped where the console renders them, and `html_url` must start with
+`https://` before it becomes a link. Intake stores the failure and the reason it
+will not be triaged; it does not read job logs, so no log content can reach a
+model, a report or the database in this slice. A later slice that fetches a log
+must redact it before any slice or model input.
+
 ### Job cost, evidence and metrics
 
 `events` stores activation/intervention names, user/repo/job ids and a short

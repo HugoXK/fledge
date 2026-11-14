@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
-import { openStore, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow } from './db.js'
+import { openStore, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
 import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions, type Viewer } from './auth/session.js'
@@ -1364,6 +1364,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         }),
         ...(workState !== undefined && isWorkItemState(workState) ? { workState } : {}),
         reviewTrend,
+        workflowFailures: store.listWorkflowFailuresForRepo(repo.id, 10),
         postmortems: store.listPostmortemsForRepo(repo.id, { openOnly: true }),
         recurrences: store.listPostmortemRecurrences(repo.id),
         models: store.listUserProviderModels(repo.user_id),
@@ -3466,6 +3467,68 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
 
+  // #542 slice 1: a red default branch used to be invisible, because the
+  // follow-up path needs a Fledge job on that exact PR. Intake records the
+  // failure and the decision about it — `queued` for a failure on the default
+  // branch, `ignored` with its reason for one this path will not triage — and
+  // stops there: no log read, no model call, no rerun, no issue. A green or
+  // cancelled run is not a failed run, so it stores nothing.
+  const handleWorkflowRun = async (event: string, body: Record<string, unknown>): Promise<void> => {
+    if (event !== 'workflow_run' || body.action !== 'completed') return
+    const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
+    const installationId = Number(installation.id)
+    const repository = typeof body.repository === 'object' && body.repository !== null ? (body.repository as Record<string, unknown>) : {}
+    const fullName = typeof repository.full_name === 'string' ? repository.full_name : ''
+    if (!Number.isFinite(installationId) || fullName === '') return
+    const repo = store.findRepoByInstallationAndFullName(installationId, fullName)
+    if (repo === undefined) return
+    const run = typeof body.workflow_run === 'object' && body.workflow_run !== null ? (body.workflow_run as Record<string, unknown>) : {}
+    if (String(run.conclusion ?? '') !== 'failure') return
+    const runId = Number(run.id)
+    const attempt = Number(run.run_attempt ?? 1)
+    if (!Number.isInteger(runId) || runId <= 0 || !Number.isInteger(attempt) || attempt <= 0) return
+    const runUrl = typeof run.html_url === 'string' ? run.html_url : ''
+    const workflowName = typeof run.name === 'string' && run.name !== '' ? run.name : ''
+    // GitHub always sends https here; refusing anything else keeps the console's
+    // link from becoming a scheme the payload chose.
+    if (!runUrl.startsWith('https://') || workflowName === '') return
+    const headBranch = typeof run.head_branch === 'string' ? run.head_branch : ''
+    const headSha = typeof run.head_sha === 'string' ? run.head_sha : ''
+    const runEvent = typeof run.event === 'string' ? run.event : ''
+    // A fork can carry a different default branch name on each side, so any of
+    // the three names counts; a tag run reports the tag as `head_branch` and is
+    // therefore not a default-branch run until a later slice proves ancestry.
+    const defaultBranches = new Set(
+      [repo.default_branch, repo.upstream_default_branch, repo.fork_default_branch]
+        .filter((branch) => typeof branch === 'string' && branch !== '')
+        .map((branch) => branch.toLowerCase()),
+    )
+    const pullRequestRun = (Array.isArray(run.pull_requests) && run.pull_requests.length > 0) || runEvent === 'pull_request' || runEvent === 'pull_request_target'
+    const onDefaultBranch = headBranch !== '' && defaultBranches.has(headBranch.toLowerCase())
+    const reason = pullRequestRun ? 'pull_request' : !onDefaultBranch ? 'not_default_branch' : null
+    const status: WorkflowFailureStatus = reason === null ? 'queued' : 'ignored'
+    const stored = store.recordWorkflowFailure({
+      id: randomId('wf'),
+      repoId: repo.id,
+      runId,
+      attempt,
+      workflowName: workflowName.slice(0, 200),
+      headSha: headSha.slice(0, 64),
+      headBranch: headBranch.slice(0, 200),
+      event: runEvent.slice(0, 40),
+      status,
+      reason,
+      runUrl: runUrl.slice(0, 500),
+    })
+    if (!stored.created) return
+    store.event('workflow_failure', {
+      userId: repo.user_id,
+      repoId: repo.id,
+      meta: `${status}:${reason ?? 'analysis_pending'}:${runId}:${attempt}:${headSha.slice(0, 12)}`.slice(0, 300),
+    })
+    log.info('workflow failure intake', { repo: `${repo.owner}/${repo.name}`, run: runId, attempt, status, reason })
+  }
+
   const handleGithubFollowup = async (event: string, body: Record<string, unknown>): Promise<void> => {
     const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
     const installationId = Number(installation.id)
@@ -3736,6 +3799,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     try {
       await handleWorkItemEvent(event, body)
+      await handleWorkflowRun(event, body)
       await handleIssueCommand(event, body)
       await handleGithubFollowup(event, body)
       if (delivery !== '') store.finishWebhookDelivery(delivery, 'processed')
