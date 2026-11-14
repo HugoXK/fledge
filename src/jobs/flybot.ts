@@ -28,6 +28,9 @@ interface BridgePayload {
   platform: { baseUrl: string; model: string; token: string }
   timeoutMinutes: number
   instructions: string
+  rulesText?: string
+  contextUrl?: string
+  skills?: Array<{ name: string; path: string; description: string; bytes: number; sha256: string }>
 }
 
 function iterateInstructions(context: RunnerContext): string[] {
@@ -190,11 +193,26 @@ export class FlyBotRunner implements Runner {
       credentialSecret: context.credential.secret,
       platform: context.platform,
       timeoutMinutes: context.timeoutMinutes,
+      ...(context.rules === undefined ? {} : {
+        rulesText: context.rules.effective.slice(0, 16_000),
+        contextUrl: context.credential.url.replace(/\/credential$/, '/context'),
+        skills: context.rules.skills.map((skill) => ({
+          name: skill.name,
+          path: skill.path,
+          description: skill.description,
+          bytes: skill.bytes,
+          sha256: skill.sha256,
+        })),
+      }),
       instructions: [
         'You are the Fledge repository worker.',
         `Get the GitHub token with GET ${context.credential.url} and header "Authorization: Bearer ${context.credential.secret}".`,
         `Use the platform model at ${context.platform.baseUrl} with the job token as the API key; the model is ${context.platform.model}.`,
         ...(context.kind === 'review' ? reviewInstructions(context) : context.kind === 'discover' ? discoverInstructions(context) : context.kind === 'triage' ? triageInstructions(context) : context.kind === 'plan' ? planInstructions(context) : context.kind === 'scope' ? scopeInstructions(context) : context.kind === 'verify' ? verifyInstructions(context) : iterateInstructions(context)),
+        ...(context.rules === undefined ? [] : [
+          `Repository rules from ${context.rules.owner}/${context.rules.name} at ${context.rules.commit} are in the Rules section.`,
+          `A skill's full text is readable at GET ${context.credential.url.replace(/\/credential$/, '/context')}?path=<skill path> with "Authorization: Bearer ${context.callback.secret}".`,
+        ]),
         `Send a progress heartbeat after each major step and at least every 10 minutes: POST ${context.callback.url} with JSON {"status":"running","summary":"<one line progress>","checkpoint":"<done + next>"} and "Authorization: Bearer ${context.callback.secret}".`,
         'GitHub attribution: end every issue, PR and comment you create with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',
         'Final callback: include "attribution": {"writtenBy":"...","claimedBy":"...","implementedBy":"...","testedBy":"...","reviewedBy":"..."} with role names only (Lead, Product, Test, Security, Reviewer, Dev-1, Dev-2). Omit a key for a step that did not happen; never write "not run", "pending" or "(Team)".',

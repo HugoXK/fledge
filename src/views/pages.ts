@@ -2386,6 +2386,9 @@ export function jobPage(input: {
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/retry">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(job.checkpoint === null || job.checkpoint === '' ? t('重试这个任务', 'Retry this job') : t('从断点继续', 'Resume from checkpoint'))}</button></form>`
     : ''
   const recheck = job.pr_url === null || supportMode ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('重新核实 PR', 'Re-check PR'))}</button></form>`
+  const ackRuleChange = verification?.ruleChange === undefined || verification.ruleChange.acknowledged || repo.repo_role !== 'maintainer'
+    ? ''
+    : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/ack-rule-change">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t(`确认规则变更（${verification.ruleChange.paths.length} 个文件）`, `Acknowledge rule change (${verification.ruleChange.paths.length} files)`))}</button></form>`
   const execute = job.kind === 'plan' && job.status === 'succeeded' && job.plan_approved_at !== null
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/execute">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('执行这个计划', 'Execute this plan'))}</button></form>`
     : ''
@@ -2450,6 +2453,7 @@ export function jobPage(input: {
         ${supportMode ? '' : control}
         ${supportMode ? '' : execute}
         ${supportMode ? '' : recheck}
+        ${supportMode ? '' : ackRuleChange}
         ${supportMode ? '' : retry}
       </div>
     </div>
@@ -2482,6 +2486,7 @@ export function jobPage(input: {
     <div class="row between">
       <div>${readinessBadge(t, readiness.state)}${readiness.reasons.length === 0 ? '' : `<p class="fine">${escapeHtml(readiness.reasons.slice(0, 6).join(' · '))}</p>`}</div>
       ${recheck}
+      ${ackRuleChange}
     </div>
     ${verification === null
       ? `<p class="muted">${escapeHtml(t('还没有核实记录。任务回调后会自动核实；也可以现在重新检查。', 'No verification yet. It runs after a job callback; you can also re-check now.'))}</p>`

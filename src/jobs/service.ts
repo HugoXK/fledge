@@ -34,6 +34,7 @@ import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTy
 import { parseTriage } from '../lib/triage.js'
 import { repoGithubToken, ReadOnlyTokenUnavailable, triageReadOnlyToken } from '../repos/token.js'
 import { parseTeam } from '../flybot/instances.js'
+import { isRuleChange, loadRepoRules, RulesError, type RepoRules } from '../rules.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
 import type { InstanceManager } from '../flybot/instances.js'
 
@@ -482,6 +483,52 @@ export class Jobs {
     return [...due].sort()
   }
 
+  private rulesCache = new Map<string, { at: number; rules: RepoRules }>()
+
+  private async loadRules(
+    repo: RepoRow,
+    baseBranch: string,
+    preflightSha: string | null,
+  ): Promise<{ ok: true; rules?: RepoRules } | { ok: false; error: string; code: string; detail?: string }> {
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    try {
+      const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
+      const client = new GithubClient(token, this.config.github.apiBase)
+      let commit = preflightSha
+      if (commit === null) {
+        const branch = await client.getBranch(owner, name, baseBranch)
+        commit = branch?.sha ?? null
+      }
+      if (commit === null) {
+        return { ok: false, error: '无法确定仓库的基准提交，暂时不能读取仓库规则。', code: 'RULES_UNAVAILABLE' }
+      }
+      const key = `${repo.id}:${commit}`
+      const cached = this.rulesCache.get(key)
+      if (cached !== undefined && Date.now() - cached.at < 5 * 60_000) {
+        return { ok: true, ...(cached.rules.files.length === 0 && cached.rules.skills.length === 0 ? {} : { rules: cached.rules }) }
+      }
+      const rules = await loadRepoRules(client, owner, name, commit)
+      if (this.rulesCache.size > 100) this.rulesCache.clear()
+      this.rulesCache.set(key, { at: Date.now(), rules })
+      return { ok: true, ...(rules.files.length === 0 && rules.skills.length === 0 ? {} : { rules }) }
+    } catch (error) {
+      if (error instanceof RulesError) {
+        return {
+          ok: false,
+          error: error.message,
+          code: error.code === 'rules_invalid' ? 'RULES_INVALID' : 'RULES_UNAVAILABLE',
+          detail: error.path,
+        }
+      }
+      return {
+        ok: false,
+        error: `读取仓库规则失败：${error instanceof Error ? error.message : String(error)}`,
+        code: 'RULES_UNAVAILABLE',
+      }
+    }
+  }
+
   private async duplicatePreflight(repo: RepoRow, goal: string, workItemId?: string): Promise<{ ok: boolean; error?: string; code?: string; detail?: string }> {
     // Only the FlyBot runner reads the upstream repository; the sibling
     // `preflight` has the same guard at its first line. Without it a deployment
@@ -696,6 +743,12 @@ export class Jobs {
       preflightSha = preflight.baseSha ?? null
       preflightWarning = preflight.warning ?? ''
     }
+    let rules: RepoRules | undefined
+    if (this.runner.name === 'flybot') {
+      const loaded = await this.loadRules(repo, baseBranch, preflightSha)
+      if (!loaded.ok) return { ok: false, error: loaded.error, code: loaded.code, detail: loaded.detail }
+      rules = loaded.rules
+    }
     const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : kind === 'discover' ? DEFAULT_DISCOVER_GOAL : kind === 'triage' ? DEFAULT_TRIAGE_GOAL : kind === 'scope' ? DEFAULT_SCOPE_GOAL : kind === 'verify' ? DEFAULT_VERIFY_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
     const rawGoal = goalOverride ?? baseGoal
     const carryOver = trigger === 'schedule' || trigger === 'followup'
@@ -791,6 +844,28 @@ export class Jobs {
       throw error
     }
     if (continuityUsed) this.store.updateJob(job.id, { continuity_used: 1 })
+    if (rules !== undefined) {
+      this.store.saveJobContext({
+        jobId: job.id,
+        repoId: repo.id,
+        commitSha: rules.commit,
+        rulesJson: JSON.stringify({
+          owner: rules.owner,
+          name: rules.name,
+          commit: rules.commit,
+          hash: rules.hash,
+          effective: rules.effective,
+          files: rules.files.map((file) => ({ path: file.path, sha256: file.sha256, bytes: file.bytes })),
+          skills: rules.skills.map((skill) => ({ name: skill.name, path: skill.path, description: skill.description, sha256: skill.sha256, bytes: skill.bytes })),
+        }),
+        manifestJson: JSON.stringify([
+          ...rules.files.map((file) => ({ path: file.path, kind: 'rule', sha256: file.sha256, bytes: file.bytes })),
+          ...rules.skills.map((skill) => ({ path: skill.path, kind: 'skill', sha256: skill.sha256, bytes: skill.bytes })),
+        ]),
+        files: [...rules.files, ...rules.skills].map((file) => ({ path: file.path, sha256: file.sha256, bytes: file.bytes, content: file.content })),
+      })
+      this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.rules', step: kind, meta: `${rules.commit} ${rules.hash}`.slice(0, 200) })
+    }
     if (options.workItemId !== undefined) {
       this.store.updateWorkItem(options.workItemId, { state: 'in_progress', job_id: job.id, assignee_user_id: user.id })
     }
@@ -869,6 +944,7 @@ export class Jobs {
         credential: { url: `${this.config.baseUrl}/api/jobs/${job.id}/credential`, secret: callbackSecret },
         platform: { baseUrl: `${this.config.baseUrl}/v1`, model: this.config.llm.model, token: platformToken },
         ...(flybot === undefined ? {} : { flybot }),
+        ...(rules === undefined ? {} : { rules }),
         timeoutMinutes: this.config.runner.timeoutMinutes,
       })
       if (result.status === 'running') {
@@ -1239,6 +1315,23 @@ export class Jobs {
     return checkPathGuard(listed.files.map((file) => file.filename), allow, deny, undefined, reportedFiles > 0 ? reportedFiles : listed.files.length, listed.complete)
   }
 
+  private async ruleChangePaths(
+    job: JobRow,
+    client: GithubClient,
+    owner: string,
+    name: string,
+    number: number,
+    reportedFiles: number,
+    knownFiles: string[],
+  ): Promise<string[]> {
+    // A job that never loaded a rule context cannot have a repository rule to
+    // protect, so it must not pay an extra changed-file request.
+    if (this.store.getJobContext(job.id) === undefined) return []
+    if (knownFiles.length > 0) return knownFiles.filter(isRuleChange)
+    const listed = await client.listPullRequestFiles(owner, name, number, reportedFiles)
+    return listed.files.map((file) => file.filename).filter(isRuleChange)
+  }
+
   // A truncated walk and a protected-path violation are different refusals. A
   // notification that names the path when the list was merely cut off accuses
   // the change of something it did not do, so the phrase follows `truncated`.
@@ -1310,6 +1403,14 @@ export class Jobs {
         reasons,
       }
       const guard = await this.pathGuardFor(client, owner, name, number, job, repo, pr.changedFiles)
+      const rulePaths = await this.ruleChangePaths(job, client, owner, name, number, pr.changedFiles, guard.files)
+      if (rulePaths.length > 0) {
+        const acknowledged = this.store.getSetting(`rule_change_ack:${job.id}:${pr.headSha}`) !== undefined
+        verification.ruleChange = { paths: rulePaths, acknowledged }
+        if (!acknowledged) reasons.push('Pull request changes Fledge rules or skills; a maintainer must acknowledge the rule change.')
+        verification.reasons = reasons
+        verification.ok = reasons.length === 0
+      }
       this.store.updateJob(job.id, { verification_json: JSON.stringify(verification), path_guard_json: JSON.stringify(guard) })
       if (!guard.ok) {
         incCounter('fledge_path_guard_blocked_total', {}, 1, 'Pull requests blocked by path guard')
@@ -1424,6 +1525,12 @@ export class Jobs {
       if (pr.state !== 'open' || pr.draft) return { ok: false, message: 'PR 不是 open 状态。' }
       const guard = await this.pathGuardFor(client, owner, name, number, job, repo, pr.changedFiles)
       this.store.updateJob(job.id, { path_guard_json: JSON.stringify(guard) })
+      const changedRules = await this.ruleChangePaths(job, client, owner, name, number, pr.changedFiles, guard.files)
+      if (changedRules.length > 0 && this.store.getSetting(`rule_change_ack:${job.id}:${pr.headSha}`) === undefined) {
+        this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: rule change needs acknowledgement (${changedRules.length} paths)`)
+        this.store.notify(job.user_id, 'job', `任务 ${job.id} 的 PR 修改了 Fledge 规则或技能，maintainer 确认后才能合并。`)
+        return { ok: false, message: 'PR 修改了 Fledge 规则或技能，需要 maintainer 先确认。' }
+      }
       if (!guard.ok) {
         incCounter('fledge_path_guard_blocked_total', {}, 1, 'Pull requests blocked by path guard')
         const detail = Jobs.pathGuardDetail(guard)
@@ -2562,6 +2669,12 @@ export class Jobs {
     }
 
     const baseBranch = job.base_branch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch))
+    let rules: RepoRules | undefined
+    if (this.runner.name === 'flybot') {
+      const loaded = await this.loadRules(repo, baseBranch, job.base_sha)
+      if (!loaded.ok) return fail(loaded.error)
+      rules = loaded.rules
+    }
     this.store.updateJob(job.id, {
       status: 'running',
       started_at: nowIso(),
@@ -2609,6 +2722,7 @@ export class Jobs {
         credential: { url: `${this.config.baseUrl}/api/jobs/${job.id}/credential`, secret: callbackSecret },
         platform: { baseUrl: `${this.config.baseUrl}/v1`, model: this.config.llm.model, token: platformToken },
         ...(flybot === undefined ? {} : { flybot }),
+        ...(rules === undefined ? {} : { rules }),
         timeoutMinutes: this.config.runner.timeoutMinutes,
       })
       if (result.status === 'running') return

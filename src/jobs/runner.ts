@@ -2,6 +2,7 @@ import type { Config } from '../config.js'
 import type { JobRow, RepoRow, UserRow } from '../db.js'
 import type { Logger } from '../lib/log.js'
 import type { RepoRole } from '../lib/repoRole.js'
+import type { RepoRules } from '../rules.js'
 import { FlyBotRunner } from './flybot.js'
 import { MockRunner } from './mock.js'
 
@@ -47,6 +48,7 @@ export interface RunnerContext {
   credential: JobCredential
   platform: PlatformModel
   flybot?: { url: string; token: string; sessionId: string; role: 'chief' | 'lead' | 'reviewer' | 'product' | 'test'; leadName: string }
+  rules?: RepoRules
   timeoutMinutes: number
 }
 

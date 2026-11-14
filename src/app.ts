@@ -20,6 +20,7 @@ import { assertSafeModelUrl } from './gateway/modelUrl.js'
 import { quotaView } from './gateway/quota.js'
 import { parseAttributionJson } from './lib/attribution.js'
 import { failureBreakdown } from './lib/failure.js'
+import { parseVerification } from './lib/verification.js'
 import { Jobs } from './jobs/service.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
@@ -1794,6 +1795,23 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${key}=${encodeURIComponent(message)}`)
   })
 
+  app.post('/repos/:id/jobs/:jobId/ack-rule-change', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('只有 maintainer 可以确认规则变更。')}`)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const verification = parseVerification(job.verification_json)
+    if (verification?.ruleChange === undefined || job.pr_url === null) {
+      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个任务没有待确认的规则变更。')}`)
+    }
+    store.setSetting(`rule_change_ack:${job.id}:${verification.sha}`, nowIso())
+    store.audit(viewer.user.id, 'job.rule_change_acknowledged', `${job.id}: ${verification.ruleChange.paths.join(', ').slice(0, 300)}`)
+    const result = await jobs.recheck(job.id)
+    const key = result.ok ? 'notice' : 'error'
+    const message = result.ok ? '规则变更已确认，PR 证据检查通过。' : (result.message ?? '规则变更已确认，但 PR 仍有其他问题。')
+    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${key}=${encodeURIComponent(message)}`)
+  })
+
   app.post('/repos/:id/jobs/:jobId/merge', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
@@ -3043,6 +3061,34 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const result = await approvals.apply(token, 'email-link')
     if (!result.ok) return htmlPage(reply, 400, messagePage(config, '无法处理', result.reason, request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
     return reply.type('text/html').send(messagePage(config, result.user.status === 'approved' ? '已批准' : '已拒绝', `@${result.user.login} 的申请已${result.user.status === 'approved' ? '批准' : '拒绝'}。`, request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
+  })
+
+  app.get('/api/jobs/:id/context', async (request, reply) => {
+    const jobId = String((request.params as Record<string, string>).id)
+    if (!apiLimiter.take(`job-context:${jobId}:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
+    const job = store.getJob(jobId)
+    if (job === undefined) return reply.code(404).send({ error: 'job not found' })
+    const secret = bearerSecret(request)
+    if (secret === '' || !safeEqual(sha256Hex(secret), job.callback_hash)) return reply.code(401).send({ error: 'bad context secret' })
+    if (job.status !== 'queued' && job.status !== 'running') return reply.code(409).send({ error: 'job already finished' })
+    const context = store.getJobContext(job.id)
+    if (context === undefined) return reply.code(404).send({ error: 'no context for this job' })
+    const path = queryText(request, 'path')
+    if (path === undefined) {
+      let files: unknown = []
+      try {
+        files = JSON.parse(context.manifest_json) as unknown
+      } catch {}
+      return reply.send({ commit: context.commit_sha, files })
+    }
+    if (path.length > 300 || path.includes('\0')) return reply.code(400).send({ error: 'invalid context path' })
+    const file = store.getJobContextFile(job.id, path)
+    if (file === undefined) return reply.code(404).send({ error: 'context file not found' })
+    return reply
+      .header('cache-control', 'no-store')
+      .header('x-content-sha256', file.sha256)
+      .type('text/plain; charset=utf-8')
+      .send(file.content)
   })
 
   app.get('/api/jobs/:id/credential', async (request, reply) => {

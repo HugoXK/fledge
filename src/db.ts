@@ -409,6 +409,23 @@ export interface JobEventRow {
   meta: string | null
 }
 
+export interface JobContextRow {
+  job_id: string
+  repo_id: string
+  commit_sha: string
+  rules_json: string
+  manifest_json: string
+  created_at: string
+}
+
+export interface JobContextFileRow {
+  job_id: string
+  path: string
+  sha256: string
+  bytes: number
+  content: string
+}
+
 export interface ArtifactVersionRow {
   id: string
   artifact: string
@@ -891,6 +908,24 @@ CREATE TABLE IF NOT EXISTS job_events (
 );
 CREATE INDEX IF NOT EXISTS job_events_job_idx ON job_events(job_id, id DESC);
 CREATE INDEX IF NOT EXISTS job_events_at_idx ON job_events(at);
+
+CREATE TABLE IF NOT EXISTS job_contexts (
+  job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL,
+  commit_sha TEXT NOT NULL,
+  rules_json TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS job_context_files (
+  job_id TEXT NOT NULL REFERENCES job_contexts(job_id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  PRIMARY KEY (job_id, path)
+);
 
 CREATE TABLE IF NOT EXISTS artifact_versions (
   id TEXT PRIMARY KEY,
@@ -2665,6 +2700,48 @@ export class Store {
 
   getJob(id: string): JobRow | undefined {
     return this.get<JobRow>('SELECT * FROM jobs WHERE id = ?', id)
+  }
+
+  saveJobContext(input: {
+    jobId: string
+    repoId: string
+    commitSha: string
+    rulesJson: string
+    manifestJson: string
+    files: Array<{ path: string; sha256: string; bytes: number; content: string }>
+  }): void {
+    this.transaction(() => {
+      this.run(
+        `INSERT INTO job_contexts (job_id, repo_id, commit_sha, rules_json, manifest_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(job_id) DO UPDATE SET repo_id = excluded.repo_id, commit_sha = excluded.commit_sha, rules_json = excluded.rules_json, manifest_json = excluded.manifest_json`,
+        input.jobId,
+        input.repoId,
+        input.commitSha,
+        input.rulesJson,
+        input.manifestJson,
+        nowIso(),
+      )
+      this.run('DELETE FROM job_context_files WHERE job_id = ?', input.jobId)
+      for (const file of input.files) {
+        this.run(
+          'INSERT INTO job_context_files (job_id, path, sha256, bytes, content) VALUES (?, ?, ?, ?, ?)',
+          input.jobId,
+          file.path,
+          file.sha256,
+          file.bytes,
+          file.content,
+        )
+      }
+    })
+  }
+
+  getJobContext(jobId: string): JobContextRow | undefined {
+    return this.get<JobContextRow>('SELECT * FROM job_contexts WHERE job_id = ?', jobId)
+  }
+
+  getJobContextFile(jobId: string, path: string): JobContextFileRow | undefined {
+    return this.get<JobContextFileRow>('SELECT * FROM job_context_files WHERE job_id = ? AND path = ?', jobId, path)
   }
 
   listJobs(userId: string, limit = 20): JobRow[] {

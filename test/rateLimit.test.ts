@@ -136,8 +136,8 @@ test('a configured proxy hop is trusted: the appended client address, not the pe
 test('every throttle in src/app.ts takes its key from the normalized client address', () => {
   const source = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8')
   const takes = source.split('\n').map((line) => line.trim()).filter((line) => line.includes('.take('))
-  assert.equal(takes.length, 16, `the limiter call count changed: ${takes.length}`)
-  assert.equal(takes.filter((line) => line.includes('rateLimitKey(request)')).length, 15, 'every throttle but reauth uses the normalized key')
+  assert.equal(takes.length, 17, `the limiter call count changed: ${takes.length}`)
+  assert.equal(takes.filter((line) => line.includes('rateLimitKey(request)')).length, 16, 'every throttle but reauth uses the normalized key')
   assert.equal(takes.filter((line) => line.includes('reauth:${viewer.user.id}')).length, 1, 'reauth stays keyed on the user id')
   for (const line of takes) {
     assert.ok(line.includes('rateLimitKey(request)') || line.includes('reauth:${viewer.user.id}'), `a limiter key is not client-choosable-proof: ${line}`)
