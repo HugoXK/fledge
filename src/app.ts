@@ -1241,12 +1241,24 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     // #564: open work, an active job and a ready instance decide when a
     // repository runs again, and none of them is on RepoRow.
-    const nextRunFacts = allRepos.map((repo) => ({
-      repoId: repo.id,
-      openWork: store.listOpenWorkItems(repo.id).length > 0,
-      activeJob: store.activeJobForRepo(repo.id) !== undefined,
-      instanceReady: store.getRepoInstance(repo.id)?.status === 'ready',
-    }))
+    // #688: a repository that has saved a schedule row is answered by the planner,
+    // so its answer travels with the facts instead of being re-derived from the
+    // interval rule the card used to apply to every repository.
+    const nextRunFacts = allRepos.map((repo) => {
+      const scheduleRow = store.scheduleForRepo(repo.id)
+      const schedule = scheduleRow === undefined ? null : scheduleFromRow(scheduleRow)
+      return {
+        repoId: repo.id,
+        openWork: store.listOpenWorkItems(repo.id).length > 0,
+        activeJob: store.activeJobForRepo(repo.id) !== undefined,
+        instanceReady: store.getRepoInstance(repo.id)?.status === 'ready',
+        ...(scheduleRow === undefined ? {} : {
+          scheduledNext: schedule === null
+            ? { kind: 'unreadable' as const, at: null }
+            : { kind: schedule.kind, at: nextTime(schedule, Date.now()) },
+        }),
+      }
+    })
     return reply.type('text/html').send(
       dashboardPage({
         config,
@@ -3188,6 +3200,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!isValidBranchName(targetBranch)) {
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('目标分支格式不正确。')}#repo-settings`)
     }
+    // #524: the same POST writes the pre-merge policy, and the auto-merge gate
+    // above left that half reachable from a stale session. `require_protection`
+    // and `stage_mode` each switch off a check the merge path depends on, the
+    // path lists and the target branch decide what a merge may touch, and
+    // `repo_role` decides who may act. One gate for the set, so a single submit
+    // writes one audit row rather than one per field.
+    const policyNext: Array<[string, string | number | null, string | number]> = [
+      ['require_protection', repo.require_protection, body.requireProtection === '1' ? 1 : 0],
+      ['allow_paths', repo.allow_paths, (body.allowPaths ?? '').trim().slice(0, 2000)],
+      ['deny_paths', repo.deny_paths, (body.denyPaths ?? '').trim().slice(0, 2000)],
+      ['target_branch', repo.target_branch, targetBranch],
+      ['repo_role', currentRole ?? 'none', repoRole],
+      ['stage_mode', repo.stage_mode, parseStageMode(body.stageMode) ?? 'off'],
+    ]
+    const policyChanged = policyNext.filter(([, was, next]) => was !== next).map(([field]) => field)
+    if (policyChanged.length > 0 && requireRecentAuth(request, reply, viewer, 'repo.policy')) return reply
     if (targetBranch !== repo.target_branch) {
       try {
         const token = await repoGithubToken(repo, config, githubApp, store)
@@ -3220,6 +3248,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       reviewer_enabled: canMaintain && repo.can_review === 1 && body.review === '1' ? 1 : 0,
       review_interval_minutes: reviewInterval,
     })
+    if (policyChanged.length > 0) {
+      store.audit(viewer.user.id, 'repo.policy', `${repo.owner}/${repo.name} ${policyChanged.join(',')} by @${viewer.user.login}`)
+    }
     const allowedModels = new Set(store.listUserProviderModels(viewer.user.id).map((model) => model.id))
     const requestedModels = [...new Set(formList(request, 'modelIds').filter((id) => allowedModels.has(id)))]
     const requestedDefault = (body.defaultModelId ?? '').trim()
