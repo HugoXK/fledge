@@ -14,6 +14,15 @@
 // Not in this slice, by design: occurrence rows, leases, misfire policies,
 // budgets and the notification outbox. They build on this function.
 
+import type { Translate } from '../i18n.js'
+
+const ENGLISH: Translate = (_zh, en) => en
+
+interface Label {
+  zh: string
+  en: string
+}
+
 export interface CronSchedule {
   kind: 'cron'
   /** The expression exactly as it was accepted, for display. */
@@ -66,27 +75,48 @@ function fail(reason: string): { ok: false; reason: string } {
 // zone: the contract is a zone name, so a schedule follows the offset changes its
 // zone makes. A fixed offset would pin the wall clock and silently never observe a
 // DST transition, so it is refused by name rather than left to `Intl`.
-function timezoneProblem(timezone: string): string | null {
+function timezoneProblem(timezone: string, t: Translate): string | null {
   const trimmed = timezone.trim()
   const upper = trimmed.toUpperCase()
   const signed = trimmed.startsWith('+') || trimmed.startsWith('-')
   const prefixed = upper.startsWith('UTC+') || upper.startsWith('UTC-') || upper.startsWith('GMT+') || upper.startsWith('GMT-')
   if (signed || prefixed) {
-    return `timezone "${timezone}" is a fixed UTC offset, not an IANA zone; use a zone name such as Asia/Shanghai`
+    return t(
+      `时区 "${timezone}" 是固定 UTC 偏移，不是 IANA 时区；请使用 Asia/Shanghai 这样的时区名称`,
+      `timezone "${timezone}" is a fixed UTC offset, not an IANA zone; use a zone name such as Asia/Shanghai`,
+    )
   }
-  if (trimmed === '') return `timezone "${timezone}" is empty; an IANA zone such as UTC or Asia/Shanghai is required`
+  if (trimmed === '') {
+    return t(
+      `时区 "${timezone}" 为空；需要 UTC 或 Asia/Shanghai 这样的 IANA 时区`,
+      `timezone "${timezone}" is empty; an IANA zone such as UTC or Asia/Shanghai is required`,
+    )
+  }
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: trimmed })
     return null
   } catch {
-    return `timezone "${timezone}" is not an IANA zone this runtime knows`
+    return t(
+      `时区 "${timezone}" 不是当前运行时认识的 IANA 时区`,
+      `timezone "${timezone}" is not an IANA zone this runtime knows`,
+    )
   }
 }
 
-function parseNumber(text: string, label: string, min: number, max: number): { ok: true; value: number } | { ok: false; reason: string } {
-  if (!/^\d+$/.test(text)) return fail(`${label} field "${text}" is not a number; named months, weekdays and extensions are not supported`)
+function parseNumber(text: string, label: Label, min: number, max: number, t: Translate): { ok: true; value: number } | { ok: false; reason: string } {
+  if (!/^\d+$/.test(text)) {
+    return fail(t(
+      `${label.zh}字段 "${text}" 不是数字；不支持月份、星期名称和扩展语法`,
+      `${label.en} field "${text}" is not a number; named months, weekdays and extensions are not supported`,
+    ))
+  }
   const value = Number(text)
-  if (value < min || value > max) return fail(`${label} field "${text}" is outside ${min}-${max}`)
+  if (value < min || value > max) {
+    return fail(t(
+      `${label.zh}字段 "${text}" 超出 ${min}-${max}`,
+      `${label.en} field "${text}" is outside ${min}-${max}`,
+    ))
+  }
   return { ok: true, value }
 }
 
@@ -97,19 +127,34 @@ interface FieldParse {
   reason: string
 }
 
-function parseField(raw: string, label: string, min: number, max: number): FieldParse {
+function parseField(raw: string, label: Label, min: number, max: number, t: Translate): FieldParse {
   const denied = (reason: string): FieldParse => ({ ok: false, values: [], wildcard: false, reason })
   const values = new Set<number>()
   const wildcard = raw === '*'
   for (const part of raw.split(',')) {
-    if (part === '') return denied(`${label} field "${raw}" has an empty element`)
+    if (part === '') {
+      return denied(t(
+        `${label.zh}字段 "${raw}" 含有空元素`,
+        `${label.en} field "${raw}" has an empty element`,
+      ))
+    }
     const pieces = part.split('/')
-    if (pieces.length > 2) return denied(`${label} element "${part}" has more than one step`)
+    if (pieces.length > 2) {
+      return denied(t(
+        `${label.zh}元素 "${part}" 含有多个步长`,
+        `${label.en} element "${part}" has more than one step`,
+      ))
+    }
     const rangeText = pieces[0] ?? ''
     const stepText = pieces[1]
     let step = 1
     if (stepText !== undefined) {
-      if (!/^\d+$/.test(stepText) || Number(stepText) < 1) return denied(`${label} step in "${part}" must be a positive number`)
+      if (!/^\d+$/.test(stepText) || Number(stepText) < 1) {
+        return denied(t(
+          `${label.zh}元素 "${part}" 的步长必须是正数`,
+          `${label.en} step in "${part}" must be a positive number`,
+        ))
+      }
       step = Number(stepText)
     }
     let low: number
@@ -119,18 +164,28 @@ function parseField(raw: string, label: string, min: number, max: number): Field
       high = max
     } else if (rangeText.includes('-')) {
       const bounds = rangeText.split('-')
-      if (bounds.length !== 2) return denied(`${label} range "${rangeText}" is not a low-high pair`)
+      if (bounds.length !== 2) {
+        return denied(t(
+          `${label.zh}范围 "${rangeText}" 不是低-高对`,
+          `${label.en} range "${rangeText}" is not a low-high pair`,
+        ))
+      }
       const lowerText = bounds[0] ?? ''
       const upperText = bounds[1] ?? ''
-      const lower = parseNumber(lowerText, label, min, max)
+      const lower = parseNumber(lowerText, label, min, max, t)
       if (!lower.ok) return denied(lower.reason)
-      const upper = parseNumber(upperText, label, min, max)
+      const upper = parseNumber(upperText, label, min, max, t)
       if (!upper.ok) return denied(upper.reason)
-      if (lower.value > upper.value) return denied(`${label} range "${rangeText}" runs backwards`)
+      if (lower.value > upper.value) {
+        return denied(t(
+          `${label.zh}范围 "${rangeText}" 是倒序的`,
+          `${label.en} range "${rangeText}" runs backwards`,
+        ))
+      }
       low = lower.value
       high = upper.value
     } else {
-      const single = parseNumber(rangeText, label, min, max)
+      const single = parseNumber(rangeText, label, min, max, t)
       if (!single.ok) return denied(single.reason)
       low = single.value
       // In Vixie cron `5/10` is "start at 5, step 10 through the end of the
@@ -140,36 +195,45 @@ function parseField(raw: string, label: string, min: number, max: number): Field
     for (let value = low; value <= high; value += step) values.add(value)
   }
   const sorted = [...values].sort((a, b) => a - b)
-  if (sorted.length === 0) return denied(`${label} field "${raw}" selects nothing`)
+  if (sorted.length === 0) {
+    return denied(t(
+      `${label.zh}字段 "${raw}" 没有选中任何值`,
+      `${label.en} field "${raw}" selects nothing`,
+    ))
+  }
   return { ok: true, values: sorted, wildcard, reason: '' }
 }
 
-function parseCron(expression: string): { ok: true; fields: CronFields } | { ok: false; reason: string } {
+function parseCron(expression: string, t: Translate = ENGLISH): { ok: true; fields: CronFields } | { ok: false; reason: string } {
   const parts = expression.trim().split(/\s+/)
   if (parts.length !== 5) {
     if (parts.length > 5) {
-      return fail(
+      return fail(t(
+        `cron 表达式有五个字段；"${expression}" 有 ${parts.length} 个，而六字段形式意味着开头多一个秒字段，暂不支持`,
         `a cron expression is five fields; "${expression}" has ${parts.length}, and a six-field form means a leading seconds field, which is not supported`,
-      )
+      ))
     }
-    return fail(`a cron expression is five fields; "${expression}" has ${parts.length}, so fields are missing`)
+    return fail(t(
+      `cron 表达式有五个字段；"${expression}" 只有 ${parts.length} 个，字段不足`,
+      `a cron expression is five fields; "${expression}" has ${parts.length}, so fields are missing`,
+    ))
   }
   const minute = parts[0] ?? ''
   const hour = parts[1] ?? ''
   const dayOfMonth = parts[2] ?? ''
   const month = parts[3] ?? ''
   const dayOfWeek = parts[4] ?? ''
-  const minutes = parseField(minute, 'minute', 0, 59)
+  const minutes = parseField(minute, { zh: '分钟', en: 'minute' }, 0, 59, t)
   if (!minutes.ok) return fail(minutes.reason)
-  const hours = parseField(hour, 'hour', 0, 23)
+  const hours = parseField(hour, { zh: '小时', en: 'hour' }, 0, 23, t)
   if (!hours.ok) return fail(hours.reason)
-  const dom = parseField(dayOfMonth, 'day-of-month', 1, 31)
+  const dom = parseField(dayOfMonth, { zh: '日', en: 'day-of-month' }, 1, 31, t)
   if (!dom.ok) return fail(dom.reason)
-  const months = parseField(month, 'month', 1, 12)
+  const months = parseField(month, { zh: '月', en: 'month' }, 1, 12, t)
   if (!months.ok) return fail(months.reason)
   // 7 is Sunday in the cron dialect operators type; normalise it to 0 so the
   // rest of the module only ever sees 0-6 (JS `getUTCDay()` numbering).
-  const dow = parseField(dayOfWeek, 'day-of-week', 0, 7)
+  const dow = parseField(dayOfWeek, { zh: '星期', en: 'day-of-week' }, 0, 7, t)
   if (!dow.ok) return fail(dow.reason)
   const daysOfWeek = [...new Set(dow.values.map((value) => (value === 7 ? 0 : value)))].sort((a, b) => a - b)
   return {
@@ -186,26 +250,40 @@ function parseCron(expression: string): { ok: true; fields: CronFields } | { ok:
   }
 }
 
-export function parseSchedule(input: ScheduleInput): ScheduleParse {
+export function parseSchedule(input: ScheduleInput, t: Translate = ENGLISH): ScheduleParse {
   const startAt = input.startAt ?? null
   const endAt = input.endAt ?? null
-  if (startAt !== null && !Number.isFinite(startAt)) return fail('start_at must be a finite instant')
-  if (endAt !== null && !Number.isFinite(endAt)) return fail('end_at must be a finite instant')
-  if (startAt !== null && endAt !== null && endAt <= startAt) return fail('end_at must be after start_at')
+  if (startAt !== null && !Number.isFinite(startAt)) {
+    return fail(t('start_at 必须是有限的时间点', 'start_at must be a finite instant'))
+  }
+  if (endAt !== null && !Number.isFinite(endAt)) {
+    return fail(t('end_at 必须是有限的时间点', 'end_at must be a finite instant'))
+  }
+  if (startAt !== null && endAt !== null && endAt <= startAt) {
+    return fail(t('end_at 必须晚于 start_at', 'end_at must be after start_at'))
+  }
 
   if ('cron' in input) {
-    const zoneProblem = timezoneProblem(input.timezone)
+    const zoneProblem = timezoneProblem(input.timezone, t)
     if (zoneProblem !== null) return fail(zoneProblem)
-    const parsed = parseCron(input.cron)
+    const parsed = parseCron(input.cron, t)
     if (!parsed.ok) return fail(parsed.reason)
     return { ok: true, schedule: { kind: 'cron', expression: input.cron.trim(), timezone: input.timezone, startAt, endAt } }
   }
 
   const everyMs = input.everyMs
   if (!Number.isFinite(everyMs) || !Number.isInteger(everyMs) || everyMs < MINUTE) {
-    return fail(`everyMs ${String(everyMs)} must be a whole number of milliseconds, at least one minute`)
+    return fail(t(
+      `everyMs ${String(everyMs)} 必须是整数毫秒，且至少一分钟`,
+      `everyMs ${String(everyMs)} must be a whole number of milliseconds, at least one minute`,
+    ))
   }
-  if (everyMs > MAX_INTERVAL) return fail(`everyMs ${everyMs} is longer than the 30-day maximum interval`)
+  if (everyMs > MAX_INTERVAL) {
+    return fail(t(
+      `everyMs ${everyMs} 超过 30 天的最长间隔`,
+      `everyMs ${everyMs} is longer than the 30-day maximum interval`,
+    ))
+  }
   return { ok: true, schedule: { kind: 'interval', everyMs, startAt, endAt } }
 }
 

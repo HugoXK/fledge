@@ -312,7 +312,11 @@ defect.
   the schedule's zone, and mark a local time the spring-forward gap removed as
   skipped rather than shifting it. Because the interval form has no timezone, an
   interval that arrives with one is refused by name instead of being accepted and
-  shown as if a zone applied. A preview stores nothing and creates no job.
+  shown as if a zone applied. A preview stores nothing and creates no job. Each
+  refusal is authored in both Chinese and English where the planner raises it,
+  from the request's locale, so the page alert and `GET /api/schedule/preview`
+  show the same reason in the reader's language rather than an English-only
+  sentence.
   Leases, misfire policies, layered budgets and the notification outbox are not
   built yet.
 - **The tick consumes the planner** (#544, third slice): a `schedules` row — at

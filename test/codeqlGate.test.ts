@@ -172,8 +172,15 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
   // those anchors read `:628`/`:663`/`:673`/`:683` and the webhook registration
   // `:3419`; the gateway pair stays `:155`/`:180` because both inserts land below
   // it. Nothing is added or dismissed.
+  // #615 then rewrites the two schedule-preview routes above the deployments
+  // rollback registration: `git diff --numstat src/app.ts` against the branch
+  // point reads `7 4`, a net +3. The rebase onto main after #629 merged replays
+  // that same +3 on a taller tree: the rollback redirect sits at `:3750` on
+  // main@5aec5e36 and at `:3753` here, so alert #65 reads `:3753`. The four
+  // top-of-file registrations and the gateway pair do not move. Nothing is
+  // added or dismissed.
   assert.deepEqual([...keys].sort(), [
-    'js/missing-rate-limiting|src/app.ts|3431',
+    'js/missing-rate-limiting|src/app.ts|3753',
     'js/missing-rate-limiting|src/app.ts|639',
     'js/missing-rate-limiting|src/app.ts|674',
     'js/missing-rate-limiting|src/app.ts|684',
