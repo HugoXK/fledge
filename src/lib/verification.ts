@@ -20,6 +20,7 @@ export interface VerificationResult {
   reviews: { changesRequested: boolean; approvals: number }
   testEvidence: TestEvidence
   reasons: string[]
+  ruleChange?: { paths: string[]; acknowledged: boolean }
 }
 
 export interface MergeReadiness {

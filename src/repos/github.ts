@@ -3,6 +3,7 @@ import { incCounter, observeHistogram } from '../lib/metrics.js'
 import { endSpan, startSpan } from '../lib/otel.js'
 import { acquireGithubBudget, noteGithubRateLimit } from '../lib/githubBudget.js'
 import type { MergedPullRequest } from '../lib/duplicates.js'
+import { sha256Hex } from '../lib/secrets.js'
 
 const DEFAULT_API = 'https://api.github.com'
 const SEGMENT = /^[A-Za-z0-9_.-]+$/
@@ -287,6 +288,63 @@ export class GithubClient {
       return true
     } catch (error) {
       if (error instanceof GithubError && error.status === 404) return true
+      throw error
+    }
+  }
+
+  async getContentAtRef(
+    owner: string,
+    name: string,
+    path: string,
+    ref: string,
+  ): Promise<{ type: string; sha: string; size: number; content: string } | null> {
+    const encodedPath = path.split('/').map(encodeURIComponent).join('/')
+    try {
+      const data = await this.request<{
+        type?: string
+        sha?: string
+        size?: number
+        content?: string
+        encoding?: string
+      }>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`)
+      if (Array.isArray(data) || typeof data.type !== 'string') return null
+      if (data.type !== 'file') {
+        return { type: data.type, sha: typeof data.sha === 'string' ? data.sha : '', size: Number(data.size ?? 0), content: '' }
+      }
+      const content = typeof data.content === 'string' && data.encoding === 'base64'
+        ? Buffer.from(data.content, 'base64').toString('utf8')
+        : typeof data.content === 'string' ? data.content : ''
+      return {
+        type: 'file',
+        sha: typeof data.sha === 'string' ? data.sha : sha256Hex(content),
+        size: Number(data.size ?? Buffer.byteLength(content)),
+        content,
+      }
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return null
+      throw error
+    }
+  }
+
+  async listDirectory(
+    owner: string,
+    name: string,
+    path: string,
+    ref: string,
+  ): Promise<Array<{ name: string; type: string; path: string }> | null> {
+    const encodedPath = path.split('/').map(encodeURIComponent).join('/')
+    try {
+      const data = await this.request<Array<{ name?: string; type?: string; path?: string }>>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`,
+      )
+      if (!Array.isArray(data)) return []
+      return data.flatMap((entry) => {
+        if (typeof entry.name !== 'string' || typeof entry.type !== 'string') return []
+        return [{ name: entry.name, type: entry.type, path: typeof entry.path === 'string' ? entry.path : `${path}/${entry.name}` }]
+      })
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return null
       throw error
     }
   }
