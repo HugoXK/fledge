@@ -287,6 +287,27 @@ test('the provider form stores region, data-policy URL and the allowed flag', as
   }
 })
 
+test('the provider form explains the optional region and data-policy fields', async () => {
+  const config = testConfig({ allowPrivateModelUrls: true })
+  const store = new Store(':memory:')
+  const app = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'provider-help', status: 'approved' })
+    const { cookie } = sessionFor(app, user)
+    const page = await app.app.inject({ method: 'GET', url: '/settings', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /高级：区域与数据政策（可选）/)
+    assert.match(page.body, /区域标签（可选）/)
+    assert.match(page.body, /数据政策链接（可选）/)
+    assert.match(page.body, /只有仓库设置了区域约束时才参与匹配/)
+    assert.match(page.body, /Fledge 不会抓取它/)
+    assert.match(page.body, /name="region"/)
+    assert.match(page.body, /name="dataPolicyUrl"/)
+  } finally {
+    await app.close()
+  }
+})
+
 test('a gateway refusal writes no provider key or credential-bearing URL to the log or audit', async () => {
   const hits: string[] = []
   const primary = await providerServer('ok', hits)

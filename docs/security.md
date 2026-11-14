@@ -95,14 +95,18 @@ therefore require a GitHub confirmation inside `RECENT_AUTH_MINUTES` (default 15
 tracked as `sessions.recent_auth_at`:
 
 - Gated actions: repository delete, the repository settings POST, quota changes,
-  API-token creation and revocation, admin approve/reject, and stopping a FlyBot
-  instance. The settings POST is gated on either of two paths: turning a
+  API-token creation and revocation, admin approve/reject, stopping a FlyBot
+  instance, promoting a user's platform role, stopping the platform, and deleting
+  a model provider. The settings POST is gated on either of two paths: turning a
   repository's auto-merge on or off, audited as `repo.auto_merge`, and changing
   the pre-merge policy — branch protection, the stage gate, the allowed and
   denied paths, the target branch and the repository role, audited as
   `repo.policy`. The rest of that form (enablement, budgets, reviewer
   preference, model assignment) stays a preference save and is not gated. Reads
-  and normal job actions are unaffected.
+  and normal job actions are unaffected. The last three were the remaining
+  routes where the effect is privilege-changing, fleet-wide or
+  configuration-destroying, and each now asks for the same confirmation before
+  it acts.
 - A policy change that passes the gate is audited once as `repo.policy`, naming
   the fields that moved, so one row says which weakening was attempted.
 - A session that has not re-authenticated (`recent_auth_at` is `NULL`, which is
@@ -114,9 +118,9 @@ tracked as `sessions.recent_auth_at`:
   came back and the action is submitted again.
 - Role checks still run first: a non-admin is refused with 403 before the
   recency check, and a fresh re-authentication does not grant a role.
-- The same handlers are rate-limited (60 attempts a minute per route and client
-  address) through `@fastify/rate-limit`, registered with `global: false` so the
-  ceiling is a property of the eight routes that name `config.rateLimit` and
+- The handlers that name `config.rateLimit` are rate-limited (60 attempts a
+  minute per route and client address) through `@fastify/rate-limit`, registered
+  with `global: false` so the ceiling is a property of those eight routes and
   nothing else. The key generator is `rateLimitKey` over the address
   `TRUST_PROXY` resolves, so a caller cannot mint a new bucket with a header or a
   form field, and a refused attempt answers the plugin's 429 before the handler —
@@ -572,6 +576,12 @@ A model provider carries a display label, base URL, region/jurisdiction tag, an
 optional data-policy URL and an allowed flag. The base URL and the data-policy
 URL reject credentials, and neither is written to a log or an audit row; the
 stored key is encrypted and never rendered.
+
+The region and data-policy fields on a provider are optional advanced
+metadata. The region is a label the owner assigns (`eu`, `us`, `cn`, …), not a
+data-residency guarantee or a certification; it only participates when a
+repository sets a region constraint. The data-policy link is recorded for review
+and audit and is never fetched. Empty means “not declared”.
 
 A repository may keep a provider allowlist and an optional region constraint.
 The allowlist names provider ids owned by the repository owner; an empty

@@ -160,7 +160,10 @@ defect.
   open. The toggle itself is hidden outside the phone band by a base rule, so
   the desktop header never shows a control whose panel does not exist there.
   Every destination the wide header lists is still rendered in the panel,
-  so a phone loses no route. Below 420px the row also drops the wordmark (the
+  so a phone loses no route. The theme control is one 44px icon summary in the
+  header, not a text group: its `<details>` menu carries the three choices, is
+  available signed-out, and on a phone is pinned under the header so it cannot
+  overflow either edge. Below 420px the row also drops the wordmark (the
   mark and its own `aria-label` stay) and tightens its padding and gaps: at a
   360px viewport with a classic 15px scrollbar the row has 301px of usable
   width, and the wordmark is the one child that can leave without taking a
@@ -1336,7 +1339,10 @@ also assign a selected model to each DSH bot role; after the restart Fledge call
 model or the new default, so a bot cannot keep a stale provider reference.
 
 Provider metadata also carries a region tag, an optional data-policy URL and an
-allowed flag. A repository can set a provider allowlist and a required region;
+allowed flag. Region and data policy are optional advanced fields: the region is
+a label used only by a repository's region constraint, and the data-policy link
+is recorded for review rather than fetched.
+ A repository can set a provider allowlist and a required region;
 the gateway enforces both at candidate resolution, including the fallback loop,
 and refuses a disallowed model with a stable code before any upstream call. With
 a policy set, a call must name one of the repository's models: a call that omits
