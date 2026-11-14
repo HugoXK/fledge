@@ -5,8 +5,11 @@
 // allowed to plan. That made the scheduler the only dependable delivery path, and
 // GitHub delivered `schedule` once in 68 runs — 6h27m late. The quantity the
 // release rule counts (merged pull requests since the tag) changes only on a push
-// to `main`, so a push is sufficient, and this predicate is the policy that
-// replaces the event-name gate.
+// to `main`, so a push can fill an open slot; since #548 the workflow only feeds
+// this predicate a push that touched a release-shaped path, plus the two
+// scheduled slots and a manual dispatch. The policy here is unchanged: an
+// ordinary feature merge no longer pays for a full plan, and any run that does
+// arrive still uses the same one-slot rule.
 //
 // Pure: no clock, no network, no environment. The workflow passes `now` and the
 // state it already fetches; every decision is testable without a night.

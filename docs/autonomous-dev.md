@@ -556,10 +556,19 @@ credential: both run with the automatic `GITHUB_TOKEN`, and the token is scoped 
 job rather than at file level (`release`: contents write, pull-requests read, checks
 read, issues write; `tag`: contents write, pull-requests read, actions write).
 
-The `release` job runs at 22:30 Asia/Shanghai (`30 14 * * *`), on
-`workflow_dispatch` (default `dry_run: true`) and on a push to `main`. It collects
-the state, asks the planner and the pure `decideDrive()` in
-`scripts/lib/release-drive.mjs`, and does exactly one thing per night:
+The `release` job runs at 22:30 Asia/Shanghai (`30 14 * * *`), again at 23:30
+(`30 15 * * *`) as a catch-up for a late or dropped delivery, on
+`workflow_dispatch` (default `dry_run: true`) and on a push to `main` that
+touches a release-shaped path: `package.json`, `package-lock.json`,
+`CHANGELOG.md` or `docker-compose.yml`. The paths filter is the steady-state fix
+(#548): an ordinary feature merge changed the pull-request count but started a
+full plan job (`fetch-depth: 0`, several API calls) even when the `14:30Z` slot
+had already shipped. `changelog.d/**` is deliberately not in the filter, because
+almost every feature pull request adds a fragment; including it would put the
+per-merge noise back. The catch-up slot and the filtered push still go through the
+same trigger predicate, which is unchanged. It collects the state, asks the
+planner and the pure `decideDrive()` in `scripts/lib/release-drive.mjs`, and does
+exactly one thing per night:
 
 | Situation | Action |
 |---|---|
@@ -577,14 +586,16 @@ The state collection measures the changelog fragments with
 `scripts/fragment-count.mjs`, the same rule `scripts/changelog.mjs` folds with. A
 directory holding only `README.md`, or no markdown at all, is zero fragments — a
 legitimate answer the planner turns into its own first reason, not a failed step —
-while a directory the process cannot read fails the job (#548). The `Trigger` step
-reads the collected state only when the collect step succeeded, so a missing state
-file is never dereferenced.
+while a directory the process cannot read fails the job (#548). The `Plan`,
+`Decide` and `Trigger` steps read the collected state only when the collect step
+succeeded, so a missing state file is never dereferenced and the collect failure
+is the single report.
 
-A push is a planning trigger, not a tolerated one, and the event name no longer
-decides: the quantity the rule counts — merged pull requests since the tag —
-changes only on a push, so a push is sufficient, and a night with no merge has
-nothing to release. What actually gates the night is the pure
+A push is a planning trigger only when the paths filter above matched a
+release-shaped change; the event name no longer decides. The quantity the rule
+counts — merged pull requests since the tag — changes on every merge, but a full
+plan job per merge was the steady-state cost #548 removed, so ordinary feature
+merges no longer start one. What actually gates an eligible run is the pure
 `decideTrigger()` in `scripts/lib/release-trigger.mjs`: it plans only when the
 planner's guards pass, no `release/v<next>` branch exists, no release pull request
 is open and the newest tag is older than the most recent `14:30Z` boundary. That
@@ -594,8 +605,15 @@ before today's boundary that finds the previous boundary unreleased fills it and
 says `catch-up`, deliberately — a dropped slot must not cost a day. The run prints
 `trigger=`, `plan=`, `catchUp=` and `reason=` in the job summary, so a merge that
 planned nothing and a slot that was refused are both visible in the run history.
-The `schedule` stays as a second trigger; a delivery ratio of one slot in 68 runs
-(6h27m late) is why it is not the primary one (`#315`).
+
+The two `schedule` slots are the dependable planning path: the 14:30Z delivery is
+the slot, and the 15:30Z delivery fills it again if the first was late or dropped;
+the predicate makes the second run `slot-shipped` when the first already released,
+so the catch-up cannot double-release. `workflow_dispatch` is the owner's manual
+path. The push stays eligible so a release-shaped merge still reaches the same
+predicate and the run history records what it decided; a delivery ratio of one
+slot in 68 runs (6h27m late) is why it was made eligible in the first place
+(`#315`).
 
 The push and the pull request are one action, so the credential that opens the
 pull request is a precondition checked **before** anything is pushed: with
@@ -612,7 +630,9 @@ The job never opens, merges or publishes a pull request, and the file contains n
 `ci-ok` on `main` is green) has no input in the planner, so the drive checks it
 before the push; a red or missing `ci-ok` on `main` is a `none` night.
 
-The `tag` job runs on `push` to `main` only. It reads `package.json` at the pushed
+The `tag` job runs on the filtered `push` to `main` only: a merged release pull
+request always changes `package.json` and `CHANGELOG.md`, so the paths filter
+always lets it through. It reads `package.json` at the pushed
 commit, asks `plan()` in `scripts/lib/release-tag.mjs` whether that commit is the
 squash of the mechanical release, and — if it is — writes the annotated tag with
 `POST /git/tags` and `POST /git/refs` on that merge commit, then dispatches

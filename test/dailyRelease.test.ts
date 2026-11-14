@@ -69,12 +69,22 @@ function permissionBlock(job: string): Record<string, string> {
   return Object.fromEntries(entries)
 }
 
-test('the schedule is 22:30 Asia/Shanghai (14:30 UTC), a manual dispatch defaults to a dry run, and a merge to main is eligible', () => {
-  assert.match(daily, /schedule:\s*\n\s*- cron: '30 14 \* \* \*'/)
+test('the schedule is 22:30 Asia/Shanghai (14:30 UTC) with a 15:30Z catch-up, a manual dispatch defaults to a dry run, and a push is filtered to release-shaped paths', () => {
+  assert.match(daily, /schedule:\s*\n(?:.*\n)*?\s*- cron: '30 14 \* \* \*'/)
+  assert.match(daily, /schedule:\s*\n(?:.*\n)*?\s*- cron: '30 15 \* \* \*'/)
   assert.match(daily, /workflow_dispatch:/)
   assert.match(daily, /dry_run:/)
   assert.match(daily, /default: true/)
   assert.match(daily, /push:\s*\n\s*branches: \[main\]/)
+  // #548: a plan job per merge was the steady-state cost. The paths filter keeps
+  // the tag job on the release merge and drops ordinary feature pushes.
+  const push = between('  push:', 'concurrency:')
+  assert.match(push, /paths:\s*\n(?:\s*- [^\n]+\n)+/)
+  const filtered = [...push.matchAll(/^\s*- ([^\n]+)$/gm)].map((match) => String(match[1]).trim())
+  for (const path of ['package.json', 'package-lock.json', 'CHANGELOG.md', 'docker-compose.yml']) {
+    assert.ok(filtered.includes(path), `the push filter includes ${path}`)
+  }
+  assert.equal(filtered.includes('changelog.d/**'), false, 'almost every feature PR adds a fragment; filtering on it would restore the per-PR noise')
 })
 
 test('permissions are declared per job, and there is no file-level block to widen both', () => {
@@ -117,6 +127,20 @@ test('the release job runs on a push too, and the trigger predicate decides whet
   assert.match(step, /import \{ decideTrigger \} from "\.\/scripts\/lib\/release-trigger\.mjs"/)
   assert.match(step, /trigger=\$\{event\} plan=\$\{decision\.plan\}/)
   assert.equal(step.includes('gh api'), false, 'the trigger step reads the state the run already collected')
+})
+
+test('a failed collect step is the single report: plan and decide never dereference a state file it did not write', () => {
+  // #548: only Trigger was guarded before this change; Plan and Decide still
+  // read `$RUNNER_TEMP/state.json` under `set -euo pipefail`, so a collect
+  // failure turned into a second ENOENT instead of the real error.
+  const pairs: Array<[string, string]> = [
+    ['      - name: Plan', '      - name: Decide'],
+    ['      - name: Decide', '      - name: Trigger'],
+  ]
+  for (const [from, to] of pairs) {
+    const step = between(from, to)
+    assert.match(step, /if: \$\{\{ steps\.state\.outcome == 'success' \}\}/, `${from.trim()} runs only after a successful collect`)
+  }
 })
 
 test('only the trigger can let a run push, and a manual dry run never does', () => {

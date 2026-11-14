@@ -10,21 +10,26 @@ name: Daily minor release
 # The workflow and job names below still read "daily minor release"; ADR 0008:42-43
 # records that label as non-authoritative, and the version decides the bump.
 #
-# Two jobs, three triggers, two credentials:
-#   release  plans the night on `schedule`, on `workflow_dispatch` and on a push
-#            to `main`, pushes `release/v<version>` with the automatic token and
-#            opens exactly one release pull request with the team token
-#            (`RELEASE_OPEN_TOKEN`). Without that secret the night is red,
-#            pushes nothing and names the missing secret; it never reports a
-#            green blocked night after pushing a branch. It never merges or
-#            publishes a pull request. Whether a run plans is decided by
-#            `scripts/lib/release-trigger.mjs`, not by the event name: the
-#            quantity the release rule counts changes only on a push, and
-#            `schedule` was delivered once in 68 runs (#315), so the push is the
-#            primary path and the `14:30Z` slot is filled at most once by
-#            either trigger.
+# Two jobs, two scheduled slots plus a filtered push, two credentials:
+#   release  plans the night on `schedule` (14:30Z, with a 15:30Z catch-up) and
+#            on `workflow_dispatch`, pushes `release/v<version>` with the
+#            automatic token and opens exactly one release pull request with the
+#            team token (`RELEASE_OPEN_TOKEN`). Without that secret the night is
+#            red, pushes nothing and names the missing secret; it never reports
+#            a green blocked night after pushing a branch. It never merges or
+#            publishes a pull request. A push to `main` is eligible only when
+#            the paths filter below matched a release-shaped change, so an
+#            ordinary feature merge no longer starts a full plan job
+#            (`fetch-depth: 0`, several API calls) just to report
+#            `slot-shipped` (#548). Whether an eligible run plans is still
+#            decided by `scripts/lib/release-trigger.mjs`, not by the event name:
+#            the `14:30Z` slot is filled at most once by any trigger, and a tag
+#            newer than the boundary is `slot-shipped`.
 #   tag      recognises the merge of that branch on `main` and writes the tag
-#            through the Git data API, then dispatches the publish run at it.
+#            through the Git data API, then dispatches the publish run at it. It
+#            stays on the filtered `push`: a merged release pull request always
+#            changes `package.json` and `CHANGELOG.md`, so it always reaches
+#            this job.
 #
 # A branch pushed with `GITHUB_TOKEN` starts no workflow, so a pull request
 # opened with it would never get a `ci-ok`. The opener is the team account for
@@ -33,7 +38,12 @@ name: Daily minor release
 
 on:
   schedule:
+    # 22:30 Asia/Shanghai is the release slot. The second delivery is a catch-up
+    # for a late or dropped run: `decideTrigger` still compares the newest tag
+    # with the 14:30Z boundary, so a 15:30Z run after a release is `slot-shipped`
+    # and a slot never releases twice.
     - cron: '30 14 * * *'
+    - cron: '30 15 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -42,6 +52,18 @@ on:
         default: true
   push:
     branches: [main]
+    # Steady-state cost: a plan job per merge made this workflow run once for
+    # every pull request, even when the 14:30Z slot had already shipped (#548).
+    # Only a release-shaped change needs the workflow. The tag job must see the
+    # mechanical release merge, and a release pull request always changes
+    # `package.json` and `CHANGELOG.md`. `changelog.d/**` is deliberately absent:
+    # almost every feature pull request adds a fragment, so filtering on it would
+    # restore the per-merge noise this filter removes.
+    paths:
+      - package.json
+      - package-lock.json
+      - CHANGELOG.md
+      - docker-compose.yml
 
 concurrency:
   group: daily-release
@@ -50,12 +72,11 @@ concurrency:
 jobs:
   release:
     name: plan the daily minor release and push its branch
-    # A push to `main` is eligible, not tolerated: the quantity the rule counts
-    # (merged pull requests since the tag) changes only on a push, and the
-    # scheduler delivered one slot in 68 runs (#315). What keeps a merge quiet is
-    # the trigger predicate below, not this gate: it decides whether the `14:30Z`
-    # slot still needs filling, and the push, the pull request and the comment
-    # each depend on its answer.
+    # A push to `main` is eligible only when the paths filter above matched a
+    # release-shaped change. Ordinary merges are kept quiet by that filter; among
+    # the runs that do arrive, the trigger predicate below decides whether the
+    # `14:30Z` slot still needs filling, and the push, the pull request and the
+    # comment each depend on its answer.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -126,6 +147,10 @@ jobs:
 
       - name: Plan
         id: plan
+        # #548: this step reads `$RUNNER_TEMP/state.json`. A collect failure is
+        # the single report; this step must not add an ENOENT on a file the
+        # collect step never wrote.
+        if: ${{ steps.state.outcome == 'success' }}
         run: |
           set -euo pipefail
           # The projection from state to planner input lives in the tested module.
@@ -162,6 +187,9 @@ jobs:
 
       - name: Decide
         id: decide
+        # Same rule as Plan: the drive reads the state and the plan files, so a
+        # failed collect step must be reported once, not again as a missing file.
+        if: ${{ steps.state.outcome == 'success' }}
         run: |
           set -euo pipefail
           # Rule 4 and the dry-run reduction live in the tested drive module. The
