@@ -175,7 +175,7 @@ and what `scripts/issue-hash.mjs` prints, so a verdict writer records from the
 same function instead of trimming by hand. The Lead recomputes it with
 
 ```sh
-node scripts/issue-gate.mjs --issue <N>   # ok | stale-pass | no-pass | bad-passer | changes | corrupt-body | hold
+node scripts/issue-gate.mjs --issue <N>   # ok | stale-pass | no-pass | bad-passer | changes | corrupt-body | hold | bad-evidence
 node scripts/issue-hash.mjs --issue <N>   # raw <hash> / trimmed <hash> for a verdict line
 ```
 
@@ -186,6 +186,26 @@ anyone other than the policy's `requiredPass` is not a PASS at all. A `hold`
 line (exit 7) means the card is approved but not claimable: `hold` replaces
 `ok` and nothing else, so a held card with `changes` still reports `changes`,
 and a held card with no verdict still reports `no-pass`.
+
+A body whose hash matches is then checked for the evidence it cites. Every
+`path:line`, `test/...:line` and symbol tied to a line must resolve at the sha
+the body's `main` = `<sha>` names — the pin — and the pin must be an ancestor of
+live `main`. One bad ref prints
+
+```
+issue-gate: bad-evidence #<N> <hash> ref=<path:line|symbol> expected=<text> found=<none|line>
+```
+
+and exits 8, after the hash check has passed: a card with no PASS at the live
+body is already unbuildable, so its refs are not resolved at all. A body that
+cites no such evidence needs no pin and is judged exactly as before. Resolution
+is pinned rather than taken at live `main` because line numbers move on every
+merge; resolving at the pin means the same body gives the same answer hours
+later, and a material edit is caught by the hash instead.
+
+The stated limits of the check: it does not judge whether an assertion is the
+semantically right one, it does not resolve quoted text (a later slice), and it
+searches for a symbol's definition only in the cited file, not the whole tree.
 
 Known limit, stated rather than papered over: a byte-for-byte revert back to the
 PASSed text **does** revive the PASS, because the gate compares the live body
