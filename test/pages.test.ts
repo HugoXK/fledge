@@ -1163,6 +1163,10 @@ test('the repository page shows a delivery board grouped by work-item state', ()
     assert.match(page, /Fix the board/)
     assert.doesNotMatch(page, /Other work/)
     assert.match(page, /Clear filter/)
+    assert.match(page, /data-open-dialog="new-work-item"/, 'the create form is behind a header button')
+    assert.match(page, /id="new-work-item"/, 'the create form is a dialog')
+    assert.match(page, /data-work-queue/, 'the page names why an item is waiting')
+    assert.match(page, /<details class="work-actions">[\s\S]*name="state"/, 'the row actions are folded into one disclosure')
   } finally {
     store.close()
   }

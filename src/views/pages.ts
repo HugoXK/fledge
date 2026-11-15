@@ -1556,37 +1556,63 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           <td data-label="${escapeHtml(t('优先级', 'Priority'))}">${item.priority}</td>
           <td data-label="Issue / PR">${item.issue_url === null ? '' : `<a href="${escapeHtml(item.issue_url)}" target="_blank" rel="noreferrer">Issue</a>`}${item.issue_url !== null && item.pr_url !== null ? ' · ' : ''}${item.pr_url === null ? '' : `<a href="${escapeHtml(item.pr_url)}" target="_blank" rel="noreferrer">PR</a>`}</td>
           <td data-label="${escapeHtml(t('任务', 'Job'))}">${item.job_id === null ? '—' : `<a href="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(item.job_id)}"><code>${escapeHtml(item.job_id)}</code></a>`}</td>
-          <td data-label="${escapeHtml(t('操作', 'Actions'))}"><div class="row">
+          <td data-label="${escapeHtml(t('操作', 'Actions'))}"><details class="work-actions"><summary>${escapeHtml(t('操作', 'Actions'))}</summary><div class="row">
             ${item.state === 'merged' || item.state === 'closed' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/run">${csrf(viewer)}${commandHidden(commands[`work-run:${item.id}`])}<button class="btn btn-small" type="submit">${escapeHtml(t('开始工作', 'Start work'))}</button></form>`}
             ${item.state === 'merged' || item.state === 'closed' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/scope">${csrf(viewer)}${commandHidden(commands[`work-scope:${item.id}`])}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('Product 范围', 'Product scope'))}</button></form>`}
             ${item.pr_url === null ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/verify">${csrf(viewer)}${commandHidden(commands[`work-verify:${item.id}`])}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('Test 验证', 'Test verify'))}</button></form>`}
             ${stateOptions === '' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/state" class="row">${csrf(viewer)}<select name="state" aria-label="${escapeHtml(t('新状态', 'New state'))}">${stateOptions}</select><button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('更新状态', 'Update state'))}</button></form>`}
-          </div></td>
+          </div></details></td>
         </tr>`
       }).join('')
   const workCounts = new Map<string, number>()
   for (const item of workItems) workCounts.set(item.state, (workCounts.get(item.state) ?? 0) + 1)
-  const workBoard = `<section class="card" id="board">
-    <div class="row between"><h2>${escapeHtml(t('交付看板', 'Delivery board'))}</h2><span class="fine">${workState === undefined ? escapeHtml(t('按工作项状态汇总；点击状态可筛选下面的列表。', 'Grouped by state; click a state to filter the list below.')) : `<a class="link" href="/repos/${escapeHtml(repo.id)}#work">${escapeHtml(t('清除筛选', 'Clear filter'))}</a>`}</span></div>
-    <div class="table-scroll"><table class="table-cards table-cards-head"><thead><tr>${WORK_ITEM_STATES.map((state) => `<th><a class="link" href="/repos/${escapeHtml(repo.id)}?workState=${state}#work">${escapeHtml(workItemStateLabel(t, state))}</a></th>`).join('')}</tr></thead><tbody><tr>${WORK_ITEM_STATES.map((state) => `<td data-label="${escapeHtml(workItemStateLabel(t, state))}"><strong>${workCounts.get(state) ?? 0}</strong></td>`).join('')}</tr></tbody></table></div>
-  </section>`
-
+  const workTotal = workItems.length
+  const workSummary = `<div class="work-summary" id="board" data-work-summary>${WORK_ITEM_STATES.map((state) => {
+    const count = workCounts.get(state) ?? 0
+    const share = workTotal === 0 ? 0 : Math.round((count / workTotal) * 100)
+    const active = workState === state
+    return `<a class="link${active ? ' is-active' : ''}" href="/repos/${escapeHtml(repo.id)}?workState=${state}#work" data-work-state="${state}"><strong>${count}</strong><span>${escapeHtml(workItemStateLabel(t, state))}</span><small>${share}%</small></a>`
+  }).join('')}</div>`
+  const workQueueReason = !repoEnabled
+    ? t('仓库已停用；工作项不会开始。', 'The repository is disabled; work items will not start.')
+    : !credentialOk
+      ? t('GitHub 凭据失效；工作项不会开始。', 'The GitHub credential is invalid; work items will not start.')
+      : flybotAvailable && !flybotReady
+        ? t('FlyBot 实例未就绪；工作项不会开始。', 'The FlyBot instance is not ready; work items will not start.')
+        : repo.auto_iterate !== 1
+          ? t('自动工作已关闭；可以从操作里手动开始。', 'Automatic work is off; start an item manually from its actions.')
+          : input.activeJob === true
+            ? t('已有任务在运行；队列会在它结束后继续。', 'A job is already running; the queue continues when it finishes.')
+            : t('工作项会在可运行时开始。', 'Work items start when they are runnable.')
   const workCard = `<section class="card">
-    <div class="row between"><h2>${escapeHtml(t('工作项', 'Work items'))}</h2><span class="fine">${workState === undefined ? escapeHtml(t('Issue / PR / 状态 / 优先级', 'Issue / PR / state / priority')) : escapeHtml(t(`筛选：${workItemStateLabel(t, workState)}`, `Filter: ${workItemStateLabel(t, workState)}`))}</span></div>
-    <form method="post" action="/repos/${escapeHtml(repo.id)}/work" class="form">
-      ${csrf(viewer)}
-      <div class="row">
-        <label class="grow">${escapeHtml(t('标题', 'Title'))} <input name="title" required maxlength="200" /></label>
-        <label>${escapeHtml(t('优先级', 'Priority'))} <input name="priority" type="number" min="0" max="100" value="0" class="w-90" /></label>
+    <div class="row between">
+      <div>
+        <h2>${escapeHtml(t('工作项', 'Work items'))}</h2>
+        <p class="fine">${workState === undefined ? escapeHtml(t('按状态汇总；点击状态可筛选下面的列表。', 'Grouped by state; click a state to filter the list.')) : `<a class="link" href="/repos/${escapeHtml(repo.id)}#work">${escapeHtml(t('清除筛选', 'Clear filter'))}</a>`}</p>
       </div>
-      <div class="row">
-        <label class="grow">${escapeHtml(t('Issue URL（可选）', 'Issue URL (optional)'))} <input name="issueUrl" placeholder="https://github.com/owner/repo/issues/1" /></label>
-      </div>
-      <label>${escapeHtml(t('说明', 'Detail'))} <textarea name="detail" rows="3" placeholder="${escapeHtml(t('用户问题、现状、验收标准。', 'User problem, current state, acceptance criteria.'))}"></textarea></label>
-      <button class="btn" type="submit">${escapeHtml(t('创建工作项', 'Create work item'))}</button>
-    </form>
-    <div class="table-scroll mt-14"><table class="table-cards"><thead><tr><th>${escapeHtml(t('工作项', 'Work item'))}</th><th>${escapeHtml(t('状态', 'State'))}</th><th>${escapeHtml(t('优先级', 'Priority'))}</th><th>Issue / PR</th><th>${escapeHtml(t('任务', 'Job'))}</th><th></th></tr></thead><tbody>${workRows}</tbody></table></div>
-  </section>`;
+      <button class="btn" type="button" data-open-dialog="new-work-item" aria-haspopup="dialog" aria-controls="new-work-item">${escapeHtml(t('新建工作项', 'New work item'))}</button>
+    </div>
+    <div class="row between"><h3 class="mt-16">${escapeHtml(t('交付看板', 'Delivery board'))}</h3><span class="fine">${escapeHtml(t('按状态汇总', 'Grouped by state'))}</span></div>
+    ${workSummary}
+    <p class="fine" data-work-queue>${escapeHtml(workQueueReason)}</p>
+    <dialog id="new-work-item" class="add-repo-dialog" aria-labelledby="new-work-item-title">
+      <div class="row between"><h2 id="new-work-item-title">${escapeHtml(t('新建工作项', 'New work item'))}</h2><button class="link" type="button" data-close-dialog>${escapeHtml(t('关闭', 'Close'))}</button></div>
+      <form method="post" action="/repos/${escapeHtml(repo.id)}/work" class="form">
+        ${csrf(viewer)}
+        <div class="row">
+          <label class="grow">${escapeHtml(t('标题', 'Title'))} <input name="title" required maxlength="200" /></label>
+          <label>${escapeHtml(t('优先级', 'Priority'))} <input name="priority" type="number" min="0" max="100" value="0" class="w-90" /></label>
+        </div>
+        <div class="row">
+          <label class="grow">${escapeHtml(t('Issue URL（可选）', 'Issue URL (optional)'))} <input name="issueUrl" placeholder="https://github.com/owner/repo/issues/1" /></label>
+        </div>
+        <label>${escapeHtml(t('说明', 'Detail'))} <textarea name="detail" rows="3" placeholder="${escapeHtml(t('用户问题、现状、验收标准。', 'User problem, current state, acceptance criteria.'))}"></textarea></label>
+        <button class="btn" type="submit">${escapeHtml(t('创建工作项', 'Create work item'))}</button>
+      </form>
+    </dialog>
+    <noscript><style>#new-work-item{display:block;position:static;width:auto;max-width:none;max-height:none;margin:12px 0;padding:0;border:0;background:none;box-shadow:none} [data-open-dialog="new-work-item"]{display:none}</style></noscript>
+    <div class="table-scroll mt-14"><table class="table-cards"><thead><tr><th>${escapeHtml(t('工作项', 'Work item'))}</th><th>${escapeHtml(t('状态', 'State'))}</th><th>${escapeHtml(t('优先级', 'Priority'))}</th><th>Issue / PR</th><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('操作', 'Actions'))}</th></tr></thead><tbody>${workRows}</tbody></table></div>
+  </section>`
   const prRows = prJobs.length === 0
     ? stateCell(7, { kind: 'empty', title: t('没有待处理的 PR。', 'No pull requests waiting.'), body: t('任务产出 PR 后会出现在这里；没有就是真的没有在等。', 'A pull request appears here once a job opens one; an empty list means nothing is waiting.'), action: { href: `/repos/${escapeHtml(repo.id)}`, label: t('回到仓库', 'Back to repository') } })
     : prJobs.map((job) => {
@@ -1817,7 +1843,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}</span> <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form></li>`
     }).join('')}</ul>`}
   </section>`
-  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}${securityFindingsCard(t, viewer, repo, securityFindings)}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
+  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}${securityFindingsCard(t, viewer, repo, securityFindings)}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : `<script src="${assetUrl('/assets/chief.js')}" defer></script>`}<script src="${assetUrl('/assets/repoTabs.js')}" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error, notifications: pageMessages })
 }
 

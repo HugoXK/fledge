@@ -253,23 +253,18 @@ test('the delivery board keeps every state filter reachable at every band width'
         jobs: [],
         workItems: [],
       })
-      const board = /<section class="card" id="board">([\s\S]*?)<\/section>/.exec(page)
-      assert.ok(board !== null, `${locale} page must keep the #board section`)
+      const board = /<div class="work-summary" id="board"[^>]*>([\s\S]*?)<\/div>/.exec(page)
+      assert.ok(board !== null, `${locale} page must keep the #board summary`)
       const markup = board[1] ?? ''
-      // The board's header row is the only filter for the list below it: every
-      // state must still be a link, and the row must still be a table row, at
-      // every width — the CSS change may not remove one to make the table fit.
-      const links = [...markup.matchAll(/<a class="link" href="\/repos\/[^"]*\?workState=([a-z_]+)#work">/g)].map((match) => match[1])
-      assert.deepEqual(links, [...WORK_ITEM_STATES], `${locale} board must keep one filter link per state, in order`)
-      assert.equal((markup.match(/<th>/g) ?? []).length, WORK_ITEM_STATES.length, `${locale} board must keep one th per state`)
-      assert.match(markup, /class="table-scroll"/, 'the board stays inside the scroller the affordance is attached to')
+      // The summary is the only filter for the list below it: every state must
+      // still be a link, with its count, translated label and share.
+      const links = [...markup.matchAll(/href="\/repos\/[^"]*\?workState=([a-z_]+)#work"/g)].map((match) => match[1])
+      assert.deepEqual(links, [...WORK_ITEM_STATES], `${locale} summary must keep one filter link per state, in order`)
       const t: Translate = (zh, en) => (locale === 'zh' ? zh : en)
       for (const state of WORK_ITEM_STATES) {
-        assert.ok(
-          markup.includes(`>${workItemStateLabel(t, state)}</a>`),
-          `${locale} board must link the ${state} column with its translated label`,
-        )
+        assert.ok(markup.includes(workItemStateLabel(t, state)), `${locale} summary must name ${state}`)
       }
+      assert.equal((markup.match(/%/g) ?? []).length, WORK_ITEM_STATES.length, `${locale} summary must show a share per state`)
     }
   } finally {
     store.close()
