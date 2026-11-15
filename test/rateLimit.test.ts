@@ -136,13 +136,17 @@ test('a configured proxy hop is trusted: the appended client address, not the pe
 test('every throttle in src/app.ts takes its key from the normalized client address', () => {
   const source = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8')
   const takes = source.split('\n').map((line) => line.trim()).filter((line) => line.includes('.take('))
-  assert.equal(takes.length, 20, `the limiter call count changed: ${takes.length}`)
-  assert.equal(takes.filter((line) => line.includes('rateLimitKey(request)')).length, 19, 'every throttle but reauth uses the normalized key')
+  // #708 removed the pinned call count that used to sit here. A total is a
+  // property of the file, not of the rule, so every throttle added by a later
+  // slice turned this red for no security reason — and #708 itself adds four.
+  // The loop below is the actual rule: a throttle either uses the normalized
+  // client address or the one user-keyed bucket, and nothing else.
+  assert.equal(takes.filter((line) => line.includes('rateLimitKey(request)')).length, takes.length - 1, 'every throttle but reauth uses the normalized key')
   assert.equal(takes.filter((line) => line.includes('reauth:${viewer.user.id}')).length, 1, 'reauth stays keyed on the user id')
   for (const line of takes) {
     assert.ok(line.includes('rateLimitKey(request)') || line.includes('reauth:${viewer.user.id}'), `a limiter key is not client-choosable-proof: ${line}`)
   }
-  for (const prefix of ['metrics:', 'token:', 'login:', 'callback:', 'approve:', 'credential:', 'webhook:', 'inbound:', 'platform-stop:', 'platform-resume:', 'deployment-promote:', 'deployment-rollback:', 'session-revoke:', 'session-revoke-others:', 'session-rotate:', 'api-v1-jobs:']) {
+  for (const prefix of ['metrics:', 'token:', 'login:', 'callback:', 'approve:', 'credential:', 'webhook:', 'inbound:', 'platform-stop:', 'platform-resume:', 'deployment-promote:', 'deployment-rollback:', 'session-revoke:', 'session-revoke-others:', 'session-rotate:', 'admin-role:', 'repo-add:', 'rules-save:', 'job-start:', 'api-v1-jobs:']) {
     assert.ok(takes.some((line) => line.includes(`\`${prefix}`)), `no throttle joins the ${prefix} bucket`)
   }
 })

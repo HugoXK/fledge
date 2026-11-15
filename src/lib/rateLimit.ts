@@ -48,3 +48,52 @@ export class RateLimiter {
     for (const [key, bucket] of this.buckets) if (bucket.resetAt <= now) this.buckets.delete(key)
   }
 }
+
+// #708: the classes a mutating route can name. One budget per class, read once
+// from config, so a limit is tightened by an env change rather than by editing a
+// handler. A route also names its own bucket, so two routes in the same class
+// never share a counter and a busy page cannot spend another page's budget.
+export type RateLimitClass = 'login' | 'destructive' | 'expensive'
+
+export interface RateLimitBudget {
+  max: number
+  windowMs: number
+}
+
+export type RateLimitBudgets = Record<RateLimitClass, RateLimitBudget>
+
+// The windows the routes carried before #708. `login` is the sign-in budget the
+// auth routes already had; `destructive` is the 60-a-minute window
+// `destructiveLimit` already gave the eight privileged routes; `expensive` is
+// the same window for routes that start or stop work. Keeping the two classes
+// separate means the expensive budget can be loosened without moving the
+// destructive one.
+export const DEFAULT_RATE_LIMIT_BUDGETS: RateLimitBudgets = {
+  login: { max: 30, windowMs: 60_000 },
+  destructive: { max: 60, windowMs: 60_000 },
+  expensive: { max: 60, windowMs: 60_000 },
+}
+
+// One `RateLimiter` per class. Callers pass the bucket key themselves because a
+// few routes key on the user rather than on the client address (recent-auth
+// re-checks of the same account belong in one bucket).
+export class RouteLimiters {
+  private readonly limiters: Record<RateLimitClass, RateLimiter>
+
+  constructor(budgets: RateLimitBudgets) {
+    this.limiters = {
+      login: new RateLimiter(budgets.login.max, budgets.login.windowMs),
+      destructive: new RateLimiter(budgets.destructive.max, budgets.destructive.windowMs),
+      expensive: new RateLimiter(budgets.expensive.max, budgets.expensive.windowMs),
+    }
+  }
+
+  take(className: RateLimitClass, key: string): boolean {
+    return this.limiters[className].take(key)
+  }
+
+  sweep(): void {
+    for (const limiter of Object.values(this.limiters)) limiter.sweep()
+  }
+}
+

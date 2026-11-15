@@ -240,6 +240,32 @@ A scheduled task belongs to one session. An empty per-session list is evidence
 about that session only, never proof that a task does not exist; read the
 project-wide list and ask the maintainer before deleting or recreating anything.
 
+## Issue ownership and verdict writing
+
+Owner-filed issues are assigned to the Reviewer (`HugoXK-bot`) first; the
+Reviewer assigns them back to `HugoXK` in the same write as its verdict. A
+`PASS` means the Lead assigns the card or a Dev claims it; a `CHANGES` means
+Product owns the correction and either writes the list or hands it to a Dev.
+The owner sets direction when filing and does not arbitrate afterwards, so
+"waiting for the owner" is not a valid board state: `needs-human` means an
+owner-only decision — a real signature, production, keys, data deletion, or
+opening a security surface — and nothing else.
+
+One verdict is one write: the verdict, its label (`review:approved` or
+`review:changes`), the removal of `needs-review`, and the assignee back to
+`HugoXK` for an owner-filed card. A verdict that leaves the board reading
+`needs-review` is an incident, because dispatch reads labels. From the
+2026-11-14 batch, twelve issues carried a live `CHANGES` with no verdict label
+while still reading `needs-review`, and four more carried `needs-review` beside
+their verdict; the board looked unassigned while refusals stood, and both the
+Reviewer's own label set and the Lead's had to be rebuilt by whole-set
+replacement.
+
+A branch never carries a merge commit whose only purpose is to absorb the base,
+and a conflict is not resolved by rewriting a reviewed tip: fix the branch,
+push a new tip, and ask for a verdict at that tip. Never force-push a reviewed
+branch — a rewrite is published as a new branch name with the same tree.
+
 ## Labels
 
 - Type (one): `bug`, `enhancement`, `documentation`, `accessibility`.

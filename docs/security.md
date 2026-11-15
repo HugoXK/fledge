@@ -139,6 +139,35 @@ destructive calls — can therefore answer 429 inside a minute, and that is the
 control working, not a defect: the request was refused before anything was
 written or audited, and it succeeds again once the window has passed.
 
+### Rate limiting of mutating routes
+
+#708 gives the browser-facing mutations a class and a budget instead of leaving
+each one unlimited:
+
+- **login**: 30 attempts a minute per route and client address — the window the
+  sign-in routes (`/auth/token`, `/auth/github`, the callback) already carried.
+- **destructive**: 60 a minute by default — privilege changes and policy writes.
+  This slice limits `POST /admin/users/:id/role` and `POST /repos/:id/rules`
+  this way.
+- **expensive**: 60 a minute by default — routes that start real work or spend a
+  host slot. This slice limits `POST /repos` (it provisions an instance) and
+  `POST /repos/:id/run`.
+
+The three budgets live in `src/lib/rateLimit.ts` as one `RouteLimiters`, keyed by
+`rateLimitKey` and prefixed with the route's own bucket, so two routes in the
+same class never share a counter. They come from config (`RATE_LIMIT_LOGIN_MAX`,
+`RATE_LIMIT_DESTRUCTIVE_MAX`, `RATE_LIMIT_EXPENSIVE_MAX` and each
+`_WINDOW_MS`), with the defaults above, so tightening a window is a deployment
+change rather than a source edit. A refused browser mutation answers the same
+bilingual `请求过多` / `Too many requests` page the sign-in routes return, never
+a bare status a form post cannot explain.
+
+The rest of the state-changing routes are **not yet classified**: they are
+neither limited nor exempted by a recorded decision, and #708 stays open for the
+classifying sweep, the ADR and the remaining privileged routes. A route added
+tomorrow inherits nothing from this section, and the eight `config.rateLimit`
+handlers above are unchanged by it — same window, same key.
+
 ### CSRF
 
 Every state-changing browser form includes a hidden `csrf` field derived from

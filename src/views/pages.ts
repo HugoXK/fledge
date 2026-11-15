@@ -1009,7 +1009,7 @@ export function dashboardPage(input: {
   // other two ways in: both target `#jobs`, so a page loaded on page two or with
   // an active filter is a page whose table must be visible.
   const jobTableDeepLinked = jobsPage > 1 || jobFilterIsActive(jobFilter)
-  const secondaryOpen = jobTableDeepLinked || ['#add-repo', '#inbox', '#attention'].includes(nextAction.href)
+  const secondaryOpen = jobTableDeepLinked || reposPage > 1 || ['#repositories', '#add-repo', '#inbox', '#attention'].includes(nextAction.href)
   const repoRows = repos.length === 0
     ? stateCell(5, { kind: 'empty', title: t('还没有仓库。', 'No repositories yet.'), body: t('添加第一个仓库并选择你的角色，任务才会开始。', 'Add your first repository and choose your role before any job can start.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })
     : repos
@@ -1040,6 +1040,27 @@ export function dashboardPage(input: {
         <p class="fine">${escapeHtml(t('添加后请选择你的角色；未选择前不会启动任务。', 'Choose your role after adding; jobs stay paused until you do.'))}</p>
         <button class="btn" type="submit">${escapeHtml(t('添加仓库', 'Add repository'))}</button>
       </form>`
+  const addRepoOptions = config.githubApp.id === ''
+    ? `<p class="fine">${escapeHtml(t('GitHub App 未配置，请使用下面的 fine-grained token。', 'The GitHub App is not configured; use the fine-grained token below.'))}</p>${manualForm}`
+    : `<div class="add-choice"><h3>${escapeHtml(t('方式一（推荐）：GitHub App', 'Option 1 (recommended): GitHub App'))}</h3><p class="muted">${escapeHtml(t('安装 App 并选择仓库，不需要创建 PAT；Fledge 使用短时 installation token。', 'Install the App and choose repositories; no PAT is needed. Fledge uses short-lived installation tokens.'))}</p><p><a class="btn" href="/auth/github/app/install">${escapeHtml(t('通过 GitHub App 接入', 'Connect with GitHub App'))}</a> <a class="link" href="/repos/new">${escapeHtml(t('选择已安装的仓库', 'Choose installed repositories'))}</a></p></div><details class="add-manual"><summary>${escapeHtml(t('方式二：手动提供 fine-grained token', 'Option 2: provide a fine-grained token manually'))}</summary>${manualForm}</details>`
+  // The add flow is a modal rather than a permanent half-width card, so the
+  // repository table owns the row. `#add-repo` stays on the dialog: the empty
+  // state, next action, setup checklist and POST /repos error all link to it.
+  const addRepoDialog = `<dialog id="add-repo" class="add-repo-dialog" aria-labelledby="add-repo-title">
+    <div class="row between dialog-head">
+      <h2 id="add-repo-title">${escapeHtml(t('添加仓库', 'Add repository'))}</h2>
+      <button class="link" type="button" data-close-dialog>${escapeHtml(t('关闭', 'Close'))}</button>
+    </div>
+    ${error === undefined || error === '' ? '' : `<div class="banner bad" role="alert">${escapeHtml(error)}</div>`}
+    ${addRepoOptions}
+    <p class="fine">${escapeHtml(t('两种方式选一种即可；GitHub App 不需要 PAT。', 'Choose one of the two options; the GitHub App does not need a PAT.'))}</p>
+  </dialog>
+  <noscript><style>
+    #add-repo { display:block; position:static; width:auto; max-width:none; max-height:none; margin:16px 0; padding:0; border:0; background:none; box-shadow:none; }
+    #add-repo::backdrop { display:none; }
+    #add-repo .dialog-head .link { display:none; }
+    [data-open-dialog="add-repo"] { display:none; }
+  </style></noscript>`
   const body = `<section class="workspace-hero">
     <div class="workspace-intro">
       <div class="eyebrow">${escapeHtml(t('仓库', 'REPOSITORIES'))}</div>
@@ -1097,17 +1118,13 @@ export function dashboardPage(input: {
     </div>
   </section>
 
-  <section class="cols">
-    <div class="card">
+  <section class="card" id="repositories">
+    <div class="row between repos-head">
       <h2>${escapeHtml(t('仓库', 'Repositories'))}</h2>
-      <div class="table-scroll"><table class="table-cards"><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('模式', 'Mode'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('上次运行', 'Last run'))}</th><th></th></tr></thead><tbody>${repoRows}</tbody></table></div>
-      ${pager('/dashboard', 'reposPage', reposPage, reposTotal, 10, t, { ...dashboardStateParams(jobFilter, windowDays), jobsPage }, '#add-repo')}
+      <button class="btn" type="button" data-open-dialog="add-repo" aria-haspopup="dialog" aria-controls="add-repo">${escapeHtml(t('添加仓库', 'Add repository'))}</button>
     </div>
-    <div class="card" id="add-repo">
-      <h2>${escapeHtml(t('添加仓库', 'Add repository'))}</h2>
-      ${config.githubApp.id === '' ? `<p class="fine">${escapeHtml(t('GitHub App 未配置，请使用下面的 fine-grained token。', 'The GitHub App is not configured; use the fine-grained token below.'))}</p>${manualForm}` : `<div class="add-choice"><h3>${escapeHtml(t('方式一（推荐）：GitHub App', 'Option 1 (recommended): GitHub App'))}</h3><p class="muted">${escapeHtml(t('安装 App 并选择仓库，不需要创建 PAT；Fledge 使用短时 installation token。', 'Install the App and choose repositories; no PAT is needed. Fledge uses short-lived installation tokens.'))}</p><p><a class="btn" href="/auth/github/app/install">${escapeHtml(t('通过 GitHub App 接入', 'Connect with GitHub App'))}</a> <a class="link" href="/repos/new">${escapeHtml(t('选择已安装的仓库', 'Choose installed repositories'))}</a></p></div><details class="add-manual"><summary>${escapeHtml(t('方式二：手动提供 fine-grained token', 'Option 2: provide a fine-grained token manually'))}</summary>${manualForm}</details>`}
-      <p class="fine">${escapeHtml(t('两种方式选一种即可；GitHub App 不需要 PAT。', 'Choose one of the two options; the GitHub App does not need a PAT.'))}</p>
-    </div>
+    <div class="table-scroll"><table class="table-cards"><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('模式', 'Mode'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('上次运行', 'Last run'))}</th><th></th></tr></thead><tbody>${repoRows}</tbody></table></div>
+    ${pager('/dashboard', 'reposPage', reposPage, reposTotal, 10, t, { ...dashboardStateParams(jobFilter, windowDays), jobsPage }, '#repositories')}
   </section>
 
   <section class="card" id="jobs">
@@ -1127,7 +1144,8 @@ export function dashboardPage(input: {
     ${pager('/dashboard', 'jobsPage', jobsPage, jobsTotal, 10, t, { reposPage, ...(windowDays === 30 ? { window: 30 } : {}), ...jobFilterParams(jobFilter) }, '#jobs')}
   </section>
     </div>
-  </details>`
+  </details>
+  ${addRepoDialog}`
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, error })
 }
 
