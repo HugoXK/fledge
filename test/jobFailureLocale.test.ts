@@ -185,3 +185,46 @@ test('the stall and lease reapers record the code on the row and on the notifica
     store.close()
   }
 })
+
+// #409: the stop's reason is written by `src/jobs/service.ts` with the submitted
+// cost and the repository budget interpolated, so an English console showed the
+// Chinese paragraph under an English title. `budgetStop` is the banner body; the
+// sentence must arrive in the reader's language there, while the Chinese render
+// keeps exactly what the backend wrote.
+test("a per-job budget stop renders the job page banner in the reader's language", () => {
+  const store = new Store(':memory:')
+  try {
+    const reason = 'JOB_BUDGET_PAUSED: 单任务成本 12.50 元已超过预算 10.00 元。提高单任务预算后从断点恢复，或重新开始任务。'
+    const { userId, repo, job } = failedJob(store, 'budget-banner', reason, 'JOB_BUDGET_PAUSED')
+
+    // The page can carry more than one error card (a quota banner also renders
+    // `state-error`), so the budget card is found by its own action target.
+    const card = (html: string): { title: string; body: string } => {
+      const at = html.indexOf('#repo-settings')
+      assert.ok(at > 0, 'the per-job budget banner action is missing')
+      const open = html.lastIndexOf('<div class="state state-error"', at)
+      assert.ok(open >= 0, 'the per-job budget banner is missing')
+      const slice = html.slice(open, at + 200)
+      return {
+        title: /<strong>([\s\S]*?)<\/strong>/.exec(slice)?.[1] ?? '',
+        body: /<p>([\s\S]*?)<\/p>/.exec(slice)?.[1] ?? '',
+      }
+    }
+
+    const en = card(jobPageHtml(store, 'en', userId, repo, job))
+    assert.match(en.title, /Per-job budget reached/)
+    assert.equal(CJK.test(en.body), false, `the English banner leaked the backend sentence: ${en.body}`)
+    assert.match(en.body, /12\.50 CNY/, `the English banner lost the observed cost: ${en.body}`)
+    assert.match(en.body, /budget/i, `the English banner must name what stopped the job: ${en.body}`)
+
+    const zh = card(jobPageHtml(store, 'zh', userId, repo, job))
+    assert.match(zh.title, /单任务预算/)
+    assert.match(zh.body, /12\.50 元/, `the Chinese banner keeps the sentence the service wrote: ${zh.body}`)
+
+    // The raw sentence stays readable under the technical-details block.
+    const detail = /Technical detail<\/summary><p>([\s\S]*?)<\/p>/.exec(jobPageHtml(store, 'en', userId, repo, job))?.[1] ?? ''
+    assert.equal(detail, reason, 'the technical-details copy is the operator text, unchanged')
+  } finally {
+    store.close()
+  }
+})
