@@ -93,6 +93,19 @@ test('every blocker is the same string the release route refuses with', () => {
   assert.equal(noCommits.refusal?.message, (nothing as { message: string }).message)
 })
 
+// A tag that resolved for the compare but not for the commit read is the same
+// no-answer case: the page must not name a tag it cannot describe.
+test('a tag that stops resolving is no answer, not a first release', async () => {
+  const client = {
+    async getBranch() { return { name: 'main', sha: HEAD } },
+    async listTags() { return [{ name: 'v1.3.0', sha: TAG_SHA }] },
+    async compareCommits() { return { status: 'ahead', aheadBy: 7 } },
+    async getCommitMeta() { return null },
+  }
+  const view = await readReleaseReadiness(client as never, { owner: 'o', name: 'r', defaultBranch: 'main' })
+  assert.equal(view, null)
+})
+
 // The probe budget is bounded, so running out of it is "no answer", never the
 // claim that a repository has no previous tag.
 test('an undetermined previous tag is no answer, not a first release', async () => {

@@ -707,6 +707,18 @@ while any other status becomes the fixed `the tag reference was refused by GitHu
 the page. A 422 from `createAnnotatedTag` is the `target_missing` refusal rather
 than an exception. No call here updates or deletes a ref.
 
+The readiness view adds two more reads and one additive field. `getCommitMeta`
+(`GET /commits/{ref}`) returns one commit's SHA and committer date, and `null` on
+404, so a tag that stopped resolving becomes a named "could not read" instead of
+an exception. `listMergedPullRequestsSince` pages `GET /pulls?state=closed` in
+`updated_at` order, keeps only entries merged at or after one instant and carries
+their labels, and reports `complete: false` only when the page cap was reached
+while every row seen was still inside the window: a pull request merged before the
+window can appear on an early page after a comment, so the filter runs per entry
+rather than stopping at the first old row. `listDirectory` also returns each
+entry's blob `sha`, which is how a `changelog.d` fragment that was edited is told
+from one already released.
+
 Workflow tracking uses bounded reads and one draft-only write:
 `listWorkflowRunsForRef` (up to three pages of `GET /actions/runs?branch=<tag>`,
 so other workflows cannot push the tag's run out of the window),
@@ -733,3 +745,33 @@ against the same row, and
 `POST /repos/:id/releases/:releaseId/check` (owner only, CSRF, maintainer role)
 repeats it, then redirects to `?release=1&checked=<message>`. The check may
 prepare a draft Release; it never publishes, reruns, deletes or moves anything.
+
+### `GET /repos/:id/release-readiness`
+
+Owner only; no CSRF, because nothing is written. It answers whether a connected
+repository can be released before a version is typed, using only GETs on the
+installation token Fledge already holds — no tag is created, no Release is
+prepared, and no token with release scope is requested. The server-rendered page
+names the latest SemVer tag reachable from the default branch and its commit time
+(the highest tag is compared first, bounded to eight `compare` probes; running out
+of probes is reported as no answer rather than as "no previous tag"), the commits
+since that tag, the pull requests merged since it with how many are features (an
+`enhancement` or `feature` label, else a `feat` conventional title prefix, with
+the page naming which rule counted each one), and the `changelog.d` fragments
+present at the head with a blob the tag does not have.
+
+A release that would not go ahead is reported with the three version-independent
+refusals — `missing_gate`, `missing_release_workflow`, `no_new_commits` — printed
+verbatim from `releaseRefusals`, the same table `planRelease` reads, so the page
+and `POST /repos/:id/release` cannot state different reasons for the same facts.
+`tag_exists` and `not_higher` stay on the write path because they need a requested
+version. A merged count cut by the page cap says the count may be higher, and an
+unreadable default branch, an undetermined previous tag or a failed GitHub read
+renders "the repository state could not be read" instead of inventing a ready or a
+refused repository.
+
+The shared table keeps the sentences identical, not the list of checks. A
+version-independent blocker added to `planRelease` later must be added to
+`releaseReadiness` too; until it is, the page would predict ready where the write
+path refuses. The tag route is authoritative — the page is a read-only
+prediction — and the test asserts the three codes that exist today.

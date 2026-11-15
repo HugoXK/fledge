@@ -169,7 +169,11 @@ export async function readReleaseReadiness(
   // An undetermined previous tag is reported as "no answer" rather than as a
   // first release: the tags that were not compared could already point at head.
   if (previous.status === 'unknown') return null
-  const meta = previous.status === 'none' ? null : await client.getCommitMeta(input.owner, input.name, previous.tag.name)
+  // A tag that resolved for the compare and no longer resolves here is the same
+  // no-answer case: without its commit time the page would name a tag it cannot
+  // describe and a commit count it cannot attribute.
+  const meta = previous.status === 'found' ? await client.getCommitMeta(input.owner, input.name, previous.tag.name) : null
+  if (previous.status === 'found' && meta === null) return null
   const merged = meta === null
     ? { pulls: [], complete: false }
     : await client.listMergedPullRequestsSince(input.owner, input.name, meta.committedAt)
