@@ -307,7 +307,9 @@ defect.
   repository, so a relation cannot cross a project boundary, and a task cannot
   be related to itself. A repeated save is one row. Nothing derives a relation
   from a title or an embedding: similar tasks stay separate until a person links
-  them, and a relation never moves, merges or suppresses work.
+  them, and a relation never moves, merges or suppresses work. The decision record
+  for the ladder and the relation table is
+  `docs/decisions/0018-priority-ladder-and-relations.md`.
 - **One bounded next-task decision**: after a job is verified the follow-up is a
   single decision — `new`, `supplement`, `related` or `recurrence` — carrying a
   reason and checkable evidence. `new` creates one separate task, `supplement`
