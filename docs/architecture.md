@@ -319,13 +319,18 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   rebuilds that URL keeps the state it is not changing: the 7/30-day window,
   both "Clear filters" links and both pagers read the keys from one helper, so
   the filter survives a window switch and a page click, and the window survives
-  a filter and a clear. The admin search page (`/admin/search`) builds its two
-  job filters from those same `JOB_FILTER_STATUSES` and `JOB_FILTER_KINDS` lists
-  and the same label helpers, so every kind a job can have is selectable there
-  and both locales read the console's words rather than the stored code; the
-  option values stay the codes, so the query, the totals and the CSV export are
-  unchanged. A second hand-written list in a view is how `scope` and `verify`
-  went missing from a form once already.
+  a filter and a clear. The admin search page (`/admin/search`) uses one toolbar
+  with a `Jobs` / `Audit` switch (`view=jobs|audit`): the active tab owns the
+  only filter form, so there is one Query field and paging or export cannot drop
+  the other tab's unrelated keys. The job fields still come from
+  `JOB_FILTER_STATUSES` and `JOB_FILTER_KINDS` and the same label helpers, so
+  every kind a job can have is selectable there and both locales read the
+  console's words rather than the stored code; option values stay the codes, so
+  the query, totals and CSV export are unchanged. Audit details render
+  `key=value` pairs as chips, link `job_*`, `repo_*` and `usr_*` ids to their
+  pages, and collapse long free text behind a details control instead of
+  truncating one raw line. A second hand-written list in a view is how `scope`
+  and `verify` went missing from a form once already.
 - **Admin CSV exports**: both `/admin/export/jobs.csv` and
   `/admin/export/audit.csv` write one `admin.jobs_export` / `admin.audit_export`
   row once the body is known — `filters=` echoes the allow-listed codes and ISO

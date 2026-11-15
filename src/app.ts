@@ -4598,6 +4598,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const action = (queryText(request, 'action') ?? '').slice(0, 80)
     const from = (queryText(request, 'from') ?? '').slice(0, 20)
     const to = (queryText(request, 'to') ?? '').slice(0, 20)
+    const view = queryText(request, 'view') === 'audit' ? 'audit' : 'jobs'
     const perPage = 20
     const page = (name: string, total: number): number => {
       const n = Number(queryText(request, name))
@@ -4618,7 +4619,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       jobs: store.searchJobs(userIds, jobFilters, perPage, (jobsPage - 1) * perPage),
       audit: store.searchAudit(userIds, auditFilters, perPage, (auditPage - 1) * perPage),
       usersById,
-      filters: { q, status, kind, priority, action, from, to },
+      filters: { q, status, kind, priority, action, from, to, view },
       jobsPage,
       jobsTotal,
       auditPage, auditTotal,
