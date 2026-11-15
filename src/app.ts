@@ -3302,6 +3302,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!roleAllowed(repo.permission, role)) {
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('你的 GitHub 权限不允许选择这个角色。', 'Your GitHub permission does not allow this role.'))}#role`)
     }
+    // #718: this route writes the same `repo_role` column as the settings form,
+    // and demoting to developer clears `auto_merge` and `reviewer_enabled`. The
+    // role check above still answers first; the confirmation comes before the
+    // write. The limiter half of this route belongs to #708.
+    if (requireRecentAuth(request, reply, viewer, 'repo.role')) return reply
     store.updateRepo(repo.id, { repo_role: role, auto_merge: 0, reviewer_enabled: role === 'maintainer' ? repo.reviewer_enabled : 0, role_checked_at: nowIso() })
     store.audit(viewer.user.id, 'repo.role', `${repo.owner}/${repo.name} role=${role} previous=${repo.repo_role ?? 'none'}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(role === 'maintainer' ? t('已选择角色：Maintainer。', 'Role selected: Maintainer.') : t('已选择角色：Developer。', 'Role selected: Developer.'))}`)
