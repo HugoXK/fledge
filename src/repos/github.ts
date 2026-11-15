@@ -61,6 +61,24 @@ export interface PullRequestInfo {
   draft: boolean
   merged: boolean
   changedFiles: number
+  // #373: the body is what the agent already wrote about the change. The job
+  // page shows it; nothing here interprets it.
+  body: string
+}
+
+// #373: the job page shows how large the change is. The per-file walk below
+// already carries `additions` and `deletions`, so the sum is defined once, next
+// to the reader that owns the walk and its cap.
+export function summarizePullRequestFiles(
+  files: ReadonlyArray<{ additions: number; deletions: number }>,
+): { files: number; additions: number; deletions: number } {
+  let additions = 0
+  let deletions = 0
+  for (const file of files) {
+    additions += Number.isFinite(file.additions) ? file.additions : 0
+    deletions += Number.isFinite(file.deletions) ? file.deletions : 0
+  }
+  return { files: files.length, additions, deletions }
 }
 
 export interface CheckRunInfo {
@@ -506,7 +524,7 @@ export class GithubClient {
     name: string,
     input: { title: string; head: string; base: string; body: string },
   ): Promise<PullRequestInfo> {
-    const pr = await this.request<{ number: number; html_url: string; title: string; state: string; head: { ref: string; sha: string }; base: { ref: string }; mergeable?: boolean | null; mergeable_state?: string; draft?: boolean; merged?: boolean; changed_files?: number }>(
+    const pr = await this.request<{ number: number; html_url: string; title: string; state: string; head: { ref: string; sha: string }; base: { ref: string }; mergeable?: boolean | null; mergeable_state?: string; draft?: boolean; merged?: boolean; changed_files?: number; body?: string | null }>(
       'POST',
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls`,
       input,
@@ -524,6 +542,7 @@ export class GithubClient {
       draft: pr.draft === true,
       merged: pr.merged === true,
       changedFiles: Number(pr.changed_files ?? 0),
+      body: typeof pr.body === 'string' ? pr.body : '',
     }
   }
 
@@ -540,6 +559,7 @@ export class GithubClient {
       draft: boolean
       merged: boolean
       changed_files?: number
+      body?: string | null
     }>(
       'GET',
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}`,
@@ -557,6 +577,7 @@ export class GithubClient {
       draft: pr.draft,
       merged: pr.merged,
       changedFiles: Number(pr.changed_files ?? 0),
+      body: typeof pr.body === 'string' ? pr.body : '',
     }
   }
 
@@ -834,6 +855,20 @@ export class GithubClient {
     }
     const complete = reportedFiles > 0 ? files.length >= reportedFiles : !capped
     return { files, complete }
+  }
+
+  // #373: the job page needs the change size, not the file list. A capped walk is
+  // reported as such rather than summed: a total taken from part of the change
+  // would understate it, and the page says the fact is unavailable instead.
+  async pullRequestDiffTotals(
+    owner: string,
+    name: string,
+    number: number,
+    reportedFiles = 0,
+  ): Promise<{ totals: { files: number; additions: number; deletions: number } | null; complete: boolean }> {
+    const listed = await this.listPullRequestFiles(owner, name, number, reportedFiles)
+    if (!listed.complete) return { totals: null, complete: false }
+    return { totals: summarizePullRequestFiles(listed.files), complete: true }
   }
 
   async getBranchProtection(owner: string, name: string, branch: string): Promise<{ protected: boolean; requiredChecks: string[]; requiredApprovals: number } | null> {

@@ -1615,6 +1615,31 @@ makes the sweep idempotent: a rerun offers nothing and mails nobody, and an
 account restored by hand stays skipped. Operator output carries the login and the
 registration date, never an address.
 
+### The job page's change story
+
+The job page answers "did it pass", and a maintainer's first question is "what
+is the change". `GET /repos/:id/jobs/:jobId` therefore makes one read of the
+job's pull request and hands the render a `ChangeStory`: the body split into
+what changed, risks and ran, plus the diff totals. It is a read model over what
+the agent already wrote — no model call and no summary of a summary.
+
+The read is cached per job for 60 seconds, the same shape as `inboxCache` above,
+so refreshing the page spends no GitHub request; a job with no pull request
+skips the read entirely and the block is absent. The body comes from
+`PullRequestInfo.body`, and the totals from `pullRequestDiffTotals`, which sums
+the existing changed-file walk. When that walk hits its own cap the totals are
+reported as unavailable rather than summed: a number taken from part of a change
+would understate it.
+
+`src/lib/changeStory.ts` is pure. It recognises `## What changed`, `## Risks`
+and `## Ran` at any heading level, and the bare `Ran:` line this repository's PR
+template uses; a repeated heading keeps the last occurrence and the block says
+so, so an edited body cannot silently show the abandoned draft. A heading the
+body does not carry renders `not stated` and is never filled from another
+section. A read that fails — 404, no token, a capped list — leaves the page at
+200 and names the unavailable fact instead, because a page that 500s on a read
+it did not need is worse than no block.
+
 ### Email notifications
 
 Fledge sends mail from the configured `MAIL_FROM` (production:

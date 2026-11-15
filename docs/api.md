@@ -438,6 +438,13 @@ refused rather than judged, which is deliberate — an unread file is not a
 permitted one. Rows stored before these fields existed keep their old sentence
 and are upgraded on the next check, so there is no migration.
 
+`PullRequestInfo` also carries the pull request `body`, which the reader never
+interprets: the job page shows the three sections the agent wrote into it.
+`pullRequestDiffTotals` reduces the same listing to `{ files, additions,
+deletions }` for that page, and reports no totals when the walk was capped — the
+same rule as the path guard, stated once: a partial listing is unavailable, never
+rounded down and presented as the change.
+
 ## Job endpoints
 
 These are called by the FlyBot bridge/agent, not by a browser.

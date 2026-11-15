@@ -29,8 +29,9 @@ import { parseAttributionJson } from './lib/attribution.js'
 import { failureBreakdown } from './lib/failure.js'
 import { fetchFailureLog, logFailureReason } from './actions/workflowLog.js'
 import { parseVerification } from './lib/verification.js'
+import { readChangeStory, type ChangeStory } from './lib/changeStory.js'
 import { DEFAULT_TRIAGE_GOAL, Jobs } from './jobs/service.js'
-import { parseIssueUrl } from './jobs/prUrl.js'
+import { parseIssueUrl, parsePrUrl } from './jobs/prUrl.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
 import type { PriorityLevel } from './lib/priority.js'
@@ -834,6 +835,41 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     summary: job.summary === null ? null : localizeMessage(locale, job.summary) ?? job.summary,
     error: job.error === null ? null : localizeMessage(locale, job.error) ?? job.error,
   }))
+
+  // #373 slice 1: the job page's "Why this change" block reads the pull request
+  // body and the changed-file totals. One read per job with a 60 s bound, the
+  // same shape as `inboxCache` above: a page refresh must not spend a GitHub
+  // request, and a job without a pull request spends none at all.
+  const changeStoryTtlMs = 60_000
+  const changeStoryCache = new Map<string, { at: number; story: ChangeStory }>()
+  const changeStoryFor = async (repo: RepoRow, job: JobRow): Promise<ChangeStory | undefined> => {
+    if (job.pr_url === null || job.pr_url === '') return undefined
+    const cached = changeStoryCache.get(job.id)
+    if (cached !== undefined && Date.now() - cached.at < changeStoryTtlMs) return cached.story
+    const parsed = parsePrUrl(repo, job.pr_url, config.github.apiBase)
+    let story: ChangeStory
+    if (!parsed.ok) {
+      story = readChangeStory({ body: null, totals: null, diffState: 'unreadable' })
+    } else {
+      try {
+        const token = await repoGithubToken(repo, config, githubApp, store)
+        const client = new GithubClient(token, config.github.apiBase)
+        const pr = await client.getPullRequest(parsed.ref.owner, parsed.ref.name, parsed.ref.number)
+        const diff = await client.pullRequestDiffTotals(parsed.ref.owner, parsed.ref.name, parsed.ref.number, pr.changedFiles)
+        story = readChangeStory({ body: pr.body, totals: diff.totals, diffState: diff.complete ? 'ok' : 'capped' })
+      } catch (error) {
+        // A read that failed is a fact the block reports, not a reason to fail
+        // the page: the evidence below it is what the maintainer came for.
+        log.warn('change story read failed', { repo: repo.id, job: job.id, error: error instanceof Error ? error.message : String(error) })
+        story = readChangeStory({ body: null, totals: null, diffState: 'unreadable' })
+      }
+    }
+    if (changeStoryCache.size >= 200) {
+      for (const [key, entry] of changeStoryCache) if (Date.now() - entry.at >= changeStoryTtlMs) changeStoryCache.delete(key)
+    }
+    changeStoryCache.set(job.id, { at: Date.now(), story })
+    return story
+  }
 
   const requireAdvanced = (viewer: { user: UserRow; preview?: boolean }): void => {
     if (viewer.user.role !== 'superadmin' || viewer.preview === true) throw httpError(403, '仅超级管理员可访问实时团队页面。', 'SUPERADMIN_ONLY')
@@ -2971,12 +3007,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // label map keeps the viewer's own repositories readable without naming
     // anybody else's.
     const repoLabels = new Map(store.listRepos(viewer.user.id).map((entry) => [entry.id, `${entry.upstream_owner || entry.owner}/${entry.upstream_name || entry.name}`]))
+    // #373: one read of the pull request, cached per job, so the page can say
+    // what the change is and not only that its checks passed.
+    const changeStory = await changeStoryFor(repo, job)
     return reply.type('text/html').send(jobPage({
       config,
       locale: request.locale ?? 'zh',
       viewer: viewOf(viewer),
       repo,
       job,
+      changeStory,
       queued,
       viewerActive: store.listActiveJobsForUser(viewer.user.id),
       repoLabels,
