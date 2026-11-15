@@ -1912,7 +1912,21 @@ change. `off` keeps the route that existed before the contract,
 receipt is where a divergence shows — and `on` lets the command answer. An
 unknown value is `off`: a typo must not start enforcing.
 
-The rest of the write surface — repository settings, releases, member grants —
+`repo.update` is slice 4, the first non-job write: the merge-policy block of the
+console settings form (`require_protection`, `allow_paths`, `deny_paths`,
+`target_branch`, `stage_mode`, `repo_role`). It is fenced on the repository's own
+revision, not the project's, so a job queued elsewhere cannot invalidate a
+settings save while a policy written from another tab does. The command rewrites
+only the fields the caller sent, refuses a value outside the closed set
+(`invalid_arguments`) instead of clamping it and re-checks the chosen role against
+the connection's permission when it runs (`repo_role_not_allowed`). Its capability
+is `repo.policy`, which both roles hold, because the console let both save this
+block before the move; `config.write` would have narrowed it to maintainers. A
+replay is answered from the stored receipt, so a refreshed or retried submit
+writes nothing the second time and does not move the fence twice.
+
+The rest of the write surface — the other half of the settings form (goal,
+models, budgets, intervals, auto-merge, reviewer), releases and member grants —
 still calls its service directly. Each migrates by registering one operation and
 leaving its route as an adapter; none of them may keep a second copy of the rules.
 The issue-thread `/fledge plan` and `/fledge fix` commands are the chat adapter:

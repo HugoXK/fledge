@@ -1,8 +1,11 @@
-import type { Store } from '../db.js'
+import type { RepoRow, Store } from '../db.js'
 import type { Jobs } from '../jobs/service.js'
 import { JOB_KINDS, type JobKind } from '../jobs/runner.js'
 import type { Capability } from './actor.js'
 import { refusalSentenceUsesDetail } from '../lib/failure.js'
+import { isValidBranchName } from '../lib/branches.js'
+import { parseRepoRole, roleAllowed } from '../lib/repoRole.js'
+import { parseStageMode } from '../lib/stages.js'
 
 // #540: the catalog is a closed map, not a registry a caller can extend. An
 // operation declares its capabilities, the target it needs and the arguments it
@@ -241,7 +244,91 @@ const taskRetry: Operation = {
   },
 }
 
+// #540 slice 4: the settings form's merge-policy block is the first non-job
+// write behind the contract. The six fields are one set because one Save writes
+// them together, and each of them decides what a merge may touch:
+// `require_protection` switches the protection check off, `allow_paths`,
+// `deny_paths` and `target_branch` decide the surface, `stage_mode` decides
+// whether the stage gate blocks, and `repo_role` decides who may act at all. The
+// command rewrites only the fields the caller sent, refuses a value outside the
+// closed set instead of clamping it, and re-checks the role against the
+// connection's permission when it runs, not when the page was rendered.
+const repoUpdate: Operation = {
+  kind: 'command',
+  // The console has always let a `developer` connection save this policy; the
+  // capability names that grant instead of borrowing `config.write`, which is
+  // maintainer-only, so moving the write does not narrow who may make it.
+  capabilities: ['repo.policy'],
+  requiredTarget: ['projectId'],
+  revisionTarget: 'projectId',
+  revisionType: 'repo',
+  async execute(context, target, args) {
+    const repo = context.store.getRepo(target.projectId ?? '')
+    if (repo === undefined) return { status: 'failed', errorCode: 'project_not_found', errorMessage: 'the project does not exist' }
+    const patch: Partial<Pick<RepoRow, 'target_branch' | 'allow_paths' | 'deny_paths' | 'require_protection' | 'stage_mode' | 'repo_role'>> = {}
+    const changed: string[] = []
+    if (args.targetBranch !== undefined) {
+      const branch = typeof args.targetBranch === 'string' ? args.targetBranch.trim() : ''
+      if (!isValidBranchName(branch)) return { status: 'failed', errorCode: 'invalid_arguments', errorMessage: 'the target branch is not a valid branch name' }
+      if (branch !== repo.target_branch) {
+        patch.target_branch = branch
+        changed.push('target_branch')
+      }
+    }
+    for (const [key, column] of [['allowPaths', 'allow_paths'], ['denyPaths', 'deny_paths']] as const) {
+      const value = args[key]
+      if (value === undefined) continue
+      if (typeof value !== 'string') return { status: 'failed', errorCode: 'invalid_arguments', errorMessage: `${key} must be a string` }
+      const trimmed = value.trim().slice(0, 2000)
+      if (trimmed !== repo[column]) {
+        patch[column] = trimmed
+        changed.push(column)
+      }
+    }
+    if (args.requireProtection !== undefined) {
+      if (typeof args.requireProtection !== 'boolean') return { status: 'failed', errorCode: 'invalid_arguments', errorMessage: 'requireProtection must be a boolean' }
+      const value = args.requireProtection ? 1 : 0
+      if (value !== repo.require_protection) {
+        patch.require_protection = value
+        changed.push('require_protection')
+      }
+    }
+    if (args.stageMode !== undefined) {
+      const mode = parseStageMode(args.stageMode)
+      if (mode === null) return { status: 'failed', errorCode: 'invalid_arguments', errorMessage: 'the stage mode is not one of off, shadow, enforced' }
+      if (mode !== repo.stage_mode) {
+        patch.stage_mode = mode
+        changed.push('stage_mode')
+      }
+    }
+    if (args.repoRole !== undefined) {
+      const role = parseRepoRole(args.repoRole)
+      if (role === null) return { status: 'failed', errorCode: 'invalid_arguments', errorMessage: 'the role is not one of maintainer, developer' }
+      // The form checks this against the row it rendered; the command checks it
+      // again, because the connection's permission can change between the two.
+      if (!roleAllowed(repo.permission, role)) {
+        return { status: 'failed', errorCode: 'repo_role_not_allowed', errorMessage: `this connection cannot hold the ${role} role` }
+      }
+      if (role !== repo.repo_role) {
+        patch.repo_role = role
+        changed.push('repo_role')
+      }
+    }
+    return {
+      status: 'succeeded',
+      result: { changed },
+      // The row is the business change, so it commits with the receipt and the
+      // revision bump: a crash cannot leave the policy written with the receipt
+      // still saying `accepted`.
+      commit: () => {
+        if (changed.length > 0) context.store.updateRepo(repo.id, patch)
+      },
+    }
+  },
+}
+
 export const OPERATIONS: Readonly<Record<string, Operation>> = Object.freeze({
+  'repo.update': repoUpdate,
   'task.cancel': taskCancel,
   'task.pause': taskPause,
   'task.create': taskCreate,
