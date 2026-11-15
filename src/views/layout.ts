@@ -131,6 +131,52 @@ function bannerHtml(text: string, link: { href: string; anchor: string } | null)
   return `${escaped.slice(0, index)}${open}${escaped.slice(index + anchor.length)}`
 }
 
+export type NotificationLevel = 'error' | 'warning' | 'success' | 'info'
+
+export interface PageNotification {
+  level: NotificationLevel
+  text: string
+  /** Two entries with the same key render once; defaults to the text itself. */
+  key?: string
+  link?: { href: string; anchor: string } | null
+}
+
+// #472: the severity order is the one the classes already implied — `banner bad`
+// is a failure, `banner ok` a completed action, a plain `banner` information, and
+// the `warn` variant this change adds sits between the failure and the two.
+const LEVEL_ORDER: Record<NotificationLevel, number> = { error: 0, warning: 1, success: 2, info: 3 }
+const LEVEL_CLASS: Record<NotificationLevel, string> = {
+  error: 'banner bad',
+  warning: 'banner warn',
+  success: 'banner ok',
+  info: 'banner',
+}
+
+// One stack, one polite region. A message that arrives on two paths (a redirect
+// and a page-data banner for the same event) carries the same key and renders
+// once, at the severity of the first writer that knew the worst about it. The
+// dismiss control hides its own node, so an announcement is not cut off and a
+// reload does not resurrect a one-shot notice.
+export function notificationStack(locale: Locale, entries: PageNotification[]): string {
+  const kept = new Map<string, PageNotification>()
+  for (const entry of entries) {
+    const key = entry.key ?? entry.text
+    const previous = kept.get(key)
+    if (previous === undefined || LEVEL_ORDER[entry.level] < LEVEL_ORDER[previous.level]) kept.set(key, entry)
+  }
+  const ordered = [...kept.values()].sort((a, b) => LEVEL_ORDER[a.level] - LEVEL_ORDER[b.level])
+  if (ordered.length === 0) return ''
+  const t = translator(locale)
+  const dismissLabel = escapeHtml(t('关闭消息', 'Dismiss message'))
+  const messages = ordered
+    .map(
+      (entry) =>
+        `<div class="${LEVEL_CLASS[entry.level]}" data-notification data-level="${entry.level}"><span class="banner-text">${bannerHtml(entry.text, entry.link ?? null)}</span><button type="button" class="banner-dismiss" data-dismiss aria-label="${dismissLabel}" title="${dismissLabel}">×</button></div>`,
+    )
+    .join('')
+  return `<section class="banner-stack" aria-live="polite" data-notification-stack>${messages}</section>`
+}
+
 export function layout(options: LayoutOptions): string {
   const { title, viewer, body, config, active } = options
   const locale = options.locale ?? 'zh'
@@ -144,6 +190,9 @@ export function layout(options: LayoutOptions): string {
   const refusal = refusalBanner(locale, options.error)
   const error = refusal === null ? localizeMessage(locale, options.error) : refusal.text
   const errorLink = refusal === null ? null : refusal.link
+  const messages: PageNotification[] = []
+  if (error !== undefined && error !== '') messages.push({ level: 'error', text: error, link: errorLink })
+  if (notice !== undefined && notice !== '') messages.push({ level: 'success', text: notice })
   const preview = viewer !== undefined && viewer !== null && viewer.preview === true
   const release = options.release ?? releaseSurface()
   // #93: "current page" is a claim about the document, so it belongs to the link
@@ -219,8 +268,7 @@ export function layout(options: LayoutOptions): string {
   </header>
   <main class="wrap" id="main">
     ${preview && viewer !== undefined && viewer !== null ? `<div class="banner ok preview-banner"><span>${escapeHtml(t('正在预览用户视图。', 'Previewing the user view.'))}</span><form method="post" action="/admin/simulation">${`<input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />`}<input type="hidden" name="enable" value="0" /><input type="hidden" name="returnTo" value="${escapeHtml(path)}" /><button class="link" type="submit">${escapeHtml(t('退出模拟', 'Exit preview'))}</button></form></div>` : ''}
-    ${notice === undefined || notice === '' ? '' : `<div class="banner ok" role="status">${escapeHtml(notice)}</div>`}
-    ${error === undefined || error === '' ? '' : `<div class="banner bad" role="alert">${bannerHtml(error, errorLink)}</div>`}
+    ${notificationStack(locale, messages)}
     ${body}
   </main>
   ${footer}

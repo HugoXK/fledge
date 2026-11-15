@@ -12,7 +12,8 @@ const CJK = /[\u3400-\u9fff]/
 const LEAK = /ECONNREFUSED|127\.0\.0\.1|8080|HttpError|500/
 
 function banner(html: string): string {
-  return /<div class="banner bad" role="alert">([\s\S]*?)<\/div>/.exec(html)?.[1] ?? ''
+  // #472: one stack renders every message, so the refusal is its text span.
+  return /<span class="banner-text">([\s\S]*?)<\/span><button/.exec(html)?.[1] ?? ''
 }
 
 function makeRepo(store: Store, userId: string) {
