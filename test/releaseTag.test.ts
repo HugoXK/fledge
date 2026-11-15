@@ -232,6 +232,11 @@ interface ReleaseRouteOptions {
   refWriteRaw?: string
   refWriteContentType?: string
   commitStatus?: number
+  // The first observation after a tag write reads the tag's Release and its run;
+  // a test that cares about the tracked row supplies them here.
+  existingRelease?: Record<string, unknown>
+  runs?: Array<Record<string, unknown>>
+  jobs?: Array<Record<string, unknown>>
 }
 
 async function releaseRouteHarness(options: ReleaseRouteOptions = {}) {
@@ -258,6 +263,17 @@ async function releaseRouteHarness(options: ReleaseRouteOptions = {}) {
     }
     if (method === 'GET' && url.startsWith('/repos/o/r/tags')) return json(response, 200, options.tags ?? [])
     if (method === 'GET' && url.startsWith('/repos/o/r/compare/')) return json(response, 200, { status: 'ahead', ahead_by: 3 })
+    if (method === 'GET' && url.startsWith('/repos/o/r/releases/tags/')) {
+      return options.existingRelease === undefined
+        ? json(response, 404, { message: 'Not Found' })
+        : json(response, 200, options.existingRelease)
+    }
+    if (options.runs !== undefined && method === 'GET' && url.startsWith('/repos/o/r/actions/runs?')) {
+      return json(response, 200, { total_count: options.runs.length, workflow_runs: options.runs })
+    }
+    if (options.jobs !== undefined && method === 'GET' && /\/repos\/o\/r\/actions\/runs\/\d+\/jobs/.test(url)) {
+      return json(response, 200, { total_count: options.jobs.length, jobs: options.jobs })
+    }
     if (method === 'POST' && url === '/repos/o/r/git/tags') {
       const status = options.tagWriteStatus ?? 201
       return json(response, status, status === 201 ? { sha: ROUTE_TAG_OBJECT } : { message: 'Object does not exist' })
@@ -438,6 +454,33 @@ test('a re-tag updates the recorded row and is confirmed as an existing tag, not
     assert.equal(audits.length, 2, 'the earlier audit row stays and the re-tag adds one')
     assert.ok(audits.some((entry) => entry.detail?.includes(OLD_TARGET)), 'the earlier release.tagged row is kept')
     assert.ok(audits.some((entry) => entry.detail?.includes(ROUTE_TARGET)), 'the new audit row names the new SHA')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a re-tag keeps the pointer when the Release this row prepared is already published', async () => {
+  // Finding 2 of the review, on the re-tag path: the first observation used to
+  // pass a null pointer, so the row recorded its own published Release as
+  // external and dropped the link the page shows.
+  const RELEASE_URL = 'https://github.com/o/r/releases/500'
+  const h = await releaseRouteHarness({
+    existingRelease: { id: 500, tag_name: 'v1.4.0', draft: false, prerelease: false, html_url: RELEASE_URL },
+  })
+  try {
+    const recorded = h.store.recordRelease({ repoId: h.repo.id, userId: h.repo.user_id, version: 'v1.4.0', tagName: 'v1.4.0', targetSha: 'b'.repeat(40), tagObjectSha: 'd'.repeat(40), previousTag: null, actor: 'release-route-user' })
+    assert.ok(recorded)
+    h.store.run('UPDATE repo_releases SET draft_release_id = ?, draft_url = ? WHERE id = ?', '500', RELEASE_URL, recorded.id)
+
+    const posted = await h.post()
+    assert.equal(posted.statusCode, 302)
+    assert.match(decodeURIComponent(String(posted.headers.location)), /retagged=1/)
+
+    const row = h.store.releaseById(recorded.id)
+    assert.equal(row?.status, 'draft_published', 'the re-tag reads its own published Release as its own')
+    assert.equal(row?.draft_release_id, '500', 'the pointer to our own Release survives the re-tag')
+    assert.equal(row?.draft_url, RELEASE_URL)
+    assert.equal(row?.external_release_id, null, 'our own Release is never recorded as someone else’s')
   } finally {
     await h.close()
   }

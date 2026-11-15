@@ -8,7 +8,8 @@ import { Readable } from 'node:stream'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
 import { openStore, type GateSessionRow, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
-import { createAnnotatedTag, releasePreflight } from './releases/release.js'
+import { createAnnotatedTag, parseVersion, releasePreflight } from './releases/release.js'
+import { reconcileRelease, trackingUpdate } from './releases/tracking.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
 import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions, type Viewer } from './auth/session.js'
@@ -63,6 +64,9 @@ import { configureOtel, endSpan, shutdownOtel, startSpan, type SpanHandle } from
 import { configureGithubBudget } from './lib/githubBudget.js'
 import { normalizeReviewInstruction } from './lib/followUpInstruction.js'
 import { parsePreviewQuery, previewSchedule, type PreviewResult } from './schedules/preview.js'
+import { intervalFieldText, scheduleConsole } from './schedules/console.js'
+import { nextTime } from './schedules/next.js'
+import { scheduleFromRow } from './schedules/tick.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -85,6 +89,7 @@ import {
   workspacePage,
   searchPage,
   schedulePage,
+  scheduleConsolePage,
   agentWorkspacePage,
   settingsPage,
   inboxSection,
@@ -99,7 +104,7 @@ import { memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from 
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
 import { THEME_COOKIE, isTheme, resolveTheme, withTheme } from './views/theme.js'
 import { GithubClient, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
-import { GithubApp } from './repos/app.js'
+import { checkWebhookSignature, GithubApp, webhookSecretSlot } from './repos/app.js'
 import { repoGithubToken } from './repos/token.js'
 import { InstanceManager } from './flybot/instances.js'
 import { dshCookie, proxyWorkspaceHttp, proxyWorkspaceUpgrade } from './flybot/workspace.js'
@@ -220,8 +225,20 @@ function queryTextOf(value: unknown): string | undefined {
 function previewQuery(request: FastifyRequest): Record<string, string | undefined> {
   const query = (request.query as Record<string, unknown> | undefined) ?? {}
   return {
+    mode: queryTextOf(query.mode),
     cron: queryTextOf(query.cron),
     every: queryTextOf(query.every),
+    every_amount: queryTextOf(query.every_amount),
+    every_unit: queryTextOf(query.every_unit),
+    // #677: the page posts one clock per panel under `<mode>_time`, so no two
+    // panels can collide in one request; `time` stays for the documented API.
+    time: queryTextOf(query.time),
+    daily_time: queryTextOf(query.daily_time),
+    weekdays_time: queryTextOf(query.weekdays_time),
+    weekly_time: queryTextOf(query.weekly_time),
+    monthly_time: queryTextOf(query.monthly_time),
+    weekday: queryTextOf(query.weekday),
+    month_day: queryTextOf(query.month_day),
     timezone: queryTextOf(query.timezone),
     from: queryTextOf(query.from),
     start_at: queryTextOf(query.start_at),
@@ -816,7 +833,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       time: new Date().toISOString(),
     }
     if (diagnosticsAccess(request) === 'denied') return publicAnswer
-    return { ...publicAnswer, commit: config.build.commit, builtAt: config.build.builtAt }
+    // #466: `current`/`previous`/`none` says which secret slot the verifier is
+    // using, from the same pair the verifier reads, so a half-finished rotation
+    // is visible to the operator. It is never a value and never a fingerprint.
+    return { ...publicAnswer, commit: config.build.commit, builtAt: config.build.builtAt, webhookSecretSlot: webhookSecretSlot(config.githubApp) }
   })
 
   app.get('/readyz', async (_request, reply) => {
@@ -1221,12 +1241,24 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     // #564: open work, an active job and a ready instance decide when a
     // repository runs again, and none of them is on RepoRow.
-    const nextRunFacts = allRepos.map((repo) => ({
-      repoId: repo.id,
-      openWork: store.listOpenWorkItems(repo.id).length > 0,
-      activeJob: store.activeJobForRepo(repo.id) !== undefined,
-      instanceReady: store.getRepoInstance(repo.id)?.status === 'ready',
-    }))
+    // #688: a repository that has saved a schedule row is answered by the planner,
+    // so its answer travels with the facts instead of being re-derived from the
+    // interval rule the card used to apply to every repository.
+    const nextRunFacts = allRepos.map((repo) => {
+      const scheduleRow = store.scheduleForRepo(repo.id)
+      const schedule = scheduleRow === undefined ? null : scheduleFromRow(scheduleRow)
+      return {
+        repoId: repo.id,
+        openWork: store.listOpenWorkItems(repo.id).length > 0,
+        activeJob: store.activeJobForRepo(repo.id) !== undefined,
+        instanceReady: store.getRepoInstance(repo.id)?.status === 'ready',
+        ...(scheduleRow === undefined ? {} : {
+          scheduledNext: schedule === null
+            ? { kind: 'unreadable' as const, at: null }
+            : { kind: schedule.kind, at: nextTime(schedule, Date.now()) },
+        }),
+      }
+    })
     return reply.type('text/html').send(
       dashboardPage({
         config,
@@ -1363,23 +1395,113 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         else error = result.reason
       }
     }
+    const mode = query.mode ?? (query.cron !== undefined ? 'custom' : query.every !== undefined ? 'interval' : 'daily')
     const page = schedulePage({
       config,
       locale: request.locale ?? 'zh',
       viewer: viewOf(viewer),
       form: {
+        mode,
         cron: query.cron ?? '',
-        every: query.every ?? '',
+        everyAmount: query.every_amount ?? (query.every === undefined ? '15' : (query.every.replace(/[^0-9].*$/, '') || '15')),
+        everyUnit: query.every_unit ?? (query.every === undefined ? 'm' : (query.every.slice(-1) || 'm')),
+        // The mode's own field first: the page names each panel's clock after
+        // its mode, and `time` is the API's single name (#677).
+        time: query[`${mode}_time`] ?? query.time ?? '09:00',
+        weekday: query.weekday ?? '1',
+        monthDay: query.month_day ?? '1',
         timezone: query.timezone ?? '',
         startAt: query.start_at ?? '',
         endAt: query.end_at ?? '',
         from: query.from ?? '',
-        count: query.count ?? '',
+        count: query.count ?? '5',
       },
       preview,
       error,
     })
     return htmlPage(reply, error === undefined ? 200 : 400, page)
+  })
+
+  // #544 slice 3A/3B, the console: the page a maintainer reads, and the write
+  // that makes `saveSchedule` reachable in the product at all. Once the row
+  // exists it owns the repository's cadence, so this route is the only door to it.
+  app.get('/repos/:id/schedule', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const locale = request.locale ?? 'zh'
+    const t = translator(locale)
+    const row = store.scheduleForRepo(repo.id)
+    const state = scheduleConsole({
+      repoId: repo.id,
+      row,
+      occurrences: store.listScheduleOccurrences(repo.id, 20),
+      now: Date.now(),
+      jobStatus: (jobId) => store.getJob(jobId)?.status ?? null,
+    })
+    const refused = queryText(request, 'refused')
+    const instant = (value: number | null | undefined): string => (value === null || value === undefined ? '' : new Date(value).toISOString())
+    return reply.type('text/html').send(scheduleConsolePage({
+      config,
+      locale,
+      viewer: viewOf(viewer),
+      repo,
+      state,
+      form: {
+        cron: row?.expression ?? '',
+        every: row?.every_ms === null || row?.every_ms === undefined ? '' : intervalFieldText(row.every_ms),
+        timezone: row?.timezone ?? '',
+        startAt: instant(row?.start_at),
+        endAt: instant(row?.end_at),
+      },
+      ...(queryText(request, 'saved') === undefined ? {} : { notice: t('排期已保存。', 'The schedule is saved.') }),
+      ...(queryText(request, 'removed') === undefined ? {} : { notice: t('排期已删除，仓库回到旧的自动间隔。', 'The schedule was deleted; the repository is back on the legacy interval.') }),
+      ...(refused === undefined ? {} : { error: refused }),
+    }))
+  })
+
+  // The form is the same query shape the preview takes, so the console and the
+  // preview cannot disagree about what a legal schedule is. A refusal comes back
+  // as a reason naming the field, and nothing is written.
+  app.post('/repos/:id/schedule', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const back = `/repos/${repo.id}/schedule`
+    const body = form(request)
+    const parsed = parsePreviewQuery({
+      cron: String(body.cron ?? '').trim(),
+      every: String(body.every ?? '').trim(),
+      timezone: String(body.timezone ?? '').trim(),
+      start_at: String(body.start_at ?? '').trim(),
+      end_at: String(body.end_at ?? '').trim(),
+    }, Date.now(), translator(request.locale ?? 'zh'))
+    if (!parsed.ok) return reply.redirect(`${back}?refused=${encodeURIComponent(parsed.reason)}`)
+    const schedule = parsed.request.schedule
+    const existing = store.scheduleForRepo(repo.id)
+    store.saveSchedule({
+      id: existing?.id ?? randomId('sch'),
+      repoId: repo.id,
+      kind: schedule.kind,
+      expression: schedule.kind === 'cron' ? schedule.expression : null,
+      everyMs: schedule.kind === 'interval' ? schedule.everyMs : null,
+      timezone: schedule.kind === 'cron' ? schedule.timezone : null,
+      startAt: schedule.startAt,
+      endAt: schedule.endAt,
+    })
+    const label = schedule.kind === 'cron'
+      ? `${schedule.expression} ${schedule.timezone}`
+      : `every ${intervalFieldText(schedule.everyMs)}`
+    store.audit(viewer.user.id, 'schedule.saved', `${repo.id}: ${label}`)
+    return reply.redirect(`${back}?saved=1`)
+  })
+
+  // Deleting the row hands the repository back to its legacy interval; it does
+  // not stop the repository, so the audit says which schedule stopped owning it.
+  app.post('/repos/:id/schedule/remove', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const existing = store.scheduleForRepo(repo.id)
+    if (existing !== undefined) {
+      store.deleteSchedule(repo.id)
+      store.audit(viewer.user.id, 'schedule.removed', `${repo.id}: ${existing.kind} ${existing.expression ?? `${String(existing.every_ms)}ms`}`)
+    }
+    return reply.redirect(`/repos/${repo.id}/schedule?removed=1`)
   })
 
   app.get('/repos', async (_request, reply) => {
@@ -1700,6 +1822,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const trendSince = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString()
     const reviewTrend = { week: store.reviewTrend(repo.id, trendSince(7)), month: store.reviewTrend(repo.id, trendSince(30)) }
     const repoModels = store.listRepoModelSelection(repo.id)
+    const scheduleRow = store.scheduleForRepo(repo.id)
+    const schedule = scheduleRow === undefined ? null : scheduleFromRow(scheduleRow)
     let chiefMessages
     if ((viewer.user.role !== 'superadmin' || viewer.preview === true) && instance?.status === 'ready') {
       chiefMessages = await instances.chiefTranscript(repo.id).catch((error) => {
@@ -1758,6 +1882,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         }),
         ...(workState !== undefined && isWorkItemState(workState) ? { workState } : {}),
         reviewTrend,
+        // #544: a repository with a schedule row is answered by the planner, not
+        // by the legacy interval rule the page computed for every repository.
+        ...(scheduleRow === undefined ? {} : {
+          scheduledNext: schedule === null ? { kind: 'unreadable' as const, at: null } : { kind: schedule.kind, at: nextTime(schedule, Date.now()) },
+        }),
         workflowFailures: store.listWorkflowFailuresForRepo(repo.id, 10),
         postmortems: store.listPostmortemsForRepo(repo.id, { openOnly: true }),
         recurrences: store.listPostmortemRecurrences(repo.id),
@@ -1781,6 +1910,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         releaseRefused: queryText(request, 'refused'),
         releaseTagged: queryText(request, 'tagged'),
         releaseRetagged: queryText(request, 'retagged'),
+        releaseChecked: queryText(request, 'checked'),
       }),
     )
   })
@@ -1865,8 +1995,67 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const recorded = store.recordRelease({ repoId: repo.id, userId: viewer.user.id, version: plan.version, tagName: plan.tagName, targetSha: plan.targetSha, tagObjectSha: created.tagObjectSha, previousTag: plan.previousTag, actor: viewer.user.login })
     store.audit(viewer.user.id, 'release.tagged', `${repo.id}: ${plan.tagName}@${plan.targetSha}`)
     if (recorded === undefined) return reply.redirect(`${back}&refused=${encodeURIComponent(`tag ${plan.tagName} was created, but its release record could not be updated; Fledge moved nothing`)}`)
+    // The run may not exist yet; the first observation is still recorded, and
+    // the check route repeats it later. A failed check never turns a created tag
+    // into a refusal. The recorded draft pointer travels into the reconcile: on a
+    // re-tag the row still owns the Release it prepared, and without the pointer
+    // that Release would be misread as someone else's.
+    try {
+      const tracked = await reconcileRelease(client, {
+        owner,
+        name,
+        tagName: plan.tagName,
+        targetSha: plan.targetSha,
+        prerelease: plan.prerelease,
+        draftReleaseId: recorded.draft_release_id === null ? null : Number(recorded.draft_release_id),
+      })
+      store.updateReleaseTracking(recorded.id, trackingUpdate(tracked, {
+        draftReleaseId: recorded.draft_release_id,
+        draftUrl: recorded.draft_url,
+      }))
+    } catch (error) {
+      log.warn('release run check after tag failed', { repo: repo.id, tag: plan.tagName, error: String(error) })
+    }
     if (retagged) return reply.redirect(`${back}&tagged=${encodeURIComponent(plan.tagName)}&retagged=1`)
     return reply.redirect(`${back}&tagged=${encodeURIComponent(plan.tagName)}`)
+  })
+
+  // #546: the read/reconcile surface. It observes the tag's workflow run again
+  // and may prepare a draft Release; it never publishes, reruns, deletes or moves
+  // anything, and the owner's maintainer role is the precondition.
+  app.post('/repos/:id/releases/:releaseId/check', async (request, reply) => {
+    const params = request.params as Record<string, string>
+    const { viewer, repo } = ownedRepo(request, String(params.id), true)
+    const back = `/repos/${repo.id}?release=1`
+    if (repo.repo_role !== 'maintainer') {
+      return reply.redirect(`${back}&error=${encodeURIComponent('只有 maintainer 可以检查发布工作流。')}`)
+    }
+    const release = store.releaseById(String(params.releaseId))
+    if (release === undefined || release.repo_id !== repo.id) throw httpError(404, '发布记录不存在。', 'RELEASE_NOT_FOUND')
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    const token = await repoGithubToken(repo, config, githubApp, store)
+    const client = new GithubClient(token, config.github.apiBase)
+    let result: Awaited<ReturnType<typeof reconcileRelease>>
+    try {
+      result = await reconcileRelease(client, {
+        owner,
+        name,
+        tagName: release.tag_name,
+        targetSha: release.target_sha,
+        prerelease: (parseVersion(release.version)?.prerelease.length ?? 0) > 0,
+        draftReleaseId: release.draft_release_id === null ? null : Number(release.draft_release_id),
+      })
+    } catch (error) {
+      log.warn('release run check failed', { repo: repo.id, tag: release.tag_name, error: String(error) })
+      return reply.redirect(`${back}&error=${encodeURIComponent('the workflow run could not be read from GitHub; no Release was created')}`)
+    }
+    store.updateReleaseTracking(release.id, trackingUpdate(result, {
+      draftReleaseId: release.draft_release_id,
+      draftUrl: release.draft_url,
+    }))
+    store.audit(viewer.user.id, 'release.checked', `${repo.id}: ${release.tag_name} ${result.status}`)
+    return reply.redirect(`${back}&checked=${encodeURIComponent(result.message)}`)
   })
 
   app.post('/repos/:id/memory', async (request, reply) => {
@@ -3011,6 +3200,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!isValidBranchName(targetBranch)) {
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('目标分支格式不正确。')}#repo-settings`)
     }
+    // #524: the same POST writes the pre-merge policy, and the auto-merge gate
+    // above left that half reachable from a stale session. `require_protection`
+    // and `stage_mode` each switch off a check the merge path depends on, the
+    // path lists and the target branch decide what a merge may touch, and
+    // `repo_role` decides who may act. One gate for the set, so a single submit
+    // writes one audit row rather than one per field.
+    const policyNext: Array<[string, string | number | null, string | number]> = [
+      ['require_protection', repo.require_protection, body.requireProtection === '1' ? 1 : 0],
+      ['allow_paths', repo.allow_paths, (body.allowPaths ?? '').trim().slice(0, 2000)],
+      ['deny_paths', repo.deny_paths, (body.denyPaths ?? '').trim().slice(0, 2000)],
+      ['target_branch', repo.target_branch, targetBranch],
+      ['repo_role', currentRole ?? 'none', repoRole],
+      ['stage_mode', repo.stage_mode, parseStageMode(body.stageMode) ?? 'off'],
+    ]
+    const policyChanged = policyNext.filter(([, was, next]) => was !== next).map(([field]) => field)
+    if (policyChanged.length > 0 && requireRecentAuth(request, reply, viewer, 'repo.policy')) return reply
     if (targetBranch !== repo.target_branch) {
       try {
         const token = await repoGithubToken(repo, config, githubApp, store)
@@ -3043,6 +3248,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       reviewer_enabled: canMaintain && repo.can_review === 1 && body.review === '1' ? 1 : 0,
       review_interval_minutes: reviewInterval,
     })
+    if (policyChanged.length > 0) {
+      store.audit(viewer.user.id, 'repo.policy', `${repo.owner}/${repo.name} ${policyChanged.join(',')} by @${viewer.user.login}`)
+    }
     const allowedModels = new Set(store.listUserProviderModels(viewer.user.id).map((model) => model.id))
     const requestedModels = [...new Set(formList(request, 'modelIds').filter((id) => allowedModels.has(id)))]
     const requestedDefault = (body.defaultModelId ?? '').trim()
@@ -3262,6 +3470,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const id = String((request.params as Record<string, string>).id)
     const provider = store.modelProviderById(id, viewer.user.id)
     if (provider === undefined) return reply.code(404).send({ error: '模型提供方不存在。' })
+    // #525: the delete removes configuration the owner may not have recorded,
+    // and the lookup above only proves the provider is theirs - a stolen cookie
+    // is still theirs. The actor's own scope keeps a refusal local to the owner.
+    if (requireRecentAuth(request, reply, viewer, 'model.provider.remove')) return reply
     store.deleteModelProvider(id, viewer.user.id)
     store.audit(viewer.user.id, 'model.provider.removed', `${id} ${provider.label}`)
     return reply.redirect(`/settings?notice=${encodeURIComponent('模型提供方已删除。')}#model-providers`)
@@ -3454,6 +3666,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       daily: store.dailyMetrics(since),
       repoCosts: store.repoCostMetrics(since),
       modelCosts: store.modelCostMetrics(since),
+      currency: store.costByCurrency(since),
       alerts: store.alerts({ usdCny: config.quota.usdCny }),
       windowDays,
       failures: failureBreakdown(store.failedJobsSince(since)),
@@ -3935,9 +4148,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // #283: the platform emergency stop. `isAdminRole` on purpose, not
   // `requireAdmin`, and no `preview` rejection: the preview cookie is how the
   // admin panel degrades to read-only, and the one action that must still work in
-  // that state is stopping everything. The stop is a persisted `settings` row, so
-  // it survives a restart, and this route reports what the drain did rather than
-  // a bare "stopped".
+  // that state is stopping everything. The recency gate still applies in preview,
+  // because a read-only panel is exactly where a stale cookie must not act. The
+  // stop is a persisted `settings` row, so it survives a restart, and this route
+  // reports what the drain did rather than a bare "stopped".
   app.post('/admin/platform/stop', async (request, reply) => {
     // Same limiter and window as the other mutating form (`/approve/:token`), and
     // an HTML page rather than the JSON 429 the API routes send: this is a form
@@ -3945,6 +4159,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!loginLimiter.take(`platform-stop:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以停止平台。', 'ADMIN_ONLY')
+    // #525: a stop drains the fleet and cancels work that a resume cannot bring
+    // back, so the admin session alone is not enough evidence of the person.
+    if (requireRecentAuth(request, reply, viewer, 'flybot.platform.stop')) return reply
     const t = translator(request.locale ?? 'zh')
     const reason = (form(request).reason ?? '').trim().slice(0, 200)
     const result = await jobs.stopPlatform({ id: viewer.user.id, login: viewer.user.login }, reason)
@@ -4070,8 +4287,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (user === undefined || user.id === viewer.user.id || user.role === 'superadmin') throw httpError(403, '不能修改这个账号。', 'ROLE_PROTECTED')
     const role = form(request).role
     if (role !== 'admin' && role !== 'user') throw httpError(400, '角色无效。', 'BAD_ROLE')
+    // #525: a promotion is privilege escalation, so a superadmin cookie on its
+    // own must not be enough. The 403 and 400 above still answer first.
+    if (requireRecentAuth(request, reply, viewer, 'admin.user.role')) return reply
     store.setUserRole(id, role)
-    store.audit(id, 'admin.role', `role=${role} by @${viewer.user.login}`)
+    store.audit(id, 'admin.role', `role=${user.role}->${role} by @${viewer.user.login}`)
     return reply.redirect(`/admin?notice=${encodeURIComponent(role === 'admin' ? '已设为管理员。' : '已设为用户。')}`)
   })
 
@@ -4534,7 +4754,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!githubApp.configured || config.githubApp.webhookSecret === '') return reply.code(503).send({ error: 'GitHub App webhook is not configured' })
     const signature = String(request.headers['x-hub-signature-256'] ?? '')
     const raw = (request as FastifyRequest & { rawBody?: Buffer }).rawBody
-    if (raw === undefined || !githubApp.verifyWebhook(raw, signature)) return reply.code(401).send({ error: 'bad webhook signature' })
+    const verdict = raw === undefined ? { ok: false, slot: null, superseded: false } : checkWebhookSignature(config.githubApp, raw, signature)
+    if (!verdict.ok) {
+      // #466: a signature that matches the value this instance retired is not
+      // noise, it means a delivery is still being signed with the old secret.
+      // One row per refusal, and the detail names only the closed window.
+      if (verdict.superseded) store.audit(null, 'app.webhook_secret_superseded', `signed with GITHUB_APP_WEBHOOK_SECRET_PREVIOUS after its window closed at ${config.githubApp.webhookSecretPreviousUntil ?? ''}`)
+      return reply.code(401).send({ error: 'bad webhook signature' })
+    }
     const event = String(request.headers['x-github-event'] ?? '')
     const delivery = String(request.headers['x-github-delivery'] ?? '')
     const body = (request.body ?? {}) as Record<string, unknown>

@@ -7,9 +7,11 @@
 // Reads the chain back from the API — plan, release branch, pull request,
 // annotated tag, image digest, SBOM, provenance attestation, GitHub Release and
 // the running `/healthz` — and exits non-zero when any link is missing or
-// disagrees. It writes nothing: no deploy, no tag, no merge, no comment. The
-// token is read from the environment and used only as a request header; it never
-// appears in an argument or in the output.
+// disagrees. `--local-image-digest` adds the one link the API cannot answer: the
+// image this host is about to run, read locally by the operator (#462). It
+// writes nothing: no deploy, no tag, no merge, no comment. The token is read
+// from the environment and used only as a request header; it never appears in an
+// argument or in the output.
 //
 // Exit codes: 0 the chain is complete, 1 a link is missing or disagrees,
 // 2 the command could not read its input (never a green verdict).
@@ -96,7 +98,7 @@ function planFromPull(pull) {
   return { version: String(pull?.__version ?? ''), mainSha: match[1] ?? '', plannedAt: String(pull?.created_at ?? '') }
 }
 
-async function collect({ version, repo, token, baseUrl, packageVersion, fetchImpl, metricsToken = '' }) {
+async function collect({ version, repo, token, baseUrl, packageVersion, fetchImpl, metricsToken = '', localImageDigest = '' }) {
   const api = apiClient(repo, token, fetchImpl)
   const owner = String(repo).split('/')[0] ?? ''
   const branchName = `release/v${version}`
@@ -191,6 +193,7 @@ async function collect({ version, repo, token, baseUrl, packageVersion, fetchImp
     attestation: chain.attestation,
     release,
     healthz,
+    localImageDigest,
   }
 }
 
@@ -211,7 +214,7 @@ function repoFromEnvironment() {
 
 async function main() {
   if (has('--help')) {
-    console.log('node scripts/verify-release.mjs --version X.Y.Z [--base-url URL] [--fixtures FILE] [--deployment FILE] [--write FILE] [--json]')
+    console.log('node scripts/verify-release.mjs --version X.Y.Z [--base-url URL] [--fixtures FILE] [--deployment FILE] [--local-image-digest sha256:…] [--write FILE] [--json]')
     return 0
   }
   const fixtures = argument('--fixtures')
@@ -219,10 +222,23 @@ async function main() {
   const baseUrl = argument('--base-url').replace(/\/$/, '')
   const deploymentPath = argument('--deployment')
   const write = argument('--write')
+  const localDigest = argument('--local-image-digest')
+  // A present-but-empty value is not "nothing to compare": the documented
+  // recording command substitutes the output of `docker image inspect`, which is
+  // empty when the image carries no RepoDigests or the inspect fails. Passing
+  // that through as `skipped` would write a green record whose one new link was
+  // never made, so it is a usage error like any other unreadable input.
+  if (localDigest === '' && has('--local-image-digest')) {
+    throw new UsageError('--local-image-digest needs a sha256:… digest; an empty value cannot be recorded')
+  }
   const json = has('--json')
   const packagePath = argument('--package')
 
   const local = readPackageVersion(packagePath === '' ? new URL('../package.json', import.meta.url) : packagePath)
+  // A named `--package` is the tree that will actually run, so an unreadable one
+  // is exit 2 rather than a skipped link: the start hook must not pass a host it
+  // could not read.
+  if (packagePath !== '' && local.version === '') throw new UsageError(local.reason || `${packagePath} has no readable version`)
   const version = wanted === '' ? local.version : wanted
   if (!VERSION.test(version)) {
     throw new UsageError(wanted === '' ? `no --version and ${local.reason || 'no readable package.json'}` : `"${wanted}" is not an X.Y.Z version`)
@@ -233,13 +249,33 @@ async function main() {
     const file = readJsonFile(fixtures)
     if (!file.ok) throw new UsageError(file.reason)
     const payload = file.value ?? {}
-    input = { ...payload, version, packageVersion: String(payload.packageVersion ?? local.version), baseUrl: baseUrl === '' ? String(payload.baseUrl ?? '') : baseUrl }
+    // A recorded chain carries the digest the release step compared; the flag
+    // overrides it, so a replay can still be asked about another image. The same
+    // holds for the tree: `--package` names the one that will run, so it beats
+    // the version the record was written with — that is how the start hook
+    // notices an upgrade the release step never recorded.
+    input = {
+      ...payload,
+      version,
+      packageVersion: packagePath === '' ? String(payload.packageVersion ?? local.version) : local.version,
+      baseUrl: baseUrl === '' ? String(payload.baseUrl ?? '') : baseUrl,
+      localImageDigest: localDigest === '' ? String(payload.localImageDigest ?? '') : localDigest,
+    }
   } else {
     const repo = argument('--repo') || repoFromEnvironment()
     const token = String(process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? '')
     if (repo === '') throw new UsageError('no repository: set GITHUB_REPOSITORY or pass --repo owner/name')
     if (token === '') throw new UsageError('no token: set GITHUB_TOKEN or pass --fixtures to replay a recorded chain')
-    input = await collect({ version, repo, token, baseUrl, packageVersion: local.version, fetchImpl: fetch, metricsToken: String(process.env.METRICS_TOKEN ?? '') })
+    input = await collect({
+      version,
+      repo,
+      token,
+      baseUrl,
+      packageVersion: local.version,
+      fetchImpl: fetch,
+      metricsToken: String(process.env.METRICS_TOKEN ?? ''),
+      localImageDigest: localDigest,
+    })
   }
 
   let status = evaluateReleaseStatus(input)
@@ -267,7 +303,11 @@ async function main() {
   else console.log(printStatus(status))
   if (write !== '') {
     try {
-      writeFileSync(write, `${JSON.stringify(status, null, 2)}\n`)
+      // The file is both the snapshot the console renders and the record the
+      // start hook replays (#462). Writing the verdict alone would make the
+      // replay prove nothing, so the chain it was judged from is written beside
+      // it; `--fixtures` reads the same fields back.
+      writeFileSync(write, `${JSON.stringify({ ...input, ...status }, null, 2)}\n`)
     } catch (error) {
       throw new UsageError(`cannot write ${write}: ${error instanceof Error ? error.message : String(error)}`)
     }

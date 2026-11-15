@@ -184,6 +184,7 @@ const MESSAGES: Record<string, string> = {
   '只有 maintainer 可以合并 PR。': 'Only a maintainer can merge a pull request.',
   '只有 maintainer 可以执行计划。': 'Only a maintainer can execute a plan.',
   '只有 maintainer 可以执行这个操作。': 'Only a maintainer can do this.',
+  '只有 maintainer 可以检查发布工作流。': 'Only a maintainer can check the release workflow.',
   '只有 maintainer 可以批准计划。': 'Only a maintainer can approve a plan.',
   '只有 maintainer 可以批量合并 PR。': 'Only a maintainer can merge pull requests in bulk.',
   '只有 maintainer 可以拒绝计划。': 'Only a maintainer can reject a plan.',

@@ -46,6 +46,26 @@ function writeCopy(dir: string, stamp: string, content: string, manifest: Manife
   writeFileSync(`${path}.json`, `${JSON.stringify(record, null, 2)}\n`)
 }
 
+// `scripts/backup.mjs` writes this name once a backup key is configured, and the
+// manifest beside it describes the ciphertext: its size and sha256 are the ones
+// the card has to compare, exactly as for a plaintext copy.
+function writeEncryptedCopy(dir: string, stamp: string, content: string): string {
+  const name = `fledge-${stamp}.db.enc`
+  const path = join(dir, name)
+  writeFileSync(path, content)
+  const record = {
+    copy: name,
+    createdAt: isoFromStamp(stamp),
+    size: Buffer.byteLength(content),
+    sha256: digest(content),
+    schemaVersion: 3,
+    tables: { jobs: 1 },
+    encryption: { format: 'fledge-backup', version: 1, kdf: 'raw', keyId: 'k_test', keyVersion: 1 },
+  }
+  writeFileSync(`${path}.json`, `${JSON.stringify(record, null, 2)}\n`)
+  return name
+}
+
 function makeBackupDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'fledge-admin-backup-'))
   // The newest copy is in step with its manifest.
@@ -336,5 +356,52 @@ test('BACKUP_DIR and BACKUP_EXPECTED_HOURS resolve where the writer resolves the
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
+  }
+})
+
+test('an encrypted copy is the newest copy, so /admin does not deny the backup it just made', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-admin-backup-enc-'))
+  try {
+    const name = writeEncryptedCopy(dir, '2026-11-09T02-00-00-000Z', 'encrypted backup bytes\n')
+    const status = readBackupStatus({ dir, now: NOW })
+    assert.equal(status.present, true)
+    assert.equal(status.copies.length, 1)
+    assert.equal(status.newest?.name, name)
+    assert.equal(status.newest?.ageHours, 34)
+    // The manifest hashes the file on disk, which for an encrypted copy is the
+    // ciphertext: reading the newest copy still compares the bytes it recorded.
+    assert.equal(status.newest?.manifest, 'matches')
+    assert.equal(status.stale, true)
+
+    for (const locale of ['en', 'zh'] as const) {
+      const html = card(renderAdmin(locale, status))
+      assert.doesNotMatch(html, locale === 'en' ? /No backup copy recorded yet/ : /还没有记录备份副本/)
+      // The hint to write a copy is only for a directory that has none; an
+      // encrypted copy is a copy.
+      assert.doesNotMatch(html, locale === 'en' ? /the next copy appears here/ : /下一份副本会出现在这里/)
+      assert.match(html, /fledge-2026-11-09T02-00-00-000Z\.db\.enc/)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a stale plaintext copy does not hide the newer encrypted copy beside it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-admin-backup-mixed-'))
+  try {
+    writeCopy(dir, '2026-11-08T02-00-00-000Z', 'plaintext backup bytes\n', {})
+    const encrypted = writeEncryptedCopy(dir, '2026-11-09T02-00-00-000Z', 'encrypted backup bytes\n')
+    const status = readBackupStatus({ dir, now: NOW })
+    assert.equal(status.copies.length, 2)
+    assert.equal(status.newest?.name, encrypted)
+    // The plaintext copy stays listed, but its name ending in `.db` no longer
+    // makes it the newest one.
+    assert.ok(status.copies.some((copy) => copy.name === 'fledge-2026-11-08T02-00-00-000Z.db'))
+    assert.equal(status.newest?.manifest, 'matches')
+    const en = card(renderAdmin('en', status))
+    assert.match(en, /2 copies/)
+    assert.doesNotMatch(en, /No backup copy recorded yet/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })
