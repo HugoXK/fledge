@@ -290,6 +290,17 @@ execute `test/*.test.ts` and a second Node 22 leg bought no second signal. The
 matrix job keeps its name and `ci-ok` still requires both jobs; a failing test
 fails both remaining runs.
 
+`restore-drill` reuses the build artifact instead of installing and building a
+second time (#643). Reuse is bound to provenance, not to an artifact name: the
+`build` job writes `dist/build-manifest.json` naming `$GITHUB_SHA` and the sha256
+of every file it emitted, and the drill runs `node scripts/dist-manifest.mjs
+verify --dir dist --commit "$GITHUB_SHA"` before it does anything. A stale,
+partial, edited or foreign artifact fails there instead of standing in for the
+commit under test; a missing artifact fails at the download step, and there is no
+fallback rebuild, because that fallback is exactly what would hide a broken
+`build` job. The drill loads only `dist/` and the checked-out `scripts/`, so it
+needs no `npm ci`.
+
 The classifier is an allowlist. An unknown path, an unreadable diff or an empty
 path list runs every gate. A push, schedule or manual run sets every flag true,
 so `main` is still verified in full. `ci-ok` accepts a skipped conditional job
