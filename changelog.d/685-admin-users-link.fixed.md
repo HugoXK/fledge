@@ -1,0 +1,1 @@
+The admin console's empty-state "View users" action now opens the Users section on `/admin` instead of `/admin/users`, which had no page and returned a generic 404. `/admin/users` now redirects admin visitors to `/admin#users`; the read-only support view at `/admin/users/:id` is unchanged.

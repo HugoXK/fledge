@@ -545,7 +545,9 @@ Release and Backups. The release facts and the release chain share one `Release`
 section, and the section nav is a sticky underline tab row rather than a wall of
 pill links. An empty release chain says it is expected and keeps the operator
 command under a disclosure with a `<DATA_DIR>` placeholder, never the real host
-path.
+path. The page owns the Users section at `/admin#users`; `/admin/users` is an
+admin-only redirect to that section for older links and bookmarks, while
+`/admin/users/:id` remains the read-only support view.
 
 ### Team console and live events
 
