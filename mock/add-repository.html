@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN" data-locale="zh" data-density="comfortable" data-theme="system">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#f4f6f9" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#07090d" media="(prefers-color-scheme: dark)" />
+  <title>GitHub App 接入 · Fledge</title>
+  <link rel="stylesheet" href="assets/app.css?v=cc2f0835c794" />
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="top">
+    <div class="top-inner">
+      <a class="brand" href="index.html" aria-label="Fledge"><span class="mark">F</span><span>Fledge<small>羽巢</small></span></a>
+      <button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="main-nav">菜单</button>
+      <nav class="nav" id="main-nav" aria-label="主导航">
+        <a href="console.html">工作区</a>
+        <a class="on" href="dashboard.html" aria-current="true">仓库</a>
+        <a href="schedule-preview.html">排期</a>
+        <a href="settings.html">设置</a>
+        
+      </nav>
+      <div class="spacer"></div>
+      <details class="theme-menu">
+    <summary aria-label="主题" title="主题">
+      <span class="theme-glyph theme-glyph-system" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="2"/><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor"/></svg></span>
+      <span class="theme-glyph theme-glyph-light" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>
+      <span class="theme-glyph theme-glyph-dark" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><path d="M20 15.2A8.4 8.4 0 0 1 8.8 4a8.4 8.4 0 1 0 11.2 11.2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></span>
+    </summary>
+    <div class="theme-options">
+      <a href="#" data-theme-btn="system" aria-current="true"><span class="theme-option-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="2"/><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor"/></svg></span><span>跟随系统</span></a>
+      <a href="#" data-theme-btn="light" aria-current="false"><span class="theme-option-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span><span>浅色</span></a>
+      <a href="#" data-theme-btn="dark" aria-current="false"><span class="theme-option-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><path d="M20 15.2A8.4 8.4 0 0 1 8.8 4a8.4 8.4 0 1 0 11.2 11.2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></span><span>深色</span></a>
+    </div>
+  </details>
+      <div class="lang" role="group" aria-label="Language"><a href="#" data-lang-btn="zh" aria-current="true">中</a><a href="#" data-lang-btn="en">EN</a></div>
+      <div class="account">
+        <span class="account-avatar" aria-hidden="true">H</span>
+        <span class="account-name">@HugoXK</span>
+        <span class="pill" title="平台额度">¥50.00</span>
+        <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="link account-exit" type="submit">退出</button></form>
+      </div>
+    </div>
+  </header>
+  <main class="wrap" id="main">
+<div class="banner" data-mock-snapshot>静态快照 · 由 <code>npm run mock:snapshot</code> 从真实视图生成；表单和链接不会提交。Static snapshot generated from the real views; forms and links are inert.</div>
+    
+    
+    <section class="card">
+    <div class="row between">
+      <div>
+        <div class="eyebrow">GITHUB APP</div>
+        <h1>通过 GitHub App 接入</h1>
+        <p class="muted">安装 App、选择仓库后，Fledge 使用短时 installation token，不需要你创建 PAT。</p>
+      </div>
+      <a class="btn btn-ghost" href="dashboard.html">返回工作区</a>
+    </div>
+  </section>
+  <section class="card">
+    <h2>已安装</h2>
+    <p class="muted">还没有安装 GitHub App。安装并选择仓库后，可以直接在这里接入。</p>
+    <p><a class="btn" href="https://github.com/apps/fledge-mock/installations/new" target="_blank" rel="noreferrer">安装 / 调整 GitHub App</a></p>
+  </section>
+  
+  </main>
+  <footer class="foot">
+    <div>Fledge · 让托管的仓库自己长大 · 由 FlyBot 驱动 · <span class="foot-release">v0.0.0-mock</span></div>
+    <nav class="foot-links" aria-label="页脚导航">
+      <a href="https://fledge-docs.hugoxk.online/docs/" target="_blank" rel="noreferrer">文档</a>
+      <a href="https://portal.hugoxk.online" target="_blank" rel="noreferrer">Portal</a>
+      <a href="https://hugoxk.online/status/" target="_blank" rel="noreferrer">平台状态</a>
+      <a href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">GitHub</a>
+    </nav>
+  </footer>
+  <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title">
+    <form method="dialog" data-mock-inert onsubmit="return false;">
+      <h2 id="confirm-dialog-title">请确认</h2>
+      <p data-confirm-message></p>
+      <div class="row">
+        <button class="btn btn-ghost" value="cancel">取消</button>
+        <button class="btn btn-danger" value="confirm">确认</button>
+      </div>
+    </form>
+  </dialog>
+  </body>
+</html>

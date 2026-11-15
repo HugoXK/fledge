@@ -95,6 +95,20 @@ your own test key; never against a real user's quota.
 - User-facing strings are Chinese; keep `README.md` and `README.zh.md` in step.
 - Commit messages: English, imperative subject, reason in the body.
 
+### UI snapshot
+
+`mock/` is generated from the real views, not hand-written. The release routine
+refreshes it once per release:
+
+```sh
+npm run mock:snapshot
+npm run mock:check
+```
+
+Commit the regenerated `mock/` with the release work. Do not edit `mock/` by
+hand and do not add a per-PR drift gate: it is a static design-review artifact,
+not a second application, and the release is the sync point.
+
 ### Changelog
 
 For a change users can see, add one file

@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="zh-CN" data-locale="zh" data-density="comfortable" data-theme="system">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#f4f6f9" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#07090d" media="(prefers-color-scheme: dark)" />
+  <title>HugoXK/demo-app · Fledge</title>
+  <link rel="stylesheet" href="assets/app.css?v=cc2f0835c794" />
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="top">
+    <div class="top-inner">
+      <a class="brand" href="index.html" aria-label="Fledge"><span class="mark">F</span><span>Fledge<small>羽巢</small></span></a>
+      <button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="main-nav">菜单</button>
+      <nav class="nav" id="main-nav" aria-label="主导航">
+        <a href="console.html">工作区</a>
+        <a class="on" href="dashboard.html" aria-current="true">仓库</a>
+        <a href="schedule-preview.html">排期</a>
+        <a href="settings.html">设置</a>
+        
+      </nav>
+      <div class="spacer"></div>
+      <details class="theme-menu">
+    <summary aria-label="主题" title="主题">
+      <span class="theme-glyph theme-glyph-system" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="2"/><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor"/></svg></span>
+      <span class="theme-glyph theme-glyph-light" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>
+      <span class="theme-glyph theme-glyph-dark" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><path d="M20 15.2A8.4 8.4 0 0 1 8.8 4a8.4 8.4 0 1 0 11.2 11.2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></span>
+    </summary>
+    <div class="theme-options">
+      <a href="#" data-theme-btn="system" aria-current="true"><span class="theme-option-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="2"/><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor"/></svg></span><span>跟随系统</span></a>
+      <a href="#" data-theme-btn="light" aria-current="false"><span class="theme-option-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span><span>浅色</span></a>
+      <a href="#" data-theme-btn="dark" aria-current="false"><span class="theme-option-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><path d="M20 15.2A8.4 8.4 0 0 1 8.8 4a8.4 8.4 0 1 0 11.2 11.2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></span><span>深色</span></a>
+    </div>
+  </details>
+      <div class="lang" role="group" aria-label="Language"><a href="#" data-lang-btn="zh" aria-current="true">中</a><a href="#" data-lang-btn="en">EN</a></div>
+      <div class="account">
+        <span class="account-avatar" aria-hidden="true">H</span>
+        <span class="account-name">@HugoXK</span>
+        <span class="pill" title="平台额度">¥50.00</span>
+        <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="link account-exit" type="submit">退出</button></form>
+      </div>
+    </div>
+  </header>
+  <main class="wrap" id="main">
+<div class="banner" data-mock-snapshot>静态快照 · 由 <code>npm run mock:snapshot</code> 从真实视图生成；表单和链接不会提交。Static snapshot generated from the real views; forms and links are inert.</div>
+    
+    
+    <div class="repo-page"><section class="card">
+    <div class="row between">
+      <div>
+        <div class="eyebrow">仓库</div>
+        <h1>HugoXK/demo-app</h1>
+        <p class="muted">目标分支 <code>main</code> · 仅手动运行 · 自动间隔 <b>每小时</b> · 下次约 <span data-next-run data-next-source="interval">自动工作已关闭</span> · <a href="#">排期控制台</a> · <span class="badge">空闲</span></p>
+        <p class="fine">上游 <a href="https://github.com/HugoXK/demo-app" target="_blank" rel="noreferrer">HugoXK/demo-app</a> · 自有仓库，无需 fork · GitHub 权限 <code>写入</code> · 你的角色 <code>开发者</code> · 审核需要 maintainer 角色</p>
+      </div>
+      <div class="row">
+        <a class="btn btn-ghost" href="#">工作区</a>
+        <a class="btn btn-ghost" href="#">CI 门禁</a>
+        
+        <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="expected_revision" value="1" /><input type="hidden" name="idempotency_key" value="cmd_mock" /><button class="btn" type="submit">立即运行</button></form>
+        <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="expected_revision" value="1" /><input type="hidden" name="idempotency_key" value="cmd_mock" /><button class="btn btn-ghost" type="submit">只出计划</button></form>
+        
+      </div>
+    </div>
+  </section><nav class="repo-subnav" id="repo-tabs" aria-label="仓库分区"><a class="repo-tab" id="repo-tab-overview" href="#overview" aria-current="page">概览</a><a class="repo-tab" id="repo-tab-delivery" href="#delivery">交付</a><a class="repo-tab" id="repo-tab-work" href="#work">工作</a><a class="repo-tab" id="repo-tab-team" href="#team">团队</a><a class="repo-tab" id="repo-tab-settings" href="#settings">设置</a><a class="repo-tab" id="repo-tab-danger" href="#danger">危险操作</a></nav><section class="repo-section" id="overview" data-repo-section="overview" aria-labelledby="repo-tab-overview"><section class="card" id="triage">
+    <div class="eyebrow">分诊</div>
+    <h2>分诊这个仓库</h2>
+    <p class="muted">读出开着的 issue 和 PR，按优先级排序、标出重复项，并点名下一项。只读：不开分支，也不开 PR。</p>
+    <form method="post" action="#" class="form" data-mock-inert onsubmit="return false;">
+      <input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="expected_revision" value="1" /><input type="hidden" name="idempotency_key" value="cmd_mock" />
+      <label for="triage-issue-repo_demo">Issue URL（可选）
+        <input id="triage-issue-repo_demo" name="issueUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://github.com/HugoXK/demo-app/issues/1" aria-describedby="triage-issue-repo_demo-hint" />
+      </label>
+      <p class="fine" id="triage-issue-repo_demo-hint">填一个这个仓库的 issue，看板就从它开始；留空则通读全部开着的 issue 和 PR。别的仓库或别的站点的链接会被拒绝，任务不会开始。</p>
+      <div class="row">
+        <button class="btn" type="submit">开始分诊</button>
+        
+      </div>
+    </form>
+  </section><section class="card inbox" id="inbox" aria-live="polite" hidden>
+    <div class="row between">
+      <div>
+        <div class="eyebrow">需要你处理</div>
+        <h2>FlyBot 在等你回答 <span class="count" data-inbox-count>0</span></h2>
+        <p class="muted">回答会直接发送给正在运行的团队，不需要进入仓库工作台。</p>
+      </div>
+      <a class="link" href="dashboard.html">查看仓库</a>
+    </div>
+    <div class="inbox-list"><p class="muted">没有待回答的问题。</p></div>
+    <p class="fine" data-inbox-status role="status" aria-live="polite"></p>
+  </section><section class="card chief-card" id="chief" data-chief-api="" data-chief-events="" data-chief-message="" data-chief-csrf="mock-csrf">
+    <div class="row between">
+      <div>
+        <h2>和 Chief 沟通</h2>
+        <p class="muted">你只需要和 Chief 沟通；团队内部由 Chief 分派。对话会写入审计。</p>
+      </div>
+      <div class="row"><a class="link" href="#inbox">待回答的问题</a><a class="link" href="repository-demo.html#chief">刷新回复</a></div>
+    </div>
+    <div class="chief-thread" id="chief-thread"><p class="muted">还没有对话。给 Chief 发第一句。</p></div>
+    <p class="muted">FlyBot 实例就绪后可以和 Chief 沟通。</p>
+  </section><section class="card" id="repo-memory">
+    <h2>项目记忆</h2>
+    <p class="muted">这个仓库的版本化记忆：决策、约定和踩过的坑，按角色可见，每次读到的是确定的版本而不是摘要。</p>
+    <p><a class="link" href="#">打开项目记忆</a></p>
+  </section><section class="card" id="repo-gate">
+    <h2>仓库门禁</h2>
+    <p class="muted">查看已提出的门禁计划和确认状态。确认只记录决定，不会写入仓库。</p>
+    <p><a class="link" href="#">打开仓库门禁</a></p>
+  </section></section><section class="repo-section" id="delivery" data-repo-section="delivery" aria-labelledby="repo-tab-delivery"><section class="card" id="release">
+    <div class="eyebrow">发布</div>
+    <h2>给这个仓库打版本标签</h2>
+    <p class="muted">版本由你输入，Fledge 只做校验：没有新提交、版本不高于上一个标签、标签已存在、缺门禁或不是标签触发的 release.yml，都会拒绝。标签只会新建，永不移动或删除。</p>
+    <p class="muted"><a class="link" href="#">先看发布就绪状态（只读）</a> · 上一个标签、自那以来的提交与合并 PR、待发布片段，以及不能发布的原因。</p>
+    
+    
+    
+    <form method="post" action="#" class="form" data-mock-inert onsubmit="return false;">
+      <input type="hidden" name="csrf" value="mock-csrf" />
+      <label for="release-version-repo_demo">版本（SemVer）
+        <input id="release-version-repo_demo" name="version" type="text" autocomplete="off" placeholder="v1.2.3" required />
+      </label>
+      <label for="release-sha-repo_demo">确认完整提交 SHA
+        <input id="release-sha-repo_demo" name="sha" type="text" autocomplete="off" spellcheck="false" pattern="[0-9a-fA-F]{40}" placeholder="40-character SHA" required />
+      </label>
+      <label class="row"><input type="checkbox" name="confirm" value="1" required /> 我确认版本和提交，标签创建后不会移动</label>
+      <div class="row"><button class="btn" type="submit">校验并打标签</button></div>
+    </form>
+    <p class="fine">还没有由 Fledge 创建的版本标签。</p>
+  </section><section class="card" id="workflow-failures">
+    <div class="row between"><div><div class="eyebrow">默认分支失败</div><h2>失败的运行</h2><p class="muted">默认分支上失败的运行记录在这里；PR 运行仍由 PR 跟进处理。本版会读取失败 job 的日志，先脱敏再保存一个有长度上限的摘录；不重跑、不建 issue，日志读失败也会保留记录并写明原因。</p></div><span class="fine">0 条记录</span></div>
+    <p class="muted">还没有记录到默认分支失败。</p>
+  </section><section class="card" id="postmortems">
+    <div class="row between"><div><div class="eyebrow">故障复盘</div><h2>未关闭的复盘</h2><p class="muted">每个失败、停滞或取消的任务有一条复盘；同一复发键只保留一个计数，并在第二次出现时升级一次。缺少证据时标记为未核实，不猜原因。</p></div><span class="fine">0 个未关闭</span></div>
+    <p class="muted">没有未关闭的复盘。</p>
+  </section><section class="card" id="review-trend">
+    <div class="row between"><div><div class="eyebrow">审核质量</div><h2>审核趋势</h2><p class="muted">只统计这个仓库已完成的审核。空窗口显示 —；少于 5 个审核标注为小样本；要求修改率的分母是记录了结果的审核，不是全部审核。</p></div></div>
+    <div class="table-scroll"><table><thead><tr><th>窗口</th><th>审核数</th><th>平均分</th><th>要求修改率</th><th>PR→审核</th><th>PR→合并</th><th>模型</th></tr></thead><tbody><tr data-trend-window="week"><th scope="row">7 天</th><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr data-trend-window="month"><th scope="row">30 天</th><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table></div>
+    <p class="fine"><small class="muted" data-trend-empty="week">最近 7 天没有审核，所以显示 —，不是 0。</small> <small class="muted" data-trend-empty="month">最近 30 天没有审核，所以显示 —，不是 0。</small></p>
+  </section><section class="card"><h2>待处理 PR</h2>
+    
+    <p class="muted">合并前会重新检查 PR 状态、checks、commit status、reviews 和 branch protection。</p>
+    
+    <div class="table-scroll"><table class="table-cards"><thead><tr><th>PR</th><th>状态</th><th>核实</th><th>审核分</th><th>成本</th><th>创建</th><th></th></tr></thead><tbody><tr data-state="empty"><td colspan="7"><div class="state state-empty" data-state="empty" role="status">
+  <span class="state-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 13V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v6" /><path d="M4 13h4l1.6 2.5h4.8L16 13h4" /><path d="M4 13v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" /></svg></span>
+  <div class="state-body">
+    <strong>没有待处理的 PR。</strong>
+    <p>任务产出 PR 后会出现在这里；没有就是真的没有在等。</p>
+    
+    <div class="actions"><a class="btn btn-small" href="repository-demo.html">回到仓库</a></div>
+  </div>
+</div></td></tr></tbody></table></div></section>  <section class="card" id="jobs">
+    <h2>任务</h2>
+    <div class="table-scroll"><table class="job-table table-priority" id="repo-jobs-table" aria-label="任务"><thead><tr><th>任务</th><th>状态</th><th>PR / Issue</th><th data-priority="low">摘要</th></tr></thead><tbody><tr data-state="empty"><td colspan="4"><div class="state state-empty" data-state="empty" role="status">
+  <span class="state-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 13V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v6" /><path d="M4 13h4l1.6 2.5h4.8L16 13h4" /><path d="M4 13v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" /></svg></span>
+  <div class="state-body">
+    <strong>还没有任务。</strong>
+    <p>立即运行会创建这个仓库的第一个任务；每次运行只开一个 PR。</p>
+    
+    <form method="post" action="#" class="actions" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="&lt;input type=&quot;hidden&quot; name=&quot;csrf&quot; value=&quot;mock-csrf&quot; /&gt;" /><button class="btn btn-small" type="submit">立即运行</button></form>
+  </div>
+</div></td></tr></tbody></table></div>
+    
+  </section></section><section class="repo-section" id="work" data-repo-section="work" aria-labelledby="repo-tab-work"><section class="card" id="board">
+    <div class="row between"><h2>交付看板</h2><span class="fine">按工作项状态汇总；点击状态可筛选下面的列表。</span></div>
+    <div class="table-scroll"><table class="table-cards table-cards-head"><thead><tr><th><a class="link" href="repository-demo.html#work">待分诊</a></th><th><a class="link" href="repository-demo.html#work">已分诊</a></th><th><a class="link" href="repository-demo.html#work">已分配</a></th><th><a class="link" href="repository-demo.html#work">进行中</a></th><th><a class="link" href="repository-demo.html#work">PR 已就绪</a></th><th><a class="link" href="repository-demo.html#work">审核中</a></th><th><a class="link" href="repository-demo.html#work">需要修改</a></th><th><a class="link" href="repository-demo.html#work">已批准</a></th><th><a class="link" href="repository-demo.html#work">已合并</a></th><th><a class="link" href="repository-demo.html#work">已关闭</a></th></tr></thead><tbody><tr><td data-label="待分诊"><strong>0</strong></td><td data-label="已分诊"><strong>0</strong></td><td data-label="已分配"><strong>0</strong></td><td data-label="进行中"><strong>0</strong></td><td data-label="PR 已就绪"><strong>0</strong></td><td data-label="审核中"><strong>0</strong></td><td data-label="需要修改"><strong>0</strong></td><td data-label="已批准"><strong>0</strong></td><td data-label="已合并"><strong>0</strong></td><td data-label="已关闭"><strong>0</strong></td></tr></tbody></table></div>
+  </section><section class="card">
+    <div class="row between"><h2>工作项</h2><span class="fine">Issue / PR / 状态 / 优先级</span></div>
+    <form method="post" action="#" class="form" data-mock-inert onsubmit="return false;">
+      <input type="hidden" name="csrf" value="mock-csrf" />
+      <div class="row">
+        <label class="grow">标题 <input name="title" required maxlength="200" /></label>
+        <label>优先级 <input name="priority" type="number" min="0" max="100" value="0" class="w-90" /></label>
+      </div>
+      <div class="row">
+        <label class="grow">Issue URL（可选） <input name="issueUrl" placeholder="https://github.com/owner/repo/issues/1" /></label>
+      </div>
+      <label>说明 <textarea name="detail" rows="3" placeholder="用户问题、现状、验收标准。"></textarea></label>
+      <button class="btn" type="submit">创建工作项</button>
+    </form>
+    <div class="table-scroll mt-14"><table class="table-cards"><thead><tr><th>工作项</th><th>状态</th><th>优先级</th><th>Issue / PR</th><th>任务</th><th></th></tr></thead><tbody><tr data-state="empty"><td colspan="6"><div class="state state-empty" data-state="empty" role="status">
+  <span class="state-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 13V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v6" /><path d="M4 13h4l1.6 2.5h4.8L16 13h4" /><path d="M4 13v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" /></svg></span>
+  <div class="state-body">
+    <strong>还没有工作项。</strong>
+    <p>创建一个，或让任务自动生成。</p>
+    
+    <div class="actions"><a class="btn btn-small" href="dashboard.html">回到仓库</a></div>
+  </div>
+</div></td></tr></tbody></table></div>
+  </section></section><section class="repo-section" id="team" data-repo-section="team" aria-labelledby="repo-tab-team"><div class="banner">这个部署没有启用每仓库 FlyBot 实例，任务由全局 mock/runner 处理。</div><section class="card">
+    <div class="row between">
+      <div>
+        <div class="eyebrow">每仓库 FlyBot</div>
+        <h2>FlyBot 状态</h2>
+        <p class="muted">未创建</p>
+      </div>
+      
+    </div>
+    
+  </section></section><section class="repo-section" id="settings" data-repo-section="settings" aria-labelledby="repo-tab-settings">  <section class="cols">
+    <div class="card" id="repo-settings">
+      <h2>迭代目标</h2>
+      <p class="muted" data-usage-line>已用仓库 2/10，FlyBot 实例 0/3</p>
+      <form method="post" action="#" class="form" data-mock-inert onsubmit="return false;">
+        <input type="hidden" name="csrf" value="mock-csrf" />
+        <input type="hidden" name="expected_revision" value="1" /><input type="hidden" name="idempotency_key" value="cmd_mock" />
+        <label>任务模板
+    <select data-goal-template data-goal-target="goal-settings">
+      <option value="">选择一个模板…</option>
+      <option value="bug" data-text="Reproduce one concrete, user-visible bug. Write a failing test first, make the smallest correct fix, run the relevant tests, and open one PR. Do not refactor unrelated code.">修一个可复现 bug</option>
+      <option value="tests" data-text="Add focused tests for one existing module's highest-risk failure path. Write the failing test first, then the smallest fix or test-only change, and open one PR.">补关键测试</option>
+      <option value="docs" data-text="Fix one place where the docs or comments disagree with the code. Verify the code first, make the smallest documentation change, and open one PR. Do not add unproven features.">修正文档/注释</option>
+      <option value="deps" data-text="Check one dependency for a real security or compatibility issue. Make the smallest safe upgrade, run the existing tests, record pass/fail, and open one PR. Do not upgrade unrelated packages.">处理一个依赖问题</option>
+    </select>
+  </label>
+        <textarea id="goal-settings" name="goal" rows="5" placeholder="这个仓库每次迭代应该关注什么？">Add focused tests for the highest-risk paths.</textarea>
+        <label>目标分支<button type="button" class="info-tip" aria-label="PR 会合入这个分支；Fledge 仍会新建工作分支，不会直接 push 目标分支。留空使用仓库默认分支。" aria-expanded="false" data-tip="PR 会合入这个分支；Fledge 仍会新建工作分支，不会直接 push 目标分支。留空使用仓库默认分支。">!</button> <input name="targetBranch" value="main" placeholder="main / develop / release/2.x" autocomplete="off" /></label>
+        <label>你的角色<button type="button" class="info-tip" aria-label="角色来自你在这个 GitHub 仓库的权限。admin/maintain 可选 maintainer 或 developer；其他权限只能选 developer。平台管理员不能替你改。" aria-expanded="false" data-tip="角色来自你在这个 GitHub 仓库的权限。admin/maintain 可选 maintainer 或 developer；其他权限只能选 developer。平台管理员不能替你改。">!</button> <select name="repoRole" required><option value="developer" selected>开发者</option></select></label>
+        <div class="row" data-auto-group>
+          <label class="check"><input type="checkbox" name="auto" value="1"  /> 自动迭代</label>
+          <label class="check"><input type="checkbox" name="enabled" value="1" checked /> 启用</label>
+          <label>发现间隔<button type="button" class="info-tip" aria-label="没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。" aria-expanded="false" data-tip="没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。">!</button> <select name="interval"><option value="60" selected>每小时</option><option value="120">每 2 小时</option><option value="180">每 3 小时</option><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440">每天</option><option value="2880">每 2 天</option><option value="4320">每 3 天</option><option value="10080">每周</option><option value="20160">每 2 周</option><option value="43200">每 30 天</option></select></label>
+        </div>
+        <div class="row" data-review-group>
+          <label class="check"><input type="checkbox" name="review" value="1"  disabled data-role-can-review="0" /> 启用 PR 审核</label>
+          <label>审核间隔 <select name="reviewInterval" disabled><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440" selected>每天</option><option value="2880">每 2 天</option><option value="4320">每 3 天</option><option value="10080">每周</option><option value="20160">每 2 周</option><option value="43200">每 30 天</option></select></label>
+        </div>
+        <div class="row" data-merge-group>
+          <label class="check"><input type="checkbox" name="autoMerge" value="1"  disabled /> 允许 maintainer 自动合并 PR<button type="button" class="info-tip" aria-label="默认关闭。只有 maintainer 能开启；开启后 Fledge 会在 PR 检查通过且没有 changes requested 时执行 squash merge。developer 不能开启。" aria-expanded="false" data-tip="默认关闭。只有 maintainer 能开启；开启后 Fledge 会在 PR 检查通过且没有 changes requested 时执行 squash merge。developer 不能开启。">!</button></label>
+        </div>
+        <label class="check"><input type="checkbox" name="planRequired" value="1"  /> 先出计划，批准后执行<button type="button" class="info-tip" aria-label="开启后“立即运行”先生成计划；maintainer 批准计划后才写代码。" aria-expanded="false" data-tip="开启后“立即运行”先生成计划；maintainer 批准计划后才写代码。">!</button></label>
+        <details class="advanced-help" data-advanced="repo-settings">
+          <summary>高级：运维设置（路径、阶段门禁、预算、模型）</summary>
+        <div class="row">
+          <label class="grow">允许修改路径（可选）<button type="button" class="info-tip" aria-label="逗号或换行分隔。批准计划时会填入执行 prompt；不是硬性沙箱。" aria-expanded="false" data-tip="逗号或换行分隔。批准计划时会填入执行 prompt；不是硬性沙箱。">!</button> <input name="allowPaths" value="" placeholder="src/, docs/" /></label>
+          <label class="grow">禁止修改路径（可选） <input name="denyPaths" value="" placeholder=".github/, deploy/" /></label>
+        </div>
+        <div class="row">
+          <label>合并方式 <select name="mergeMethod"><option value="squash" selected>squash</option><option value="merge">merge</option><option value="rebase">rebase</option></select></label>
+          <label>团队阶段门禁 <select name="stageMode"><option value="off" selected>关闭</option><option value="shadow">观察</option><option value="enforced">强制</option></select></label>
+        </div>
+        <p class="fine">强制模式下，实现任务必须带范围、验收标准、失败/通过测试证据和 Dev/Test 分工，审核任务必须带 Reviewer 和评分；否则任务失败且不会自动合并。观察模式只记录不阻断。</p>
+        <div class="row">
+          <label class="check"><input type="checkbox" name="requireProtection" value="1" checked /> 自动合并前要求 branch protection<button type="button" class="info-tip" aria-label="开启后 Fledge 会检查保护规则、required checks 和 required approvals；读不到保护规则时不会自动合并。" aria-expanded="false" data-tip="开启后 Fledge 会检查保护规则、required checks 和 required approvals；读不到保护规则时不会自动合并。">!</button></label>
+        </div>
+        <p class="fine">Branch protection: <code>unknown</code></p>
+        <div class="row">
+          <label>仓库月度预算（元） <input name="monthlyBudget" type="number" min="0" max="10000" step="0.01" value="0.00" /></label>
+          <label>单任务预算（元） <input name="jobBudget" type="number" min="0" max="10000" step="0.01" value="0.00" /></label>
+          <label>超出单任务预算时<button type="button" class="info-tip" aria-label="在任务的下一个检查点生效：此时已经记录了花费，不需要再调用一次模型。" aria-expanded="false" data-tip="在任务的下一个检查点生效：此时已经记录了花费，不需要再调用一次模型。">!</button>
+            <select name="jobBudgetAction">
+              <option value="alert" selected>只提醒（默认）</option>
+              <option value="pause" >暂停任务，可从断点恢复</option>
+              <option value="cancel" >取消任务</option>
+            </select>
+          </label>
+        </div>
+        <p class="fine">本月已用 ¥0.00</p>
+        <div class="row">
+          <label class="grow">可用模型<button type="button" class="info-tip" aria-label="提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。" aria-expanded="false" data-tip="提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。">!</button>
+            <span class="list"><div class="mb-6"><strong>DeepSeek</strong><br /><label class="check"><input type="checkbox" name="modelIds" value="pvm_mock"  /> DeepSeek Chat <small class="muted">deepseek-chat</small></label></div></span>
+          </label>
+        </div>
+        <div class="row">
+          <label class="grow">允许的提供方（可选）<button type="button" class="info-tip" aria-label="只允许这个仓库使用勾选的提供方；一个都不勾表示不限制。提供方本身由你在 Settings 里添加。" aria-expanded="false" data-tip="只允许这个仓库使用勾选的提供方；一个都不勾表示不限制。提供方本身由你在 Settings 里添加。">!</button>
+            <span class="list"><label class="check"><input type="checkbox" name="allowedProviderIds" value="prv_mock"  /> DeepSeek <small class="muted">cn</small> · <a class="link" href="https://api-docs.deepseek.com/" rel="noreferrer noopener" target="_blank">数据政策</a></label></span>
+          </label>
+          <label>区域约束（可选） <input name="providerRegion" value="" maxlength="80" placeholder="eu" /></label>
+        </div>
+        <p class="fine">区域约束比较提供方标注的区域（不区分大小写）；留空表示不限区域。这个策略只作用于当前仓库。</p>
+        <label>默认模型 <select name="defaultModelId"><option value="">平台默认</option><option value="pvm_mock">DeepSeek · DeepSeek Chat *</option></select></label>
+        <div class="row bot-models"><label>Chief <select name="botModel_chief"><option value="">跟随默认</option></select></label><label>Lead <select name="botModel_lead"><option value="">跟随默认</option></select></label><label>Product <select name="botModel_product"><option value="">跟随默认</option></select></label><label>Test <select name="botModel_test"><option value="">跟随默认</option></select></label><label>Security <select name="botModel_security"><option value="">跟随默认</option></select></label><label>Reviewer <select name="botModel_reviewer"><option value="">跟随默认</option></select></label><label>Dev-1 <select name="botModel_dev1"><option value="">跟随默认</option></select></label><label>Dev-2 <select name="botModel_dev2"><option value="">跟随默认</option></select></label></div>
+        <p class="fine">每个 bot 可以单独选择模型；不选则跟随默认。保存选择后，空闲时点击“应用模型并重启工作区”才会生效，Fledge 会通过 DSH 把模型分配给对应 bot。</p>
+        </details>
+        <p class="fine">你在这个上游没有 admin/maintain 权限，审核角色不可用。</p>
+        
+        <button class="btn" type="submit">保存</button>
+      </form>
+      
+    </div>
+    <div class="card" id="connection">
+      <h2>连接</h2>
+      <p class="muted">GitHub token 已加密保存；页面不会显示明文。如果仓库或 token 变了，删除后重新添加。</p>
+      <p class="fine">审核最近运行 尚未运行</p>
+      <div class="row mb-12">
+        <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost" type="submit">重新检测上游 / fork</button></form>
+      </div>
+      <p class="fine">平台只通过 GitHub API 读取元数据、创建 fork 和分支/PR；不会 clone 到公共磁盘。</p>
+    </div>
+  </section></section><section class="repo-section" id="danger" data-repo-section="danger" aria-labelledby="repo-tab-danger"><section class="card">
+    <h2>危险操作</h2>
+    <p class="muted">这里的操作只影响 Fledge 连接，不会删除 GitHub 仓库。停止调度会保留实例和历史；停止 FlyBot 会停止容器；删除会移除连接、实例、任务和 token。</p>
+    <div class="row">
+      <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost" type="submit">停止调度</button></form>
+      
+    </div>
+    <form method="post" action="#" class="form" data-mock-inert onsubmit="return false;">
+      <input type="hidden" name="csrf" value="mock-csrf" />
+      <label>输入仓库名 <code>demo-app</code> 确认删除 <input name="confirmName" autocomplete="off" required /></label>
+      <button class="btn btn-danger" type="submit">删除仓库连接</button>
+    </form>
+  </section></section></div></main>
+  <footer class="foot">
+    <div>Fledge · 让托管的仓库自己长大 · 由 FlyBot 驱动 · <span class="foot-release">v0.0.0-mock</span></div>
+    <nav class="foot-links" aria-label="页脚导航">
+      <a href="https://fledge-docs.hugoxk.online/docs/" target="_blank" rel="noreferrer">文档</a>
+      <a href="https://portal.hugoxk.online" target="_blank" rel="noreferrer">Portal</a>
+      <a href="https://hugoxk.online/status/" target="_blank" rel="noreferrer">平台状态</a>
+      <a href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">GitHub</a>
+    </nav>
+  </footer>
+  <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title">
+    <form method="dialog" data-mock-inert onsubmit="return false;">
+      <h2 id="confirm-dialog-title">请确认</h2>
+      <p data-confirm-message></p>
+      <div class="row">
+        <button class="btn btn-ghost" value="cancel">取消</button>
+        <button class="btn btn-danger" value="confirm">确认</button>
+      </div>
+    </form>
+  </dialog>
+  </body>
+</html>

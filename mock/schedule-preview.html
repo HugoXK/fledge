@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN" data-locale="zh" data-density="comfortable" data-theme="system">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#f4f6f9" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#07090d" media="(prefers-color-scheme: dark)" />
+  <title>排期预览 · Fledge</title>
+  <link rel="stylesheet" href="assets/app.css?v=cc2f0835c794" />
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="top">
+    <div class="top-inner">
+      <a class="brand" href="index.html" aria-label="Fledge"><span class="mark">F</span><span>Fledge<small>羽巢</small></span></a>
+      <button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="main-nav">菜单</button>
+      <nav class="nav" id="main-nav" aria-label="主导航">
+        <a href="console.html">工作区</a>
+        <a href="dashboard.html">仓库</a>
+        <a class="on" href="schedule-preview.html" aria-current="page">排期</a>
+        <a href="settings.html">设置</a>
+        
+      </nav>
+      <div class="spacer"></div>
+      <details class="theme-menu">
+    <summary aria-label="主题" title="主题">
+      <span class="theme-glyph theme-glyph-system" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="2"/><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor"/></svg></span>
+      <span class="theme-glyph theme-glyph-light" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>
+      <span class="theme-glyph theme-glyph-dark" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><path d="M20 15.2A8.4 8.4 0 0 1 8.8 4a8.4 8.4 0 1 0 11.2 11.2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></span>
+    </summary>
+    <div class="theme-options">
+      <a href="#" data-theme-btn="system" aria-current="true"><span class="theme-option-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="2"/><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor"/></svg></span><span>跟随系统</span></a>
+      <a href="#" data-theme-btn="light" aria-current="false"><span class="theme-option-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span><span>浅色</span></a>
+      <a href="#" data-theme-btn="dark" aria-current="false"><span class="theme-option-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false"><path d="M20 15.2A8.4 8.4 0 0 1 8.8 4a8.4 8.4 0 1 0 11.2 11.2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></span><span>深色</span></a>
+    </div>
+  </details>
+      <div class="lang" role="group" aria-label="Language"><a href="#" data-lang-btn="zh" aria-current="true">中</a><a href="#" data-lang-btn="en">EN</a></div>
+      <div class="account">
+        <span class="account-avatar" aria-hidden="true">H</span>
+        <span class="account-name">@HugoXK</span>
+        <span class="pill" title="平台额度">¥50.00</span>
+        <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="link account-exit" type="submit">退出</button></form>
+      </div>
+    </div>
+  </header>
+  <main class="wrap" id="main">
+<div class="banner" data-mock-snapshot>静态快照 · 由 <code>npm run mock:snapshot</code> 从真实视图生成；表单和链接不会提交。Static snapshot generated from the real views; forms and links are inert.</div>
+    
+    
+    <a class="back" href="console.html">← 返回工作区</a>
+    <section class="card"><div class="eyebrow">排期</div><h1>下一次什么时候运行？</h1>
+      <p class="muted">选一个常用节奏就能看到接下来几次运行。预览和将来的 worker 使用同一个规划器；它不保存任何东西，也不会创建任务。</p>
+      <form method="get" action="#" class="form" data-schedule-form data-mock-inert onsubmit="return false;">
+        <div class="row"><label>什么时候运行 <select name="mode" data-schedule-mode><option value="interval">固定间隔</option><option value="daily" selected>每天</option><option value="weekdays">工作日</option><option value="weekly">每周</option><option value="monthly">每月</option><option value="custom">高级 cron</option></select></label><label data-schedule-timezone-wrap>时区 <select name="timezone" data-schedule-timezone data-auto="0"><option value="Asia/Shanghai" selected>Asia/Shanghai</option><option value="Asia/Tokyo">Asia/Tokyo</option><option value="Asia/Singapore">Asia/Singapore</option><option value="Asia/Kolkata">Asia/Kolkata</option><option value="Europe/London">Europe/London</option><option value="Europe/Berlin">Europe/Berlin</option><option value="Europe/Paris">Europe/Paris</option><option value="America/New_York">America/New_York</option><option value="America/Chicago">America/Chicago</option><option value="America/Denver">America/Denver</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="Australia/Sydney">Australia/Sydney</option><option value="UTC">UTC</option></select></label><label>预览条数 <input type="number" name="count" min="1" max="20" value="5" inputmode="numeric" /></label></div>
+        <div class="row schedule-panel" data-schedule-panel="interval"><label>每 <input type="number" name="every_amount" min="1" max="10080" value="15" inputmode="numeric" /> <select name="every_unit"><option value="m" selected>分钟</option><option value="h">小时</option><option value="d">天</option></select></label></div>
+        <div class="row schedule-panel" data-schedule-panel="daily"><label>时间 <input type="time" name="daily_time" value="09:00" step="60" required /></label></div>
+        <div class="row schedule-panel" data-schedule-panel="weekdays"><label>时间 <input type="time" name="weekdays_time" value="09:00" step="60" /></label><p class="fine">周一到周五，按上面的时区。</p></div>
+        <div class="row schedule-panel" data-schedule-panel="weekly"><select name="weekday"><option value="1" selected>周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="0">周日</option></select><label>时间 <input type="time" name="weekly_time" value="09:00" step="60" /></label></div>
+        <div class="row schedule-panel" data-schedule-panel="monthly"><select name="month_day"><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option><option value="16">16</option><option value="17">17</option><option value="18">18</option><option value="19">19</option><option value="20">20</option><option value="21">21</option><option value="22">22</option><option value="23">23</option><option value="24">24</option><option value="25">25</option><option value="26">26</option><option value="27">27</option><option value="28">28</option><option value="29">29</option><option value="30">30</option><option value="31">31</option></select><label>时间 <input type="time" name="monthly_time" value="09:00" step="60" /></label><p class="fine">每月这一天；不存在的日期会按规划器规则处理。</p></div>
+        <div class="row schedule-panel" data-schedule-panel="custom"><label class="grow">cron 表达式 <input name="cron" value="" placeholder="0 9 * * 1-5" /></label><p class="fine">五个字段：分 时 日 月 周。给熟悉 cron 的人使用。</p></div>
+        <details class="advanced-help"><summary>高级：起止时间 / 从哪个时刻开始预览</summary>
+          <div class="row"><label>从 <input name="from" value="" placeholder="2026-11-16T00:00:00Z" /> <span class="fine">留空=现在</span></label><label>生效时间 <input name="start_at" value="" placeholder="2026-11-16T00:00:00Z" /></label><label>结束时间 <input name="end_at" value="" placeholder="" /></label></div>
+          <p class="fine">时间必须带偏移，例如 2026-11-16T09:00:00+08:00。</p>
+        </details>
+        <button class="btn" type="submit">预览接下来的运行</button>
+      </form>
+    </section>
+    <section class="card"><h2>接下来的运行</h2><p class="muted">cron <code>0 9 * * *</code> · Asia/Shanghai</p><div class="table-scroll"><table><thead><tr><th>#</th><th>本地时间</th><th>UTC</th><th>偏移</th><th>已跳过</th></tr></thead><tbody><tr><td>1</td><td>2026-11-16 09:00 <span class="fine">Asia/Shanghai</span></td><td><code>2026-11-16T01:00:00.000Z</code></td><td>GMT+8</td><td>—</td></tr><tr><td>2</td><td>2026-11-17 09:00 <span class="fine">Asia/Shanghai</span></td><td><code>2026-11-17T01:00:00.000Z</code></td><td>GMT+8</td><td>—</td></tr><tr><td>3</td><td>2026-11-18 09:00 <span class="fine">Asia/Shanghai</span></td><td><code>2026-11-18T01:00:00.000Z</code></td><td>GMT+8</td><td>—</td></tr><tr><td>4</td><td>2026-11-19 09:00 <span class="fine">Asia/Shanghai</span></td><td><code>2026-11-19T01:00:00.000Z</code></td><td>GMT+8</td><td>—</td></tr><tr><td>5</td><td>2026-11-20 09:00 <span class="fine">Asia/Shanghai</span></td><td><code>2026-11-20T01:00:00.000Z</code></td><td>GMT+8</td><td>—</td></tr></tbody></table></div></section>
+  </main>
+  <footer class="foot">
+    <div>Fledge · 让托管的仓库自己长大 · 由 FlyBot 驱动 · <span class="foot-release">v0.0.0-mock</span></div>
+    <nav class="foot-links" aria-label="页脚导航">
+      <a href="https://fledge-docs.hugoxk.online/docs/" target="_blank" rel="noreferrer">文档</a>
+      <a href="https://portal.hugoxk.online" target="_blank" rel="noreferrer">Portal</a>
+      <a href="https://hugoxk.online/status/" target="_blank" rel="noreferrer">平台状态</a>
+      <a href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">GitHub</a>
+    </nav>
+  </footer>
+  <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title">
+    <form method="dialog" data-mock-inert onsubmit="return false;">
+      <h2 id="confirm-dialog-title">请确认</h2>
+      <p data-confirm-message></p>
+      <div class="row">
+        <button class="btn btn-ghost" value="cancel">取消</button>
+        <button class="btn btn-danger" value="confirm">确认</button>
+      </div>
+    </form>
+  </dialog>
+  </body>
+</html>
