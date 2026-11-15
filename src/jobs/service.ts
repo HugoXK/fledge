@@ -47,6 +47,7 @@ import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
 import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
+import { promoteDiscoveredIssue } from './discoveryPromotion.js'
 import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader } from './continuity.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
 import type { ScheduleRow } from '../db.js'
@@ -1324,7 +1325,7 @@ export class Jobs {
     }
   }
 
-  private syncWorkItemForJob(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; prUrl: string | null; issueUrl: string | null }): void {
+  private syncWorkItemForJob(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; prUrl: string | null; issueUrl: string | null; summary?: string }): void {
     const existing = job.work_item_id === null ? undefined : this.store.getWorkItem(job.work_item_id)
     if (existing !== undefined) {
       const prState = result.prUrl === null ? existing.pr_state : 'open'
@@ -1343,6 +1344,20 @@ export class Jobs {
         ...(result.issueUrl === null ? {} : { issue_url: result.issueUrl }),
         job_id: job.id,
       })
+      return
+    }
+    if (job.kind === 'discover') {
+      const promotion = promoteDiscoveredIssue(this.store, this.config, {
+        repoId: job.repo_id,
+        userId: job.user_id,
+        issueUrl: result.issueUrl,
+        title: result.summary ?? '',
+      })
+      this.store.audit(
+        job.user_id,
+        promotion.status === 'promoted' ? 'job.discovery_promoted' : 'job.discovery_promotion_skipped',
+        `${job.id}: ${promotion.status}${promotion.workItemId === undefined ? '' : ` ${promotion.workItemId}`}`,
+      )
       return
     }
     if (result.status !== 'succeeded' || (result.prUrl === null && result.issueUrl === null)) return
@@ -1419,7 +1434,7 @@ export class Jobs {
     const started = Date.parse(job.started_at ?? job.created_at)
     const ended = Date.parse(nowIso())
     if (Number.isFinite(started) && Number.isFinite(ended)) observeHistogram('fledge_job_seconds', Math.max(0, (ended - started) / 1000), { kind: job.kind, status: result.status }, 'Job duration')
-    this.syncWorkItemForJob(job, { status: result.status, prUrl, issueUrl })
+    this.syncWorkItemForJob(job, { status: result.status, prUrl, issueUrl, summary })
     const finalJob = this.store.getJob(jobId) ?? job
     const digest = buildRunDigest(finalJob, { status: result.status, summary, issueUrl, prUrl })
     this.store.updateJob(jobId, { continuity_json: JSON.stringify(digest), output_kind: digest.output_kind })
