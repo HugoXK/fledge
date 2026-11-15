@@ -396,7 +396,7 @@ test('the create form redirects to the gate page and the page links the pull req
     assert.equal(response.statusCode, 302)
     assert.equal(response.headers.location, `/repos/${h.repo.id}/gate`)
     const page = await h.built.app.inject({ method: 'GET', url: `/repos/${h.repo.id}/gate`, headers: { cookie: `${h.cookie}; fledge_lang=en` } })
-    assert.match(page.body, /https:\/\/github\.com\/owner\/repo\/pull\/7/)
+    assert.ok(page.body.includes('href="https://github.com/owner/repo/pull/7"'), 'the gate page links the pull request')
   } finally {
     await h.close()
     await fake.close()
