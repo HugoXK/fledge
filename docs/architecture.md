@@ -581,6 +581,10 @@ revoke stays one click.
 The operator chooses the upstream through `PLATFORM_LLM_BASE_URL`; keep the
 real endpoint and key out of git and out of public documentation.
 
+### Repository rules and skills
+
+A repository can add `.fledge/rules.md`, `.fledge/review.md`, `.fledge/develop.md` and text skills under `.agents/skills/`. Fledge reads them from the default branch at the job's fixed commit, records the commit and file hashes in `job_contexts`/`job_context_files`, and injects the effective rule text into the bridge prompt. For the three rule files the effective layer is repository file first, then a maintainer-owned console override in `repo_rule_overrides`, then the implicit built-in behaviour; each job records that layer per path in its context. The full text of a skill is read on demand with the job callback secret from `GET /api/jobs/:id/context?path=...`; the endpoint only serves files recorded for that job and only while it is queued or running. A PR that changes a rule or skill file blocks auto-merge until a maintainer acknowledges that head SHA. The set is bounded before it can reach a prompt: 32 KiB per rule file, 32 KiB per skill file, 32 skills, and 256 KiB for the whole set. A set that crosses any ceiling is refused as a whole rather than truncated, because a job that ran on half its rules would silently lose the other half, and the 16 KiB injected slice is a budget rather than a drop. Details and limits: [rules.md](rules.md).
+
 ### Per-repository FlyBot instances
 
 Each hosted repository gets its own FlyBot container and its own team. The user

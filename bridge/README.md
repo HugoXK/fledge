@@ -56,6 +56,9 @@ loopback only; keep it that way.
   "goal": "Fix one reproducible bug and open a PR.",
   "callbackUrl": "https://fledge.example/api/jobs/job_abc/callback",
   "callbackSecret": "…",
+  "rulesText": "## .fledge/rules.md\n…",
+  "skills": [{ "name": "release-notes", "path": ".agents/skills/release-notes/SKILL.md", "description": "Release notes", "bytes": 812 }],
+  "contextUrl": "https://fledge.example/api/jobs/job_abc/context",
   "credentialUrl": "https://fledge.example/api/jobs/job_abc/credential",
   "credentialSecret": "…",
   "platform": {
@@ -111,6 +114,16 @@ The agent prompt includes:
    a `followUps` array for each Fledge PR that needs a same-branch fix;
 8. POST the result to `callbackUrl` with
    `{status, branch, prUrl, issueUrl, reviewScore, summary, error}`.
+
+A repository can also carry its own rule and skill files. When it does, the
+payload adds `rulesText` (the effective `.fledge/*` text for the job's fixed
+commit, first 16 KiB), a `skills` index and a `contextUrl`. The index is a list,
+not the text: the agent reads one skill with `GET contextUrl?path=<path>` and its
+`callbackSecret`, and only while the job is queued or running. Rules and skills
+are repository content, not configuration — they cannot add tools, permissions,
+stages or authority, and Fledge never executes them. The body is capped at 32 KiB
+per file and 256 KiB for the set; an oversized set refuses the job instead of
+being truncated.
 
 The callback answers:
 
