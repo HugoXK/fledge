@@ -6,7 +6,7 @@ import { MockRunner } from '../src/jobs/mock.js'
 import { GithubError } from '../src/repos/github.js'
 import { encryptSecret } from '../src/lib/secrets.js'
 import { compareVersions, createAnnotatedTag, hasTagTriggeredWorkflow, parseVersion, planRelease, releasePreflight, suggestHigher } from '../src/releases/release.js'
-import { formBody, json, makeUser, MemoryMailer, readBody, sessionFor, startFakeServer, testConfig } from './helpers.js'
+import { flashCookie, flashOf, formBody, json, makeUser, MemoryMailer, readBody, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
 // A release request is a maintainer-supplied version and a fixed full SHA. These
 // tests pin the two properties that keep it from becoming an automatic release
@@ -324,7 +324,7 @@ async function releaseRouteHarness(options: ReleaseRouteOptions = {}) {
     session,
     calls,
     post,
-    page: async (location: string) => built.app.inject({ method: 'GET', url: location, headers: { cookie: session.cookie } }),
+    page: async (location: string, extraCookie = '') => built.app.inject({ method: 'GET', url: location, headers: { cookie: extraCookie === '' ? session.cookie : `${session.cookie}; ${extraCookie}` } }),
     close: async () => { await built.close(); await server.close() },
   }
 }
@@ -332,27 +332,26 @@ async function releaseRouteHarness(options: ReleaseRouteOptions = {}) {
 test('a refusal reaches the page with a marker, the reason and the next legal version', async () => {
   const h = await releaseRouteHarness({ tags: [{ name: 'v1.5.0', sha: 'b'.repeat(40), commit: { sha: 'b'.repeat(40) } }] })
   try {
-    // A marker in the query is the only honest proof that the page rendered the
-    // outcome: prose assertions pass against the static copy in the card, which
-    // is how an empty refusal shipped green before.
+    // #472 slice 3: the outcome is one-shot. A hand-typed address must render
+    // nothing; only the redirect that produced it may deliver the message.
     const marker = 'REFUSAL-MARKER-9e7c'
     const direct = await h.page(`/repos/${h.repo.id}?release=1&refused=${encodeURIComponent(marker)}`)
     assert.equal(direct.statusCode, 200)
-    assert.match(direct.body, /id="release-refused"/)
-    assert.match(direct.body, new RegExp(marker))
-    assert.match(direct.body, /没有打标签/)
-    assert.match(direct.body, /No tag was created/)
-    assert.doesNotMatch(direct.body, /id="release-tagged"/)
+    assert.doesNotMatch(direct.body, /id="release-refused"/)
+    assert.doesNotMatch(direct.body, new RegExp(marker))
+    assert.doesNotMatch(direct.body, /No tag was created/)
 
     const posted = await h.post()
     assert.equal(posted.statusCode, 302)
     const location = String(posted.headers.location)
-    assert.match(location, /refused=/)
+    assert.doesNotMatch(location, /refused=/, 'the refusal must leave the address bar')
     assert.doesNotMatch(location, /tagged=/)
-    assert.match(decodeURIComponent(location), /v1\.5\.1/, 'the refusal names the next legal version')
+    const flashed = flashOf(posted)
+    assert.equal(flashed?.outcome?.key, 'refused')
+    assert.match(flashed?.outcome?.text ?? '', /v1\.5\.1/, 'the refusal names the next legal version')
     assert.equal(h.store.listReleasesForRepo(h.repo.id).length, 0, 'a refusal writes no release row')
 
-    const page = await h.page(location)
+    const page = await h.page(location, flashCookie(posted) ?? '')
     assert.equal(page.statusCode, 200)
     assert.match(page.body, /v1\.5\.1/, 'the suggestion reaches the returned HTML')
     assert.match(page.body, /is not higher than v1\.5\.0/, 'the reason reaches the returned HTML')
@@ -367,11 +366,12 @@ test('a 422 from the tag write is a rendered refusal and not a crash page', asyn
     const posted = await h.post()
     assert.equal(posted.statusCode, 302, 'an unhandled 422 used to be a 500')
     const location = String(posted.headers.location)
-    assert.match(location, /refused=/)
+    assert.doesNotMatch(location, /refused=/)
+    assert.equal(flashOf(posted)?.outcome?.key, 'refused')
     assert.equal(h.store.listReleasesForRepo(h.repo.id).length, 0)
     assert.equal(h.calls.filter((call) => call.method === 'POST').length, 1, 'only the refused tag object write was attempted')
 
-    const page = await h.page(location)
+    const page = await h.page(location, flashCookie(posted) ?? '')
     assert.match(page.body, /id="release-refused"/)
     assert.match(page.body, /is not a commit in this repository/)
     assert.doesNotMatch(page.body, /id="release-tagged"/)
@@ -386,7 +386,8 @@ test('a successful tag is confirmed on the page and the ref points at the tag ob
     const posted = await h.post()
     assert.equal(posted.statusCode, 302)
     const location = String(posted.headers.location)
-    assert.match(location, /tagged=v1\.4\.0/)
+    assert.doesNotMatch(location, /tagged=/)
+    assert.deepEqual(flashOf(posted)?.outcome, { text: 'v1.4.0', key: 'tagged' })
 
     const writes = h.calls.filter((call) => call.method === 'POST')
     assert.deepEqual(writes.map((call) => call.url), ['/repos/o/r/git/tags', '/repos/o/r/git/refs'])
@@ -399,14 +400,11 @@ test('a successful tag is confirmed on the page and the ref points at the tag ob
 
     const marker = 'TAGGED-MARKER-9e7c'
     const direct = await h.page(`/repos/${h.repo.id}?release=1&tagged=${encodeURIComponent(marker)}`)
-    assert.match(direct.body, /id="release-tagged"/)
-    assert.match(direct.body, new RegExp(marker))
-    assert.match(direct.body, /已创建标签/)
-    assert.match(direct.body, /Created tag/)
-    assert.doesNotMatch(direct.body, /id="release-refused"/)
+    assert.doesNotMatch(direct.body, /id="release-tagged"/)
+    assert.doesNotMatch(direct.body, new RegExp(marker))
 
     // Following the real redirect confirms the tag that was created.
-    const followed = await h.page(location)
+    const followed = await h.page(location, flashCookie(posted) ?? '')
     assert.match(followed.body, /id="release-tagged">[\s\S]{0,200}v1\.4\.0/, 'the success banner names the tag')
   } finally {
     await h.close()
@@ -426,9 +424,9 @@ test('a re-tag updates the recorded row and is confirmed as an existing tag, not
     const posted = await h.post()
     assert.equal(posted.statusCode, 302)
     const location = String(posted.headers.location)
-    assert.match(location, /tagged=v1\.4\.0/)
+    assert.doesNotMatch(location, /tagged=/)
     assert.doesNotMatch(location, /refused=/)
-    assert.match(decodeURIComponent(location), /retagged=1/, 'the page distinguishes a re-tag from a created tag')
+    assert.deepEqual(flashOf(posted)?.outcome, { text: 'v1.4.0', key: 'retagged' }, 'the page distinguishes a re-tag from a created tag')
 
     const releases = h.store.listReleasesForRepo(h.repo.id)
     assert.equal(releases.length, 1, 'a re-tag keeps exactly one row for the tag name')
@@ -440,7 +438,7 @@ test('a re-tag updates the recorded row and is confirmed as an existing tag, not
     assert.ok(row.updated_at > oldAt, 'the row is updated after the one it replaces')
     assert.equal(row.created_at, oldAt, 'the original row is updated, not replaced')
 
-    const page = await h.page(location)
+    const page = await h.page(location, flashCookie(posted) ?? '')
     assert.equal(page.statusCode, 200)
     assert.doesNotMatch(page.body, /No tag was created/)
     assert.doesNotMatch(page.body, /没有打标签/)
@@ -474,7 +472,8 @@ test('a re-tag keeps the pointer when the Release this row prepared is already p
 
     const posted = await h.post()
     assert.equal(posted.statusCode, 302)
-    assert.match(decodeURIComponent(String(posted.headers.location)), /retagged=1/)
+    assert.equal(flashOf(posted)?.outcome?.key, 'retagged')
+    assert.deepEqual(flashOf(posted)?.outcome?.text, 'v1.4.0')
 
     const row = h.store.releaseById(recorded.id)
     assert.equal(row?.status, 'draft_published', 'the re-tag reads its own published Release as its own')
@@ -492,13 +491,15 @@ test('a 500 from the ref write names the HTTP status and never quotes the upstre
   try {
     const posted = await h.post()
     assert.equal(posted.statusCode, 302)
-    const location = decodeURIComponent(String(posted.headers.location))
-    assert.match(location, /refused=/)
-    assert.match(location, /tag reference was refused by GitHub \(HTTP 500\)/)
-    assert.doesNotMatch(location, new RegExp(upstream))
+    const location = String(posted.headers.location)
+    assert.doesNotMatch(location, /refused=/, 'the refusal must leave the address bar')
+    const flashed = flashOf(posted)?.outcome
+    assert.equal(flashed?.key, 'refused')
+    assert.match(flashed?.text ?? '', /tag reference was refused by GitHub \(HTTP 500\)/)
+    assert.doesNotMatch(flashed?.text ?? '', new RegExp(upstream))
     assert.equal(h.store.listReleasesForRepo(h.repo.id).length, 0, 'a refused ref writes no release row')
 
-    const page = await h.page(String(posted.headers.location))
+    const page = await h.page(location, flashCookie(posted) ?? '')
     assert.match(page.body, /tag reference was refused by GitHub \(HTTP 500\)/)
     assert.doesNotMatch(page.body, new RegExp(upstream))
   } finally {
@@ -515,12 +516,15 @@ test('a non-JSON 403 from the ref write names the permission it needs and leaks 
   try {
     const posted = await h.post()
     assert.equal(posted.statusCode, 302)
-    const location = decodeURIComponent(String(posted.headers.location))
-    assert.match(location, /needs Contents: write/)
-    assert.match(location, /\(HTTP 403\)/)
-    assert.doesNotMatch(location, new RegExp(upstream))
+    const location = String(posted.headers.location)
+    assert.doesNotMatch(location, /refused=/, 'the refusal must leave the address bar')
+    const flashed = flashOf(posted)?.outcome
+    assert.equal(flashed?.key, 'refused')
+    assert.match(flashed?.text ?? '', /needs Contents: write/)
+    assert.match(flashed?.text ?? '', /\(HTTP 403\)/)
+    assert.doesNotMatch(flashed?.text ?? '', new RegExp(upstream))
 
-    const page = await h.page(String(posted.headers.location))
+    const page = await h.page(location, flashCookie(posted) ?? '')
     assert.match(page.body, /needs Contents: write/)
     assert.doesNotMatch(page.body, new RegExp(upstream))
   } finally {
@@ -533,9 +537,10 @@ test('a 422 from the ref write stays the tag_exists sentence, not the fixed ref 
   try {
     const posted = await h.post()
     assert.equal(posted.statusCode, 302)
-    const location = decodeURIComponent(String(posted.headers.location))
-    assert.match(location, /tag v1\.4\.0 already exists; nothing was moved or deleted/)
-    assert.doesNotMatch(location, /tag reference was refused by GitHub/)
+    assert.doesNotMatch(String(posted.headers.location), /refused=/, 'the refusal must leave the address bar')
+    const flashed = flashOf(posted)?.outcome
+    assert.match(flashed?.text ?? '', /tag v1\.4\.0 already exists; nothing was moved or deleted/)
+    assert.doesNotMatch(flashed?.text ?? '', /tag reference was refused by GitHub/)
     assert.equal(h.store.listReleasesForRepo(h.repo.id).length, 0)
   } finally {
     await h.close()

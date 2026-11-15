@@ -19,7 +19,8 @@ const cssText = (): string => readFileSync(new URL('../public/app.css', import.m
 
 interface Entry {
   level: 'error' | 'warning' | 'success' | 'info'
-  text: string
+  text?: string
+  html?: string
   key?: string
 }
 
@@ -150,4 +151,104 @@ test('the inbox stays out of the stack', () => {
 
 test('a page with no message renders no empty stack', () => {
   assert.doesNotMatch(page('en'), /banner-stack/)
+})
+
+// #472 slice 3: page-level messages join the one stack instead of being a
+// second ad-hoc banner elsewhere on the page. `notifications` is the page's own
+// list; it is ordered and de-duplicated with the redirect message by the same
+// builder, so a page cannot classify a message twice.
+function pageWith(locale: Locale, notifications: Entry[], options: { notice?: string; error?: string; body?: string } = {}): string {
+  return layout({
+    title: 'x',
+    viewer: null,
+    body: options.body ?? '',
+    config: testConfig(),
+    locale,
+    path: '/dashboard',
+    notice: options.notice,
+    error: options.error,
+    notifications,
+  })
+}
+
+test('a page-level message joins the stack and sorts with the redirect message', () => {
+  const html = pageWith('en', [
+    { level: 'info', text: 'A repository has no instance yet.', key: 'instance-missing' },
+    { level: 'error', text: 'The FlyBot instance failed.', key: 'instance-failed' },
+  ], { notice: 'Repository saved.' })
+  const main = mainOf(html)
+  const stack = stackOf(main)
+  assert.equal(main.match(/aria-live="polite"/g)?.length, 1, 'a page message added a second live region')
+  // The stack's documented order is failure, warning, success, information, so a
+  // page's own information entry sorts below the redirect's success message.
+  assert.ok(stack.indexOf('The FlyBot instance failed.') < stack.indexOf('Repository saved.'))
+  assert.ok(stack.indexOf('Repository saved.') < stack.indexOf('A repository has no instance yet.'))
+  assert.equal(stack.match(/data-dismiss/g)?.length, 3, 'every message, including a page-level one, needs a dismiss control')
+})
+
+test('a page message built with html keeps its structure and still travels through the stack', () => {
+  const stack = stackOf(mainOf(pageWith('en', [
+    { level: 'error', html: '<strong>Current state</strong><ul><li>Repository disabled</li></ul><div class="row"><a class="btn" href="#x">Enable</a></div>', key: 'lifecycle' },
+  ])))
+  assert.match(stack, /<strong>Current state<\/strong>/)
+  assert.match(stack, /<li>Repository disabled<\/li>/)
+  assert.match(stack, /<a class="btn" href="#x">Enable<\/a>/)
+  assert.match(stack, /data-dismiss/)
+})
+
+test('a page message and the redirect message sharing a key render once at the worse severity', () => {
+  // A page entry without an explicit key is keyed by its text, the same seam a
+  // redirect message uses, so the same sentence from both paths renders once and
+  // keeps the failure the redirect knew about.
+  const stack = stackOf(mainOf(pageWith('en', [
+    { level: 'success', text: 'Repository saved.' },
+  ], { error: 'Repository saved.' })))
+  assert.equal(stack.match(/Repository saved\./g)?.length, 1, 'the same event rendered twice')
+  assert.match(stack, /class="banner bad"/, 'the page entry must not downgrade the redirect failure')
+})
+
+test('the exhausted-quota banner is a stack message, not a second banner outside it', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'stack-quota', status: 'approved', quota: 0 })
+    const html = dashboardPage({
+      config: testConfig(),
+      locale: 'en',
+      viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
+      repos: [],
+      jobs: [],
+      notifications: [],
+    })
+    const main = mainOf(html)
+    const stack = stackOf(main)
+    // The dashboard's next-action card also says the quota is used up; only the
+    // banner sentence counts, and it must exist exactly once, inside the stack.
+    const banner = /Platform quota is used up\. Add your own model API in Settings/g
+    assert.match(stack, banner)
+    assert.equal(main.match(banner)?.length, 1, 'the quota banner rendered outside the stack as well')
+  } finally {
+    store.close()
+  }
+})
+
+test('an add-repository failure stays in its form and does not also render in the stack', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'stack-add', status: 'approved' })
+    const marker = 'ADD-REPO-MARKER-472'
+    const html = dashboardPage({
+      config: testConfig(),
+      locale: 'en',
+      viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
+      repos: [],
+      jobs: [],
+      notifications: [],
+      error: marker,
+    })
+    const main = mainOf(html)
+    assert.equal(main.match(new RegExp(marker, 'g'))?.length, 1, 'the form error rendered twice, in the form and in the stack')
+    assert.match(main, /id="add-repo"[\s\S]*ADD-REPO-MARKER-472/, 'the failure must stay in the add-repository dialog')
+  } finally {
+    store.close()
+  }
 })

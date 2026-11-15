@@ -2155,11 +2155,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         // #546: the release form is on this page, so its outcome has to land here
         // too — a refusal the maintainer cannot see reads as a click that did
         // nothing, and a success that is not confirmed is indistinguishable from
-        // one that never ran.
-        releaseRefused: queryText(request, 'refused'),
-        releaseTagged: queryText(request, 'tagged'),
-        releaseRetagged: queryText(request, 'retagged'),
-        releaseChecked: queryText(request, 'checked'),
+        // one that never ran. #472 slice 3: the outcome now rides in the one-shot
+        // flash (its own slot, so it stays beside the form instead of becoming a
+        // top-of-page notice); a hand-typed query parameter renders nothing.
+        releaseRefused: request.flash?.outcome?.key === 'refused' ? request.flash.outcome.text : undefined,
+        releaseTagged:
+          request.flash?.outcome?.key === 'tagged' || request.flash?.outcome?.key === 'retagged'
+            ? request.flash.outcome.text
+            : undefined,
+        releaseRetagged: request.flash?.outcome?.key === 'retagged' ? '1' : undefined,
+        releaseChecked: request.flash?.outcome?.key === 'checked' ? request.flash.outcome.text : undefined,
       }),
     )
   })

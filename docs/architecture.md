@@ -47,7 +47,14 @@ Page messages are not per-page markup. `notificationStack` in
 one `section.banner-stack` with a single `aria-live="polite"` region inside it,
 ordered by severity where the message is built — `banner bad` first, then the
 `warn` variant, then `banner ok`/plain `banner` — and de-duplicated by key, so
-one event that reaches the page on two paths prints once. Each message carries
+one event that reaches the page on two paths prints once. A page that used to
+render its own ad-hoc banner hands its messages to the layout as
+`notifications` instead, so a page cannot classify the same event a second time
+outside the region; an entry may carry already-escaped `html` when it needs a
+list or a button the plain-text builder cannot express. A message that belongs
+to a form or a control — the release card, the settings provider/email/token
+forms, the schedule cron error, the danger card's stale-confirmation step —
+keeps its place next to that form. Each message carries
 its own `data-dismiss` control, and `public/app.js` hides that node (`hidden`)
 without deleting it or touching any other message, so an announcement is not cut
 off mid-read and a reload starts from the server's answer again. The inbox
@@ -63,7 +70,11 @@ The cookie keeps the message's key beside its text, so a refusal carries its cod
 as the event id; the message is read in `onRequest` and never from the query, so
 a hand-typed `notice`/`error` parameter has no renderer left to reach. The
 redirect interceptor is one `onSend` seam rather than a change at every redirect
-site. `test/flash.test.ts` pins the cookie shape, its caps and the local-only
+site. The cookie keeps a second, separate slot for a release outcome
+(`refused`, `tagged`, `retagged`, `checked`), so the repository page renders
+that sentence inside its release card once and a reload no longer repeats it;
+those parameters are read only on `release=1`, because the same names are plain
+form errors on other pages. `test/flash.test.ts` pins the cookie shape, its caps and the local-only
 rewrite; `test/oneShotNotice.test.ts` pins redirect → cookie → first page →
 reload.
 
