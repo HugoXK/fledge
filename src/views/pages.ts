@@ -1235,7 +1235,18 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, notifications: pageMessages })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; recentAuthAt?: string | null; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: ScheduledNext; securityFindings?: SecurityFindingRow[] }): string {
+// #697: one row per budget scope the repository page can set. The route reads
+// the caps and the spend; the page only decides how they read.
+export interface BudgetScopeView {
+  kind: 'repository' | 'principal'
+  label: string
+  capCny: number
+  spentCny: number
+  action: string
+  unknownCount: number
+}
+
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; recentAuthAt?: string | null; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: ScheduledNext; securityFindings?: SecurityFindingRow[]; budgetScopes?: BudgetScopeView[] }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const workItems = input.workItems ?? []
@@ -1249,6 +1260,12 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const repoDefaultModelId = input.repoDefaultModelId ?? ''
   const botModelMap = new Map((input.repoBotModels ?? []).map((entry) => [entry.role, entry.provider_model_id]))
   const repoSpendCny = input.repoSpendCny ?? 0
+  const budgetScopeRows = input.budgetScopes ?? []
+  const repositoryScope: BudgetScopeView = budgetScopeRows.find((row) => row.kind === 'repository') ?? { kind: 'repository', label: '', capCny: 0, spentCny: 0, action: 'alert', unknownCount: 0 }
+  const principalScope: BudgetScopeView = budgetScopeRows.find((row) => row.kind === 'principal') ?? { kind: 'principal', label: '', capCny: 0, spentCny: 0, action: 'alert', unknownCount: 0 }
+  const budgetActionOptions = (selected: string): string => [['alert', t('只提醒（默认）', 'Alert only (default)')], ['pause', t('暂停任务，可从断点恢复', 'Pause the job; it can resume from its checkpoint')], ['cancel', t('取消任务', 'Cancel the job')]]
+    .map(([value, label]) => `<option value="${value}"${selected === value ? ' selected' : ''}>${escapeHtml(label ?? '')}</option>`)
+    .join('')
   const questions = input.questions ?? []
   const chiefMessages = input.chiefMessages ?? []
   const securityFindings = input.securityFindings ?? []
@@ -1745,6 +1762,24 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           </label>
         </div>
         <p class="fine">${escapeHtml(t('本月已用', 'Spent this month'))} ${escapeHtml(quotaMoney(repoSpendCny))}${repo.monthly_budget_cny > 0 ? ` / ${escapeHtml(quotaMoney(repo.monthly_budget_cny))}` : ''}</p>
+        <div class="row">
+          <label>${escapeHtml(t('仓库预算（元）', 'Repository budget (CNY)'))}${infoTip(t('这个仓库最近 30 天所有任务的成本上限；为空或 0 表示不设上限。', 'A cap on this repository\'s spend over the last 30 days; empty or 0 means no cap.'))} <input name="repoBudget" type="number" min="0" max="10000" step="0.01" value="${repositoryScope.capCny.toFixed(2)}" /></label>
+          <label>${escapeHtml(t('超出仓库预算时', 'When the repository budget is exceeded'))}
+            <select name="repoBudgetAction">${budgetActionOptions(repositoryScope.action)}</select>
+          </label>
+        </div>
+        <div class="row">
+          <label>${escapeHtml(t('用户预算（元）', 'User budget (CNY)'))}${infoTip(t('这个仓库的发起人最近 30 天在所有仓库的成本上限；为空或 0 表示不设上限。', 'A cap on what the person who starts work spends across all repositories in the last 30 days; empty or 0 means no cap.'))} <input name="principalBudget" type="number" min="0" max="10000" step="0.01" value="${principalScope.capCny.toFixed(2)}" /></label>
+          <label>${escapeHtml(t('超出用户预算时', 'When the user budget is exceeded'))}
+            <select name="principalBudgetAction">${budgetActionOptions(principalScope.action)}</select>
+          </label>
+        </div>
+        ${budgetScopeRows.length === 0 ? '' : `<div class="table-scroll"><table class="list budget-scopes">
+          <caption class="fine">${escapeHtml(t('预算作用域（最近 30 天）', 'Budget scopes (last 30 days)'))}</caption>
+          <thead><tr><th>${escapeHtml(t('作用域', 'Scope'))}</th><th>${escapeHtml(t('预算', 'Cap'))}</th><th>${escapeHtml(t('30 天已用', 'Spent (30 days)'))}</th></tr></thead>
+          <tbody>${budgetScopeRows.map((row) => `<tr><td>${escapeHtml(row.kind === 'repository' ? t('仓库', 'Repository') : t('用户', 'User'))} ${escapeHtml(row.label)}</td><td>${row.capCny > 0 ? escapeHtml(quotaMoney(row.capCny)) : escapeHtml(t('未设置', 'no cap'))}</td><td>${escapeHtml(quotaMoney(row.spentCny))}</td></tr>`).join('')}</tbody>
+        </table></div>`}
+        ${budgetScopeRows.filter((row) => row.unknownCount > 0).map((row) => `<p class="fine">${escapeHtml(`${row.label}: ${t(`有 ${row.unknownCount} 次调用无法计价，因此这里的已用金额是下界。`, `${row.unknownCount} calls could not be priced, so this spend is a lower bound.`)}`)}</p>`).join('')}
         <div class="row">
           <label class="grow">${escapeHtml(t('可用模型', 'Available models'))}${infoTip(t('提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。', 'Providers and models are managed in Settings; select only the models this repository may use.'))}
             ${models.length === 0

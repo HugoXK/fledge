@@ -408,7 +408,9 @@ per day. Test mail is rate-limited to one per minute.
   login selects nothing. The erasure is: one transaction deletes every row that names it or one of
   its repositories — including `sessions`, `api_tokens`, `repo_instances` and the
   other repo-scoped tables the cascade reaches, plus the plain-column rows no
-  cascade sees (`artifact_versions.repo_id`, `audit_log.user_id`, `events`) and
+  cascade sees (`artifact_versions.repo_id`, `audit_log.user_id`, `events`, and
+  `budget_scopes`, whose `principal:user:<id>` and `repository:<repo_id>` keys
+  name the account without a `user_id` column) and
   the six `settings` shapes that carry the account in the key or the value
   (`quota_notified:`, `digest_sent:`, `email_test:`, `email_reply:`,
   `github_app_state:`, `installation_sender:`). An account that gained a

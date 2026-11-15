@@ -1954,6 +1954,7 @@ listing, and every row links to the page that already owns it.
 | `scoped_grants` | explicit capability grants with source, evidence, expiry, revocation and revision (#541) |
 | `identity_migrations` | one report row per identity backfill version (#541) |
 | `security_findings` | one row per `rule + path + line` a job reported, with `open`/`fixed`/`dismissed`/`regressed`, the job that dismissed it and the written reason or evidence; absence from a later report never moves a row (#379) |
+| `budget_scopes` | one stored CNY cap per scope — `repository` keyed by repository id, `principal` keyed by `principal:user:<id>` — with the action it takes (`alert`/`pause`/`cancel`); a missing row means no cap, never a zero cap, and the job scope keeps reading `repos.job_budget_cny` (#697) |
 | `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
 
 ## Deployment records
