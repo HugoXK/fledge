@@ -1,6 +1,7 @@
 import type { Config } from '../config.js'
 import type { CostReport } from '../metrics/cost.js'
 import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow, TaskRelationRow } from '../db.js'
+import { assetUrl } from '../lib/assetVersion.js'
 import { redactCommand, type DriftAssessment, type EnvironmentCurrent, type ReleaseSnapshot } from '../lib/deployments.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
@@ -1645,7 +1646,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     }).join('')}</ul>`}
   </section>`
   const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${planBanner}${lifecycleBanner}${triageCard}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceNotice}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
-  return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : '<script src="/assets/chief.js" defer></script>'}<script src="/assets/repoTabs.js" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
+  return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : `<script src="${assetUrl('/assets/chief.js')}" defer></script>`}<script src="${assetUrl('/assets/repoTabs.js')}" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
 }
 
 function workItemStageLabel(t: Translate, state: string): string {
@@ -1821,7 +1822,7 @@ export function teamPage(input: {
     ${jobTable(locale, jobs, { body: t('去这个仓库的页面运行第一个任务；每次运行最多开一个 PR。', 'Run the first job from this repository page; each run opens at most one pull request.'), action: { href: `/repos/${escapeHtml(repo.id)}`, label: t('去仓库运行', 'Run from the repository') } }, { id: 'team-jobs-table', ranks })}
     ${pager(`/repos/${repo.id}`, 'jobsPage', jobsPage, jobsTotal, 10, t, {}, '#jobs')}
   </section>
-  <script src="/assets/team.js" defer></script>`
+  <script src="${assetUrl('/assets/team.js')}" defer></script>`
   return layout({ title: t('团队工作台', 'Team console'), viewer, body, config, locale, path: `/repos/${repo.id}/team`, active: 'dashboard', notice, error })
 }
 
@@ -2515,7 +2516,7 @@ export function applicationStatusPage(input: {
     ${rejected ? '' : `<p class="fine">${escapeHtml(t('管理员通常在一个工作日内处理。邮件可能进入垃圾箱；也可以回到本页查看状态。', 'The administrator usually reviews within one business day. Check your spam folder or return to this page for the status.'))}</p>`}
     <form method="post" action="/auth/logout">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('退出登录', 'Sign out'))}</button></form>
   </section>
-  <script src="/assets/application.js" defer></script>`
+  <script src="${assetUrl('/assets/application.js')}" defer></script>`
   return layout({ title: rejected ? t('申请未通过', 'Application not approved') : t('申请状态', 'Application status'), viewer, body, config, locale, path: '/apply/status', notice, error })
 }
 
