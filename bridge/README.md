@@ -40,6 +40,23 @@ loopback only; keep it that way.
 
 ## Contract
 
+Every path except `/healthz` needs `Authorization: Bearer $BRIDGE_TOKEN`, and the
+listener stays on loopback. `test/bridgeContract.test.ts` pins this table against
+the real file.
+
+| Request | Status | Body |
+|---|---|---|
+| `GET /healthz` | `200` | `{ok, service:'fledge-flybot-bridge', modelProxy}` |
+| `POST /run`, accepted | `202` | `{ok:true, accepted:true}` |
+| `POST /run`, `POST /dsh`, `POST /job-done`, malformed JSON | `400` | `{error:'invalid JSON'}` |
+| `POST /run`, a required field missing | `400` | `{error:'jobId, credentialUrl and callbackUrl are required'}` |
+| `POST /dsh`, no `endpoint` | `400` | `{error:'endpoint required'}` |
+| any path without the token | `401` | `{error:'unauthorized'}` |
+| an unknown path, or a method other than `POST` | `404` | `{error:'not found'}` |
+| a body over `MAX_PROMPT_BYTES` | `413` | `{error:'body too large'}` |
+| a DSH send or `/dsh` call that fails | `502` | `{error}` for `/dsh`; `/run` adds the redacted `detail` |
+| `POST /job-done` | `200` | `{ok:true}`, and it clears the per-job model token |
+
 `POST /run` with `Authorization: Bearer $BRIDGE_TOKEN`:
 
 ```json

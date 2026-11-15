@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -18,7 +18,7 @@ import type { Runner } from '../src/jobs/runner.js'
 import { classifyFailure, failureSentence } from '../src/lib/failure.js'
 import { retryDecision } from '../src/lib/retry.js'
 import { encryptSecret } from '../src/lib/secrets.js'
-import { makeUser, MemoryMailer, testConfig } from './helpers.js'
+import { BRIDGE_TOKEN, makeUser, MemoryMailer, startBridge, testConfig, writeDshLog } from './helpers.js'
 
 // #260: the reviewer session of a repository instance answered the DSH send
 // with 202, never started a model call because the provider was over budget, and
@@ -188,43 +188,10 @@ test('a genuine no-heartbeat job still fails as stalled', async () => {
 // The bridge is the only place that sees DSH's answer to the send, and it used
 // to throw that answer away: every send failure became `could not reach DSH`, so
 // the budget text never reached `jobs.error`.
-async function freePort(): Promise<number> {
-  const { server, port } = await listen((_request, response) => response.writeHead(200).end())
-  await close(server)
-  return port
-}
-
-async function spawnBridge(web: string, logPath: string): Promise<{ child: ReturnType<typeof spawn>; port: number }> {
-  const port = await freePort()
-  const child = spawn(process.execPath, [join(process.cwd(), 'bridge/flybot-bridge.mjs')], {
-    env: {
-      ...process.env,
-      BRIDGE_PORT: String(port),
-      BRIDGE_HOST: '127.0.0.1',
-      BRIDGE_TOKEN: 'bridge-token-for-the-test',
-      FLYBOT_CHAT_SESSION_ID: 'session-test',
-      FLYBOT_WEB: web,
-      FLYBOT_LOG: logPath,
-      MODEL_PROXY_PORT: '0',
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  const deadline = Date.now() + 10_000
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/healthz`)
-      if (response.ok) return { child, port }
-    } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 100))
-  }
-  child.kill('SIGKILL')
-  throw new Error('the bridge did not answer /healthz')
-}
-
 test('the bridge relays the DSH refusal instead of calling it an unreachable bridge', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'fledge-provider-'))
   const logPath = join(dir, 'dsh-web.log')
-  writeFileSync(logPath, 'dsh web listening url=http://127.0.0.1:3080/?token=testtoken\n')
+  writeDshLog(logPath, 'testtoken')
   const dsh = await listen((request, response) => {
     if (request.method === 'GET') {
       response.writeHead(200, { 'set-cookie': 'dsh=ok; Path=/' }).end('ok')
@@ -236,13 +203,13 @@ test('the bridge relays the DSH refusal instead of calling it an unreachable bri
       jsonBody(response, 429, { error: { message: BUDGET_TEXT } })
     })
   })
-  let child: ReturnType<typeof spawn> | undefined
+  let child: ChildProcess | undefined
   try {
-    const bridge = await spawnBridge(`http://127.0.0.1:${dsh.port}`, logPath)
+    const bridge = await startBridge({ web: `http://127.0.0.1:${dsh.port}`, log: logPath })
     child = bridge.child
     const response = await fetch(`http://127.0.0.1:${bridge.port}/run`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer bridge-token-for-the-test' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${BRIDGE_TOKEN}` },
       body: JSON.stringify({
         jobId: 'job_provider_refused',
         kind: 'review',
