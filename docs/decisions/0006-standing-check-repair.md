@@ -39,10 +39,13 @@ Three consequences follow from it:
 1. The repair step reads check runs with `filter=all`. `filter=latest` returns
    only the newest check run per name, which is precisely the view that hid the
    failing suite in `#175`.
-2. A PASS repairs every failed `Review gate` run at the sha whose own
-   `review-gate` job failed, because re-running that run is the only action that
-   replaces the check run inside the red suite. Re-running a run of another
-   workflow, or starting a new run, opens a new suite and leaves the red standing.
+2. A PASS repairs every failed run of the workflow that owns each required context
+   at the sha whose own job of that context failed, because re-running that run is
+   the only action that replaces the check run inside the red suite. Re-running a
+   run of another workflow, or starting a new run, opens a new suite and leaves the
+   red standing. `pr-lint` has owned `.github/workflows/pr-lint.yml` since `#753`,
+   so it is repaired by a run of that workflow and never by `Review gate`; `ci-ok`
+   is not a target at all, because no verdict can make a tree check wrong.
 3. A run is repairable while `run_attempt <= MAX_REPAIR_ATTEMPT` (2). A run that a
    person already re-ran by hand sat on attempt 2 — the state a PASS usually
    arrives into — so attempt 1 only is too narrow. The cap is the loop bound:
@@ -96,6 +99,31 @@ arrives. Measured on the case the amendment exists for — reds at `00:28:08Z`,
 `00:30:48Z`, `00:31:54Z` in suite `116791416250`, PASS at `00:42:39Z`, repaint green
 at `00:56:26Z` in the same suite — every red predates the verdict and the repaint
 postdates it.
+
+## Amendment 2026-11-15 (#770): the target is the workflow that owns the wrong context
+
+Consequence 2 said "every failed `Review gate` run", and the planner hard-coded
+that: `REQUIRED_CONTEXT = 'review-gate'` gated the check-run read
+(`scripts/gate-repair.mjs`), the candidate filter, the PASS target list and the
+rejection test. That was right while `pr-lint` was the last job of
+`review-gate.yml`. `#753` moved it into `.github/workflows/pr-lint.yml` with its
+own `edited` trigger, and from then on a body edit repainted `pr-lint` while the
+repair path could not: the plan filtered runs to `Review gate`, found no red
+`review-gate`, and exited 0 with "nothing to do" over a tip whose only red
+required context was `pr-lint`. The merge stayed blocked and the log said the tip
+was fine.
+
+The decision is unchanged and so is every bound; only the set of workflows a
+repair may re-run grows. `REPAIRABLE_CONTEXTS` in `scripts/lib/gate-repair.mjs`
+pairs each required context a verdict can invalidate with the one workflow that
+owns it — `review-gate` → `Review gate`, `pr-lint` → `pr-lint` — and a PASS re-runs
+the failed, below-cap run of that workflow whose own job of that name failed. A run
+of another workflow is still never a target, for the same reason as consequence 2,
+and a context that already carries the expected conclusion is left alone. The
+rejection path stays scoped to `review-gate`: a red `pr-lint` is a different
+context and must not read as "the rejection is already visible". A red in a
+non-gate context with no repairable run behind it is reported as blocked rather
+than passed. `ci-ok` is not in the table: no verdict can make a tree check wrong.
 
 ## Rejected
 
