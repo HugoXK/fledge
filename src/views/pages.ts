@@ -2090,6 +2090,11 @@ const AUDIT_ACTIONS: Record<string, [string, string]> = {
   'flybot.instance.ready': ['FlyBot 实例就绪', 'FlyBot instance ready'],
   'flybot.instance.failed': ['FlyBot 实例失败', 'FlyBot instance failed'],
   'flybot.instance.stopped': ['FlyBot 实例停止', 'FlyBot instance stopped'],
+  'flybot.instance.auto_restarted': ['自动重启实例', 'Instance auto-restarted'],
+  'flybot.instance.recovered': ['实例已恢复', 'Instance recovered'],
+  'session.revoked': ['撤销会话', 'Session revoked'],
+  'admin.support_view': ['查看支持详情', 'Support view'],
+  'job.cancelled': ['任务取消', 'Job cancelled'],
   'token.created': ['创建 token', 'Token created'],
   'token.revoked': ['撤销 token', 'Token revoked'],
   'model.saved': ['保存模型', 'Model saved'],
@@ -2127,6 +2132,30 @@ function auditTone(action: string): string {
   return ''
 }
 
+function auditLinkify(text: string): string {
+  const parts = text.split(/(\b(?:job|repo|usr)_[A-Za-z0-9_-]+\b)/g)
+  return parts.map((part) => {
+    if (!/^(?:job|repo|usr)_/.test(part)) return escapeHtml(part)
+    const href = part.startsWith('job_') ? `/admin/jobs/${part}` : part.startsWith('repo_') ? `/repos/${part}` : `/admin/users/${part}`
+    return `<a href="${escapeHtml(href)}">${escapeHtml(part)}</a>`
+  }).join('')
+}
+
+function auditDetailHtml(t: Translate, detail: string): string {
+  if (detail === '') return '—'
+  const chips: string[] = []
+  const rest = detail.replace(/\b([A-Za-z][\w.-]*)=("[^"]*"|[^\s]+)/g, (_match, key: string, value: string) => {
+    chips.push(`<span class="kv"><b>${escapeHtml(key)}</b>${escapeHtml(value.replace(/^"|"$/g, ''))}</span>`)
+    return ' '
+  }).replace(/\s+/g, ' ').trim()
+  const restHtml = rest === ''
+    ? ''
+    : rest.length > 160
+      ? `<span>${auditLinkify(rest.slice(0, 120))}…</span><details class="audit-more"><summary>${escapeHtml(t('展开详情', 'Show details'))}</summary><pre>${escapeHtml(rest)}</pre></details>`
+      : `<span>${auditLinkify(rest)}</span>`
+  return `<div class="audit-detail" title="${escapeHtml(detail)}">${chips.join('')}${restHtml}</div>`
+}
+
 function auditRows(locale: Locale, audit: AuditRow[], usersById: Map<string, string>, hideActor = false): string {
   const t = translator(locale)
   if (audit.length === 0) return stateCell(4, { kind: 'empty', title: t('暂无记录。', 'No records yet.'), body: t('审批、任务和设置变更都会写进审计；现在还没有任何一条。', 'Approvals, jobs and setting changes are audited; there is nothing yet.'), action: { href: '/dashboard', label: t('回到仓库', 'Back to repositories') } })
@@ -2141,17 +2170,17 @@ function auditRows(locale: Locale, audit: AuditRow[], usersById: Map<string, str
       if (detail === `@${actor}`) detail = ''
       if (hideActor) detail = detail.replace(/\bby @[A-Za-z0-9-]+\b/g, t('由管理员操作', 'by an administrator'))
       const tone = auditTone(row.action)
-      const rawAction = AUDIT_ACTIONS[row.action] === undefined ? '' : row.action
       const actorHtml = hideActor
         ? escapeHtml(t('管理员 / 系统', 'Admin / System'))
         : actor === undefined
           ? escapeHtml(t('系统', 'System'))
           : `@${escapeHtml(actor)}${target === undefined ? '' : ` <span class="muted">→ @${escapeHtml(target)}</span>`}`
+      const detailHtml = auditDetailHtml(t, detail)
       return `<tr>
         <td class="nowrap" data-label="${escapeHtml(t('时间', 'Time'))}"><span title="${escapeHtml(row.at)}">${escapeHtml(humanTimeShort(row.at))}</span></td>
-        <td data-label="${escapeHtml(t('动作', 'Action'))}"><span class="badge ${tone}">${escapeHtml(auditLabel(t, row.action))}</span>${rawAction === '' ? '' : `<br /><small class="muted">${escapeHtml(rawAction)}</small>`}</td>
+        <td data-label="${escapeHtml(t('动作', 'Action'))}"><span class="badge ${tone}" title="${escapeHtml(row.action)}">${escapeHtml(auditLabel(t, row.action))}</span></td>
         <td class="nowrap" data-label="${escapeHtml(t('操作者', 'Actor'))}">${actorHtml}</td>
-        <td data-priority="low" data-label="${escapeHtml(t('详情', 'Detail'))}">${detail === '' ? '—' : `<span title="${escapeHtml(hideActor ? detail : rawDetail)}">${escapeHtml(detail.slice(0, 160))}</span>`}</td>
+        <td data-priority="low" data-label="${escapeHtml(t('详情', 'Detail'))}">${detailHtml}</td>
       </tr>`
     })
     .join('')
@@ -3750,7 +3779,7 @@ export function adminSearchPage(input: {
   jobs: JobRow[]
   audit: AuditRow[]
   usersById: Map<string, string>
-  filters: { q: string; status: string; kind: string; priority: string; action: string; from: string; to: string }
+  filters: { q: string; status: string; kind: string; priority: string; action: string; from: string; to: string; view: 'jobs' | 'audit' }
   jobsPage: number
   jobsTotal: number
   auditPage: number
@@ -3777,10 +3806,56 @@ export function adminSearchPage(input: {
   const auditTable = auditRows(locale, audit, usersById, false)
   const jobQuery = query({ q: filters.q, status: filters.status, kind: filters.kind, priority: filters.priority })
   const auditQuery = query({ q: filters.q, action: filters.action, from: filters.from, to: filters.to })
+  const view = filters.view
+  const isAudit = view === 'audit'
+  const hasFilter = [filters.q, filters.status, filters.kind, filters.priority, filters.action, filters.from, filters.to].some((value) => value !== '')
+  const tabHref = (target: 'jobs' | 'audit'): string => `/admin/search?${query({ view: target, q: filters.q })}`
+  const tab = (target: 'jobs' | 'audit', label: string, total: number): string =>
+    `<a class="search-tab${view === target ? ' is-active' : ''}" href="${escapeHtml(tabHref(target))}"${view === target ? ' aria-current="page"' : ''}>${escapeHtml(label)} <span class="count">${total}</span></a>`
+  const queryField = `<label class="filter-query">${escapeHtml(t('关键词', 'Query'))}<input type="search" name="q" value="${escapeHtml(filters.q)}" placeholder="${escapeHtml(t('搜索任务、仓库、用户或审计详情', 'Search jobs, repositories, users or audit detail'))}" autocomplete="off" /></label>`
+  const statusField = `<label>${escapeHtml(t('状态', 'Status'))}<select name="status"><option value="">${escapeHtml(t('全部状态', 'All statuses'))}</option>${JOB_FILTER_STATUSES.map((status) => `<option value="${status}"${filters.status === status ? ' selected' : ''}>${escapeHtml(statusFilterLabel(t, status))}</option>`).join('')}</select></label>`
+  const kindField = `<label>${escapeHtml(t('类型', 'Kind'))}<select name="kind"><option value="">${escapeHtml(t('全部类型', 'All kinds'))}</option>${JOB_FILTER_KINDS.map((kind) => `<option value="${kind}"${filters.kind === kind ? ' selected' : ''}>${escapeHtml(kindFilterLabel(t, kind))}</option>`).join('')}</select></label>`
+  const priorityField = `<label>${escapeHtml(t('优先级', 'Priority'))}<select name="priority"><option value="">${escapeHtml(t('全部级别', 'All levels'))}</option>${PRIORITY_LEVELS.map((level) => `<option value="${level}"${filters.priority === level ? ' selected' : ''}>${escapeHtml(level)} — ${escapeHtml(priorityLevelLabel(t, level))}</option>`).join('')}</select></label>`
+  const actionField = `<label>${escapeHtml(t('动作', 'Action'))}<input type="search" name="action" value="${escapeHtml(filters.action)}" placeholder="repo.settings" autocomplete="off" /></label>`
+  const fromField = `<label>${escapeHtml(t('从', 'From'))}<input type="date" name="from" value="${escapeHtml(filters.from.slice(0, 10))}" /></label>`
+  const toField = `<label>${escapeHtml(t('到', 'To'))}<input type="date" name="to" value="${escapeHtml(filters.to.slice(0, 10))}" /></label>`
+  const activeTotal = isAudit ? auditTotal : jobsTotal
+  const activePage = isAudit ? auditPage : jobsPage
+  const activeQuery = isAudit ? auditQuery : jobQuery
+  const filterForm = `<form method="get" action="/admin/search" class="search-filters" role="search">
+    <input type="hidden" name="view" value="${view}" />
+    <div class="filter-grid">${queryField}${isAudit ? actionField + fromField + toField : statusField + kindField + priorityField}</div>
+    <div class="filter-actions">
+      <button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button>
+      ${hasFilter ? `<a class="link" href="/admin/search?view=${view}">${escapeHtml(t('清除筛选', 'Clear filters'))}</a>` : ''}
+      <a class="btn btn-ghost filter-export" href="/admin/export/${isAudit ? 'audit' : 'jobs'}.csv?${escapeHtml(activeQuery)}" title="${escapeHtml(t('导出当前筛选结果', 'Export the current filtered result'))}">${escapeHtml(t('导出 CSV', 'Export CSV'))} (${activeTotal})</a>
+    </div>
+  </form>`
+  const table = isAudit
+    ? `<div class="table-scroll"><table class="table-cards table-priority" id="search-audit-table" aria-label="${escapeHtml(t('审计', 'Audit'))}"><thead><tr><th scope="col">${escapeHtml(t('时间', 'Time'))}</th><th scope="col">${escapeHtml(t('动作', 'Action'))}</th><th scope="col">${escapeHtml(t('操作者', 'Actor'))}</th><th scope="col" data-priority="low">${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${auditTable}</tbody></table></div>`
+    : `<div class="table-scroll"><table><thead><tr><th scope="col">${escapeHtml(t('任务', 'Job'))}</th><th scope="col">${escapeHtml(t('状态', 'Status'))}</th><th scope="col">${escapeHtml(t('用户', 'User'))}</th><th scope="col">PR / Issue</th></tr></thead><tbody>${jobRows}</tbody></table></div>`
+  const activePager = isAudit
+    ? pager('/admin/search', 'auditPage', auditPage, auditTotal, perPage, t, { view: 'audit', q: filters.q, action: filters.action, from: filters.from, to: filters.to })
+    : pager('/admin/search', 'jobsPage', jobsPage, jobsTotal, perPage, t, { view: 'jobs', q: filters.q, status: filters.status, kind: filters.kind, priority: filters.priority })
   const body = `<a class="back" href="/admin">← ${escapeHtml(t('返回管理', 'Back to admin'))}</a>
-    <section class="card"><div class="eyebrow">${escapeHtml(t('搜索与导出', 'SEARCH & EXPORT'))}</div><h1>${escapeHtml(t('审计与任务', 'Audit and jobs'))}</h1><p class="muted">${escapeHtml(t('按用户范围过滤；可导出当前结果。', 'Scoped by the same user visibility as the admin page; export the current result.'))}</p></section>
-    <section class="card"><h2>${escapeHtml(t('任务', 'Jobs'))}</h2><form method="get" action="/admin/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" /></label><label>${escapeHtml(t('状态', 'Status'))} <select name="status"><option value="">${escapeHtml(t('全部', 'All'))}</option>${JOB_FILTER_STATUSES.map((status) => `<option value="${status}"${filters.status === status ? ' selected' : ''}>${escapeHtml(statusFilterLabel(t, status))}</option>`).join('')}</select></label><label>${escapeHtml(t('类型', 'Kind'))} <select name="kind"><option value="">${escapeHtml(t('全部', 'All'))}</option>${JOB_FILTER_KINDS.map((kind) => `<option value="${kind}"${filters.kind === kind ? ' selected' : ''}>${escapeHtml(kindFilterLabel(t, kind))}</option>`).join('')}</select></label><label>${escapeHtml(t('优先级', 'Priority'))} <select name="priority"><option value="">${escapeHtml(t('全部', 'All'))}</option>${PRIORITY_LEVELS.map((level) => `<option value="${level}"${filters.priority === level ? ' selected' : ''}>${escapeHtml(level)}</option>`).join('')}</select></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button><a class="btn btn-ghost" href="/admin/export/jobs.csv?${escapeHtml(jobQuery)}">${escapeHtml(t('导出 CSV', 'Export CSV'))}</a></div></form>${lastExportLine(lastJobsExport)}<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('用户', 'User'))}</th><th>PR / Issue</th></tr></thead><tbody>${jobRows}</tbody></table></div><p class="fine">${escapeHtml(t('共', 'Total'))} ${jobsTotal} · ${escapeHtml(t('第', 'Page'))} ${jobsPage}</p>${pager('/admin/search', 'jobsPage', jobsPage, jobsTotal, perPage, t, { q: filters.q, status: filters.status, kind: filters.kind, priority: filters.priority, auditPage })}</section>
-    <section class="card"><h2>${escapeHtml(t('审计', 'Audit'))}</h2><form method="get" action="/admin/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" /></label><label>${escapeHtml(t('动作', 'Action'))} <input name="action" value="${escapeHtml(filters.action)}" placeholder="repo.settings" /></label><label>${escapeHtml(t('从', 'From'))} <input name="from" value="${escapeHtml(filters.from)}" placeholder="YYYY-MM-DD" /></label><label>${escapeHtml(t('到', 'To'))} <input name="to" value="${escapeHtml(filters.to)}" placeholder="YYYY-MM-DD" /></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button><a class="btn btn-ghost" href="/admin/export/audit.csv?${escapeHtml(auditQuery)}">${escapeHtml(t('导出 CSV', 'Export CSV'))}</a></div></form>${lastExportLine(lastAuditExport)}${auditTable}<p class="fine">${escapeHtml(t('共', 'Total'))} ${auditTotal} · ${escapeHtml(t('第', 'Page'))} ${auditPage}</p>${pager('/admin/search', 'auditPage', auditPage, auditTotal, perPage, t, { q: filters.q, action: filters.action, from: filters.from, to: filters.to, jobsPage })}</section>`
+    <section class="card">
+      <div class="row between search-head">
+        <div>
+          <div class="eyebrow">${escapeHtml(t('搜索与导出', 'SEARCH & EXPORT'))}</div>
+          <h1>${escapeHtml(t('审计与任务', 'Audit and jobs'))}</h1>
+          <p class="muted">${escapeHtml(t('按用户范围过滤；切换任务或审计，只显示当前筛选。', 'Scoped by the same user visibility as the admin page; switch between jobs and audit, and only the active filter is applied.'))}</p>
+        </div>
+        <nav class="search-tabs" aria-label="${escapeHtml(t('任务或审计', 'Jobs or audit'))}">${tab('jobs', t('任务', 'Jobs'), jobsTotal)}${tab('audit', t('审计', 'Audit'), auditTotal)}</nav>
+      </div>
+      ${filterForm}
+      ${lastExportLine(isAudit ? lastAuditExport : lastJobsExport)}
+    </section>
+    <section class="card" id="${isAudit ? 'audit' : 'jobs'}">
+      <div class="row between"><h2>${escapeHtml(isAudit ? t('审计', 'Audit') : t('最近任务', 'Recent jobs'))} <small class="count">${activeTotal}</small></h2><span class="fine">${escapeHtml(t('每页 20 条', '20 per page'))}</span></div>
+      ${table}
+      <p class="fine">${escapeHtml(t('共', 'Total'))} ${activeTotal} · ${escapeHtml(t('第', 'Page'))} ${activePage}</p>
+      ${activePager}
+    </section>`
   return layout({ title: t('审计与任务', 'Audit and jobs'), viewer, body, config, locale, path: '/admin/search', active: 'admin', notice, error })
 }
 

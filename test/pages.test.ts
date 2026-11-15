@@ -1883,39 +1883,42 @@ test('a job stopped by its budget names the action and the next step, in both la
   }
 })
 
-test('admin search links every later page and keeps the filters per section', () => {
+test('admin search links every later page and keeps the active tab filters', () => {
   const config = testConfig()
   const store = new Store(':memory:')
   try {
     const user = makeUser(store, { login: 'search-pager', status: 'approved' })
     const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
-    const filters = { q: 'x', status: 'failed', kind: 'iterate', priority: '', action: 'repo.settings', from: '2026-01-01', to: '2026-01-31' }
-    const page = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map([[user.id, user.login]]), filters, jobsPage: 1, jobsTotal: 45, auditPage: 2, auditTotal: 60, perPage: 20, lastJobsExport: null, lastAuditExport: null })
+    const filters = { q: 'x', status: 'failed', kind: 'iterate', priority: '', action: 'repo.settings', from: '2026-01-01', to: '2026-01-31', view: 'jobs' as const }
+    const jobsPage = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map([[user.id, user.login]]), filters, jobsPage: 1, jobsTotal: 45, auditPage: 2, auditTotal: 60, perPage: 20, lastJobsExport: null, lastAuditExport: null })
 
-    const jobsNext = page.match(/href="([^"]*jobsPage=2[^"]*)"/)?.at(1)
-    assert.ok(jobsNext, 'the jobs section links to its own second page')
+    const jobsNext = jobsPage.match(/href="([^"]*jobsPage=2[^"]*)"/)?.at(1)
+    assert.ok(jobsNext, 'the jobs tab links to its own second page')
     assert.match(jobsNext, /q=x/, 'the jobs link keeps the keyword')
     assert.match(jobsNext, /status=failed/, 'the jobs link keeps the status filter')
     assert.match(jobsNext, /kind=iterate/, 'the jobs link keeps the kind filter')
-    assert.match(jobsNext, /auditPage=2/, 'the jobs link keeps the audit section on its page')
+    assert.match(jobsNext, /view=jobs/, 'the jobs link keeps the active tab')
     assert.doesNotMatch(jobsNext, /action=/, 'the jobs link carries no audit-only filter')
+    assert.doesNotMatch(jobsNext, /auditPage=/, 'the jobs link carries no audit page')
 
-    const auditNext = page.match(/href="([^"]*auditPage=3[^"]*)"/)?.at(1)
-    assert.ok(auditNext, 'the audit section links to its own next page')
+    const auditPage = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map([[user.id, user.login]]), filters: { ...filters, view: 'audit' as const }, jobsPage: 1, jobsTotal: 45, auditPage: 2, auditTotal: 60, perPage: 20, lastJobsExport: null, lastAuditExport: null })
+    const auditNext = auditPage.match(/href="([^"]*auditPage=3[^"]*)"/)?.at(1)
+    assert.ok(auditNext, 'the audit tab links to its own next page')
     assert.match(auditNext, /q=x/, 'the audit link keeps the keyword')
     assert.match(auditNext, /action=repo\.settings/, 'the audit link keeps the action filter')
     assert.match(auditNext, /from=2026-01-01/, 'the audit link keeps the date range')
-    assert.match(auditNext, /jobsPage=1/, 'the audit link keeps the jobs section on its page')
+    assert.match(auditNext, /view=audit/, 'the audit link keeps the active tab')
     assert.doesNotMatch(auditNext, /status=/, 'the audit link carries no jobs-only filter')
+    assert.doesNotMatch(auditNext, /jobsPage=/, 'the audit link carries no jobs page')
 
-    const short = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map(), filters, jobsPage: 1, jobsTotal: 20, auditPage: 1, auditTotal: 20, perPage: 20, lastJobsExport: null, lastAuditExport: null })
-    assert.doesNotMatch(short, /jobsPage=2/, 'a section that fits one page renders no jobs pager')
-    assert.doesNotMatch(short, /auditPage=2/, 'a section that fits one page renders no audit pager')
+    const shortJobs = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map(), filters, jobsPage: 1, jobsTotal: 20, auditPage: 1, auditTotal: 20, perPage: 20, lastJobsExport: null, lastAuditExport: null })
+    assert.doesNotMatch(shortJobs, /jobsPage=2/, 'a tab that fits one page renders no jobs pager')
+    const shortAudit = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map(), filters: { ...filters, view: 'audit' as const }, jobsPage: 1, jobsTotal: 20, auditPage: 1, auditTotal: 20, perPage: 20, lastJobsExport: null, lastAuditExport: null })
+    assert.doesNotMatch(shortAudit, /auditPage=2/, 'a tab that fits one page renders no audit pager')
   } finally {
     store.close()
   }
 })
-
 // #453 review: the settings page linked its zero-token empty state at `#tokens`
 // while the card carrying that anchor did not exist, so the visual matrix's
 // `getElementById('tokens')` returned null and its "section clears the sticky

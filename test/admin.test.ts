@@ -568,3 +568,40 @@ test('the search page shows the newest export for the viewer: when, rows, scope 
     await built.close()
   }
 })
+
+test('admin search uses one toolbar and renders audit details as structure, not a log line', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'search-ui-admin', admin: true })
+    const user = makeUser(store, { login: 'search-ui-user', status: 'approved' })
+    store.audit(user.id, 'repo.refreshed', 'permission=admin role=maintainer auto=role-recheck')
+    store.audit(user.id, 'flybot.instance.auto_restarted', `repo_abc: Error: ${'bridge '.repeat(40)}`)
+    const { cookie } = sessionFor(built, admin)
+
+    const jobs = await built.app.inject({ method: 'GET', url: '/admin/search', headers: { cookie } })
+    assert.equal(jobs.statusCode, 200)
+    assert.match(jobs.body, /<form[^>]*class="search-filters"[^>]*role="search"/)
+    assert.equal((jobs.body.match(/name="q"/g) ?? []).length, 1, 'one query field, not one per card')
+    assert.match(jobs.body, /type="search"[^>]*name="q"/)
+    assert.match(jobs.body, /class="search-tab[^"]*"[^>]*aria-current="page"/)
+    assert.match(jobs.body, /P0 —/, 'the priority option carries its console label')
+
+    const audit = await built.app.inject({ method: 'GET', url: '/admin/search?view=audit', headers: { cookie } })
+    assert.equal(audit.statusCode, 200)
+    assert.match(audit.body, /type="date"[^>]*name="from"/)
+    assert.match(audit.body, /type="date"[^>]*name="to"/)
+    assert.match(audit.body, /<span class="kv"><b>permission<\/b>admin<\/span>/)
+    assert.match(audit.body, /<span class="kv"><b>role<\/b>maintainer<\/span>/)
+    assert.doesNotMatch(audit.body, /<small class="muted">repo\.refreshed<\/small>/, 'the action label is not repeated as a raw line')
+    assert.match(audit.body, /自动重启实例/, 'the flybot event has a human label')
+    assert.match(audit.body, /<details class="audit-more">/, 'a long error is collapsed')
+    assert.match(audit.body, /\/admin\/export\/audit\.csv\?/)
+
+    const filtered = await built.app.inject({ method: 'GET', url: '/admin/search?view=audit&action=repo.refreshed&from=2026-11-01&to=2026-11-15', headers: { cookie } })
+    assert.match(filtered.body, /\/admin\/export\/audit\.csv\?[^"]*action=repo\.refreshed/)
+  } finally {
+    await built.close()
+  }
+})
