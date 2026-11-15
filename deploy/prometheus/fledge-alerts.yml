@@ -64,3 +64,12 @@ groups:
         annotations:
           summary: Fledge has open operational alerts
           runbook_url: https://github.com/HugoXK/fledge/blob/main/docs/observability.md
+
+      - alert: FledgeClockSkewHigh
+        expr: abs(fledge_clock_skew_seconds) > 120
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Fledge's clock is more than two minutes away from GitHub time
+          runbook_url: https://github.com/HugoXK/fledge/blob/main/docs/deploy.md

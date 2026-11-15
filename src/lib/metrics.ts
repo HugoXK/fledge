@@ -58,6 +58,12 @@ export function setGauge(name: string, value: number, labels: MetricLabels = {},
   gauges.set(key, { name, help, labels, value })
 }
 
+// #758: a gauge whose value is unknown is removed rather than published as 0, so a
+// dashboard cannot read "no measurement" as "everything is fine".
+export function clearGauge(name: string, labels: MetricLabels = {}): void {
+  gauges.delete(labelKey(name, labels))
+}
+
 export function observeHistogram(name: string, value: number, labels: MetricLabels = {}, help = '', buckets = DEFAULT_BUCKETS): void {
   if (!Number.isFinite(value) || value < 0) return
   const key = labelKey(name, labels)
