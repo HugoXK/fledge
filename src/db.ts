@@ -5079,12 +5079,19 @@ export class Store {
 
   /** #636: per-currency spend and the count of requests that could not be priced. */
   costByCurrency(sinceIso: string): CostReport {
-    const rows = this.all<{ currency: string | null; total: number | null; n: number }>(
-      'SELECT currency, SUM(cost_usd) AS total, COUNT(*) AS n FROM quota_ledger WHERE cost_known = 1 AND at >= ? GROUP BY currency',
+    // #702: a row with no currency and a row billed `'USD'` are the same currency,
+    // so the label has to be resolved before grouping. Grouping by the raw column
+    // and mapping NULL to USD afterwards returned two buckets that both read
+    // "USD", and an instance upgraded from the pre-#636 schema has NULL on every
+    // row it already had, so its first deploy showed two USD rows on the page.
+    // The unknown-currency semantics are untouched: only priced rows are grouped,
+    // and a currency other than USD or NULL keeps its own bucket.
+    const rows = this.all<{ currency: string; total: number | null; n: number }>(
+      "SELECT COALESCE(currency, 'USD') AS currency, SUM(cost_usd) AS total, COUNT(*) AS n FROM quota_ledger WHERE cost_known = 1 AND at >= ? GROUP BY COALESCE(currency, 'USD')",
       sinceIso,
     )
     const buckets = rows
-      .map((row) => ({ currency: row.currency ?? 'USD', amount: Number(row.total ?? 0), requests: Number(row.n) }))
+      .map((row) => ({ currency: row.currency, amount: Number(row.total ?? 0), requests: Number(row.n) }))
       .sort((a, b) => a.currency.localeCompare(b.currency))
     const unknown = this.get<{ n: number }>('SELECT COUNT(*) AS n FROM quota_ledger WHERE cost_known = 0 AND at >= ?', sinceIso)
     const unknownRequests = Number(unknown?.n ?? 0)
