@@ -144,7 +144,9 @@ test('the workflow lint job runs actionlint and the injection checker', () => {
   const block = jobBlock(ci, 'workflow-lint')
   assert.match(block, /uses: raven-actions\/actionlint@[0-9a-f]{40} # v\d/)
   assert.match(block, /version: '1\.\d+\.\d+'/, "the action's default is `latest`, which is an unpinned download behind a pinned action")
-  assert.match(block, /node scripts\/workflow-injection\.mjs/)
+  // #640: the checker comes from the base branch; the workflows and the
+  // allowlist are read from the paths it is given.
+  assert.match(block, /node base\/scripts\/workflow-injection\.mjs --workflows \.github\/workflows --allowlist base\/\.github\/agent\/workflow-injection-allowlist\.json/)
 })
 
 test('an expression inside a run block is a finding', () => {
