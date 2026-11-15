@@ -1219,7 +1219,14 @@ concrete it creates nothing. The callback refuses a discovery result that carrie
 a branch or pull request (`DISCOVERY_PR_FORBIDDEN`). The job goal gets a bounded
 `Carry-over` block with the last three run digests and up to four open items; the
 block is data, not an instruction, and is capped well below the 4000-character
-goal limit. Each finished run is classified as `pr`, `issue`, `review`, `zero`,
+goal limit. Every line that names an issue or a pull request is checked once
+before the block is built — at most seven reads, three digests plus four work
+items, one per line because a line that names both is governed by its pull
+request — so a closed issue or a merged pull request is dropped from the block
+and counted instead of being carried into the next run. The block states what it
+did in its header, `carry-over: 1 used, 1 dropped (closed/merged)`, with an
+`, N unverified` segment when a read failed; a failed read keeps its line rather
+than dropping it silently, and the job page shows the same header line. Each finished run is classified as `pr`, `issue`, `review`, `zero`,
 `meta` or `failed`. A meta issue
 (`存量/盘点/清账/reconcile/inventory/backlog audit`) is closed on the tracking
 board and notifies the owner instead of counting as a productive run. Two

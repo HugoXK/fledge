@@ -2068,6 +2068,9 @@ test('scheduled jobs carry the previous run and open work, and classify meta out
     },
   }
   const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  // #365: the block reads live state through GitHub; this case is about what the
+  // goal carries, so the reader answers without a request.
+  jobs.carryOverReaderOverride = () => ({ read: async () => 'open' })
   try {
     const user = makeUser(store, { login: 'continuity-user', status: 'approved' })
     const repo = store.createRepo({
@@ -2347,8 +2350,8 @@ test('meta titles are recognised and classified separately', () => {
   assert.equal(carried.output_kind, 'issue')
 })
 
-test('carry-over is bounded, names the open work and is explicitly data', () => {
-  const text = buildCarryOver({
+test('carry-over is bounded, names the open work and is explicitly data', async () => {
+  const { text } = await buildCarryOver({
     recent: [job({ id: 'job_2', summary: 'created issue #2', issue_url: 'https://x/issues/2' })],
     openWork: [workItem({ pr_url: 'https://x/pr/3', state: 'pr_ready' })],
     maxChars: 500,

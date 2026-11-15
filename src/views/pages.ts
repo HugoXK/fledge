@@ -27,6 +27,7 @@ import type { PreviewResult } from '../schedules/preview.js'
 import { intervalFieldText, type ScheduleConsoleState } from '../schedules/console.js'
 import { contractOf, resolveWorkType, workTypeLabel, workTypePurpose } from '../lib/workTypes.js'
 import { parseTriageJson, triageSummaryLine } from '../lib/triage.js'
+import { carryOverHeaderFromGoal } from '../jobs/continuity.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
 import { parseAdversarialRecord, type AdversarialRecord } from '../lib/adversarialReview.js'
@@ -2822,6 +2823,14 @@ export function jobPage(input: {
   const providerLine = providerParts.length === 0
     ? ''
     : `<p class="fine" data-provider><strong>${escapeHtml(t('提供方', 'Provider'))}:</strong> ${escapeHtml(providerParts.join(' · '))}</p>`
+  // #365: a job that continued earlier work states what that block actually
+  // carried. The line is read back from the stored goal, so the page and the
+  // prompt cannot spell the same counts two ways, and a job with no block (or a
+  // pre-#365 row) shows nothing.
+  const carryOverHeader = job.continuity_used === 1 ? carryOverHeaderFromGoal(job.goal) : ''
+  const carryOverLine = carryOverHeader === ''
+    ? ''
+    : `<p class="fine" data-carry-over>${escapeHtml(carryOverHeader)}</p>`
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
   const teamStats = jobTeamStats(job)
@@ -3049,6 +3058,7 @@ export function jobPage(input: {
       ${attribution === '' ? '' : `<p class="fine">${escapeHtml(attribution)}</p>`}
       ${modelLine}
       ${providerLine}
+      ${carryOverLine}
       ${job.checkpoint === null || job.checkpoint === '' ? '' : `<p class="fine"><strong>${escapeHtml(t('断点', 'Checkpoint'))}:</strong> ${escapeHtml(job.checkpoint)}</p>`}
       <p class="fine">${jobLinks(job)}</p>
     </div>
