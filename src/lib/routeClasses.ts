@@ -88,6 +88,20 @@ const EXPENSIVE_ROUTE_LIST = [
   'POST /repos/:id/jobs/:jobId/approve-plan',
   'POST /repos/:id/jobs/:jobId/reject-plan',
   'POST /repos/:id/jobs/:jobId/execute',
+  // The workspace proxy is registered with `app.all` (the two
+  // `/repos/:id/workspace/app…` registrations in `src/app.ts`), so it answers
+  // every method; the mutating ones forward their body to the per-repo workspace
+  // app, where they can start work inside the instance. That is why they are
+  // expensive rather than ordinary. Nothing paces them yet: classification is
+  // the policy, enforcement is the later slice.
+  'POST /repos/:id/workspace/app',
+  'PUT /repos/:id/workspace/app',
+  'PATCH /repos/:id/workspace/app',
+  'DELETE /repos/:id/workspace/app',
+  'POST /repos/:id/workspace/app/*',
+  'PUT /repos/:id/workspace/app/*',
+  'PATCH /repos/:id/workspace/app/*',
+  'DELETE /repos/:id/workspace/app/*',
   'POST /repos/:id/security-findings/:findingId/fix',
   'POST /admin/webhooks/:id/retry',
 ] as const

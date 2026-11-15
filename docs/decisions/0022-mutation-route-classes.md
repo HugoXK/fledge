@@ -84,6 +84,16 @@ credential guessing, and the machine endpoints under `/api/` keep the 120-a-minu
 `apiLimiter` that paces callers rather than forms. Those controls defend a
 different thing; being ordinary says they take no **class** budget.
 
+**Classification is not enforcement.** A green sweep says every mutating route
+has a class; it does not say every class has a budget. Read the table as policy
+and `limits.take(...)` as what is paced today — they are compared in a later
+slice, and until then 28 of the 30 destructive routes and most of the
+`expensive` list are classified and unpaced. The workspace proxy is the clearest
+case: `app.all` on `/repos/:id/workspace/app` and `/repos/:id/workspace/app/*`
+answers every method, so its mutating forms are in the table as `expensive`
+because a body forwarded to the per-repo workspace app can start work inside the
+instance; none of them is paced yet.
+
 ## Consequences
 
 - Adding a mutating route now costs one line in the table. Forgetting it is a red

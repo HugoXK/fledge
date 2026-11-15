@@ -19,6 +19,10 @@ import {
 // Two directions, because a table can rot either way: a route registered and
 // left unclassified is the defect the card describes, and a class left behind
 // for a route that no longer exists would keep the sweep looking complete.
+//
+// The reader understands every registration form the file uses: `app.all` is one
+// registration but four mutating routes, so it is expanded, and a form the reader
+// does not know is refused loudly instead of being skipped.
 
 const APP_SOURCE = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8')
 
@@ -28,15 +32,34 @@ function withoutComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
 }
 
+// The registration forms this reader understands. `all` is the one that carries
+// more than a single method, and a form outside this set is refused rather than
+// skipped: an unread form is an unclassified route, which is the defect the sweep
+// exists to catch.
+const ROUTE_FORMS = new Set(['get', 'post', 'put', 'patch', 'delete', 'all'])
+// `app.all` answers every method. Only the methods that can change state are
+// swept; a GET through the same registration is a read and stays out.
+const ALL_MUTATING_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'] as const
+
 /** Every mutating route `src/app.ts` registers, as `METHOD /path`. */
 export function registeredMutations(source = APP_SOURCE): string[] {
   const text = withoutComments(source)
-  const pattern = /app\.(get|post|put|patch|delete)\(\s*'([^']+)'/g
   const found: string[] = []
-  for (const match of text.matchAll(pattern)) {
-    const method = (match[1] ?? '').toUpperCase()
-    if (method === 'GET') continue
-    found.push(routeKey(method, match[2] ?? ''))
+  for (const match of text.matchAll(/app\.([A-Za-z]+)\(\s*'([^']*)'/g)) {
+    const form = (match[1] ?? '').toLowerCase()
+    const path = match[2] ?? ''
+    if (!ROUTE_FORMS.has(form)) {
+      // `app.addHook('onResponse', …)` is not a route; `app.options('/x', …)` is.
+      // Refuse the second kind instead of letting it past unread.
+      if (path.startsWith('/')) throw new Error(`the sweep cannot read app.${form}('${path}'); teach registeredMutations or drop the form`)
+      continue
+    }
+    if (form === 'all') {
+      for (const method of ALL_MUTATING_METHODS) found.push(routeKey(method, path))
+      continue
+    }
+    if (form === 'get') continue
+    found.push(routeKey(form.toUpperCase(), path))
   }
   return found
 }
@@ -47,6 +70,29 @@ test('#708 the sweep reads the route table, not a number written down', () => {
   // what a broken pattern or a moved file would look like.
   assert.ok(routes.length > 0, 'the sweep found no mutating route in src/app.ts; the pattern is wrong, not the code')
   assert.equal(new Set(routes).size, routes.length, 'the same mutating route is registered twice, so the sweep is ambiguous')
+})
+
+// `app.all` answers every method, so one registration can carry more than one
+// mutating route. The reader has to see that form or the sweep misses them
+// silently — the workspace proxy is registered that way and forwards a body.
+test('#708 an app.all registration is read as every mutating method', () => {
+  const read = registeredMutations("app.all('/repos/:id/workspace/app/*', async () => {})")
+  assert.deepEqual(read, [
+    'POST /repos/:id/workspace/app/*',
+    'PUT /repos/:id/workspace/app/*',
+    'PATCH /repos/:id/workspace/app/*',
+    'DELETE /repos/:id/workspace/app/*',
+  ])
+})
+
+// The other half of the same defect: a registration form the reader does not
+// know is not "not a route" — it is a route nobody classified. Refusing it keeps
+// the next `app.all` or `app.options` from passing a green sweep.
+test('#708 the sweep refuses a registration form it cannot read', () => {
+  assert.throws(
+    () => registeredMutations("app.options('/repos/:id/settings', async () => {})"),
+    /cannot read app\.options/,
+  )
 })
 
 test('#708 every mutating route in src/app.ts names a class', () => {
