@@ -3591,8 +3591,17 @@ export class Jobs {
       const now = Date.now()
       const plan = schedule === null || scheduleRow === undefined
         ? null
-        : planTick(schedule, scheduleAnchor(scheduleRow, repo), now)
-      if (plan !== null && plan.dueAt === null) continue
+        : planTick(schedule, scheduleAnchor(scheduleRow, repo), now, {
+            misfire: scheduleRow.misfire === 'once' ? 'once' : 'skip',
+            graceMs: scheduleRow.grace_ms,
+          })
+      if (plan !== null && plan.dueAt === null) {
+        // #544 slice 5: a window whose only outcome is "too late" still has rows
+        // to record. Only a decision with nothing to say — no run and no skipped
+        // instant — is a no-op.
+        if (plan.skipped.length > 0) this.skipScheduledOccurrence(repo, plan, 'grace-exceeded')
+        continue
+      }
       if (this.store.activeJobForRepo(repo.id) !== undefined) {
         // A due instant that cannot run now is the misfire case: skip it with a
         // reason rather than queue a second run behind the active one.
@@ -3660,6 +3669,10 @@ export class Jobs {
         } else if (result.ok) {
           const at = Date.now()
           this.settleScheduledOccurrence(repo, plan, lease, 'dispatched', { jobId: result.job?.id, dispatchedAt: at, lagMs: at - dueAt })
+          // #544 slice 5: under `once` the instants this decision does not make up
+          // are rows, and the cursor moves past the whole window in the same
+          // transaction, or the next tick would re-decide them.
+          this.recordSkippedInstants(repo, plan)
         } else {
           this.settleScheduledOccurrence(repo, plan, lease, 'skipped', { reason: result.code ?? 'dispatch-refused' })
         }
@@ -3713,19 +3726,49 @@ export class Jobs {
   // now, so it needs no lease: recording it is already idempotent on the row's
   // unique key.
   private skipScheduledOccurrence(repo: RepoRow, plan: TickPlan, reason: string): void {
-    if (plan.dueAt === null) return
+    if (plan.dueAt === null && plan.skipped.length === 0) return
+    const schedule = this.store.scheduleForRepo(repo.id)
+    if (schedule === undefined) return
     const at = Date.now()
-    const occurrence = this.recordScheduledOccurrence(repo, plan, 'skipped', { reason })
+    const recorded = this.store.recordScheduleDecisions({
+      scheduleId: schedule.id,
+      repoId: repo.id,
+      timingRevision: schedule.timing_revision,
+      skipped: plan.skipped.map((entry) => ({ id: randomId('occ'), at: entry.at, reason: entry.reason })),
+      decision: plan.dueAt === null ? undefined : { id: randomId('occ'), at: plan.dueAt, state: 'skipped', reason, missed: plan.missed },
+      cursorAt: plan.cursorAt,
+    })
     this.store.audit(repo.user_id, 'schedule.skipped', JSON.stringify({
       repo: `${repo.owner}/${repo.name}`,
       occurrence_at: plan.dueAt,
       decided_at: at,
       missed: plan.missed,
       reason,
-      occurrence: occurrence?.id ?? null,
+      occurrence: recorded.decision?.id ?? recorded.skipped[0]?.id ?? null,
+      skipped: recorded.skipped.map((row) => row.id),
     }))
-    this.store.advanceScheduleOccurrence(repo.id, plan.dueAt)
-    log.info('scheduled occurrence skipped', { repo: `${repo.owner}/${repo.name}`, reason, at: plan.dueAt, missed: plan.missed })
+    log.info('scheduled occurrence skipped', {
+      repo: `${repo.owner}/${repo.name}`, reason, at: plan.dueAt, missed: plan.missed, skipped: recorded.skipped.length,
+    })
+  }
+
+  // #544 slice 5: the instants a dispatch decided not to make up under `once`.
+  // They are written after the settle, in one transaction with the cursor, so a
+  // rejected settle leaves no half-recorded window behind.
+  private recordSkippedInstants(repo: RepoRow, plan: TickPlan): void {
+    if (plan.skipped.length === 0) return
+    const schedule = this.store.scheduleForRepo(repo.id)
+    if (schedule === undefined) return
+    const recorded = this.store.recordScheduleDecisions({
+      scheduleId: schedule.id,
+      repoId: repo.id,
+      timingRevision: schedule.timing_revision,
+      skipped: plan.skipped.map((entry) => ({ id: randomId('occ'), at: entry.at, reason: entry.reason })),
+      cursorAt: plan.cursorAt,
+    })
+    log.info('scheduled instants skipped', {
+      repo: `${repo.owner}/${repo.name}`, count: recorded.skipped.length, at: plan.dueAt,
+    })
   }
 
   // #544 slice 3B-B2. The lease is taken before the dispatch, so the decision to

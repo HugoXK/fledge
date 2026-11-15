@@ -35,6 +35,8 @@ export interface ScheduleConsoleState {
   schedule: Schedule | null
   timingRevision: number | null
   misfire: string | null
+  /** #544 slice 5: how late a due instant may be dispatched; null is unbounded. */
+  graceMs: number | null
   /** The next instant the planner answers for `now`; null when it cannot answer. */
   nextAt: number | null
   /** The newest decided instant, whatever it decided. */
@@ -88,6 +90,7 @@ export function scheduleConsole(input: {
     schedule,
     timingRevision: row === undefined ? null : row.timing_revision,
     misfire: row === undefined ? null : row.misfire,
+    graceMs: row === undefined ? null : row.grace_ms,
     nextAt: schedule === null ? null : nextTime(schedule, now),
     last: occurrences[0] ?? null,
     lastSuccess,

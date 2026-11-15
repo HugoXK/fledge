@@ -257,6 +257,11 @@ export interface ScheduleRow {
   end_at: number | null
   timing_revision: number
   misfire: string
+  /**
+   * #544 slice 5: how late a due instant may still be dispatched. Null means no
+   * bound, which is the behaviour every schedule had before this column existed.
+   */
+  grace_ms: number | null
   last_occurrence_at: number | null
   created_at: string
   updated_at: string
@@ -1812,6 +1817,7 @@ CREATE TABLE IF NOT EXISTS schedules (
   end_at INTEGER,
   timing_revision INTEGER NOT NULL DEFAULT 1,
   misfire TEXT NOT NULL DEFAULT 'skip',
+  grace_ms INTEGER,
   last_occurrence_at INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -1942,9 +1948,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 38) {
+    if (previousVersion > 39) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (38)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (39)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -1954,6 +1960,7 @@ export class Store {
     this.migrateArtifactColumns()
     this.migrateManagementColumns()
     this.migrateScheduleOccurrenceColumns()
+    this.migrateScheduleMisfireColumns()
     this.migrateReleaseColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
@@ -1966,7 +1973,7 @@ export class Store {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
     this.migrateIdentity()
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 38)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 39)};`)
   }
 
   // #544 slice 3B-B2: a database written by slice B1 already has the occurrence
@@ -1974,6 +1981,15 @@ export class Store {
   // predates the lease has no holder: `attempts` 1 is the decision it already
   // records, and a null token cannot match anything, so an old row is never
   // settled by a worker that never held it.
+  // #544 slice 5: `misfire` was stored from the first slice but nothing but a
+  // count ever read it. The policy now decides the run, so a schedule also needs
+  // its grace bound. The column is added in place: a row written before it keeps
+  // no bound, which is exactly the behaviour it had.
+  private migrateScheduleMisfireColumns(): void {
+    const columns = this.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
+    if (!columns.includes('grace_ms')) this.db.exec('ALTER TABLE schedules ADD COLUMN grace_ms INTEGER')
+  }
+
   private migrateScheduleOccurrenceColumns(): void {
     const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(schedule_occurrences)').map((row) => row.name))
     const additions: Array<[string, string]> = [
@@ -4369,6 +4385,7 @@ export class Store {
     startAt?: number | null
     endAt?: number | null
     misfire?: string
+    graceMs?: number | null
   }): ScheduleRow {
     const existing = this.scheduleForRepo(input.repoId)
     const timingChanged = existing !== undefined && (
@@ -4382,19 +4399,19 @@ export class Store {
     const at = nowIso()
     if (existing === undefined) {
       this.run(
-        `INSERT INTO schedules (id, repo_id, kind, expression, every_ms, timezone, start_at, end_at, timing_revision, misfire, last_occurrence_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, ?, ?)`,
+        `INSERT INTO schedules (id, repo_id, kind, expression, every_ms, timezone, start_at, end_at, timing_revision, misfire, grace_ms, last_occurrence_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, ?, ?)`,
         input.id, input.repoId, input.kind, input.expression ?? null, input.everyMs ?? null, input.timezone ?? null,
-        input.startAt ?? null, input.endAt ?? null, input.misfire ?? 'skip', at, at,
+        input.startAt ?? null, input.endAt ?? null, input.misfire ?? 'skip', input.graceMs ?? null, at, at,
       )
     } else {
       this.run(
         `UPDATE schedules SET kind = ?, expression = ?, every_ms = ?, timezone = ?, start_at = ?, end_at = ?,
-           timing_revision = ?, misfire = ?, updated_at = ? WHERE repo_id = ?`,
+           timing_revision = ?, misfire = ?, grace_ms = ?, updated_at = ? WHERE repo_id = ?`,
         input.kind, input.expression ?? null, input.everyMs ?? null, input.timezone ?? null,
         input.startAt ?? null, input.endAt ?? null,
         timingChanged ? existing.timing_revision + 1 : existing.timing_revision,
-        input.misfire ?? existing.misfire, at, input.repoId,
+        input.misfire ?? existing.misfire, input.graceMs === undefined ? existing.grace_ms : input.graceMs, at, input.repoId,
       )
     }
     const row = this.scheduleForRepo(input.repoId)
@@ -4447,6 +4464,52 @@ export class Store {
     const row = this.findScheduleOccurrence(input.scheduleId, input.logicalTime, input.timingRevision)
     if (row === undefined) throw new Error(`occurrence ${input.scheduleId}@${input.logicalTime}/${input.timingRevision} disappeared after insert`)
     return { row, created: Number(result.changes) > 0 }
+  }
+
+  // #544 slice 5: the instants one decision passed over are rows of their own, and
+  // the cursor that leap-frogs past them moves in the same transaction. Otherwise
+  // two workers deciding about the same window could both write a catch-up, and a
+  // crash between a row and the cursor would either replay the window or lose it.
+  // The unique key still makes each row idempotent, so a retried decision is one
+  // decision.
+  recordScheduleDecisions(input: {
+    scheduleId: string
+    repoId: string
+    timingRevision: number
+    skipped: Array<{ id: string; at: number; reason: string; missed?: number }>
+    decision?: { id: string; at: number; state: 'dispatched' | 'skipped'; reason: string | null; missed: number }
+    cursorAt: number | null
+  }): { skipped: ScheduleOccurrenceRow[]; decision: ScheduleOccurrenceRow | undefined } {
+    const skipped: ScheduleOccurrenceRow[] = []
+    let decision: ScheduleOccurrenceRow | undefined
+    this.transaction(() => {
+      for (const entry of input.skipped) {
+        skipped.push(this.recordScheduleOccurrence({
+          id: entry.id,
+          scheduleId: input.scheduleId,
+          repoId: input.repoId,
+          logicalTime: entry.at,
+          timingRevision: input.timingRevision,
+          state: 'skipped',
+          reason: entry.reason,
+          missed: entry.missed ?? 0,
+        }).row)
+      }
+      if (input.decision !== undefined) {
+        decision = this.recordScheduleOccurrence({
+          id: input.decision.id,
+          scheduleId: input.scheduleId,
+          repoId: input.repoId,
+          logicalTime: input.decision.at,
+          timingRevision: input.timingRevision,
+          state: input.decision.state,
+          reason: input.decision.reason,
+          missed: input.decision.missed,
+        }).row
+      }
+      if (input.cursorAt !== null) this.advanceScheduleOccurrence(input.repoId, input.cursorAt)
+    })
+    return { skipped, decision }
   }
 
   findScheduleOccurrence(scheduleId: string, logicalTime: number, timingRevision: number): ScheduleOccurrenceRow | undefined {
