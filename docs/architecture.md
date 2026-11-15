@@ -1637,7 +1637,7 @@ counts as used, because the `repo.added` audit row is the evidence. The
 token data.
 
 The sweep behind that page (`src/users/trial.ts`, run hourly by the job service,
-or by hand with `npm run trial:sweep -- [--dry-run] [--login <login>]`) selects
+or by hand with `npm run trial:sweep -- [--dry-run] [--purge-dry-run] [--login <login>]`) selects
 `status = approved`, `role = user`, registered more than 7 days ago, with no
 `repos` row, no `repo.added` audit, no `jobs` row and no `trial.expired` audit.
 The status change and the `trial.expired` audit row commit as one transaction, so
@@ -1650,6 +1650,26 @@ cannot resubmit, so the notice must not promise that. The audit row is also what
 makes the sweep idempotent: a rerun offers nothing and mails nobody, and an
 account restored by hand stays skipped. Operator output carries the login and the
 registration date, never an address.
+
+The same sweep then runs the purge phase (#690) on the same clock, so one writer
+owns the whole lifecycle and no second scheduler can erase an account the first
+one is still rejecting. `Store.trialPurgeCandidates(now, graceHours)` offers
+every `status = rejected`, `role = user` account whose `trial.expired` row is at
+least `TRIAL_PURGE_GRACE_HOURS` (default 72) old, with counts of its
+repositories, jobs, instances and GitHub installations; the phase re-reads those
+counts immediately before deleting, because usage can arrive between the two
+reads. A used account is skipped and audited as `trial.purge_skipped` with the
+blocking resource and its count; an unused one goes to `Store.purgeUserRows(id)`,
+the single delete path that #691's superadmin deletion also calls (it decides no
+eligibility — the caller asserts the account is dead). That function is one
+transaction: it computes the spend aggregate and the row counts, deletes the rows
+no cascade reaches (`artifact_versions.repo_id`, `audit_log.user_id`, `events`,
+the six `settings` shapes keyed or valued by the account id or login), deletes
+the `users` row so the repo-scoped cascade fires, and writes one `trial.purged`
+retention row with `user_id` NULL so it survives. The page's purge section reads
+those rows (`Store.recentPurgeAudits`) and renders the reason, the operator, the
+row total and the per-currency spend — the aggregate never folds buckets, because
+`cost_usd` is in each row's own currency.
 
 ### The job page's change story
 

@@ -4306,6 +4306,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       locale: request.locale ?? 'zh',
       viewer: viewOf(viewer),
       rows: store.trialCandidates(),
+      // #690: the purge records, so a skipped or erased account is visible on the
+      // page and not only in the sweep's output.
+      purges: store.recentPurgeAudits(10),
+      purgesGraceHours: config.trialPurgeGraceHours,
       filter: isTrialFilter(requested) ? requested : 'all',
       notice: request.flash?.notice?.text,
       error: request.flash?.error?.text,

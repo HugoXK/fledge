@@ -3412,17 +3412,23 @@ export function agentWorkspacePage(input: {
 
 // #279: read-only. An operator can see who is approaching expiry, who is exempt
 // and who the sweep revoked, without an email address on screen and without a
-// control that could mail or change a status - #265 owns both.
+// control that could mail or change a status - #265 owns both. #690 adds the
+// purge records: an erased account or one kept because it used the platform,
+// both read from the audit rows the sweep writes.
 export function adminTrialsPage(input: {
   config: Config
   locale: Locale
   viewer: Viewer
   rows: TrialCandidateSource[]
   filter: TrialFilter
+  purges?: AuditRow[]
+  /** #690: the configured grace window, so the page states the real one. */
+  purgesGraceHours?: number
   notice?: string
   error?: string
 }): string {
   const { config, locale, viewer, rows, filter, notice, error } = input
+  const purges = input.purges ?? []
   const t = translator(locale)
   const now = Date.now()
   const views = rows.map((row) => trialStateOf(row, now))
@@ -3471,6 +3477,64 @@ export function adminTrialsPage(input: {
   const filters = filterLabels
     .map(([value, zh, en]) => `<a class="btn ${filter === value ? '' : 'btn-ghost'}" href="/admin/trials?trial=${value}">${escapeHtml(t(zh, en))} <span class="fine">${counts[value]}</span></a>`)
     .join(' ')
+
+  // #690: the purge record detail is a small JSON object written by the sweep. It
+  // carries no login, email or token by construction, so the page can read it —
+  // the money is shown per currency because the aggregate never folds buckets.
+  const purgeText = (row: AuditRow): string => {
+    const raw = row.detail ?? ''
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return raw
+    }
+    if (typeof parsed !== 'object' || parsed === null) return raw
+    const detail = parsed as { reason?: unknown; operator?: unknown; rows?: unknown; spend?: unknown }
+    const parts: string[] = []
+    if (typeof detail.reason === 'string' && detail.reason !== '') parts.push(detail.reason)
+    if (typeof detail.operator === 'string' && detail.operator !== '') parts.push(detail.operator)
+    if (typeof detail.rows === 'object' && detail.rows !== null) {
+      const total = Object.values(detail.rows as Record<string, unknown>)
+        .filter((n): n is number => typeof n === 'number')
+        .reduce((sum, n) => sum + n, 0)
+      parts.push(t(`${total} 行`, `${total} rows`))
+    }
+    const spend = detail.spend as { buckets?: unknown; unknownRequests?: unknown } | undefined
+    if (spend !== undefined && Array.isArray(spend.buckets)) {
+      const buckets = (spend.buckets as Array<{ currency?: unknown; amount?: unknown; requests?: unknown }>)
+        .map((bucket) => `${String(bucket.currency ?? '')} ${Number(bucket.amount ?? 0).toFixed(4)} (${String(bucket.requests ?? 0)})`)
+        .join(', ')
+      if (buckets !== '') parts.push(buckets)
+      if (typeof spend.unknownRequests === 'number' && spend.unknownRequests > 0) {
+        parts.push(t(`${spend.unknownRequests} 条未计价`, `${spend.unknownRequests} unpriced`))
+      }
+    }
+    return parts.join(' · ')
+  }
+  const purgeRows = purges
+    .map((row) => {
+      const label = row.action === 'trial.purged' ? t('已清理', 'Purged') : t('已保留', 'Kept')
+      const badgeClass = row.action === 'trial.purged' ? 'badge bad' : 'badge'
+      return `<tr data-purge-audit="${row.id}">
+        <td><small class="muted">${escapeHtml(humanTimeShort(row.at))}</small></td>
+        <td><span class="${badgeClass}">${escapeHtml(label)}</span></td>
+        <td><small class="muted">${escapeHtml(purgeText(row))}</small></td>
+      </tr>`
+    })
+    .join('')
+  const purgeHtml = purges.length === 0
+    ? stateCell(3, {
+        kind: 'empty',
+        title: t('还没有清理记录。', 'No purge records yet.'),
+        body: t('清扫会在账号到期超过宽限期后写入一条。', 'The sweep writes one once an account is past the grace window.'),
+      })
+    : `<div class="table-scroll"><table><thead><tr>
+        <th>${escapeHtml(t('时间', 'At'))}</th>
+        <th>${escapeHtml(t('结果', 'Result'))}</th>
+        <th>${escapeHtml(t('明细', 'Detail'))}</th>
+      </tr></thead><tbody>${purgeRows}</tbody></table></div>`
+
   const body = `<section class="workspace-hero">
     <div class="workspace-intro">
       <div class="eyebrow">${escapeHtml(t('预览试用', 'PREVIEW TRIALS'))}</div>
@@ -3493,6 +3557,11 @@ export function adminTrialsPage(input: {
       <th>${escapeHtml(t('试用到期审计', 'Trial expired at'))}</th>
     </tr></thead><tbody>${rowsHtml}</tbody></table></div>
     <p class="fine">${escapeHtml(t('用户列只显示登录名；账号操作在支持视图里。', 'The user column shows the login only; account actions live in the support view.'))}</p>
+  </section>
+  <section class="card">
+    <div class="row between"><h2>${escapeHtml(t('清理记录', 'Purge records'))}</h2><span class="fine">${escapeHtml(t(`宽限期 ${input.purgesGraceHours ?? 72} 小时；最近 ${purges.length} 条。`, `Grace window ${input.purgesGraceHours ?? 72}h; latest ${purges.length}.`))}</span></div>
+    ${purgeHtml}
+    <p class="fine">${escapeHtml(t('清理保留一行非个人信息：时间、原因、操作者、行数和按币种的消费汇总；不含登录名、邮箱或令牌。', 'A purge keeps one non-personal row: time, reason, operator, row counts and the spend per currency; no login, email or token.'))}</p>
   </section>`
   return layout({ title: t('预览试用', 'Preview trials'), viewer, body, config, locale, path: '/admin/trials', active: 'admin', notice, error })
 }
