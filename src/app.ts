@@ -1515,6 +1515,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         timezone: row?.timezone ?? '',
         startAt: instant(row?.start_at),
         endAt: instant(row?.end_at),
+        misfire: row?.misfire ?? 'skip',
+        // Minutes, because a person thinks in minutes and the stored column is
+        // milliseconds. Empty means no bound, which is the old behaviour.
+        grace: row?.grace_ms === null || row?.grace_ms === undefined ? '' : String(Math.round(row.grace_ms / 60_000)),
       },
       ...(queryText(request, 'saved') === undefined ? {} : { notice: t('排期已保存。', 'The schedule is saved.') }),
       ...(queryText(request, 'removed') === undefined ? {} : { notice: t('排期已删除，仓库回到旧的自动间隔。', 'The schedule was deleted; the repository is back on the legacy interval.') }),
@@ -1529,16 +1533,27 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const back = `/repos/${repo.id}/schedule`
     const body = form(request)
+    const t = translator(request.locale ?? 'zh')
     const parsed = parsePreviewQuery({
       cron: String(body.cron ?? '').trim(),
       every: String(body.every ?? '').trim(),
       timezone: String(body.timezone ?? '').trim(),
       start_at: String(body.start_at ?? '').trim(),
       end_at: String(body.end_at ?? '').trim(),
-    }, Date.now(), translator(request.locale ?? 'zh'))
+    }, Date.now(), t)
     if (!parsed.ok) return reply.redirect(`${back}?refused=${encodeURIComponent(parsed.reason)}`)
     const schedule = parsed.request.schedule
     const existing = store.scheduleForRepo(repo.id)
+    // #544 slice 5: the misfire policy and its grace bound are part of the
+    // schedule a person saves, not a column only a migration could write. `skip`
+    // is the default and an empty grace field means no bound, so a form that
+    // predates these fields keeps the behaviour it had.
+    const misfire = body.misfire === 'once' ? 'once' : 'skip'
+    const graceRaw = String(body.grace ?? '').trim()
+    const graceMinutes = graceRaw === '' ? null : Number(graceRaw)
+    if (graceMinutes !== null && (!Number.isFinite(graceMinutes) || graceMinutes < 0 || graceMinutes > 10_080)) {
+      return reply.redirect(`${back}?refused=${encodeURIComponent(t('宽限时间必须是 0 到 10080 分钟之间的整数。', 'The grace bound must be an integer between 0 and 10080 minutes.'))}`)
+    }
     store.saveSchedule({
       id: existing?.id ?? randomId('sch'),
       repoId: repo.id,
@@ -1548,6 +1563,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       timezone: schedule.kind === 'cron' ? schedule.timezone : null,
       startAt: schedule.startAt,
       endAt: schedule.endAt,
+      misfire,
+      graceMs: graceMinutes === null ? null : Math.round(graceMinutes) * 60_000,
     })
     const label = schedule.kind === 'cron'
       ? `${schedule.expression} ${schedule.timezone}`

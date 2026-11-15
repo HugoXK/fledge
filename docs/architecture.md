@@ -470,8 +470,8 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   select and defaults to `Asia/Shanghai` when omitted. The start/end/from window
   is optional and lives under an advanced disclosure, so a reader who only wants
   "weekdays at 09:30" never types cron or an ISO offset.
-  Leases, misfire policies, layered budgets and the notification outbox are not
-  built yet.
+  Layered budgets and the notification outbox are not built yet (the misfire
+  policy is, see the slice below).
 - **The tick consumes the planner** (#544, third slice): a `schedules` row — at
   most one per repository — makes `nextTime` the only rule for when a work run is
   due, and `repos.interval_minutes` stops deciding for that repository. A
@@ -484,9 +484,8 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   never moves backwards, so one instant is dispatched once; `timing_revision`
   moves only when a field that changes *when* the schedule fires changes (the
   expression, the interval, the zone or the window), never for a display edit.
-  `misfire: 'skip'` is the only policy: a due instant that cannot run is
-  recorded with a reason (`active-job`, `idle`, `not-due`, a dispatch refusal) and
-  is not made up later.
+  A due instant that cannot run is recorded with a reason (`active-job`, `idle`,
+  `not-due`, a dispatch refusal) and is not made up later.
   A decided instant now has a row of its own (`schedule_occurrences`, fourth
   slice): `timing_revision` copies the schedule's revision at decision time, and
   `UNIQUE(schedule_id, logical_time, timing_revision)` makes that instant under
@@ -508,6 +507,21 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   (`dispatched` / `skipped`) holds no lease and is never claimable again, so a
   late worker cannot turn a recorded skip into a run. A worker that gives up
   before deciding (quota) releases its lease instead of waiting for it to lapse.
+  The misfire policy (slice 5) decides what a passed-over window means, and it is
+  stored on the row rather than chosen by the worker. `misfire: 'skip'` is the
+  default: the newest due instant is dispatched and the ones before it are
+  counted. `misfire: 'once'` makes up the **oldest** passed instant instead — the
+  run keeps the logical time it was scheduled for, which is what a budget or a
+  report later reads — and the later instants become `skipped` rows with
+  `misfire-once`, so nothing in the window is silently dropped. `grace_ms` bounds
+  how late a due instant may still be dispatched; one older than the bound becomes
+  a `skipped` row with `grace-exceeded` and is never dispatched. Either way the
+  high water mark moves to the last instant the decision covered, in the same
+  transaction as the rows (`recordScheduleDecisions`), so the next tick starts
+  after the window instead of re-deciding it and two workers cannot both write a
+  catch-up. A null `grace_ms` means no bound, which is exactly the behaviour every
+  schedule had before the column existed, and the console form carries both
+  fields so a maintainer sets the policy rather than a migration.
   Reviews keep their own cadence (`review_interval_minutes`): this switches the work loop
   only.
 - **The console reads the planner** (#544, the console slice): `/repos/:id/schedule`
