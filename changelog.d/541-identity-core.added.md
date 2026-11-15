@@ -1,1 +1,0 @@
-Add the first identity slice: tenant, project, principal, membership and scoped-grant rows are backfilled idempotently from existing repositories and users, and an authenticated `GET /api/auth/me` reports the caller's project roles and capabilities without exposing secrets. Existing owner checks still decide access in this slice.

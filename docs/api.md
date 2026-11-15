@@ -33,7 +33,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/readyz` | public | Database and per-repository instance readiness summary |
 | GET | `/metrics` | `Authorization: Bearer <METRICS_TOKEN>` only | Prometheus metrics; a production start refuses an empty `METRICS_TOKEN`, so there is no unauthenticated production path, and a `?token=` query value is not accepted |
 | GET | `/api/read/metrics` | approved | Read-only metrics: a super admin gets the global window, users get their own personal window (`?window=7 or 30`) |
-| GET | `/schedule` | approved | Schedule preview page: the next runs of a cron expression or interval, with local times and DST skips |
+| GET | `/schedule` | approved | Schedule preview page: a mode picker (interval, daily, weekdays, weekly, monthly, advanced cron), local times and DST skips |
 | GET | `/api/schedule/preview` | approved | The same preview as JSON |
 | GET | `/repos/:id/schedule` | owner | Schedule console: the stored schedule, the planner's next run, the newest decided instant (state, reason, attempts, lease) and the last success; an unknown value prints `unknown` |
 | POST | `/repos/:id/schedule` | owner + CSRF | Save the console form (cron or interval, zone, window); audits `schedule.saved` and writes nothing when the form is refused |
@@ -188,11 +188,25 @@ and `alerts` sections. The route never mutates state.
 Session-authenticated and read-only: it walks the planner and stores nothing.
 Query parameters:
 
-- `cron` or `every` — exactly one. `cron` is a five-field expression; `every` is
-  an interval with a unit, such as `90s`, `15m`, `2h` or `1d`, between one minute
-  and 30 days.
-- `timezone` — an IANA zone, required for `cron` and refused for `every`, because
-  the interval form has no timezone and is absolute time.
+- `cron` or `every` — the legacy pair; exactly one. `cron` is a five-field
+  expression; `every` is an interval with a unit, such as `90s`, `15m`, `2h` or
+  `1d`, between one minute and 30 days.
+- `mode` — the friendly form used by the page: `interval`, `daily`, `weekdays`,
+  `weekly`, `monthly` or `custom`. It builds the same planner input:
+  - `interval` reads `every_amount` (1..10080) and `every_unit` (`m`, `h`, `d`)
+    and ignores `timezone`, because an interval is absolute time.
+  - `daily`, `weekdays`, `weekly` and `monthly` read `time` as `HH:MM`,
+    `timezone` (default `Asia/Shanghai`), and `weekday` (0=Sunday..6=Saturday)
+    or `month_day` (1..31) where the mode needs one. The page itself names each
+    panel's clock after its mode — `daily_time`, `weekdays_time`, `weekly_time`,
+    `monthly_time` — because all four panels are in one form and a shared name
+    would arrive as an array; the mode's own field wins, and `time` is the
+    fallback and the name for API callers.
+  - `custom` reads `cron`; the timezone defaults to `Asia/Shanghai` when omitted.
+  A mode ignores the legacy `cron`/`every` values, so switching between modes in
+  the page cannot leave a stale expression in the request.
+- `timezone` — an IANA zone, required for the legacy `cron` form and refused for
+  the legacy `every` form. The friendly modes default to `Asia/Shanghai`.
 - `from` — an ISO 8601 instant with an offset; defaults to now.
 - `start_at`, `end_at` — optional `[start_at, end_at)` window, same shape as `from`.
 - `count` — 1..20, default 5.
