@@ -145,7 +145,7 @@ State:
 | Label | Meaning |
 |---|---|
 | `needs-info` | The report is not reproducible or the spec is unclear |
-| `needs-human` | A design, security or policy decision is required |
+| `needs-human` | An owner-only decision is required: a real signature, production, keys, data deletion, or opening a security surface. A design or policy question the team can settle is not `needs-human` — pick the answer and record it |
 | `agent-ready` | Clear, unblocked, no open design conflict |
 | `agent-working` | A claim is live |
 | `agent-pr` | A PR exists |
@@ -162,8 +162,13 @@ All four:
 3. It is not `hold`, not an umbrella, and not team-via-groups work.
 4. The Reviewer posted `Issue-review: PASS at issue #<N> body <12-hex>` and added
    `review:approved`. That verdict plus the label is the Reviewer's only state
-   write: it never adds `agent-ready`, never assigns, and never edits the body.
-   `agent-ready` is added by the Lead and only by the Lead.
+   write: it never adds `agent-ready` and never edits the body. `agent-ready` is
+   added by the Lead and only by the Lead.
+   For an owner-filed card the same write also removes `needs-review` and
+   assigns the card back to `HugoXK`; that hand-back is part of the verdict, not
+   a separate step (`AGENTS.md`, "Issue ownership and verdict writing"). A
+   verdict that leaves an owner-filed card assigned to the Reviewer is a board
+   defect, because dispatch reads the assignee.
 
 The hash is sha256 over the decoded body, first 12 hex. A verdict may name
 either the raw body or the body with trailing whitespace stripped — several
@@ -195,6 +200,11 @@ the human rule — a material edit voids the approval, so the Reviewer re-reads 
 covers that window.
 
 Otherwise `needs-human` or `needs-info`, with the blocking question in a comment.
+
+A reviewed branch never gains a merge commit whose only purpose is to absorb a
+newer base: it voids the PASS and makes the same change be judged twice. Fix the
+branch, push a new tip, and ask for a verdict at that tip. Resolve a real
+conflict inside the branch; never rewrite a tip that was already reviewed.
 
 ## Risk tiers
 
