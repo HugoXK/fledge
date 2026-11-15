@@ -88,9 +88,14 @@ jobs:
             exit 1
           fi
           export TAG_ON_MAIN=1
-          export TAG_OBJECT_TYPE="$(git cat-file -t "refs/tags/${RELEASE_TAG}")"
-          export TAG_TAGGER="$(git for-each-ref --format='%(taggername)' "refs/tags/${RELEASE_TAG}")"
-          export TAG_COMMIT="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          # Declare and assign separately: shellcheck SC2155, because a failing
+          # command inside an export would be masked by the export's own status.
+          TAG_OBJECT_TYPE="$(git cat-file -t "refs/tags/${RELEASE_TAG}")"
+          export TAG_OBJECT_TYPE
+          TAG_TAGGER="$(git for-each-ref --format='%(taggername)' "refs/tags/${RELEASE_TAG}")"
+          export TAG_TAGGER
+          TAG_COMMIT="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          export TAG_COMMIT
           gh api "repos/${REPO}/commits/${TAG_COMMIT}/pulls" > "${RUNNER_TEMP}/tag-pulls.json"
           node --input-type=module -e '
             import { readFileSync } from "node:fs"
