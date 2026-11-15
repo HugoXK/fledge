@@ -1009,7 +1009,7 @@ export function dashboardPage(input: {
     : repos
         .map(
           (repo) => `<tr data-repo-id="${escapeHtml(repo.id)}">
-            <td data-label="${escapeHtml(t('仓库', 'Repository'))}"><a href="/repos/${escapeHtml(repo.id)}"><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></a>${repo.is_fork === 1 ? `<br /><small class="muted">${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}</small>` : ''} <span class="badge kind">${escapeHtml(repoRoleLabel(t, repo.repo_role))}</span>${repo.reviewer_enabled === 1 ? ' <span class="badge">reviewer</span>' : ''}${repo.repo_role === null ? `<br /><small class="muted">${escapeHtml(t('打开仓库选择角色', 'Open the repository to choose a role'))}</small>` : ''}</td>
+            <td data-label="${escapeHtml(t('仓库', 'Repository'))}"><a href="/repos/${escapeHtml(repo.id)}"><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></a>${repo.is_fork === 1 ? `<br /><small class="muted">${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}</small>` : ''} <span class="badge kind">${escapeHtml(repoRoleLabel(t, repo.repo_role))}</span>${repo.reviewer_enabled === 1 ? ` <span class="badge">${escapeHtml(t('审核者', 'Reviewer'))}</span>` : ''}${repo.repo_role === null ? `<br /><small class="muted">${escapeHtml(t('打开仓库选择角色', 'Open the repository to choose a role'))}</small>` : ''}</td>
             <td data-label="${escapeHtml(t('模式', 'Mode'))}">${repo.auto_iterate === 1 ? `<span class="badge good">${escapeHtml(t('自动工作', 'Auto work'))}</span>` : `<span class="badge">${escapeHtml(t('手动', 'Manual'))}</span>`}</td>
             <td data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, repo.last_status ?? 'idle')}</td>
             <td data-label="${escapeHtml(t('上次运行', 'Last run'))}">${escapeHtml(humanTimeShort(repo.last_run_at))}</td>
@@ -2557,7 +2557,7 @@ export function workspacePage(input: {
               <strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong>
               <small>${repo.auto_iterate === 1 ? `${escapeHtml(t('自动工作', 'Auto work'))}` : escapeHtml(t('手动', 'Manual'))} · ${escapeHtml(t('上次运行', 'Last run'))} ${escapeHtml(humanTimeShort(repo.last_run_at))}${repo.is_fork === 1 ? ` · ${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}` : ''}</small>
             </div>
-            <div class="list-meta">${badge(t, repo.last_status ?? 'idle')}${repo.reviewer_enabled === 1 ? ' <span class="badge">reviewer</span>' : ''}</div>
+            <div class="list-meta">${badge(t, repo.last_status ?? 'idle')}${repo.reviewer_enabled === 1 ? ` <span class="badge">${escapeHtml(t('审核者', 'Reviewer'))}</span>` : ''}</div>
           </a>`,
         )
         .join('')}</div>

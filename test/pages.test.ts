@@ -2024,3 +2024,32 @@ test('the job page shows the adversarial verdict and says when the answer was re
     store.close()
   }
 })
+
+// #415: the reviewer badge was the one untranslated word on both repository
+// lists, and it was lowercase in English while every neighbouring badge is not.
+test('both repository lists translate the reviewer badge', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'reviewer-badge-user', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const created = store.createRepo({ id: 'repo_reviewer_badge', userId: user.id, owner: 'o', name: 'badge', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.updateRepo(created.id, { reviewer_enabled: 1 })
+    const repo = store.getRepo(created.id)!
+    assert.equal(repo.reviewer_enabled, 1, 'the fixture repository has the reviewer enabled')
+
+    const dashboard = dashboardPage({ config, locale: 'zh', viewer, repos: [repo], jobs: [], notifications: [] })
+    assert.match(dashboard, /<span class="badge">审核者<\/span>/, 'the dashboard repository table translates the reviewer badge')
+    assert.doesNotMatch(dashboard, />reviewer</, 'the dashboard repository table carries no bare English reviewer badge')
+
+    const workspace = workspacePage({ config, locale: 'zh', viewer, repos: [repo], jobs: [] })
+    assert.match(workspace, /<span class="badge">审核者<\/span>/, 'the console repository list translates the reviewer badge')
+    assert.doesNotMatch(workspace, />reviewer</, 'the console repository list carries no bare English reviewer badge')
+
+    const english = workspacePage({ config, locale: 'en', viewer, repos: [repo], jobs: [] })
+    assert.match(english, /<span class="badge">Reviewer<\/span>/, 'the English console capitalises the reviewer badge like its neighbours')
+    assert.doesNotMatch(english, />reviewer</, 'the English console never prints the lowercase literal')
+  } finally {
+    store.close()
+  }
+})
