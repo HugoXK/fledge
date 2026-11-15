@@ -19,7 +19,7 @@ import { dedupeRepoNames, instanceLimitRefusal, repoLimitRefusal, type LimitRefu
 import { isTrialFilter } from './lib/trials.js'
 import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, errorReportMail, feedbackMail, rejectedEmail, testEmail } from './email/templates.js'
-import { deliverFeedbackToLead, publicIssueDraft, verifyTriageToken } from './feedback/lead.js'
+import { attemptLeadDelivery, publicIssueDraft, retryPendingLeadDeliveries, verifyTriageToken } from './feedback/lead.js'
 import { triageProblems } from './feedback/lifecycle.js'
 import { notifyFeedbackReporter, notifyReleasedFeedback } from './feedback/notify.js'
 import { notifyEmail } from './email/recipient.js'
@@ -4161,7 +4161,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const publishConsent = body.publishConsent === '1'
     store.createFeedback({ id, userId: viewer.user.id, kind, message, page, createdAt })
     const triage = store.createFeedbackTriage({ ref: id, userId: viewer.user.id, userLogin: viewer.user.login, kind, publishConsent, createdAt })
-    void deliverFeedbackToLead({ config, instances, triage, feedback: store.feedbackById(id) }).catch((error) => log.warn('feedback lead delivery failed', { ref: id, error: redact(String(error)) }))
+    void attemptLeadDelivery({ store, config, instances, triage, feedback: store.feedbackById(id) }).catch((error) => log.warn('feedback lead delivery failed', { ref: id, error: redact(String(error)) }))
     store.audit(viewer.user.id, 'feedback.created', `${id} kind=${kind} chars=${message.length}`)
     const replyTo = notifyEmail(viewer.user)
     try {
@@ -4207,7 +4207,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       publishConsent,
       createdAt: report.created_at,
     })
-    void deliverFeedbackToLead({ config, instances, triage, error: report }).catch((error) => log.warn('error report lead delivery failed', { ref, error: redact(String(error)) }))
+    void attemptLeadDelivery({ store, config, instances, triage, error: report }).catch((error) => log.warn('error report lead delivery failed', { ref, error: redact(String(error)) }))
     try {
       await mailer.send({
         to: config.mail.feedbackEmail,
@@ -5663,16 +5663,23 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return htmlPage(reply, status, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), status === 404 ? '页面不存在' : '出错了', status >= 500 ? '服务器出了点问题，请稍后再试。' : message, request.locale, undefined, report))
   })
 
+  let retryingLead = false
   const sweeper = setInterval(() => {
     limits.sweep()
     apiLimiter.sweep()
     store.deleteExpiredSessions()
+    if (options.startScheduler === false || retryingLead) return
+    retryingLead = true
+    void retryPendingLeadDeliveries({ store, config, instances })
+      .catch((error) => log.warn('feedback lead retry failed', { error: redact(String(error)) }))
+      .finally(() => { retryingLead = false })
   }, 60_000)
   sweeper.unref()
 
   if (options.startScheduler !== false) {
     jobs.start()
     void notifyReleasedFeedback({ store, mailer }).catch((error) => log.warn('released feedback notification failed', { error: redact(String(error)) }))
+    void retryPendingLeadDeliveries({ store, config, instances }).catch((error) => log.warn('feedback lead retry failed', { error: redact(String(error)) }))
   }
 
   return {

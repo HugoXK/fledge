@@ -202,7 +202,8 @@ feedback or error data. A public GitHub issue is created by the Lead only after 
 separate sanitized-publication consent, and the issue may @ the reporter only
 when that consent is present. The triage read returns a ready-to-use sanitized
 issue draft built from `public_summary`; raw message/stack never enters it. The triage row stores the issue/PR URLs, fixed and
-released versions, user-facing message, public summary and notification state;
+released versions, user-facing message, public summary, notification state and
+the bounded Lead-delivery attempts;
 the raw text remains in the feedback/error row.
 
 ### CSRF

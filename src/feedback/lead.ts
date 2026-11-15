@@ -5,7 +5,7 @@
 // The report itself must never fail because the Lead is offline; the caller
 // keeps the row and the maintainer mail.
 import type { Config } from '../config.js'
-import type { ErrorReportRow, FeedbackRow, FeedbackTriageRow } from '../db.js'
+import type { ErrorReportRow, FeedbackRow, FeedbackTriageRow, Store } from '../db.js'
 import { hmacHex, redact, safeEqual } from '../lib/secrets.js'
 
 export interface LeadTransport {
@@ -86,6 +86,64 @@ export function buildTriagePacket(input: TriagePacketInput): string {
     '- Fledge sends the in-app/email update to the reporter; do not send it yourself.',
   ]
   return lines.join('\n').slice(0, 4000)
+}
+
+export const LEAD_MAX_ATTEMPTS = 5
+
+export function leadRetryDelayMs(attempts: number): number {
+  const delays = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000, 6 * 60 * 60_000]
+  return delays[Math.max(0, Math.min(delays.length - 1, attempts - 1))]!
+}
+
+// #814 follow-up: the route records every attempt, so a temporary bridge
+// outage is retried with a bounded backoff instead of silently disappearing.
+// The packet is idempotent by ref, so a resend after a lost DB write is safe.
+export async function attemptLeadDelivery(input: TriagePacketInput & {
+  store: Store
+  instances: LeadTransport | undefined
+  fetchImpl?: typeof fetch
+  now?: number
+}): Promise<{ ok: boolean; mode: LeadMode; error?: string }> {
+  const result = await deliverFeedbackToLead(input)
+  if (result.ok) {
+    input.store.markLeadDelivered(input.triage.ref)
+    return result
+  }
+  const attempts = input.triage.lead_attempts + 1
+  const next = attempts >= LEAD_MAX_ATTEMPTS
+    ? null
+    : new Date((input.now ?? Date.now()) + leadRetryDelayMs(attempts)).toISOString()
+  input.store.recordLeadDeliveryFailure(input.triage.ref, result.error ?? 'unknown', attempts, next)
+  return result
+}
+
+export async function retryPendingLeadDeliveries(input: {
+  store: Store
+  config: Config
+  instances: LeadTransport | undefined
+  fetchImpl?: typeof fetch
+  now?: number
+  limit?: number
+}): Promise<number> {
+  const now = input.now ?? Date.now()
+  const pending = input.store.listPendingLeadDeliveries(new Date(now).toISOString(), input.limit ?? 20)
+  let sent = 0
+  for (const triage of pending) {
+    const feedback = input.store.feedbackById(triage.ref)
+    const error = input.store.errorReportByRef(triage.ref)
+    const result = await attemptLeadDelivery({
+      store: input.store,
+      config: input.config,
+      instances: input.instances,
+      triage,
+      ...(feedback === undefined ? {} : { feedback }),
+      ...(error === undefined ? {} : { error }),
+      ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
+      now,
+    })
+    if (result.ok) sent += 1
+  }
+  return sent
 }
 
 export async function deliverFeedbackToLead(input: TriagePacketInput & {

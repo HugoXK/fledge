@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { buildTriagePacket, deliverFeedbackToLead, publicIssueDraft, triageToken, verifyTriageToken } from '../src/feedback/lead.js'
+import { attemptLeadDelivery, buildTriagePacket, deliverFeedbackToLead, publicIssueDraft, retryPendingLeadDeliveries, triageToken, verifyTriageToken } from '../src/feedback/lead.js'
 import { notifyReleasedFeedback } from '../src/feedback/notify.js'
 import { json, makeUser, MemoryMailer, readBody, startFakeServer, testConfig } from './helpers.js'
 
@@ -80,6 +80,58 @@ test('a configured bridge target posts a send to the configured session', async 
     const config = testConfig({ feedback: { ...base.feedback, leadRepoId: '', leadBridgeUrl: server.url, leadBridgeToken: 'bridge-token', leadSessionId: 'lead-session' } })
     const result = await deliverFeedbackToLead({ config, instances: undefined, triage: f.triage, feedback: f.feedback })
     assert.deepEqual(result, { ok: true, mode: 'bridge' })
+  } finally {
+    f.store.close()
+    await server.close()
+  }
+})
+
+test('a failed Lead delivery is recorded and retried, then marked delivered', async () => {
+  const f = fixture()
+  let calls = 0
+  const server = await startFakeServer(async (request, response) => {
+    await readBody(request)
+    calls += 1
+    json(response, calls === 1 ? 500 : 200, { ok: true })
+  })
+  try {
+    const base = testConfig()
+    const config = testConfig({ feedback: { ...base.feedback, leadRepoId: '', leadBridgeUrl: server.url, leadBridgeToken: 'bridge-token', leadSessionId: 'lead-session' } })
+    const first = await attemptLeadDelivery({ store: f.store, config, instances: undefined, triage: f.triage, feedback: f.feedback, now: 1_000 })
+    assert.equal(first.ok, false)
+    const failed = f.store.feedbackTriageByRef(f.triage.ref)
+    assert.equal(failed?.lead_attempts, 1)
+    assert.match(failed?.lead_last_error ?? '', /500/)
+    assert.ok((failed?.lead_next_attempt_at ?? '') !== '')
+    assert.equal(failed?.lead_delivered_at, null)
+
+    const second = await attemptLeadDelivery({ store: f.store, config, instances: undefined, triage: failed!, feedback: f.feedback, now: 2_000 })
+    assert.equal(second.ok, true)
+    const delivered = f.store.feedbackTriageByRef(f.triage.ref)
+    assert.ok(delivered?.lead_delivered_at)
+    assert.equal(delivered?.lead_next_attempt_at, null)
+  } finally {
+    f.store.close()
+    await server.close()
+  }
+})
+
+test('the retry worker sends only pending Lead deliveries', async () => {
+  const f = fixture()
+  let calls = 0
+  const server = await startFakeServer(async (request, response) => {
+    await readBody(request)
+    calls += 1
+    json(response, 200, { ok: true })
+  })
+  try {
+    const base = testConfig()
+    const config = testConfig({ feedback: { ...base.feedback, leadRepoId: '', leadBridgeUrl: server.url, leadBridgeToken: 'bridge-token', leadSessionId: 'lead-session' } })
+    assert.equal(await retryPendingLeadDeliveries({ store: f.store, config, instances: undefined, now: 10_000 }), 1)
+    assert.equal(calls, 1)
+    assert.ok(f.store.feedbackTriageByRef(f.triage.ref)?.lead_delivered_at)
+    assert.equal(await retryPendingLeadDeliveries({ store: f.store, config, instances: undefined, now: 20_000 }), 0, 'a delivered row is not resent')
+    assert.equal(calls, 1)
   } finally {
     f.store.close()
     await server.close()

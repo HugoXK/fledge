@@ -1921,6 +1921,10 @@ CREATE TABLE IF NOT EXISTS feedback_triage (
   released_at TEXT,
   last_notified_status TEXT,
   notified_at TEXT,
+  lead_delivered_at TEXT,
+  lead_attempts INTEGER NOT NULL DEFAULT 0,
+  lead_last_error TEXT,
+  lead_next_attempt_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -2066,6 +2070,10 @@ export interface FeedbackTriageRow {
   released_at: string | null
   last_notified_status: string | null
   notified_at: string | null
+  lead_delivered_at: string | null
+  lead_attempts: number
+  lead_last_error: string | null
+  lead_next_attempt_at: string | null
   created_at: string
   updated_at: string
 }
@@ -2089,11 +2097,12 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 42) {
+    if (previousVersion > 43) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (42)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (43)`)
     }
     this.db.exec(SCHEMA)
+    this.migrateFeedbackTriageColumns()
     this.migrateColumns()
     this.migrateRepoColumns()
     this.migrateProviderColumns()
@@ -2114,7 +2123,7 @@ export class Store {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
     this.migrateIdentity()
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 42)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 43)};`)
   }
 
   // #544 slice 3B-B2: a database written by slice B1 already has the occurrence
@@ -2321,6 +2330,16 @@ export class Store {
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE repo_releases ADD COLUMN ${name} ${type}`)
     }
+  }
+
+  // #814 follow-up: the triage row existed before the Lead delivery outbox, so
+  // an older database gains the retry columns in place.
+  private migrateFeedbackTriageColumns(): void {
+    const columns = this.all<{ name: string }>('PRAGMA table_info(feedback_triage)').map((column) => column.name)
+    if (!columns.includes('lead_delivered_at')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_delivered_at TEXT')
+    if (!columns.includes('lead_attempts')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_attempts INTEGER NOT NULL DEFAULT 0')
+    if (!columns.includes('lead_last_error')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_last_error TEXT')
+    if (!columns.includes('lead_next_attempt_at')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_next_attempt_at TEXT')
   }
 
   private migrateColumns(): void {
@@ -5794,6 +5813,19 @@ export class Store {
 
   listFeedbackTriageForUser(userId: string, limit = 10): FeedbackTriageRow[] {
     return this.all<FeedbackTriageRow>('SELECT * FROM feedback_triage WHERE user_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT ?', userId, Math.max(1, Math.min(50, limit)))
+  }
+
+  markLeadDelivered(ref: string): void {
+    const at = nowIso()
+    this.run('UPDATE feedback_triage SET lead_delivered_at = ?, lead_last_error = NULL, lead_next_attempt_at = NULL, updated_at = ? WHERE ref = ?', at, at, ref)
+  }
+
+  recordLeadDeliveryFailure(ref: string, error: string, attempts: number, nextAt: string | null): void {
+    this.run('UPDATE feedback_triage SET lead_attempts = ?, lead_last_error = ?, lead_next_attempt_at = ?, updated_at = ? WHERE ref = ?', attempts, error.slice(0, 500), nextAt, nowIso(), ref)
+  }
+
+  listPendingLeadDeliveries(now: string, limit = 20): FeedbackTriageRow[] {
+    return this.all<FeedbackTriageRow>('SELECT * FROM feedback_triage WHERE lead_delivered_at IS NULL AND lead_attempts < 5 AND (lead_next_attempt_at IS NULL OR lead_next_attempt_at <= ?) ORDER BY created_at ASC LIMIT ?', now, Math.max(1, Math.min(100, limit)))
   }
 
   listFeedbackForRelease(limit = 50): FeedbackTriageRow[] {

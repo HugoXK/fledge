@@ -116,7 +116,9 @@ connected repo (`FLEDGE_LEAD_REPO_ID`) or a direct bridge; the packet carries a
 per-ref signed token, not the raw stack. The Lead reads and writes through
 `GET`/`POST /api/feedback/:ref` and `/triage`; the read response carries a
 sanitized issue draft, every transition appends an event, and the signed-in
-reporter sees in-app/mail updates plus a Settings history row. A `fixed_version` at or
+reporter sees in-app/mail updates plus a Settings history row. Delivery is a
+bounded outbox: a failure is retried with backoff up to five attempts and the
+row records the last error/next attempt; a delivered row is never resent. A `fixed_version` at or
 below the running `VERSION` sends the fixed notice once; the startup scan then
 marks the record `released` and sends the “now live” notice once. Fledge never
 creates the public issue: the Lead does, sanitized, and records its URL.
