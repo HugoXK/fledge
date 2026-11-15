@@ -75,11 +75,10 @@ function intermediatePaths(dir: string): string[] {
         continue
       }
       if (depth >= 2 || !name.startsWith('fledge-')) continue
-      try {
-        if (statSync(path).isDirectory()) walk(path, depth + 1)
-      } catch {
-        // Raced with the child's own cleanup.
-      }
+      // Walk without a stat first: a file throws ENOTDIR into the readdir guard
+      // above, and check-then-use on the same path is what js/file-system-race
+      // reports.
+      walk(path, depth + 1)
     }
   }
   walk(dir, 0)
@@ -90,11 +89,10 @@ function intermediatePaths(dir: string): string[] {
 // on content: a file that opens as SQLite in the backup directory is the bug.
 function sqliteNames(dir: string): string[] {
   return names(dir).filter((name) => {
-    const path = join(dir, name)
+    // One read decides it: stat-then-read is a check-then-use on the same path
+    // (js/file-system-race), and a directory throws EISDIR into this catch.
     try {
-      if (!statSync(path).isFile()) return false
-      const head = readFileSync(path, { encoding: 'latin1' })
-      return head.startsWith(SQLITE_MAGIC)
+      return readFileSync(join(dir, name), { encoding: 'latin1' }).startsWith(SQLITE_MAGIC)
     } catch {
       return false
     }
