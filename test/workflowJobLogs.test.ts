@@ -13,7 +13,7 @@ import { json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig }
 // GitHub App/user token, only bounded, and only as a redacted excerpt. A fetch
 // failure is a stored reason on the intake row, never a lost intake.
 
-const HOOK_SECRET = 'webhook-secret-542-logs'
+const HOOK_SECRET = 'webhook-secret-' + '542-logs'
 const TOKEN = ['ghp_', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', '0123456789'].join('')
 
 type Built = Awaited<ReturnType<typeof buildApp>>
