@@ -779,6 +779,14 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
+      # #640: a reviewer has to be able to see in the log which copy of the gate
+      # judged the pull request. This names the base tree's blob for the
+      # evaluator the next step runs, so a tampered copy on the branch cannot be
+      # mistaken for it — the sha printed here is the one the verdict came from.
+      - name: Name the evaluator that comes from the base tree
+        run: |
+          set -euo pipefail
+          echo "scripts/ci-ok.mjs from the base tree: blob $(git -C base rev-parse HEAD:scripts/ci-ok.mjs)"
       # `skipped` is a failure here unless the job is named in SKIPPABLE_ON for
       # this event, and a required job missing from `needs` fails too.
       - name: Every required job passed

@@ -362,6 +362,13 @@ supply-chain checks read, and the SARIF the analysis produced. The CodeQL
 baseline and the workflow-injection allowlist are read from `base/`, because a
 pull request that could widen either would grade its own work.
 
+`ci-ok` also prints the blob the base tree holds for the evaluator it is about to
+run: `scripts/ci-ok.mjs from the base tree: blob <sha>`. That line is how a
+reviewer tells the two copies apart in a run log — the sha named there is the
+file the next step executes — so a branch that rewrites `scripts/ci-ok.mjs` is
+visible as a mismatch instead of an invisible substitution. It is evidence, not
+a gate: the verdict still comes from the base file.
+
 The `changes` job also runs `scripts/gate-integrity.mjs`, which writes every
 gate file in the diff into the job summary. It fails closed when the diff cannot
 be read: a summary that says "no gate file" over an unreadable diff would be a
