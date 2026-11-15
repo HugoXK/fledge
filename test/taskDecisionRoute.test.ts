@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
 import { buildApp, type BuiltApp } from '../src/app.js'
-import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { MemoryMailer, flashOf, formBody, makeUser, sessionFor, testConfig } from './helpers.js'
 
 // #639: the post-QA decision is one bounded write, reached from the job page
 // where a verify or review run ends. The page preselects the framework default
@@ -90,7 +90,7 @@ async function fixture(tag: string): Promise<Fixture> {
   }
 }
 
-async function post(f: Fixture, locale: 'zh' | 'en', payload: Record<string, string>): Promise<{ statusCode: number; location: string }> {
+async function post(f: Fixture, locale: 'zh' | 'en', payload: Record<string, string>): Promise<{ statusCode: number; location: string; flash: ReturnType<typeof flashOf> }> {
   const session = sessionFor(f.built, f.user)
   const response = await f.built.app.inject({
     method: 'POST',
@@ -98,7 +98,7 @@ async function post(f: Fixture, locale: 'zh' | 'en', payload: Record<string, str
     headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `${session.cookie}; fledge_lang=${locale}` },
     payload: formBody({ csrf: session.csrf, ...payload }),
   })
-  return { statusCode: response.statusCode, location: decodeURIComponent(String(response.headers.location ?? '')) }
+  return { statusCode: response.statusCode, location: decodeURIComponent(String(response.headers.location ?? '')), flash: flashOf(response) }
 }
 
 async function page(f: Fixture, jobId: string): Promise<string> {
@@ -116,9 +116,9 @@ test('a decision without checkable evidence is refused in English for an English
     const before = f.store.listWorkItems(f.repoId).length
     const response = await post(f, 'en', { ...good, kind: 'new', title: 'another retry fix', evidence: 'obviously needed' })
     assert.equal(response.statusCode, 302)
-    assert.match(response.location, /error=/)
-    assert.match(response.location, /checkable evidence/)
-    assert.doesNotMatch(response.location, /可核对的证据/, 'the English page does not carry the Chinese sentence')
+    assert.ok(response.flash?.error)
+    assert.match(response.flash?.error?.text ?? '', /checkable evidence/)
+    assert.doesNotMatch(response.flash?.error?.text ?? '', /可核对的证据/, 'the English page does not carry the Chinese sentence')
     assert.equal(f.store.listWorkItems(f.repoId).length, before, 'a refused decision writes no task')
   } finally {
     await f.close()
@@ -129,9 +129,9 @@ test('the same refusal is Chinese for a Chinese request', async () => {
   const f = await fixture('zh')
   try {
     const response = await post(f, 'zh', { ...good, kind: 'new', title: '再修一次', evidence: '显然需要' })
-    assert.match(response.location, /error=/)
-    assert.match(response.location, /可核对的证据/)
-    assert.doesNotMatch(response.location, /checkable evidence/)
+    assert.ok(response.flash?.error)
+    assert.match(response.flash?.error?.text ?? '', /可核对的证据/)
+    assert.doesNotMatch(response.flash?.error?.text ?? '', /checkable evidence/)
   } finally {
     await f.close()
   }
@@ -141,8 +141,8 @@ test('a new task gets the framework default level and one audit row', async () =
   const f = await fixture('new')
   try {
     const response = await post(f, 'en', { ...good, kind: 'new', title: 'fix the second call site' })
-    assert.match(response.location, /notice=/)
-    assert.match(response.location, /Recorded as the next step/)
+    assert.ok(response.flash?.notice)
+    assert.match(response.flash?.notice?.text ?? '', /Recorded as the next step/)
     const created = f.store.listWorkItems(f.repoId).filter((item) => item.title === 'fix the second call site')
     assert.equal(created.length, 1)
     assert.equal(created[0]?.priority, 10, 'P2 is the framework default')
@@ -159,8 +159,8 @@ test('new plus an existing task id is repaired once into related, not duplicated
   try {
     const before = f.store.listWorkItems(f.repoId).length
     const response = await post(f, 'en', { ...good, kind: 'new', title: 'the same retry helper', existing_task_id: f.existedTaskId })
-    assert.match(response.location, /notice=/)
-    assert.match(response.location, /repaired once into related/)
+    assert.ok(response.flash?.notice)
+    assert.match(response.flash?.notice?.text ?? '', /repaired once into related/)
     assert.equal(f.store.listWorkItems(f.repoId).length, before + 1, 'the repair still opens the follow-up task')
     const relations = f.store.listTaskRelations(f.verifyId)
     assert.equal(relations.length, 1)
@@ -179,7 +179,7 @@ test('supplement appends to the existing task and starts no second execution', a
     const before = f.store.listWorkItems(f.repoId).length
     const jobsBefore = f.store.listWorkItems(f.repoId).map((item) => item.job_id).join(',')
     const response = await post(f, 'en', { ...good, kind: 'supplement', existing_task_id: f.existedTaskId })
-    assert.match(response.location, /Supplement an existing task/)
+    assert.match(response.flash?.notice?.text ?? '', /Supplement an existing task/)
     assert.equal(f.store.listWorkItems(f.repoId).length, before, 'a supplement opens no task')
     assert.equal(f.store.listWorkItems(f.repoId).map((item) => item.job_id).join(','), jobsBefore, 'and no second execution')
     assert.match(String(f.store.getWorkItem(f.existedTaskId)?.detail), /second call site/)
@@ -194,8 +194,8 @@ test('supplement without a task id is refused instead of silently opening one', 
   try {
     const before = f.store.listWorkItems(f.repoId).length
     const response = await post(f, 'en', { ...good, kind: 'supplement' })
-    assert.match(response.location, /error=/)
-    assert.match(response.location, /name an existing task/)
+    assert.ok(response.flash?.error)
+    assert.match(response.flash?.error?.text ?? '', /name an existing task/)
     assert.equal(f.store.listWorkItems(f.repoId).length, before)
   } finally {
     await f.close()
@@ -252,7 +252,7 @@ test('a related decision on a task that never ran writes no task and no decision
     for (const attempt of [1, 2]) {
       const response = await post(f, 'en', payload)
       assert.equal(response.statusCode, 302, `attempt ${attempt} redirects`)
-      assert.match(response.location, /error=/, `attempt ${attempt} is a refusal`)
+      assert.ok(response.flash?.error, `attempt ${attempt} is a refusal`)
       assert.equal(f.store.listWorkItems(f.repoId).length, before, `attempt ${attempt} writes no task`)
       assert.equal(audits(), auditsBefore, `attempt ${attempt} writes no decision audit row`)
     }
@@ -282,8 +282,8 @@ test('a related decision pointing at the decision job itself writes no task', as
 
     const response = await post(f, 'en', { ...good, kind: 'related', existing_task_id: own.id, title: 'relate this very run' })
     assert.equal(response.statusCode, 302)
-    assert.match(response.location, /error=/)
-    assert.match(response.location, /itself/)
+    assert.ok(response.flash?.error)
+    assert.match(response.flash?.error?.text ?? '', /itself/)
     assert.equal(f.store.listWorkItems(f.repoId).length, before, 'a self relation writes no task')
     assert.equal(audits(), auditsBefore, 'a self relation writes no decision audit row')
   } finally {
@@ -296,7 +296,7 @@ test('a related decision on a task that did run still writes the task and one re
   try {
     const before = f.store.listWorkItems(f.repoId).length
     const response = await post(f, 'en', { ...good, kind: 'related', existing_task_id: f.existedTaskId, title: 'fix the retry in the second call site' })
-    assert.match(response.location, /notice=/)
+    assert.ok(response.flash?.notice)
     assert.equal(f.store.listWorkItems(f.repoId).length, before + 1)
     const relations = f.store.listTaskRelations(f.existedJobId)
     assert.equal(relations.length, 1)

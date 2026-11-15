@@ -12,7 +12,7 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { randomToken, sha256Hex } from '../src/lib/secrets.js'
-import { formBody, json, makeTerminalJob, makeUser, MemoryMailer, readBody, sessionFor, startFakeServer, testConfig } from './helpers.js'
+import { MemoryMailer, flashOf, formBody, json, makeTerminalJob, makeUser, readBody, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
 const DAY = 86_400_000
 const past = (): string => new Date(Date.now() - 60_000).toISOString()
@@ -151,7 +151,7 @@ test('never is refused for a normal user and allowed for an operator token', asy
       payload: formBody({ csrf, name: 'forever', expiryDays: 'never' }),
     })
     assert.equal(refused.statusCode, 302)
-    assert.match(String(refused.headers.location), /error=/)
+    assert.ok(flashOf(refused)?.error)
     assert.equal(store.listApiTokens(user.id).find((row) => row.name === 'forever'), undefined)
 
     const admin = makeUser(store, { login: 'operator-token-user', status: 'approved', superadmin: true })

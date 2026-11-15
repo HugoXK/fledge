@@ -6,7 +6,7 @@ import { buildApp } from '../src/app.js'
 import { managementActor } from '../src/management/actor.js'
 import { ManagementService, type CommandEnvelope } from '../src/management/service.js'
 import { encryptSecret } from '../src/lib/secrets.js'
-import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { MemoryMailer, flashOf, formBody, makeUser, sessionFor, testConfig } from './helpers.js'
 
 // #540, smallest slice: one ManagementService, one command (`task.cancel`), a
 // persisted receipt and a revision fence. The job cancel form is the adapter, so
@@ -232,12 +232,12 @@ test('the cancel form replays a refusal as a refusal, never as a success', async
 
     const first = await built.app.inject({ method: 'POST', url: `/repos/${repo.id}/jobs/${job.id}/cancel`, headers, payload: body })
     assert.equal(first.statusCode, 302)
-    assert.match(String(first.headers.location), /error=/, 'the refused command reports the refusal')
+    assert.ok(flashOf(first)?.error, 'the refused command reports the refusal')
 
     const replay = await built.app.inject({ method: 'POST', url: `/repos/${repo.id}/jobs/${job.id}/cancel`, headers, payload: body })
     assert.equal(replay.statusCode, 302)
-    assert.match(String(replay.headers.location), /error=/, 'the replay of a stored failure is still a refusal')
-    assert.doesNotMatch(String(replay.headers.location), /notice=/, 'and never a success notice')
+    assert.ok(flashOf(replay)?.error, 'the replay of a stored failure is still a refusal')
+    assert.equal(flashOf(replay)?.notice, undefined, 'and never a success notice')
   } finally {
     await built.close()
   }
@@ -279,12 +279,12 @@ test('the cancel form is an adapter: a replay cancels once and a stale page canc
     const body = formBody({ csrf: session.csrf, expected_revision: revision, idempotency_key: key })
     const first = await built.app.inject({ method: 'POST', url: `/repos/${repo.id}/jobs/${job.id}/cancel`, headers, payload: body })
     assert.equal(first.statusCode, 302)
-    assert.match(String(first.headers.location), /notice=/)
+    assert.ok(flashOf(first)?.notice)
     assert.equal(store.getJob(job.id)?.status, 'cancelled')
 
     const replay = await built.app.inject({ method: 'POST', url: `/repos/${repo.id}/jobs/${job.id}/cancel`, headers, payload: body })
     assert.equal(replay.statusCode, 302)
-    assert.match(String(replay.headers.location), /notice=/)
+    assert.ok(flashOf(replay)?.notice)
     assert.equal(store.listAudit(50).filter((row) => row.action === 'job.cancelled').length, 1)
 
     // A page that is one revision old: the same form, a stale number, writes nothing.
@@ -296,7 +296,7 @@ test('the cancel form is an adapter: a replay cancels once and a stale page canc
       payload: formBody({ csrf: session.csrf, expected_revision: 99, idempotency_key: 'stale-key' }),
     })
     assert.equal(stale.statusCode, 302)
-    assert.match(String(stale.headers.location), /error=/)
+    assert.ok(flashOf(stale)?.error)
     assert.equal(store.getJob(second.id)?.status, 'queued', 'a stale page leaves the job alone')
   } finally {
     await built.close()

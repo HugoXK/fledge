@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { formBody, makeTerminalJob, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { MemoryMailer, flashOf, formBody, makeTerminalJob, makeUser, sessionFor, testConfig } from './helpers.js'
 
 test('admin jobs and audit paginate at ten rows with friendly audit labels', async () => {
   const config = testConfig()
@@ -165,7 +165,7 @@ test('admin management is scoped and only the owner can promote admins or set un
       payload: formBody({ csrf: adminSession.csrf, quota: '1', unlimited: '1' }),
     })
     assert.equal(adminUnlimited.statusCode, 302)
-    assert.match(String(adminUnlimited.headers.location), /error=/)
+    assert.ok(flashOf(adminUnlimited)?.error)
     assert.equal(store.userById(normal.id)?.quota_unlimited, 0)
 
     const ownerUnlimited = await built.app.inject({

@@ -11,7 +11,7 @@ import { loadConfig } from '../src/config.js'
 import { Jobs } from '../src/jobs/service.js'
 import type { Runner } from '../src/jobs/runner.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS } from '../src/lib/workItems.js'
-import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { MemoryMailer, flashOf, formBody, makeUser, sessionFor, testConfig } from './helpers.js'
 
 const DAY = 86_400_000
 const ago = (ms: number): string => new Date(Date.now() - ms).toISOString()
@@ -165,7 +165,7 @@ test('a late approval cannot revive an expired plan, and closed -> triaged still
       payload: formBody({ csrf }),
     })
     assert.equal(late.statusCode, 302)
-    assert.match(String(late.headers.location), /error=/)
+    assert.ok(flashOf(late)?.error)
     assert.equal(store.getJob(job.id)!.plan_approved_at, null)
     assert.equal(store.getWorkItem(item.id)!.state, 'closed')
     assert.equal(store.getWorkItem(item.id)!.closed_reason, 'plan_expired')
@@ -190,7 +190,7 @@ test('a late approval cannot revive an expired plan, and closed -> triaged still
       payload: formBody({ csrf }),
     })
     assert.equal(stillLate.statusCode, 302)
-    assert.match(String(stillLate.headers.location), /error=/)
+    assert.ok(flashOf(stillLate)?.error)
     assert.equal(store.getJob(job.id)!.plan_approved_at, null)
     assert.equal(store.getWorkItem(item.id)!.state, 'triaged')
   } finally {

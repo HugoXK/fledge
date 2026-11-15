@@ -5,7 +5,7 @@ import { Store } from '../src/db.js'
 import { Jobs, PLATFORM_DRAIN_LIMIT, PLATFORM_STOP_DRAIN_LIMIT } from '../src/jobs/service.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { failureBannerSentence } from '../src/lib/failure.js'
-import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { flashOf, formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
 
 // #283: the platform emergency stop. The card asks for one operator action that
 // pauses scheduling, refuses every new enqueue with PLATFORM_PAUSED, drains the
@@ -84,7 +84,7 @@ test('a platform stop refuses new enqueues, drains the running job and records o
       payload: formBody({ csrf: enqueueSession.csrf }),
     })
     assert.equal(refused.statusCode, 302)
-    assert.match(String(refused.headers.location), /[?&]error=PLATFORM_PAUSED(?:%3A|:)/)
+    assert.match(flashOf(refused)?.error?.key ?? '', /^PLATFORM_PAUSED:/)
 
     // What the user reads is the banner template, not the shorter inline message
     // the service returns: `failureSentence` resolves the code against
@@ -131,7 +131,7 @@ test('resume clears the stop, replays nothing, and names the repositories due on
     // Resume itself must not re-enqueue the frozen set; only the next tick decides.
     assert.equal(f.store.listJobsForRepo(f.due.id).length, jobsWhileStopped, 'resume replayed the frozen set')
     // The operator is told which repositories are due next, before they happen.
-    assert.match(decodeURIComponent(String(resumed.headers.location)), /acme\/due/)
+    assert.match(flashOf(resumed)?.notice?.text ?? '', /acme\/due/)
 
     await f.built.jobs.tick()
     assert.equal(f.store.listJobsForRepo(f.due.id).length, 1, 'the scheduler did not enqueue after resume')

@@ -5,7 +5,7 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
-import { formBody, json, makeTerminalJob, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
+import { flashOf, formBody, json, makeTerminalJob, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
 import { adminSearchPage, appReposPage, dashboardPage, jobPage, landingPage, metricsPage, repoPage, settingsPage, workspacePage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
 import { localizeMessage } from '../src/i18n.js'
@@ -396,7 +396,8 @@ test('repository settings can change the target branch', async () => {
       payload: formBody({ csrf, goal: '', targetBranch: 'missing', enabled: '1', interval: '1440', reviewInterval: '1440' }),
     })
     assert.equal(rejected.statusCode, 302)
-    assert.match(String(rejected.headers.location), /error=/)
+    assert.equal(rejected.headers.location, `/repos/${repo.id}#repo-settings`)
+    assert.equal(flashOf(rejected)?.error?.text, '目标分支不存在或不可访问。')
     assert.equal(store.getRepo(repo.id)?.target_branch, 'develop')
   } finally {
     await built.close()
@@ -598,7 +599,8 @@ test('a repository asks the user to choose a role and only offers allowed roles'
       payload: formBody({ csrf, role: 'maintainer' }),
     })
     assert.equal(rejected.statusCode, 302)
-    assert.match(String(rejected.headers.location), /error=/)
+    assert.equal(rejected.headers.location, `/repos/${readRepo.id}#role`)
+    assert.equal(flashOf(rejected)?.error?.text, '你的 GitHub 权限不允许选择这个角色。')
     assert.equal(store.getRepo(readRepo.id)?.repo_role, null)
 
     const accepted = await built.app.inject({
@@ -724,8 +726,8 @@ test('refresh downgrades a maintainer when the GitHub permission is lost', async
       payload: formBody({ csrf }),
     })
     assert.equal(refreshed.statusCode, 302)
-    assert.match(String(refreshed.headers.location), /notice=/)
-    assert.match(decodeURIComponent(String(refreshed.headers.location)), /降级/)
+    assert.equal(refreshed.headers.location, `/repos/${repo.id}`)
+    assert.match(flashOf(refreshed)?.notice?.text ?? '', /降级/)
     const updated = store.getRepo(repo.id)!
     assert.equal(updated.permission, 'read')
     assert.equal(updated.repo_role, 'developer')
@@ -800,7 +802,8 @@ test('a plan must be approved by a maintainer before execution', async () => {
       payload: formBody({ csrf }),
     })
     assert.equal(rejected.statusCode, 302)
-    assert.match(String(rejected.headers.location), /error=/)
+    assert.equal(rejected.headers.location, `/repos/${repo.id}/jobs/${job.id}`)
+    assert.equal(flashOf(rejected)?.error?.text, '计划尚未批准。')
     assert.equal(contexts.length, 0)
 
     const approved = await built.app.inject({

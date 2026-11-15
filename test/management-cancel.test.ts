@@ -4,7 +4,7 @@ import { Store } from '../src/db.js'
 import { buildApp, type BuiltApp } from '../src/app.js'
 import { ManagementService } from '../src/management/service.js'
 import { encryptSecret } from '../src/lib/secrets.js'
-import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { MemoryMailer, flashOf, formBody, makeUser, sessionFor, testConfig } from './helpers.js'
 
 // #616: the web cancel runs `task.cancel` through the management service, whose
 // receipt transaction called the postmortem write that opens a transaction of
@@ -49,7 +49,7 @@ async function fixture(id: string): Promise<Fixture> {
   return { built, user, repoId: repo.id, jobId: job.id, close: async () => { await built.close() } }
 }
 
-async function cancelPost(f: Fixture, payload: Record<string, string>): Promise<{ statusCode: number; location: string }> {
+async function cancelPost(f: Fixture, payload: Record<string, string>): Promise<{ statusCode: number; location: string; flash: ReturnType<typeof flashOf> }> {
   const session = sessionFor(f.built, f.user)
   const response = await f.built.app.inject({
     method: 'POST',
@@ -57,7 +57,7 @@ async function cancelPost(f: Fixture, payload: Record<string, string>): Promise<
     headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: session.cookie },
     payload: formBody({ csrf: session.csrf, ...payload }),
   })
-  return { statusCode: response.statusCode, location: String(response.headers.location) }
+  return { statusCode: response.statusCode, location: String(response.headers.location), flash: flashOf(response) }
 }
 
 // The warning `notePostmortem` writes is the only trace of the loss, so a case
@@ -94,7 +94,7 @@ test('a web cancel writes the postmortem row and logs no failure', async () => {
   try {
     const response = await cancelPost(f, { expected_revision: '1', idempotency_key: 'cancel-row' })
     assert.equal(response.statusCode, 302)
-    assert.match(response.location, /notice=/)
+    assert.ok(response.flash?.notice)
     assert.equal(f.built.store.getJob(f.jobId)?.status, 'cancelled')
 
     const postmortem = f.built.store.getPostmortemForJob(f.jobId)

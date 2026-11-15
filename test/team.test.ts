@@ -7,7 +7,7 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { encryptSecret } from '../src/lib/secrets.js'
-import { formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
+import { flashOf, formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
 
 function makeZip(name: string, text: string): Buffer {
@@ -164,7 +164,8 @@ test('team console reads live state and sends guidance', async () => {
       payload: formBody({ csrf, sessionId: 'lead-1', questionId: 'q1', selected: 'Write docs', custom: '', returnTo: `/repos/${repo.id}` }),
     })
     assert.equal(formAnswered.statusCode, 302)
-    assert.match(String(formAnswered.headers.location), new RegExp(`^/repos/${repo.id}\\?notice=`))
+    assert.equal(formAnswered.headers.location, `/repos/${repo.id}`)
+    assert.equal(flashOf(formAnswered)?.notice?.text, '答案已发送。')
     const formAnswerCall = received.filter((entry) => entry.endpoint === 'answer-question').at(-1)
     assert.deepEqual(formAnswerCall?.payload, { sessionId: 'lead-1', questionId: 'q1', answer: { selected: ['Write docs'] } })
 
@@ -196,7 +197,8 @@ test('team console reads live state and sends guidance', async () => {
       payload: formBody({ csrf, target: '', returnTo: `/repos/${repo.id}/workspace` }),
     })
     assert.equal(formStopped.statusCode, 302)
-    assert.match(String(formStopped.headers.location), new RegExp(`^/repos/${repo.id}/workspace\\?notice=`))
+    assert.equal(formStopped.headers.location, `/repos/${repo.id}/workspace`)
+    assert.match(flashOf(formStopped)?.notice?.text ?? '', /已停止 1 个角色|暂停请求/)
     const hostileStop = await built.app.inject({
       method: 'POST',
       url: `/repos/${repo.id}/team/stop`,
@@ -204,7 +206,8 @@ test('team console reads live state and sends guidance', async () => {
       payload: formBody({ csrf, target: '', returnTo: '//evil.com' }),
     })
     assert.equal(hostileStop.statusCode, 302)
-    assert.match(String(hostileStop.headers.location), new RegExp(`^/repos/${repo.id}/team\\?notice=`), 'a hostile returnTo must fall back to the route fallback')
+    assert.equal(hostileStop.headers.location, `/repos/${repo.id}/team`, 'a hostile returnTo must fall back to the route fallback')
+    assert.match(flashOf(hostileStop)?.notice?.text ?? '', /已停止 1 个角色|暂停请求/)
     const formStopCall = received.filter((entry) => entry.endpoint === 'send').at(-1)
     assert.match(String((formStopCall?.payload as { text?: string })?.text), /Human stop request/)
   } finally {
