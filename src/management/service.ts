@@ -1,6 +1,7 @@
 import type { ManagementCommandRow, Store } from '../db.js'
 import type { Jobs } from '../jobs/service.js'
 import { randomId, redact, sha256Hex } from '../lib/secrets.js'
+import { errorClass, errorMessage } from '../lib/errorText.js'
 import { log } from '../lib/log.js'
 import { capabilitiesForRepo, FORBIDDEN_ARGUMENT_KEYS, type ActorContext } from './actor.js'
 import { operationFor, type CommandTarget } from './catalog.js'
@@ -270,8 +271,8 @@ export class ManagementService {
     try {
       afterCommit?.()
     } catch (error) {
-      const name = error instanceof Error ? error.name : typeof error
-      const reason = error instanceof Error ? error.message : String(error)
+      const name = errorClass(error)
+      const reason = errorMessage(error)
       log.warn('after-commit callback failed', { trace: receipt.id, error: `${name}: ${reason}` })
       try {
         this.store.audit(receipt.principal_id, 'management.command.after_commit_failed', `${receipt.id} ${receipt.operation} ${name}: ${redact(reason)}`)

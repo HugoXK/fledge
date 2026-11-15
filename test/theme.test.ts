@@ -124,21 +124,33 @@ test('#657: theme and density are two independent preferences on one document', 
   assert.match(html, /<meta name="color-scheme" content="light" \/>/, 'the pinned scheme survives alongside a saved density')
 })
 
-test('#657: the header carries three 44px choices, marks the chosen one and is bilingual', async () => {
-  for (const [locale, labels] of [['zh', ['自动', '浅色', '深色']], ['en', ['Auto', 'Light', 'Dark']]] as const) {
+test('#682: the header carries one icon menu with the three choices, signed out too', async () => {
+  for (const [locale, labels] of [['zh', ['跟随系统', '浅色', '深色']], ['en', ['System', 'Light', 'Dark']]] as const) {
     const html = await documentWith(`fledge_theme=dark; fledge_lang=${locale}`)
-    const group = /<div class="theme"[^>]*>([\s\S]*?)<\/div>/.exec(html)?.[1] ?? ''
-    assert.notEqual(group, '', `${locale}: the header must render a theme group`)
+    const menu = /<details class="theme-menu">([\s\S]*?)<\/details>/.exec(html)?.[1] ?? ''
+    assert.notEqual(menu, '', `${locale}: the header must render the theme menu`)
+    assert.match(menu, /<summary aria-label="[^"]+"/, `${locale}: the summary needs an accessible name`)
     for (const mode of ['system', 'light', 'dark']) {
-      assert.match(group, new RegExp(`href="/theme/${mode}\\?next=`), `${locale}: ${mode} is one link away, with no JavaScript`)
+      assert.match(menu, new RegExp(`href="/theme/${mode}\\?next=`), `${locale}: ${mode} is one link away, with no JavaScript`)
     }
-    for (const label of labels) assert.ok(group.includes(label), `${locale}: the choices must be labelled ${labels.join('/')}`)
-    const current = [...group.matchAll(/data-theme-btn="([^"]+)" aria-current="true"/g)].map((match) => match[1])
+    for (const label of labels) assert.ok(menu.includes(label), `${locale}: the choices must be labelled ${labels.join('/')}`)
+    const current = [...menu.matchAll(/data-theme-btn="([^"]+)" aria-current="true"/g)].map((match) => match[1])
     assert.deepEqual(current, ['dark'], `${locale}: exactly the saved choice is marked current`)
-    // It rides inside the navigation panel, so the phone row gains no child and
-    // cannot overflow at 360px.
+    // The control is a header child, not a nav-panel child, so a signed-out
+    // landing page has it as well.
     const nav = /<nav class="nav" id="main-nav"[\s\S]*?<\/nav>/.exec(html)?.[0] ?? ''
-    assert.ok(nav.includes('class="theme"'), `${locale}: the chooser must live inside #main-nav so the compact panel carries it`)
+    assert.doesNotMatch(nav, /class="theme-menu"/, `${locale}: the chooser must not sit inside the signed-in nav`)
+    assert.match(html, /<header class="top">[\s\S]*?class="theme-menu"[\s\S]*?<\/header>/, `${locale}: the chooser must be in the header`)
+  }
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const guest = await built.app.inject({ method: 'GET', url: '/' })
+    assert.equal(guest.statusCode, 200)
+    assert.match(guest.body, /class="theme-menu"/, 'the signed-out landing page must keep the theme chooser')
+  } finally {
+    await built.close()
   }
 })
 
@@ -166,43 +178,31 @@ test('#657: the header and the account pill paint palette tokens, not dark liter
   }
 })
 
-test('#657: each choice keeps the 44px touch floor and the compact panel keeps the row intact', () => {
-  const theme = rules.filter((rule) => rule.selectors.some((selector) => selector.startsWith('.theme')))
-  assert.ok(theme.length > 0, 'no .theme rule at all')
-  const link = theme.find((rule) => rule.selectors.includes('.theme a'))
-  assert.ok(link !== undefined, '.theme a is missing')
-  for (const property of ['min-width', 'min-height']) {
-    assert.equal(
-      link.declarations.find((entry) => entry.property === property)?.value,
-      'var(--touch)',
-      `.theme a must keep the ${property} touch floor`,
-    )
+test('#682: the icon button and every menu option keep the 44px touch floor', () => {
+  const summary = rules.find((rule) => rule.selectors.includes('.theme-menu summary') && rule.media === null)
+  assert.ok(summary !== undefined, '.theme-menu summary is missing')
+  for (const property of ['width', 'height']) {
+    assert.equal(summary.declarations.find((entry) => entry.property === property)?.value, 'var(--touch)', `the icon summary must keep the ${property} touch floor`)
   }
-  // The selected state has to be visible without colour alone: the current
-  // choice carries a border and a weight change as well.
-  const current = theme.find((rule) => rule.selectors.some((selector) => selector.includes('aria-current="true"')))
-  assert.ok(current !== undefined, 'the selected theme must have a visible rule of its own')
+  const option = rules.find((rule) => rule.selectors.includes('.theme-options a') && rule.media === null)
+  assert.ok(option !== undefined, '.theme-options a is missing')
+  assert.equal(option.declarations.find((entry) => entry.property === 'min-height')?.value, 'var(--touch)', 'each menu option must keep the 44px floor')
+  const current = rules.find((rule) => rule.selectors.some((selector) => selector.includes('.theme-options a[aria-current="true"]')))
+  assert.ok(current !== undefined, 'the selected option needs a visible rule of its own')
   const visible = current.declarations.map((entry) => entry.property)
-  assert.ok(visible.includes('background') || visible.includes('color'), 'the selected state must paint something')
-
-  // The control must not add a child to the phone row: the panel it rides in is
-  // hidden until the toggle opens it, so 360px keeps the #133 fixed row.
-  const panel = rules.find((rule) => rule.selectors.includes('.top .nav') && rule.media === '(max-width: 960px)')
-  assert.ok(panel !== undefined, 'the compact nav panel rule is missing')
-  assert.equal(conditionHolds('(max-width: 960px)', 360), true)
-  assert.equal(panel.declarations.find((entry) => entry.property === 'display')?.value, 'none', 'the panel stays collapsed until the toggle opens it')
-  const themeRules = theme.filter((rule) => rule.media !== null && conditionHolds(rule.media, 360))
-  for (const rule of themeRules) {
-    assert.doesNotMatch(
-      rule.selectors.join(' '),
-      /\.top-inner/,
-      'the theme control must not become a row child at 360px',
-    )
-  }
+  assert.ok(visible.includes('background') || visible.includes('color'), 'the selected option must paint something')
+  // The narrow popover is pinned to the viewport under the header so it cannot
+  // open past either edge at 360px, whichever side the summary sits on.
+  const narrow = rules.find((rule) => rule.media === '(max-width: 640px)' && rule.selectors.includes('.theme-options'))
+  assert.ok(narrow !== undefined, 'the phone popover needs a viewport rule')
+  assert.equal(narrow.declarations.find((entry) => entry.property === 'position')?.value, 'fixed')
+  assert.equal(narrow.declarations.find((entry) => entry.property === 'right')?.value, '12px')
 })
 
 test('#657: docs/ui.md names the two palette tokens and the three-way preference', () => {
   for (const token of ['--header-bg', '--chip-bg']) assert.ok(DOC.includes(token), `docs/ui.md must document ${token}`)
   assert.match(DOC, /fledge_theme/, 'docs/ui.md must name the cookie the render reads')
+  assert.match(DOC, /icon/i, 'docs/ui.md must describe the icon menu')
+  assert.match(DOC, /signed-out|signed out/i, 'docs/ui.md must state that the control is available signed out')
   for (const mode of ['system', 'light', 'dark']) assert.match(DOC, new RegExp(`\\b${mode}\\b`), `docs/ui.md must name the ${mode} choice`)
 })
