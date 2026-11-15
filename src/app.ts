@@ -104,6 +104,8 @@ import { gatePage } from './views/gate.js'
 import { planHash, validateGatePlan } from './gates/plan.js'
 import { memoryMissingPage, memoryPage } from './views/memory.js'
 import { rulesOverridesPage } from './views/rules.js'
+import { ciGatePage } from './views/ciGate.js'
+import { reportCiGate } from './lib/ciGate.js'
 import { isRulePath, MAX_RULE_FILE_BYTES } from './rules.js'
 import { audienceVisible, memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from './lib/memory.js'
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
@@ -1838,6 +1840,37 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const message = error instanceof Error ? error.message : String(error)
       return reply.redirect(`/dashboard?error=${encodeURIComponent(message)}`)
     }
+  })
+
+  // #543 slice 1: answer whether this repository's own CI gates a merge. Read
+  // only — workflows, protection and the commits that landed are read from
+  // GitHub; nothing is created, committed or opened on the user's repository.
+  app.get('/repos/:id/ci-gate', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const token = await repoGithubToken(repo, config, githubApp, store)
+    if (token === '') throw httpError(400, '这个仓库没有可用的 GitHub token。', 'REPO_TOKEN_MISSING')
+    const client = new GithubClient(token, config.github.apiBase)
+    const branch = repo.default_branch
+    const entries = await client.listDirectory(repo.owner, repo.name, '.github/workflows', branch)
+    const workflows: Array<{ path: string; content: string }> = []
+    for (const entry of (entries ?? []).filter((item) => item.type === 'file' && /\.ya?ml$/i.test(item.name)).slice(0, 20)) {
+      const file = await client.getContentAtRef(repo.owner, repo.name, entry.path, branch)
+      if (file !== null && file.type === 'file') workflows.push({ path: entry.path, content: file.content.slice(0, 100_000) })
+    }
+    const gate = await client.getBranchProtection(repo.owner, repo.name, branch)
+    // A window, not a sample: one page of the newest merged pull requests, then
+    // the ones merged inside the reported window. The merge commit is the commit
+    // that landed, so its check runs are the evidence for that landing.
+    const since = Date.now() - 14 * 24 * 60 * 60 * 1000
+    const mergedPulls: Array<{ number: number; mergedAt: string; conclusions: string[] }> = []
+    for (const pull of (await client.listMergedPullRequests(repo.owner, repo.name, 1)).filter((item) => Date.parse(item.mergedAt) >= since).slice(0, 10)) {
+      const conclusions = pull.mergeCommitSha === null
+        ? []
+        : (await client.listCheckRuns(repo.owner, repo.name, pull.mergeCommitSha)).map((run) => run.conclusion ?? 'running')
+      mergedPulls.push({ number: pull.number, mergedAt: pull.mergedAt, conclusions })
+    }
+    const report = reportCiGate({ repo: `${repo.owner}/${repo.name}`, defaultBranch: branch, workflows, gate, mergedPulls })
+    return htmlPage(reply, 200, ciGatePage({ config, locale: request.locale ?? 'zh', viewer: viewOf(viewer), repo, report }))
   })
 
   app.get('/repos/:id', async (request, reply) => {
