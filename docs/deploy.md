@@ -95,8 +95,9 @@ The script refuses while a job is active unless `--force` is passed. It updates
 `bridge.env`, `repo_instances.bridge_token_enc` and the matching `api_tokens` row
 and restarts each bridge. The GitHub PAT used by the development routine is not
 managed by this script: create a new classic PAT with `repo` scope in GitHub
-settings, run `NEW_GITHUB_TOKEN=... node scripts/rotate-github-token.mjs`, and
-revoke the old token.
+settings, run `node scripts/rotate-github-token.mjs --token-file <0600 file>`
+(or pipe the token with `--token-file -`), and revoke the old token. The token is
+never passed on the command line or in the environment.
 
 ## 3. SMTP
 

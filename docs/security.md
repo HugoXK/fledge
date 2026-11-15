@@ -508,12 +508,29 @@ The GitHub PAT used by the maintenance routine is not managed by Fledge. To
 rotate it:
 
 1. Create a new classic PAT with `repo` scope in GitHub settings.
-2. Run `NEW_GITHUB_TOKEN=... node scripts/rotate-github-token.mjs` on the host
-   that holds `~/.dsh/bot/secrets.json` (override with `SECRETS_PATH` if needed).
+2. Write it to a file only your account can read, then run the rotation on the
+   host that holds `~/.dsh/bot/secrets.json` (override with `SECRETS_PATH` if
+   needed):
+
+   ```sh
+   install -m 0600 /dev/null ~/new-github-token
+   # paste the new token into that file, then:
+   node scripts/rotate-github-token.mjs --token-file ~/new-github-token
+   rm ~/new-github-token
+   ```
+
+   Piping it works the same way and leaves no file behind:
+   `read -rs TOKEN && printf '%s' "$TOKEN" | node scripts/rotate-github-token.mjs --token-file -`.
 3. Revoke the old token in GitHub settings.
 
-The script validates the new token, writes a timestamped backup next to the
-secrets file and never prints the token. It does not revoke the old token.
+The script refuses a token that arrives on the command line or in
+`NEW_GITHUB_TOKEN`: the command line is kept in shell history and shown by `ps`,
+and an environment variable is inherited by every child process. `--token-file`
+must name a regular file with mode `0600`. The script validates the new token,
+writes a timestamped backup next to the secrets file and never prints the token.
+It does not revoke the old token. A secrets file that is not valid JSON is
+reported by position only — never with a fragment of its contents, which would
+put the token in a log.
 
 **The old value is dead only when one and the same run proves it.** Run
 `GET /user` with the old value and `GET /user` with the new value inside a single

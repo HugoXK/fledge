@@ -142,7 +142,8 @@ back. See [architecture.md](architecture.md) and [api.md](api.md).
    credential circuit breaker and managed token rotation are done; still needed
    are log rotation, a backup restore drill and admin token rotation. The leaked
    GitHub development PAT must be rotated by the owner with
-   `NEW_GITHUB_TOKEN=... node scripts/rotate-github-token.mjs`.
+   `node scripts/rotate-github-token.mjs --token-file <0600 file>` (or
+   `--token-file -` with the token on stdin).
 3. **Next product slice**: shared repository members (design in
    [decisions/0002](decisions/0002-shared-repo-members.md)), native DSH message
    streaming and deeper stage orchestration.
