@@ -1,12 +1,15 @@
 import type { Config } from '../config.js'
 import type { CostReport } from '../metrics/cost.js'
-import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow } from '../db.js'
+import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow, TaskRelationRow } from '../db.js'
 import { redactCommand, type DriftAssessment, type EnvironmentCurrent, type ReleaseSnapshot } from '../lib/deployments.js'
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
 import { nextRun, type NextRun } from '../lib/nextRun.js'
 import { aheadOfViewer, queueRanks, rankQueued, type QueueRank } from '../lib/queueRank.js'
+import { levelFromRank, PRIORITY_LEVELS } from '../lib/priority.js'
+import { RELATION_KINDS, relationKindLabel, type RelationKind } from '../lib/relations.js'
+import { DECISION_KINDS, DEFAULT_DECISION, decisionKindLabel } from '../lib/taskDecision.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { renderState, stateCell, type StateAction } from './states.js'
@@ -396,7 +399,7 @@ function jobRows(locale: Locale, jobs: JobRow[], empty?: EmptyJobs, ranks?: Map<
       return `<tr data-job-id="${escapeHtml(job.id)}">
         <td class="job-cell" data-label="${escapeHtml(t('任务', 'Job'))}">
           <a href="/repos/${escapeHtml(job.repo_id)}/jobs/${escapeHtml(job.id)}"><code>${escapeHtml(job.id)}</code></a> <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span>
-          <small class="job-meta">${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(humanTimeShort(job.created_at))}</small>${rank === undefined ? '' : `<small class="job-meta" title="${escapeHtml(t('队列位置按优先级、再按到达顺序', 'queue position by priority, then arrival'))}" data-queue-rank>#${rank.position}/${rank.total} · P${job.priority}</small>`}
+          <small class="job-meta">${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(humanTimeShort(job.created_at))}</small>${rank === undefined ? '' : `<small class="job-meta" title="${escapeHtml(t('队列位置按优先级、再按到达顺序', 'queue position by priority, then arrival'))}" data-queue-rank>#${rank.position}/${rank.total} · ${escapeHtml(levelFromRank(job.priority))}</small>`}
         </td>
         <td data-job-status data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, job.status)}${classifyFailure(job) === null ? '' : `<br /><small class="muted">${escapeHtml(failureLabel(t, classifyFailure(job)!.kind))}</small>`}</td>
         <td class="job-links" data-label="${escapeHtml(t('PR / Issue', 'PR / Issue'))}">${jobLinks(job)}</td>
@@ -583,7 +586,7 @@ export function rejectedPage(config: Config, viewer: Viewer, locale: Locale = 'z
 // place here, because a link that re-lists the keys itself is how the window
 // buttons lost the filter, both "Clear filters" links lost the window, and the
 // repository pager lost both.
-const NO_JOB_FILTER: JobFilter = { repo: '', status: '', kind: '' }
+const NO_JOB_FILTER: JobFilter = { repo: '', status: '', kind: '', priority: '' }
 
 /** The window and the active filter, as the query keys every control carries. */
 function dashboardStateParams(filter: JobFilter, windowDays: number): Record<string, string> {
@@ -621,6 +624,10 @@ function jobFilterForm(locale: Locale, filter: JobFilter, repos: Array<{ id: str
     <label>${escapeHtml(t('类型', 'Kind'))}<select name="kind">${options(
       [{ value: '', label: t('全部类型', 'All kinds') }, ...JOB_FILTER_KINDS.map((kind) => ({ value: kind, label: kindFilterLabel(t, kind) }))],
       filter.kind,
+    )}</select></label>
+    <label>${escapeHtml(t('优先级', 'Priority'))}<select name="priority">${options(
+      [{ value: '', label: t('全部级别', 'All levels') }, ...PRIORITY_LEVELS.map((level) => ({ value: level, label: level }))],
+      filter.priority,
     )}</select></label>
     <div class="job-filter-actions">
       <button class="btn btn-small" type="submit">${escapeHtml(t('筛选', 'Filter'))}</button>
@@ -968,7 +975,7 @@ export function dashboardPage(input: {
   const reposTotal = input.reposTotal ?? repos.length
   const jobsPage = input.jobsPage ?? 1
   const jobsTotal = input.jobsTotal ?? jobs.length
-  const jobFilter = input.jobFilter ?? { repo: '', status: '' as const, kind: '' }
+  const jobFilter = input.jobFilter ?? { repo: '', status: '' as const, kind: '', priority: '' }
   const repoOptions = input.repoOptions ?? []
   const t = translator(locale)
   const quota = quotaView(viewer.user, config)
@@ -2596,6 +2603,13 @@ export function messagePage(config: Config, title: string, message: string, view
   })
 }
 
+function priorityLevelLabel(t: Translate, level: string): string {
+  if (level === 'P0') return t('持续损害、凭证泄露或故障', 'ongoing damage, credential exposure or an outage')
+  if (level === 'P1') return t('核心目标被阻塞', 'the core goal is blocked')
+  if (level === 'P2') return t('普通工作（默认）', 'ordinary work (default)')
+  return t('非核心打磨', 'non-core polish')
+}
+
 export function jobPage(input: {
   config: Config
   locale: Locale
@@ -2610,6 +2624,8 @@ export function jobPage(input: {
   repoLabels?: Map<string, string>
   events?: JobEventRow[]
   postmortem?: PostmortemRow | null
+  // #639: relations are explicit; the page lists them and offers one write.
+  relations?: TaskRelationRow[]
   // #540: the revision this render saw and the key a double submit replays.
   // Absent on surfaces that cannot write (the admin support view).
   cancel?: { revision: number; idempotencyKey: string }
@@ -2635,6 +2651,7 @@ export function jobPage(input: {
   const retryHidden = commandHidden(input.retry)
   const events = input.events ?? []
   const postmortem = input.postmortem ?? null
+  const relations = input.relations ?? []
   const supportMode = input.supportMode === true
   const t = translator(locale)
   const advanced = advancedViewer(viewer)
@@ -2810,7 +2827,7 @@ export function jobPage(input: {
     const labels = input.repoLabels ?? new Map<string, string>()
     const ownedRows = ahead.owned.map((entry) => `<div class="list-row" data-queue-owned-job="${escapeHtml(entry.id)}">
         <div class="list-main"><a href="/repos/${escapeHtml(entry.repo_id)}/jobs/${escapeHtml(entry.id)}">${escapeHtml(labels.get(entry.repo_id) ?? entry.repo_id)}</a>
-          <small>${escapeHtml(t(`优先级 ${entry.priority}（${triggerLabel(t, entry.trigger)}）`, `priority ${entry.priority} (${triggerLabel(t, entry.trigger).toLowerCase()})`))} · ${escapeHtml(humanTimeShort(entry.created_at))}</small></div>
+          <small>${escapeHtml(t(`优先级 ${levelFromRank(entry.priority)}（${triggerLabel(t, entry.trigger)}）`, `priority ${levelFromRank(entry.priority)} (${triggerLabel(t, entry.trigger).toLowerCase()})`))} · ${escapeHtml(humanTimeShort(entry.created_at))}</small></div>
       </div>`).join('')
     const others = ahead.othersAhead === 0
       ? ''
@@ -2818,12 +2835,84 @@ export function jobPage(input: {
         ? t('另有 1 个排队任务在前，不显示详情。', '1 other queued job is ahead; its details are not shown.')
         : t(`另有 ${ahead.othersAhead} 个排队任务在前，不显示详情。`, `${ahead.othersAhead} other queued jobs are ahead; their details are not shown.`))}</p>`
     return `<div data-queue>
-      <p class="fine" data-job-queue-position>${escapeHtml(t(`队列位置 ${rank.position} / 共 ${rank.total} · 优先级 ${job.priority}（${triggerLabel(t, job.trigger)}）`, `Queue position ${rank.position} of ${rank.total} · priority ${job.priority} (${triggerLabel(t, job.trigger).toLowerCase()})`))}</p>
+      <p class="fine" data-job-queue-position>${escapeHtml(t(`队列位置 ${rank.position} / 共 ${rank.total} · 优先级 ${levelFromRank(job.priority)}（${triggerLabel(t, job.trigger)}）`, `Queue position ${rank.position} of ${rank.total} · priority ${levelFromRank(job.priority)} (${triggerLabel(t, job.trigger).toLowerCase()})`))}</p>
       <p class="fine" data-queue-rule>${escapeHtml(t('按优先级、再按进入顺序排队；同一位置可能有多个任务。仓库里已有运行中或更早的排队任务时，这个位置不会立即开始。', 'Position is by priority, then arrival; jobs equal on both share a position. A repository with a running or earlier queued job delays its own next job, so this is the order, not a promise that it starts next.'))}</p>
       ${ahead.owned.length === 0 ? '' : `<p class="fine">${escapeHtml(t('你的排队任务，按优先级、再按进入顺序：', 'Your queued jobs, by priority, then arrival:'))}</p><div class="list" data-queue-owned>${ownedRows}</div>`}
       ${others}
     </div>`
   })()
+  const priorityNow = levelFromRank(job.priority)
+  const priorityCard = supportMode
+    ? ''
+    : `<section class="card" id="priority">
+    <div class="row between"><h2>${escapeHtml(t('优先级', 'Priority'))}</h2><span class="fine" data-priority-level>${escapeHtml(priorityNow)}</span></div>
+    <p class="fine">${escapeHtml(t('P0 持续损害、凭证泄露或故障；P1 核心目标被阻塞；P2 普通工作；P3 非核心打磨。P0/P1 需要理由和可核对的证据，形容词不算证据。改级会排到新级别的队尾；运行中的任务不会被打断。', 'P0 ongoing damage, credential exposure or an outage; P1 the core goal is blocked; P2 ordinary work; P3 non-core polish. P0/P1 need a reason and checkable evidence — adjectives are not evidence. A change moves the job to the tail of its new level; a running job is not interrupted.'))}</p>
+    <form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/priority" class="form">
+      ${csrf(viewer)}
+      <div class="row">
+        <label>${escapeHtml(t('级别', 'Level'))}
+          <select name="level" aria-label="${escapeHtml(t('优先级 P0-P3', 'Priority P0-P3'))}">
+            ${PRIORITY_LEVELS.map((level) => `<option value="${level}"${level === priorityNow ? ' selected' : ''}>${level} — ${escapeHtml(priorityLevelLabel(t, level))}</option>`).join('')}
+          </select>
+        </label>
+        <label class="grow">${escapeHtml(t('理由', 'Reason'))} <input name="reason" maxlength="200" placeholder="${escapeHtml(t('为什么是这个级别', 'Why this level'))}" /></label>
+      </div>
+      <label>${escapeHtml(t('证据（链接、提交/工单 sha，或带单位的测量值）', 'Evidence (a link, a commit/issue sha, or a measurement with a unit)'))} <input name="evidence" maxlength="300" /></label>
+      <button class="btn" type="submit">${escapeHtml(t('保存优先级', 'Save priority'))}</button>
+    </form>
+  </section>`
+  const relationRows = relations.map((relation) => {
+    const otherId = relation.source_job_id === job.id ? relation.target_job_id : relation.source_job_id
+    return `<div class="list-row" data-job-relation="${escapeHtml(relation.id)}">
+        <div class="list-main"><span class="badge">${escapeHtml(relationKindLabel(relation.kind as RelationKind, t))}</span> <a href="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(otherId)}"><code>${escapeHtml(otherId)}</code></a>
+          <small>${escapeHtml(relation.reason)} · <code>${escapeHtml(relation.evidence)}</code></small></div>
+      </div>`
+  }).join('')
+  const relationForm = supportMode
+    ? ''
+    : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/relations" class="form">
+      ${csrf(viewer)}
+      <div class="row">
+        <label>${escapeHtml(t('目标任务', 'Target task'))} <input name="target_job_id" required maxlength="80" placeholder="${escapeHtml(t('同一仓库里的任务 id', 'a task id in this repository'))}" /></label>
+        <label>${escapeHtml(t('关系', 'Relation'))} <select name="kind">${RELATION_KINDS.map((kind) => `<option value="${kind}">${escapeHtml(relationKindLabel(kind, t))}</option>`).join('')}</select></label>
+      </div>
+      <label>${escapeHtml(t('理由', 'Reason'))} <input name="reason" maxlength="200" placeholder="${escapeHtml(t('为什么是同一个问题', 'Why they belong together'))}" /></label>
+      <label>${escapeHtml(t('证据（链接、提交/工单 sha，或带单位的测量值）', 'Evidence (a link, a commit/issue sha, or a measurement with a unit)'))} <input name="evidence" maxlength="300" /></label>
+      <button class="btn" type="submit">${escapeHtml(t('保存关联', 'Save relation'))}</button>
+    </form>`
+  // #639: a verify or review run ends in one bounded decision, so the page
+  // offers it where that run ends and already selects the framework default —
+  // a separate P2 task — for the case where nobody decides.
+  const postQa = (job.kind === 'verify' || job.kind === 'review') && (job.status === 'succeeded' || job.status === 'failed')
+  const decisionCard = supportMode || !postQa
+    ? ''
+    : `<section class="card" id="decision">
+    <div class="row between"><h2>${escapeHtml(t('下一步', 'What comes next'))}</h2><span class="fine" data-decision-default>${escapeHtml(`${DEFAULT_DECISION.kind} · ${DEFAULT_DECISION.level}`)}</span></div>
+    <p class="fine">${escapeHtml(t('验证结束后只做一个有界决定：另开新任务、补充已有任务、标为相关或复发。理由至少 8 字，并给出可核对的证据。没有人做决定时，框架按 P2 另开一个任务，不猜。', 'A verify run ends in one bounded decision: a separate new task, a supplement to an existing one, related, or a recurrence. It needs a reason of at least 8 characters and checkable evidence. When nobody decides, the framework opens a separate P2 task instead of guessing.'))}</p>
+    <form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/decision" class="form">
+      ${csrf(viewer)}
+      <div class="row">
+        <label>${escapeHtml(t('决定', 'Decision'))}<select name="kind" aria-label="${escapeHtml(t('下一步决定', 'Next-step decision'))}">${DECISION_KINDS.map((kind) => `<option value="${kind}"${kind === DEFAULT_DECISION.kind ? ' selected' : ''}>${escapeHtml(decisionKindLabel(kind, t))}</option>`).join('')}</select></label>
+        <label>${escapeHtml(t('级别', 'Level'))}<select name="level" aria-label="${escapeHtml(t('新任务的级别 P0-P3', 'Level of the new task, P0-P3'))}">${PRIORITY_LEVELS.map((level) => `<option value="${level}"${level === DEFAULT_DECISION.level ? ' selected' : ''}>${level} — ${escapeHtml(priorityLevelLabel(t, level))}</option>`).join('')}</select></label>
+      </div>
+      <div class="row">
+        <label class="grow">${escapeHtml(t('新任务标题', 'New task title'))} <input name="title" maxlength="200" placeholder="${escapeHtml(t('一句话说清要做什么', 'One line on what the task is'))}" /></label>
+        <label>${escapeHtml(t('已有任务 id（补充、相关、复发时必填）', 'Existing task id (required to supplement, relate or recur)'))} <input name="existing_task_id" maxlength="80" /></label>
+      </div>
+      <label>${escapeHtml(t('理由', 'Reason'))} <input name="reason" maxlength="200" placeholder="${escapeHtml(t('为什么是这个决定', 'Why this is the next step'))}" /></label>
+      <label>${escapeHtml(t('证据（链接、提交/工单 sha，或带单位的测量值）', 'Evidence (a link, a commit/issue sha, or a measurement with a unit)'))} <input name="evidence" maxlength="300" /></label>
+      <button class="btn" type="submit">${escapeHtml(t('记下这一步', 'Record this step'))}</button>
+    </form>
+  </section>`
+  const relationsCard = supportMode
+    ? ''
+    : `<section class="card" id="relations">
+    <div class="row between"><h2>${escapeHtml(t('关联任务', 'Related tasks'))}</h2><span class="fine" data-relation-count>${relations.length}</span></div>
+    <p class="fine">${escapeHtml(t('关联只有一个来源：人明确写下理由和证据。标题相似不会自动合并，也不会压制任何任务。', 'A relation has one source: a person writes the reason and the evidence. A similar title never merges tasks and never suppresses one.'))}</p>
+    ${relationRows === '' ? `<p class="muted">${escapeHtml(t('还没有关联任务。', 'No related tasks yet.'))}</p>` : `<div class="list">${relationRows}</div>`}
+    ${relationForm}
+  </section>`
+
   const body = `<section class="card">
     <div class="row between">
       <div>
@@ -2843,6 +2932,9 @@ export function jobPage(input: {
     </div>
     ${queueBlock}
   </section>
+  ${priorityCard}
+  ${relationsCard}
+  ${decisionCard}
   ${jobLoading}
   ${supportMode ? '' : planCard}
   ${postmortemCard}
@@ -3560,7 +3652,7 @@ export function adminSearchPage(input: {
   jobs: JobRow[]
   audit: AuditRow[]
   usersById: Map<string, string>
-  filters: { q: string; status: string; kind: string; action: string; from: string; to: string }
+  filters: { q: string; status: string; kind: string; priority: string; action: string; from: string; to: string }
   jobsPage: number
   jobsTotal: number
   auditPage: number
@@ -3585,11 +3677,11 @@ export function adminSearchPage(input: {
     ? stateCell(4, { kind: 'empty', title: t('没有匹配的任务。', 'No matching jobs.'), body: t('换一个关键词，或清空筛选。', 'Try another keyword, or clear the filter.'), action: { href: '/admin', label: t('回到管理', 'Back to admin') } })
     : jobs.map((job) => `<tr><td><a href="/admin/jobs/${escapeHtml(job.id)}"><code>${escapeHtml(job.id)}</code></a></td><td>${badge(t, job.status)} <span class="badge kind">${escapeHtml(jobKindLabel(t, job))}</span></td><td>${escapeHtml(usersById.get(job.user_id) ?? job.user_id)}</td><td>${escapeHtml(job.pr_url ?? job.issue_url ?? '—')}</td></tr>`).join('')
   const auditTable = auditRows(locale, audit, usersById, false)
-  const jobQuery = query({ q: filters.q, status: filters.status, kind: filters.kind })
+  const jobQuery = query({ q: filters.q, status: filters.status, kind: filters.kind, priority: filters.priority })
   const auditQuery = query({ q: filters.q, action: filters.action, from: filters.from, to: filters.to })
   const body = `<a class="back" href="/admin">← ${escapeHtml(t('返回管理', 'Back to admin'))}</a>
     <section class="card"><div class="eyebrow">${escapeHtml(t('搜索与导出', 'SEARCH & EXPORT'))}</div><h1>${escapeHtml(t('审计与任务', 'Audit and jobs'))}</h1><p class="muted">${escapeHtml(t('按用户范围过滤；可导出当前结果。', 'Scoped by the same user visibility as the admin page; export the current result.'))}</p></section>
-    <section class="card"><h2>${escapeHtml(t('任务', 'Jobs'))}</h2><form method="get" action="/admin/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" /></label><label>${escapeHtml(t('状态', 'Status'))} <select name="status"><option value="">${escapeHtml(t('全部', 'All'))}</option>${JOB_FILTER_STATUSES.map((status) => `<option value="${status}"${filters.status === status ? ' selected' : ''}>${escapeHtml(statusFilterLabel(t, status))}</option>`).join('')}</select></label><label>${escapeHtml(t('类型', 'Kind'))} <select name="kind"><option value="">${escapeHtml(t('全部', 'All'))}</option>${JOB_FILTER_KINDS.map((kind) => `<option value="${kind}"${filters.kind === kind ? ' selected' : ''}>${escapeHtml(kindFilterLabel(t, kind))}</option>`).join('')}</select></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button><a class="btn btn-ghost" href="/admin/export/jobs.csv?${escapeHtml(jobQuery)}">${escapeHtml(t('导出 CSV', 'Export CSV'))}</a></div></form>${lastExportLine(lastJobsExport)}<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('用户', 'User'))}</th><th>PR / Issue</th></tr></thead><tbody>${jobRows}</tbody></table></div><p class="fine">${escapeHtml(t('共', 'Total'))} ${jobsTotal} · ${escapeHtml(t('第', 'Page'))} ${jobsPage}</p>${pager('/admin/search', 'jobsPage', jobsPage, jobsTotal, perPage, t, { q: filters.q, status: filters.status, kind: filters.kind, auditPage })}</section>
+    <section class="card"><h2>${escapeHtml(t('任务', 'Jobs'))}</h2><form method="get" action="/admin/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" /></label><label>${escapeHtml(t('状态', 'Status'))} <select name="status"><option value="">${escapeHtml(t('全部', 'All'))}</option>${JOB_FILTER_STATUSES.map((status) => `<option value="${status}"${filters.status === status ? ' selected' : ''}>${escapeHtml(statusFilterLabel(t, status))}</option>`).join('')}</select></label><label>${escapeHtml(t('类型', 'Kind'))} <select name="kind"><option value="">${escapeHtml(t('全部', 'All'))}</option>${JOB_FILTER_KINDS.map((kind) => `<option value="${kind}"${filters.kind === kind ? ' selected' : ''}>${escapeHtml(kindFilterLabel(t, kind))}</option>`).join('')}</select></label><label>${escapeHtml(t('优先级', 'Priority'))} <select name="priority"><option value="">${escapeHtml(t('全部', 'All'))}</option>${PRIORITY_LEVELS.map((level) => `<option value="${level}"${filters.priority === level ? ' selected' : ''}>${escapeHtml(level)}</option>`).join('')}</select></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button><a class="btn btn-ghost" href="/admin/export/jobs.csv?${escapeHtml(jobQuery)}">${escapeHtml(t('导出 CSV', 'Export CSV'))}</a></div></form>${lastExportLine(lastJobsExport)}<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('用户', 'User'))}</th><th>PR / Issue</th></tr></thead><tbody>${jobRows}</tbody></table></div><p class="fine">${escapeHtml(t('共', 'Total'))} ${jobsTotal} · ${escapeHtml(t('第', 'Page'))} ${jobsPage}</p>${pager('/admin/search', 'jobsPage', jobsPage, jobsTotal, perPage, t, { q: filters.q, status: filters.status, kind: filters.kind, priority: filters.priority, auditPage })}</section>
     <section class="card"><h2>${escapeHtml(t('审计', 'Audit'))}</h2><form method="get" action="/admin/search" class="form"><div class="row"><label>${escapeHtml(t('关键词', 'Query'))} <input name="q" value="${escapeHtml(filters.q)}" /></label><label>${escapeHtml(t('动作', 'Action'))} <input name="action" value="${escapeHtml(filters.action)}" placeholder="repo.settings" /></label><label>${escapeHtml(t('从', 'From'))} <input name="from" value="${escapeHtml(filters.from)}" placeholder="YYYY-MM-DD" /></label><label>${escapeHtml(t('到', 'To'))} <input name="to" value="${escapeHtml(filters.to)}" placeholder="YYYY-MM-DD" /></label><button class="btn" type="submit">${escapeHtml(t('搜索', 'Search'))}</button><a class="btn btn-ghost" href="/admin/export/audit.csv?${escapeHtml(auditQuery)}">${escapeHtml(t('导出 CSV', 'Export CSV'))}</a></div></form>${lastExportLine(lastAuditExport)}${auditTable}<p class="fine">${escapeHtml(t('共', 'Total'))} ${auditTotal} · ${escapeHtml(t('第', 'Page'))} ${auditPage}</p>${pager('/admin/search', 'auditPage', auditPage, auditTotal, perPage, t, { q: filters.q, action: filters.action, from: filters.from, to: filters.to, jobsPage })}</section>`
   return layout({ title: t('审计与任务', 'Audit and jobs'), viewer, body, config, locale, path: '/admin/search', active: 'admin', notice, error })
 }

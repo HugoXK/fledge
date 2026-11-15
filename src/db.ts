@@ -4,6 +4,7 @@ import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { log } from './lib/log.js'
 import { nowIso } from './lib/time.js'
+import { isPriorityLevel, PRIORITY_BOUNDS } from './lib/priority.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 import { parseModelRun } from './lib/modelRun.js'
 import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
@@ -639,6 +640,18 @@ export interface JobEventRow {
   role: string | null
   step: string | null
   meta: string | null
+}
+
+export interface TaskRelationRow {
+  id: string
+  repo_id: string
+  source_job_id: string
+  target_job_id: string
+  kind: string
+  reason: string
+  evidence: string
+  created_by: string
+  created_at: string
 }
 
 export interface PostmortemRow {
@@ -1342,6 +1355,24 @@ CREATE TABLE IF NOT EXISTS job_events (
 );
 CREATE INDEX IF NOT EXISTS job_events_job_idx ON job_events(job_id, id DESC);
 CREATE INDEX IF NOT EXISTS job_events_at_idx ON job_events(at);
+
+-- #639: an explicit relation between two tasks of one project. The row is a
+-- claim somebody made with a reason and evidence; nothing derives it from a
+-- title, so two similarly named tasks stay two tasks until a person links them.
+CREATE TABLE IF NOT EXISTS task_relations (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  source_job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  target_job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  evidence TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (source_job_id, target_job_id, kind)
+);
+CREATE INDEX IF NOT EXISTS task_relations_source_idx ON task_relations(source_job_id);
+CREATE INDEX IF NOT EXISTS task_relations_target_idx ON task_relations(target_job_id);
 
 -- #384: one postmortem per failed/stalled/cancelled job, plus a ledger row per
 -- recurrence key. The job_id unique constraint is the idempotency guard: a
@@ -2666,6 +2697,88 @@ export class Store {
       input.role ?? null,
       input.step ?? null,
       input.meta === undefined || input.meta === null ? null : input.meta.slice(0, 4000),
+    )
+  }
+
+  // #639: both ends must be jobs of the same repository. A relation that named a
+  // job in another project would join two tenants' work, so it is refused here
+  // rather than being written and filtered at read time.
+  createTaskRelation(input: {
+    repoId: string
+    sourceJobId: string
+    targetJobId: string
+    kind: string
+    reason: string
+    evidence: string
+    createdBy: string
+  }): { created: boolean; relation: TaskRelationRow } | { error: 'relation_same_job' | 'relation_target_missing' | 'relation_cross_project' } {
+    const source = this.getJob(input.sourceJobId)
+    const target = this.getJob(input.targetJobId)
+    if (source === undefined || target === undefined) return { error: 'relation_target_missing' }
+    if (source.id === target.id) return { error: 'relation_same_job' }
+    if (source.repo_id !== input.repoId || target.repo_id !== input.repoId) return { error: 'relation_cross_project' }
+    if (input.kind === '') return { error: 'relation_target_missing' }
+    const existing = this.get<TaskRelationRow>(
+      'SELECT * FROM task_relations WHERE source_job_id = ? AND target_job_id = ? AND kind = ?',
+      input.sourceJobId,
+      input.targetJobId,
+      input.kind,
+    )
+    if (existing !== undefined) return { created: false, relation: existing }
+    const relation: TaskRelationRow = {
+      id: `rel_${randomBytes(8).toString('hex')}`,
+      repo_id: input.repoId,
+      source_job_id: input.sourceJobId,
+      target_job_id: input.targetJobId,
+      kind: input.kind,
+      reason: input.reason,
+      evidence: input.evidence,
+      created_by: input.createdBy,
+      created_at: nowIso(),
+    }
+    // #639: the read above and this insert are not one step, so two submits of the
+    // same relation can both miss the read. `OR IGNORE` gives the loser the row the
+    // winner wrote instead of a raw constraint error at a route with no handler for
+    // one; `created` then reports which of the two this call was.
+    this.run(
+      'INSERT OR IGNORE INTO task_relations (id, repo_id, source_job_id, target_job_id, kind, reason, evidence, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      relation.id,
+      relation.repo_id,
+      relation.source_job_id,
+      relation.target_job_id,
+      relation.kind,
+      relation.reason,
+      relation.evidence,
+      relation.created_by,
+      relation.created_at,
+    )
+    const stored = this.get<TaskRelationRow>(
+      'SELECT * FROM task_relations WHERE source_job_id = ? AND target_job_id = ? AND kind = ?',
+      input.sourceJobId,
+      input.targetJobId,
+      input.kind,
+    )
+    return stored === undefined ? { created: false, relation } : { created: stored.id === relation.id, relation: stored }
+  }
+
+  // #639: a related task does not steal a running job's claim. It leaves one
+  // notice that job takes at its next checkpoint; taking it removes the row, so
+  // a second checkpoint cannot repeat the same interruption.
+  requestCoordination(jobId: string, detail: string): void {
+    this.setSetting(`coordination:${jobId}`, detail.slice(0, 500))
+  }
+
+  takeCoordination(jobId: string): string | undefined {
+    const value = this.getSetting(`coordination:${jobId}`)
+    if (value !== undefined) this.deleteSetting(`coordination:${jobId}`)
+    return value
+  }
+
+  listTaskRelations(jobId: string): TaskRelationRow[] {
+    return this.all<TaskRelationRow>(
+      'SELECT * FROM task_relations WHERE source_job_id = ? OR target_job_id = ? ORDER BY created_at ASC, id ASC',
+      jobId,
+      jobId,
     )
   }
 
@@ -4542,7 +4655,16 @@ export class Store {
   // #232: the dashboard filters by repository, status and kind in SQL so the
   // count and the page agree, and so the filters compose with the pagination
   // offset instead of slicing a filtered array in memory.
-  private jobsForUserWhere(userId: string, filter?: { repo?: string; status?: string; kind?: string }): { sql: string; params: unknown[] } {
+  // #639: one level is a half-open rank range, so a filter names P0..P3 rather
+  // than the storage integers and still matches rows written before the ladder.
+  private priorityClause(level: string, params: unknown[]): string[] {
+    if (level === '' || !isPriorityLevel(level)) return []
+    const bounds = PRIORITY_BOUNDS[level]
+    params.push(bounds.min, bounds.max)
+    return ['priority >= ?', 'priority < ?']
+  }
+
+  private jobsForUserWhere(userId: string, filter?: { repo?: string; status?: string; kind?: string; priority?: string }): { sql: string; params: unknown[] } {
     const clauses = ['user_id = ?']
     const params: unknown[] = [userId]
     if (filter?.repo !== undefined && filter.repo !== '') {
@@ -4557,10 +4679,11 @@ export class Store {
       clauses.push('kind = ?')
       params.push(filter.kind)
     }
+    if (filter?.priority !== undefined) clauses.push(...this.priorityClause(filter.priority, params))
     return { sql: clauses.join(' AND '), params }
   }
 
-  listJobsPageForUser(userId: string, limit: number, offset: number, filter?: { repo?: string; status?: string; kind?: string }): JobRow[] {
+  listJobsPageForUser(userId: string, limit: number, offset: number, filter?: { repo?: string; status?: string; kind?: string; priority?: string }): JobRow[] {
     const where = this.jobsForUserWhere(userId, filter)
     // #232: `created_at` is not unique — a batch of jobs seeded in the same
     // millisecond ties, and SQLite then has no stable order, so the same row can
@@ -4569,7 +4692,7 @@ export class Store {
     return this.all<JobRow>(`SELECT * FROM jobs WHERE ${where.sql} ORDER BY ${newestJobOrder('jobs')} LIMIT ? OFFSET ?`, ...where.params, limit, offset)
   }
 
-  countJobsForUser(userId: string, filter?: { repo?: string; status?: string; kind?: string }): number {
+  countJobsForUser(userId: string, filter?: { repo?: string; status?: string; kind?: string; priority?: string }): number {
     const where = this.jobsForUserWhere(userId, filter)
     return Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM jobs WHERE ${where.sql}`, ...where.params)?.n ?? 0)
   }
@@ -5351,7 +5474,7 @@ export class Store {
     return Number(this.get<{ n: number }>(query.sql, ...query.params)?.n ?? 0)
   }
 
-  private jobFilter(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string }, limit: number, offset: number, count: boolean): { sql: string; params: Array<string | number> } {
+  private jobFilter(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string; priority?: string }, limit: number, offset: number, count: boolean): { sql: string; params: Array<string | number> } {
     const clauses: string[] = []
     const params: Array<string | number> = []
     if (userIds !== null) {
@@ -5371,17 +5494,18 @@ export class Store {
       clauses.push('kind = ?')
       params.push(filters.kind)
     }
+    if (filters.priority !== undefined) clauses.push(...this.priorityClause(filters.priority, params))
     const where = clauses.length === 0 ? '' : ` WHERE ${clauses.join(' AND ')}`
     if (count) return { sql: `SELECT COUNT(*) AS n FROM jobs${where}`, params }
     return { sql: `SELECT * FROM jobs${where} ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`, params: [...params, limit, offset] }
   }
 
-  searchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string }, limit: number, offset: number): JobRow[] {
+  searchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string; priority?: string }, limit: number, offset: number): JobRow[] {
     const query = this.jobFilter(userIds, filters, limit, offset, false)
     return this.all<JobRow>(query.sql, ...query.params)
   }
 
-  countSearchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string }): number {
+  countSearchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string; priority?: string }): number {
     const query = this.jobFilter(userIds, filters, 0, 0, true)
     return Number(this.get<{ n: number }>(query.sql, ...query.params)?.n ?? 0)
   }

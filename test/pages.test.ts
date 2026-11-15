@@ -1878,7 +1878,7 @@ test('admin search links every later page and keeps the filters per section', ()
   try {
     const user = makeUser(store, { login: 'search-pager', status: 'approved' })
     const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
-    const filters = { q: 'x', status: 'failed', kind: 'iterate', action: 'repo.settings', from: '2026-01-01', to: '2026-01-31' }
+    const filters = { q: 'x', status: 'failed', kind: 'iterate', priority: '', action: 'repo.settings', from: '2026-01-01', to: '2026-01-31' }
     const page = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map([[user.id, user.login]]), filters, jobsPage: 1, jobsTotal: 45, auditPage: 2, auditTotal: 60, perPage: 20, lastJobsExport: null, lastAuditExport: null })
 
     const jobsNext = page.match(/href="([^"]*jobsPage=2[^"]*)"/)?.at(1)

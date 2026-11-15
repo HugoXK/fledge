@@ -133,7 +133,8 @@ async function fixture(locale: 'zh' | 'en' = 'zh'): Promise<Fixture> {
   create({ id: 'job_queue_running', repoId: runningRepo.id, userId: alice.id, trigger: 'manual', priority: 0, createdAt: '2026-11-13T09:00:00.000Z', status: 'running' })
   // The other tenant's priority (30) and arrival (10:00) are values no own job
   // has, so a leak of either is visible as a value the page cannot legitimately
-  // print: own jobs are priority 20 at 10:02 and priority 10 at 10:03.
+  // print: own jobs are priority 20 (P1) at 10:02 and priority 10 (P2) at 10:03,
+  // while the other tenant's 30 is level P0.
   create({ id: 'job_queue_bob', repoId: bobRepo.id, userId: bob.id, trigger: 'followup', priority: 30, createdAt: '2026-11-13T10:00:00.000Z' })
   create({ id: 'job_queue_followup', repoId: followRepo.id, userId: alice.id, trigger: 'followup', priority: 20, createdAt: '2026-11-13T10:02:00.000Z' })
   create({ id: 'job_queue_manual', repoId: manualRepo.id, userId: alice.id, trigger: 'manual', priority: 10, createdAt: '2026-11-13T10:03:00.000Z' })
@@ -152,7 +153,7 @@ async function fixture(locale: 'zh' | 'en' = 'zh'): Promise<Fixture> {
 test('the job page prints position, total and the trigger that created it, and the count-only sentence for other tenants', async () => {
   const data = await fixture('zh')
   try {
-    assert.equal(textOf(data.aliceJobPage, 'data-job-queue-position'), '队列位置 3 / 共 3 · 优先级 10（手动）')
+    assert.equal(textOf(data.aliceJobPage, 'data-job-queue-position'), '队列位置 3 / 共 3 · 优先级 P2（手动）')
     // The acceptance is one exact sentence, not a "contains no identifier"
     // substring check: priority is another tenant's trigger class.
     assert.equal(textOf(data.aliceJobPage, 'data-queue-others'), '另有 1 个排队任务在前，不显示详情。')
@@ -161,16 +162,16 @@ test('the job page prints position, total and the trigger that created it, and t
     const otherArrival = humanTimeShort('2026-11-13T10:00:00.000Z')
     const ownArrival = humanTimeShort('2026-11-13T10:02:00.000Z')
     assert.equal(textOf(data.aliceJobPage, 'data-queue'), [
-      '队列位置 3 / 共 3 · 优先级 10（手动）',
+      '队列位置 3 / 共 3 · 优先级 P2（手动）',
       '按优先级、再按进入顺序排队；同一位置可能有多个任务。仓库里已有运行中或更早的排队任务时，这个位置不会立即开始。',
       '你的排队任务，按优先级、再按进入顺序：',
-      `acme/one 优先级 20（跟进） · ${ownArrival}`,
+      `acme/one 优先级 P1（跟进） · ${ownArrival}`,
       '另有 1 个排队任务在前，不显示详情。',
     ].join(' '))
     const owned = [...data.aliceJobPage.matchAll(/<div class="list-row" data-queue-owned-job="([^"]+)">/g)].map((match) => match[1])
     assert.deepEqual(owned, ['job_queue_followup'])
     assert.match(data.aliceJobPage, /acme\/one/)
-    assert.match(data.aliceJobPage, /优先级 20（跟进）/)
+    assert.match(data.aliceJobPage, /优先级 P1（跟进）/)
     // No identifier of the other tenant's job, and none of the two values the
     // fixture gives only to it: login, repository, id, priority 30, arrival
     // 10:00. The text check above catches a leaks inside the block; these catch
@@ -178,7 +179,10 @@ test('the job page prints position, total and the trigger that created it, and t
     assert.doesNotMatch(data.aliceJobPage, /bob/)
     assert.doesNotMatch(data.aliceJobPage, /acme\/beta/)
     assert.doesNotMatch(data.aliceJobPage, /job_queue_bob/)
-    assert.doesNotMatch(data.aliceJobPage, /P30|优先级 30|priority 30/)
+    // The other tenant's priority is 30, which the console prints as level P0.
+    // The priority card legitimately names P0 in its own help text, so this leak
+    // check is scoped to the queue block, where a leaked priority is printed.
+    assert.doesNotMatch(textOf(data.aliceJobPage, 'data-queue'), /P0/)
     assert.ok(!data.aliceJobPage.includes(otherArrival), 'the other tenant arrival is not rendered anywhere')
     assert.doesNotMatch(data.aliceJobPage, /2026-11-13T10:00/)
   } finally {
@@ -192,8 +196,8 @@ test('the dashboard and the repository list show position and priority inside th
     // The dashboard lists alice's own two queued jobs; the other tenant's job is
     // ahead in the instance queue, so the ranks are 2/3 and 3/3, not 1/2 and 2/2.
     const dashboardRanks = [...data.aliceDashboard.matchAll(/data-queue-rank>([^<]*)</g)].map((match) => match[1])
-    assert.deepEqual(dashboardRanks, ['#3/3 · P10', '#2/3 · P20'])  // newest first
-    assert.match(data.aliceRepoPage, /data-queue-rank>#3\/3 · P10</)
+    assert.deepEqual(dashboardRanks, ['#3/3 · P2', '#2/3 · P1'])  // newest first
+    assert.match(data.aliceRepoPage, /data-queue-rank>#3\/3 · P2</)
     const ranks = [...data.aliceRepoPage.matchAll(/data-queue-rank>/g)]
     assert.equal(ranks.length, 1, 'one queued job on this repository; the rank rides inside the job cell')
     // Still the four labelled columns: no fifth column was added.
@@ -208,9 +212,9 @@ test('the dashboard and the repository list show position and priority inside th
 test('the same facts render in English', async () => {
   const data = await fixture('en')
   try {
-    assert.equal(textOf(data.aliceJobPage, 'data-job-queue-position'), 'Queue position 3 of 3 · priority 10 (manual)')
+    assert.equal(textOf(data.aliceJobPage, 'data-job-queue-position'), 'Queue position 3 of 3 · priority P2 (manual)')
     assert.equal(textOf(data.aliceJobPage, 'data-queue-others'), '1 other queued job is ahead; its details are not shown.')
-    assert.match(data.aliceRepoPage, /data-queue-rank>#3\/3 · P10</)
+    assert.match(data.aliceRepoPage, /data-queue-rank>#3\/3 · P2</)
   } finally {
     await data.built.close()
   }

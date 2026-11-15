@@ -29,6 +29,8 @@ import { DEFAULT_TRIAGE_GOAL, Jobs } from './jobs/service.js'
 import { parseIssueUrl } from './jobs/prUrl.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
+import type { PriorityLevel } from './lib/priority.js'
+import { decisionKindLabel, isDecisionKind } from './lib/taskDecision.js'
 import fastifyRateLimit from '@fastify/rate-limit'
 import { rateLimitKey, RateLimiter } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
@@ -1206,7 +1208,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // #232: the job filters are read from the query on every request and applied
     // in SQL, so the URL, the count and the page always describe the same list.
     const jobFilter = parseJobFilters(
-      { repo: queryText(request, 'repo'), status: queryText(request, 'status'), kind: queryText(request, 'kind') },
+      { repo: queryText(request, 'repo'), status: queryText(request, 'status'), kind: queryText(request, 'kind'), priority: queryText(request, 'priority') },
       allRepos.map((repo) => repo.id),
     )
     const reposTotal = store.countReposForUser(viewer.user.id)
@@ -2615,6 +2617,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewerActive: store.listActiveJobsForUser(viewer.user.id),
       repoLabels,
       events: store.listJobEvents(job.id, 200),
+      relations: store.listTaskRelations(job.id),
       postmortem: store.getPostmortemForJob(job.id) ?? null,
       // #540: the cancel form carries the revision it rendered and a fresh key,
       // so a double submit replays the same receipt and a stale page conflicts.
@@ -2735,6 +2738,136 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     const retried = commandJobId(outcome) ?? job.id
     return reply.redirect(`/repos/${repo.id}/jobs/${retried}?notice=${encodeURIComponent(t('已重新排队。', 'Queued again.'))}`)
+  })
+
+  // #639: a priority change is a claim about urgency, so the route hands the
+  // level, the reason and the evidence to one service method. The ladder is the
+  // closed P0..P3 set; the store moves a real change to the new level's tail and
+  // leaves a running job running.
+  app.post('/repos/:id/jobs/:jobId/priority', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
+      return reply.redirect(`${back}?error=${encodeURIComponent('请先选择你的角色。')}`)
+    }
+    const t = translator(request.locale ?? 'zh')
+    const body = form(request)
+    const result = await jobs.setPriority(job.id, {
+      level: String(body.level ?? '') as PriorityLevel,
+      reason: String(body.reason ?? ''),
+      evidence: String(body.evidence ?? ''),
+      actorUserId: viewer.user.id,
+    })
+    if (!result.ok) {
+      // The refusal reaches the page as text, so it is written in the request
+      // locale here; the service names the code and the route owns the wording.
+      const refusal = result.code === 'PRIORITY_EVIDENCE_REQUIRED'
+        ? t(
+          'P0/P1 需要理由（至少 12 字）和可核对的证据：链接、提交/工单 sha，或带单位的测量值。形容词不算证据。',
+          'P0/P1 need a reason (at least 12 characters) and checkable evidence: a link, a commit/issue sha, or a measurement with a unit. An adjective is not evidence.',
+        )
+        : result.code === 'PRIORITY_LEVEL_INVALID'
+          ? t('优先级别无效，请选 P0、P1、P2 或 P3。', 'That priority level is not valid; choose P0, P1, P2 or P3.')
+          : (result.error ?? t('优先级修改失败。', 'The priority change failed.'))
+      return reply.redirect(`${back}?error=${encodeURIComponent(refusal)}&code=${encodeURIComponent(result.code ?? '')}`)
+    }
+    const notice = result.changed === true
+      ? t(`优先级已改为 ${result.level}。`, `Priority is now ${result.level}.`)
+      : t('优先级没有变化。', 'The priority is unchanged.')
+    return reply.redirect(`${back}?notice=${encodeURIComponent(notice)}`)
+  })
+
+  // #639: a relation is an explicit claim that two tasks are about one problem.
+  // The route refuses a target outside this repository and hands the claim
+  // standard to the service, so no title match can ever create one.
+  app.post('/repos/:id/jobs/:jobId/relations', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
+      return reply.redirect(`${back}?error=${encodeURIComponent('请先选择你的角色。')}`)
+    }
+    const t = translator(request.locale ?? 'zh')
+    const body = form(request)
+    const result = await jobs.relate({
+      repoId: repo.id,
+      sourceJobId: job.id,
+      targetJobId: String(body.target_job_id ?? '').trim(),
+      kind: body.kind,
+      reason: body.reason ?? '',
+      evidence: body.evidence ?? '',
+      actorUserId: viewer.user.id,
+    })
+    if (!result.ok) {
+      const refusal = result.code === 'RELATION_EVIDENCE_REQUIRED'
+        ? t(
+          '关联需要理由（至少 8 字）和可核对的证据：链接、提交/工单 sha，或带单位的测量值。',
+          'A relation needs a reason (at least 8 characters) and checkable evidence: a link, a commit/issue sha, or a measurement with a unit.',
+        )
+        : result.code === 'RELATION_KIND_INVALID'
+          ? t('关联类型无效，请选同一问题、相关或复发。', 'That relation kind is not valid; choose same problem, related or recurrence.')
+          : result.code === 'relation_cross_project'
+            ? t('只能关联同一仓库里的任务。', 'A relation can only join two tasks of the same repository.')
+            : result.code === 'relation_same_job'
+              ? t('任务不能和它自己建立关联。', 'A task cannot be related to itself.')
+              : t('目标任务不存在。', 'The target task does not exist.')
+      return reply.redirect(`${back}?error=${encodeURIComponent(refusal)}`)
+    }
+    const notice = result.created === true
+      ? t('已建立关联。', 'Relation saved.')
+      : t('关联已存在。', 'That relation already exists.')
+    return reply.redirect(`${back}?notice=${encodeURIComponent(notice)}`)
+  })
+
+  // #639: the post-QA decision is one bounded write. The route accepts the four
+  // kinds, names the refusal in the request's locale, and leaves the claim
+  // standard and the repair to the service. A decision that needs no decision at
+  // all is not a route: the framework default is what the page preselects.
+  app.post('/repos/:id/jobs/:jobId/decision', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
+      return reply.redirect(`${back}?error=${encodeURIComponent('请先选择你的角色。')}`)
+    }
+    const t = translator(request.locale ?? 'zh')
+    const body = form(request)
+    const result = await jobs.decideNextTask({
+      repoId: repo.id,
+      sourceJobId: job.id,
+      kind: body.kind,
+      existingTaskId: String(body.existing_task_id ?? '').trim(),
+      reason: body.reason ?? '',
+      evidence: body.evidence ?? '',
+      title: String(body.title ?? ''),
+      level: body.level,
+      actorUserId: viewer.user.id,
+    })
+    if (!result.ok) {
+      // The service names the code; the route owns the sentence, so it is
+      // written in the request's language rather than translated afterwards.
+      const refusal = result.code === 'DECISION_KIND_INVALID'
+        ? t('下一步决定无效，请选新任务、补充、相关或复发。', 'That next-step decision is not valid; choose a new task, a supplement, related or a recurrence.')
+        : result.code === 'DECISION_EVIDENCE_REQUIRED'
+          ? t('下一步决定需要理由（至少 8 字）和可核对的证据：链接、提交/工单 sha，或带单位的测量值。', 'A next-step decision needs a reason (at least 8 characters) and checkable evidence: a link, a commit/issue sha, or a measurement with a unit.')
+          : result.code === 'DECISION_TARGET_REQUIRED'
+            ? t('补充、相关或复发都要指出一个已有的任务。', 'To supplement, relate or recur, you must name an existing task.')
+            : result.code === 'relation_same_job'
+              ? t('任务不能和它自己建立关联。', 'A task cannot be related to itself.')
+              : result.code === 'relation_cross_project'
+                ? t('只能关联同一仓库里的任务。', 'A relation can only join two tasks of the same repository.')
+                : t('那个已有任务不存在，或新任务还没有标题。', 'That existing task does not exist, or the new task has no title.')
+      return reply.redirect(`${back}?error=${encodeURIComponent(refusal)}&code=${encodeURIComponent(result.code ?? '')}`)
+    }
+    const kind = isDecisionKind(result.kind) ? result.kind : 'new'
+    const label = decisionKindLabel(kind, t)
+    const repaired = result.repaired === true ? t('（“新任务”与已有任务 id 同时出现，已按相关处理一次。）', ' (a separate new task and an existing task id came together; it was repaired once into related.)') : ''
+    const notice = t(`已记为下一步：${label}。${repaired}`, `Recorded as the next step: ${label}.${repaired}`)
+    return reply.redirect(`${back}?notice=${encodeURIComponent(notice)}`)
   })
 
   app.post('/repos/:id/jobs/:jobId/recheck', async (request, reply) => {
@@ -3769,7 +3902,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return Number.isFinite(n) && n >= 1 ? Math.min(Math.floor(n), Math.max(1, Math.ceil(total / perPage))) : 1
     }
     const auditFilters = { q, action, from, to: to === '' ? '' : (to.length === 10 ? `${to}T23:59:59.999Z` : to) }
-    const jobFilters = { q, status, kind }
+    const priority = (queryText(request, 'priority') ?? '').slice(0, 10)
+    const jobFilters = { q, status, kind, priority }
     const auditTotal = store.countSearchAudit(userIds, auditFilters)
     const jobsTotal = store.countSearchJobs(userIds, jobFilters)
     const auditPage = page('auditPage', auditTotal)
@@ -3782,7 +3916,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       jobs: store.searchJobs(userIds, jobFilters, perPage, (jobsPage - 1) * perPage),
       audit: store.searchAudit(userIds, auditFilters, perPage, (auditPage - 1) * perPage),
       usersById,
-      filters: { q, status, kind, action, from, to },
+      filters: { q, status, kind, priority, action, from, to },
       jobsPage,
       jobsTotal,
       auditPage, auditTotal,
@@ -3902,7 +4036,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const viewer = requireAdmin(request)
     if (viewer.preview === true) return reply.code(403).send({ error: 'preview' })
     const userIds = adminVisibleUserIds(viewer)
-    const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), status: (queryText(request, 'status') ?? '').slice(0, 30), kind: (queryText(request, 'kind') ?? '').slice(0, 30) }
+    const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), status: (queryText(request, 'status') ?? '').slice(0, 30), kind: (queryText(request, 'kind') ?? '').slice(0, 30), priority: (queryText(request, 'priority') ?? '').slice(0, 10) }
     const matched = store.countSearchJobs(userIds, filters)
     if (matched > EXPORT_ROW_CAP) return refuseLargeExport(request, reply, viewer, 'jobs', matched)
     const built = assembleCsv(
@@ -3912,7 +4046,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       (row) => [row.id, row.repo_id, row.user_id, row.status, row.kind, row.trigger, row.created_at, row.finished_at ?? '', row.pr_url ?? '', row.issue_url ?? '', row.cost_usd].map(csvCell).join(','),
     )
     store.audit(viewer.user.id, 'admin.jobs_export', exportTrailDetail({
-      filters: [filters.status === '' ? '' : `status=${filters.status}`, filters.kind === '' ? '' : `kind=${filters.kind}`],
+      filters: [filters.status === '' ? '' : `status=${filters.status}`, filters.kind === '' ? '' : `kind=${filters.kind}`, filters.priority === '' ? '' : `priority=${filters.priority}`],
       q: filters.q,
       rows: built.rows,
       scope: exportScope(userIds),

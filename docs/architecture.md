@@ -288,6 +288,43 @@ defect.
   keeps the ticket. `0` marks a row written before the column existed, and it is
   backfilled in `created_at` order when the database opens, which is the order
   those rows were already ranked by. A running job is never preempted.
+- **Priority ladder**: `P0`–`P3` is the closed set a person sees; the integer
+  column stays the storage form the ticket orders by, so `P0` maps to `30`
+  (ongoing damage, credential exposure or an outage), `P1` to `20` (the core goal
+  is blocked), `P2` to `10` (ordinary work, the default) and `P3` to `0`
+  (non-core polish). Rows written before the ladder, and work-item priorities on
+  a 0–100 scale, read as the nearest level rather than as an invalid value.
+  Raising a job to `P0` or `P1` is a claim, so the save carries a reason and
+  evidence a second person can check — a link, a commit or ticket sha, or a
+  measurement with a unit; adjectives alone are refused. The no-op rule and the
+  tail-ticket rule above still decide where the row sits. The dashboard and the
+  admin job search filter by level (`P0`–`P3`), and the clause is a half-open
+  rank range, so a row written before the ladder still appears under the level
+  the console prints for it.
+- **Task relations are explicit**: `task_relations` joins two jobs of one
+  repository as `same_problem`, `related` or `recurrence`, with the reason and
+  the checkable evidence the claim rests on. Both ends must be jobs of the same
+  repository, so a relation cannot cross a project boundary, and a task cannot
+  be related to itself. A repeated save is one row. Nothing derives a relation
+  from a title or an embedding: similar tasks stay separate until a person links
+  them, and a relation never moves, merges or suppresses work. The decision record
+  for the ladder and the relation table is
+  `docs/decisions/0018-priority-ladder-and-relations.md`.
+- **One bounded next-task decision**: after a job is verified the follow-up is a
+  single decision — `new`, `supplement`, `related` or `recurrence` — carrying a
+  reason and checkable evidence. `new` creates one separate task, `supplement`
+  appends to an existing task without a second execution, and `related` /
+  `recurrence` create the task and the explicit relation that says why. `new`
+  aimed at an existing task is contradictory and is repaired once into
+  `related`. When the decision step is unavailable the framework default is a
+  separate task at `P2`. A related task whose target is still running leaves one
+  coordination notice, which that job takes at its next progress heartbeat that
+  carries a checkpoint, and only once — a heartbeat without a checkpoint is
+  progress, not a checkpoint, so it takes nothing. The running job keeps its
+  claim. The console offers the decision where a
+  `verify` or `review` run ends, at `POST /repos/:id/jobs/:jobId/decision`, and
+  preselects the framework default, so the undecided case is still one ordinary
+  `P2` task rather than an open-ended chain.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
   a maintainer reviewer is due); with no open work it **stays idle** unless the
