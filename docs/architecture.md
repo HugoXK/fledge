@@ -494,7 +494,10 @@ revoke stays one click.
   zero cost, so spend stays a lower bound rather than a claim of "free" (#636).
   `users.quota_used_usd`, `jobs.cost_usd` and the CNY budgets are USD columns:
   only rows billed in USD reach them, and a row in another currency is reported
-  by `Store.costByCurrency()` in its own bucket instead of being converted.
+  by `Store.costByCurrency()` in its own bucket instead of being converted. A
+  row with no currency is the pre-#636 legacy shape and is the USD bucket, not a
+  second one: the label is resolved before the grouping, so an upgraded instance
+  shows one `USD` row (#702).
   `src/metrics/cost.ts` holds the price table, the cache-token rule and the
   unknown-vs-zero decision; the gateway only reads its answer.
 - At zero it returns HTTP 402 with `code: FLEDGE_QUOTA_EXHAUSTED` and a settings
@@ -536,6 +539,13 @@ also refreshed on the next job before dispatch. Iterate jobs go to the Chief,
 which must pass the job block to the Lead verbatim; review jobs go to the
 Reviewer only when the repository has enabled it. The Lead delegates to the
 member whose scope fits and posts the final callback exactly once.
+
+The admin page is ordered by the admin's work: Pending, Users, Jobs, Audit,
+Release and Backups. The release facts and the release chain share one `Release`
+section, and the section nav is a sticky underline tab row rather than a wall of
+pill links. An empty release chain says it is expected and keeps the operator
+command under a disclosure with a `<DATA_DIR>` placeholder, never the real host
+path.
 
 ### Team console and live events
 
