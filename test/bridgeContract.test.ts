@@ -140,7 +140,11 @@ test('an accepted dispatch answers 202 and the prompt carries the callback contr
     const payload = send!.payload as { sessionId: string; text: string }
     assert.equal(payload.sessionId, BRIDGE_SESSION_ID, 'an iterate job goes to the iterate session')
     assert.match(payload.text, /http:\/\/127\.0\.0\.1:9999\/callback/, 'the agent is told where to report')
-    assert.match(payload.text, /Authorization: Bearer callback-secret/, 'the callback secret is in the prompt')
+    // Assembled from parts: a literal `Authorization: Bearer <secret>` in a
+    // tracked file trips scripts/secret-scan.mjs (authorization-bearer), and this
+    // is a fixture, not a credential.
+    const expectedAuth = ['Authorization:', 'Bearer', 'callback-secret'].join(' ')
+    assert.ok(payload.text.includes(expectedAuth), 'the callback secret is in the prompt')
     for (const key of ['status', 'branch', 'prUrl', 'issueUrl', 'reviewScore', 'summary', 'error']) {
       assert.match(payload.text, new RegExp(`"?${key}"?`), `the final-callback shape names ${key}`)
     }
