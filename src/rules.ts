@@ -4,6 +4,7 @@ import { sha256Hex } from './lib/secrets.js'
 export const RULE_PATHS = ['.fledge/rules.md', '.fledge/review.md', '.fledge/develop.md'] as const
 export const SKILLS_DIR = '.agents/skills'
 export const MAX_RULE_FILE_BYTES = 32 * 1024
+export const MAX_RULES_PROMPT_BYTES = 16_000
 export const MAX_RULES_TOTAL_BYTES = 256 * 1024
 export const MAX_SKILLS = 32
 export const MAX_SKILL_BYTES = 32 * 1024
@@ -159,7 +160,19 @@ export async function loadRepoRules(
   if (totalBytes > MAX_RULES_TOTAL_BYTES) {
     throw new RulesError('rules_invalid', '.fledge', `rules and skills exceed ${MAX_RULES_TOTAL_BYTES} bytes`)
   }
-  const effective = files.map((file) => `## ${file.path}\n${file.content.trimEnd()}`).join('\n\n')
+  // The bridge prompt carries the rule text up to MAX_RULES_PROMPT_BYTES. A set
+  // that does not fit is refused as a whole and names the file that crossed the
+  // budget: slicing here would silently drop the later files from every prompt
+  // of that job, and a job that ran without `.fledge/review.md` looks healthy.
+  const sections = files.map((file) => ({ path: file.path, text: `## ${file.path}\n${file.content.trimEnd()}` }))
+  let promptBytes = 0
+  for (const [index, section] of sections.entries()) {
+    promptBytes += Buffer.byteLength(section.text, 'utf8') + (index === 0 ? 0 : 2)
+    if (promptBytes > MAX_RULES_PROMPT_BYTES) {
+      throw new RulesError('rules_invalid', section.path, `rules text reaches ${promptBytes} bytes with ${section.path}, over the ${MAX_RULES_PROMPT_BYTES}-byte prompt budget`)
+    }
+  }
+  const effective = sections.map((section) => section.text).join('\n\n')
   const hash = sha256Hex(JSON.stringify({
     commit,
     files: files.map((file) => [file.path, file.sha256, file.layer]),

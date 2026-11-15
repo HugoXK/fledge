@@ -194,7 +194,9 @@ export class FlyBotRunner implements Runner {
       platform: context.platform,
       timeoutMinutes: context.timeoutMinutes,
       ...(context.rules === undefined ? {} : {
-        rulesText: context.rules.effective.slice(0, 16_000),
+        // `loadRepoRules` already refused a set over MAX_RULES_PROMPT_BYTES, so
+        // the whole text fits and nothing is dropped here.
+        rulesText: context.rules.effective,
         contextUrl: context.credential.url.replace(/\/credential$/, '/context'),
         skills: context.rules.skills.map((skill) => ({
           name: skill.name,

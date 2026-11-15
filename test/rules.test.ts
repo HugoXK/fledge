@@ -6,7 +6,7 @@ import { Jobs } from '../src/jobs/service.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
 import { failureBannerSentence } from '../src/lib/failure.js'
-import { loadRepoRules, MAX_RULE_FILE_BYTES, MAX_RULES_TOTAL_BYTES, MAX_SKILL_BYTES, RulesError } from '../src/rules.js'
+import { loadRepoRules, MAX_RULE_FILE_BYTES, MAX_RULES_PROMPT_BYTES, MAX_RULES_TOTAL_BYTES, MAX_SKILL_BYTES, RulesError } from '../src/rules.js'
 import { GithubClient } from '../src/repos/github.js'
 import { formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
@@ -16,7 +16,7 @@ function base64(text: string): string {
   return Buffer.from(text, 'utf8').toString('base64')
 }
 
-async function rulesGithub(options: { ruleType?: string; ruleSize?: number; skillCount?: number; skillBytes?: number; hasRules?: boolean } = {}): Promise<{ url: string; close: () => Promise<void> }> {
+async function rulesGithub(options: { ruleType?: string; ruleSize?: number; ruleBytes?: number; reviewBytes?: number; skillCount?: number; skillBytes?: number; hasRules?: boolean } = {}): Promise<{ url: string; close: () => Promise<void> }> {
   return startFakeServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
     if (url.pathname === '/repos/o/r/branches/main') {
@@ -41,6 +41,11 @@ async function rulesGithub(options: { ruleType?: string; ruleSize?: number; skil
         json(response, 200, { type: 'file', sha: 'rulesha', size: options.ruleSize, encoding: 'base64', content: base64('# Rules\nAlways test.\n') })
         return
       }
+      if (options.ruleBytes !== undefined) {
+        const content = 'r'.repeat(options.ruleBytes)
+        json(response, 200, { type: 'file', sha: 'rulesha', size: Buffer.byteLength(content), encoding: 'base64', content: base64(content) })
+        return
+      }
       json(response, 200, {
         type: 'file',
         sha: 'rulesha',
@@ -48,6 +53,11 @@ async function rulesGithub(options: { ruleType?: string; ruleSize?: number; skil
         encoding: 'base64',
         content: base64('# Rules\nAlways test.\n'),
       })
+      return
+    }
+    if (url.pathname === '/repos/o/r/contents/.fledge/review.md' && options.reviewBytes !== undefined) {
+      const content = 'v'.repeat(options.reviewBytes)
+      json(response, 200, { type: 'file', sha: 'reviewsha', size: Buffer.byteLength(content), encoding: 'base64', content: base64(content) })
       return
     }
     if (url.pathname === '/repos/o/r/contents/.fledge/review.md' || url.pathname === '/repos/o/r/contents/.fledge/develop.md') {
@@ -236,6 +246,173 @@ test('a set just under the total ceiling loads instead of being refused', async 
   }
 })
 
+test('a rule file over the prompt budget is refused naming that file, not sliced', async () => {
+  // One file may be 32 KiB, but the bridge prompt only carries the rule text up
+  // to MAX_RULES_PROMPT_BYTES. Past that the set is refused as a whole; a silent
+  // slice would drop the later files from every prompt.
+  const server = await rulesGithub({ ruleBytes: MAX_RULES_PROMPT_BYTES + 1 })
+  try {
+    const client = new GithubClient('token', server.url)
+    await assert.rejects(
+      () => loadRepoRules(client, 'o', 'r', COMMIT),
+      (error: unknown) => error instanceof RulesError
+        && error.code === 'rules_invalid'
+        && error.path === '.fledge/rules.md'
+        && /prompt budget/.test(error.message)
+        && /16021 bytes/.test(error.message),
+    )
+  } finally {
+    await server.close()
+  }
+})
+
+test('the file that crosses the prompt budget is the one the refusal names', async () => {
+  // `.fledge/rules.md` is legal on its own; the second file is what pushes the
+  // assembled text over, so naming the first file would hide the actual cause.
+  const server = await rulesGithub({ ruleBytes: 12_000, reviewBytes: 4_000 })
+  try {
+    const client = new GithubClient('token', server.url)
+    await assert.rejects(
+      () => loadRepoRules(client, 'o', 'r', COMMIT),
+      (error: unknown) => error instanceof RulesError
+        && error.code === 'rules_invalid'
+        && error.path === '.fledge/review.md'
+        && /16043 bytes/.test(error.message)
+        && /\.fledge\/review\.md/.test(error.message),
+    )
+  } finally {
+    await server.close()
+  }
+})
+
+test('a set just under the prompt budget loads with the whole text intact', async () => {
+  const server = await rulesGithub({ ruleBytes: 10_000, reviewBytes: 3_000 })
+  try {
+    const client = new GithubClient('token', server.url)
+    const rules = await loadRepoRules(client, 'o', 'r', COMMIT)
+    const bytes = Buffer.byteLength(rules.effective, 'utf8')
+    assert.ok(bytes <= MAX_RULES_PROMPT_BYTES, `effective text is ${bytes} bytes`)
+    assert.ok(bytes > MAX_RULES_PROMPT_BYTES - 4_000)
+    assert.match(rules.effective, /^## \.fledge\/rules\.md\nr{10000}\n\n## \.fledge\/review\.md\nv{3000}$/)
+    assert.ok(rules.effective.endsWith('v'.repeat(3_000)), 'the last file must not lose bytes')
+  } finally {
+    await server.close()
+  }
+})
+
+test('a job that starts during admission answers JOB_ACTIVE before the rule layer is read', async () => {
+  // The early active check already answered, so a rule read here can only be a
+  // race window: another enqueue inserts a job while this one resolves its base
+  // commit. That refusal needs no network and must win over an invalid rule set.
+  const base = testConfig()
+  const store = new Store(':memory:')
+  const user = makeUser(store, { login: 'busy-rules-user', status: 'approved' })
+  const repo = store.createRepo({
+    id: 'repo_busy_rules',
+    userId: user.id,
+    owner: 'o',
+    name: 'r',
+    defaultBranch: 'main',
+    tokenEnc: encryptSecret('token', base.tokenEncryptionKey),
+    permission: 'admin',
+    repoRole: 'maintainer',
+    goal: '',
+    autoIterate: false,
+    intervalMinutes: 1440,
+  })
+  let raced = false
+  const server = await startFakeServer((request, response) => {
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+    if (url.pathname === '/repos/o/r/branches/main') {
+      if (!raced) {
+        raced = true
+        store.createJob({ id: 'job_raced_rules', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'won the race', callbackHash: 'cb_raced', platformTokenHash: '' })
+      }
+      json(response, 200, { name: 'main', commit: { sha: COMMIT } })
+      return
+    }
+    if (url.pathname === '/repos/o/r/contents/' || url.pathname === '/repos/o/r/contents') {
+      json(response, 200, { type: 'dir' })
+      return
+    }
+    if (url.pathname === '/repos/o/r/contents/.fledge/rules.md') {
+      // If the rule layer is read first, this refusal is what the caller sees.
+      json(response, 200, { type: 'file', sha: 'rulesha', size: MAX_RULE_FILE_BYTES + 1, encoding: 'base64', content: base64('# Rules\nAlways test.\n') })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const configLive = testConfig({
+    tokenEncryptionKey: base.tokenEncryptionKey,
+    github: { ...base.github, apiBase: server.url },
+    flybot: { ...base.flybot, instanceImage: '' },
+    runner: { ...base.runner, queueDispatch: false },
+  })
+  const runner: Runner = { name: 'flybot', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, configLive, runner, new MemoryMailer())
+  try {
+    const result = await jobs.enqueue(repo, 'manual', 'do the work', 'iterate')
+    assert.equal(result.ok, false)
+    assert.equal(result.code, 'JOB_ACTIVE', `got ${result.code ?? ''}: ${result.error ?? ''}`)
+    assert.equal(store.listJobs(user.id, 10).length, 1)
+  } finally {
+    await server.close()
+    store.close()
+  }
+})
+
+test('the platform job limit answers JOB_LIMIT before it reads the rule layer', async () => {
+  const server = await rulesGithub({ ruleSize: MAX_RULE_FILE_BYTES + 1 })
+  const base = testConfig()
+  const config = testConfig({
+    github: { ...base.github, apiBase: server.url },
+    flybot: { ...base.flybot, instanceImage: '' },
+    runner: { ...base.runner, queueDispatch: false, maxActiveJobs: 1 },
+  })
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'flybot', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'limit-rules-user', status: 'approved' })
+    const other = store.createRepo({
+      id: 'repo_limit_other',
+      userId: user.id,
+      owner: 'o',
+      name: 'r',
+      defaultBranch: 'main',
+      tokenEnc: encryptSecret('token', config.tokenEncryptionKey),
+      permission: 'admin',
+      repoRole: 'maintainer',
+      goal: '',
+      autoIterate: false,
+      intervalMinutes: 1440,
+    })
+    store.createJob({ id: 'job_limit_other', repoId: other.id, userId: user.id, trigger: 'manual', goal: 'running elsewhere', callbackHash: 'cb_limit', platformTokenHash: '' })
+    const second = makeUser(store, { login: 'limit-rules-user-two', status: 'approved' })
+    const fresh = store.createRepo({
+      id: 'repo_limit_fresh',
+      userId: second.id,
+      owner: 'o',
+      name: 'r',
+      defaultBranch: 'main',
+      tokenEnc: encryptSecret('token', config.tokenEncryptionKey),
+      permission: 'admin',
+      repoRole: 'maintainer',
+      goal: '',
+      autoIterate: false,
+      intervalMinutes: 1440,
+    })
+    const result = await jobs.enqueue(fresh, 'manual', 'do the work', 'iterate')
+    assert.equal(result.ok, false)
+    assert.equal(result.code, 'JOB_LIMIT')
+    assert.equal(store.listJobs(user.id, 10).length, 1)
+    assert.equal(store.listJobs(second.id, 10).length, 0)
+  } finally {
+    await server.close()
+    store.close()
+  }
+})
+
 test('enqueue stores the fixed-commit rule context and hands it to the runner', async () => {
   const server = await rulesGithub()
   const base = testConfig()
@@ -320,10 +497,10 @@ test('an invalid rule set refuses the enqueue with a code the banner can render'
     const result = await jobs.enqueue(repo, 'manual', 'do the work', 'iterate')
     assert.equal(result.ok, false)
     assert.equal(result.code, 'RULES_INVALID')
-    assert.equal(result.detail, '.fledge/rules.md')
+    assert.equal(result.detail, '.fledge/rules.md is larger than 32768 bytes')
     const value = `${result.code}:${result.detail ?? ''}`
-    assert.match(failureBannerSentence('en', value) ?? '', /rules or skills are invalid/)
-    assert.match(failureBannerSentence('zh', value) ?? '', /规则或技能不合法/)
+    assert.match(failureBannerSentence('en', value) ?? '', /rules or skills are invalid: \.fledge\/rules\.md is larger than 32768 bytes/)
+    assert.match(failureBannerSentence('zh', value) ?? '', /规则或技能不合法：\.fledge\/rules\.md is larger than 32768 bytes/)
   } finally {
     await server.close()
     store.close()

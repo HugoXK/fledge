@@ -117,13 +117,13 @@ The agent prompt includes:
 
 A repository can also carry its own rule and skill files. When it does, the
 payload adds `rulesText` (the effective `.fledge/*` text for the job's fixed
-commit, first 16 KiB), a `skills` index and a `contextUrl`. The index is a list,
+commit, at most 16000 bytes), a `skills` index and a `contextUrl`. The index is a list,
 not the text: the agent reads one skill with `GET contextUrl?path=<path>` and its
 `callbackSecret`, and only while the job is queued or running. Rules and skills
 are repository content, not configuration — they cannot add tools, permissions,
 stages or authority, and Fledge never executes them. The body is capped at 32 KiB
-per file and 256 KiB for the set; an oversized set refuses the job instead of
-being truncated.
+per file and 256 KiB for the set; a set whose rule text does not fit the 16000-byte
+prompt budget refuses the job instead of being truncated.
 
 The callback answers:
 

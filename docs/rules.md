@@ -35,7 +35,7 @@ or `builtin`) in its job context `rules_json`.
 ## Rules that do not move
 
 - The files are read from the default branch at the job's resolved commit, never from a pull request head. A change to them only affects later jobs.
-- The whole set is rejected when a file is a symlink or submodule, contains a NUL byte, is larger than 32 KiB, or the set exceeds 256 KiB or 32 skills. There is no partial load.
+- The whole set is rejected when a file is a symlink or submodule, contains a NUL byte, is larger than 32 KiB, the assembled rule text exceeds 16000 bytes, or the set exceeds 256 KiB or 32 skills. There is no partial load and no truncation: the refusal names the file that crossed the limit.
 - Skills are text. They cannot add tools, permissions, stages or authority, and Fledge never executes them.
 - The job context endpoint only serves the files recorded for that job. It needs the job callback secret, only answers while the job is queued or running, and records each read as a job event.
 - A pull request that changes a rule or skill file is flagged in verification. Auto-merge stays blocked until a maintainer acknowledges that exact head SHA; the acknowledgement is stored per job and SHA, so a new commit needs a new one.
@@ -48,4 +48,4 @@ or `builtin`) in its job context `rules_json`.
 | Skill file | 32 KiB |
 | Rules + skills per job | 256 KiB |
 | Skills | 32 |
-| Prompt rule text | first 16 KiB (the rest stays in the context endpoint) |
+| Prompt rule text | 16000 bytes; a larger set is refused whole and names the file that crossed the budget (nothing is sliced) |

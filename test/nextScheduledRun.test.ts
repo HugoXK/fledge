@@ -206,6 +206,7 @@ test('the dashboard answers with the schedule row, not the interval, when one ex
     })
     store.createModelProvider({ id: 'prov_scheduled', userId: user.id, label: 'p', baseUrl: 'https://example.test', keyEnc: 'x', allowPrivate: false })
     store.createProviderModel({ id: 'pm_scheduled', providerId: 'prov_scheduled', model: 'm', label: 'm' })
+    store.setRepoModelSelection(repo.id, ['pm_scheduled'], 'pm_scheduled')
     store.createJob({ id: 'job_scheduled', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
     store.updateJob('job_scheduled', { status: 'succeeded' })
     const row = store.saveSchedule({ id: 'sch_scheduled', repoId: repo.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })

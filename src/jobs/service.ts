@@ -56,6 +56,19 @@ import { isRuleChange, loadRepoRules, RulesError, type RepoRules } from '../rule
 import type { JobKind, RepoRef, Runner } from './runner.js'
 import type { InstanceManager } from '../flybot/instances.js'
 
+// #732: the platform pays only when the job has no own model to use. A
+// repository selection is an own model too: the bridge patches the instance from
+// `listRepoModelSelection` and the gateway resolves the same row, so checking
+// only the legacy users.own_llm_* columns refused a job that would never spend
+// platform quota.
+function platformFundedFor(user: UserRow, store: Store, repoId: string): boolean {
+  const legacyOwnModel =
+    user.own_llm_base_url !== null &&
+    user.own_llm_base_url !== '' &&
+    user.own_llm_key_enc !== null
+  return !legacyOwnModel && store.listRepoModelSelection(repoId).length === 0
+}
+
 export const DEFAULT_GOAL =
   'Review this repository for one high-value defect or improvement. Write a failing test first, implement the smallest correct fix, run the relevant tests, and open a pull request. Do not refactor unrelated code.'
 
@@ -806,7 +819,9 @@ export class Jobs {
           ok: false,
           error: error.message,
           code: error.code === 'rules_invalid' ? 'RULES_INVALID' : 'RULES_UNAVAILABLE',
-          detail: error.path,
+          // The banner reads `{detail}`, so an invalid set has to carry the
+          // message: it names the file that crossed the limit and the byte count.
+          detail: error.message,
         }
       }
       return {
@@ -1043,7 +1058,7 @@ export class Jobs {
     const jobId = `job_${randomToken(10)}`
     const callbackSecret = randomToken(24)
     const callbackHash = sha256Hex(callbackSecret)
-    const platformFunded = user.own_llm_base_url === null || user.own_llm_base_url === '' || user.own_llm_key_enc === null
+    const platformFunded = platformFundedFor(user, this.store, repo.id)
 
     if (platformFunded && quotaView(user, this.config).exhausted) {
       const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind, workType: workType.type, ownerStarted: this.ownerStartedFor(trigger, options) })
@@ -1092,21 +1107,23 @@ export class Jobs {
       }
     }
 
-    let rules: RepoRules | undefined
-    if (this.runner.name === 'flybot') {
-      const loaded = await this.loadRules(repo, baseBranch, preflightSha)
-      if (!loaded.ok) return { ok: false, error: loaded.error, code: loaded.code, detail: loaded.detail }
-      rules = loaded.rules
-    }
-
-    // The instance precondition is decided before the rule layer: a repository
-    // whose bridge is not ready refuses as `INSTANCE_NOT_READY`, which is the
-    // answer base gave before there was a rule read that could fail first.
+    // Every refusal that needs no network comes first: the instance
+    // precondition (`INSTANCE_NOT_READY`), the busy queue (`JOB_ACTIVE`) and the
+    // platform limit (`JOB_LIMIT`). Only an enqueue that can create a job reads
+    // the rule layer, so an unreadable or oversized rule set cannot mask a busy
+    // or full queue with `RULES_INVALID`/`RULES_UNAVAILABLE`.
     if (this.store.activeJobForRepo(repo.id) !== undefined) {
       return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
     }
     if (!this.config.runner.queueDispatch && this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) {
       return { ok: false, error: `平台当前已有 ${this.config.runner.maxActiveJobs} 个任务在运行，请稍后再试。`, code: 'JOB_LIMIT', detail: String(this.config.runner.maxActiveJobs) }
+    }
+
+    let rules: RepoRules | undefined
+    if (this.runner.name === 'flybot') {
+      const loaded = await this.loadRules(repo, baseBranch, preflightSha)
+      if (!loaded.ok) return { ok: false, error: loaded.error, code: loaded.code, detail: loaded.detail }
+      rules = loaded.rules
     }
 
     const platformToken = `flg_${randomToken(32)}`
@@ -3244,7 +3261,7 @@ export class Jobs {
     } catch (error) {
       return fail(`任务密钥无法解密：${String(error)}`)
     }
-    const platformFunded = user.own_llm_base_url === null || user.own_llm_base_url === '' || user.own_llm_key_enc === null
+    const platformFunded = platformFundedFor(user, this.store, repo.id)
     if (platformFunded && quotaView(user, this.config).exhausted) {
       this.finish(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。' }, revoke)
       await this.quotaNotifier.notify(user)
