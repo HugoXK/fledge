@@ -7,6 +7,12 @@ Every user starts with **1 CNY** of platform-funded model usage
 user to configure their own OpenAI-compatible model service. Their jobs then run
 on their key, with no platform metering.
 
+The first-run model step shows the remaining balance. Below
+`PLATFORM_QUOTA_COMFORT_CNY` (default 50) it warns that the balance may not cover
+the first run and recommends adding an own model now; at or above it the balance
+is shown without a warning and Settings → Model remains the later path. The
+threshold changes the checklist advice only; it never changes quota accounting.
+
 ## Units
 
 - Ledger: the provider's own **currency**, one bucket per currency (`USD`,
@@ -75,6 +81,10 @@ stream ends. A request that is already in flight is allowed to finish; the
 
 ## Enforcement
 
+- A job is platform-funded only when neither the legacy user-level model nor a
+  repository-selected provider model exists. The enqueue and dispatch paths use
+  the same predicate as the bridge and the gateway, so selecting a model for the
+  repository is enough to pass an exhausted platform quota.
 - Before a platform-funded request: if `remaining_cny <= 0`, return HTTP 402
   immediately and mark that user's active jobs `quota_exhausted` (their job
   tokens are revoked) so the UI does not wait for the job timeout.

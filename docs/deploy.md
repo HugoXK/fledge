@@ -39,6 +39,7 @@ Key settings:
 | `PLATFORM_LLM_KEY` | Platform key; never commit it |
 | `INITIAL_QUOTA_CNY` | Default 1 |
 | `USD_CNY_RATE` | Default 7.2 |
+| `PLATFORM_QUOTA_COMFORT_CNY` | Default 50; below this the first-run checklist recommends an own model |
 | `RUNNER_MODE` | `mock` or `flybot` |
 | `JOB_TIMEOUT_MINUTES` / `JOB_STALL_MINUTES` | Hard timeout (default 90) and no-heartbeat stall timeout (default 30) |
 | `FLYBOT_BRIDGE_URL` / `FLYBOT_BRIDGE_TOKEN` | Bridge endpoint and shared secret |
@@ -700,9 +701,12 @@ the command that verifies a large copy. The copies line counts only copies a
 manifest contradicts and names the rest separately, so `0 copies · nothing to
 check` is what an empty directory says. An encrypted copy is listed the same
 way: its manifest's size and `sha256` cover the file on disk, so the card
-compares the ciphertext and reads the age from the name. The drill prints its
-verdict and records nothing, so the card says `none recorded`
-rather than showing a green it cannot prove.
+compares the ciphertext and reads the age from the name. The restore drill
+writes `${DATA_DIR}/backup-drill.json` when `DATA_DIR` is set (or the path passed
+with `--status-file`), and the card shows that record's time, `ok`/`failed` and
+RTO/RPO. It says `none recorded` only when that file is absent or unreadable, so
+the card never shows a green it cannot prove.
+
 
 Back up `.env` separately (it contains the encryption key). Without
 `TOKEN_ENCRYPTION_KEY`, stored GitHub/model tokens cannot be decrypted.
@@ -718,7 +722,7 @@ written `0600`, so the dump is not readable by other accounts on the host either
 Prove that the newest copy still restores, without touching the live database:
 
 ```sh
-npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR"
+npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --status-file "$DATA_DIR/backup-drill.json"
 # encrypted copy: prefix with BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key
 # manifest=/var/lib/fledge/backups/fledge-2026-11-06T09-44-53-448Z.db.json
 # table=jobs expected=5000 actual=5000        one line per table: copy vs manifest
@@ -739,6 +743,11 @@ How it works and how to read it:
   directory (write a fresh copy first with `--fresh`; with a key configured that
   fresh copy is encrypted too). Nothing is created if a copy already exists, so
   the RPO you see is the age of your real backup schedule.
+- `--status-file <path>` records the result for `/admin`: `{at, ok, detail}`,
+  mode `0600`, written atomically. With neither the flag nor `DATA_DIR` the drill
+  writes nothing, so a CI run cannot touch an operator's data directory. A failed
+  drill overwrites the last success with `ok:false`, so the card never shows a
+  stale green.
 - **An encrypted copy is decrypted with the configured key before the database
   checks.** The `.db.enc` extension selects the encrypted path; the ciphertext is
   checked against the manifest first, then decrypted with

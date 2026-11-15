@@ -25,6 +25,7 @@ import { quotaView } from './gateway/quota.js'
 import { parseAttributionJson } from './lib/attribution.js'
 import { failureBreakdown } from './lib/failure.js'
 import { fetchFailureLog, logFailureReason } from './actions/workflowLog.js'
+import { parseVerification } from './lib/verification.js'
 import { DEFAULT_TRIAGE_GOAL, Jobs } from './jobs/service.js'
 import { parseIssueUrl } from './jobs/prUrl.js'
 import { createRunner, type Runner } from './jobs/runner.js'
@@ -102,6 +103,8 @@ import { withDensity } from './views/layout.js'
 import { gatePage } from './views/gate.js'
 import { planHash, validateGatePlan } from './gates/plan.js'
 import { memoryMissingPage, memoryPage } from './views/memory.js'
+import { rulesOverridesPage } from './views/rules.js'
+import { isRulePath, MAX_RULE_FILE_BYTES } from './rules.js'
 import { audienceVisible, memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from './lib/memory.js'
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
 import { THEME_COOKIE, isTheme, resolveTheme, withTheme } from './views/theme.js'
@@ -1232,17 +1235,32 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // #734: the checklist describes the account, not the job table. `jobsTotal`
     // carries the current filter for the table; the checklist must not read it.
     const setupJobsTotal = store.countJobsForUser(viewer.user.id)
+    // #732: a provider row is not an own model until a repository selects it (or
+    // the legacy user-level model is set). The gateway and the bridge both read
+    // the repository selection, so the checklist must use the same answer.
+    const providerConfigured = store
+      .listModelProviders(viewer.user.id)
+      .some((provider) => store.listProviderModels(provider.id).length > 0)
+    const legacyOwnModel =
+      viewer.user.own_llm_base_url !== null &&
+      viewer.user.own_llm_base_url !== '' &&
+      viewer.user.own_llm_key_enc !== null
+    const setupQuota = quotaView(viewer.user, config)
     const platformAvailable =
       config.llm.baseUrl !== '' &&
       config.llm.key !== '' &&
-      !quotaView(viewer.user, config).exhausted
+      !setupQuota.exhausted
     const setup = {
       repos: reposTotal,
       roleChosen: allRepos.some((repo) => repo.repo_role !== null),
-      modelConfigured: store
-        .listModelProviders(viewer.user.id)
-        .some((provider) => store.listProviderModels(provider.id).length > 0),
+      providerConfigured,
+      modelConfigured:
+        legacyOwnModel ||
+        allRepos.some((repo) => store.listRepoModelSelection(repo.id).length > 0),
       platformAvailable,
+      platformQuotaRemainingCny: setupQuota.remainingCny,
+      platformQuotaUnlimited: setupQuota.unlimited,
+      platformQuotaComfortCny: config.quota.comfortCny,
       instanceReady: allRepos.some((repo) => store.getRepoInstance(repo.id)?.status === 'ready'),
       jobs: setupJobsTotal,
       firstJobStatus: firstJob?.status ?? null,
@@ -1262,7 +1280,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         openWork: store.listOpenWorkItems(repo.id).length > 0,
         activeJob: store.activeJobForRepo(repo.id) !== undefined,
         instanceReady: store.getRepoInstance(repo.id)?.status === 'ready',
-        ...(scheduleRow === undefined ? {} : {
+        // #723: the worker only considers an enabled repository (`listAutoRepos`
+        // is `WHERE enabled = 1 AND auto_iterate = 1`), so a paused repository
+        // must not travel with a planner answer the card would treat as runnable.
+        ...(scheduleRow === undefined || repo.enabled !== 1 ? {} : {
           scheduledNext: schedule === null
             ? { kind: 'unreadable' as const, at: null }
             : { kind: schedule.kind, at: nextTime(schedule, Date.now()) },
@@ -1894,7 +1915,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         reviewTrend,
         // #544: a repository with a schedule row is answered by the planner, not
         // by the legacy interval rule the page computed for every repository.
-        ...(scheduleRow === undefined ? {} : {
+        // #723: `enabled` answers before the row does, so a paused repository
+        // keeps the `disabled` sentence the page already has instead of a
+        // planner instant the worker will never run.
+        ...(scheduleRow === undefined || repo.enabled !== 1 ? {} : {
           scheduledNext: schedule === null ? { kind: 'unreadable' as const, at: null } : { kind: schedule.kind, at: nextTime(schedule, Date.now()) },
         }),
         workflowFailures: store.listWorkflowFailuresForRepo(repo.id, 10),
@@ -2225,6 +2249,68 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/${repo.id}/gate?notice=${encodeURIComponent(t('计划已确认。还没有写入仓库。', 'The plan is confirmed. Nothing has been written to the repository yet.'))}`)
     }
     return reply.send(gateSessionView(confirmed))
+  })
+
+  // #538: console overrides for the three rule files. A repository file stays
+  // the first layer, this row is the second, and the built-in behaviour is the
+  // implicit third. Writes carry the revision the form rendered, so a concurrent
+  // edit is refused instead of overwriting it.
+  app.get('/repos/:id/rules', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    if (repo.repo_role !== 'maintainer') throw httpError(403, '只有 maintainer 可以编辑规则覆盖。', 'MAINTAINER_ONLY')
+    const conflictPath = queryText(request, 'conflictPath')
+    const conflictRevision = Number.parseInt(queryText(request, 'conflictRevision') ?? '', 10)
+    return reply.type('text/html').send(rulesOverridesPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      repo,
+      overrides: store.listRepoRuleOverrides(repo.id),
+      saved: queryText(request, 'saved'),
+      cleared: queryText(request, 'cleared'),
+      ...(conflictPath === undefined ? {} : { conflictPath }),
+      ...(Number.isInteger(conflictRevision) ? { conflictRevision } : {}),
+      refused: queryText(request, 'refused'),
+    }))
+  })
+
+  app.post('/repos/:id/rules', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (repo.repo_role !== 'maintainer') throw httpError(403, '只有 maintainer 可以编辑规则覆盖。', 'MAINTAINER_ONLY')
+    const body = form(request)
+    const path = body.path ?? ''
+    if (!isRulePath(path)) return reply.redirect(`/repos/${repo.id}/rules?refused=path_invalid`)
+    const content = body.content ?? ''
+    if (content.trim() === '') return reply.redirect(`/repos/${repo.id}/rules?refused=content_empty`)
+    if (content.includes('\0')) return reply.redirect(`/repos/${repo.id}/rules?refused=content_invalid`)
+    if (Buffer.byteLength(content) > MAX_RULE_FILE_BYTES) return reply.redirect(`/repos/${repo.id}/rules?refused=content_too_large`)
+    const expectedRevision = Number.parseInt(body.expected_revision ?? '', 10)
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 0) return reply.redirect(`/repos/${repo.id}/rules?refused=revision_invalid`)
+    const result = store.upsertRepoRuleOverride({ repoId: repo.id, path, content, updatedBy: viewer.user.id, expectedRevision })
+    if (!result.ok) {
+      store.audit(viewer.user.id, 'repo.rules_override_refused', `${path}: expected ${expectedRevision}, current ${result.revision}`)
+      return reply.redirect(`/repos/${repo.id}/rules?conflictPath=${encodeURIComponent(path)}&conflictRevision=${result.revision}`)
+    }
+    store.audit(viewer.user.id, 'repo.rules_override_saved', `${path}: revision ${result.row.revision}, ${Buffer.byteLength(content)} bytes`)
+    return reply.redirect(`/repos/${repo.id}/rules?saved=${encodeURIComponent(path)}`)
+  })
+
+  app.post('/repos/:id/rules/delete', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (repo.repo_role !== 'maintainer') throw httpError(403, '只有 maintainer 可以编辑规则覆盖。', 'MAINTAINER_ONLY')
+    const body = form(request)
+    const path = body.path ?? ''
+    if (!isRulePath(path)) return reply.redirect(`/repos/${repo.id}/rules?refused=path_invalid`)
+    const expectedRevision = Number.parseInt(body.expected_revision ?? '', 10)
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 0) return reply.redirect(`/repos/${repo.id}/rules?refused=revision_invalid`)
+    const result = store.deleteRepoRuleOverride({ repoId: repo.id, path, expectedRevision })
+    if (!result.ok) {
+      store.audit(viewer.user.id, 'repo.rules_override_refused', `${path}: clear expected ${expectedRevision}, current ${result.revision}`)
+      if (result.code === 'rule_override_missing') return reply.redirect(`/repos/${repo.id}/rules?refused=rule_override_missing`)
+      return reply.redirect(`/repos/${repo.id}/rules?conflictPath=${encodeURIComponent(path)}&conflictRevision=${result.revision}`)
+    }
+    store.audit(viewer.user.id, 'repo.rules_override_cleared', path)
+    return reply.redirect(`/repos/${repo.id}/rules?cleared=${encodeURIComponent(path)}`)
   })
 
   app.get('/repos/:id/settings', async (request, reply) => {
@@ -2896,6 +2982,23 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.audit(viewer.user.id, 'job.pr_rechecked', `${job.id}: ${result.ok ? 'ok' : (result.message ?? 'failed')}`)
     const key = result.ok ? 'notice' : 'error'
     const message = result.ok ? 'PR 证据与路径检查通过。' : (result.message ?? '重新检查失败。')
+    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${key}=${encodeURIComponent(message)}`)
+  })
+
+  app.post('/repos/:id/jobs/:jobId/ack-rule-change', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('只有 maintainer 可以确认规则变更。')}`)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const verification = parseVerification(job.verification_json)
+    if (verification?.ruleChange === undefined || job.pr_url === null) {
+      return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个任务没有待确认的规则变更。')}`)
+    }
+    store.setSetting(`rule_change_ack:${job.id}:${verification.sha}`, nowIso())
+    store.audit(viewer.user.id, 'job.rule_change_acknowledged', `${job.id}: ${verification.ruleChange.paths.join(', ').slice(0, 300)}`)
+    const result = await jobs.recheck(job.id)
+    const key = result.ok ? 'notice' : 'error'
+    const message = result.ok ? '规则变更已确认，PR 证据检查通过。' : (result.message ?? '规则变更已确认，但 PR 仍有其他问题。')
     return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${key}=${encodeURIComponent(message)}`)
   })
 
@@ -4475,6 +4578,37 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const result = await approvals.apply(token, 'email-link')
     if (!result.ok) return htmlPage(reply, 400, messagePage(config, '无法处理', result.reason, request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
     return reply.type('text/html').send(messagePage(config, result.user.status === 'approved' ? '已批准' : '已拒绝', `@${result.user.login} 的申请已${result.user.status === 'approved' ? '批准' : '拒绝'}。`, request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
+  })
+
+  app.get('/api/jobs/:id/context', async (request, reply) => {
+    const jobId = String((request.params as Record<string, string>).id)
+    if (!apiLimiter.take(`job-context:${jobId}:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
+    const job = store.getJob(jobId)
+    if (job === undefined) return reply.code(404).send({ error: 'job not found' })
+    const secret = bearerSecret(request)
+    if (secret === '' || !safeEqual(sha256Hex(secret), job.callback_hash)) return reply.code(401).send({ error: 'bad context secret' })
+    if (job.status !== 'queued' && job.status !== 'running') return reply.code(409).send({ error: 'job already finished' })
+    const context = store.getJobContext(job.id)
+    if (context === undefined) return reply.code(404).send({ error: 'no context for this job' })
+    const path = queryText(request, 'path')
+    if (path === undefined) {
+      let files: unknown = []
+      try {
+        files = JSON.parse(context.manifest_json) as unknown
+      } catch {}
+      return reply.send({ commit: context.commit_sha, files })
+    }
+    if (path.length > 300 || path.includes('\0')) return reply.code(400).send({ error: 'invalid context path' })
+    const file = store.getJobContextFile(job.id, path)
+    if (file === undefined) return reply.code(404).send({ error: 'context file not found' })
+    // docs/rules.md promises that every context read is audited. The path is
+    // recorded whole and the content never enters the event.
+    store.recordJobEvent({ jobId: job.id, repoId: job.repo_id, userId: job.user_id, kind: 'job.context_read', step: 'context', meta: path })
+    return reply
+      .header('cache-control', 'no-store')
+      .header('x-content-sha256', file.sha256)
+      .type('text/plain; charset=utf-8')
+      .send(file.content)
   })
 
   app.get('/api/jobs/:id/credential', async (request, reply) => {

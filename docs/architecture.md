@@ -26,6 +26,35 @@
 The console is server-rendered from `src/views/` and styled by `public/app.css`;
 its design tokens are documented in [docs/ui.md](ui.md).
 
+The console serves two surfaces with different jobs (#235). `/dashboard` is the
+owner's home: one next action, the first-run checklist, cost and status.
+`/console` is the operator workspace: every repository, the job queue, quota and
+the inbox. Both URLs are kept, neither is re-gated, and the boundary is recorded
+in [0020](decisions/0020-owner-and-operator-surfaces.md). On the repository page
+the settings card keeps the loop controls inline — goal, target branch, role,
+auto-iterate, enabled, discovery interval, reviewer, auto-merge, plan-first — and
+puts the operator policy in one closed
+`<details data-advanced="repo-settings">` inside the same form: allowed and
+forbidden paths, merge method, team stage gate, branch protection, the monthly
+and per-job budgets with spend, the available models and providers, and the
+per-bot model assignment. `<details>` still submits its inputs, so
+`POST /repos/:id/settings` and every authorization check behind it are unchanged;
+the per-bot model restart stays its own form and therefore outside the settings
+form.
+
+Page messages are not per-page markup. `notificationStack` in
+`src/views/layout.ts` renders every `notice`/`error` a route hands the layout as
+one `section.banner-stack` with a single `aria-live="polite"` region inside it,
+ordered by severity where the message is built — `banner bad` first, then the
+`warn` variant, then `banner ok`/plain `banner` — and de-duplicated by key, so
+one event that reaches the page on two paths prints once. Each message carries
+its own `data-dismiss` control, and `public/app.js` hides that node (`hidden`)
+without deleting it or touching any other message, so an announcement is not cut
+off mid-read and a reload starts from the server's answer again. The inbox
+(`inboxSection`) stays a separate card with its own region and is never folded
+into the stack. `test/notificationStack.test.ts` pins the order, the single
+region, the dismiss behaviour and the inbox's separation.
+
 Every list, panel and live stream renders its non-data states through
 `renderState`/`stateCell` in `src/views/states.ts` — loading, empty, error,
 success and disabled — so the aria contract (`status`, `alert`, `aria-busy`,
@@ -64,6 +93,14 @@ empty state, the next action, the setup checklist and the `POST /repos` error, s
 the dialog is opened by the hash as well as the button. The dialog lives outside
 the secondary disclosure; a `<noscript>` rule renders it inline when JavaScript is
 unavailable, and the token form keeps its CSRF field and `type="password"`.
+
+The admin backup card has two read-only sources: `readBackupStatus()` lists the
+plaintext copies in `config.backup.dir` and counts the encrypted copies beside
+them, and `readRestoreDrill()` reads `<dataDir>/backup-drill.json`. The card
+never opens the database or a copy. It hashes only the newest plaintext copy
+under the 4 MiB cap, gives a row only to a copy that differs or whose manifest
+cannot be read, and reports the drill record rather than a fixed "none
+recorded". `scripts/restore-drill.mjs --status-file` is the writer.
 
 ## Components
 
@@ -104,7 +141,16 @@ unavailable, and the token form keeps its CSRF field and `type="password"`.
   the first job. Once the quota is exhausted or the platform model is not
   configured, the same step becomes required again; the answer is derived from
   the rows and config on every request, so no skip cookie or second store is
-  needed. The checklist reads the account's unfiltered job count, so a
+  needed. The step is completed by a repository selection (or the legacy
+  user-level model), not by a provider row: a provider that no repository has
+  selected links to the repository picker instead of claiming the step is done.
+  The quota next action is shown only while no usable own model exists. The
+  model row prints the remaining balance. Below `PLATFORM_QUOTA_COMFORT_CNY`
+  (default 50) it warns that the balance may not cover the first run and
+  recommends an own model now (Settings → Model, or the repository picker when a
+  provider is already configured); at or above it it only names the balance and
+  keeps the own-model link as a later option. The checklist reads the account's
+  unfiltered job count, so a
   `status`/`repo`/`kind`/`priority` filter on the recent-jobs table cannot bring
   the checklist back after the first job. Once a job exists the checklist is
   replaced by a first-run summary
@@ -116,7 +162,8 @@ unavailable, and the token form keeps its CSRF field and `type="password"`.
 - **Next action** (`src/views/pages.ts`, `nextActionFor`): `/dashboard` opens
   with one server-derived action instead of a wall of equal cards. The order is
   the order a person would take them — an open question only they can answer, an
-  exhausted platform quota, the most urgent alert (stalled or slow job, stale
+  exhausted platform quota when no usable own model exists, the most urgent
+  alert (stalled or slow job, stale
   PR, invalid credential, repository budget), the account's newest failed job,
   the unfinished first-run step — and when none applies, an all-clear that names
   the known next scheduled automatic run (a repository the scheduler has never
@@ -136,9 +183,20 @@ unavailable, and the token form keeps its CSRF field and `type="password"`.
   because that row owns its cadence; the dashboard route passes the instant with
   the repository's facts and both surfaces render it through `plannedNextLine`, so
   the card cannot fall back to the interval rule for a scheduled repository and
-  disagree with the page below it. The dashboard route passes open work, the
+  disagree with the page below it. The daily digest is the third surface: `buildDigest`
+  calls `nextRunFor` (`src/lib/nextRunFor.ts`), which makes the same row-vs-interval
+  choice and delegates the instant to `nextTime`/`dueAfterMs`, so the email prints
+  the same state and time as the page. The digest owns only its Chinese wording; it
+  does not import `src/views/**`. A disabled repository is answered by `enabled`
+  before either rule: the worker only considers `enabled = 1 AND
+  auto_iterate = 1` (`src/db.ts`, `listAutoRepos`) and a manual start on a paused
+  repository is refused with `REPO_DISABLED`, so the page route withholds a saved
+  row's answer and `nextRunFor` answers `disabled` before the row — no surface
+  names a run for a paused repository. The page keeps the `disabled` sentence with
+  or without a schedule row, and the dashboard never names a paused repository
+  while an enabled one has a next run. The dashboard route passes open work, the
   active job and instance readiness per repository because those live outside
-  `RepoRow`; the two surfaces therefore print one string, and
+  `RepoRow`; the surfaces therefore print one string, and
   the wording says "next run", never an estimate. The newest job is read on its own, not
   from the job-table slice: the table is paged and filtered, and `?jobsPage=2` or
   `?status=` must not change the sentence the page opens with. The first-run
@@ -588,6 +646,10 @@ revoke stays one click.
 
 The operator chooses the upstream through `PLATFORM_LLM_BASE_URL`; keep the
 real endpoint and key out of git and out of public documentation.
+
+### Repository rules and skills
+
+A repository can add `.fledge/rules.md`, `.fledge/review.md`, `.fledge/develop.md` and text skills under `.agents/skills/`. Fledge reads them from the default branch at the job's fixed commit, records the commit and file hashes in `job_contexts`/`job_context_files`, and injects the effective rule text into the bridge prompt. For the three rule files the effective layer is repository file first, then a maintainer-owned console override in `repo_rule_overrides`, then the implicit built-in behaviour; each job records that layer per path in its context. The full text of a skill is read on demand with the job callback secret from `GET /api/jobs/:id/context?path=...`; the endpoint only serves files recorded for that job and only while it is queued or running. A PR that changes a rule or skill file blocks auto-merge until a maintainer acknowledges that head SHA. The set is bounded before it can reach a prompt: 32 KiB per rule file, 32 KiB per skill file, 32 skills, 256 KiB for the whole set, and 16000 bytes for the assembled rule text the bridge prompt carries. A set that crosses any ceiling is refused as a whole rather than truncated, because a job that ran on half its rules would silently lose the other half; the refusal names the file that crossed the limit and the byte count it reached, and the prompt is sent whole or not at all. Details and limits: [rules.md](rules.md).
 
 ### Per-repository FlyBot instances
 

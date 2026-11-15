@@ -320,6 +320,19 @@
     if (target instanceof Element && target.closest('.info-tip') !== null) return
     closeInfoTips()
   })
+  // #472: a dismiss control hides its own message and nothing else. The node
+  // stays in the document so a live announcement is not cut off mid-read, and
+  // the `hidden` flag is not persisted, so a reload starts from the server's
+  // answer rather than from a client-side opinion about it.
+  document.addEventListener('click', (event) => {
+    const target = event.target
+    if (!(target instanceof Element)) return
+    const button = target.closest('[data-dismiss]')
+    if (button === null) return
+    const message = button.closest('[data-notification]')
+    if (message === null) return
+    message.hidden = true
+  })
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') closeInfoTips()
   })

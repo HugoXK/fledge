@@ -11,9 +11,21 @@ export type SetupStepKey = 'repo' | 'role' | 'model' | 'instance' | 'job'
 export interface SetupState {
   repos: number
   roleChosen: boolean
+  // A provider with at least one model exists, but it may not be selected by a
+  // repository yet.
+  providerConfigured: boolean
+  // A repository can actually run on an own model: it has a selected provider
+  // model, or the legacy user-level model is configured. Naming this separately
+  // from `providerConfigured` is #732: adding a model in Settings is not the same
+  // as making a repository use it.
   modelConfigured: boolean
   /** The platform model is configured and the user's platform quota is not exhausted. */
   platformAvailable: boolean
+  /** The remaining platform quota in CNY; `platformQuotaUnlimited` wins when true. */
+  platformQuotaRemainingCny: number
+  platformQuotaUnlimited: boolean
+  /** Config value: below this remaining balance the step warns and recommends an own model. */
+  platformQuotaComfortCny: number
   instanceReady: boolean
   jobs: number
   // Status of the account's *first* job, all-time, not a window-scoped count:
@@ -34,6 +46,8 @@ export interface SetupStep {
   /** Satisfied by the platform quota rather than an own provider. */
   optional?: boolean
   note?: string
+  /** A longer advisory shown under the note, e.g. a low platform balance. */
+  warning?: string
 }
 
 export interface SetupChecklist {
@@ -52,8 +66,46 @@ export interface FirstRunOutcome {
 
 const TOTAL = 5
 
+// The threshold is `PLATFORM_QUOTA_COMFORT_CNY` in config; the checklist keeps
+// no second default, so a deployment changes the advice in one place. Below it
+// the platform still pays, but the user is advised to bring an own model before
+// the first job; at or above it the balance is shown without a warning.
+function cny(value: number): string {
+  return value > 0 && value < 1 ? `¥${value.toFixed(4)}` : `¥${value.toFixed(2)}`
+}
+
 export function setupChecklist(state: SetupState, t: Translate): SetupChecklist {
   const repoHref = state.repoHref ?? '#add-repo'
+  const optionalPlatform = state.platformAvailable && !state.modelConfigured
+  const quotaText = state.platformQuotaUnlimited ? t('不限额', 'unlimited') : cny(state.platformQuotaRemainingCny)
+  const lowPlatformQuota = optionalPlatform && !state.platformQuotaUnlimited && state.platformQuotaRemainingCny < state.platformQuotaComfortCny
+  const platformNote = optionalPlatform
+    ? state.platformQuotaUnlimited
+      ? t('使用平台额度（不限额）', 'Using platform quota (unlimited)')
+      : t(`使用平台额度（默认）· 剩余 ${quotaText}`, `Using platform quota (default) · ${quotaText} left`)
+    : undefined
+  const platformWarning = lowPlatformQuota
+    ? state.providerConfigured
+      ? t(`当前平台额度只剩 ${quotaText}，首次运行可能不够用；建议现在为仓库选择模型。`, `Only ${quotaText} of platform quota is left; it may not cover the first run. Choose a model for the repository now.`)
+      : t(`当前平台额度只剩 ${quotaText}，首次运行可能不够用；建议现在在 Settings → Model 配置自己的模型。`, `Only ${quotaText} of platform quota is left; it may not cover the first run. Add your own model in Settings → Model now.`)
+    : undefined
+  const modelAction = optionalPlatform
+    ? state.providerConfigured
+      ? {
+          href: repoHref,
+          label: lowPlatformQuota
+            ? t('立即选择仓库模型', 'Choose a repository model now')
+            : t('选择仓库模型（可选）', 'Choose a repository model (optional)'),
+        }
+      : {
+          href: '/settings#model-providers',
+          label: lowPlatformQuota
+            ? t('立即配置自己的模型', 'Add your own model now')
+            : t('以后在 Settings → Model 配置', 'Configure later in Settings → Model'),
+        }
+    : state.providerConfigured && !state.modelConfigured
+      ? { href: repoHref, label: t('选择仓库模型', 'Choose a repository model') }
+      : { href: '/settings#model-providers', label: t('打开「设置 → 模型」', 'Open Settings → Model') }
   const steps: SetupStep[] = [
     {
       key: 'repo',
@@ -71,28 +123,31 @@ export function setupChecklist(state: SetupState, t: Translate): SetupChecklist 
     },
     {
       key: 'model',
-      title: t('添加模型提供方', 'Add a model provider'),
-      // The gateway falls back to the platform model when the user has not
-      // configured one. The step is therefore already satisfied while the
-      // platform model is available and the quota is not exhausted; adding an
-      // own provider is an optional upgrade, not a prerequisite for the first run.
+      // #732: a provider row is not an own model until a repository selects it.
+      // #728: the step is still optional while the platform quota can fund the
+      // run; when the quota is exhausted or the platform model is missing, a
+      // provider without a selection is the required next action.
+      title: !state.modelConfigured && state.providerConfigured && !state.platformAvailable
+        ? t('为仓库选择模型', 'Choose a model for the repository')
+        : t('添加模型提供方', 'Add a model provider'),
       done: state.modelConfigured || state.platformAvailable,
-      optional: state.platformAvailable && !state.modelConfigured,
-      note: state.platformAvailable && !state.modelConfigured ? t('使用平台额度（默认）', 'Using platform quota (default)') : undefined,
-      action: {
-        href: '/settings#model-providers',
-        label: state.platformAvailable && !state.modelConfigured
-          ? t('添加自己的模型（可选）', 'Add your own model (optional)')
-          : t('打开「设置 → 模型」', 'Open Settings → Model'),
-      },
-      blocked: state.platformAvailable ? null : state.roleChosen ? null : t('先选择你的角色。', 'Choose your role first.'),
+      optional: optionalPlatform,
+      note: platformNote,
+      warning: platformWarning,
+      action: modelAction,
+      // Adding or selecting a model does not depend on the repository role.
+      blocked: null,
     },
     {
       key: 'instance',
       title: t('启动 FlyBot 实例', 'Start the FlyBot instance'),
       done: state.instanceReady,
       action: { href: repoHref, label: t('打开仓库启动', 'Open the repository') },
-      blocked: !state.modelConfigured && !state.platformAvailable ? t('先添加一个模型。', 'Add a model first.') : null,
+      blocked: !state.modelConfigured && !state.platformAvailable
+        ? state.providerConfigured
+          ? t('先为仓库选择一个模型。', 'Choose a model for the repository first.')
+          : t('先添加一个模型。', 'Add a model first.')
+        : null,
     },
     {
       key: 'job',
