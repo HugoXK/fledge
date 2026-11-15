@@ -246,6 +246,34 @@ test('a job that carries a PR replaces the checklist and the summary links it', 
   }
 })
 
+// #734: the table filter is table state. A filter that matches no job must not
+// make an account with a finished first run look new again.
+test('a job-table filter does not rewrite the first-run state', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'checklist-filtered', status: 'approved' })
+    const session = sessionFor(built, user)
+    const cookie = `${session.cookie}; fledge_lang=en`
+    const repo = store.createRepo({ id: 'repo_filtered', userId: user.id, owner: 'o', name: 'filtered', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_filtered', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob('job_filtered', { status: 'succeeded' })
+
+    const clean = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
+    assert.match(clean.body, /data-first-pr/, 'the first job gives the account its first-run summary')
+
+    const filtered = await built.app.inject({ method: 'GET', url: '/dashboard?status=queued', headers: { cookie } })
+    assert.equal(filtered.statusCode, 200)
+    assert.match(filtered.body, /data-first-pr/, 'a filter that matches no job does not bring the checklist back')
+    assert.match(filtered.body, /Your first job finished/, 'the first-run outcome still reads the first job')
+    assert.doesNotMatch(filtered.body, /data-setup-next=/, 'the checklist is not rendered again')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
+
 // Finding 1 on #241: the first-run summary must read the *first job*, not a
 // window-scoped success count. A success that fell out of the 7-day window used
 // to render "Your first job did not succeed" and the retry path, while
