@@ -158,3 +158,28 @@ export function classifyChanges(paths) {
 
   return { docsOnly, source, frontend, deps, db, docker, workflows, codeql }
 }
+
+// #752: the changed paths of a pull request whose base commit is not in the
+// checkout. `git diff base...head` needs both commits; when the base is missing
+// the classify step used to fall straight through to `--all`, so every gate ran
+// — including a `codeql-required` job that then waited out its ten-minute bound
+// for an analysis CodeQL never starts for a path it ignores.
+//
+// The fetch is tried by sha first (one round trip for a reachable commit) and
+// then by the base branch ref, and `null` — the caller's "run every gate" answer
+// — comes back only after both attempts failed. `git` is injected so the suite
+// drives the missing-base case without a repository.
+export function changedPathsForPullRequest({ base, head, baseRef = '', git }) {
+  if (base === '' || head === '') return null
+  const first = git.diff(base, head)
+  if (first !== null) return first
+  // A commit that is present and still cannot be diffed is not a fetching
+  // problem, and a second fetch would only hide that behind another failure.
+  if (git.hasCommit(base)) return null
+  if (git.fetchSha(base)) {
+    const bySha = git.diff(base, head)
+    if (bySha !== null) return bySha
+  }
+  if (baseRef !== '' && git.fetchRef(baseRef)) return git.diff(base, head)
+  return null
+}

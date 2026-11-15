@@ -138,3 +138,126 @@ test('path predicates recognise the shapes the workflow relies on', () => {
   assert.equal(isDbPath('scripts/restore-drill-ci.mjs'), true)
   assert.equal(isSourcePath('docs/deploy.md'), false)
 })
+
+// #752: a pull request whose branch was cut before the latest `main` carries a
+// base commit that this checkout never fetched, so `git diff "$base...$head"`
+// fails and the classify step fell straight to `--all`. Every gate then ran,
+// and `codeql-required` sat on its ten-minute bound waiting for an analysis
+// CodeQL does not start for an ignored path. The resolver below owns that
+// decision so the suite can drive it; the workflow only calls it.
+const BASE = 'b'.repeat(40)
+const HEAD = 'h'.repeat(40)
+
+interface ResolverGit {
+  diff: (base: string, head: string) => string[] | null
+  hasCommit: (sha: string) => boolean
+  fetchSha: (sha: string) => boolean
+  fetchRef: (ref: string) => boolean
+}
+
+interface ResolverOptions {
+  base: string
+  head: string
+  baseRef?: string
+  git: ResolverGit
+}
+
+interface ResolverLib {
+  changedPathsForPullRequest: (options: ResolverOptions) => string[] | null
+}
+
+// A dynamic import so this file still runs before the export exists, and the red
+// is a named failing test rather than a crash on the whole suite.
+async function resolver(): Promise<ResolverLib> {
+  return (await import('../scripts/lib/ciChanges.mjs')) as unknown as ResolverLib
+}
+
+test('a base commit missing from the checkout is fetched before the diff is called unreadable', async () => {
+  const { changedPathsForPullRequest } = await resolver()
+  const calls: string[] = []
+  let diffs = 0
+  const paths = changedPathsForPullRequest({
+    base: BASE,
+    head: HEAD,
+    baseRef: 'main',
+    git: {
+      diff: () => {
+        diffs += 1
+        calls.push(`diff#${String(diffs)}`)
+        // The observed #752 failure: the first diff cannot resolve the base.
+        return diffs === 1 ? null : ['AGENTS.md']
+      },
+      hasCommit: () => false,
+      fetchSha: () => {
+        calls.push('fetch-sha')
+        return true
+      },
+      fetchRef: () => {
+        calls.push('fetch-ref')
+        return true
+      },
+    },
+  })
+
+  assert.deepEqual(paths, ['AGENTS.md'], 'a doc-only diff must classify as documentation, not as every gate')
+  assert.ok(calls.includes('fetch-sha'), `the base has to be fetched by sha, calls: ${calls.join(', ')}`)
+  assert.ok(
+    calls.indexOf('fetch-sha') > calls.indexOf('diff#1') && calls.indexOf('diff#2') > calls.indexOf('fetch-sha'),
+    `the retry has to come after the fetch and before the fallback, calls: ${calls.join(', ')}`,
+  )
+})
+
+test('a base commit that is present is not fetched a second time', async () => {
+  const { changedPathsForPullRequest } = await resolver()
+  let fetched = 0
+  const paths = changedPathsForPullRequest({
+    base: BASE,
+    head: HEAD,
+    git: {
+      diff: () => ['src/app.ts'],
+      hasCommit: () => true,
+      fetchSha: () => {
+        fetched += 1
+        return true
+      },
+      fetchRef: () => {
+        fetched += 1
+        return true
+      },
+    },
+  })
+  assert.deepEqual(paths, ['src/app.ts'])
+  assert.equal(fetched, 0, 'a readable base needs no network round trip')
+})
+
+test('an unreadable base still runs every gate, by sha and then by ref', async () => {
+  const { changedPathsForPullRequest } = await resolver()
+  const tried: string[] = []
+  const paths = changedPathsForPullRequest({
+    base: BASE,
+    head: HEAD,
+    baseRef: 'main',
+    git: {
+      diff: () => null,
+      hasCommit: () => false,
+      fetchSha: () => {
+        tried.push('sha')
+        return false
+      },
+      fetchRef: () => {
+        tried.push('ref')
+        return true
+      },
+    },
+  })
+  assert.equal(paths, null, 'null means the caller runs every gate; an unreadable diff must never shrink it')
+  assert.deepEqual(tried, ['sha', 'ref'], 'both ways of naming the base are tried before the conservative fallback')
+})
+
+test('the classify step delegates the diff and keeps the every-gate fallback for other events', () => {
+  const workflow = readFileSync(fileURLToPath(new URL('../.github/workflows/ci.yml', import.meta.url)), 'utf8')
+  const step = workflow.slice(workflow.indexOf('- name: Classify the changed paths'), workflow.indexOf('\n  lint:'))
+  assert.match(step, /node scripts\/ci-changes\.mjs --git-base/, 'the classify step must delegate the diff so the fetch-before-fallback rule is testable')
+  assert.match(step, /\*\) node scripts\/ci-changes\.mjs --all; exit 0 ;;/, 'a push or schedule still verifies the whole tree')
+  assert.doesNotMatch(step, /git diff/, 'the untestable shell diff is what fell through to --all; it must not come back')
+})

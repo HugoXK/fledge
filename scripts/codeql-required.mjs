@@ -14,7 +14,7 @@
 
 import { appendFileSync, readFileSync } from 'node:fs'
 
-import { analysisFromApi, codeqlRequired } from './lib/codeql-required.mjs'
+import { analysisFromApi, changeInventory, codeqlRequired } from './lib/codeql-required.mjs'
 
 function readEvent(eventPath) {
   if (eventPath === '') return {}
@@ -40,6 +40,18 @@ function apiClient({ token, base }) {
     if (!response.ok) throw new Error(`GitHub ${response.status} ${path}: ${text.slice(0, 200)}`)
     return text === '' ? null : JSON.parse(text)
   }
+}
+
+// #752: the range whose change set decides whether an analysis can exist at all.
+// Only the events whose trigger `codeql.yml` filters have one; a push is analysed
+// unfiltered, so it never short-circuits.
+function changeRange(eventName, payload) {
+  const event = payload ?? {}
+  const read = (base, head) =>
+    typeof base === 'string' && typeof head === 'string' && base !== '' && head !== '' ? { base, head } : null
+  if (eventName === 'pull_request') return read(event.pull_request?.base?.sha, event.pull_request?.head?.sha)
+  if (eventName === 'merge_group') return read(event.merge_group?.base_sha, event.merge_group?.head_sha)
+  return null
 }
 
 function writeSummary(line) {
@@ -85,6 +97,15 @@ async function main() {
           } catch (error) {
             throw new Error(`cannot read the CodeQL analysis for ${asked}: ${error.message}`)
           }
+        },
+        // #752: the change set and the ignore list that decides whether an
+        // analysis can exist. The list is read from the base commit, so a pull
+        // request that edits `codeql.yml` is still judged by the policy in force
+        // before it; every failure here is "no inventory", never a pass.
+        changeInventory: async () => {
+          const range = changeRange(eventName, payload)
+          if (range === null) return null
+          return await changeInventory({ api, repo: repository, base: range.base, head: range.head })
         },
       },
       // Real time and a real timer: the bound lives in the module, the test

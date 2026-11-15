@@ -143,6 +143,28 @@ export async function codeqlRequired(input, lookups, clock) {
     return { ok: false, reason: `no commit to gate: a ${eventName === '' ? 'unknown' : eventName} event carries no sha`, sha: null, polls: 0 }
   }
 
+  // #752: an analysis cannot exist for a change set that `codeql.yml` filters
+  // out, so waiting for one only turns a documentation-only pull request into a
+  // ten-minute false failure. Every uncertainty — no inventory, an unreadable
+  // one, an empty one, a failed read — falls through to the wait below, which is
+  // still the answer for a change CodeQL would analyse.
+  if ((eventName === 'pull_request' || eventName === 'merge_group') && typeof lookups.changeInventory === 'function') {
+    let inventory = null
+    try {
+      inventory = await lookups.changeInventory()
+    } catch {
+      inventory = null
+    }
+    if (inventory !== null && inventory !== undefined && onlyIgnoredPaths(inventory.paths, inventory.patterns)) {
+      return {
+        ok: true,
+        reason: `every changed path is ignored by ${CODEQL_WORKFLOW}, so no analysis for ${sha} is expected`,
+        sha,
+        polls: 0,
+      }
+    }
+  }
+
   const deadline = clock.now() + waitMs
   let polls = 0
   for (;;) {
@@ -167,4 +189,159 @@ export async function codeqlRequired(input, lookups, clock) {
     sha,
     polls,
   }
+}
+
+// #752: `codeql.yml` filters its own trigger (`paths-ignore`), so a pull request
+// whose every changed path is ignored is analysed by nothing at all — and the
+// gate, which reads that analysis, waited out its ten-minute bound and reddened
+// `ci-ok` for a run that was never meant to start. A pull request that changed
+// only `AGENTS.md` could not merge for this reason.
+//
+// The list is read out of the workflow by the caller and travels here as data: a
+// copy in this module would drift from the file, and the diff that decides
+// "ignored only" has to be the commit's real change set, never a guess.
+export const CODEQL_WORKFLOW_FILE = '.github/workflows/codeql.yml'
+
+// The compare endpoint answers at most 300 files however it is paged; past that
+// the answer cannot be called complete, so the gate waits instead of shrinking.
+export const MAX_COMPARE_PAGES = 3
+export const COMPARE_PER_PAGE = 100
+
+function unquote(text) {
+  const value = String(text ?? '').trim()
+  if (value.length >= 2 && ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith('"') && value.endsWith('"')))) {
+    return value.slice(1, -1)
+  }
+  return value
+}
+
+// The `paths-ignore` list under `on.pull_request` in a workflow file. A tiny
+// reader on purpose: the repository carries no YAML dependency, and the shape
+// this needs is one block of `- pattern` lines.
+export function pathsIgnoreFromWorkflow(text) {
+  const lines = String(text ?? '').split('\n')
+  const patterns = []
+  let inTrigger = false
+  let inIgnore = false
+  for (const raw of lines) {
+    const line = raw.replace(/\r$/, '')
+    const trimmed = line.trim()
+    const trigger = /^ {2}([A-Za-z_][A-Za-z0-9_-]*):\s*(?:#.*)?$/.exec(line)
+    if (trigger !== null) {
+      inTrigger = trigger[1] === 'pull_request'
+      inIgnore = false
+      continue
+    }
+    if (!inTrigger) continue
+    const key = /^ {4}([A-Za-z_][A-Za-z0-9_-]*):\s*(?:#.*)?$/.exec(line)
+    if (key !== null) {
+      inIgnore = key[1] === 'paths-ignore'
+      continue
+    }
+    if (!inIgnore) continue
+    const item = /^\s*-\s+(.+?)\s*$/.exec(line)
+    if (item === null) {
+      if (trimmed === '' || trimmed.startsWith('#')) continue
+      inIgnore = false
+      continue
+    }
+    const pattern = unquote(item[1])
+    if (pattern !== '') patterns.push(pattern)
+  }
+  return patterns
+}
+
+const GLOB_CACHE = new Map()
+
+function globToRegExp(pattern) {
+  const cached = GLOB_CACHE.get(pattern)
+  if (cached !== undefined) return cached
+  let source = ''
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index]
+    if (char === '*') {
+      if (pattern[index + 1] === '*') {
+        // `**/` may match no directory at all, which is why `**/*.md` covers a
+        // root-level `AGENTS.md` the way the workflow's own filter does.
+        if (pattern[index + 2] === '/') {
+          source += '(?:[^/]+/)*'
+          index += 2
+        } else {
+          source += '.*'
+          index += 1
+        }
+      } else {
+        source += '[^/]*'
+      }
+      continue
+    }
+    if (char === '?') {
+      source += '[^/]'
+      continue
+    }
+    source += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  }
+  const compiled = new RegExp(`^${source}$`)
+  GLOB_CACHE.set(pattern, compiled)
+  return compiled
+}
+
+export function matchesIgnoredPath(path, patterns) {
+  const normalized = String(path ?? '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+  if (normalized === '') return false
+  return (Array.isArray(patterns) ? patterns : []).some((pattern) => globToRegExp(String(pattern)).test(normalized))
+}
+
+// Only a non-empty change set whose every path is ignored answers true. An empty
+// list is not "everything is ignored"; it is a diff nobody could read.
+export function onlyIgnoredPaths(paths, patterns) {
+  const list = (Array.isArray(paths) ? paths : []).map((path) => String(path ?? '').trim()).filter((path) => path !== '')
+  if (list.length === 0) return false
+  if (!Array.isArray(patterns) || patterns.length === 0) return false
+  return list.every((path) => matchesIgnoredPath(path, patterns))
+}
+
+export function comparePath({ repo, base, head, page = 1, perPage = COMPARE_PER_PAGE }) {
+  const query = new URLSearchParams({ per_page: String(perPage), page: String(page) })
+  return `/repos/${repo}/compare/${base}...${head}?${query.toString()}`
+}
+
+// The commit's real change set. `null` means the answer could not be called
+// complete — a full page at the cap — and the caller must not treat that as
+// "every path is ignored".
+export async function changedPathsFromApi({ api, repo, base, head, maxPages = MAX_COMPARE_PAGES, perPage = COMPARE_PER_PAGE }) {
+  const paths = []
+  for (let page = 1; page <= maxPages; page += 1) {
+    const payload = await api(comparePath({ repo, base, head, page, perPage }))
+    const files = Array.isArray(payload?.files) ? payload.files : []
+    for (const file of files) {
+      if (typeof file?.filename === 'string') paths.push(file.filename)
+    }
+    if (files.length < perPage) return paths
+  }
+  return null
+}
+
+// The workflow as it stands at the commit being gated. Reading it from the base
+// commit rather than the checkout is the point: a pull request that edits
+// `codeql.yml` must be judged by the policy that was in force before it.
+async function workflowAtPullRequest({ api, repo, base }) {
+  const payload = await api(`/repos/${repo}/contents/${CODEQL_WORKFLOW_FILE}?ref=${encodeURIComponent(base)}`)
+  if (payload === null || typeof payload !== 'object') return null
+  if (typeof payload.content !== 'string') return null
+  if (payload.encoding !== undefined && payload.encoding !== 'base64') return null
+  return Buffer.from(payload.content.replace(/\n/g, ''), 'base64').toString('utf8')
+}
+
+export async function changeInventory({ api, repo, base, head, maxPages, perPage }) {
+  const workflow = await workflowAtPullRequest({ api, repo, base })
+  if (workflow === null) return null
+  const patterns = pathsIgnoreFromWorkflow(workflow)
+  if (patterns.length === 0) return null
+  const paths = await changedPathsFromApi({ api, repo, base, head, maxPages, perPage })
+  if (paths === null) return null
+  return { paths, patterns }
 }

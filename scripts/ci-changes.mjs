@@ -10,7 +10,9 @@
 // so no heavy job may be skipped there.
 
 import { appendFileSync, readFileSync } from 'node:fs'
-import { allGateChanges, classifyChanges } from './lib/ciChanges.mjs'
+import { spawnSync } from 'node:child_process'
+
+import { allGateChanges, changedPathsForPullRequest, classifyChanges } from './lib/ciChanges.mjs'
 
 function argument(name) {
   const index = process.argv.indexOf(name)
@@ -23,12 +25,57 @@ function fail(message) {
   process.exit(2)
 }
 
+// #752: the diff that used to live in the workflow. `git diff base...head` fails
+// when the pull request's base commit is not in the checkout, which is the whole
+// defect: the step then ran every gate. Here the base is fetched once by sha and
+// once by the base branch ref before that conservative answer is allowed.
+function git(args) {
+  const result = spawnSync('git', args, { encoding: 'utf8' })
+  return { ok: result.status === 0, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
+}
+
+function pathsFromGit(base, head, baseRef) {
+  return changedPathsForPullRequest({
+    base,
+    head,
+    baseRef,
+    git: {
+      diff: (from, to) => {
+        const result = git(['diff', '--name-only', '--no-renames', `${from}...${to}`])
+        if (!result.ok) return null
+        return result.stdout
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line !== '')
+      },
+      hasCommit: (sha) => git(['cat-file', '-e', `${sha}^{commit}`]).ok,
+      fetchSha: (sha) => {
+        // A shallow fetch of the commit is the cheap attempt; the full fetch
+        // covers a server that will not serve an arbitrary sha shallowly.
+        if (!git(['fetch', '--no-tags', '--depth=1', 'origin', sha]).ok) git(['fetch', '--no-tags', 'origin', sha])
+        return git(['cat-file', '-e', `${sha}^{commit}`]).ok
+      },
+      fetchRef: (ref) => git(['fetch', '--no-tags', '--depth=1', 'origin', ref]).ok,
+    },
+  })
+}
+
 let changes
 if (process.argv.includes('--all')) {
   changes = allGateChanges()
+} else if (argument('--git-base') !== '') {
+  const base = argument('--git-base')
+  const head = argument('--git-head')
+  const paths = pathsFromGit(base, head, argument('--base-ref'))
+  if (paths === null) {
+    console.error(`cannot diff ${base}...${head}; running every gate`)
+    changes = allGateChanges()
+  } else {
+    changes = classifyChanges(paths)
+  }
 } else {
   const file = argument('--from-file')
-  if (file === '') fail('usage: node scripts/ci-changes.mjs --from-file <paths.txt> | --all')
+  if (file === '') fail('usage: node scripts/ci-changes.mjs --from-file <paths.txt> | --git-base <sha> --git-head <sha> [--base-ref <ref>] | --all')
   let text
   try {
     text = readFileSync(file, 'utf8')
