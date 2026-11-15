@@ -888,7 +888,8 @@ merged, so a tag on `main` is evidence of a released version, not of a rollout.
   ```
 
   An **absent** `fledge_clock_skew_seconds` line means "not measured" — no App
-  configured, or GitHub unreachable — and is not evidence that time is right.
+  configured, GitHub unreachable, or a `Date` header the client could not parse
+  (a rewriting proxy) — and is not evidence that time is right.
   `FledgeClockSkewHigh` fires on `abs(fledge_clock_skew_seconds) > 120` for ten
   minutes. Fix the host clock (`timedatectl set-ntp true`, or start the container
   with a host that keeps time); Fledge reports the drift and never rewrites a

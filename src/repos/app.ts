@@ -81,7 +81,17 @@ export class GithubApp {
         this.measuredSkewSeconds = null
         return null
       }
-      this.skewMs = Date.now() - Date.parse(date)
+      const remote = Date.parse(date)
+      if (!Number.isFinite(remote)) {
+        // #758 finding: a `Date` header that is present but unparseable (a
+        // rewriting proxy is the realistic case) is a failed measurement, not a
+        // reading. `skewMs` keeps the last real correction for the JWT, and the
+        // report says "unknown" — `NaN` here used to travel to /readyz, to the
+        // metric, and into the JWT's `iat` without failing anything.
+        this.measuredSkewSeconds = null
+        return null
+      }
+      this.skewMs = Date.now() - remote
       const seconds = Math.round(this.skewMs / 1000)
       this.measuredSkewSeconds = seconds
       if (Math.abs(seconds) > CLOCK_SKEW_LOG_SECONDS) log.warn('clock.skew', { skewSeconds: seconds, source: 'github' })
