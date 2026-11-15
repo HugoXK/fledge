@@ -56,6 +56,7 @@ jobs:
       docker: ${{ steps.classify.outputs.docker }}
       workflows: ${{ steps.classify.outputs.workflows }}
       codeql: ${{ steps.classify.outputs.codeql }}
+      deploy: ${{ steps.classify.outputs.deploy }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -610,10 +611,91 @@ jobs:
         # event payload, so a dependency install cannot be the thing that fails.
         run: node scripts/codeql-required.mjs
 
+  # #644: a deploy-only diff is not code, so the app gates skip it, but `deploy/`
+  # ships executable and syntax-sensitive files. `changes` sets `deploy` when any
+  # deploy/ path is in the diff; this job reads those files instead of letting a
+  # reviewer be the only check. The classifier cannot call a mixed diff
+  # deploy-only: `source` is computed from the same list, so deploy/ + src/ sets
+  # both flags and the code gates still run, and `ci-ok` refuses a skipped
+  # `deploy-check` when the flag is true.
+  deploy-check:
+    name: deploy-check
+    needs: changes
+    if: needs.changes.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Parse the Cloudflare email worker
+        run: node --check deploy/cloudflare-email-worker.js
+      - name: Check the Prometheus alert rules
+        env:
+          # The release archive is checksum-pinned in the script, not downloaded
+          # from a floating `latest`; the checksum is from the release's own
+          # sha256sums.txt.
+          PROMTOOL_VERSION: 2.55.1
+          PROMTOOL_SHA256: 19700bdd42ec31ee162e4079ebda4cd0a44432df4daa637141bdbea4b1cd8927
+        run: |
+          set -euo pipefail
+          archive="/tmp/prometheus_${PROMTOOL_VERSION}.tar.gz"
+          curl -sSfL -o "$archive" \
+            "https://github.com/prometheus/prometheus/releases/download/v${PROMTOOL_VERSION}/prometheus-${PROMTOOL_VERSION}.linux-amd64.tar.gz"
+          echo "${PROMTOOL_SHA256}  ${archive}" | sha256sum -c -
+          tar xzf "$archive" -C /tmp "prometheus-${PROMTOOL_VERSION}.linux-amd64/promtool"
+          "/tmp/prometheus-${PROMTOOL_VERSION}.linux-amd64/promtool" check rules deploy/prometheus/fledge-alerts.yml
+      - name: Best-effort nginx and systemd checks
+        # nginx and systemd-analyze are not guaranteed on the runner. When they
+        # are absent the gap is written to the job summary; when they are present
+        # the nginx example is parsed against generated certificates and a
+        # failure is a failure, while systemd-analyze stays advisory because its
+        # output includes the runner's own unrelated units.
+        shell: bash
+        run: |
+          set -uo pipefail
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          status=0
+          if command -v nginx >/dev/null 2>&1; then
+            tmp="$(mktemp -d)"
+            openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=localhost' \
+              -keyout "$tmp/key.pem" -out "$tmp/cert.pem" >/dev/null 2>&1
+            sed -e "s#/etc/letsencrypt/live/fledge.example.com/fullchain.pem#$tmp/cert.pem#" \
+                -e "s#/etc/letsencrypt/live/fledge.example.com/privkey.pem#$tmp/key.pem#" \
+                -e 's#/var/log/nginx/fledge-access.log#/dev/null#' \
+                -e 's#/var/log/nginx/fledge-error.log#/dev/null#' \
+                -e 's#listen 443 ssl http2;#listen 127.0.0.1:18443 ssl;#' \
+                -e 's#listen 80;#listen 127.0.0.1:18080;#' \
+                deploy/nginx.conf.example > "$tmp/site.conf"
+            { echo 'events {}'; echo 'http {'; cat "$tmp/site.conf"; echo '}'; } > "$tmp/nginx.conf"
+            if nginx -t -q -c "$tmp/nginx.conf" -p "$tmp"; then
+              echo 'nginx: deploy/nginx.conf.example parsed' >> "$summary"
+            else
+              echo 'nginx: deploy/nginx.conf.example failed `nginx -t`' >> "$summary"
+              status=1
+            fi
+          else
+            echo 'nginx: not installed on this runner — deploy/nginx.conf.example was not syntax-checked (gap).' >> "$summary"
+          fi
+          if command -v systemd-analyze >/dev/null 2>&1; then
+            if systemd-analyze verify deploy/fledge.service > /tmp/systemd-verify.txt 2>&1; then
+              echo 'systemd: deploy/fledge.service parsed' >> "$summary"
+            else
+              echo 'systemd: `systemd-analyze verify` reported problems (advisory, not a gate):' >> "$summary"
+              sed -n '1,20p' /tmp/systemd-verify.txt >> "$summary"
+            fi
+          else
+            echo 'systemd: systemd-analyze is not on this runner — deploy/fledge.service was not verified (gap).' >> "$summary"
+          fi
+          exit "$status"
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required]
+    needs: [changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required, deploy-check]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -647,7 +729,7 @@ jobs:
   main-health:
     name: main-health
     if: always() && github.ref == 'refs/heads/main'
-    needs: [ci-ok, changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required]
+    needs: [ci-ok, changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required, deploy-check]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

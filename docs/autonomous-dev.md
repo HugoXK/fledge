@@ -255,6 +255,7 @@ file is the record and not the gate — branch protection is an owner action.
 - `workflow-lint` (actionlint over the workflow tree, plus the template-injection check)
 - `secret-scan` (gitleaks over the commit range, full history on `main`)
 - `codeql-required` (the CodeQL analysis for this event's commit exists and is green)
+- `deploy-check` (the `deploy/` worker, alert rules and service samples parse, when the diff reaches `deploy/`)
 
 A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
 `skipped`, `cancelled` or a job absent from `needs`, except where
@@ -263,8 +264,8 @@ A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
 ### Change-aware gates
 
 The `changes` job in `ci.yml` classifies the pull request diff once and writes
-eight flags: `source`, `frontend`, `deps`, `db`, `docker`, `workflows`, `codeql`
-and `docsOnly`. Jobs that cannot learn anything from the diff carry a job-level `if`
+nine flags: `source`, `frontend`, `deps`, `db`, `docker`, `workflows`, `codeql`,
+`deploy` and `docsOnly`. Jobs that cannot learn anything from the diff carry a job-level `if`
 and are skipped **before a runner starts**, not after an install:
 
 | Flag false | Jobs skipped |
@@ -275,6 +276,7 @@ and are skipped **before a runner starts**, not after an install:
 | `db` | `restore-drill` |
 | `docker` | `docker` |
 | `workflows` | `action-pins`, `workflow-lint` |
+| `deploy` | `deploy-check` |
 | `codeql` | `codeql-required` (and the CodeQL workflow's own docs/deploy/Dockerfile path filter) |
 
 `test` and `coverage` are never conditional, and are not in this table. The suite
@@ -283,6 +285,16 @@ is a cross-cutting reader: 60 of the 184 files under `test/` read `docs/`,
 workflow-only diff still turns the suite red. Skipping it for `source: false` let
 `ci-ok` go green over a red suite, and for `docs/` (T0) and `public/` (T1) no
 verdict reads it either.
+
+`deploy` is its own flag because a deploy-only diff is not gate-free: `deploy/`
+ships the Cloudflare worker, the Prometheus rules and the nginx/systemd samples,
+and none of the app gates reads them. `deploy-check` parses the worker, runs
+`promtool check rules`, and checks nginx/systemd where the runner provides them
+(a missing tool is written to the job summary as a gap, never as a pass). The
+flag is computed from the same path list as `source`, so a diff that mixes
+`deploy/` with `src/` sets both and the code gates still run; the classifier
+cannot answer "deploy-only" for a mixed diff, and `test/ciChanges.test.ts`
+pins that refusal.
 
 One full-suite execution per supported Node line is enough (#642): `test (24)` is
 the compatibility run and `coverage` is the Node 22 run, since both commands
