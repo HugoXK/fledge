@@ -377,8 +377,9 @@ jobs:
       - name: Open the release pull request
         id: open
         # A dry run and a night that pushed nothing stay out of the write path.
-        # The token is the repository secret, read by the script from the
-        # environment: it never appears in an argument, an output or a log. Its
+        # The token is the `release` environment secret (#527), readable only by
+        # this job and never by the `tag` job: it never appears in an argument, an
+        # output or a log. Its
         # presence is the precondition the step above checks before anything is
         # pushed (#333), so this step runs only with the credential in place; the
         # guard below is the invariant, not a state to report. A refusal by the
