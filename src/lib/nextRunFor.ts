@@ -39,14 +39,7 @@ export interface NextRunFor {
 
 export function nextRunFor(input: NextRunForInput): NextRunFor {
   const now = input.now ?? Date.now()
-  if (input.row !== undefined) {
-    const schedule = scheduleFromRow(input.row)
-    if (schedule === null) return { at: null, state: 'unknown-unreadable' }
-    const at = nextTime(schedule, now)
-    if (at === null) return { at: null, state: 'unknown-closed' }
-    return { at, state: at <= now ? 'due' : 'scheduled' }
-  }
-  return nextRun({
+  const intervalAnswer = (): NextRunFor => nextRun({
     lastRunAt: input.repo.last_run_at,
     intervalMinutes: input.repo.interval_minutes,
     workCooldownMinutes: input.workCooldownMinutes,
@@ -57,4 +50,19 @@ export function nextRunFor(input: NextRunForInput): NextRunFor {
     instanceReady: input.instanceReady,
     now,
   })
+  // #723: `enabled` answers before the row does, exactly as the worker does.
+  // `listAutoRepos()` is `WHERE enabled = 1 AND auto_iterate = 1` and a manual
+  // start on a paused repository is refused with `REPO_DISABLED`, so a saved
+  // schedule row must not buy a paused repository a next run on any surface.
+  // The interval answer already carries the `disabled` state, so the page,
+  // dashboard and digest keep one wording.
+  if (input.repo.enabled !== 1) return intervalAnswer()
+  if (input.row !== undefined) {
+    const schedule = scheduleFromRow(input.row)
+    if (schedule === null) return { at: null, state: 'unknown-unreadable' }
+    const at = nextTime(schedule, now)
+    if (at === null) return { at: null, state: 'unknown-closed' }
+    return { at, state: at <= now ? 'due' : 'scheduled' }
+  }
+  return intervalAnswer()
 }

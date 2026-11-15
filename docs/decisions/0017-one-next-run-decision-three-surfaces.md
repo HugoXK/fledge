@@ -64,3 +64,15 @@ dashboard use, so a deployment with no FlyBot image never prints "not ready".
   planner instant for a scheduled repository — including a disabled repository
   that has a saved row, where the row decides the cadence on both surfaces.
 - `src/jobs/` remains a caller of the rule, never its owner.
+
+## Amendment — #723 (2026-11-15)
+
+`enabled` answers before the saved row does, here and on every surface. The
+worker only considers `enabled = 1 AND auto_iterate = 1` (`src/db.ts`,
+`listAutoRepos`) and a manual start on a paused repository is refused with
+`REPO_DISABLED` (`src/jobs/service.ts`), so a paused repository must not be
+promised a run even when it keeps its schedule row. The Consequences sentence
+that let a disabled repository with a saved row follow the row's cadence is
+therefore superseded: the page route withholds the row's answer for a paused
+repository and `nextRunFor` returns `disabled` before it reads the row, so the
+page, the dashboard and the digest keep one sentence.
