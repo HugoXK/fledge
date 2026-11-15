@@ -45,6 +45,16 @@ not a conclusion.
   `void` or a one-line reason.
 - Test helpers are not exempt from honesty, only from the production gates.
 
+## Lint warnings
+
+- `npm run lint` fails on any warning `lint-warnings.baseline.json` does not
+  name, and on a baseline entry the tree no longer produces.
+- The baseline carries only warnings that predate the gate. Fix a warning when
+  you are already in the file; run `npm run lint:update` in the same reviewed
+  change so its entry leaves with it.
+- Never add a rule-level off switch, an inline disable, or an exclude to get to
+  green; the baseline is the only allowance the gate carries.
+
 ## Security
 
 ### Secrets

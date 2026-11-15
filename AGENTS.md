@@ -223,7 +223,8 @@ npm run db:backup      # online SQLite backup
 npm run mail:outbox    # newest development email + approval links
 ```
 
-Node 22.9+ is required (`node:sqlite`). The CI matrix is Node 22 and 24.
+Node 22.9+ is required (`node:sqlite`). CI runs the full suite on Node 22 (the
+`coverage` job) and Node 24 (the `test` matrix job); one execution per line.
 
 ## Maintenance routines (optional)
 

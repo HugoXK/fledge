@@ -765,7 +765,10 @@ DSH token never reaches the browser.
 ### GitHub App onboarding and webhooks
 
 The optional GitHub App removes the PAT from the common path. Fledge generates a
-short-lived App JWT (with a clock-skew correction from GitHub's `Date` header),
+short-lived App JWT (with a clock-skew correction from GitHub's `Date` header,
+the same measurement reported by `/readyz` as `clock.skewSeconds` and by
+`/metrics` as `fledge_clock_skew_seconds`; a failed measurement reports
+`null` and no series at all rather than a zero that would read as aligned),
 exchanges it for an installation token, lists the installation repositories and
 stores only `repos.installation_id`; `repoGithubToken()` prefers a user OAuth token authorized with `repo` scope for human attribution and otherwise uses a fresh installation
 token when that column is set and falls back to the encrypted PAT otherwise. The

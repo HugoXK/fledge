@@ -205,6 +205,16 @@ and approve; 120/min across credential, callback, webhook, inbound and metrics).
 
 The volume `fledge-data` holds the SQLite database and the console outbox.
 
+Both stages of the image pin `node:22-alpine` by digest (`Dockerfile`), so a tag
+that moves cannot change the toolchain under a build whose diff says nothing
+about it. Update the pin deliberately: resolve the digest a fresh pull reports
+for `22-alpine`, replace both `FROM` lines together, and keep the readable tag in
+the reference. `test/dockerfilePins.test.ts` fails on a `FROM` without
+`@sha256:<64 lowercase hex>` and on two stages pinned to different digests, so a
+dropped digest is a red suite rather than a silent tag. Dependabot's Docker
+ecosystem is the next slice; until it lands, the bump is manual and still needs a
+rebuild, the image scan and the smoke check.
+
 The runtime stage also copies `CHANGELOG.md` and `changelog.d/` into `/app`
 (`Dockerfile`, runtime stage). The console reads them for the footer version and
 the `/admin` release card, which states the running version, the newest changelog
@@ -875,6 +885,25 @@ merged, so a tag on `main` is evidence of a released version, not of a rollout.
   `curl -H "Authorization: Bearer $METRICS_TOKEN" https://<host>/healthz`; without
   it the key is absent by design, not a deploy failure.
 - Watch for `level:"error"` in structured logs.
+- Clock skew: a wrong host clock shifts every stored timestamp, every digest line
+  and every scheduled run, and the container cannot be trusted to keep time on its
+  own. `GET /readyz` carries `clock.skewSeconds` — the last measured offset from
+  GitHub's `Date` header, positive when the process is ahead — and it is `null`
+  when nothing has been measured, never `0`:
+
+  ```sh
+  curl -s https://<host>/readyz | jq .clock
+  curl -s -H "Authorization: Bearer $METRICS_TOKEN" https://<host>/metrics \
+    | grep fledge_clock_skew_seconds
+  ```
+
+  An **absent** `fledge_clock_skew_seconds` line means "not measured" — no App
+  configured, GitHub unreachable, or a `Date` header the client could not parse
+  (a rewriting proxy) — and is not evidence that time is right.
+  `FledgeClockSkewHigh` fires on `abs(fledge_clock_skew_seconds) > 120` for ten
+  minutes. Fix the host clock (`timedatectl set-ntp true`, or start the container
+  with a host that keeps time); Fledge reports the drift and never rewrites a
+  stored timestamp to hide it.
 - The Admin panel shows the audit trail and recent jobs.
 - Quota state: `GET /v1/models` with a user token, or the dashboard.
 - Disk: SQLite WAL files and logs.
