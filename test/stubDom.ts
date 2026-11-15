@@ -55,12 +55,17 @@ export interface NavHarness {
   changeMedia: () => void
   focused: () => number
   autoSelectDisabled: () => boolean
+  clickDismiss: (index: number) => void
+  messageHidden: (index: number) => boolean
+  removedMessages: () => number
 }
 
 export interface RunAppOptions {
   resizeObserver?: boolean
   media?: 'modern' | 'legacy' | 'none'
   headerHeight?: number
+  /** How many dismissed-capable notification nodes the page stub carries. */
+  dismiss?: number
 }
 
 export function runApp(options: RunAppOptions = {}): NavHarness {
@@ -79,6 +84,7 @@ export function runApp(options: RunAppOptions = {}): NavHarness {
   const observed: unknown[] = []
   const mediaListeners: Array<() => void> = []
   const keydownListeners: Array<Listener> = []
+  const clickListeners: Array<Listener> = []
   let focusCalls = 0
   toggle.focus = () => { focusCalls += 1 }
   const autoSelect = { disabled: false }
@@ -123,6 +129,21 @@ export function runApp(options: RunAppOptions = {}): NavHarness {
     },
   }
 
+  // #472: one dismiss control per notification, and the script hides the node
+  // it belongs to instead of deleting it. The stub models exactly that: a
+  // message node with a `hidden` flag, its button, and a closest() that walks
+  // from the pressed element to the button and from the button to the message.
+  const messageNodes: Array<{ hidden: boolean; removed?: boolean }> = Array.from({ length: options.dismiss ?? 0 }, () => ({ hidden: false }))
+  const dismissTargets = messageNodes.map((message) => {
+    const button = new StubElement()
+    button.closest = (selector: string) => (selector === '[data-notification]' ? message : null)
+    // The pressed node is the control's own content, so the first closest() call
+    // has to step from it to the button, exactly as it does in a browser.
+    const pressed = new StubElement()
+    pressed.closest = (selector: string) => (selector === '[data-dismiss]' ? button : null)
+    return pressed
+  })
+
   const storage = { getItem: () => null, setItem: () => {}, removeItem: () => {} }
   const mediaResult = mediaMode === 'legacy'
     ? { addListener: (listener: () => void) => { mediaListeners.push(listener) } }
@@ -142,6 +163,7 @@ export function runApp(options: RunAppOptions = {}): NavHarness {
       getElementById: (id: string) => (id === 'main-nav' ? panel : null),
       addEventListener: (type: string, listener: Listener) => {
         if (type === 'keydown') keydownListeners.push(listener)
+        if (type === 'click') clickListeners.push(listener)
       },
     },
     window: {
@@ -176,6 +198,13 @@ export function runApp(options: RunAppOptions = {}): NavHarness {
     changeMedia: () => { for (const listener of mediaListeners) listener() },
     focused: () => focusCalls,
     autoSelectDisabled: () => autoSelect.disabled,
+    clickDismiss: (index: number) => {
+      const target = dismissTargets[index]
+      if (target === undefined) throw new Error(`no dismiss control at index ${index}`)
+      for (const listener of clickListeners) listener({ target })
+    },
+    messageHidden: (index: number) => messageNodes[index]?.hidden === true,
+    removedMessages: () => messageNodes.filter((message) => message.removed === true).length,
   }
 }
 

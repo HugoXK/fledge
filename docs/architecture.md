@@ -26,6 +26,19 @@
 The console is server-rendered from `src/views/` and styled by `public/app.css`;
 its design tokens are documented in [docs/ui.md](ui.md).
 
+Page messages are not per-page markup. `notificationStack` in
+`src/views/layout.ts` renders every `notice`/`error` a route hands the layout as
+one `section.banner-stack` with a single `aria-live="polite"` region inside it,
+ordered by severity where the message is built — `banner bad` first, then the
+`warn` variant, then `banner ok`/plain `banner` — and de-duplicated by key, so
+one event that reaches the page on two paths prints once. Each message carries
+its own `data-dismiss` control, and `public/app.js` hides that node (`hidden`)
+without deleting it or touching any other message, so an announcement is not cut
+off mid-read and a reload starts from the server's answer again. The inbox
+(`inboxSection`) stays a separate card with its own region and is never folded
+into the stack. `test/notificationStack.test.ts` pins the order, the single
+region, the dismiss behaviour and the inbox's separation.
+
 Every list, panel and live stream renders its non-data states through
 `renderState`/`stateCell` in `src/views/states.ts` — loading, empty, error,
 success and disabled — so the aria contract (`status`, `alert`, `aria-busy`,
