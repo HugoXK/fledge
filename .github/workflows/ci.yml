@@ -654,31 +654,20 @@ jobs:
         # the nginx example is parsed against generated certificates and a
         # failure is a failure, while systemd-analyze stays advisory because its
         # output includes the runner's own unrelated units.
+        #
+        # The wrapper, the generated certificates and the parse itself live in
+        # scripts/check-nginx-config.sh: it renders deploy/nginx.check.conf,
+        # which declares a pid path inside its own temporary directory, because
+        # the compiled-in /run/nginx.pid is not writable by the runner and that
+        # failed this job on main (#795). test/nginxCheck.test.ts drives that
+        # script with a stub nginx and inspects the rendered file.
         shell: bash
         run: |
           set -uo pipefail
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
           status=0
-          if command -v nginx >/dev/null 2>&1; then
-            tmp="$(mktemp -d)"
-            openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=localhost' \
-              -keyout "$tmp/key.pem" -out "$tmp/cert.pem" >/dev/null 2>&1
-            sed -e "s#/etc/letsencrypt/live/fledge.example.com/fullchain.pem#$tmp/cert.pem#" \
-                -e "s#/etc/letsencrypt/live/fledge.example.com/privkey.pem#$tmp/key.pem#" \
-                -e 's#/var/log/nginx/fledge-access.log#/dev/null#' \
-                -e 's#/var/log/nginx/fledge-error.log#/dev/null#' \
-                -e 's#listen 443 ssl http2;#listen 127.0.0.1:18443 ssl;#' \
-                -e 's#listen 80;#listen 127.0.0.1:18080;#' \
-                deploy/nginx.conf.example > "$tmp/site.conf"
-            { echo 'events {}'; echo 'http {'; cat "$tmp/site.conf"; echo '}'; } > "$tmp/nginx.conf"
-            if nginx -t -q -c "$tmp/nginx.conf" -p "$tmp"; then
-              echo 'nginx: deploy/nginx.conf.example parsed' >> "$summary"
-            else
-              echo 'nginx: deploy/nginx.conf.example failed `nginx -t`' >> "$summary"
-              status=1
-            fi
-          else
-            echo 'nginx: not installed on this runner — deploy/nginx.conf.example was not syntax-checked (gap).' >> "$summary"
+          if ! bash scripts/check-nginx-config.sh >> "$summary" 2>&1; then
+            status=1
           fi
           if command -v systemd-analyze >/dev/null 2>&1; then
             if systemd-analyze verify deploy/fledge.service > /tmp/systemd-verify.txt 2>&1; then
