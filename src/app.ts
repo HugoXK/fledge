@@ -107,7 +107,8 @@ import {
 } from './views/pages.js'
 import { withDensity } from './views/layout.js'
 import { gatePage } from './views/gate.js'
-import { planHash, validateGatePlan } from './gates/plan.js'
+import { planHash, validateGatePlan, type GatePlan } from './gates/plan.js'
+import { applyGatePlan } from './gates/apply.js'
 import { memoryMissingPage, memoryPage } from './views/memory.js'
 import { rulesOverridesPage } from './views/rules.js'
 import { ciGatePage } from './views/ciGate.js'
@@ -2558,6 +2559,118 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/${repo.id}/gate?notice=${encodeURIComponent(t('计划已确认。还没有写入仓库。', 'The plan is confirmed. Nothing has been written to the repository yet.'))}`)
     }
     return reply.send(gateSessionView(confirmed))
+  })
+
+  // #543 second slice: a confirmed plan may be applied once. The claim below is
+  // a compare-and-set on the session row, so two clicks cannot both open a pull
+  // request; the loser gets a 409 and the winner records the branch and PR URL on
+  // the same row. Planning and confirming still write nothing to the repository.
+  app.post('/repos/:id/gate/sessions/:sessionId/create', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (repo.repo_role !== 'maintainer') return gateMaintainerRefusal(reply, request)
+    const sessionId = String((request.params as Record<string, string>).sessionId)
+    const t = translator(request.locale ?? 'zh')
+    const session = store.getGateSessionForRepo(repo.id, sessionId)
+    if (session === undefined) {
+      return reply.code(404).send({ error: { type: 'GATE_SESSION_NOT_FOUND', message: t('门禁会话不存在。', 'That gate session does not exist.') } })
+    }
+    if (session.pr_url !== null) {
+      return reply.code(409).send({
+        error: {
+          type: 'GATE_PR_ALREADY_CREATED',
+          prUrl: session.pr_url,
+          message: t(`这个会话已经创建了门禁 PR：${session.pr_url}`, `This session already created its gate pull request: ${session.pr_url}`),
+        },
+      })
+    }
+    if (session.status !== 'confirmed') {
+      return reply.code(409).send({
+        error: {
+          type: 'SESSION_NOT_CONFIRMED',
+          message: t(`这个会话的状态是 ${session.status}；先由维护者确认计划，才会写入仓库。`, `The session is ${session.status}; a maintainer must confirm the plan before anything is written.`),
+        },
+      })
+    }
+    const claimed = store.claimGateSession(session.id, 'confirmed', 'analyzing')
+    if (claimed === undefined) {
+      return reply.code(409).send({
+        error: {
+          type: 'SESSION_NOT_CONFIRMED',
+          message: t('另一个请求正在应用这个会话，或它的状态已经改变。', 'Another request is applying this session, or its status changed.'),
+        },
+      })
+    }
+    const refused = (status: number, code: string, message: string, branch?: string): FastifyReply => {
+      store.updateGateSession(session.id, {
+        status: code === 'stale_base_sha' ? 'refused' : 'failed',
+        error_code: code,
+        ...(branch === undefined ? {} : { branch }),
+      })
+      store.audit(viewer.user.id, 'gate.pr.refused', `${repo.owner}/${repo.name} session=${session.id} code=${code}`)
+      return reply.code(status).send({ error: { type: code, message } })
+    }
+    let plan: GatePlan | null = null
+    try {
+      const parsed = validateGatePlan(JSON.parse(claimed.plan_json))
+      // The hash is recomputed from the stored plan: a row edited behind the
+      // store cannot be applied under the hash the human confirmed.
+      if (parsed.ok && planHash(parsed.plan) === claimed.plan_hash) plan = parsed.plan
+    } catch {
+      plan = null
+    }
+    if (plan === null) {
+      return refused(409, 'plan_invalid', t('存储的计划与它记录的哈希不一致，请重新提交计划。', 'The stored plan does not match its recorded hash; submit the plan again.'))
+    }
+    let token = ''
+    try {
+      token = await repoGithubToken(repo, config, githubApp, store)
+    } catch (error) {
+      log.warn('gate token unavailable', { repo: repo.id, error: String(error) })
+      token = ''
+    }
+    if (token === '') {
+      // Nothing was written; put the row back to `confirmed` so the same
+      // confirmation can be applied once the connection is repaired.
+      store.updateGateSession(session.id, { status: 'confirmed' })
+      return reply.code(409).send({
+        error: {
+          type: 'GITHUB_TOKEN_MISSING',
+          message: t('这个仓库没有可用的 GitHub 凭据，无法创建门禁 PR。', 'This repository has no usable GitHub credential, so the gate pull request cannot be created.'),
+        },
+      })
+    }
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    const baseBranch = repo.target_branch || repo.upstream_default_branch || repo.default_branch
+    const applied = await applyGatePlan({
+      client: new GithubClient(token, config.github.apiBase),
+      owner,
+      name,
+      baseBranch,
+      plan,
+      planHash: claimed.plan_hash,
+      confirmedBy: claimed.confirmed_by ?? viewer.user.login,
+    })
+    if (!applied.ok) {
+      const status = applied.code === 'github_unavailable' || applied.code === 'write_failed' || applied.code === 'pr_failed' ? 502 : 409
+      return refused(status, applied.code, applied.message, applied.branch)
+    }
+    const created = store.updateGateSession(session.id, {
+      status: 'created',
+      branch: applied.branch,
+      pr_url: applied.prUrl,
+      error_code: null,
+    })!
+    store.audit(viewer.user.id, 'gate.pr.created', `${owner}/${name} session=${session.id} branch=${applied.branch} pr=${applied.prUrl}`)
+    const notice = t(
+      `门禁 PR 已创建：${applied.prUrl}（${applied.files.length} 个文件）`,
+      `Gate pull request created: ${applied.prUrl} (${applied.files.length} files)`,
+    )
+    const contentType = String(request.headers['content-type'] ?? '')
+    if (contentType.includes('application/x-www-form-urlencoded')) {
+      return reply.redirect(`/repos/${repo.id}/gate?notice=${encodeURIComponent(notice)}`)
+    }
+    return reply.code(201).send(gateSessionView(created))
   })
 
   // #538: console overrides for the three rule files. A repository file stays

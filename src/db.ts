@@ -3244,6 +3244,22 @@ export class Store {
     return this.getGateSession(id)
   }
 
+  // #543: creating the gate pull request must happen once per confirmed plan,
+  // even when two requests arrive together. The compare-and-set is one SQL
+  // statement, so exactly one caller wins the transition and the loser reads no
+  // row; a read-then-update here would let both callers open a PR.
+  claimGateSession(id: string, from: GateSessionStatus, to: GateSessionStatus): GateSessionRow | undefined {
+    const changed = this.runChanges(
+      'UPDATE gate_sessions SET status = ?, updated_at = ? WHERE id = ? AND status = ?',
+      to,
+      nowIso(),
+      id,
+      from,
+    )
+    if (changed === 0) return undefined
+    return this.getGateSession(id)
+  }
+
   listGateSessionsForRepo(repoId: string, limit = 50): GateSessionRow[] {
     return this.all<GateSessionRow>(
       'SELECT * FROM gate_sessions WHERE repo_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?',

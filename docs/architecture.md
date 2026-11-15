@@ -2267,9 +2267,9 @@ repository.
 - **A session is the record** (`gate_sessions` in `src/db.ts`). It holds the
   repository, status (`analyzing`, `proposed`, `confirmed`, `created`, `refused`,
   `failed`), the base SHA, the canonical plan JSON, its hash, the confirming
-  actor and time, and the future PR/branch/error fields. `Store` exposes
+  actor and time, and the PR/branch/error fields. `Store` exposes
   `createGateSession`, `getGateSession`, `getGateSessionForRepo`,
-  `updateGateSession` and `listGateSessionsForRepo`.
+  `updateGateSession`, `claimGateSession` and `listGateSessionsForRepo`.
 - **The API proposes, it does not write.** `POST /repos/:id/gate/sessions` is
   maintainer-only and CSRF-checked. It validates the plan, optionally reads the
   default-branch SHA with a GitHub `GET /branches/:branch` call, and refuses a
@@ -2284,9 +2284,50 @@ repository.
   preview, and offers a maintainer a confirm form. Every value is escaped and
   every sentence is bilingual.
 
-Not built yet: the gate pull request, GitHub file/commit writes, merging the
-planned job into an existing workflow YAML, and trial runs; those belong to later
-slices of #543.
+Trial runs are not built: Fledge still does not clone or execute a user
+repository, so a lane duration is evidence reported by the analysis run.
+
+## Applying a confirmed gate plan (`#543` second slice)
+
+A confirmed session can be applied once, through
+`POST /repos/:id/gate/sessions/:sessionId/create` (maintainer-only, CSRF-checked).
+It is the only route that writes to a user's repository, and the write is exactly
+one branch, the composed files and one pull request.
+
+- **The claim is a compare-and-set** (`Store.claimGateSession`). The route moves
+  the row `confirmed` → `analyzing` with a single `UPDATE ... WHERE status =
+  'confirmed'`, so two clicks cannot both open a pull request; the loser gets a
+  409. A session that already carries `pr_url` is refused with
+  `GATE_PR_ALREADY_CREATED`.
+- **The base branch is re-read first** (`src/gates/apply.ts`). If it no longer
+  matches the plan's `baseSha`, nothing is written: the session becomes
+  `refused` with `stale_base_sha`, and the caller has to run the analysis again.
+  Creating the branch uses the plan SHA, never a branch name.
+- **Composition is pure** (`src/gates/compose.ts`). Given the plan and the files
+  read at the base SHA it returns the exact bytes and the PR body. It writes
+  `.github/ci-gates.json` (the lane contract), `scripts/gate/gate.mjs` when
+  missing, `.github/workflows/release.yml` when missing, and
+  `.github/workflows/fledge-gate.yml` for the lanes that need their own triggers.
+- **An existing workflow is merged, never replaced.** The preferred target is
+  `.github/workflows/ci.yml` (else the first workflow file that has an `on:` and
+  a `jobs:` block). Only the pr-ready `fledge-gate` job and a `pull_request`
+  trigger are inserted; the schedule, tag and `merge_group` triggers stay in the
+  dedicated file so an unrelated workflow never starts running on them. If the
+  trigger block has a shape the text merge will not rewrite, the pr-ready lane
+  falls back into the dedicated file and the PR body records why.
+- **Lanes keep their four outcomes** (`src/gates/lanes.ts`). An empty lane is
+  `not_applicable`, never `pass`; a missing exit code is a failure; an observe
+  lane's failure is `observe_fail`, recorded and not fatal. A repository without
+  a merge queue runs pr-merge after merge, and the contract records the
+  merge-preview gap: a check that only sees the merged tree cannot block a pull
+  request. A merge-queue repository gets `merge_group` instead, and no such gap.
+- **The page shows the result.** `/repos/:id/gate` offers the create form on a
+  confirmed session, then links the PR and the branch, and shows the recorded
+  `error_code` on a refusal or failure. Every sentence stays bilingual.
+
+GitHub writes use `GithubClient.createBranch` (`POST /git/refs`) and
+`GithubClient.putFile` (`PUT /contents/:path`, with the blob SHA when updating).
+Nothing force-pushes and nothing merges the gate pull request.
 
 ## Release tags for hosted repositories
 
