@@ -39,6 +39,7 @@ Key settings:
 | `PLATFORM_LLM_KEY` | Platform key; never commit it |
 | `INITIAL_QUOTA_CNY` | Default 1 |
 | `USD_CNY_RATE` | Default 7.2 |
+| `PLATFORM_QUOTA_COMFORT_CNY` | Default 50; below this the first-run checklist recommends an own model |
 | `RUNNER_MODE` | `mock` or `flybot` |
 | `JOB_TIMEOUT_MINUTES` / `JOB_STALL_MINUTES` | Hard timeout (default 90) and no-heartbeat stall timeout (default 30) |
 | `FLYBOT_BRIDGE_URL` / `FLYBOT_BRIDGE_TOKEN` | Bridge endpoint and shared secret |

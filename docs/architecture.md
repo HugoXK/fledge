@@ -96,7 +96,16 @@ defect.
   the first job. Once the quota is exhausted or the platform model is not
   configured, the same step becomes required again; the answer is derived from
   the rows and config on every request, so no skip cookie or second store is
-  needed. The checklist reads the account's unfiltered job count, so a
+  needed. The step is completed by a repository selection (or the legacy
+  user-level model), not by a provider row: a provider that no repository has
+  selected links to the repository picker instead of claiming the step is done.
+  The quota next action is shown only while no usable own model exists. The
+  model row prints the remaining balance. Below `PLATFORM_QUOTA_COMFORT_CNY`
+  (default 50) it warns that the balance may not cover the first run and
+  recommends an own model now (Settings → Model, or the repository picker when a
+  provider is already configured); at or above it it only names the balance and
+  keeps the own-model link as a later option. The checklist reads the account's
+  unfiltered job count, so a
   `status`/`repo`/`kind`/`priority` filter on the recent-jobs table cannot bring
   the checklist back after the first job. Once a job exists the checklist is
   replaced by a first-run summary
@@ -108,7 +117,8 @@ defect.
 - **Next action** (`src/views/pages.ts`, `nextActionFor`): `/dashboard` opens
   with one server-derived action instead of a wall of equal cards. The order is
   the order a person would take them — an open question only they can answer, an
-  exhausted platform quota, the most urgent alert (stalled or slow job, stale
+  exhausted platform quota when no usable own model exists, the most urgent
+  alert (stalled or slow job, stale
   PR, invalid credential, repository budget), the account's newest failed job,
   the unfinished first-run step — and when none applies, an all-clear that names
   the known next scheduled automatic run (a repository the scheduler has never

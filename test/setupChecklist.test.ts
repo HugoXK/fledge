@@ -21,8 +21,12 @@ function state(patch: Partial<SetupState> = {}): SetupState {
   return {
     repos: 0,
     roleChosen: false,
+    providerConfigured: false,
     modelConfigured: false,
     platformAvailable: false,
+    platformQuotaRemainingCny: 0,
+    platformQuotaUnlimited: false,
+    platformQuotaComfortCny: 50,
     instanceReady: false,
     jobs: 0,
     firstJobStatus: null,
@@ -54,9 +58,10 @@ test('a brand-new account starts at step 1 and every later step names its blocke
   assert.equal(checklist.next?.key, 'repo')
   assert.equal(checklist.next?.blocked, null, 'step 1 has no prerequisite')
   assert.equal(checklist.next?.action.href, '#add-repo')
-  for (const step of checklist.steps.slice(1)) {
+  for (const step of checklist.steps.filter((entry) => entry.key !== 'model').slice(1)) {
     assert.notEqual(step.blocked, null, `${step.key} names the step that blocks it`)
   }
+  assert.equal(checklist.steps.find((step) => step.key === 'model')?.blocked, null, 'adding a model does not depend on the role')
   assert.deepEqual(checklist.steps.map((step) => step.key), ['repo', 'role', 'model', 'instance', 'job'])
 })
 
@@ -82,21 +87,69 @@ test('the next step follows the data, and a completed step stops being the actio
   assert.equal(withInstance.complete, false, 'the job is the step that finishes the run')
 })
 
+test('a provider without a repository selection is not a completed model step', () => {
+  const providerOnly = setupChecklist(state({ repos: 1, roleChosen: true, providerConfigured: true, modelConfigured: false, repoHref: '/repos/r1' }), en)
+  assert.equal(providerOnly.next?.key, 'model')
+  assert.equal(providerOnly.next?.title, 'Choose a model for the repository')
+  assert.equal(providerOnly.next?.action.href, '/repos/r1', 'the add form is not the next step once a provider exists')
+  assert.equal(providerOnly.steps.find((step) => step.key === 'instance')?.blocked, 'Choose a model for the repository first.')
+
+  const selected = setupChecklist(state({ repos: 1, roleChosen: true, providerConfigured: true, modelConfigured: true, repoHref: '/repos/r1' }), en)
+  assert.equal(selected.next?.key, 'instance', 'a repository selection is the own model the gateway and bridge use')
+  assert.equal(selected.steps.find((step) => step.key === 'model')?.done, true)
+  assert.equal(selected.steps.find((step) => step.key === 'instance')?.blocked, null)
+})
+
 test('platform quota satisfies the model step and skips its NEXT ACTION', () => {
-  const withRole = setupChecklist(state({ repos: 1, roleChosen: true, platformAvailable: true, repoHref: '/repos/r1' }), en)
+  const withRole = setupChecklist(state({ repos: 1, roleChosen: true, platformAvailable: true, platformQuotaRemainingCny: 50, repoHref: '/repos/r1' }), en)
   assert.equal(withRole.next?.key, 'instance', 'the missing own model must not be the next action while platform quota is available')
   const model = withRole.steps.find((step) => step.key === 'model')
   assert.ok(model !== undefined)
   assert.equal(model.done, true)
   assert.equal(model.optional, true)
-  assert.equal(model.note, 'Using platform quota (default)')
-  assert.equal(model.action.label, 'Add your own model (optional)')
+  assert.equal(model.note, 'Using platform quota (default) · ¥50.00 left')
+  assert.equal(model.warning, undefined, 'a comfortable balance does not warn')
+  assert.equal(model.action.label, 'Configure later in Settings → Model')
   assert.equal(model.blocked, null)
   assert.equal(withRole.steps.find((step) => step.key === 'instance')?.blocked, null)
+
+  const unlimited = setupChecklist(state({ repos: 1, roleChosen: true, platformAvailable: true, platformQuotaUnlimited: true, repoHref: '/repos/r1' }), en)
+  const unlimitedModel = unlimited.steps.find((step) => step.key === 'model')
+  assert.equal(unlimitedModel?.note, 'Using platform quota (unlimited)')
+  assert.equal(unlimitedModel?.warning, undefined)
+  assert.equal(unlimitedModel?.action.label, 'Configure later in Settings → Model')
 
   const complete = setupChecklist(state({ repos: 1, roleChosen: true, platformAvailable: true, instanceReady: true, jobs: 1, firstJobStatus: 'succeeded', repoHref: '/repos/r1' }), en)
   assert.equal(complete.done, 5)
   assert.equal(complete.complete, true)
+})
+
+test('the quota comfort threshold defaults to 50 and reads the env override', () => {
+  assert.equal(testConfig().quota.comfortCny, 50)
+  assert.equal(testConfig({ quota: { initialCny: 1, usdCny: 7.2, comfortCny: 123 } }).quota.comfortCny, 123)
+})
+
+test('a low platform balance recommends an own model when the model step is skipped', () => {
+  const low = setupChecklist(state({ repos: 1, roleChosen: true, platformAvailable: true, platformQuotaRemainingCny: 1, repoHref: '/repos/r1' }), en)
+  const model = low.steps.find((step) => step.key === 'model')
+  assert.match(model?.note ?? '', /¥1\.00/)
+  assert.match(model?.warning ?? '', /may not cover the first run/)
+  assert.match(model?.warning ?? '', /Settings → Model/)
+  assert.equal(model?.action.label, 'Add your own model now')
+  assert.equal(model?.optional, true)
+
+  const providerLow = setupChecklist(state({ repos: 1, roleChosen: true, providerConfigured: true, platformAvailable: true, platformQuotaRemainingCny: 1, repoHref: '/repos/r1' }), en)
+  const providerModel = providerLow.steps.find((step) => step.key === 'model')
+  assert.equal(providerModel?.action.href, '/repos/r1')
+  assert.equal(providerModel?.action.label, 'Choose a repository model now')
+  assert.match(providerModel?.warning ?? '', /Choose a model for the repository now/)
+})
+
+test('the quota comfort threshold comes from config, not a second constant', () => {
+  const strict = setupChecklist(state({ repos: 1, roleChosen: true, platformAvailable: true, platformQuotaRemainingCny: 50, platformQuotaComfortCny: 100, repoHref: '/repos/r1' }), en)
+  assert.notEqual(strict.steps.find((step) => step.key === 'model')?.warning, undefined, 'a 100 CNY threshold warns at 50 CNY')
+  const relaxed = setupChecklist(state({ repos: 1, roleChosen: true, platformAvailable: true, platformQuotaRemainingCny: 50, platformQuotaComfortCny: 50, repoHref: '/repos/r1' }), en)
+  assert.equal(relaxed.steps.find((step) => step.key === 'model')?.warning, undefined, 'a 50 CNY threshold is comfortable at 50 CNY')
 })
 
 test('the dashboard shows platform quota instead of a model requirement when the platform can fund the run', async () => {
@@ -114,9 +167,55 @@ test('the dashboard shows platform quota instead of a model requirement when the
     assert.match(page.body, /data-setup-next="instance"/)
     assert.match(page.body, /Using platform quota/)
     assert.match(page.body, /Add your own model/)
+    assert.match(page.body, /Only ¥1\.00 of platform quota is left/)
+    assert.match(page.body, /may not cover the first run/)
+    assert.match(page.body, /setup-warning/)
     const nextAction = page.body.match(/<section class="card" id="next-action"[\s\S]*?<\/section>/)?.[0] ?? ''
     assert.match(nextAction, /Start the FlyBot instance/, 'the platform-funded run does not stop at the model step')
     assert.doesNotMatch(nextAction, /Add a model provider/, 'the optional model step is not the primary action')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
+
+test('a comfortable platform balance only names the remaining quota', async () => {
+  const config = testConfig()
+  config.llm.baseUrl = 'https://platform.example/v1'
+  config.llm.key = 'platform-key'
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'platform-quota-50', status: 'approved', quota: 50 })
+    const session = sessionFor(built, user)
+    store.createRepo({ id: 'repo_platform_50', userId: user.id, owner: 'o', name: 'platform-50', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const page = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: `${session.cookie}; fledge_lang=en` } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /Using platform quota \(default\) · ¥50\.00 left/)
+    assert.match(page.body, /Configure later in Settings → Model/)
+    assert.doesNotMatch(page.body, /may not cover the first run/)
+    assert.doesNotMatch(page.body, /setup-warning/)
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
+
+test('the dashboard uses the configured comfort threshold', async () => {
+  const config = testConfig()
+  config.llm.baseUrl = 'https://platform.example/v1'
+  config.llm.key = 'platform-key'
+  config.quota.comfortCny = 100
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'platform-quota-configured', status: 'approved', quota: 50 })
+    const session = sessionFor(built, user)
+    store.createRepo({ id: 'repo_platform_configured', userId: user.id, owner: 'o', name: 'platform-configured', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const page = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: `${session.cookie}; fledge_lang=en` } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /Only ¥50\.00 of platform quota is left/, 'the route passes config.quota.comfortCny to the checklist')
+    assert.match(page.body, /may not cover the first run/)
   } finally {
     await built.app.close()
     store.close()
@@ -215,6 +314,17 @@ test('the route detects the step from rows, so a second browser or a cleared coo
     const withRole = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
     assert.match(withRole.body, /data-setup-next="model"/, 'role chosen and no model: the model step is next')
     assert.match(withRole.body, /Open Settings → Model/, 'the next action points at the exact form')
+
+    const provider = store.createModelProvider({ id: 'prv_route', userId: user.id, label: 'Own', baseUrl: 'https://own.example/v1', keyEnc: 'x', allowPrivate: false })
+    const model = store.createProviderModel({ id: 'pvm_route', providerId: provider.id, model: 'own-model', label: 'Own model' })
+    const withProvider = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
+    assert.match(withProvider.body, /data-setup-next="model"/, 'a provider alone is not a repository model')
+    assert.match(withProvider.body, /Choose a model for the repository/, 'the next action is the repository picker')
+    assert.match(withProvider.body, /href="\/repos\/repo_route"/, 'and it links to the repository')
+
+    store.setRepoModelSelection('repo_route', [model.id], model.id)
+    const withSelection = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
+    assert.match(withSelection.body, /data-setup-next="instance"/, 'a selected repository model completes the model step')
   } finally {
     await built.app.close()
     store.close()

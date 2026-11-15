@@ -676,7 +676,7 @@ function setupSection(setup: SetupState | undefined, t: Translate, primaryElsewh
           : ''
       return `<li class="setup-step${step.done ? ' is-done' : ''}${current ? ' is-current' : ''}" data-setup-step="${step.key}"${current ? ' aria-current="step"' : ''}>
         <span class="setup-mark" aria-hidden="true">${mark}</span>
-        <div class="setup-main"><strong>${escapeHtml(step.title)}</strong>${status}</div>
+        <div class="setup-main"><strong>${escapeHtml(step.title)}</strong>${status}${step.warning === undefined ? '' : `<span class="setup-warning">${escapeHtml(step.warning)}</span>`}</div>
         ${action}
       </li>`
     })
@@ -842,7 +842,10 @@ function nextActionFor(input: {
       setupStep: null,
     }
   }
-  if (quota.exhausted) {
+  // #732: the platform quota only stops a platform-funded job. A repository
+  // selection (or the legacy own model) is not platform-funded, so the quota
+  // card must not tell that user to add a model they already have.
+  if (quota.exhausted && (setup === undefined || !setup.modelConfigured)) {
     return {
       kind: 'quota',
       title: t('平台额度已用完。', 'Platform quota is used up.'),
