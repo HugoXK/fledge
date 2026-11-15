@@ -124,7 +124,9 @@ function renderRepo(options: { repoRole?: 'maintainer' | null } = {}): Rendered 
 }
 
 const uniq = (values: string[]): string[] => values.filter((value, index, all) => all.indexOf(value) === index).sort()
-const norm = (value: string): string => value.replace(/repo_nav/g, ':id')
+// #700: asset URLs carry `?v=<digest>`, which is not part of the href the pin
+// names; keep the set below stable by folding the version away.
+const norm = (value: string): string => value.replace(/repo_nav/g, ':id').replace(/\?v=[0-9a-f]{8,}$/, '')
 const idSet = (html: string): string[] => uniq([...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1] ?? ''))
 const formSet = (html: string): string[] => uniq([...html.matchAll(/<form[^>]*\saction="([^"]+)"/g)].map((match) => norm(match[1] ?? '')))
 const hrefList = (html: string): string[] => uniq([...html.matchAll(/\shref="([^"]+)"/g)].map((match) => norm(match[1] ?? '')))
@@ -229,7 +231,7 @@ test('the tab script follows the hash and the deep links', () => {
   assert.match(source, /is-tabbed/, 'the tab script never collapses the sections')
   const rendered = renderRepo()
   try {
-    assert.match(rendered.html, /<script src="\/assets\/repoTabs\.js" defer><\/script>/, 'the page does not load the tab script')
+    assert.match(rendered.html, /<script src="\/assets\/repoTabs\.js\?v=[0-9a-f]{8,}" defer><\/script>/, 'the page does not load the versioned tab script')
   } finally {
     rendered.close()
   }

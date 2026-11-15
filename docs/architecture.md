@@ -182,6 +182,17 @@ defect.
   (`.fine-link`) and the class carries the floor. Text fields, selects and
   textareas are 16px below 641px, the size below which iOS zooms a focused
   field.
+- **Asset URLs carry a content version** (`src/lib/assetVersion.ts`): the host
+  serves `/assets/` with a four-hour freshness lifetime and the page sets no
+  cache directive of its own, so every asset URL is emitted as
+  `?v=<first 12 hex of the file's sha256>` — the four in `src/views/layout.ts`,
+  the six in `src/views/pages.ts` (`repoPage`, `teamPage`,
+  `applicationStatusPage`) and the two `rewriteWorkspaceHtml` injects into the
+  proxied workspace page. The digest is memoised per path and is the file's own
+  bytes, never the commit: `/healthz` withholds `config.build.commit` behind
+  `diagnosticsAccess` (#236, #466) and an asset URL is public. A deploy that
+  changes a file therefore changes its URL, so a browser cannot serve the old
+  copy inside the lifetime whatever header the host sends.
 - **Repository page tabs** (`src/views/pages.ts` `repoPage`, `public/repoTabs.js`):
   `/repos/:id` renders six sections — Overview, Delivery, Work, Team, Settings,
   Danger — behind a sticky subnav. The sections are a regroup of the cards the

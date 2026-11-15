@@ -2,6 +2,7 @@ import type { UserRow } from '../db.js'
 import { quotaView, type QuotaView } from '../gateway/quota.js'
 import type { Config } from '../config.js'
 import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
+import { assetUrl } from '../lib/assetVersion.js'
 import { refusalBanner } from '../lib/failure.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import type { Density } from './density.js'
@@ -201,7 +202,7 @@ export function layout(options: LayoutOptions): string {
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   ${themeMeta('system')}
   <title>${escapeHtml(title)} · Fledge</title>
-  <link rel="stylesheet" href="/assets/app.css" />
+  <link rel="stylesheet" href="${assetUrl('/assets/app.css')}" />
 </head>
 <body>
   <a class="skip-link" href="#main">${escapeHtml(t('跳到主要内容', 'Skip to main content'))}</a>
@@ -223,7 +224,7 @@ export function layout(options: LayoutOptions): string {
     ${body}
   </main>
   ${footer}
-  <script src="/assets/section-nav.js" defer></script>
+  <script src="${assetUrl('/assets/section-nav.js')}" defer></script>
   <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title">
     <form method="dialog">
       <h2 id="confirm-dialog-title">${escapeHtml(t('请确认', 'Please confirm'))}</h2>
@@ -234,8 +235,8 @@ export function layout(options: LayoutOptions): string {
       </div>
     </form>
   </dialog>
-  <script src="/assets/app.js" defer></script>
-  <script src="/assets/questions.js" defer></script>
+  <script src="${assetUrl('/assets/app.js')}" defer></script>
+  <script src="${assetUrl('/assets/questions.js')}" defer></script>
 </body>
 </html>`
 }

@@ -135,7 +135,8 @@ test('the rendered header drives --header-h, and the layout ships that script', 
   )
 
   const html = render('/dashboard')
-  assert.match(html, /<script src="\/assets\/app\.js" defer><\/script>/, 'the layout must load the updater it depends on')
+  // #700: the URL carries a content version now, so the pin is the path prefix.
+  assert.match(html, /<script src="\/assets\/app\.js\?v=[0-9a-f]{8,}" defer><\/script>/, 'the layout must load the updater it depends on')
 })
 
 test('touch targets in the shell follow the --touch token', () => {

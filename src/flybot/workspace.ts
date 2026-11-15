@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { RepoInstanceRow, RepoRow } from '../db.js'
+import { assetUrl } from '../lib/assetVersion.js'
 import { log } from '../lib/log.js'
 
 const cookieCache = new Map<string, { cookie: string; at: number }>()
@@ -46,7 +47,9 @@ export function rewriteWorkspaceHtml(html: string, repo: RepoRow, prefix: string
   else next = next.replace(/<head([^>]*)>/i, `<head$1><title>${title.replace(/[<>&]/g, '')}</title>`)
   if (/<base\s+href=/i.test(next)) next = next.replace(/<base\s+href=["'][^"']*["'][^>]*>/i, `<base href="${prefix}">`)
   else next = next.replace(/<head([^>]*)>/i, `<head$1><base href="${prefix}">`)
-  const injected = `<link rel="stylesheet" href="/assets/workspace-brand.css"><script src="/assets/workspace-brand.js" defer></script>`
+  // #700: the proxied page is served from the same host, so its two injected
+  // files need the same content version the console's own assets carry.
+  const injected = `<link rel="stylesheet" href="${assetUrl('/assets/workspace-brand.css')}"><script src="${assetUrl('/assets/workspace-brand.js')}" defer></script>`
   if (/<\/head>/i.test(next)) next = next.replace(/<\/head>/i, `${injected}</head>`)
   const repoName = repo.upstream_owner ? `${repo.upstream_owner}/${repo.upstream_name}` : repo.name
   next = next.replace(/<body([^>]*)>/i, `<body$1 data-fledge-repo="${repoName.replace(/["<>&]/g, '')}">`)

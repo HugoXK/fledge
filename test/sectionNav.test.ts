@@ -259,8 +259,9 @@ test('a section taller than the band stays current until the next one takes its 
 
 test('the page loads the rule before the script that uses it, and a tap marks its own chip', () => {
   const html = render('settings')
-  const ruleAt = html.indexOf('src="/assets/section-nav.js"')
-  const appAt = html.indexOf('src="/assets/app.js"')
+  // #700: both URLs now carry a content version, so the pin is the path prefix.
+  const ruleAt = html.indexOf('src="/assets/section-nav.js?v=')
+  const appAt = html.indexOf('src="/assets/app.js?v=')
   assert.ok(ruleAt !== -1 && appAt !== -1 && ruleAt < appAt, 'section-nav.js must load before app.js')
   assert.match(script, /sectionNavRule\.currentSection\(/)
   assert.match(script, /bandTop:\s*sectionNavRule\.scrollBandTop\(window\.innerHeight, anchorOffset\)/)
