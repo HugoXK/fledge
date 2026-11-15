@@ -1299,7 +1299,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         openWork: store.listOpenWorkItems(repo.id).length > 0,
         activeJob: store.activeJobForRepo(repo.id) !== undefined,
         instanceReady: store.getRepoInstance(repo.id)?.status === 'ready',
-        ...(scheduleRow === undefined ? {} : {
+        // #723: the worker only considers an enabled repository (`listAutoRepos`
+        // is `WHERE enabled = 1 AND auto_iterate = 1`), so a paused repository
+        // must not travel with a planner answer the card would treat as runnable.
+        ...(scheduleRow === undefined || repo.enabled !== 1 ? {} : {
           scheduledNext: schedule === null
             ? { kind: 'unreadable' as const, at: null }
             : { kind: schedule.kind, at: nextTime(schedule, Date.now()) },
@@ -1931,7 +1934,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         reviewTrend,
         // #544: a repository with a schedule row is answered by the planner, not
         // by the legacy interval rule the page computed for every repository.
-        ...(scheduleRow === undefined ? {} : {
+        // #723: `enabled` answers before the row does, so a paused repository
+        // keeps the `disabled` sentence the page already has instead of a
+        // planner instant the worker will never run.
+        ...(scheduleRow === undefined || repo.enabled !== 1 ? {} : {
           scheduledNext: schedule === null ? { kind: 'unreadable' as const, at: null } : { kind: schedule.kind, at: nextTime(schedule, Date.now()) },
         }),
         workflowFailures: store.listWorkflowFailuresForRepo(repo.id, 10),

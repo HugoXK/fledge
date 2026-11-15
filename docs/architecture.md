@@ -191,9 +191,16 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   calls `nextRunFor` (`src/lib/nextRunFor.ts`), which makes the same row-vs-interval
   choice and delegates the instant to `nextTime`/`dueAfterMs`, so the email prints
   the same state and time as the page. The digest owns only its Chinese wording; it
-  does not import `src/views/**`. The dashboard route passes open work, the
+  does not import `src/views/**`. A disabled repository is answered by `enabled`
+  before either rule: the worker only considers `enabled = 1 AND
+  auto_iterate = 1` (`src/db.ts`, `listAutoRepos`) and a manual start on a paused
+  repository is refused with `REPO_DISABLED`, so the page route withholds a saved
+  row's answer and `nextRunFor` answers `disabled` before the row — no surface
+  names a run for a paused repository. The page keeps the `disabled` sentence with
+  or without a schedule row, and the dashboard never names a paused repository
+  while an enabled one has a next run. The dashboard route passes open work, the
   active job and instance readiness per repository because those live outside
-  `RepoRow`; the two surfaces therefore print one string, and
+  `RepoRow`; the surfaces therefore print one string, and
   the wording says "next run", never an estimate. The newest job is read on its own, not
   from the job-table slice: the table is paged and filtered, and `?jobsPage=2` or
   `?status=` must not change the sentence the page opens with. The first-run
