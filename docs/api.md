@@ -777,3 +777,20 @@ version-independent blocker added to `planRelease` later must be added to
 `releaseReadiness` too; until it is, the page would predict ready where the write
 path refuses. The tag route is authoritative — the page is a read-only
 prediction — and the test asserts the three codes that exist today.
+
+### `POST /repos/:id/release-readiness/tag`
+
+Owner only, CSRF, maintainer role: the one write on the readiness page, and the
+only thing it creates is an annotated tag. The form carries `version`, the 40-hex
+`head` the page rendered, and `confirm=1`. The route **re-reads the default
+branch immediately before it writes**, and a head that is not the one the form
+carried is refused as `branch_moved`, naming both commits — because a tag is
+never moved or deleted, so a stale target costs a version rather than a retry. A
+version that fails `planRelease` is refused in that plan's own words, including
+the suggested next version. A 403 or 404 from the ref write is refused as
+`tag_scope_missing`, saying the installation needs `Contents: write`; the 422
+race stays `tag_exists`; no upstream GitHub body text reaches the page. The
+outcome travels to the page as a one-shot flash — "tag created" or the refusal —
+and never as a query string. Nothing else is written: no Release object, no draft
+notes, no workflow dispatch and no token beyond the repository's installation
+token. Draft notes and the Release are a later slice of #546.

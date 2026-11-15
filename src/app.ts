@@ -8,7 +8,7 @@ import { Readable } from 'node:stream'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
 import { openStore, type GateSessionRow, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
-import { createAnnotatedTag, parseVersion, releasePreflight } from './releases/release.js'
+import { createAnnotatedTag, parseVersion, releasePreflight, releaseRefusals } from './releases/release.js'
 import { reconcileRelease, trackingUpdate } from './releases/tracking.js'
 import { readReleaseReadiness } from './releases/readiness.js'
 import { releaseReadinessPage } from './views/releaseReadiness.js'
@@ -2099,7 +2099,55 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repoLabel: `${owner}/${name}`,
       readiness,
       ...(error === undefined ? {} : { error }),
+      // #472: the tag route reports through the flash, so the sentence is read
+      // once from the cookie and never from a query string the address bar keeps.
+      ...(request.flash?.notice?.text === undefined ? {} : { notice: request.flash.notice.text }),
+      ...(request.flash?.error?.text === undefined ? {} : { refused: request.flash.error.text }),
     }))
+  })
+
+  // #546 slice 2: the tag action behind the readiness page. The page is a
+  // prediction and this route is the authority, so the default branch head is
+  // read again immediately before the write: the form carries the head it was
+  // rendered with, and a branch that moved is a refusal rather than a tag on a
+  // tree the maintainer never saw on that page. Slice boundary: the annotated tag
+  // only — no Release object and no draft notes, which are slice 3.
+  app.post('/repos/:id/release-readiness/tag', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const back = `/repos/${repo.id}/release-readiness`
+    const fail = (message: string) => reply.redirect(`${back}?error=${encodeURIComponent(message)}`)
+    if (repo.repo_role !== 'maintainer') return fail('只有上游仓库的 maintainer 可以打标签。 / Only a maintainer of the upstream repository can tag it')
+    const body = form(request)
+    const version = String(body.version ?? '').trim()
+    const headSha = String(body.head ?? '').trim().toLowerCase()
+    if (!/^[0-9a-f]{40}$/.test(headSha)) return fail('the page did not carry a full 40-character head; re-read the readiness page and try again')
+    if (body.confirm !== '1') return fail('the tag must be confirmed; a tag is never moved or deleted')
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    const defaultBranch = repo.upstream_default_branch || repo.default_branch
+    const token = await repoGithubToken(repo, config, githubApp, store)
+    if (token === '') return fail('没有可用的 GitHub 安装令牌。 / No GitHub installation token is available')
+    const client = new GithubClient(token, config.github.apiBase)
+    // The write is one call away, so this read is now, not when the page was built.
+    const branch = await client.getBranch(owner, name, defaultBranch)
+    if (branch === null) return fail(`默认分支 ${defaultBranch} 读不到，没有打标签。 / the default branch ${defaultBranch} could not be read; nothing was tagged`)
+    const nowSha = branch.sha.toLowerCase()
+    if (nowSha !== headSha) return fail(releaseRefusals.branchMoved(headSha, nowSha))
+    const plan = await releasePreflight(client, { owner, name, defaultBranch, requestedVersion: version, targetSha: headSha })
+    if (!plan.ok) {
+      const reason = plan.suggestion === undefined ? plan.message : `${plan.message}; the next legal version is ${plan.suggestion}`
+      return fail(reason)
+    }
+    const created = await createAnnotatedTag(client, { owner, name, plan })
+    if (!created.ok) return fail(created.message)
+    // The tag exists from here on, so the audit records it even if the row below
+    // cannot be written: the page must never claim no tag while one is visible.
+    const recorded = store.recordRelease({ repoId: repo.id, userId: viewer.user.id, version: plan.version, tagName: plan.tagName, targetSha: plan.targetSha, tagObjectSha: created.tagObjectSha, previousTag: plan.previousTag, actor: viewer.user.login })
+    store.audit(viewer.user.id, 'release.tagged', `${repo.id}: ${plan.tagName}@${plan.targetSha}`)
+    if (recorded === undefined) return fail(`tag ${plan.tagName} was created, but its release record could not be updated; Fledge moved nothing`)
+    // No reconcile: observing the run and preparing a draft Release is slice 3,
+    // and this route writes nothing beyond the tag and its row.
+    return reply.redirect(`${back}?notice=${encodeURIComponent(`tag ${plan.tagName} created on ${plan.targetSha.slice(0, 12)}; nothing else was written`)}`)
   })
 
   // #546: a maintainer-supplied version and a confirmed full SHA. The preflight
