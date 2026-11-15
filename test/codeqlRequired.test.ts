@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { validateBaseline } from '../scripts/lib/codeql-alerts.mjs'
 
 // #304: a red CodeQL analysis blocked nothing. `analyze` lives in its own
 // workflow (`codeql.yml`), so `ci-ok` in `ci.yml` could never aggregate its
@@ -88,6 +89,15 @@ function fakeClock(): Clock & { slept: number[] } {
     slept,
   }
 }
+
+
+test('the live CodeQL baseline is well-formed, owned and unexpired', () => {
+  const baseline = JSON.parse(readFileSync(new URL('../.github/agent/codeql-baseline.json', import.meta.url), 'utf8'))
+  const checked = validateBaseline(baseline, Date.now())
+  assert.deepEqual(checked.errors, [], 'the recorded baseline must pass its own reader')
+  assert.equal(checked.entries.filter((entry) => entry.dismissed === true).length, 3, 'the three dismissed results keep their record')
+  assert.equal(checked.entries.filter((entry) => entry.dismissed !== true).length, 4, 'the four open results stay open')
+})
 
 const SHA = 'a'.repeat(40)
 

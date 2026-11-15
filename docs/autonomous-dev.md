@@ -427,7 +427,13 @@ already reviewed in the alert UI does not fail the gate again — recording them
 dismisses nothing. The same step runs on a push to `main`, so new
 highs cannot accumulate there either. Changing the baseline is a reviewed commit,
 and the PR that does it says why the alert is accepted; a line that drifts for an
-unrelated reason fails loudly rather than being silently re-labelled.
+unrelated reason fails loudly rather than being silently re-labelled. Every open
+entry carries `owner` and an ISO `expires`; the gate validates the file before it
+compares keys and fails closed on a malformed entry or an expiry in the past,
+naming the owner and the date. A dismissed entry carries `dismissed: true` with
+its alert-UI rationale and no expiry, so a reviewed false positive never turns red
+on a date nobody can act on. `expires` is the only age rule; `recordedAtSha` keeps
+its one job as the sha printed in the failure line.
 `security-severity` is read whether the SARIF writes it as a number or a string,
 and rules a query pack keeps under `tool.extensions[].rules` are resolved by
 `ruleId` and `ruleIndex`. A security result whose severity cannot be read — and
