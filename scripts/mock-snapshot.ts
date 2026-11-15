@@ -323,14 +323,41 @@ function localPage(path: string, seedRow: Seed): string {
   return ''
 }
 
+function isExternalUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'mailto:'
+  } catch {
+    return false
+  }
+}
+
 function rewriteHref(value: string, seedRow: Seed): string {
-  if (value === '' || value.startsWith('#') || value.startsWith('assets/') || /^https?:\/\//.test(value) || value.startsWith('mailto:')) return value
-  if (value.startsWith('javascript:')) return '#'
+  if (value === '' || value.startsWith('#') || value.startsWith('assets/') || isExternalUrl(value)) return value
   const [beforeHash, hash] = value.split('#', 2)
   const pathPart = (beforeHash ?? '').split('?')[0] ?? ''
   const local = localPage(pathPart, seedRow)
   if (local === '') return '#'
   return hash === undefined ? local : `${local}#${hash}`
+}
+
+// The generator owns this HTML, so a small tag walker is enough to drop the
+// layout's script elements. A regex that strips tags is the class of sanitizer
+// CodeQL flags (`js/incomplete-multi-character-sanitization`); this walker reads
+// the exact closing tag and keeps every other byte.
+function stripScripts(html: string): string {
+  const lower = html.toLowerCase()
+  let out = ''
+  let index = 0
+  for (;;) {
+    const start = lower.indexOf('<script', index)
+    if (start === -1) return out + html.slice(index)
+    out += html.slice(index, start)
+    const end = lower.indexOf('</script>', start)
+    if (end === -1) return out
+    index = end + '</script>'.length
+    while (index < html.length && /\s/.test(html[index] ?? '')) index += 1
+  }
 }
 
 function rewrite(html: string, seedRow: Seed, csrf: string): string {
@@ -339,7 +366,7 @@ function rewrite(html: string, seedRow: Seed, csrf: string): string {
   // has no submit path, so one stable placeholder is the honest value.
   out = out.replace(/cmd_[A-Za-z0-9_-]+/g, 'cmd_mock')
   out = out.replace(/(href|src)="\/assets\/([^"]+)"/g, '$1="assets/$2"')
-  out = out.replace(/<script\b[^>]*src="(?:assets|\/assets)\/[^"]*"[^>]*><\/script>\s*/g, '')
+  out = stripScripts(out)
   out = out.replace(/href="([^"]*)"/g, (_match, href: string) => `href="${rewriteHref(href, seedRow)}"`)
   out = out.replace(/<form\b([^>]*)>/g, (_match, attrs: string) => {
     const withoutAction = attrs.replace(/\baction="[^"]*"/g, 'action="#"')
