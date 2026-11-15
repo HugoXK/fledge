@@ -177,6 +177,12 @@ export function notificationStack(locale: Locale, entries: PageNotification[]): 
   return `<section class="banner-stack" aria-live="polite" data-notification-stack>${messages}</section>`
 }
 
+// One CSRF field for every form, so a new form cannot forget it or spell the
+// name differently. The route reads `csrf` from the body or the header.
+export function csrfField(viewer: Viewer): string {
+  return `<input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />`
+}
+
 export function layout(options: LayoutOptions): string {
   const { title, viewer, body, config, active } = options
   const locale = options.locale ?? 'zh'

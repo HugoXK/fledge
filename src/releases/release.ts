@@ -85,6 +85,18 @@ export const releaseRefusals = {
   missingGate: 'the default branch is not protected by required checks, so this repository is not onboarded to a gate',
   missingReleaseWorkflow: 'the repository has no tag-triggered .github/workflows/release.yml',
   noNewCommits: (tag: string): string => `nothing to release: ${tag} already points at the target commit`,
+  // #546 slice 2: a form carries the head it was rendered with. If the branch
+  // moved in between, tagging the confirmed commit would release a tree the
+  // maintainer never looked at on that page, and a tag cannot be moved after.
+  branchMoved: (shown: string, now: string): string => `the default branch moved since this page was read: the page showed ${shown} and the branch head is now ${now}; nothing was tagged, because a tag is never moved or deleted. Re-read the readiness page and confirm the new head`,
+  // The installation token is what writes the tag. Without Contents: write the
+  // write is refused before anything exists, and the operator needs the name of
+  // the permission rather than the upstream sentence GitHub returns.
+  tagScopeMissing: (status: number): string => status === 404
+    // A 404 does not prove a missing permission: it also means the App cannot see
+    // the repository any more. Both causes are named, neither is asserted.
+    ? 'the GitHub App installation cannot see this repository when writing the tag (HTTP 404); check that the App is still installed here and has Contents: write. Nothing was moved or deleted'
+    : `the GitHub App installation cannot write tags on this repository (HTTP ${status}); it needs Contents: write. Nothing was moved or deleted`,
 }
 
 export interface ReleasePlanInput {
@@ -162,7 +174,9 @@ export interface ReleaseGithubClient {
 
 export type TagCreation =
   | { ok: true; tagObjectSha: string; ref: string }
-  | { ok: false; code: 'tag_exists' | 'tag_ref_failed' | 'target_missing'; message: string }
+  // `status` travels with the refusal so a caller can name the cause: a 403/404 is
+  // a missing permission, not a refused name, and the page says which.
+  | { ok: false; code: 'tag_exists' | 'tag_ref_failed' | 'tag_scope_missing' | 'target_missing'; status: number; message: string }
 
 // The tag object is written first and the ref second, because the ref is what
 // makes the tag visible and fires the repository's release workflow. A 422 on the
@@ -185,7 +199,7 @@ export async function createAnnotatedTag(
     // preflight and this write. The route validated only that the input is 40
     // hex characters, so this is a refusal the page can explain, never a crash.
     if (error instanceof GithubError && error.status === 422) {
-      return { ok: false, code: 'target_missing', message: `${input.plan.targetSha} is not a commit in this repository` }
+      return { ok: false, code: 'target_missing', status: error.status, message: `${input.plan.targetSha} is not a commit in this repository` }
     }
     throw error
   }
@@ -193,9 +207,15 @@ export async function createAnnotatedTag(
   const created = await client.createTagRef(input.owner, input.name, { ref, sha: tag.sha })
   if (created.ok) return { ok: true, tagObjectSha: tag.sha, ref }
   if (created.status === 422) {
-    return { ok: false, code: 'tag_exists', message: `tag ${input.plan.tagName} already exists; nothing was moved or deleted` }
+    return { ok: false, code: 'tag_exists', status: created.status, message: `tag ${input.plan.tagName} already exists; nothing was moved or deleted` }
   }
-  return { ok: false, code: 'tag_ref_failed', message: `the tag reference was refused by GitHub (HTTP ${created.status}); nothing was moved or deleted` }
+  // A 403/404 from the ref write is the installation not being allowed to write
+  // the ref — a permission the operator can grant — so it is named rather than
+  // reported as a generic refusal. GitHub's own text never reaches the page.
+  if (created.status === 403 || created.status === 404) {
+    return { ok: false, code: 'tag_scope_missing', status: created.status, message: releaseRefusals.tagScopeMissing(created.status) }
+  }
+  return { ok: false, code: 'tag_ref_failed', status: created.status, message: `the tag reference was refused by GitHub (HTTP ${created.status}); nothing was moved or deleted` }
 }
 
 // The workflow text is read, never executed. A `tags:` key inside the `on:` block

@@ -2248,6 +2248,17 @@ inside the window the page says the count may be higher instead of printing a
 smaller number. A fragment counts when it is present at the head with a blob the
 previous tag does not have, so an edited fragment is still pending work.
 
+The one write on that page is `POST /repos/:id/release-readiness/tag` (#546 slice
+2): the form carries the head the page rendered, and the route reads the default
+branch again immediately before the tag write. A head that is not the one the
+form carried is refused as `branch_moved` with both commits named, because a tag
+is never moved or deleted and a stale target costs a version rather than a retry;
+a refused ref write (403/404) is `tag_scope_missing`, naming `Contents: write`
+instead of repeating GitHub's text. The route creates the annotated tag and its
+`repo_releases` row and stops there — observing the run and preparing a draft
+Release stay with `src/releases/tracking.ts` (slice 3), so the page's own write
+path cannot publish anything.
+
 ## Following the release workflow and preparing a draft
 
 `src/releases/tracking.ts` observes the workflow a tag fires and stops at a draft

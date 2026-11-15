@@ -506,18 +506,22 @@ test('a 500 from the ref write names the HTTP status and never quotes the upstre
   }
 })
 
-test('a non-JSON 403 from the ref write still produces the fixed sentence and no body excerpt', async () => {
+test('a non-JSON 403 from the ref write names the permission it needs and leaks no body excerpt', async () => {
+  // #546 slice 2: a 403 on the ref write is the installation lacking Contents:
+  // write, not a refused name, so the sentence names the permission. What the
+  // upstream body must never do is reach the page, and that rule is unchanged.
   const upstream = 'PROXY-BODY-9e7c-must-not-render'
   const h = await releaseRouteHarness({ refWriteStatus: 403, refWriteRaw: `<html><body>${upstream}</body></html>`, refWriteContentType: 'text/html' })
   try {
     const posted = await h.post()
     assert.equal(posted.statusCode, 302)
     const location = decodeURIComponent(String(posted.headers.location))
-    assert.match(location, /tag reference was refused by GitHub \(HTTP 403\)/)
+    assert.match(location, /needs Contents: write/)
+    assert.match(location, /\(HTTP 403\)/)
     assert.doesNotMatch(location, new RegExp(upstream))
 
     const page = await h.page(String(posted.headers.location))
-    assert.match(page.body, /tag reference was refused by GitHub \(HTTP 403\)/)
+    assert.match(page.body, /needs Contents: write/)
     assert.doesNotMatch(page.body, new RegExp(upstream))
   } finally {
     await h.close()
