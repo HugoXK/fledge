@@ -75,6 +75,7 @@ import { parsePreviewQuery, previewSchedule, type PreviewResult } from './schedu
 import { intervalFieldText, scheduleConsole } from './schedules/console.js'
 import { nextTime } from './schedules/next.js'
 import { scheduleFromRow } from './schedules/tick.js'
+import { DAILY_RUNS_MAX, parseDailyRuns, utcDayEnd, utcDayStart } from './schedules/budget.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -107,7 +108,8 @@ import {
 } from './views/pages.js'
 import { withDensity } from './views/layout.js'
 import { gatePage } from './views/gate.js'
-import { planHash, validateGatePlan } from './gates/plan.js'
+import { planHash, validateGatePlan, type GatePlan } from './gates/plan.js'
+import { applyGatePlan } from './gates/apply.js'
 import { memoryMissingPage, memoryPage } from './views/memory.js'
 import { rulesOverridesPage } from './views/rules.js'
 import { ciGatePage } from './views/ciGate.js'
@@ -124,7 +126,7 @@ import { dshCookie, proxyWorkspaceHttp, proxyWorkspaceUpgrade } from './flybot/w
 import { managementActor } from './management/actor.js'
 import { ManagementService, type CommandOutcome, type ManagementCode } from './management/service.js'
 import type { JobKind } from './jobs/runner.js'
-import { listEffectiveScopes, platformCapabilitiesForRole, resolveUserActor, type Capability } from './identity/authorization.js'
+import { identityPrincipalId, listEffectiveScopes, platformCapabilitiesForRole, resolveUserActor, type Capability } from './identity/authorization.js'
 
 export interface BuildOptions {
   config: Config
@@ -1625,12 +1627,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const locale = request.locale ?? 'zh'
     const t = translator(locale)
     const row = store.scheduleForRepo(repo.id)
+    const now = Date.now()
     const state = scheduleConsole({
       repoId: repo.id,
       row,
       occurrences: store.listScheduleOccurrences(repo.id, 20),
-      now: Date.now(),
+      now,
       jobStatus: (jobId) => store.getJob(jobId)?.status ?? null,
+      // #544 slice 6: the same count function the worker charges with, read over
+      // today's UTC day — the worker charges the *instant's* day, so a catch-up
+      // run can spend a past day while this fact answers "how much of today is
+      // used". A repository with no schedule row read no count, which is unknown.
+      ...(row === undefined ? {} : { runsToday: store.countScheduleDispatchesBetween(row.id, utcDayStart(now), utcDayEnd(now)) }),
     })
     const refused = queryText(request, 'refused')
     const instant = (value: number | null | undefined): string => (value === null || value === undefined ? '' : new Date(value).toISOString())
@@ -1650,6 +1658,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         // Minutes, because a person thinks in minutes and the stored column is
         // milliseconds. Empty means no bound, which is the old behaviour.
         grace: row?.grace_ms === null || row?.grace_ms === undefined ? '' : String(Math.round(row.grace_ms / 60_000)),
+        dailyRuns: row?.daily_runs === null || row?.daily_runs === undefined ? '' : String(row.daily_runs),
       },
       ...(queryText(request, 'saved') === undefined ? {} : { notice: t('排期已保存。', 'The schedule is saved.') }),
       ...(queryText(request, 'removed') === undefined ? {} : { notice: t('排期已删除，仓库回到旧的自动间隔。', 'The schedule was deleted; the repository is back on the legacy interval.') }),
@@ -1685,6 +1694,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (graceMinutes !== null && (!Number.isFinite(graceMinutes) || graceMinutes < 0 || graceMinutes > 10_080)) {
       return reply.redirect(`${back}?refused=${encodeURIComponent(t('宽限时间必须是 0 到 10080 分钟之间的整数。', 'The grace bound must be an integer between 0 and 10080 minutes.'))}`)
     }
+    // #544 slice 6: an absent field keeps the stored limit, so a form that
+    // predates the budget cannot silently clear it. An explicit empty field is
+    // unbounded, which is the behaviour every schedule had.
+    const dailyRunsField = body.daily_runs
+    const parsedDailyRuns = dailyRunsField === undefined
+      ? ({ ok: true, dailyRuns: undefined } as const)
+      : parseDailyRuns(String(dailyRunsField))
+    if (!parsedDailyRuns.ok) {
+      const message = parsedDailyRuns.reason === 'not-an-integer'
+        ? t('每日运行上限必须是大于 0 的整数。', 'The daily run limit must be a whole number greater than 0.')
+        : t(`每日运行上限必须在 1 到 ${DAILY_RUNS_MAX} 之间。`, `The daily run limit must be between 1 and ${DAILY_RUNS_MAX}.`)
+      return reply.redirect(`${back}?refused=${encodeURIComponent(message)}`)
+    }
     store.saveSchedule({
       id: existing?.id ?? randomId('sch'),
       repoId: repo.id,
@@ -1696,6 +1718,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       endAt: schedule.endAt,
       misfire,
       graceMs: graceMinutes === null ? null : Math.round(graceMinutes) * 60_000,
+      dailyRuns: parsedDailyRuns.dailyRuns,
     })
     const label = schedule.kind === 'cron'
       ? `${schedule.expression} ${schedule.timezone}`
@@ -2069,6 +2092,31 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // what each number means, including when a window has no review at all.
     const trendSince = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString()
     const reviewTrend = { week: store.reviewTrend(repo.id, trendSince(7)), month: store.reviewTrend(repo.id, trendSince(30)) }
+    // #697: the two budget scopes this page can set, each with the spend it is
+    // compared against. Both read the same rolling 30-day window the repository
+    // budget already uses, and both are USD-billed only.
+    const budgetWindow = trendSince(30)
+    const budgetPrincipal = identityPrincipalId(repo.user_id)
+    const repositoryScopeRow = store.getBudgetScope('repository', repo.id)
+    const principalScopeRow = store.getBudgetScope('principal', budgetPrincipal)
+    const budgetScopes = [
+      {
+        kind: 'repository' as const,
+        label: `${repo.owner}/${repo.name}`,
+        capCny: repositoryScopeRow?.cap_cny ?? 0,
+        spentCny: store.repoUsageSince(repo.id, budgetWindow) * config.quota.usdCny,
+        action: repositoryScopeRow?.action ?? 'alert',
+        unknownCount: store.repoUnknownCountSince(repo.id, budgetWindow),
+      },
+      {
+        kind: 'principal' as const,
+        label: `@${store.userById(repo.user_id)?.login ?? repo.user_id}`,
+        capCny: principalScopeRow?.cap_cny ?? 0,
+        spentCny: store.principalUsageSince(repo.user_id, budgetWindow) * config.quota.usdCny,
+        action: principalScopeRow?.action ?? 'alert',
+        unknownCount: store.principalUnknownCountSince(repo.user_id, budgetWindow),
+      },
+    ]
     const repoModels = store.listRepoModelSelection(repo.id)
     const scheduleRow = store.scheduleForRepo(repo.id)
     const schedule = scheduleRow === undefined ? null : scheduleFromRow(scheduleRow)
@@ -2154,7 +2202,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         repoModelIds: repoModels.map((model) => model.id),
         repoBotModels: store.listRepoBotModels(repo.id),
         repoDefaultModelId: repoModels.find((model) => model.is_default === 1)?.id ?? '',
-        repoSpendCny: store.repoUsageSince(repo.id, new Date(Date.now() - 30 * 86_400_000).toISOString()) * config.quota.usdCny,
+        repoSpendCny: store.repoUsageSince(repo.id, budgetWindow) * config.quota.usdCny,
+        budgetScopes,
         questions,
         chiefMessages,
         activeJob: store.activeJobForRepo(repo.id) !== undefined,
@@ -2562,6 +2611,118 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/${repo.id}/gate?notice=${encodeURIComponent(t('计划已确认。还没有写入仓库。', 'The plan is confirmed. Nothing has been written to the repository yet.'))}`)
     }
     return reply.send(gateSessionView(confirmed))
+  })
+
+  // #543 second slice: a confirmed plan may be applied once. The claim below is
+  // a compare-and-set on the session row, so two clicks cannot both open a pull
+  // request; the loser gets a 409 and the winner records the branch and PR URL on
+  // the same row. Planning and confirming still write nothing to the repository.
+  app.post('/repos/:id/gate/sessions/:sessionId/create', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (repo.repo_role !== 'maintainer') return gateMaintainerRefusal(reply, request)
+    const sessionId = String((request.params as Record<string, string>).sessionId)
+    const t = translator(request.locale ?? 'zh')
+    const session = store.getGateSessionForRepo(repo.id, sessionId)
+    if (session === undefined) {
+      return reply.code(404).send({ error: { type: 'GATE_SESSION_NOT_FOUND', message: t('门禁会话不存在。', 'That gate session does not exist.') } })
+    }
+    if (session.pr_url !== null) {
+      return reply.code(409).send({
+        error: {
+          type: 'GATE_PR_ALREADY_CREATED',
+          prUrl: session.pr_url,
+          message: t(`这个会话已经创建了门禁 PR：${session.pr_url}`, `This session already created its gate pull request: ${session.pr_url}`),
+        },
+      })
+    }
+    if (session.status !== 'confirmed') {
+      return reply.code(409).send({
+        error: {
+          type: 'SESSION_NOT_CONFIRMED',
+          message: t(`这个会话的状态是 ${session.status}；先由维护者确认计划，才会写入仓库。`, `The session is ${session.status}; a maintainer must confirm the plan before anything is written.`),
+        },
+      })
+    }
+    const claimed = store.claimGateSession(session.id, 'confirmed', 'analyzing')
+    if (claimed === undefined) {
+      return reply.code(409).send({
+        error: {
+          type: 'SESSION_NOT_CONFIRMED',
+          message: t('另一个请求正在应用这个会话，或它的状态已经改变。', 'Another request is applying this session, or its status changed.'),
+        },
+      })
+    }
+    const refused = (status: number, code: string, message: string, branch?: string): FastifyReply => {
+      store.updateGateSession(session.id, {
+        status: code === 'stale_base_sha' ? 'refused' : 'failed',
+        error_code: code,
+        ...(branch === undefined ? {} : { branch }),
+      })
+      store.audit(viewer.user.id, 'gate.pr.refused', `${repo.owner}/${repo.name} session=${session.id} code=${code}`)
+      return reply.code(status).send({ error: { type: code, message } })
+    }
+    let plan: GatePlan | null = null
+    try {
+      const parsed = validateGatePlan(JSON.parse(claimed.plan_json))
+      // The hash is recomputed from the stored plan: a row edited behind the
+      // store cannot be applied under the hash the human confirmed.
+      if (parsed.ok && planHash(parsed.plan) === claimed.plan_hash) plan = parsed.plan
+    } catch {
+      plan = null
+    }
+    if (plan === null) {
+      return refused(409, 'plan_invalid', t('存储的计划与它记录的哈希不一致，请重新提交计划。', 'The stored plan does not match its recorded hash; submit the plan again.'))
+    }
+    let token = ''
+    try {
+      token = await repoGithubToken(repo, config, githubApp, store)
+    } catch (error) {
+      log.warn('gate token unavailable', { repo: repo.id, error: String(error) })
+      token = ''
+    }
+    if (token === '') {
+      // Nothing was written; put the row back to `confirmed` so the same
+      // confirmation can be applied once the connection is repaired.
+      store.updateGateSession(session.id, { status: 'confirmed' })
+      return reply.code(409).send({
+        error: {
+          type: 'GITHUB_TOKEN_MISSING',
+          message: t('这个仓库没有可用的 GitHub 凭据，无法创建门禁 PR。', 'This repository has no usable GitHub credential, so the gate pull request cannot be created.'),
+        },
+      })
+    }
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    const baseBranch = repo.target_branch || repo.upstream_default_branch || repo.default_branch
+    const applied = await applyGatePlan({
+      client: new GithubClient(token, config.github.apiBase),
+      owner,
+      name,
+      baseBranch,
+      plan,
+      planHash: claimed.plan_hash,
+      confirmedBy: claimed.confirmed_by ?? viewer.user.login,
+    })
+    if (!applied.ok) {
+      const status = applied.code === 'github_unavailable' || applied.code === 'write_failed' || applied.code === 'pr_failed' ? 502 : 409
+      return refused(status, applied.code, applied.message, applied.branch)
+    }
+    const created = store.updateGateSession(session.id, {
+      status: 'created',
+      branch: applied.branch,
+      pr_url: applied.prUrl,
+      error_code: null,
+    })!
+    store.audit(viewer.user.id, 'gate.pr.created', `${owner}/${name} session=${session.id} branch=${applied.branch} pr=${applied.prUrl}`)
+    const notice = t(
+      `门禁 PR 已创建：${applied.prUrl}（${applied.files.length} 个文件）`,
+      `Gate pull request created: ${applied.prUrl} (${applied.files.length} files)`,
+    )
+    const contentType = String(request.headers['content-type'] ?? '')
+    if (contentType.includes('application/x-www-form-urlencoded')) {
+      return reply.redirect(`/repos/${repo.id}/gate?notice=${encodeURIComponent(notice)}`)
+    }
+    return reply.code(201).send(gateSessionView(created))
   })
 
   // #538: console overrides for the three rule files. A repository file stays
@@ -3885,6 +4046,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       interval_minutes: interval,
       reviewer_enabled: canMaintain && repo.can_review === 1 && body.review === '1' ? 1 : 0,
       review_interval_minutes: reviewInterval,
+    })
+    // #697: the two scopes this form owns. A zero cap removes the row, so
+    // "cleared" and "a cap of zero" cannot be confused, and both writes are the
+    // same additive table the job checkpoint reads.
+    const scopeAction = (value: string | undefined): string => (value === 'pause' || value === 'cancel' ? value : 'alert')
+    store.setBudgetScope({
+      kind: 'repository',
+      id: repo.id,
+      capCny: Math.max(0, Math.min(10000, Number(body.repoBudget) || 0)),
+      action: scopeAction(body.repoBudgetAction),
+    })
+    store.setBudgetScope({
+      kind: 'principal',
+      id: identityPrincipalId(repo.user_id),
+      capCny: Math.max(0, Math.min(10000, Number(body.principalBudget) || 0)),
+      action: scopeAction(body.principalBudgetAction),
     })
     const policyWritten = Array.isArray(outcome.result.changed)
       ? outcome.result.changed.filter((field): field is string => typeof field === 'string')

@@ -341,6 +341,51 @@ CodeQL never starts for an ignored path. The short circuit for a diff that
 touches only paths `codeql.yml` ignores is separate and is described under
 [Supply-chain gates](#supply-chain-gates).
 
+### Gate integrity: the evaluator runs from the base branch
+
+A pull request decides nothing about itself. Every evaluator is checked out from
+the base branch into `base/` and executed from there:
+
+| Job | Runs |
+|---|---|
+| `changes` | `node base/scripts/ci-changes.mjs --repo . --git-base <base> --git-head <head>` |
+| `risk` | `node base/scripts/risk-gate.mjs --repo . --base <ref>` |
+| `action-pins` | `node base/scripts/action-pins.mjs --workflows .github/workflows` |
+| `workflow-lint` | `node base/scripts/workflow-injection.mjs --workflows .github/workflows --allowlist base/.github/agent/workflow-injection-allowlist.json` |
+| `codeql-required` | `node base/scripts/codeql-required.mjs` |
+| `ci-ok` | `node base/scripts/ci-ok.mjs` |
+| CodeQL gate | `node base/scripts/codeql-gate.mjs --sarif codeql-results --baseline base/.github/agent/codeql-baseline.json` |
+
+Only the data under test comes from the head: the diff (`--repo .` names the
+checkout that carries the pull request's commits), the workflow files the two
+supply-chain checks read, and the SARIF the analysis produced. The CodeQL
+baseline and the workflow-injection allowlist are read from `base/`, because a
+pull request that could widen either would grade its own work.
+
+`ci-ok` also prints the blob the base tree holds for the evaluator it is about to
+run: `scripts/ci-ok.mjs from the base tree: blob <sha>`. That line is how a
+reviewer tells the two copies apart in a run log — the sha named there is the
+file the next step executes — so a branch that rewrites `scripts/ci-ok.mjs` is
+visible as a mismatch instead of an invisible substitution. It is evidence, not
+a gate: the verdict still comes from the base file.
+
+The `changes` job also runs `scripts/gate-integrity.mjs`, which writes every
+gate file in the diff into the job summary. It fails closed when the diff cannot
+be read: a summary that says "no gate file" over an unreadable diff would be a
+blind gate, not a clean one. The step runs it only when the base tree has the
+file (`[ -f base/scripts/gate-integrity.mjs ]`), because the pull request that
+introduces the summary runs against a base branch that predates it; the test is
+on the base path, so a diff cannot decide whether the summary runs. Nothing
+about the merge requirement changes — a diff that edits the gate is still T3 and
+still needs a PASS at the tip.
+
+What this does not move: for a `pull_request` event GitHub fetches the workflow
+YAML itself from the pull request, so a job's own `run:` lines are, by
+construction, the head's text. The protection for that shape is the required
+check plus the T3 PASS on a diff the `gate-integrity` summary names, not this
+checkout split. Moving the aggregate onto a `workflow_run` workflow, which always
+executes the default branch's copy, is a separate slice.
+
 ### A red `main` reports itself
 
 `ci-ok` still only computes the commit's health; the job that says so out loud is
@@ -485,7 +530,13 @@ already reviewed in the alert UI does not fail the gate again — recording them
 dismisses nothing. The same step runs on a push to `main`, so new
 highs cannot accumulate there either. Changing the baseline is a reviewed commit,
 and the PR that does it says why the alert is accepted; a line that drifts for an
-unrelated reason fails loudly rather than being silently re-labelled.
+unrelated reason fails loudly rather than being silently re-labelled. Every open
+entry carries `owner` and an ISO `expires`; the gate validates the file before it
+compares keys and fails closed on a malformed entry or an expiry in the past,
+naming the owner and the date. A dismissed entry carries `dismissed: true` with
+its alert-UI rationale and no expiry, so a reviewed false positive never turns red
+on a date nobody can act on. `expires` is the only age rule; `recordedAtSha` keeps
+its one job as the sha printed in the failure line.
 `security-severity` is read whether the SARIF writes it as a number or a string,
 and rules a query pack keeps under `tool.extensions[].rules` are resolved by
 `ruleId` and `ruleIndex`. A security result whose severity cannot be read — and

@@ -299,6 +299,24 @@ function statusLabel(t: Translate, status: string): string {
   return labels[status] ?? status
 }
 
+// #805: the status answers "why is this not ready" on its own; `last_error` only
+// explains a failure. `Instances.stop()` leaves the previous `last_error` in place
+// and a starting instance has none, so reading that column for every non-ready
+// status called a stopped instance healthy. Only `failed` reads the error, and an
+// empty error there means a failed check, never a healthy one.
+function instanceReason(t: Translate, status: string, error: string | null | undefined): string {
+  if (status === 'ready') return t('健康检查正常', 'Health check ok')
+  if (status === 'stopped') return t('实例已停止，不会接受新任务', 'The instance is stopped and takes no new jobs')
+  if (status === 'starting') return t('实例正在创建，还未就绪', 'The instance is being created and is not ready yet')
+  if (status === 'provisioning') return t('实例正在初始化，还未就绪', 'The instance is being provisioned and is not ready yet')
+  const text = String(error ?? '').toLowerCase()
+  if (/\b502\b/.test(text)) return t('Bridge 返回 502', 'Bridge returned 502')
+  if (/fetch failed|econnrefused|enotfound|etimedout|network/.test(text)) return t('Bridge 无法连接', 'Bridge unreachable')
+  if (/container|docker|not running/.test(text)) return t('容器未运行', 'Container is not running')
+  if (/model|gateway|provider/.test(text)) return t('模型端点不可达', 'Model endpoint unreachable')
+  return t('健康检查失败', 'Health check failed')
+}
+
 // A webhook delivery stores its state as an internal code. The console names the
 // three states in the reader's language and keeps the code only as the filter
 // value, so `/admin/webhooks?status=` links keep filtering exactly as before.
@@ -1235,7 +1253,18 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, notifications: pageMessages })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; recentAuthAt?: string | null; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: ScheduledNext; securityFindings?: SecurityFindingRow[] }): string {
+// #697: one row per budget scope the repository page can set. The route reads
+// the caps and the spend; the page only decides how they read.
+export interface BudgetScopeView {
+  kind: 'repository' | 'principal'
+  label: string
+  capCny: number
+  spentCny: number
+  action: string
+  unknownCount: number
+}
+
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; recentAuthAt?: string | null; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: ScheduledNext; securityFindings?: SecurityFindingRow[]; budgetScopes?: BudgetScopeView[] }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const workItems = input.workItems ?? []
@@ -1249,6 +1278,12 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const repoDefaultModelId = input.repoDefaultModelId ?? ''
   const botModelMap = new Map((input.repoBotModels ?? []).map((entry) => [entry.role, entry.provider_model_id]))
   const repoSpendCny = input.repoSpendCny ?? 0
+  const budgetScopeRows = input.budgetScopes ?? []
+  const repositoryScope: BudgetScopeView = budgetScopeRows.find((row) => row.kind === 'repository') ?? { kind: 'repository', label: '', capCny: 0, spentCny: 0, action: 'alert', unknownCount: 0 }
+  const principalScope: BudgetScopeView = budgetScopeRows.find((row) => row.kind === 'principal') ?? { kind: 'principal', label: '', capCny: 0, spentCny: 0, action: 'alert', unknownCount: 0 }
+  const budgetActionOptions = (selected: string): string => [['alert', t('只提醒（默认）', 'Alert only (default)')], ['pause', t('暂停任务，可从断点恢复', 'Pause the job; it can resume from its checkpoint')], ['cancel', t('取消任务', 'Cancel the job')]]
+    .map(([value, label]) => `<option value="${value}"${selected === value ? ' selected' : ''}>${escapeHtml(label ?? '')}</option>`)
+    .join('')
   const questions = input.questions ?? []
   const chiefMessages = input.chiefMessages ?? []
   const securityFindings = input.securityFindings ?? []
@@ -1404,6 +1439,22 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     : runnable
       ? { body: t('立即运行会创建这个仓库的第一个任务；每次运行只开一个 PR。', 'Run now creates the first job for this repository; each run opens at most one pull request.'), action: { formAction: `/repos/${repo.id}/run`, label: t('立即运行', 'Run now'), csrf: csrf(viewer) } }
       : { body: t('先修复 FlyBot 实例或 GitHub 凭据，然后再运行。', 'Fix the FlyBot instance or the GitHub credential first, then run.'), action: { label: t('实例与凭据在本页的连接卡片里。', 'The instance and the credential are on the connection card of this page.') } }
+  const instanceHealthTone = config.flybot.instanceImage === ''
+    ? 'busy'
+    : instance === undefined
+      ? 'busy'
+      : instance.status === 'ready'
+        ? 'good'
+        : instance.status === 'failed' ? 'bad' : 'busy'
+  const instanceHealthStatus = config.flybot.instanceImage === ''
+    ? t('未启用', 'not enabled')
+    : instance === undefined ? t('未创建', 'not created') : statusLabel(t, instance.status)
+  const instanceHealthReason = config.flybot.instanceImage === ''
+    ? t('这个部署没有启用每仓库 FlyBot 实例。', 'This deployment has no per-repository FlyBot instance.')
+    : instance === undefined
+      ? t('实例尚未创建。', 'The instance has not been created yet.')
+      : instanceReason(t, instance.status, instance.last_error)
+  const instanceLastHealth = instance === undefined || instance.last_health_at === null ? t('未知', 'unknown') : humanTimeShort(instance.last_health_at)
   // #472 slice 3: the instance state is a page-level message, not a banner in the
   // team card. `failed` is an error; any other non-ready state is informational.
   if (config.flybot.instanceImage === '') {
@@ -1414,7 +1465,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     pageMessages.push({
       level: instance.status === 'failed' ? 'error' : 'warning',
       key: 'instance-status',
-      text: `${t(`FlyBot 实例状态：${statusLabel(t, instance.status)}`, `FlyBot instance status: ${statusLabel(t, instance.status)}`)}${instance.last_error === null ? '' : ` · ${instance.last_error}`}`,
+      text: `${t('FlyBot 实例：', 'FlyBot instance: ')}${instanceHealthStatus} · ${instanceHealthReason}`,
     })
   }
   const instanceActions = config.flybot.instanceImage === ''
@@ -1486,12 +1537,14 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     <p class="muted">${escapeHtml(t('读出开着的 issue 和 PR，按优先级排序、标出重复项，并点名下一项。只读：不开分支，也不开 PR。', 'Reads the open issues and pull requests, ranks them by priority, links duplicates and names the next item. Read-only: no branch and no pull request.'))}</p>
     ${triageForm}
   </section>`
-  const instanceCard = `<section class="card">
+  const instanceCard = `<section class="card" data-instance-health>
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('每仓库 FlyBot', 'PER-REPOSITORY FLYBOT'))}</div>
         <h2>${escapeHtml(advanced ? t('实例与团队', 'Instance & team') : t('FlyBot 状态', 'FlyBot status'))}</h2>
-        <p class="muted">${instance === undefined ? escapeHtml(t('未创建', 'Not created')) : `${badge(t, instance.status)}${advanced ? ` <span class="muted">${escapeHtml(instance.container)}</span>` : ''}`}${instanceReady && advanced ? ` · ${escapeHtml(t('任务先发给总控，再由负责人执行', 'jobs go to the Chief, then the Lead'))}` : ''}</p>
+        <p class="muted"><span class="badge ${instanceHealthTone}">${escapeHtml(instanceHealthStatus)}</span> · ${escapeHtml(instanceHealthReason)}</p>
+        <p class="fine">${escapeHtml(t('最近检查', 'Last health check'))} ${escapeHtml(instanceLastHealth)}${advanced && instance !== undefined ? ` · ${escapeHtml(instance.container)}` : ''}${instanceReady && advanced ? ` · ${escapeHtml(t('任务先发给总控，再由负责人执行', 'jobs go to the Chief, then the Lead'))}` : ''}</p>
+        ${instance === undefined || instance.last_error === null ? '' : `<details class="advanced-help"><summary>${escapeHtml(t('技术详情', 'Technical detail'))}</summary><pre>${escapeHtml(instance.last_error)}</pre></details>`}
       </div>
       ${advanced ? instanceActions : ''}
     </div>
@@ -1556,37 +1609,65 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           <td data-label="${escapeHtml(t('优先级', 'Priority'))}">${item.priority}</td>
           <td data-label="Issue / PR">${item.issue_url === null ? '' : `<a href="${escapeHtml(item.issue_url)}" target="_blank" rel="noreferrer">Issue</a>`}${item.issue_url !== null && item.pr_url !== null ? ' · ' : ''}${item.pr_url === null ? '' : `<a href="${escapeHtml(item.pr_url)}" target="_blank" rel="noreferrer">PR</a>`}</td>
           <td data-label="${escapeHtml(t('任务', 'Job'))}">${item.job_id === null ? '—' : `<a href="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(item.job_id)}"><code>${escapeHtml(item.job_id)}</code></a>`}</td>
-          <td data-label="${escapeHtml(t('操作', 'Actions'))}"><div class="row">
+          <td data-label="${escapeHtml(t('操作', 'Actions'))}"><details class="work-actions"><summary>${escapeHtml(t('操作', 'Actions'))}</summary><div class="row">
             ${item.state === 'merged' || item.state === 'closed' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/run">${csrf(viewer)}${commandHidden(commands[`work-run:${item.id}`])}<button class="btn btn-small" type="submit">${escapeHtml(t('开始工作', 'Start work'))}</button></form>`}
             ${item.state === 'merged' || item.state === 'closed' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/scope">${csrf(viewer)}${commandHidden(commands[`work-scope:${item.id}`])}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('Product 范围', 'Product scope'))}</button></form>`}
             ${item.pr_url === null ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/verify">${csrf(viewer)}${commandHidden(commands[`work-verify:${item.id}`])}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('Test 验证', 'Test verify'))}</button></form>`}
             ${stateOptions === '' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/work/${escapeHtml(item.id)}/state" class="row">${csrf(viewer)}<select name="state" aria-label="${escapeHtml(t('新状态', 'New state'))}">${stateOptions}</select><button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('更新状态', 'Update state'))}</button></form>`}
-          </div></td>
+          </div></details></td>
         </tr>`
       }).join('')
   const workCounts = new Map<string, number>()
   for (const item of workItems) workCounts.set(item.state, (workCounts.get(item.state) ?? 0) + 1)
-  const workBoard = `<section class="card" id="board">
-    <div class="row between"><h2>${escapeHtml(t('交付看板', 'Delivery board'))}</h2><span class="fine">${workState === undefined ? escapeHtml(t('按工作项状态汇总；点击状态可筛选下面的列表。', 'Grouped by state; click a state to filter the list below.')) : `<a class="link" href="/repos/${escapeHtml(repo.id)}#work">${escapeHtml(t('清除筛选', 'Clear filter'))}</a>`}</span></div>
-    <div class="table-scroll"><table class="table-cards table-cards-head"><thead><tr>${WORK_ITEM_STATES.map((state) => `<th><a class="link" href="/repos/${escapeHtml(repo.id)}?workState=${state}#work">${escapeHtml(workItemStateLabel(t, state))}</a></th>`).join('')}</tr></thead><tbody><tr>${WORK_ITEM_STATES.map((state) => `<td data-label="${escapeHtml(workItemStateLabel(t, state))}"><strong>${workCounts.get(state) ?? 0}</strong></td>`).join('')}</tr></tbody></table></div>
-  </section>`
-
+  const workTotal = workItems.length
+  const workSummary = `<div class="work-summary" id="board" data-work-summary>${WORK_ITEM_STATES.map((state) => {
+    const count = workCounts.get(state) ?? 0
+    // A share needs a denominator. With no work items at all every state would
+    // otherwise read "0%", which is a confident zero the board cannot support.
+    const share = workTotal === 0 ? null : Math.round((count / workTotal) * 100)
+    const active = workState === state
+    return `<a class="link${active ? ' is-active' : ''}" href="/repos/${escapeHtml(repo.id)}?workState=${state}#work" data-work-state="${state}"><strong>${count}</strong><span>${escapeHtml(workItemStateLabel(t, state))}</span><small>${share === null ? '—' : `${share}%`}</small></a>`
+  }).join('')}</div>`
+  const workQueueReason = !repoEnabled
+    ? t('仓库已停用；工作项不会开始。', 'The repository is disabled; work items will not start.')
+    : !credentialOk
+      ? t('GitHub 凭据失效；工作项不会开始。', 'The GitHub credential is invalid; work items will not start.')
+      : flybotAvailable && !flybotReady
+        ? t('FlyBot 实例未就绪；工作项不会开始。', 'The FlyBot instance is not ready; work items will not start.')
+        : repo.auto_iterate !== 1
+          ? t('自动工作已关闭；可以从操作里手动开始。', 'Automatic work is off; start an item manually from its actions.')
+          : input.activeJob === true
+            ? t('已有任务在运行；队列会在它结束后继续。', 'A job is already running; the queue continues when it finishes.')
+            : t('工作项会在可运行时开始。', 'Work items start when they are runnable.')
   const workCard = `<section class="card">
-    <div class="row between"><h2>${escapeHtml(t('工作项', 'Work items'))}</h2><span class="fine">${workState === undefined ? escapeHtml(t('Issue / PR / 状态 / 优先级', 'Issue / PR / state / priority')) : escapeHtml(t(`筛选：${workItemStateLabel(t, workState)}`, `Filter: ${workItemStateLabel(t, workState)}`))}</span></div>
-    <form method="post" action="/repos/${escapeHtml(repo.id)}/work" class="form">
-      ${csrf(viewer)}
-      <div class="row">
-        <label class="grow">${escapeHtml(t('标题', 'Title'))} <input name="title" required maxlength="200" /></label>
-        <label>${escapeHtml(t('优先级', 'Priority'))} <input name="priority" type="number" min="0" max="100" value="0" class="w-90" /></label>
+    <div class="row between">
+      <div>
+        <h2>${escapeHtml(t('工作项', 'Work items'))}</h2>
+        <p class="fine">${workState === undefined ? escapeHtml(t('按状态汇总；点击状态可筛选下面的列表。', 'Grouped by state; click a state to filter the list.')) : `<a class="link" href="/repos/${escapeHtml(repo.id)}#work">${escapeHtml(t('清除筛选', 'Clear filter'))}</a>`}</p>
       </div>
-      <div class="row">
-        <label class="grow">${escapeHtml(t('Issue URL（可选）', 'Issue URL (optional)'))} <input name="issueUrl" placeholder="https://github.com/owner/repo/issues/1" /></label>
-      </div>
-      <label>${escapeHtml(t('说明', 'Detail'))} <textarea name="detail" rows="3" placeholder="${escapeHtml(t('用户问题、现状、验收标准。', 'User problem, current state, acceptance criteria.'))}"></textarea></label>
-      <button class="btn" type="submit">${escapeHtml(t('创建工作项', 'Create work item'))}</button>
-    </form>
-    <div class="table-scroll mt-14"><table class="table-cards"><thead><tr><th>${escapeHtml(t('工作项', 'Work item'))}</th><th>${escapeHtml(t('状态', 'State'))}</th><th>${escapeHtml(t('优先级', 'Priority'))}</th><th>Issue / PR</th><th>${escapeHtml(t('任务', 'Job'))}</th><th></th></tr></thead><tbody>${workRows}</tbody></table></div>
-  </section>`;
+      <button class="btn" type="button" data-open-dialog="new-work-item" aria-haspopup="dialog" aria-controls="new-work-item">${escapeHtml(t('新建工作项', 'New work item'))}</button>
+    </div>
+    <div class="row between"><h3 class="mt-16">${escapeHtml(t('交付看板', 'Delivery board'))}</h3><span class="fine">${escapeHtml(t('按状态汇总', 'Grouped by state'))}</span></div>
+    ${workSummary}
+    <p class="fine" data-work-queue>${escapeHtml(workQueueReason)}</p>
+    <dialog id="new-work-item" class="add-repo-dialog" aria-labelledby="new-work-item-title">
+      <div class="row between"><h2 id="new-work-item-title">${escapeHtml(t('新建工作项', 'New work item'))}</h2><button class="link" type="button" data-close-dialog>${escapeHtml(t('关闭', 'Close'))}</button></div>
+      <form method="post" action="/repos/${escapeHtml(repo.id)}/work" class="form">
+        ${csrf(viewer)}
+        <div class="row">
+          <label class="grow">${escapeHtml(t('标题', 'Title'))} <input name="title" required maxlength="200" /></label>
+          <label>${escapeHtml(t('优先级', 'Priority'))} <input name="priority" type="number" min="0" max="100" value="0" class="w-90" /></label>
+        </div>
+        <div class="row">
+          <label class="grow">${escapeHtml(t('Issue URL（可选）', 'Issue URL (optional)'))} <input name="issueUrl" placeholder="https://github.com/owner/repo/issues/1" /></label>
+        </div>
+        <label>${escapeHtml(t('说明', 'Detail'))} <textarea name="detail" rows="3" placeholder="${escapeHtml(t('用户问题、现状、验收标准。', 'User problem, current state, acceptance criteria.'))}"></textarea></label>
+        <button class="btn" type="submit">${escapeHtml(t('创建工作项', 'Create work item'))}</button>
+      </form>
+    </dialog>
+    <noscript><style>#new-work-item{display:block;position:static;width:auto;max-width:none;max-height:none;margin:12px 0;padding:0;border:0;background:none;box-shadow:none} [data-open-dialog="new-work-item"]{display:none}</style></noscript>
+    <div class="table-scroll mt-14"><table class="table-cards"><thead><tr><th>${escapeHtml(t('工作项', 'Work item'))}</th><th>${escapeHtml(t('状态', 'State'))}</th><th>${escapeHtml(t('优先级', 'Priority'))}</th><th>Issue / PR</th><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('操作', 'Actions'))}</th></tr></thead><tbody>${workRows}</tbody></table></div>
+  </section>`
   const prRows = prJobs.length === 0
     ? stateCell(7, { kind: 'empty', title: t('没有待处理的 PR。', 'No pull requests waiting.'), body: t('任务产出 PR 后会出现在这里；没有就是真的没有在等。', 'A pull request appears here once a job opens one; an empty list means nothing is waiting.'), action: { href: `/repos/${escapeHtml(repo.id)}`, label: t('回到仓库', 'Back to repository') } })
     : prJobs.map((job) => {
@@ -1746,6 +1827,24 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </div>
         <p class="fine">${escapeHtml(t('本月已用', 'Spent this month'))} ${escapeHtml(quotaMoney(repoSpendCny))}${repo.monthly_budget_cny > 0 ? ` / ${escapeHtml(quotaMoney(repo.monthly_budget_cny))}` : ''}</p>
         <div class="row">
+          <label>${escapeHtml(t('仓库预算（元）', 'Repository budget (CNY)'))}${infoTip(t('这个仓库最近 30 天所有任务的成本上限；为空或 0 表示不设上限。', 'A cap on this repository\'s spend over the last 30 days; empty or 0 means no cap.'))} <input name="repoBudget" type="number" min="0" max="10000" step="0.01" value="${repositoryScope.capCny.toFixed(2)}" /></label>
+          <label>${escapeHtml(t('超出仓库预算时', 'When the repository budget is exceeded'))}
+            <select name="repoBudgetAction">${budgetActionOptions(repositoryScope.action)}</select>
+          </label>
+        </div>
+        <div class="row">
+          <label>${escapeHtml(t('用户预算（元）', 'User budget (CNY)'))}${infoTip(t('这个仓库的发起人最近 30 天在所有仓库的成本上限；为空或 0 表示不设上限。', 'A cap on what the person who starts work spends across all repositories in the last 30 days; empty or 0 means no cap.'))} <input name="principalBudget" type="number" min="0" max="10000" step="0.01" value="${principalScope.capCny.toFixed(2)}" /></label>
+          <label>${escapeHtml(t('超出用户预算时', 'When the user budget is exceeded'))}
+            <select name="principalBudgetAction">${budgetActionOptions(principalScope.action)}</select>
+          </label>
+        </div>
+        ${budgetScopeRows.length === 0 ? '' : `<div class="table-scroll"><table class="list budget-scopes">
+          <caption class="fine">${escapeHtml(t('预算作用域（最近 30 天）', 'Budget scopes (last 30 days)'))}</caption>
+          <thead><tr><th>${escapeHtml(t('作用域', 'Scope'))}</th><th>${escapeHtml(t('预算', 'Cap'))}</th><th>${escapeHtml(t('30 天已用', 'Spent (30 days)'))}</th></tr></thead>
+          <tbody>${budgetScopeRows.map((row) => `<tr><td>${escapeHtml(row.kind === 'repository' ? t('仓库', 'Repository') : t('用户', 'User'))} ${escapeHtml(row.label)}</td><td>${row.capCny > 0 ? escapeHtml(quotaMoney(row.capCny)) : escapeHtml(t('未设置', 'no cap'))}</td><td>${escapeHtml(quotaMoney(row.spentCny))}</td></tr>`).join('')}</tbody>
+        </table></div>`}
+        ${budgetScopeRows.filter((row) => row.unknownCount > 0).map((row) => `<p class="fine">${escapeHtml(`${row.label}: ${t(`有 ${row.unknownCount} 次调用无法计价，因此这里的已用金额是下界。`, `${row.unknownCount} calls could not be priced, so this spend is a lower bound.`)}`)}</p>`).join('')}
+        <div class="row">
           <label class="grow">${escapeHtml(t('可用模型', 'Available models'))}${infoTip(t('提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。', 'Providers and models are managed in Settings; select only the models this repository may use.'))}
             ${models.length === 0
               ? `<span class="muted">${escapeHtml(t('还没有模型。先到 Settings 添加提供方和模型。', 'No models yet. Add a provider and models in Settings.'))}</span>`
@@ -1817,7 +1916,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}</span> <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form></li>`
     }).join('')}</ul>`}
   </section>`
-  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}${securityFindingsCard(t, viewer, repo, securityFindings)}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
+  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}${securityFindingsCard(t, viewer, repo, securityFindings)}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : `<script src="${assetUrl('/assets/chief.js')}" defer></script>`}<script src="${assetUrl('/assets/repoTabs.js')}" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error, notifications: pageMessages })
 }
 
@@ -2381,6 +2480,8 @@ export function adminPage(input: {
         <td data-priority="low" data-label="${escapeHtml(t('已用', 'Used'))}">${quotaMoney(quotaView(user, config).usedCny)}</td>
         <td data-priority="low" data-label="${escapeHtml(t('活动', 'Activity'))}"><small class="muted">${escapeHtml(t('最近登录', 'Last sign-in'))} ${escapeHtml(humanTimeShort(user.last_login_at))}<br />${escapeHtml(t('仓库', 'Repos'))} ${activity?.get(user.id)?.repos ?? 0} · ${escapeHtml(t('任务', 'Jobs'))} ${activity?.get(user.id)?.jobs ?? 0}<br />${escapeHtml(t('最近任务', 'Last job'))} ${escapeHtml(humanTimeShort(activity?.get(user.id)?.lastJobAt))}</small></td>
         <td class="admin-adjust" data-label="${escapeHtml(t('调整', 'Adjust'))}">
+          <details class="admin-adjust-details">
+            <summary>${escapeHtml(t('管理', 'Manage'))} · ${user.quota_unlimited === 1 ? '∞' : money(user.quota_cny)} · ${escapeHtml(roleLabel(t, user.role))}</summary>
           <div class="admin-control-row">
             <form method="post" action="/admin/users/${escapeHtml(user.id)}/quota" class="admin-inline-form">${csrf(viewer)}<input class="admin-quota" name="quota" type="number" step="0.1" min="0" value="${user.quota_cny}" aria-label="${escapeHtml(t('额度', 'Quota'))}" />${superadmin ? `<label class="check admin-check"><input type="checkbox" name="unlimited" value="1"${user.quota_unlimited === 1 ? ' checked' : ''} /> ${escapeHtml(t('不限额', 'Unlimited'))}</label>` : ''}<button class="link" type="submit">${escapeHtml(t('改额度', 'Set quota'))}</button></form>
           </div>
@@ -2390,6 +2491,7 @@ export function adminPage(input: {
             ${user.role !== 'superadmin' && user.id !== viewer.user.id && user.status === 'rejected' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/approve">${csrf(viewer)}<button class="link good" type="submit">${escapeHtml(t('重新批准', 'Re-approve'))}</button></form>` : ''}
             ${user.role !== 'superadmin' && user.id !== viewer.user.id && user.status === 'approved' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/reject" data-confirm="${escapeHtml(t('停用这个用户并停止其所有 FlyBot 实例？', 'Disable this user and stop all their FlyBot instances?'))}">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('停用', 'Disable'))}</button></form>` : ''}
           </div>
+          </details>
         </td>
       </tr>`,
     )
@@ -2398,11 +2500,7 @@ export function adminPage(input: {
   // the card names it as the running version and never claims a commit. A file
   // that is not in this build says so; a zero fragment count is a real fact.
   const absent = t('此构建中不可用', 'not available in this build')
-  const releaseFacts = `<div class="list">
-      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('运行版本', 'Running'))}</strong><small>${release.version === null ? escapeHtml(absent) : `v${escapeHtml(release.version)} · ${escapeHtml(t('来自 package.json', 'from package.json'))}`}</small></div></div>
-      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新 CHANGELOG 段落', 'Newest CHANGELOG section'))}</strong><small>${release.changelogVersion === null || release.releasedAt === null ? escapeHtml(absent) : `${escapeHtml(release.changelogVersion)} · ${escapeHtml(release.releasedAt)}`}</small></div></div>
-      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('待发布片段', 'Pending fragments'))}</strong><small>${release.fragments === null ? escapeHtml(absent) : release.fragments === 0 ? escapeHtml(t('没有待发布片段', 'nothing pending')) : escapeHtml(t(`${release.fragments} 个待发布片段`, `${release.fragments} pending fragment${release.fragments === 1 ? '' : 's'}`))}</small></div></div>
-    </div>`
+  const releaseFactsLine = `<p class="muted">${release.version === null ? escapeHtml(absent) : `v${escapeHtml(release.version)}`}${release.changelogVersion === null || release.releasedAt === null ? ` · ${escapeHtml(absent)}` : ` · CHANGELOG ${escapeHtml(release.changelogVersion)} · ${escapeHtml(release.releasedAt)}`}${release.fragments === null ? ` · ${escapeHtml(absent)}` : ` · ${release.fragments === 0 ? escapeHtml(t('没有待发布片段', 'nothing pending')) : escapeHtml(t(`${release.fragments} 个待发布片段`, `${release.fragments} pending fragment${release.fragments === 1 ? '' : 's'}`))}`}</p>`
   // Issue #280: the chain is assembled by `node scripts/verify-release.mjs` and
   // read from `${DATA_DIR}/release-status.json`; the page renders what that run
   // recorded and never calls GitHub itself. The running row is the only live
@@ -2430,10 +2528,6 @@ export function adminPage(input: {
     const pair = labels[id] ?? [id, id]
     return t(pair[0]!, pair[1]!)
   }
-  // The live row is the one that answers "is this process the tag?"; the stored
-  // `healthz` probe is a snapshot from `verify-release`, so rendering both
-  // repeats the same comparison at two different times. Skipped links are
-  // provenance (a deleted release branch, no local image), not actions.
   const running = releaseStatus === null
     ? null
     : compareRunning(releaseStatus, { version: release.version ?? '', commit: config.build.commit })
@@ -2449,19 +2543,41 @@ export function adminPage(input: {
       : running?.state === 'ok'
         ? t('已发布并运行', 'released and running')
         : t('已发布，运行实例不一致', 'published; running differs')
-  const chainRows = releaseStatus === null
-    ? `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('还没有记录发布链', 'No release chain is recorded'))}</strong><small>${escapeHtml(t('这不是错误：发布链只有在管理员于主机上记录过一次校验后才会出现。', 'This is expected, not an error: the chain appears only after an operator records a verification on the host.'))}</small></div></div>
+  const linkRow = (entry: { id: string; state: string; detail: string }): string =>
+    `<div class="list-row"><div class="list-main"><strong>${escapeHtml(linkLabel(entry.id))}</strong><small>${escapeHtml(entry.detail)}</small></div><div class="row">${stateBadge(entry.state)}</div></div>`
+  const problemLinks = visibleLinks.filter((entry) => entry.state === 'missing' || entry.state === 'mismatch')
+  const releaseProblemRows = problemLinks.map(linkRow).join('')
+  const fullRows = visibleLinks.map(linkRow).join('')
+  const releaseTone = releaseStatus !== null && releaseArtifactsOk && running?.state === 'ok' ? 'good' : 'bad'
+  const releaseTimeline = releaseStatus === null
+    ? ''
+    : [
+        (releaseStatus.planPlannedAt ?? '') === '' ? '' : `${t('计划', 'plan')} ${humanTimeShort(releaseStatus.planPlannedAt ?? '')}`,
+        (releaseStatus.mergedAt ?? '') === '' ? '' : `${t('合并', 'merge')} ${humanTimeShort(releaseStatus.mergedAt ?? '')}`,
+        (releaseStatus.publishedAt ?? '') === '' ? '' : `${t('发布', 'publish')} ${humanTimeShort(releaseStatus.publishedAt ?? '')}`,
+      ].filter((part): part is string => part !== '').join(' → ')
+  const releaseDetails = releaseStatus === null
+    ? `<div class="list"><div class="list-row"><div class="list-main"><strong>${escapeHtml(t('还没有记录发布链', 'No release chain is recorded'))}</strong><small>${escapeHtml(t('这不是错误：发布链只有在管理员于主机上记录过一次校验后才会出现。', 'This is expected, not an error: the chain appears only after an operator records a verification on the host.'))}</small></div></div></div>
       <details class="advanced-help"><summary>${escapeHtml(t('在主机上记录发布链', 'Record it on the host'))}</summary><p class="fine">${escapeHtml(t('运行', 'Run'))} <code>node scripts/verify-release.mjs --version X.Y.Z --write &lt;DATA_DIR&gt;/release-status.json</code> ${escapeHtml(t('然后刷新此页。', 'then reload this page.'))}</p></details>`
-    : `${visibleLinks
-        .map(
-          (entry) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(linkLabel(entry.id))}</strong><small>${escapeHtml(entry.detail)}</small></div><div class="row">${stateBadge(entry.state)}</div></div>`,
-        )
-        .join('')}${running === null ? '' : `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('运行实例', 'Running instance'))}</strong><small>${escapeHtml(running.detail)}</small></div><div class="row">${stateBadge(running.state)}</div></div>`}`
+    : `<div class="list">
+        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('运行实例', 'Running instance'))}</strong><small>${escapeHtml(running?.detail ?? '')}</small></div><div class="row">${stateBadge(running?.state ?? 'unknown')}</div></div>
+        ${releaseProblemRows}
+        ${problemLinks.length === 0 ? `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('发布链', 'Release chain'))}</strong><small>${escapeHtml(t('所有发布产物一致；完整证据可展开。', 'All release artifacts agree; open the evidence for the full chain.'))}</small></div><div class="row">${stateBadge('ok')}</div></div>` : ''}
+      </div>
+      <details class="advanced-help"><summary>${escapeHtml(t('发布链证据', 'Release chain evidence'))}${releaseStatus.checkedAt === '' ? '' : ` · ${escapeHtml(t(`检查于 ${releaseStatus.checkedAt}`, `checked ${releaseStatus.checkedAt}`))}`}</summary><div class="list">${fullRows}</div></details>`
   const releaseCard = `<section class="card" id="release">
-    <h2>${escapeHtml(t('发布', 'Release'))}</h2>
-    ${releaseFacts}
-    <h3 class="mt-16">${escapeHtml(t('发布链', 'Release chain'))}${releaseStatus === null ? '' : ` <small class="count">v${escapeHtml(releaseStatus.version)} · ${escapeHtml(chainLabel)}${releaseStatus.checkedAt === '' ? '' : ` · ${escapeHtml(t(`检查于 ${releaseStatus.checkedAt}`, `checked ${releaseStatus.checkedAt}`))}`}${releaseStatus.releaseUrl === '' ? '' : ` · <a class="link" href="${escapeHtml(releaseStatus.releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(t('GitHub Release', 'GitHub Release'))}</a>`}</small>`}</h3>
-    <div class="list">${chainRows}</div>
+    <div class="row between">
+      <div>
+        <h2>${escapeHtml(t('发布与部署', 'Release & deployment'))}</h2>
+        ${releaseFactsLine}
+        ${releaseTimeline === '' ? '' : `<p class="fine" data-release-timeline>${escapeHtml(releaseTimeline)}</p>`}
+      </div>
+      <div class="row">
+        ${releaseStatus === null ? '' : `<span class="badge ${releaseTone}">${escapeHtml(chainLabel)}</span>`}
+        ${releaseStatus === null || releaseStatus.releaseUrl === '' ? '' : `<a class="link" href="${escapeHtml(releaseStatus.releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(t('GitHub Release', 'GitHub Release'))}</a>`}
+      </div>
+    </div>
+    ${releaseDetails}
   </section>`
 
   // The console can only show what the writer leaves on disk: a copy and its
@@ -2565,11 +2681,26 @@ export function adminPage(input: {
     <form method="post" action="/admin/platform/resume" class="row">${csrf(viewer)}<button class="btn btn-danger" type="submit">${escapeHtml(t('恢复平台', 'Resume platform'))}</button></form>
   </div>`
       })()
+  const releaseShort = releaseStatus === null
+    ? t('未记录', 'not recorded')
+    : !releaseArtifactsOk
+      ? t('未完成', 'incomplete')
+      : running?.state === 'ok' ? t('正常', 'ok') : t('不一致', 'differs')
+  const backupShort = newest === null ? t('无副本', 'none') : backup.stale ? t('过期', 'stale') : t('正常', 'fresh')
+  const adminSummary = `<div class="admin-summary">
+    <a href="#pending"><strong>${pending.length}</strong><span>${escapeHtml(t('待审批', 'Pending'))}</span></a>
+    <a href="#users"><strong>${users.length}</strong><span>${escapeHtml(t('用户', 'Users'))}</span></a>
+    <a href="#jobs"><strong>${jobsTotal}</strong><span>${escapeHtml(t('任务', 'Jobs'))}</span></a>
+    ${showAudit ? `<a href="#audit"><strong>${auditTotal}</strong><span>${escapeHtml(t('审计', 'Audit'))}</span></a>` : ''}
+    <a href="#release"><strong>${escapeHtml(releaseShort)}</strong><span>${escapeHtml(t('发布', 'Release'))}</span></a>
+    <a href="#backups"><strong>${escapeHtml(backupShort)}</strong><span>${escapeHtml(t('备份', 'Backups'))}</span></a>
+  </div>`
   const body = `${stopBanner}<section class="card">
     <div class="eyebrow">${escapeHtml(t('管理', 'ADMIN'))}</div>
     <h1>${escapeHtml(t('管理控制台', 'Admin console'))}</h1>
     <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}</p>
     ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出用户视图预览', 'Exit user preview') : t('预览用户视图', 'Preview the user view'))}</button></form>` : ''}
+    ${adminSummary}
   </section>
   <nav class="section-nav" aria-label="${escapeHtml(t('页面导航', 'Section navigation'))}">
     <a href="#pending" data-allow-overflow>${escapeHtml(t('待审批', 'Pending'))}</a>
@@ -2578,6 +2709,7 @@ export function adminPage(input: {
     ${showAudit ? `<a href="#audit" data-allow-overflow>${escapeHtml(t('审计', 'Audit'))}</a>` : ''}
     <a href="#release" data-allow-overflow>${escapeHtml(t('发布', 'Release'))}</a>
     <a href="#backups" data-allow-overflow>${escapeHtml(t('备份', 'Backups'))}</a>
+    <a href="#operations" data-allow-overflow>${escapeHtml(t('运维', 'Operations'))}</a>
   </nav>
   <section class="card" id="pending">
     <h2>${escapeHtml(t('待审批', 'Pending'))} <small class="count">${pending.length}</small></h2>
@@ -2599,9 +2731,8 @@ export function adminPage(input: {
   </section>` : ''}
   ${releaseCard}
   ${backupCard}
-  <section class="card">
-    <h2>${escapeHtml(t('运维工具', 'Operations'))}</h2>
-    <p class="muted">${escapeHtml(t('这些是独立的运维页面；下面的卡片把它们放在管理页的同一个入口里。', 'These are separate operations pages; the cards below collect them in one place on the admin page.'))}</p>
+  <section class="card" id="operations">
+    <div class="row between"><h2>${escapeHtml(t('运维工具', 'Operations'))}</h2><span class="fine">${escapeHtml(t('独立运维页面', 'separate operator pages'))}</span></div>
     <div class="admin-modules">
       ${superadmin ? `<a class="admin-module" href="/admin/metrics"><strong>${escapeHtml(t('产品指标', 'Product metrics'))}</strong><small>${escapeHtml(t('用户、任务、成本、失败分类和告警。', 'Users, jobs, cost, failure breakdown and alerts.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
       <a class="admin-module" href="/admin/webhooks"><strong>${escapeHtml(t('Webhook deliveries', 'Webhook deliveries'))}</strong><small>${escapeHtml(t('出站通知投递状态、重试和详情。', 'Outbound notification delivery state, retries and detail.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>` : ''}
@@ -4229,7 +4360,7 @@ export function scheduleConsolePage(input: {
   viewer: Viewer
   repo: RepoRow
   state: ScheduleConsoleState
-  form: { cron: string; every: string; timezone: string; startAt: string; endAt: string; misfire: string; grace: string }
+  form: { cron: string; every: string; timezone: string; startAt: string; endAt: string; misfire: string; grace: string; dailyRuns: string }
   notice?: string
   error?: string
 }): string {
@@ -4284,6 +4415,7 @@ export function scheduleConsolePage(input: {
         <dt>${escapeHtml(t('有效期', 'Window'))}</dt><dd>${window}</dd>
         <dt>${escapeHtml(t('时序版本', 'Timing revision'))}</dt><dd>${escapeHtml(state.timingRevision === null ? t('unknown', 'unknown') : String(state.timingRevision))} · ${escapeHtml(state.misfire === null ? t('unknown', 'unknown') : state.misfire)}</dd>
         <dt>${escapeHtml(t('宽限', 'Grace'))}</dt><dd data-schedule-grace="${escapeHtml(state.graceMs === null ? 'none' : String(state.graceMs))}">${escapeHtml(state.graceMs === null ? t('不限（默认）', 'unbounded (default)') : t(`${Math.round(state.graceMs / 60_000)} 分钟`, `${Math.round(state.graceMs / 60_000)} minutes`))}</dd>
+        <dt>${escapeHtml(t('每日运行上限', 'Daily run limit'))}</dt><dd data-schedule-daily-runs="${escapeHtml(state.budget.dailyRuns === null ? 'none' : String(state.budget.dailyRuns))}">${escapeHtml(state.budget.dailyRuns === null ? t('不限（默认）', 'unbounded (default)') : t(`${state.budget.dailyRuns} 次`, `${state.budget.dailyRuns} runs`))} · ${escapeHtml(state.budget.runsToday === null ? t('今天已运行 unknown', 'today unknown') : t(`今天已运行 ${state.budget.runsToday} 次`, `${state.budget.runsToday} today`))}${state.budget.remaining === null ? '' : ` · ${escapeHtml(t(`今天还剩 ${state.budget.remaining} 次`, `${state.budget.remaining} left today`))}`}</dd>
       </dl>
     </section>
     <section class="card"><h2>${escapeHtml(t('编辑排期', 'Edit the schedule'))}</h2>
@@ -4296,6 +4428,7 @@ export function scheduleConsolePage(input: {
         ${field('end_at', t('结束 end_at', 'end_at'), form.endAt, '')}
         <label>${escapeHtml(t('错过时', 'When an instant is missed'))} <select name="misfire"><option value="skip"${form.misfire === 'once' ? '' : ' selected'}>${escapeHtml(t('跳过（默认）', 'skip (default)'))}</option><option value="once"${form.misfire === 'once' ? ' selected' : ''}>${escapeHtml(t('补一次', 'catch up once'))}</option></select></label>
         ${field('grace', t('宽限（分钟，留空=不限）', 'grace (minutes, empty = unbounded)'), form.grace, '30')}
+        ${field('daily_runs', t('每日运行上限（留空=不限）', 'daily run limit (empty = unbounded)'), form.dailyRuns, '3')}
         <button class="btn" type="submit">${escapeHtml(t('保存排期', 'Save schedule'))}</button>
       </div></form>
       ${state.kind === 'none' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/remove" data-confirm="${escapeHtml(t('删除这个排期？仓库将回到旧的自动间隔。', 'Delete this schedule? The repository returns to the legacy interval.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('删除排期', 'Delete schedule'))}</button></form>`}

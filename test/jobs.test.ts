@@ -2503,8 +2503,11 @@ test('a discover callback cannot open a branch or pull request', async () => {
   }
 })
 
-test('a discover callback with an issue creates exactly one work item', async () => {
-  const config = testConfig()
+// #803: discover no longer promotes unconditionally. With the switch off the
+// callback leaves the backlog alone; with it on, exactly one `proposed` item is
+// the bridge into the normal work-item queue (never a branch or PR).
+test('a discover callback with an issue creates exactly one proposed work item when promotion is on', async () => {
+  const config = testConfig({ autoPromoteDiscovery: true, autoPromoteDiscoveryDailyCap: 3 })
   const store = new Store(':memory:')
   const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
   try {
@@ -2517,14 +2520,45 @@ test('a discover callback with an issue creates exactly one work item', async ()
     const result = await jobs.handleCallback('job_discover_issue', secret, { status: 'succeeded', issueUrl, summary: 'found a concrete bug' })
     assert.equal(result.ok, true)
     const item = store.findWorkItemByIssueUrl(repo.id, issueUrl)
-    assert.equal(item?.state, 'in_progress')
+    assert.equal(item?.state, 'proposed')
+    assert.equal(item?.pr_url, null)
+    assert.equal(store.listWorkItems(repo.id).length, 1)
     assert.equal(store.getJob('job_discover_issue')?.output_kind, 'issue')
+    assert.ok(store.listAudit().some((entry) => entry.action === 'job.discovery_promoted'))
 
     await jobs.tick()
     const after = store.listJobsForRepo(repo.id)
-    assert.equal(after.length, 2, 'the discovered issue feeds the next work session')
+    assert.equal(after.length, 2, 'the proposed issue feeds the next work session')
     assert.equal(after[0]?.kind, 'iterate')
     assert.equal(after[0]?.work_item_id, item?.id)
+  } finally {
+    store.close()
+  }
+})
+
+test('a discover callback leaves the backlog unchanged when promotion is off', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'discover-no-promote-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_discover_no_promote', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', upstreamHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: true, intervalMinutes: 60 })
+    const secret = 'discover-no-promote-secret'
+    store.createJob({ id: 'job_discover_no_promote', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'discover', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'discover' })
+    store.updateJob('job_discover_no_promote', { status: 'running', started_at: new Date().toISOString() })
+    const issueUrl = 'https://github.com/o/r/issues/8'
+    const result = await jobs.handleCallback('job_discover_no_promote', secret, { status: 'succeeded', issueUrl, summary: 'found a concrete bug' })
+    assert.equal(result.ok, true)
+    assert.equal(store.findWorkItemByIssueUrl(repo.id, issueUrl), undefined)
+    assert.equal(store.listWorkItems(repo.id).length, 0)
+    assert.equal(store.getJob('job_discover_no_promote')?.output_kind, 'issue')
+    const skipped = store.listAudit().find((entry) => entry.action === 'job.discovery_promotion_skipped')
+    assert.ok(skipped !== undefined)
+    assert.ok(String(skipped.detail).includes('disabled'))
+
+    await jobs.tick()
+    assert.equal(store.listWorkItems(repo.id).length, 0)
+    assert.equal(store.listJobsForRepo(repo.id).filter((job) => job.kind === 'iterate').length, 0)
   } finally {
     store.close()
   }

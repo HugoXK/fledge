@@ -408,7 +408,9 @@ per day. Test mail is rate-limited to one per minute.
   login selects nothing. The erasure is: one transaction deletes every row that names it or one of
   its repositories — including `sessions`, `api_tokens`, `repo_instances` and the
   other repo-scoped tables the cascade reaches, plus the plain-column rows no
-  cascade sees (`artifact_versions.repo_id`, `audit_log.user_id`, `events`) and
+  cascade sees (`artifact_versions.repo_id`, `audit_log.user_id`, `events`, and
+  `budget_scopes`, whose `principal:user:<id>` and `repository:<repo_id>` keys
+  name the account without a `user_id` column) and
   the six `settings` shapes that carry the account in the key or the value
   (`quota_notified:`, `digest_sent:`, `email_test:`, `email_reply:`,
   `github_app_state:`, `installation_sender:`). An account that gained a
@@ -784,6 +786,126 @@ job at a time, each on its own measured run. A dependency that genuinely needs a
 script gets a narrow, documented exception — never a blanket re-enable.
 Playwright's browser install stays an explicit step
 (`npx playwright install --with-deps chromium`), so it is unaffected.
+
+### Allowed GitHub Actions
+
+A pin and an allowlist answer two different questions, so both are required. The
+pin (`action-pins` gate 1) says "this action cannot change under us"; it says
+nothing about *who wrote it*. A pull request can add a brand-new third-party
+action pinned to a malicious commit, and that commit runs on our runner with our
+token — reviewed, pinned, and still an exfiltration. The allowlist says "only the
+actions this project has read are allowed".
+
+The list is data in the tree, `.github/agent/action-allowlist.json`, as exact
+`owner/repo` names — no wildcards, because `actions/*` re-opens the hole the list
+exists to close. A sub-path belongs to its repository: `github/codeql-action/init`
+is covered by `github/codeql-action`, since a fork of one sub-action is not a
+different action. `readAllowlist` refuses to load a malformed file rather than
+returning an empty list, and a name in the list that no workflow uses is a test
+failure too — drift in either direction is how a list stops describing the tree.
+
+CI enforces the list in the `action-pins` required job. The checker is read from
+the base branch, so the list it reads is the one already reviewed there; a pull
+request therefore cannot grant itself an action in the same commit that uses it.
+That is deliberate ordering, not an inconvenience: **the list entry lands first,
+in its own reviewed change, and the workflow that uses the action comes after.**
+
+The GitHub setting behind it is the other half, and it is a **repository setting,
+so it is the owner's action, never an agent's**:
+
+| Setting | Where | At the time of writing |
+|---|---|---|
+| `allowed_actions` | Settings → Actions → General → Actions permissions | `all` |
+| `sha_pinning_required` | same page, "Require actions to be pinned to a full-length commit SHA" | `true` |
+
+`GET /repos/{owner}/{repo}/actions/permissions` reports both, and `PATCH` on the
+same path sets them — `{"allowed_actions":"selected","sha_pinning_required":true}`,
+then `PUT /repos/{owner}/{repo}/actions/permissions/selected-actions` with
+`{"github_owned_allowed":false,"verified_allowed":false,"patterns_allowed":[...]}`
+carrying the same `owner/repo` names as the JSON file. The settings page is the
+same switch. Until they are flipped, the list is enforced by CI alone: it stops a
+pull request from merging with an unreviewed action, but it does not stop the
+workflow from starting if one is already on the branch.
+
+Procedure for adding an action:
+
+1. Open a T3 issue naming the action, its 40-hex pin, the tag it came from and
+   why no existing action does the job. An action without that reason is the
+   thing this control exists to refuse.
+2. Add one line to `.github/agent/action-allowlist.json` in its own reviewed
+   change, with the justification in the pull request body. The suite's
+   both-directions test must still pass, so a list entry that no workflow uses
+   cannot ride along.
+3. Land it, then open the workflow change that uses the action. The gate reads the
+   list from the base branch, so reversing the order reds the newer pull request
+   until the list is on `main`.
+4. Only the owner flips `allowed_actions` to `selected` and publishes the same
+   patterns through `patterns_allowed`; an agent may read the settings, never write
+   them.
+
+### Secret scanning and push protection
+
+Two boundaries, deliberately redundant: GitHub's push protection refuses a
+token-shaped push before it lands, and the in-repo scans refuse one that already
+did. `npm run secret:scan` reads the tree git tracks; the `secret-scan` CI job
+runs gitleaks over the commit range with [`.gitleaks.toml`](../.gitleaks.toml),
+so a value committed and deleted again on the same branch is still in the range.
+
+GitHub's detection has two settings beyond the two that are on. Both are
+**repository settings, so they are the owner's action, never an agent's**:
+
+| Setting (`security_and_analysis`) | Where | At the time of writing |
+|---|---|---|
+| `secret_scanning` | Settings → Code security and analysis → Secret scanning | enabled |
+| `secret_scanning.push_protection` | same page, "Push protection" | enabled |
+| `secret_scanning_validity_checks` | same page, "Validity checks" | disabled |
+| `secret_scanning_non_provider_patterns` | same page, "Non-provider patterns" | disabled |
+
+`GET /repos/{owner}/{repo}` reports all four, and `PATCH` on the same path sets
+the two that are off — `{"security_and_analysis":{"secret_scanning_validity_checks":{"status":"enabled"}}}`,
+and the same shape for `secret_scanning_non_provider_patterns`. The settings page
+is the same switch. Validity checks let GitHub ask a supported provider whether a
+found token is still live, so a revoked token stops looking like an incident.
+Non-provider patterns catch the shapes no provider prefix names: a credential in
+a qualified variable, a credential inside a connection string, and HTTP Basic
+auth. (Read the live state from the API rather than this table; the table records
+the split, not a promise that a switch stayed where it was.)
+
+Those are also the shapes the in-repo scanner did not see. It knew provider
+prefixes and the bare `PASSWORD=…` / `TOKEN=…` assignment, and the leading `\b`
+of that rule cannot match inside `SMTP_PASSWORD` or `AWS_SECRET_ACCESS_KEY` — the
+common shape in a real env file. `scripts/secret-scan.mjs` now carries
+`qualified-secret-assignment`, `credential-url` and `http-basic`, pinned by
+`test/secretScan.test.ts`: it plants one value of each shape and requires a
+finding, and requires a `${…}` / `<…>` / `{{…}}` placeholder in the same shape to
+stay clean, so the scanner does not start reding on interpolated compose files
+and documented examples.
+
+A fixture that genuinely has to look like a secret is assembled from fragments at
+test time (`'new-secret' + '-token'`), so the literal is never in the tree. The
+allowlist is the exception and names one file and one line with a reason; it is
+not the normal path, because growing it silently is how a scanner becomes noise
+that everybody ignores.
+
+#### Measuring the false-positive volume
+
+Non-provider patterns are broader than prefix matching, so they need a measured
+week rather than a promise:
+
+1. Turn both settings on, then triage every new alert in **Security → Secret
+   scanning** for seven days.
+2. A live token is rotated and its alert resolved as revoked the same day.
+3. A false positive is dismissed with a reason and, when the in-repo scanner also
+   fires on it, gets one per-line allowlist entry carrying the same reason.
+4. At the end of the week record four numbers here — alerts, real tokens, false
+   positives, and the patterns that produced them. A pattern that stays
+   unmanageable is narrowed in this document and in `scripts/secret-scan.mjs` in
+   one pull request. Never turn non-provider patterns off wholesale: that also
+   drops every true positive that did not fit a prefix.
+
+Non-goals: a generic value with no surrounding context, and a camelCase local
+variable (`smtpPassword = '…'`), stay gitleaks' entropy rules' job. The backstop
+does not claim to find every secret-shaped string.
 
 ## Threat notes
 

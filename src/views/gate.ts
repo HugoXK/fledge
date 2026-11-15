@@ -103,6 +103,17 @@ function sessionHtml(t: (zh: string, en: string) => string, repo: RepoRow, viewe
     : session.status === 'proposed'
       ? `<p class="fine">${escapeHtml(t('只有维护者可以确认计划。', 'Only a maintainer can confirm a plan.'))}</p>`
       : ''
+  // #543: a confirmed plan is the only state from which a gate pull request can
+  // be created. The button is the human's second decision, separate from the
+  // confirmation, and the session row records the one branch and PR it produced.
+  const create = session.status === 'confirmed' && canMaintain && session.pr_url === null
+    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/gate/sessions/${escapeHtml(session.id)}/create" class="inline-form" data-gate-create="true">
+        <input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />
+        <button class="btn" type="submit">${escapeHtml(t('创建门禁 PR', 'Create the gate pull request'))}</button>
+      </form>`
+    : session.status === 'confirmed' && session.pr_url === null
+      ? `<p class="fine">${escapeHtml(t('只有维护者可以创建门禁 PR。', 'Only a maintainer can create the gate pull request.'))}</p>`
+      : ''
   return `<section class="card" id="gate-session-${escapeHtml(session.id)}" data-gate-session="${escapeHtml(session.id)}" data-gate-status="${escapeHtml(session.status)}">
     <h2><span class="${statusClass(session.status)}">${escapeHtml(statusLabel(t, session.status))}</span> <code>${escapeHtml(session.id)}</code></h2>
     <p class="muted">${escapeHtml(t('基线 SHA', 'Base SHA'))}: <code>${escapeHtml(session.base_sha)}</code> · ${escapeHtml(t('计划哈希', 'Plan hash'))}: <code>${escapeHtml(session.plan_hash)}</code> · ${escapeHtml(t('创建', 'Created'))} ${escapeHtml(humanTimeShort(session.created_at))}</p>
@@ -115,7 +126,8 @@ function sessionHtml(t: (zh: string, en: string) => string, repo: RepoRow, viewe
       ${planHtml(t, plan)}
     </details>
     ${confirm}
-    <p class="fine">${escapeHtml(t('确认只记录决定，不会写入仓库；创建门禁 PR 属于后续切片。', 'Confirming records the decision only; it writes nothing to the repository. Creating the gate pull request belongs to a later slice.'))}</p>
+    ${create}
+    <p class="fine">${escapeHtml(t('确认只记录决定，不写入仓库；创建门禁 PR 才写入一个分支和一个 PR，且只能创建一次。', 'Confirming records the decision only and writes nothing. Creating the gate pull request writes one branch and one pull request, once.'))}</p>
   </section>`
 }
 

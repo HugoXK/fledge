@@ -29,6 +29,12 @@ export interface ReleaseStatusSnapshot {
   targetSha: string
   /** The GitHub Release url, empty when the chain has no Release. */
   releaseUrl: string
+  /** ISO instant the release plan was written, empty when unreadable. */
+  planPlannedAt?: string
+  /** ISO instant the release pull request merged, empty when unreadable. */
+  mergedAt?: string
+  /** ISO instant the GitHub Release was published, empty when unreadable. */
+  publishedAt?: string
 }
 
 export interface RunningInstance {
@@ -75,6 +81,9 @@ export function parseReleaseStatus(raw: unknown): ReleaseStatusSnapshot | null {
   if (ok && (entry.links.length === 0 || problems.length > 0)) return null
   const targetSha = typeof entry.targetSha === 'string' && SHA.test(entry.targetSha) ? entry.targetSha : ''
   const releaseUrl = typeof entry.releaseUrl === 'string' && /^https?:\/\//.test(entry.releaseUrl) ? entry.releaseUrl : ''
+  const plan = entry.plan !== null && typeof entry.plan === 'object' ? entry.plan as Record<string, unknown> : {}
+  const pull = entry.pull !== null && typeof entry.pull === 'object' ? entry.pull as Record<string, unknown> : {}
+  const release = entry.release !== null && typeof entry.release === 'object' ? entry.release as Record<string, unknown> : {}
   return {
     schema: 1,
     version: entry.version,
@@ -85,6 +94,9 @@ export function parseReleaseStatus(raw: unknown): ReleaseStatusSnapshot | null {
     problems,
     targetSha,
     releaseUrl,
+    planPlannedAt: typeof plan.plannedAt === 'string' ? plan.plannedAt : '',
+    mergedAt: typeof pull.mergedAt === 'string' ? pull.mergedAt : '',
+    publishedAt: typeof release.publishedAt === 'string' ? release.publishedAt : '',
   }
 }
 

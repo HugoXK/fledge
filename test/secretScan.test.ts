@@ -188,6 +188,54 @@ test('every whitelist entry is per line and still earned', () => {
   }
 })
 
+// GitHub's non-provider patterns cover shapes that name no provider: a
+// credential in a qualified environment variable, a credential inside a
+// connection string, and HTTP Basic auth. Push protection is the pre-commit
+// boundary for those and this scanner is the in-repo backstop, so a backstop
+// that only knows provider prefixes is silent exactly where push protection is
+// weakest. The shapes are planted here and must fail.
+test('a non-provider secret shape still fails the scan', async () => {
+  const value = 'Zx9' + 'Qw8Er7Ty6Ui5Op4As3Df2'
+  const passwordName = ['SMTP', 'PASSWORD'].join('_')
+  const accessKeyName = ['AWS', 'SECRET', 'ACCESS', 'KEY'].join('_')
+  const dir = makeRepo({
+    'deploy/env.example': `${passwordName}=${value}\n${accessKeyName}=${value}\n`,
+    'src/db.ts': `export const url = 'postgres://fledge:${value}@db.internal:5432/fledge'\n`,
+    'src/http.ts': `export const header = 'Authorization: Basic ${value}'\n`,
+  })
+  try {
+    const result = await runScan(dir)
+    assert.equal(result.code, 1, `a generic secret shape must fail the scan: ${result.stderr}`)
+    assert.match(result.stderr, /deploy\/env\.example:1: qualified-secret-assignment/)
+    assert.match(result.stderr, /deploy\/env\.example:2: qualified-secret-assignment/)
+    assert.match(result.stderr, /src\/db\.ts:1: credential-url/)
+    assert.match(result.stderr, /src\/http\.ts:1: http-basic/)
+    assert.ok(!result.stderr.includes(value), 'the value itself must never reach the log')
+    assert.ok(!result.stdout.includes(value), 'the value itself must never reach stdout')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a placeholder in a non-provider shape is still not a secret', async () => {
+  const passwordName = ['SMTP', 'PASSWORD'].join('_')
+  const dir = makeRepo({
+    // Compose interpolates the value from the environment at run time.
+    'docker-compose.yml': `DATABASE_URL: postgres://fledge:\${POSTGRES_PASSWORD}@db:5432/fledge\n`,
+    // Documentation spells the value as a placeholder, exactly as it should.
+    'docs/setup.md': 'postgres://fledge:<password>@db.internal:5432/fledge\n',
+    'src/auth.ts': 'const header = `Authorization: Basic ${basicAuth}`\n',
+    // An empty slot is a slot, not a value.
+    'deploy/env.example': `${passwordName}=\n`,
+  })
+  try {
+    const result = await runScan(dir)
+    assert.equal(result.code, 0, `a placeholder must not be a finding: ${result.stderr}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // The line is token-shaped if the module's own rules match it; importing the
 // module keeps this test and the scanner from drifting apart.
 function scanForTest(line: string): boolean {

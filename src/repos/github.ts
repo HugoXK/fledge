@@ -546,6 +546,48 @@ export class GithubClient {
     }
   }
 
+  // #543: the gate pull request is the only place Fledge creates a branch and
+  // writes a file, so both writes live here next to the reader that found the
+  // SHA they build on. A branch is created from an explicit commit, never from a
+  // branch name: the plan's base SHA is the thing the human reviewed.
+  async createBranch(owner: string, name: string, branch: string, sha: string): Promise<{ ref: string; sha: string }> {
+    const data = await this.request<{ ref?: string; object?: { sha?: string } }>(
+      'POST',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/git/refs`,
+      { ref: `refs/heads/${branch}`, sha },
+    )
+    return {
+      ref: typeof data.ref === 'string' ? data.ref : `refs/heads/${branch}`,
+      sha: typeof data.object?.sha === 'string' ? data.object.sha : sha,
+    }
+  }
+
+  async putFile(
+    owner: string,
+    name: string,
+    input: { path: string; content: string; message: string; branch: string; sha?: string },
+  ): Promise<{ path: string; sha: string; commitSha: string }> {
+    const encodedPath = input.path.split('/').map(encodeURIComponent).join('/')
+    const body: Record<string, unknown> = {
+      message: input.message,
+      content: Buffer.from(input.content, 'utf8').toString('base64'),
+      branch: input.branch,
+    }
+    // Updating an existing file must name the blob it replaces; creating one
+    // must not, or GitHub refuses the write.
+    if (input.sha !== undefined && input.sha !== '') body.sha = input.sha
+    const data = await this.request<{ content?: { path?: string; sha?: string }; commit?: { sha?: string } }>(
+      'PUT',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/contents/${encodedPath}`,
+      body,
+    )
+    return {
+      path: typeof data.content?.path === 'string' ? data.content.path : input.path,
+      sha: typeof data.content?.sha === 'string' ? data.content.sha : '',
+      commitSha: typeof data.commit?.sha === 'string' ? data.commit.sha : '',
+    }
+  }
+
   async getPullRequest(owner: string, name: string, number: number): Promise<PullRequestInfo> {
     const pr = await this.request<{
       number: number
