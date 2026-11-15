@@ -101,7 +101,11 @@ stream ends. A request that is already in flight is allowed to finish; the
   leave the team with AUTH errors. Outside a job the instance token is used and
   the row has no job id.
 - When the balance crosses zero: create one in-app notification and at most one
-  email per user per day (deduped by `settings:quota_notified:<userId>`).
+  email per user per day (deduped by `settings:quota_notified:<userId>`). The
+  in-app notification is written before the mail attempt, so it survives a failed
+  send; a failed send also writes a `quota.mail_failed` audit row with the SMTP
+  error redacted, because the day key is already set and that row is the only
+  trace that the reminder was never delivered.
 - A failed job before it starts (quota already zero) is recorded as
   `quota_exhausted` and does not call the model.
 
