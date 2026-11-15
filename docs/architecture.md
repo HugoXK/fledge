@@ -2060,9 +2060,28 @@ reserves the receipt, runs today's path and settles it; the same key submitted
 again replays that receipt and settles nothing, so one command moves the revision
 once and a resubmitted page cannot turn a recorded success into a failure.
 
-That split is why the job commands never need the `unknown` state. The first
-operation that does — a release, or any write that crosses an external commit
-boundary — will bring `management_command_attempts` and a reconcile step with it.
+That split is why `task.create`, `task.resume` and `task.retry` never need the
+`unknown` state: the only durable object `enqueue` creates is the local job row.
+
+`task.cancel` does (#540 slice 5), because its bridge stop can cross the external
+commit boundary with no answer. A command that throws while it awaits that step
+no longer escapes as a 500 and no longer leaves a receipt nobody can finish: the
+receipt becomes `unknown`, and the console says the step was not confirmed
+instead of claiming it failed. The next attempt with the same key reconciles
+first, through the operation's optional `reconcile` hook, against a stable
+marker. For a cancel the marker is the job row: a job that is no longer `queued`
+or `running` means the stop already happened, whoever wrote it. `applied`
+settles the receipt with `reconciled: true` and no second revision bump (the
+effect is what moved the revision), `absent` resends exactly once under the same
+revision fence, and `still-unknown` — or an operation with no hook at all —
+answers `management_unknown` and writes nothing. Nothing is resent blind.
+
+`ManagementService.markUnknown` is for an adapter that learns about a lost
+response itself, such as a future API or chat channel: only the principal on the
+receipt may call it, it applies only while the receipt is still `accepted`, and a
+receipt that has already answered is replayed rather than rewritten. A probe that
+fails leaves the receipt `unknown` instead of guessing.
+
 The form route stays a thin adapter: it renders the revision and a fresh key,
 calls the service, and turns the receipt into the same redirect as before.
 

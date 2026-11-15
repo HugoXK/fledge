@@ -344,6 +344,10 @@ function managementRefusal(t: Translate, code: string, fallback: string): string
       return t('这个请求已经用不同的内容提交过，已拒绝。请刷新页面后重试。', 'That request was already submitted with different content; reload the page and try again.')
     case 'command_in_progress':
       return t('这个操作还在处理中，请刷新页面查看结果。', 'This action is still being processed; reload to see the result.')
+    case 'management_unknown':
+      // #540 slice 5: the external write did not answer, so the honest sentence
+      // is "not confirmed, submit again to check" — never "it failed".
+      return t('这一步没有收到确认，结果未知。请再次提交同一个操作，系统会先核对再决定是否重发。', 'This step was not confirmed, so the result is unknown. Submit the same action again and it will check before resending.')
     case 'authorization_revoked':
       return t('你已经没有执行这个操作的权限。', 'You no longer have permission for this action.')
     case 'job_not_cancellable':
