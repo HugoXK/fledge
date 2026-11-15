@@ -63,6 +63,13 @@ jobs:
           # A pull request needs the whole range for `git diff base...head`; a
           # push or schedule classifies every flag as true without reading git.
           fetch-depth: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 0 || 1 }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # #640: the gate is policy, so its code comes from the base branch and
+          # never from the pull request it judges. `path: base` keeps it beside
+          # the checkout that supplies the data under test.
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.repository.default_branch }}
+          path: base
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -78,11 +85,23 @@ jobs:
           GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
         run: |
           set -euo pipefail
+          # #640: the pull request that introduces `scripts/gate-integrity.mjs`
+          # runs this job with a base branch that predates the file. The test is
+          # against the base tree, so a diff cannot decide whether the summary
+          # runs; without the file there is no summary to write, and the merge
+          # still needs its T3 PASS.
+          gate_integrity() {
+            if [ -f base/scripts/gate-integrity.mjs ]; then
+              node base/scripts/gate-integrity.mjs "$@"
+            else
+              echo "::notice::gate-integrity is not on the base branch yet; this change introduces it"
+            fi
+          }
           ref=""
           case "$EVENT" in
             pull_request) base="$PR_BASE"; head="$PR_HEAD"; ref="$PR_BASE_REF" ;;
             merge_group) base="$GROUP_BASE"; head="$GROUP_HEAD"; ref="$GROUP_BASE_REF" ;;
-            *) node scripts/ci-changes.mjs --all; exit 0 ;;
+            *) node base/scripts/ci-changes.mjs --all; gate_integrity --all; exit 0 ;;
           esac
           # #752: a branch cut before the latest `main` names a base commit that
           # this checkout does not carry, so the two-commit diff could not be
@@ -91,7 +110,10 @@ jobs:
           # CodeQL never starts for an ignored path. The script fetches the base
           # and retries; the conservative every-gate answer is still its last
           # resort, and it lives there where the suite can drive it.
-          node scripts/ci-changes.mjs --git-base "$base" --git-head "$head" --base-ref "$ref"
+          node base/scripts/ci-changes.mjs --repo . --git-base "$base" --git-head "$head" --base-ref "$ref"
+          # #640: the reviewer must see that the gate is inside the diff this gate
+          # judges; an unreadable diff fails closed instead of reporting a clean one.
+          gate_integrity --repo . --git-base "$base" --git-head "$head" --base-ref "$ref"
 
   lint:
     name: lint
@@ -172,6 +194,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # #641: the changed-lines step below diffs the pull request against its
+          # base, which a depth-1 checkout does not carry. The suite runs from the
+          # same checkout, so the history is fetched once here.
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -181,6 +208,24 @@ jobs:
         # `tee` keeps the report for the summary below; the bash shell CI uses is
         # `-eo pipefail`, so the threshold's exit code is still the step's.
         run: npm run test:coverage 2>&1 | tee coverage.txt
+      - name: Enforce the changed-lines floor
+        # #641: the floor above is one number over `src/**`, so a large covered
+        # tree hides a new untested branch. This step measures only the lines this
+        # diff adds. Pull request only: a push or schedule has no base and a
+        # merge-queue entry re-runs the pull request's own tree.
+        #
+        # The head is the checked-out commit, never `pull_request.head.sha`:
+        # this job's checkout carries no `ref:`, so it is `refs/pull/<N>/merge`
+        # and `coverage.txt` is numbered in the merge tree. `git diff base...HEAD`
+        # stays the pull request's own changes — the base is the merge's first
+        # parent — and its line numbers now come from the same tree as the report.
+        # With the head sha the two disagree whenever the base moved in a file
+        # the pull request edits, and an uncovered line is reported as covered.
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node scripts/coverage-diff.mjs --base "$PR_BASE" --head HEAD --report coverage.txt --floor 80
       - name: Publish the coverage report to the run summary
         if: always()
         run: |
@@ -412,6 +457,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # #640: the gate is policy, so its code comes from the base branch and
+          # never from the pull request it judges. `path: base` keeps it beside
+          # the checkout that supplies the data under test.
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.repository.default_branch }}
+          path: base
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -420,7 +472,7 @@ jobs:
         # The choice lives in scripts/lib/risk.mjs (chooseBase) so that
         # merge_group measures against its base sha instead of HEAD~1, and so
         # test/riskBase.test.ts covers it. The step fetches what it needs.
-        run: echo "ref=$(node scripts/risk-gate.mjs --print-base)" >> "$GITHUB_OUTPUT"
+        run: echo "ref=$(node base/scripts/risk-gate.mjs --print-base)" >> "$GITHUB_OUTPUT"
       # The branch and the title are the mechanical-release key (#80): only a PR
       # whose head is release/vX.Y.Z and whose title is exactly "release: vX.Y.Z"
       # is classified as the mechanical class. A PR that merely touches the same
@@ -430,7 +482,7 @@ jobs:
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           BASE_REF: ${{ steps.base.outputs.ref }}
-        run: node scripts/risk-gate.mjs --base "$BASE_REF" --branch "$PR_BRANCH" --title "$PR_TITLE"
+        run: node base/scripts/risk-gate.mjs --repo . --base "$BASE_REF" --branch "$PR_BRANCH" --title "$PR_TITLE"
 
   # The drill imports `dist/db.js` and the checked-out `scripts/` only: no file
   # under `node_modules` is loaded at runtime, so a second `npm ci` and
@@ -472,12 +524,19 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # #640: the gate is policy, so its code comes from the base branch and
+          # never from the pull request it judges. `path: base` keeps it beside
+          # the checkout that supplies the data under test.
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.repository.default_branch }}
+          path: base
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       # No `npm ci`: the checker is plain node and reads only the workflow files,
       # so a floating tag fails before any dependency install can run.
-      - run: node scripts/action-pins.mjs
+      - run: node base/scripts/action-pins.mjs --workflows .github/workflows
 
   # actionlint reads the YAML, the expressions and the shell syntax. It has no
   # taint analysis, so `${{ github.event.pull_request.title }}` inside `run:` is
@@ -493,13 +552,20 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # #640: the gate is policy, so its code comes from the base branch and
+          # never from the pull request it judges. `path: base` keeps it beside
+          # the checkout that supplies the data under test.
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.repository.default_branch }}
+          path: base
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       # Plain node over the workflow files, so it runs in seconds and before any
       # dependency install could be the thing that fails.
       - name: Reject a workflow expression inside a shell script
-        run: node scripts/workflow-injection.mjs
+        run: node base/scripts/workflow-injection.mjs --workflows .github/workflows --allowlist base/.github/agent/workflow-injection-allowlist.json
       - name: Lint the workflows
         uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
         with:
@@ -599,6 +665,12 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # #640: the gate is policy, so its code comes from the base branch and
+          # never from the pull request it judges. `path: base` keeps it beside
+          # the checkout that supplies the data under test.
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.repository.default_branch }}
+          path: base
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -613,7 +685,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         # No `npm ci`: the script is plain node and reads only the API and the
         # event payload, so a dependency install cannot be the thing that fails.
-        run: node scripts/codeql-required.mjs
+        run: node base/scripts/codeql-required.mjs
 
   # #644: a deploy-only diff is not code, so the app gates skip it, but `deploy/`
   # ships executable and syntax-sensitive files. `changes` sets `deploy` when any
@@ -658,31 +730,23 @@ jobs:
         # the nginx example is parsed against generated certificates and a
         # failure is a failure, while systemd-analyze stays advisory because its
         # output includes the runner's own unrelated units.
+        #
+        # The wrapper, the generated certificates and the parse itself live in
+        # scripts/check-nginx-config.sh: it renders deploy/nginx.check.conf,
+        # which declares a pid path inside its own temporary directory, because
+        # the compiled-in /run/nginx.pid is not writable by the runner and that
+        # failed this job on main (#795). test/nginxCheck.test.ts drives that
+        # script with a stub nginx and inspects the rendered file.
+        #
+        # The script's output is teed rather than redirected: a red step has to
+        # say why in the log, and `$GITHUB_STEP_SUMMARY` is not the log (#799).
         shell: bash
         run: |
           set -uo pipefail
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
           status=0
-          if command -v nginx >/dev/null 2>&1; then
-            tmp="$(mktemp -d)"
-            openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=localhost' \
-              -keyout "$tmp/key.pem" -out "$tmp/cert.pem" >/dev/null 2>&1
-            sed -e "s#/etc/letsencrypt/live/fledge.example.com/fullchain.pem#$tmp/cert.pem#" \
-                -e "s#/etc/letsencrypt/live/fledge.example.com/privkey.pem#$tmp/key.pem#" \
-                -e 's#/var/log/nginx/fledge-access.log#/dev/null#' \
-                -e 's#/var/log/nginx/fledge-error.log#/dev/null#' \
-                -e 's#listen 443 ssl http2;#listen 127.0.0.1:18443 ssl;#' \
-                -e 's#listen 80;#listen 127.0.0.1:18080;#' \
-                deploy/nginx.conf.example > "$tmp/site.conf"
-            { echo 'events {}'; echo 'http {'; cat "$tmp/site.conf"; echo '}'; } > "$tmp/nginx.conf"
-            if nginx -t -q -c "$tmp/nginx.conf" -p "$tmp"; then
-              echo 'nginx: deploy/nginx.conf.example parsed' >> "$summary"
-            else
-              echo 'nginx: deploy/nginx.conf.example failed `nginx -t`' >> "$summary"
-              status=1
-            fi
-          else
-            echo 'nginx: not installed on this runner — deploy/nginx.conf.example was not syntax-checked (gap).' >> "$summary"
+          if ! bash scripts/check-nginx-config.sh 2>&1 | tee -a "$summary"; then
+            status=1
           fi
           if command -v systemd-analyze >/dev/null 2>&1; then
             if systemd-analyze verify deploy/fledge.service > /tmp/systemd-verify.txt 2>&1; then
@@ -706,9 +770,23 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # #640: the gate is policy, so its code comes from the base branch and
+          # never from the pull request it judges. `path: base` keeps it beside
+          # the checkout that supplies the data under test.
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.repository.default_branch }}
+          path: base
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
+      # #640: a reviewer has to be able to see in the log which copy of the gate
+      # judged the pull request. This names the base tree's blob for the
+      # evaluator the next step runs, so a tampered copy on the branch cannot be
+      # mistaken for it — the sha printed here is the one the verdict came from.
+      - name: Name the evaluator that comes from the base tree
+        run: |
+          set -euo pipefail
+          echo "scripts/ci-ok.mjs from the base tree: blob $(git -C base rev-parse HEAD:scripts/ci-ok.mjs)"
       # `skipped` is a failure here unless the job is named in SKIPPABLE_ON for
       # this event, and a required job missing from `needs` fails too.
       - name: Every required job passed
@@ -716,7 +794,7 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           CHANGES: ${{ toJSON(needs.changes.outputs) }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
-        run: node scripts/ci-ok.mjs
+        run: node base/scripts/ci-ok.mjs
 
   # #305: a red `main` used to be invisible. `ci-ok` computed the commit's
   # health and stopped, no job held a write scope on issues, and the branch was

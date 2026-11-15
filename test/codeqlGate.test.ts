@@ -28,6 +28,15 @@ function sarifDocument(specs: Spec[]): string {
 }
 
 const HIGH: Spec = { rule: 'js/missing-rate-limiting', severity: '8.8', path: 'src/app.ts', line: 408 }
+const FUTURE = new Date(Date.now() + 86_400_000).toISOString()
+const PAST = new Date(Date.now() - 86_400_000).toISOString()
+
+function baseline(over: Record<string, unknown> = {}): { recordedAtSha: string; alerts: Array<Record<string, unknown>> } {
+  return {
+    recordedAtSha: 'a'.repeat(40),
+    alerts: [{ ruleId: HIGH.rule, path: HIGH.path, line: HIGH.line, severity: 'high', reason: 'accepted for the test', owner: 'HugoXK', expires: FUTURE, ...over }],
+  }
+}
 
 function tempDir(t: TestContext): string {
   const dir = mkdtempSync(join(tmpdir(), 'codeql-gate-'))
@@ -65,8 +74,7 @@ test('the same high result at base and head passes; a head that adds one fails',
   mkdirSync(sarifDir)
 
   // The baseline file's shape, not the SARIF shape: ruleId/path/line/severity.
-  const baseline = { recordedAtSha: 'a'.repeat(40), alerts: [{ ruleId: HIGH.rule, path: HIGH.path, line: HIGH.line, severity: 'high' }] }
-  writeFileSync(baselinePath, JSON.stringify(baseline))
+  writeFileSync(baselinePath, JSON.stringify(baseline()))
 
   writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([HIGH]))
   const same = runGate(sarifDir, baselinePath)
@@ -77,6 +85,59 @@ test('the same high result at base and head passes; a head that adds one fails',
   const added = runGate(sarifDir, baselinePath)
   assert.equal(added.code, 1, 'a head that adds a high result must fail')
   assert.match(added.stderr, /new critical result js\/missing-rate-limiting at src\/app\.ts:9999/)
+})
+
+test('an open baseline entry past its expiry fails even while the result is present', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify(baseline({ expires: PAST })))
+  writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([HIGH]))
+  const run = runGate(sarifDir, baselinePath)
+  assert.equal(run.code, 1, 'an expired open entry is no longer an accepted result')
+  assert.match(run.stderr, /expired on/)
+  assert.match(run.stderr, /owner HugoXK/)
+})
+
+test('an open baseline entry before its expiry passes and names the owner and expiry', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify(baseline()))
+  writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([HIGH]))
+  const run = runGate(sarifDir, baselinePath)
+  assert.equal(run.code, 0, `a live entry must pass: ${run.stderr}`)
+  assert.match(run.stdout, /owner=HugoXK/)
+  assert.match(run.stdout, new RegExp(`expires=${FUTURE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+})
+
+test('an open baseline entry missing owner, reason or expires fails closed', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([HIGH]))
+  for (const [field, pattern] of [['owner', /\.owner is missing/], ['reason', /\.reason is missing/], ['expires', /\.expires is missing/]] as const) {
+    const entry = baseline()
+    delete (entry.alerts[0] as Record<string, unknown>)[field]
+    writeFileSync(baselinePath, JSON.stringify(entry))
+    const run = runGate(sarifDir, baselinePath)
+    assert.equal(run.code, 1, `a missing ${field} must fail closed`)
+    assert.match(run.stderr, pattern)
+  }
+})
+
+test('a dismissed baseline entry never expires', (t) => {
+  const dir = tempDir(t)
+  const baselinePath = join(dir, 'baseline.json')
+  const sarifDir = join(dir, 'results')
+  mkdirSync(sarifDir)
+  writeFileSync(baselinePath, JSON.stringify(baseline({ dismissed: true, owner: undefined, expires: undefined })))
+  writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([HIGH]))
+  const run = runGate(sarifDir, baselinePath)
+  assert.equal(run.code, 0, `a dismissed entry has no expiry: ${run.stderr}`)
 })
 
 test('a medium result never fails the gate', (t) => {
@@ -99,7 +160,7 @@ test('a gate that cannot read its SARIF fails closed', (t) => {
 })
 
 test('the recorded baseline is every open high alert at its sha and nothing is dismissed', () => {
-  const baseline = JSON.parse(readFileSync('.github/agent/codeql-baseline.json', 'utf8')) as { recordedAtSha: string; alerts: CodeqlAlert[] }
+  const baseline = JSON.parse(readFileSync('.github/agent/codeql-baseline.json', 'utf8')) as { recordedAtSha: string; alerts: Array<CodeqlAlert & { owner?: string; expires?: string; dismissed?: boolean }> }
   assert.match(baseline.recordedAtSha, /^[0-9a-f]{40}$/)
   const keys = baseline.alerts.map((alert) => alertKey(alert))
   // Positions follow the tree that ships this file, not a frozen sha: the gate
@@ -189,8 +250,18 @@ test('the recorded baseline is every open high alert at its sha and nothing is d
     'js/missing-rate-limiting|src/gateway/gateway.ts|155',
     'js/missing-rate-limiting|src/gateway/gateway.ts|180',
   ])
-  const dismissed = baseline.alerts.filter((alert) => /dismissed/.test((alert as { reason?: string }).reason ?? ''))
-  assert.equal(dismissed.length, 3, 'the three dismissed false-positive results are recorded with their reason')
+  const dismissed = baseline.alerts.filter((alert) => alert.dismissed === true)
+  assert.equal(dismissed.length, 3, 'the three dismissed false-positive results are recorded as dismissed')
+  const open = baseline.alerts.filter((alert) => alert.dismissed !== true)
+  assert.equal(open.length, 4, 'the four open results stay open')
+  for (const alert of open) {
+    assert.match(alert.owner ?? '', /^HugoXK$/, 'every open entry names its owner')
+    assert.ok(Number.isFinite(Date.parse(alert.expires ?? '')), 'every open entry carries a readable expiry')
+    assert.ok(Date.parse(alert.expires ?? '') > Date.now(), 'the recorded expiry is still in the future')
+  }
+  for (const alert of dismissed) {
+    assert.equal(alert.expires, undefined, 'a dismissed entry never carries an expiry')
+  }
   assert.deepEqual(addedAlerts(keys, baseline.alerts).map((alert) => alertKey(alert)), [], 'the baseline must not fail its own alerts')
 })
 
@@ -504,7 +575,7 @@ test('a moved line is an added result and fails until the baseline records it', 
   const baselinePath = join(dir, 'baseline.json')
   const sarifDir = join(dir, 'results')
   mkdirSync(sarifDir)
-  writeFileSync(baselinePath, JSON.stringify({ recordedAtSha: 'a'.repeat(40), alerts: [{ ruleId: 'js/missing-rate-limiting', path: 'src/app.ts', line: 408, severity: 'high' }] }))
+  writeFileSync(baselinePath, JSON.stringify(baseline({ line: 408 })))
   writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([{ ...HIGH, line: 432 }]))
   const run = runGate(sarifDir, baselinePath)
   assert.equal(run.code, 1, 'the same rule at a new line is a new key')
@@ -533,10 +604,14 @@ test('a dismissed result that the baseline records is not counted as added', (t)
   // GitHub keeps dismissed alerts out of the SARIF's suppressions, so the gate
   // cannot tell them apart from open ones: the baseline is the record that the
   // result was already reviewed and dismissed.
-  writeFileSync(baselinePath, JSON.stringify({
-    recordedAtSha: 'a'.repeat(40),
-    alerts: [{ ruleId: 'js/missing-rate-limiting', path: 'src/gateway/gateway.ts', line: 125, severity: 'high', reason: 'alert #41, dismissed false positive' }],
-  }))
+  writeFileSync(baselinePath, JSON.stringify(baseline({
+    path: 'src/gateway/gateway.ts',
+    line: 125,
+    dismissed: true,
+    owner: undefined,
+    expires: undefined,
+    reason: 'alert #41, dismissed false positive in the alert UI',
+  })))
   writeFileSync(join(sarifDir, 'head.sarif'), sarifDocument([{ rule: 'js/missing-rate-limiting', severity: '7.5', path: 'src/gateway/gateway.ts', line: 125 }]))
   const run = runGate(sarifDir, baselinePath)
   assert.equal(run.code, 0, `a recorded dismissed result must not fail the gate: ${run.stderr}`)

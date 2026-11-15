@@ -19,7 +19,7 @@ test('the schedule table is part of the schema at user_version 43', () => {
     const columns = store.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
     assert.deepEqual(columns, [
       'id', 'repo_id', 'kind', 'expression', 'every_ms', 'timezone',
-      'start_at', 'end_at', 'timing_revision', 'misfire', 'grace_ms',
+      'start_at', 'end_at', 'timing_revision', 'misfire', 'grace_ms', 'daily_runs',
       'last_occurrence_at', 'created_at', 'updated_at',
     ])
   } finally {

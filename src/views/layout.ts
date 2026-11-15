@@ -52,6 +52,12 @@ export interface LayoutOptions {
   active?: string
   notice?: string
   error?: string
+  /**
+   * #472 slice 3: a page's own messages. They are merged with the redirect
+   * message and rendered by the same builder, so a page cannot order or classify
+   * its banners a second time.
+   */
+  notifications?: PageNotification[]
   /** Defaults to the running process's surface; a test passes a fixture root. */
   release?: ReleaseSurface
 }
@@ -137,7 +143,15 @@ export type NotificationLevel = 'error' | 'warning' | 'success' | 'info'
 
 export interface PageNotification {
   level: NotificationLevel
-  text: string
+  /** Plain text; the builder escapes it. */
+  text?: string
+  /**
+   * #472 slice 3: already-escaped inner HTML for a page message that carries a
+   * list, an action button, or a link the anchor rule cannot express. The page
+   * owns the escaping; the stack owns the severity class, the region and the
+   * dismiss control, so a structured message is not a second classification.
+   */
+  html?: string
   /** Two entries with the same key render once; defaults to the text itself. */
   key?: string
   link?: { href: string; anchor: string } | null
@@ -162,7 +176,8 @@ const LEVEL_CLASS: Record<NotificationLevel, string> = {
 export function notificationStack(locale: Locale, entries: PageNotification[]): string {
   const kept = new Map<string, PageNotification>()
   for (const entry of entries) {
-    const key = entry.key ?? entry.text
+    const key = entry.key ?? entry.text ?? ''
+    if (key === '') continue
     const previous = kept.get(key)
     if (previous === undefined || LEVEL_ORDER[entry.level] < LEVEL_ORDER[previous.level]) kept.set(key, entry)
   }
@@ -173,7 +188,7 @@ export function notificationStack(locale: Locale, entries: PageNotification[]): 
   const messages = ordered
     .map(
       (entry) =>
-        `<div class="${LEVEL_CLASS[entry.level]}" data-notification data-level="${entry.level}"><span class="banner-text">${bannerHtml(entry.text, entry.link ?? null)}</span><button type="button" class="banner-dismiss" data-dismiss aria-label="${dismissLabel}" title="${dismissLabel}">×</button></div>`,
+        `<div class="${LEVEL_CLASS[entry.level]}" data-notification data-level="${entry.level}"><span class="banner-text">${entry.html ?? bannerHtml(entry.text ?? '', entry.link ?? null)}</span><button type="button" class="banner-dismiss" data-dismiss aria-label="${dismissLabel}" title="${dismissLabel}">×</button></div>`,
     )
     .join('')
   return `<section class="banner-stack" aria-live="polite" data-notification-stack>${messages}</section>`
@@ -201,6 +216,10 @@ export function layout(options: LayoutOptions): string {
   const messages: PageNotification[] = []
   if (error !== undefined && error !== '') messages.push({ level: 'error', text: error, link: errorLink })
   if (notice !== undefined && notice !== '') messages.push({ level: 'success', text: notice })
+  // A page's own messages join the same list, so the order and the de-duplication
+  // happen once. The redirect message keeps its own key (the text), which is the
+  // seam where a redirect and a page banner for the same event collapse.
+  for (const entry of options.notifications ?? []) messages.push(entry)
   const preview = viewer !== undefined && viewer !== null && viewer.preview === true
   const release = options.release ?? releaseSurface()
   // #93: "current page" is a claim about the document, so it belongs to the link

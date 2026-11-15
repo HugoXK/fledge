@@ -4,10 +4,11 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 
 // The contract of issue #80, as a structural test: the file may carry no stored
-// secret, no file-level permissions block, no pull-request or release command and
-// no local tag command, and the tag write exists only as the two API calls. Every
-// assertion here fails on the pre-#80 file, where `RELEASE_TOKEN` gated the run,
-// the permissions block was file-level, and the tag came from
+// secret, no file-level permissions block, no pull-request creation or release
+// command and no local tag command. Auto-merge is the one deliberate exception:
+// it is enabled only on the mechanical release PR with a pinned head commit.
+// Every assertion here fails on the pre-#80 file, where `RELEASE_TOKEN` gated the
+// run, the permissions block was file-level, and the tag came from
 // `git tag`/`git push origin "$TAG"`.
 
 const daily = readFileSync('.github/workflows/daily-release.yml', 'utf8')
@@ -111,6 +112,16 @@ test('the team token is the only stored secret, and it is not the reviewer token
   assert.equal(/token: \$\{\{/.test(daily), false, 'the checkout uses the default token')
 })
 
+test('the opener token is readable only through the release environment (#527)', () => {
+  // The repository scope meant every workflow on `main` could read the opener
+  // token. The workflow half of the fix is this one key; the environment, its
+  // secret and the deletion of the repository secret are owner actions, so this
+  // test pins only what the file can promise — and it fails on the pre-#527 file,
+  // where neither job declares an environment.
+  assert.match(job('release'), /^ {4}environment: release$/m, 'the release job declares the environment that holds the opener token')
+  assert.doesNotMatch(job('tag'), /^ {4}environment:/m, 'the tag job runs on GITHUB_TOKEN only and must not inherit the opener environment')
+})
+
 test('the release job runs on a push too, and the trigger predicate decides whether that push plans', () => {
   // #315: the event name is no longer the planning gate. A push is eligible
   // because the rule's input changes only on a push, and the summary says what
@@ -150,13 +161,17 @@ test('only the trigger can let a run push, and a manual dry run never does', () 
   assert.match(pushStep, /if: \$\{\{ inputs\.dry_run != true && steps\.trigger\.outputs\.plan == 'true' && steps\.opener\.outputs\.ready == 'true' \}\}/)
 })
 
-test('the file never creates, merges or releases a pull request with gh, and never creates a tag with a git command', () => {
-  for (const forbidden of ['gh pr create', 'gh pr merge', 'gh release', 'git tag', 'git push origin "$TAG"', 'git push --tags', '--admin']) {
+test('the file never creates or releases a pull request with gh, and auto-merge is pinned to the mechanical PR', () => {
+  for (const forbidden of ['gh pr create', 'gh release', 'git tag', 'git push origin "$TAG"', 'git push --tags', '--admin']) {
     assert.equal(daily.includes(forbidden), false, `"${forbidden}" must not appear`)
   }
   const pushes = [...daily.matchAll(/git push /g)]
   assert.equal(pushes.length, 1, 'exactly one git push, of the release branch')
   assert.ok(daily.includes('git push origin "$BRANCH"'), 'that push is the release branch')
+  assert.match(daily, /gh pr merge "\$PR" --auto --squash --match-head-commit "\$PUSHED"/, 'auto-merge names the PR and pins its head commit')
+  const step = between('      - name: Enable auto-merge on the release pull request', '      - name: Comment on #80')
+  assert.match(step, /steps\.open\.outputs\.state == 'opened' \|\| steps\.open\.outputs\.state == 'reused'/)
+  assert.doesNotMatch(step, /--admin/)
 })
 
 test('the tag write is the two API calls on the merge commit and nothing else', () => {
@@ -347,7 +362,9 @@ test('the surface this branch adds is declared, and the workflow runs no other r
 test('release.yml is not folded into this change and knows nothing about the tag write', () => {
   assert.equal(/git\/tags/.test(release), false)
   assert.equal(/git\/refs/.test(release), false)
-  assert.match(release, /Verify the tag is an ancestor of main/)
+  // #648 renamed this step and added the provenance read beside the ancestor
+  // check; the write stays in the tag job, so the two prohibitions above hold.
+  assert.match(release, /- name: Verify the tag's provenance/)
 })
 
 test('an added test or script is held to the release lists only on a release branch', () => {

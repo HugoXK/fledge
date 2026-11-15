@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
+import type { UserRow } from '../src/db.js'
 import { Jobs } from '../src/jobs/service.js'
 import type { Runner } from '../src/jobs/runner.js'
 import { sweepExpiredTrials } from '../src/users/trial.js'
@@ -11,11 +12,28 @@ import { MemoryMailer, makeUser, testConfig } from './helpers.js'
 // `trial.expired` audit row the console already reads (#279), and "used" means a
 // repository or the audit entry that recorded one — never a login.
 const DAY = 86_400_000
+const HOUR = 3_600_000
 const NOW = Date.parse('2026-11-11T12:00:00.000Z')
 
 function backdate(store: Store, id: string, days: number): void {
   store.run('UPDATE users SET created_at = ? WHERE id = ?', new Date(NOW - days * DAY + 60_000).toISOString(), id)
 }
+
+// #690: an account already rejected, with a `trial.expired` row old enough to be
+// past the purge grace window — the state a hand-run sweep must leave alone when
+// it names another login.
+function rejectedPastGrace(store: Store, login: string, hoursOld = 100): UserRow {
+  const user = makeUser(store, { login, status: 'rejected' })
+  store.audit(user.id, 'trial.expired', 'no repository within 7 days of registration')
+  store.run(
+    'UPDATE audit_log SET at = ? WHERE user_id = ? AND action = ?',
+    new Date(NOW - hoursOld * HOUR).toISOString(),
+    user.id,
+    'trial.expired',
+  )
+  return store.userById(user.id)!
+}
+
 
 function trialAudits(store: Store, userId: string): number {
   return store.listAudit(200).filter((row) => row.user_id === userId && row.action === 'trial.expired').length
@@ -216,6 +234,56 @@ test('one login can be swept on its own', async () => {
     assert.equal(store.userById(second.id)?.status, 'rejected')
     assert.equal(store.userById(first.id)?.status, 'approved', 'the filter swept another account')
     assert.equal(mailer.messages.length, 1)
+  } finally {
+    store.close()
+  }
+})
+
+// #823: a manual `--login` run is a scope promise. The purge phase used to be
+// called without the filter, so one named account erased every other rejected
+// account past the grace window — an erasure the retention row cannot attribute.
+test('a manual --login sweep leaves every other expired account alone', async () => {
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  try {
+    const other = rejectedPastGrace(store, 'first-lapsed')
+    const named = makeUser(store, { login: 'second-lapsed', status: 'approved' })
+    backdate(store, named.id, 8)
+
+    const result = await sweepExpiredTrials(store, mailer, testConfig(), { now: new Date(NOW), login: 'second-lapsed' })
+
+    assert.deepEqual(result.rejected, ['second-lapsed'], 'the sweep did not honour the login filter')
+    assert.deepEqual(
+      result.purge.candidates.map((row) => row.login),
+      [],
+      'the purge phase selected an account outside the requested scope',
+    )
+    assert.deepEqual(result.purge.purged, [], 'the scoped run purged an account it was not asked about')
+    assert.ok(store.userById(other.id), 'a scoped sweep erased an account outside the login')
+    assert.equal(
+      store.listAudit(200).filter((row) => row.action === 'trial.purged' || row.action === 'trial.purge_skipped').length,
+      0,
+      'the scoped run wrote a purge decision for another account',
+    )
+  } finally {
+    store.close()
+  }
+})
+
+// Non-regression companion: narrowing the phase must not disable it. A global
+// run still erases every unused candidate past the grace window.
+test('a global sweep still purges every unused account past the grace window', async () => {
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  try {
+    const first = rejectedPastGrace(store, 'first-lapsed')
+    const second = rejectedPastGrace(store, 'second-lapsed', 90)
+
+    const result = await sweepExpiredTrials(store, mailer, testConfig(), { now: new Date(NOW) })
+
+    assert.deepEqual(result.purge.purged.sort(), ['first-lapsed', 'second-lapsed'], 'the global sweep stopped purging')
+    assert.equal(store.userById(first.id), undefined, 'the first candidate survived the global sweep')
+    assert.equal(store.userById(second.id), undefined, 'the second candidate survived the global sweep')
   } finally {
     store.close()
   }
