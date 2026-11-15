@@ -506,6 +506,12 @@ node scripts/action-pins.mjs   # checks the tree: 40-hex pin plus `# <version>` 
 `Not run:`), the changelog fragment and docs obligations, the `Written-by`
 writer, and any `risk:T*` label against the computed tier.
 
+`pr-lint` is its own workflow (`.github/workflows/pr-lint.yml`), so a fixed PR
+body repaints that check and nothing else. Its activity types are `opened`,
+`synchronize`, `reopened`, `ready_for_review` and `edited`; the review gate
+keeps GitHub's default three and is not restarted by a body edit, because
+`review-gate` is the check that must move only when a verdict does.
+
 `review-gate` runs on `pull_request`, `pull_request_review`, `merge_group` and on
 a verdict posted as a comment by an owner, member or collaborator
 (`issue_comment`), and it parses the newest conclusion at the PR head:

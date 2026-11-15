@@ -1043,7 +1043,10 @@ test('every checkout in this workflow is pinned to a base ref, never the pull re
     assert.match(text, /base\.sha|base_sha|default_branch/, `checkout at line ${i + 1} must pin the base side`)
     assert.doesNotMatch(text, /pull_request\.head/, `checkout at line ${i + 1} must not check out the head`)
   }
-  assert.ok(checked >= 4, `expected at least four checkouts, found ${checked}`)
+  // Three since #753 moved the `pr-lint` job (and its checkout) into its own
+  // workflow: the gate, the repair path and the comment path. The floor is
+  // asserted so a checkout that loses its ref pin cannot pass by being absent.
+  assert.ok(checked >= 3, `expected at least three checkouts, found ${checked}`)
 })
 
 test('actions: write is granted only to the two jobs that re-run a workflow run', () => {

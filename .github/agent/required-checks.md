@@ -18,7 +18,7 @@ The branch protection API currently enforces three contexts directly:
 |---|---|---|
 | `ci-ok` | `ci.yml` | every aggregate job succeeded at the same tip |
 | `review-gate` | `review-gate.yml` | a PASS at that tip from the required reviewer |
-| `pr-lint` | `review-gate.yml` | the PR body, fragment and docs obligations |
+| `pr-lint` | `pr-lint.yml` | the PR body, fragment and docs obligations |
 
 Two more checks are enforced **inside** `ci-ok` rather than as separate required
 contexts:

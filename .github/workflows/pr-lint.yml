@@ -1,0 +1,51 @@
+name: pr-lint
+
+# #753: `pr-lint` used to be the last job of `review-gate.yml`, whose trigger is a
+# bare `pull_request:`. GitHub's default activity types are `opened`,
+# `synchronize` and `reopened`, so a pull request whose body was the only thing
+# wrong never got a second lint run — the check could not repaint for the one
+# thing it reads. Adding `edited` to the review gate would have repainted
+# `review-gate` itself on a body edit, which is exactly the check that must not
+# move for a reason that is not a review. So the lint owns its own workflow and
+# its own activity types, and every other workflow here keeps the default three.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+# Default-deny, as in every other workflow here: the lint reads the body and the
+# diff through the API and writes nothing but its own check run.
+permissions:
+  contents: read
+  pull-requests: read
+
+# Two body edits in a row must not leave an older lint answering for the newer
+# body: one run per pull request, and a new edit cancels the run it supersedes.
+concurrency:
+  group: pr-lint-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-lint:
+    name: pr-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Repeated at the job level because a job-level block replaces the workflow
+    # default instead of merging with it; a job added here later cannot inherit a
+    # write scope by accident.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # The base ref, never the head: a pull request that stubs scripts/pr-lint.mjs
+      # must not be the thing that lints its own body.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Validate the pull request body and obligations
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/pr-lint.mjs
