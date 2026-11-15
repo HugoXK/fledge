@@ -114,6 +114,64 @@ export function addedAlerts(baselineKeys, alerts) {
   return highAlerts(alerts).filter((alert) => !known.has(alertKey(alert)))
 }
 
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+// #645: the baseline is a reviewed allowlist, not a permanent one. An open
+// result names an owner and an expiry; a dismissed result records the alert-UI
+// decision and never expires. A malformed entry is an error in the reader, not a
+// key that silently falls out of the set, and the gate fails closed on it.
+export function validateBaseline(baseline, now = Date.now()) {
+  if (!isPlainObject(baseline)) return { entries: [], errors: ['the baseline is not a JSON object'] }
+  if (!Array.isArray(baseline.alerts)) return { entries: [], errors: ['the baseline alerts is not a list'] }
+  const entries = []
+  const errors = []
+  baseline.alerts.forEach((value, index) => {
+    const where = `alerts[${index}]`
+    if (!isPlainObject(value)) {
+      errors.push(`${where} is not an object`)
+      return
+    }
+    const before = errors.length
+    const ruleId = typeof value.ruleId === 'string' ? value.ruleId.trim() : ''
+    const path = typeof value.path === 'string' ? value.path.trim() : ''
+    const line = value.line
+    const severity = typeof value.severity === 'string' ? value.severity.trim() : ''
+    const reason = typeof value.reason === 'string' ? value.reason.trim() : ''
+    if (ruleId === '') errors.push(`${where}.ruleId is missing`)
+    if (path === '') errors.push(`${where}.path is missing`)
+    if (!Number.isInteger(line) || line < 1) errors.push(`${where}.line is not a positive integer`)
+    if (severity === '') errors.push(`${where}.severity is missing`)
+    if (reason === '') errors.push(`${where}.reason is missing`)
+    if (value.dismissed !== undefined && typeof value.dismissed !== 'boolean') errors.push(`${where}.dismissed is not a boolean`)
+    const dismissed = value.dismissed === true
+    const owner = typeof value.owner === 'string' ? value.owner.trim() : ''
+    let expires = ''
+    if (dismissed) {
+      if (value.expires !== undefined) errors.push(`${where}.expires must be absent for a dismissed entry`)
+    } else {
+      if (owner === '') errors.push(`${where}.owner is missing`)
+      if (typeof value.expires !== 'string' || value.expires.trim() === '') {
+        errors.push(`${where}.expires is missing`)
+      } else {
+        expires = value.expires.trim()
+        const at = Date.parse(expires)
+        if (Number.isNaN(at)) errors.push(`${where}.expires is not an ISO date`)
+        else if (at <= now) errors.push(`${where} expired on ${expires} (owner ${owner === '' ? 'unrecorded' : owner})`)
+      }
+    }
+    if (errors.length !== before) return
+    entries.push({
+      ruleId, path, line, severity, reason,
+      ...(owner === '' ? {} : { owner }),
+      ...(expires === '' ? {} : { expires }),
+      ...(dismissed ? { dismissed: true } : {}),
+    })
+  })
+  return { entries, errors }
+}
+
 // #307: this gate passes a medium or low result by severity, and the branch still
 // refuses the merge while that result's review thread is open — `review-gate` owns
 // that decision (#308) and fails on any unresolved thread. Two readers describing

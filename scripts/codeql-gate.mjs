@@ -10,7 +10,7 @@
 // stays in `review-gate` (#308), and this gate's exit code never changes.
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { acceptedAlerts, addedAlerts, alertKey, highAlerts, parseSarif, threadAt } from './lib/codeql-alerts.mjs'
+import { acceptedAlerts, addedAlerts, alertKey, highAlerts, parseSarif, threadAt, validateBaseline } from './lib/codeql-alerts.mjs'
 import { pullRequestNumber, readEvent } from './lib/gate-env.mjs'
 import { reviewThreadsClient } from './lib/review-threads.mjs'
 
@@ -113,7 +113,12 @@ for (const file of files) {
   }
 }
 
-const baselineKeys = (baseline.alerts ?? []).map((alert) => alertKey(alert))
+const checked = validateBaseline(baseline, Date.now())
+if (checked.errors.length > 0) {
+  for (const error of checked.errors) console.error(`codeql-gate: baseline: ${error}`)
+  process.exit(1)
+}
+const baselineKeys = checked.entries.map((alert) => alertKey(alert))
 const added = addedAlerts(baselineKeys, alerts)
 const highs = highAlerts(alerts)
 // Printed next to every verdict: a run that produced no results and one that
@@ -190,6 +195,10 @@ if (Array.isArray(threads)) {
   }
 }
 
+for (const entry of checked.entries) {
+  if (entry.dismissed === true) continue
+  console.log(`codeql-gate: baseline entry ${alertKey(entry)} owner=${entry.owner} expires=${entry.expires}`)
+}
 console.log(
   `codeql-gate: ok (${summary}, 0 added; all in the baseline of ${baselineKeys.length} recorded at ${baseline.recordedAtSha ?? 'an unrecorded sha'})`,
 )

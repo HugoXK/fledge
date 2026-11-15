@@ -48,6 +48,11 @@ export function registeredMutations(source = APP_SOURCE): string[] {
   // reader cannot read. Refuse it: a skipped registration is an unclassified
   // mutating route passing a green sweep.
   if (/app\.route\s*\(/.test(text)) throw new Error('the sweep cannot read app.route(...); teach registeredMutations or register with a verb')
+  // A registration quoted with double quotes is a route too. The pattern below
+  // reads single quotes because that is the file's style, so a double-quoted one
+  // would be skipped as "not a route" — the same silent hole `app.route` had.
+  const doubleQuoted = /app\.([A-Za-z]+)\(\s*"([^"]*)"/.exec(text)
+  if (doubleQuoted !== null) throw new Error(`the sweep cannot read app.${doubleQuoted[1]}("${doubleQuoted[2]}"); register with single quotes or teach registeredMutations`)
   const found: string[] = []
   for (const match of text.matchAll(/app\.([A-Za-z]+)\(\s*'([^']*)'/g)) {
     const form = (match[1] ?? '').toLowerCase()
@@ -129,6 +134,16 @@ test('#708 a route that takes a class window is not filed under a lighter class'
 
 // `app.route({ method, url })` carries the method in an object, so the sweep's
 // shape cannot read it. Refusing it keeps the next one from being skipped.
+// A double-quoted registration would never match the reader's single-quote
+// pattern, so it would be skipped as if it were not a route at all. Refusing it
+// is what makes the sweep complete rather than mostly complete.
+test('#708 the sweep refuses a registration quoted with double quotes', () => {
+  assert.throws(
+    () => registeredMutations('app.post("/repos/:id/run", async () => {})'),
+    /cannot read app\.post\("/,
+  )
+})
+
 test('#708 the sweep refuses app.route, whose method is in an object', () => {
   assert.throws(
     () => registeredMutations("app.route({ method: 'POST', url: '/repos/:id/settings' }, async () => {})"),

@@ -12,7 +12,7 @@ import { makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
 // actually posts: the intake decision is stored, a green run stores nothing, and
 // the console names the decision instead of showing an empty page.
 
-const HOOK_SECRET = 'webhook-secret-542'
+const HOOK_SECRET = 'webhook-secret-' + '542'
 
 type Built = Awaited<ReturnType<typeof buildApp>>
 

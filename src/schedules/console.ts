@@ -45,6 +45,12 @@ export interface ScheduleConsoleState {
   lastSuccess: OccurrenceView | null
   /** There is no delivery outbox in this slice, so the result is never known. */
   delivery: 'unknown'
+  /**
+   * #544 slice 6: the schedule layer of the run budget. `dailyRuns` null is
+   * unbounded; `runsToday` null is unknown, which the page prints as unknown and
+   * never as zero. `remaining` is null whenever either side is null.
+   */
+  budget: { dailyRuns: number | null; runsToday: number | null; remaining: number | null }
   occurrences: OccurrenceView[]
 }
 
@@ -68,6 +74,8 @@ function viewOf(row: ScheduleOccurrenceRow, now: number): OccurrenceView {
  * `Store.listScheduleOccurrences` returns: newest logical time first. `jobStatus`
  * resolves a dispatched occurrence's job so a failed dispatch is not mistaken for
  * a success; an unknown job answers null and is not counted as either.
+ * `runsToday` is `Store.countScheduleDispatchesBetween` over the current UTC day;
+ * a caller that did not read it leaves it out, and the page says unknown.
  */
 export function scheduleConsole(input: {
   repoId: string
@@ -75,6 +83,7 @@ export function scheduleConsole(input: {
   occurrences: ScheduleOccurrenceRow[]
   now: number
   jobStatus: (jobId: string) => string | null
+  runsToday?: number
 }): ScheduleConsoleState {
   const { row, now } = input
   const schedule = row === undefined ? null : scheduleFromRow(row)
@@ -85,6 +94,8 @@ export function scheduleConsole(input: {
       ? 'unreadable'
       : row.kind === 'cron' ? 'cron' : 'interval'
   const lastSuccess = occurrences.find((occurrence) => occurrence.jobId !== null && input.jobStatus(occurrence.jobId) === 'succeeded') ?? null
+  const dailyRuns = row === undefined ? null : row.daily_runs
+  const runsToday = row === undefined ? null : (input.runsToday ?? null)
   return {
     kind,
     schedule,
@@ -95,6 +106,11 @@ export function scheduleConsole(input: {
     last: occurrences[0] ?? null,
     lastSuccess,
     delivery: 'unknown',
+    budget: {
+      dailyRuns,
+      runsToday,
+      remaining: dailyRuns === null || runsToday === null ? null : Math.max(0, dailyRuns - runsToday),
+    },
     occurrences,
   }
 }

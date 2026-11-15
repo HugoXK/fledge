@@ -95,8 +95,9 @@ The script refuses while a job is active unless `--force` is passed. It updates
 `bridge.env`, `repo_instances.bridge_token_enc` and the matching `api_tokens` row
 and restarts each bridge. The GitHub PAT used by the development routine is not
 managed by this script: create a new classic PAT with `repo` scope in GitHub
-settings, run `NEW_GITHUB_TOKEN=... node scripts/rotate-github-token.mjs`, and
-revoke the old token.
+settings, run `node scripts/rotate-github-token.mjs --token-file <0600 file>`
+(or pipe the token with `--token-file -`), and revoke the old token. The token is
+never passed on the command line or in the environment.
 
 ## 3. SMTP
 
@@ -256,6 +257,20 @@ release in the same week bumps the patch (`0.4.0 -> 0.4.1`). The planner reads
 the last tag's commit time and the workflow's run time; if either is unreadable
 it falls back to the minor, which is the first-release behaviour.
 
+#### Reliable slot trigger
+
+GitHub's `schedule` event is best-effort: on 2026-11-14 the `14:30Z` slot
+produced a run at `19:24Z`. `scripts/trigger-release.mjs` is the external
+trigger. A host cron or a Cloudflare Worker calls it at `14:30Z` (22:30
+Asia/Shanghai) with `GITHUB_REPOSITORY` and an Actions-write `GITHUB_TOKEN` in a
+`0600` env file; the script calls the `daily-release.yml` workflow_dispatch with
+`dry_run=false` and never prints the token. GitHub's `schedule` and the `15:30Z`
+catch-up stay as the fallback, and `release-trigger` makes a late run a no-op
+once the slot is filled. Install it only on a host whose clock is trustworthy
+(see #758) or on an NTP-backed scheduler; the example is
+`deploy/release-trigger.cron.example`. Raise one alert if no plan exists by
+`15:00Z`.
+
 A release that changes user-facing behaviour updates `README.md`,
 `README.zh.md` and the relevant `docs/` page in the same pull request. The
 documentation site builds from this repository's `README.md`, `README.zh.md` and
@@ -282,11 +297,24 @@ backstop: it dispatches `ci.yml` when an open same-repo pull request has no `CI`
 run at all at its head SHA, and it does not replace opening the PR with a real
 identity.
 
-The opener runs on the repository secret **`RELEASE_OPEN_TOKEN`** (Settings →
-Secrets and variables → Actions). Set it to a token for the team account —
-never the Reviewer's `HugoXK-bot` account — scoped to this repository alone, with
-`Contents: read` and `Pull requests: write` — it does not need push, because the
-workflow pushes `release/v<next>` before the opener runs. The opener reads
+The opener runs on the environment secret **`RELEASE_OPEN_TOKEN`** of the
+`release` environment (Settings → Environments → `release` → Environment
+secrets), not on a repository secret: the `release` job in
+`.github/workflows/daily-release.yml` is the only job that declares
+`environment: release`, so no other workflow on `main` can read the token, and
+the `tag` job gets no environment at all. Set it to a token for the team
+account — never the Reviewer's `HugoXK-bot` account — scoped to this repository
+alone, with `Contents: read` and `Pull requests: write` — it does not need push,
+because the workflow pushes `release/v<next>` before the opener runs.
+
+The environment must carry **no required reviewers**: the nightly runs
+unattended, and a protection rule blocks it exactly like a missing secret. Order
+matters too — the environment and its secret have to exist before the workflow
+change that names it merges, because a job that declares an environment reads
+repository secrets too until an environment secret of the same name overrides
+them. Since the repository secret is deleted in that same owner step, a nightly
+that runs between the two would fail the opener with `RELEASE_OPEN_TOKEN is not
+set`: loudly, before anything is pushed, and with nothing posted on #80. The opener reads
 `GET /user` and
 refuses a credential whose login is the review policy's `requiredPass`, so the
 reviewer account cannot open the release pull request even if it were installed

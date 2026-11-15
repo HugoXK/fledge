@@ -3,7 +3,16 @@
 // job on any action reference that is not a 40-hex pin with its tag comment.
 import { scanActorGates, scanWorkflows } from './lib/action-pins.mjs'
 
-const directory = '.github/workflows'
+// #640: the checker runs from the base branch, but the workflows it reads are
+// the pull request's own — they are the data under test, so the directory is an
+// argument.
+function argument(name, fallback) {
+  const index = process.argv.indexOf(name)
+  if (index === -1) return fallback
+  return process.argv[index + 1] ?? fallback
+}
+
+const directory = argument('--workflows', '.github/workflows')
 const report = scanWorkflows(directory)
 
 for (const finding of report.findings) {

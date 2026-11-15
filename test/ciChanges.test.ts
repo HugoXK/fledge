@@ -344,8 +344,13 @@ test('a base that is present but grafted is deepened before the diff is called u
 test('the classify step delegates the diff and keeps the every-gate fallback for other events', () => {
   const workflow = readFileSync(fileURLToPath(new URL('../.github/workflows/ci.yml', import.meta.url)), 'utf8')
   const step = workflow.slice(workflow.indexOf('- name: Classify the changed paths'), workflow.indexOf('\n  lint:'))
-  assert.match(step, /node scripts\/ci-changes\.mjs --git-base/, 'the classify step must delegate the diff so the fetch-before-fallback rule is testable')
-  assert.match(step, /\*\) node scripts\/ci-changes\.mjs --all; exit 0 ;;/, 'a push or schedule still verifies the whole tree')
+  // #640: the classifier is checked out from the base branch and told which
+  // checkout holds the pull request's commits; the diff itself is still delegated
+  // so the fetch-before-fallback rule stays testable.
+  assert.match(step, /node base\/scripts\/ci-changes\.mjs --repo \. --git-base/, 'the classify step must delegate the diff so the fetch-before-fallback rule is testable')
+  // #640: the gate-integrity helper tests the base tree for the file, so the pull
+  // request that introduces it still classifies; a push or schedule runs both.
+  assert.match(step, /\*\) node base\/scripts\/ci-changes\.mjs --all; gate_integrity --all; exit 0 ;;/, 'a push or schedule still verifies the whole tree')
   assert.doesNotMatch(step, /git diff/, 'the untestable shell diff is what fell through to --all; it must not come back')
 })
 

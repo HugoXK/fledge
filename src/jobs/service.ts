@@ -14,6 +14,8 @@ import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
 import { applyReport, findingId, type FindingState } from '../lib/securityFindings.js'
+import { budgetScopeWordZh, budgetStop, type BudgetScopeCandidate } from '../lib/budgetScope.js'
+import { identityPrincipalId } from '../identity/authorization.js'
 import { classifyFailure, providerRefusalCode, type EnqueueRefusalCode, type FailureCode } from '../lib/failure.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
@@ -49,6 +51,7 @@ import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
 import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader } from './continuity.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
+import { utcDayEnd, utcDayStart } from '../schedules/budget.js'
 import type { ScheduleRow } from '../db.js'
 import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTypeForKind, workTypeMayAutoMerge } from '../lib/workTypes.js'
 import { parseTriage } from '../lib/triage.js'
@@ -1480,6 +1483,30 @@ export class Jobs {
         this.store.notify(job.user_id, 'quota', `任务 ${jobId} 成本 ${jobCostCny.toFixed(2)} 元，超过单任务预算 ${repo.job_budget_cny.toFixed(2)} 元。`)
       }
     }
+    // #697: an `alert` scope never stops a job, so it speaks here instead — the
+    // finish notice is the only place an alert-only cap could be heard, and a
+    // cap nobody hears is not a cap.
+    if (repo !== undefined) {
+      const window = new Date(Date.now() - 30 * 86_400_000).toISOString()
+      const principalId = identityPrincipalId(job.user_id)
+      const alertScopes: Array<{ kind: 'repository' | 'principal'; id: string; capCny: number; spentUsd: number }> = []
+      const repoScope = this.store.getBudgetScope('repository', repo.id)
+      if (repoScope !== undefined) alertScopes.push({ kind: 'repository', id: repo.id, capCny: repoScope.cap_cny, spentUsd: this.store.repoUsageSince(repo.id, window) })
+      const principalScope = this.store.getBudgetScope('principal', principalId)
+      if (principalScope !== undefined) alertScopes.push({ kind: 'principal', id: principalId, capCny: principalScope.cap_cny, spentUsd: this.store.principalUsageSince(job.user_id, window) })
+      for (const scope of alertScopes) {
+        const scopeRow = scope.kind === 'repository' ? repoScope : principalScope
+        if (scopeRow === undefined || scopeRow.action !== 'alert') continue
+        // Same rule as the checkpoint: a cap compared with an unpriced call is a
+        // lower bound, and the notice says so rather than reading it as a pass.
+        const unpriced = scope.kind === 'repository' ? this.store.repoUnknownCountSince(scope.id, window) : this.store.principalUnknownCountSince(job.user_id, window)
+        const spentCny = scope.spentUsd * this.config.quota.usdCny
+        if (!(spentCny > scope.capCny)) continue
+        const bound = unpriced > 0 ? `（下界：另有 ${unpriced} 次调用未计价）` : ''
+        this.store.audit(job.user_id, 'job.budget_exceeded', `${jobId}: ${spentCny.toFixed(4)} > ${scope.capCny} (${scope.kind} ${scope.id})`)
+        this.store.notify(job.user_id, 'quota', `任务 ${jobId} 的${budgetScopeWordZh(scope.kind)}成本 ${spentCny.toFixed(2)} 元，超过预算 ${scope.capCny.toFixed(2)} 元${bound}。`)
+      }
+    }
     if (result.status === 'succeeded') {
       this.store.deleteSetting(`ops:repo_failing:${job.repo_id}`)
       this.store.resetRepoFailures(job.repo_id)
@@ -2620,12 +2647,36 @@ export class Jobs {
   // or `cancel` it stops the job here, at the checkpoint that first sees a
   // recorded cost, and the terminal callback that follows cannot revive it
   // because a paused or cancelled job answers terminal reports with a 409.
+  //
+  // #697: the same checkpoint enforces the repository and principal scopes, and
+  // it stays one function so a second enforcement point cannot disagree with
+  // this one. The job scope still reads `repos.job_budget_cny`; the two new
+  // scopes read `budget_scopes`. Precedence is job > repository > principal, and
+  // `budgetStop` decides which fire.
   private async enforceJobBudget(job: JobRow, repo: RepoRow | undefined): Promise<void> {
-    if (repo === undefined || repo.job_budget_cny <= 0) return
-    const action = repo.job_budget_action
-    if (action !== 'pause' && action !== 'cancel') return
+    if (repo === undefined) return
+    const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+    const candidates: BudgetScopeCandidate[] = []
+    if (repo.job_budget_cny > 0) {
+      candidates.push({ kind: 'job', id: job.id, capCny: repo.job_budget_cny, action: repo.job_budget_action, spentUsd: this.store.usageForJobChain(job.id) })
+    }
+    const repoScope = this.store.getBudgetScope('repository', repo.id)
+    if (repoScope !== undefined) {
+      candidates.push({ kind: 'repository', id: repo.id, capCny: repoScope.cap_cny, action: repoScope.action, spentUsd: this.store.repoUsageSince(repo.id, since) })
+    }
+    const principalId = identityPrincipalId(job.user_id)
+    const principalScope = this.store.getBudgetScope('principal', principalId)
+    if (principalScope !== undefined) {
+      candidates.push({ kind: 'principal', id: principalId, capCny: principalScope.cap_cny, action: principalScope.action, spentUsd: this.store.principalUsageSince(job.user_id, since) })
+    }
+    if (candidates.length === 0) return
+    // An `alert` scope is reported at the terminal transition, never here: it is
+    // not a stopping rule, so it must not shadow one that is.
+    if (!candidates.some((entry) => entry.action === 'pause' || entry.action === 'cancel')) return
     // No ledger row is an unknown cost, not a zero one: a provider error
     // deducts nothing, and reading that as "fits the budget" would be a lie.
+    // This guard keeps precedence at every scope, so an unpriced job is never
+    // read as fitting a repository or principal cap either.
     if (this.store.usageCountForJobChain(job.id) === 0) {
       const key = `job_budget_unknown:${job.id}`
       if (this.store.getSetting(key) === undefined) {
@@ -2635,13 +2686,14 @@ export class Jobs {
       }
       return
     }
-    const costCny = this.store.usageForJobChain(job.id) * this.config.quota.usdCny
-    if (!(costCny > repo.job_budget_cny)) return
-    const cancel = action === 'cancel'
-    const code = cancel ? 'JOB_BUDGET_CANCELLED' : 'JOB_BUDGET_PAUSED'
-    const reason = `${code}: 单任务成本 ${costCny.toFixed(2)} 元已超过预算 ${repo.job_budget_cny.toFixed(2)} 元。${cancel ? '提高单任务预算后重新开始任务。' : '提高单任务预算后从断点恢复，或重新开始任务。'}`
-    this.store.audit(job.user_id, cancel ? 'job.budget_cancelled' : 'job.budget_paused', `${job.id}: ${costCny.toFixed(4)} > ${repo.job_budget_cny}`)
-    this.store.notify(job.user_id, 'quota', `任务 ${job.id} 因单任务预算${cancel ? '取消' : '暂停'}：已用 ${costCny.toFixed(2)} 元，预算 ${repo.job_budget_cny.toFixed(2)} 元。提高预算或重新开始任务。`, code)
+    const stop = budgetStop(candidates, this.config.quota.usdCny)
+    if (stop === null) return
+    const cancel = stop.action === 'cancel'
+    const code = stop.code
+    const scopeWord = budgetScopeWordZh(stop.kind)
+    const reason = `${code}: ${scopeWord}成本 ${stop.spentCny.toFixed(2)} 元已超过预算 ${stop.capCny.toFixed(2)} 元。提高${scopeWord}预算后${cancel ? '重新开始任务。' : '从断点恢复，或重新开始任务。'}`
+    this.store.audit(job.user_id, cancel ? 'job.budget_cancelled' : 'job.budget_paused', `${job.id}: ${stop.spentCny.toFixed(4)} > ${stop.capCny.toFixed(4)} (${stop.kind} ${stop.id})`)
+    this.store.notify(job.user_id, 'quota', `任务 ${job.id} 因${scopeWord}预算${cancel ? '取消' : '暂停'}：已用 ${stop.spentCny.toFixed(2)} 元，预算 ${stop.capCny.toFixed(2)} 元。提高预算或重新开始任务。`, code)
     if (cancel) await this.cancelJob(job.id, reason)
     else await this.pauseJob(job.id, reason)
   }
@@ -3699,6 +3751,18 @@ export class Jobs {
         // instant — is a no-op.
         if (plan.skipped.length > 0) this.skipScheduledOccurrence(repo, plan, 'grace-exceeded')
         continue
+      }
+      // #544 slice 6: the schedule layer of the run budget. The instant is
+      // charged to its own logical UTC day, so a late or recovered run spends the
+      // day it was scheduled for and crossing midnight grants no fresh allowance.
+      // At the limit the instant is decided — a skipped row naming the reason —
+      // rather than left due, or every tick would re-decide it.
+      if (plan !== null && plan.dueAt !== null && scheduleRow !== undefined && scheduleRow.daily_runs !== null) {
+        const used = this.store.countScheduleDispatchesBetween(scheduleRow.id, utcDayStart(plan.dueAt), utcDayEnd(plan.dueAt))
+        if (used >= scheduleRow.daily_runs) {
+          this.skipScheduledOccurrence(repo, plan, 'budget-exceeded')
+          continue
+        }
       }
       if (this.store.activeJobForRepo(repo.id) !== undefined) {
         // A due instant that cannot run now is the misfire case: skip it with a

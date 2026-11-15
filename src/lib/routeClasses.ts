@@ -76,6 +76,9 @@ const EXPENSIVE_ROUTE_LIST = [
   'POST /repos/:id/releases/:releaseId/check',
   'POST /repos/:id/gate/sessions',
   'POST /repos/:id/gate/sessions/:sessionId/confirm',
+  // Applying a confirmed session writes a branch and opens a gate pull request in
+  // the repository: real work, and nothing is destroyed — expensive, unpaced.
+  'POST /repos/:id/gate/sessions/:sessionId/create',
   'POST /repos/:id/delivery/merge-clean',
   'POST /repos/:id/work',
   'POST /repos/:id/work/:workItemId/state',
