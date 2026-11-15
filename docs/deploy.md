@@ -337,6 +337,12 @@ Without `--base-url` the running-instance link is reported as skipped, and a
 release branch a merged release already deleted is skipped too — the pull
 request head is then the record of the tip.
 
+Release branches are retained on this repository. The ruleset `keep release
+branches` blocks deletion of `refs/heads/release/*`, so GitHub's "automatically
+delete head branches" setting leaves a merged release branch in place. That keeps
+the pre-squash tip readable and lets the branch link stay `ok`; a branch deleted
+before the ruleset existed still falls back to the pull request head.
+
 `--fixtures <file>` replays a recorded chain instead of reading the API, which is
 how the test suite exercises the same code path.
 
