@@ -402,7 +402,10 @@ per day. Test mail is rate-limited to one per minute.
   date, never an address.
 - **Account purge (owner option 2, #689).** In the same sweep, once a
   `trial.expired` row is at least `TRIAL_PURGE_GRACE_HOURS` (default 72) old, the
-  account is erased: one transaction deletes every row that names it or one of
+  account is erased. A hand run started with `--login <login>` applies that
+  login to the purge phase too, so it leaves every other rejected account in
+  place; the login must match the stored one exactly, since a differently cased
+  login selects nothing. The erasure is: one transaction deletes every row that names it or one of
   its repositories — including `sessions`, `api_tokens`, `repo_instances` and the
   other repo-scoped tables the cascade reaches, plus the plain-column rows no
   cascade sees (`artifact_versions.repo_id`, `audit_log.user_id`, `events`) and
