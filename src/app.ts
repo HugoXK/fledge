@@ -596,6 +596,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     keyGenerator: (request: FastifyRequest): string => rateLimitKey(request),
   }
 
+  // #708: the destructive class budget, read from config, for the routes that
+  // take the class after the eight that keep their literal window. Same key
+  // generator, so the ceiling is still a property of the route and the address.
+  const destructiveClassLimit = {
+    max: config.rateLimit.destructive.max,
+    timeWindow: config.rateLimit.destructive.windowMs,
+    keyGenerator: (request: FastifyRequest): string => rateLimitKey(request),
+  }
+
   const app = Fastify({
     logger: false,
     // Only the hops configured in TRUST_PROXY may add X-Forwarded-For; the
@@ -2800,6 +2809,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/team/stop', async (request, reply) => {
+    // #708: expensive — one team turn, paced before the session is read.
+    if (!limits.take('expensive', `team-stop:${rateLimitKey(request)}`)) return refuseTooMany(request, reply)
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     requireAdvanced(viewer)
     const body = form(request)
@@ -3322,6 +3333,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/jobs/:jobId/merge', async (request, reply) => {
+    // #708: expensive — a merge writes to the upstream repository.
+    if (!limits.take('expensive', `job-merge:${rateLimitKey(request)}`)) return refuseTooMany(request, reply)
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
@@ -3770,7 +3783,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(t('审核任务已排队。', 'Review job queued.'))}`)
   })
 
-  app.post('/repos/:id/role', async (request, reply) => {
+  app.post('/repos/:id/role', { config: { rateLimit: destructiveClassLimit } }, async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const body = form(request)
     const t = translator(request.locale ?? 'zh')
@@ -4102,7 +4115,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/settings?${failed.length === 0 ? 'notice' : 'error'}=${encodeURIComponent(message)}#model-providers`)
   })
 
-  app.post('/settings/providers/:id/delete', async (request, reply) => {
+  app.post('/settings/providers/:id/delete', { config: { rateLimit: destructiveClassLimit } }, async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
     const id = String((request.params as Record<string, string>).id)
     const provider = store.modelProviderById(id, viewer.user.id)

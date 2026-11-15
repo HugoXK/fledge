@@ -51,7 +51,7 @@ function post(built: Built, url: string, cookie: string, payload: string, locale
 // otherwise be answered (a redirect, a 400 or a 403), so only the limiter can
 // turn the last one into a 429. The routes keep separate buckets: exhausting one
 // destructive route must not refuse another.
-test('the five state-changing POST routes refuse the request after their class budget', async () => {
+test('the paced state-changing POST routes refuse the request after their class budget', async () => {
   await withApp(limitedConfig(), async (built, store) => {
     const superadmin = makeUser(store, { login: 'root-user', admin: true, superadmin: true, status: 'approved' })
     const target = makeUser(store, { login: 'target-user', status: 'approved' })
@@ -67,6 +67,14 @@ test('the five state-changing POST routes refuse the request after their class b
       { name: 'repository add', url: '/repos', cookie: ownerCookie, payload: formBody({ csrf: ownerCsrf }) },
       { name: 'rule save', url: `/repos/${repo.id}/rules`, cookie: ownerCookie, payload: formBody({ csrf: ownerCsrf, path: '../escape', content: 'x', expected_revision: '0' }) },
       { name: 'job start', url: `/repos/${repo.id}/run`, cookie: ownerCookie, payload: formBody({ csrf: ownerCsrf }) },
+      // #708: the remaining privileged routes the card names. The provider id
+      // and the job id do not exist, which is the point: the route is paced
+      // before it looks anything up, so a caller cannot probe for existence
+      // harder than it can ask.
+      { name: 'repository role', url: `/repos/${repo.id}/role`, cookie: ownerCookie, payload: formBody({ csrf: ownerCsrf, role: 'developer' }) },
+      { name: 'provider delete', url: '/settings/providers/nope/delete', cookie: ownerCookie, payload: formBody({ csrf: ownerCsrf }) },
+      { name: 'team stop', url: `/repos/${repo.id}/team/stop`, cookie: ownerCookie, payload: formBody({ csrf: ownerCsrf, target: 'chief' }) },
+      { name: 'job merge', url: `/repos/${repo.id}/jobs/nope/merge`, cookie: ownerCookie, payload: formBody({ csrf: ownerCsrf }) },
     ]
 
     for (const route of cases) {
