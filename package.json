@@ -13,7 +13,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint src test scripts bridge",
+    "lint": "node scripts/lint-warnings.mjs src test scripts bridge",
     "test": "tsx --test test/*.test.ts",
     "test:coverage": "tsx --test --experimental-test-coverage --test-coverage-lines=84 --test-coverage-include='src/**' test/*.test.ts",
     "check": "npm run lint && npm run typecheck && npm test && npm run build",
@@ -30,7 +30,8 @@
     "secret:scan": "node scripts/secret-scan.mjs",
     "slo:report": "node scripts/slo-report.mjs",
     "trial:sweep": "tsx scripts/trial-sweep.ts",
-    "visual:matrix": "tsx scripts/visual-matrix.ts"
+    "visual:matrix": "tsx scripts/visual-matrix.ts",
+    "lint:update": "node scripts/lint-warnings.mjs --update"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.5",

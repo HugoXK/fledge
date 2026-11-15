@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "policy": "Warnings in lint-warnings.baseline.json are the pre-existing ones; a new warning or a stale entry fails `npm run lint`. Regenerate with `npm run lint:update` in the same reviewed change that fixes a warning.",
+  "entries": [
+    {
+      "file": "src/app.ts",
+      "rule": "eslint(no-unused-vars)",
+      "message": "Type 'ManagementCode' is imported but never used.",
+      "count": 1
+    },
+    {
+      "file": "src/db.ts",
+      "rule": "eslint(no-unused-vars)",
+      "message": "Parameter 'jobId' is declared but never used. Unused parameters should start with a '_'.",
+      "count": 1
+    },
+    {
+      "file": "src/gateway/modelFallback.ts",
+      "rule": "eslint(no-unused-vars)",
+      "message": "Type 'ModelAttempt' is imported but never used.",
+      "count": 1
+    },
+    {
+      "file": "src/jobs/service.ts",
+      "rule": "eslint(no-unused-vars)",
+      "message": "Parameter 'trigger' is declared but never used. Unused parameters should start with a '_'.",
+      "count": 1
+    },
+    {
+      "file": "src/repos/github.ts",
+      "rule": "eslint(no-unused-vars)",
+      "message": "Interface 'WorkflowJobsPayload' is declared but never used.",
+      "count": 1
+    },
+    {
+      "file": "src/views/memory.ts",
+      "rule": "eslint(no-unused-vars)",
+      "message": "Parameter 't' is declared but never used. Unused parameters should start with a '_'.",
+      "count": 1
+    },
+    {
+      "file": "test/releaseOpen.test.ts",
+      "rule": "unicorn(no-useless-spread)",
+      "message": "Using a spread operator here creates a new object unnecessarily.",
+      "count": 4
+    },
+    {
+      "file": "test/theme.test.ts",
+      "rule": "eslint(no-unused-vars)",
+      "message": "Identifier 'conditionHolds' is imported but never used.",
+      "count": 1
+    }
+  ]
+}
