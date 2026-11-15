@@ -33,6 +33,7 @@ test('a docs-only diff classifies as documentation and keeps the suite runnable'
     docker: false,
     workflows: false,
     codeql: false,
+    deploy: false,
   })
 
   const workflow = readFileSync(fileURLToPath(new URL('../.github/workflows/ci.yml', import.meta.url)), 'utf8')
@@ -111,12 +112,43 @@ test('an unknown path is code and a Docker input rather than a skip', () => {
   assert.equal(changes.codeql, true)
 })
 
-test('deploy-only changes do not run the app gates', () => {
-  const changes = classifyChanges(['deploy/nginx.conf'])
-  assert.equal(changes.source, false)
+test('deploy-only changes run the deploy check instead of the app gates', () => {
+  const changes = classifyChanges(['deploy/nginx.conf', 'deploy/prometheus/fledge-alerts.yml'])
+  assert.equal(changes.deploy, true, 'the deploy flag is what starts deploy-check')
+  assert.equal(changes.source, false, 'deploy/ is not code, so the app gates may skip')
   assert.equal(changes.docker, false)
   assert.equal(changes.workflows, false)
   assert.equal(changes.codeql, false)
+
+  // The honest constraint: a deploy-only answer must never cover a source path.
+  // A mixed diff sets both flags, so the code gates still run and the deploy
+  // check still reads the deploy half; this is the refusal, not a warning.
+  const mixed = classifyChanges(['deploy/nginx.conf.example', 'src/app.ts'])
+  assert.equal(mixed.deploy, true, 'the deploy half must still be checked on a mixed diff')
+  assert.equal(mixed.source, true, 'a src/ path in the same diff must keep the code gates on')
+  assert.equal(mixed.codeql, true)
+})
+
+test('a code-only change does not start the deploy check', () => {
+  const changes = classifyChanges(['src/app.ts', 'test/app.test.ts'])
+  assert.equal(changes.deploy, false)
+  assert.equal(changes.source, true)
+})
+
+test('the deploy job starts only on a deploy flag, runs the syntax checks, and ci-ok refuses a skip', () => {
+  const workflow = readFileSync(fileURLToPath(new URL('../.github/workflows/ci.yml', import.meta.url)), 'utf8')
+  const deploy = jobBlock(workflow, 'deploy-check')
+  assert.match(deploy, /if: needs\.changes\.outputs\.deploy == 'true'/, 'deploy-check must be conditional on the deploy flag')
+  assert.match(deploy, /needs: changes/, 'deploy-check must read the classifier output')
+  assert.match(deploy, /node --check deploy\/cloudflare-email-worker\.js/, 'the worker must be parsed, not trusted to review')
+  assert.match(deploy, /promtool"\s+check rules deploy\/prometheus\/fledge-alerts\.yml/, 'the alert rules must be checked by promtool')
+  assert.match(deploy, /PROMTOOL_SHA256: [0-9a-f]{64}/, 'the promtool archive must be checksum-pinned, not a floating download')
+  assert.match(deploy, /systemd-analyze verify deploy\/fledge\.service/, 'the systemd sample must be offered to systemd-analyze')
+
+  const changes = jobBlock(workflow, 'changes')
+  assert.match(changes, /deploy: \$\{\{ steps\.classify\.outputs\.deploy \}\}/, 'the changes job must publish the deploy flag')
+  const ciOk = jobBlock(workflow, 'ci-ok')
+  assert.match(ciOk, /needs: \[[^\]]*\bdeploy-check\b/, 'ci-ok must accept a skipped deploy-check only through the flag')
 })
 
 test('an empty diff runs everything, because an unreadable diff must not shrink the gate', () => {
@@ -130,16 +162,23 @@ test('an empty diff runs everything, because an unreadable diff must not shrink 
     docker: true,
     workflows: true,
     codeql: true,
+    deploy: true,
   })
 })
 
-test('path predicates recognise the shapes the workflow relies on', () => {
+test('path predicates recognise the shapes the workflow relies on', async () => {
   assert.equal(isDocPath('docs/deploy.md'), true)
   assert.equal(isSourcePath('scripts/ci-ok.mjs'), true)
   assert.equal(isFrontendPath('src/app.ts'), true)
   assert.equal(isWorkflowPath('.github/agent/review-policy.json'), true)
   assert.equal(isDbPath('scripts/restore-drill-ci.mjs'), true)
   assert.equal(isSourcePath('docs/deploy.md'), false)
+  // A dynamic import so the red at the base tree is a named failing assertion
+  // rather than a crash on the whole file: the predicate is new in this change.
+  const { isDeployPath } = (await import('../scripts/lib/ciChanges.mjs')) as { isDeployPath?: (path: string) => boolean }
+  assert.equal(typeof isDeployPath, 'function', 'the classifier must export the predicate the workflow relies on')
+  assert.equal(isDeployPath?.('deploy/nginx.conf.example'), true)
+  assert.equal(isDeployPath?.('docs/deploy.md'), false)
 })
 
 // #752: a pull request whose branch was cut before the latest `main` carries a
