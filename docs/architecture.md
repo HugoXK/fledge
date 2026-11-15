@@ -531,7 +531,10 @@ revoke stays one click.
   zero cost, so spend stays a lower bound rather than a claim of "free" (#636).
   `users.quota_used_usd`, `jobs.cost_usd` and the CNY budgets are USD columns:
   only rows billed in USD reach them, and a row in another currency is reported
-  by `Store.costByCurrency()` in its own bucket instead of being converted.
+  by `Store.costByCurrency()` in its own bucket instead of being converted. A
+  row with no currency is the pre-#636 legacy shape and is the USD bucket, not a
+  second one: the label is resolved before the grouping, so an upgraded instance
+  shows one `USD` row (#702).
   `src/metrics/cost.ts` holds the price table, the cache-token rule and the
   unknown-vs-zero decision; the gateway only reads its answer.
 - At zero it returns HTTP 402 with `code: FLEDGE_QUOTA_EXHAUSTED` and a settings
@@ -573,6 +576,13 @@ also refreshed on the next job before dispatch. Iterate jobs go to the Chief,
 which must pass the job block to the Lead verbatim; review jobs go to the
 Reviewer only when the repository has enabled it. The Lead delegates to the
 member whose scope fits and posts the final callback exactly once.
+
+The admin page is ordered by the admin's work: Pending, Users, Jobs, Audit,
+Release and Backups. The release facts and the release chain share one `Release`
+section, and the section nav is a sticky underline tab row rather than a wall of
+pill links. An empty release chain says it is expected and keeps the operator
+command under a disclosure with a `<DATA_DIR>` placeholder, never the real host
+path.
 
 ### Team console and live events
 
@@ -1243,15 +1253,15 @@ branch and event, the attempt and the run link, so a red default branch is
 visible where the other work is instead of only in GitHub.
 
 The intake also reads the failed job's log for a `queued` row. It lists the run's
-jobs (`GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs`, at most two pages of
-100), picks the first job whose conclusion is `failure` or `timed_out`, and reads
-that job's log (`GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs`) through the
-repository's token. The log is capped at 8 MiB, and a redirect to a signed storage
-URL is followed without the GitHub token. The raw log is never stored or rendered:
-it goes through the single redactor and is reduced to a 4,000-character excerpt
-before it is written to `log_excerpt`. A token, GitHub or empty-log failure writes
-a redacted reason to `log_error` and keeps the intake row. An `ignored` row never
-spends a request on a log nobody will analyse.
+jobs (`GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs`, at most three pages
+of 100), picks the first job whose conclusion is `failure` or `timed_out`, and
+reads that job's log (`GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs`)
+through the repository's token. The log is capped at 8 MiB, and a redirect to a
+signed storage URL is followed without the GitHub token. The raw log is never
+stored or rendered: it goes through the single redactor and is reduced to a
+4,000-character excerpt before it is written to `log_excerpt`. A token, GitHub or
+empty-log failure writes a redacted reason to `log_error` and keeps the intake
+row. An `ignored` row never spends a request on a log nobody will analyse.
 
 The cited-line verifier (`src/actions/evidence.ts`) is the next building block:
 given the model's cited lines and the failed step's output it trims whitespace and
