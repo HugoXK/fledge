@@ -1978,6 +1978,28 @@ multicast, ULA, IPv6 loopback and IPv4-mapped private addresses; an exact
 `NOTIFY_WEBHOOK_ALLOWED_HOSTS` entry is the only way an operator may name a
 private self-hosted target. Errors name the host but never the secret or payload.
 
+## CI gate detection (#543, slice 1)
+
+The repository page carries a CI gate check, reached from its action row. It is
+read-only and answers whether the repository's own CI gates a merge, from four
+GitHub reads on the default branch: the `.github/workflows` directory, the
+contents of each workflow file, the branch protection, and the newest merged pull
+requests with the check runs on the commit that landed.
+
+`src/lib/ciGate.ts` is pure — the route hands it the facts — and it reports five
+findings: a workflow file exists; one triggers on `pull_request`; that one runs a
+test command; the default branch requires a check; and no pull request merged in
+the window landed without a successful check. A gap names the workflow file or the
+branch it read, so the operator can re-read the same evidence on GitHub. A
+protection read GitHub refuses is `unknown`, never `gated`; a report with no
+branch protection is `gaps`.
+
+The workflow trigger and test command are read as text, not parsed YAML, and the
+report quotes the line it matched. Nothing here creates a branch, a commit or a
+pull request on the user's repository: proposing the four lanes and opening one
+gate pull request after a human confirms is a later slice of #543, and it keeps
+the human-confirmed shape.
+
 ## Trust boundaries
 
 | Boundary | Control |
