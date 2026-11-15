@@ -33,7 +33,7 @@ import { log } from './lib/log.js'
 import type { PriorityLevel } from './lib/priority.js'
 import { decisionKindLabel, isDecisionKind } from './lib/taskDecision.js'
 import fastifyRateLimit from '@fastify/rate-limit'
-import { rateLimitKey, RateLimiter } from './lib/rateLimit.js'
+import { rateLimitKey, RateLimiter, RouteLimiters } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
 import { expiryFromDays, GATEWAY_SCOPE, isTokenScope, patExpiryDays } from './lib/tokens.js'
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
@@ -516,15 +516,25 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       idempotencyKey: parts.idempotencyKey,
     })
   }
-  const loginLimiter = new RateLimiter(30, 60_000)
+  // #708: every mutating route names its class here. One limiter per class,
+  // each route with its own bucket, all budgets from config so a deployment
+  // tightens a window with an env change. `apiLimiter` stays separate: it paces
+  // machine callers (webhooks, bridge callbacks) at a wider window than a form.
+  const limits = new RouteLimiters(config.rateLimit)
   const apiLimiter = new RateLimiter(120, 60_000)
+  // #708: one refusal for a limited mutation — the same bilingual page the
+  // sign-in routes already returned, never a bare status a form post cannot
+  // explain.
+  const refuseTooMany = (request: FastifyRequest, reply: FastifyReply) =>
+    htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
   // #460 review: the destructive actions below are rate-limited as well as
   // re-authenticated, through `@fastify/rate-limit` (registered `global: false`
   // below) so the limit is visible to callers and to CodeQL's Fastify model
   // rather than hidden in a helper no analyzer follows. The key stays the client
   // address through rateLimitKey, never a value the caller can mint; 60 a minute
   // leaves room for an admin working through a batch of approvals while still
-  // stopping a loop, a resubmitting page or a stolen cookie.
+  // stopping a loop, a resubmitting page or a stolen cookie. #708 left these two
+  // numbers alone on purpose: they keep the window they had.
   const destructiveLimit = {
     max: 60,
     timeWindow: 60_000,
@@ -943,7 +953,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const t = translator(request.locale ?? 'zh')
       return htmlPage(reply, 403, errorPage(config, request.viewer ?? null, 'OAuth 已启用', '这个部署已经启用 GitHub OAuth，请使用 GitHub 登录。', request.locale, { href: '/auth/github', label: t('使用 GitHub 登录', 'Sign in with GitHub') }))
     }
-    if (!loginLimiter.take(`token:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `token:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const token = (form(request).token ?? '').trim()
     if (token === '') return htmlPage(reply, 400, messagePage(config, '缺少 token', '请填写一个 GitHub token。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
     let profile
@@ -974,7 +984,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/auth/github', async (request, reply) => {
-    if (!loginLimiter.take(`login:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `login:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     if (!oauthConfigured(config)) {
       return htmlPage(reply, 503, errorPage(config, request.viewer ?? null, 'GitHub OAuth 未配置', '请先在 .env 设置 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET。', request.locale))
     }
@@ -985,7 +995,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/auth/github/reauthorize', async (request, reply) => {
     const viewer = requireApproved(request)
-    if (!loginLimiter.take(`reauth:${viewer.user.id}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `reauth:${viewer.user.id}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     if (!oauthConfigured(config)) return reply.redirect('/settings?error=' + encodeURIComponent('GitHub OAuth 未配置。'))
     const state = randomToken(32)
     store.createOAuthState(sha256Hex(state), addMinutes(20), safeLocalPath(queryText(request, 'next'), '/dashboard'))
@@ -994,7 +1004,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/auth/github/callback', async (request, reply) => {
-    if (!loginLimiter.take(`callback:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `callback:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const query = request.query as Record<string, string | undefined>
     const code = query.code ?? ''
     const state = query.state ?? ''
@@ -1769,6 +1779,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos', async (request, reply) => {
+    // #708: adding a repository provisions an instance, so it takes the
+    // expensive window before anything is created.
+    if (!limits.take('expensive', `repo-add:${rateLimitKey(request)}`)) return refuseTooMany(request, reply)
     const viewer = approvedCsrfGuard(request)
     const body = form(request)
     try {
@@ -2275,6 +2288,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/rules', async (request, reply) => {
+    // #708: a rule override steers every later job on this repository, so it
+    // takes the destructive window before the revision is read.
+    if (!limits.take('destructive', `rules-save:${rateLimitKey(request)}`)) return refuseTooMany(request, reply)
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     if (repo.repo_role !== 'maintainer') throw httpError(403, '只有 maintainer 可以编辑规则覆盖。', 'MAINTAINER_ONLY')
     const body = form(request)
@@ -3252,6 +3268,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/run', async (request, reply) => {
+    // #708: starting a job spends a model budget and a FlyBot slot, so it takes
+    // the expensive window before the repository is read.
+    if (!limits.take('expensive', `job-start:${rateLimitKey(request)}`)) return refuseTooMany(request, reply)
     const viewer = approvedCsrfGuard(request)
     const repo = store.getRepo(String((request.params as Record<string, string>).id))
     if (repo === undefined || repo.user_id !== viewer.user.id) throw httpError(404, '仓库不存在。', 'REPO_NOT_FOUND')
@@ -3867,7 +3886,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // and answers the same 429 page: CSRF proves the request came from our page, it
   // does not bound how many a stolen cookie may send.
   app.post('/settings/sessions/:hash/revoke', async (request, reply) => {
-    if (!loginLimiter.take(`session-revoke:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `session-revoke:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     const hash = String((request.params as Record<string, string>).hash)
     if (hash === viewer.sessionHash) {
@@ -3881,7 +3900,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/settings/sessions/revoke-others', async (request, reply) => {
-    if (!loginLimiter.take(`session-revoke-others:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `session-revoke-others:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     const removed = store.deleteOtherSessions(viewer.user.id, viewer.sessionHash)
     store.audit(viewer.user.id, 'session.revoked', `others=${removed}`)
@@ -3889,7 +3908,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/settings/sessions/rotate', async (request, reply) => {
-    if (!loginLimiter.take(`session-rotate:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `session-rotate:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     const raw = sessions.start(viewer.user.id, request)
     const hash = sha256Hex(raw)
@@ -4355,7 +4374,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/admin/deployments/promote', async (request, reply) => {
-    if (!loginLimiter.take(`deployment-promote:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `deployment-promote:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以记录部署。', 'ADMIN_ONLY')
     const parsed = parsePromotionForm(form(request), viewer.user.login)
@@ -4382,7 +4401,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/admin/deployments/rollback', async (request, reply) => {
-    if (!loginLimiter.take(`deployment-rollback:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `deployment-rollback:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以记录回滚。', 'ADMIN_ONLY')
     const parsed = parseRollbackForm(form(request), store.listDeployments(null, 500), viewer.user.login)
@@ -4416,7 +4435,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // Same limiter and window as the other mutating form (`/approve/:token`), and
     // an HTML page rather than the JSON 429 the API routes send: this is a form
     // post from a browser, and a raw JSON body would replace the page.
-    if (!loginLimiter.take(`platform-stop:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `platform-stop:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以停止平台。', 'ADMIN_ONLY')
     // #525: a stop drains the fleet and cancels work that a resume cannot bring
@@ -4435,7 +4454,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/admin/platform/resume', async (request, reply) => {
-    if (!loginLimiter.take(`platform-resume:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `platform-resume:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以恢复平台。', 'ADMIN_ONLY')
     const t = translator(request.locale ?? 'zh')
@@ -4540,6 +4559,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/admin/users/:id/role', async (request, reply) => {
+    // #708: the only route that grants `admin`, paced before the session is read.
+    if (!limits.take('destructive', `admin-role:${rateLimitKey(request)}`)) return refuseTooMany(request, reply)
     const viewer = approvedCsrfGuard(request)
     if (viewer.user.role !== 'superadmin') throw httpError(403, '仅超级管理员可访问。', 'SUPERADMIN_ONLY')
     const id = String((request.params as Record<string, string>).id)
@@ -4573,7 +4594,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/approve/:token', async (request, reply) => {
-    if (!loginLimiter.take(`approve:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `approve:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const token = String((request.params as Record<string, string>).token)
     const result = await approvals.apply(token, 'email-link')
     if (!result.ok) return htmlPage(reply, 400, messagePage(config, '无法处理', result.reason, request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
@@ -5143,7 +5164,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   const sweeper = setInterval(() => {
-    loginLimiter.sweep()
+    limits.sweep()
     apiLimiter.sweep()
     store.deleteExpiredSessions()
   }, 60_000)
