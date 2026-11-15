@@ -205,6 +205,16 @@ and approve; 120/min across credential, callback, webhook, inbound and metrics).
 
 The volume `fledge-data` holds the SQLite database and the console outbox.
 
+Both stages of the image pin `node:22-alpine` by digest (`Dockerfile`), so a tag
+that moves cannot change the toolchain under a build whose diff says nothing
+about it. Update the pin deliberately: resolve the digest a fresh pull reports
+for `22-alpine`, replace both `FROM` lines together, and keep the readable tag in
+the reference. `test/dockerfilePins.test.ts` fails on a `FROM` without
+`@sha256:<64 lowercase hex>` and on two stages pinned to different digests, so a
+dropped digest is a red suite rather than a silent tag. Dependabot's Docker
+ecosystem is the next slice; until it lands, the bump is manual and still needs a
+rebuild, the image scan and the smoke check.
+
 The runtime stage also copies `CHANGELOG.md` and `changelog.d/` into `/app`
 (`Dockerfile`, runtime stage). The console reads them for the footer version and
 the `/admin` release card, which states the running version, the newest changelog
