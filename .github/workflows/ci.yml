@@ -202,6 +202,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # The drill reuses this artifact instead of building a second tree (#643).
+      # The manifest binds every emitted file to the commit that emitted it, so a
+      # consumer can refuse an artifact that is not from its own head. The commit
+      # is `github.sha`, the same value the drill checks, so the two jobs cannot
+      # disagree about which tree is under test.
+      - name: Record the commit the artifact was built from
+        run: node scripts/dist-manifest.mjs write --dir dist --commit "$GITHUB_SHA"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fledge-dist
@@ -420,6 +427,15 @@ jobs:
           BASE_REF: ${{ steps.base.outputs.ref }}
         run: node scripts/risk-gate.mjs --base "$BASE_REF" --branch "$PR_BRANCH" --title "$PR_TITLE"
 
+  # The drill imports `dist/db.js` and the checked-out `scripts/` only: no file
+  # under `node_modules` is loaded at runtime, so a second `npm ci` and
+  # `npm run build` bought a deferred defect at best and two minutes of runner
+  # time at worst (#643). The build artifact is reused, and before the drill runs
+  # `scripts/dist-manifest.mjs verify` proves the artifact was emitted by the
+  # build job for this exact commit: a stale, partial, edited or foreign artifact
+  # fails here instead of standing in for this tree. A missing artifact fails at
+  # the download step — there is no fallback rebuild, because that fallback is
+  # what would hide a broken build job.
   restore-drill:
     name: restore-drill
     needs: [changes, build]
@@ -433,10 +449,13 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - run: npm run db:restore-drill:ci
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fledge-dist
+          path: dist
+      - name: Prove the artifact came from this commit
+        run: node scripts/dist-manifest.mjs verify --dir dist --commit "$GITHUB_SHA"
+      - run: node scripts/restore-drill-ci.mjs
 
   action-pins:
     name: action-pins
