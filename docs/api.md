@@ -668,8 +668,10 @@ and GitHub's `Date` header, in seconds, positive when the process is ahead.
 `clock.skewSeconds` is `null` — never `0` — when no measurement has succeeded:
 an unconfigured App, an unreachable GitHub, or a `Date` header that cannot be
 parsed leaves no reading, and `0` would claim a clock that was verified to be
-right. `clock.source` names the only source there is (`github`); a `null` never
-carries a source claim. The route reads the stored measurement and makes no
+right. `clock.source` is always present and names where the number comes from
+(`github`), the only source there is; when `skewSeconds` is `null` it still
+says where the measurement would have come from, so a client never has to
+handle a missing key. The route reads the stored measurement and makes no
 GitHub call of its own, so a health probe cannot turn into traffic against the
 API, and an outage cannot make readiness flap. An operator watches an absent
 `fledge_clock_skew_seconds` series as "not measured", not as "aligned" (see
