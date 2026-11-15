@@ -586,6 +586,13 @@ path. The page owns the Users section at `/admin#users`; `/admin/users` is an
 admin-only redirect to that section for older links and bookmarks, while
 `/admin/users/:id` remains the read-only support view.
 
+The admin page is a hub, not an approvals-only page. Its primary sections are
+Pending, Users, Jobs, Audit, Release and Backups; Product metrics, Webhook
+deliveries, Deployments, Audit and jobs search and Preview trials are module
+tiles at the bottom. Metrics and webhooks remain superadmin-only; the other
+three are available to admins. The opening paragraph always names the role and
+the audit logging, and carries no tool links.
+
 ### Team console and live events
 
 The team console is admin-only. `GET /api/repos/:id/team/events` streams
