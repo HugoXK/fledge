@@ -266,6 +266,35 @@ test('a successful callback stores attribution and posts a PR automation comment
   }
 })
 
+test('a repository model bypasses the platform quota check in enqueue and dispatch', async () => {
+  const base = testConfig()
+  const config = testConfig({ runner: { ...base.runner, queueDispatch: true } })
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'capture', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'repo-model-quota', status: 'approved', quota: 0 })
+    const repo = store.createRepo({ id: 'repo_model_quota', userId: user.id, owner: 'o', name: 'model-quota', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const plain = store.createRepo({ id: 'repo_plain_quota', userId: user.id, owner: 'o', name: 'plain-quota', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+
+    const provider = store.createModelProvider({ id: 'prv_model_quota', userId: user.id, label: 'Own', baseUrl: 'https://own.example/v1', keyEnc: encryptSecret('own-key', config.tokenEncryptionKey), allowPrivate: false })
+    const model = store.createProviderModel({ id: 'pvm_model_quota', providerId: provider.id, model: 'own-model', label: 'Own model' })
+    store.setRepoModelSelection(repo.id, [model.id], model.id)
+
+    const queued = await jobs.enqueue(repo, 'manual')
+    assert.equal(queued.ok, true, 'a repository selection is an own model')
+    await jobs.tick()
+    const dispatched = store.getJob(queued.job!.id)
+    assert.notEqual(dispatched?.status, 'quota_exhausted', 'dispatch uses the same own-model answer as enqueue')
+
+    const refused = await jobs.enqueue(plain, 'manual')
+    assert.equal(refused.ok, false)
+    assert.equal(refused.code, 'QUOTA_EXHAUSTED', 'a repository without a selection is still platform-funded')
+  } finally {
+    store.close()
+  }
+})
+
 test('quotaBlocked fails that user\'s active jobs and revokes their tokens', async () => {
   const config = testConfig()
   const store = new Store(':memory:')

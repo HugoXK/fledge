@@ -26,6 +26,22 @@
 The console is server-rendered from `src/views/` and styled by `public/app.css`;
 its design tokens are documented in [docs/ui.md](ui.md).
 
+The console serves two surfaces with different jobs (#235). `/dashboard` is the
+owner's home: one next action, the first-run checklist, cost and status.
+`/console` is the operator workspace: every repository, the job queue, quota and
+the inbox. Both URLs are kept, neither is re-gated, and the boundary is recorded
+in [0020](decisions/0020-owner-and-operator-surfaces.md). On the repository page
+the settings card keeps the loop controls inline — goal, target branch, role,
+auto-iterate, enabled, discovery interval, reviewer, auto-merge, plan-first — and
+puts the operator policy in one closed
+`<details data-advanced="repo-settings">` inside the same form: allowed and
+forbidden paths, merge method, team stage gate, branch protection, the monthly
+and per-job budgets with spend, the available models and providers, and the
+per-bot model assignment. `<details>` still submits its inputs, so
+`POST /repos/:id/settings` and every authorization check behind it are unchanged;
+the per-bot model restart stays its own form and therefore outside the settings
+form.
+
 Page messages are not per-page markup. `notificationStack` in
 `src/views/layout.ts` renders every `notice`/`error` a route hands the layout as
 one `section.banner-stack` with a single `aria-live="polite"` region inside it,
@@ -109,7 +125,16 @@ defect.
   the first job. Once the quota is exhausted or the platform model is not
   configured, the same step becomes required again; the answer is derived from
   the rows and config on every request, so no skip cookie or second store is
-  needed. The checklist reads the account's unfiltered job count, so a
+  needed. The step is completed by a repository selection (or the legacy
+  user-level model), not by a provider row: a provider that no repository has
+  selected links to the repository picker instead of claiming the step is done.
+  The quota next action is shown only while no usable own model exists. The
+  model row prints the remaining balance. Below `PLATFORM_QUOTA_COMFORT_CNY`
+  (default 50) it warns that the balance may not cover the first run and
+  recommends an own model now (Settings → Model, or the repository picker when a
+  provider is already configured); at or above it it only names the balance and
+  keeps the own-model link as a later option. The checklist reads the account's
+  unfiltered job count, so a
   `status`/`repo`/`kind`/`priority` filter on the recent-jobs table cannot bring
   the checklist back after the first job. Once a job exists the checklist is
   replaced by a first-run summary
@@ -121,7 +146,8 @@ defect.
 - **Next action** (`src/views/pages.ts`, `nextActionFor`): `/dashboard` opens
   with one server-derived action instead of a wall of equal cards. The order is
   the order a person would take them — an open question only they can answer, an
-  exhausted platform quota, the most urgent alert (stalled or slow job, stale
+  exhausted platform quota when no usable own model exists, the most urgent
+  alert (stalled or slow job, stale
   PR, invalid credential, repository budget), the account's newest failed job,
   the unfinished first-run step — and when none applies, an all-clear that names
   the known next scheduled automatic run (a repository the scheduler has never

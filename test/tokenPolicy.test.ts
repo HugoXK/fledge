@@ -255,7 +255,7 @@ test('a personal token named like a job token cannot write another user\'s job',
   })
   const config = testConfig({
     llm: { baseUrl: `${platform.url}/v1`, key: 'platform-key', model: 'platform-model', pricePerTokenUsd: 0.0000002 },
-    quota: { initialCny: 10, usdCny: 7.2 },
+    quota: { initialCny: 10, usdCny: 7.2, comfortCny: 50 },
   })
   const store = new Store(':memory:')
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })

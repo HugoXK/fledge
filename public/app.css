@@ -643,6 +643,7 @@ label.check { min-height: var(--touch); }
 .setup-step.is-done .setup-main strong { color: var(--muted); font-weight: 600; }
 .setup-done { color: var(--good); font-size: 12px; }
 .setup-blocked { color: var(--muted-2); font-size: 12px; }
+.setup-warning { color: var(--warn); font-size: 12px; line-height: 1.5; }
 
 .form { display: grid; gap: 13px; }
 .form label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
