@@ -20,12 +20,17 @@ export function leadMode(config: Config): LeadMode {
   return 'none'
 }
 
-export function triageToken(sessionSecret: string, ref: string): string {
-  return hmacHex(sessionSecret, `feedback-triage:${ref}`)
+export const TRIAGE_TOKEN_TTL_MS = 7 * 86_400_000
+
+export function triageToken(sessionSecret: string, ref: string, expiresAt = Date.now() + TRIAGE_TOKEN_TTL_MS): string {
+  return `${expiresAt}.${hmacHex(sessionSecret, `feedback-triage:${ref}:${expiresAt}`)}`
 }
 
-export function verifyTriageToken(sessionSecret: string, ref: string, supplied: string): boolean {
-  return supplied !== '' && safeEqual(supplied, triageToken(sessionSecret, ref))
+export function verifyTriageToken(sessionSecret: string, ref: string, supplied: string, now = Date.now()): boolean {
+  const [expires, signature] = supplied.split('.', 2)
+  const at = Number(expires)
+  if (!Number.isFinite(at) || at <= now || signature === undefined) return false
+  return safeEqual(signature, hmacHex(sessionSecret, `feedback-triage:${ref}:${expires}`))
 }
 
 // #814: the only text a Lead should paste into a public issue. It is derived
@@ -53,7 +58,8 @@ export interface TriagePacketInput {
 // triage API rather than pasted into a public issue.
 export function buildTriagePacket(input: TriagePacketInput): string {
   const { config, triage, feedback, error } = input
-  const token = triageToken(config.sessionSecret, triage.ref)
+  const tokenExpiresAt = Date.now() + TRIAGE_TOKEN_TTL_MS
+  const token = triageToken(config.sessionSecret, triage.ref, tokenExpiresAt)
   const summary = redact((feedback?.message ?? error?.error_message ?? '').trim()).slice(0, 500)
   const reporter = triage.user_login === null ? 'anonymous' : `@${triage.user_login}`
   const lines = [
@@ -68,6 +74,7 @@ export function buildTriagePacket(input: TriagePacketInput): string {
     '',
     `Read: GET ${config.baseUrl}/api/feedback/${encodeURIComponent(triage.ref)}`,
     `Authorization: Bearer ${token}`,
+    `Token expires: ${new Date(tokenExpiresAt).toISOString()}`,
     `Write: POST ${config.baseUrl}/api/feedback/${encodeURIComponent(triage.ref)}/triage`,
     'JSON: {status, user_message, public_summary, issue_url, pr_url, fixed_version}',
     'Statuses: user_error | duplicate | needs_info | confirmed | issue_opened | pr_opened | fixed | wontfix',

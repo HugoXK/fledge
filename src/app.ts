@@ -20,6 +20,7 @@ import { isTrialFilter } from './lib/trials.js'
 import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, errorReportMail, feedbackMail, rejectedEmail, testEmail } from './email/templates.js'
 import { deliverFeedbackToLead, publicIssueDraft, verifyTriageToken } from './feedback/lead.js'
+import { triageProblems } from './feedback/lifecycle.js'
 import { notifyFeedbackReporter, notifyReleasedFeedback } from './feedback/notify.js'
 import { notifyEmail } from './email/recipient.js'
 import { authenticateApiToken } from './lib/apiToken.js'
@@ -4261,25 +4262,24 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const triage = store.feedbackTriageByRef(ref)
     if (triage === undefined) return reply.code(404).send({ error: { type: 'not_found', message: 'No such feedback reference' } })
     const body = (request.body ?? {}) as Record<string, unknown>
-    const allowed = new Set(['user_error', 'duplicate', 'needs_info', 'confirmed', 'issue_opened', 'pr_opened', 'fixed', 'wontfix'])
     const status = typeof body.status === 'string' ? body.status.trim() : ''
-    if (!allowed.has(status)) return reply.code(400).send({ error: { type: 'invalid_status', message: 'Unsupported triage status' } })
     const userMessage = redact(String(body.user_message ?? '')).trim().slice(0, 1000)
     const publicSummary = redact(String(body.public_summary ?? '')).trim().slice(0, 1000)
     const issueUrl = String(body.issue_url ?? '').trim()
     const prUrl = String(body.pr_url ?? '').trim()
     const fixedVersion = String(body.fixed_version ?? '').trim()
-    const isGithubUrl = (value: string): boolean => {
-      if (value === '') return true
-      try {
-        const url = new URL(value)
-        return url.protocol === 'https:' && url.hostname === 'github.com'
-      } catch {
-        return false
-      }
-    }
-    if (!isGithubUrl(issueUrl) || !isGithubUrl(prUrl)) return reply.code(400).send({ error: { type: 'invalid_url', message: 'Only https://github.com links are accepted' } })
+    const problems = triageProblems({ status, userMessage, publicSummary, issueUrl, prUrl, fixedVersion, publicRepo: config.feedback.publicRepo })
+    if (problems.length > 0) return reply.code(400).send({ error: { type: 'invalid_triage', message: problems.join('; ') } })
     if (fixedVersion !== '' && parseVersion(fixedVersion) === null) return reply.code(400).send({ error: { type: 'invalid_version', message: 'fixed_version must be SemVer' } })
+    const unchanged = triage.status === status &&
+      (triage.user_message ?? '') === userMessage &&
+      (triage.public_summary ?? '') === publicSummary &&
+      (triage.issue_url ?? '') === issueUrl &&
+      (triage.pr_url ?? '') === prUrl &&
+      (triage.fixed_version ?? '') === fixedVersion
+    if (unchanged) {
+      return { ok: true, status, unchanged: true, issueDraft: publicIssueDraft(triage) }
+    }
     store.updateFeedbackTriage(ref, {
       status,
       user_message: userMessage === '' ? null : userMessage,

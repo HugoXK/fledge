@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { buildTriagePacket, deliverFeedbackToLead, publicIssueDraft, triageToken } from '../src/feedback/lead.js'
+import { buildTriagePacket, deliverFeedbackToLead, publicIssueDraft, triageToken, verifyTriageToken } from '../src/feedback/lead.js'
 import { notifyReleasedFeedback } from '../src/feedback/notify.js'
 import { json, makeUser, MemoryMailer, readBody, startFakeServer, testConfig } from './helpers.js'
 
@@ -23,7 +23,8 @@ test('the packet names the ref, consent and signed triage endpoints', () => {
     assert.match(packet, /ref: fb_lead/)
     assert.match(packet, /publishConsent: yes/)
     assert.match(packet, /\/api\/feedback\/fb_lead/)
-    assert.match(packet, new RegExp(triageToken(config.sessionSecret, 'fb_lead')))
+    const token = packet.split('Bearer ')[1]?.split('\n')[0] ?? ''
+    assert.equal(verifyTriageToken(config.sessionSecret, 'fb_lead', token), true, 'the packet carries a live token for this ref')
     assert.match(packet, /Never paste the raw message, stack, email or token/)
   } finally {
     f.store.close()
@@ -118,8 +119,31 @@ test('the triage API reads and writes with the per-ref token and notifies the re
     assert.ok(store.listNotifications(user.id).some((n) => n.kind === 'feedback'))
     assert.equal(mailer.messages.filter((m) => /反馈更新/.test(m.subject)).length, 1)
 
+    const replay = await built.app.inject({
+      method: 'POST',
+      url: '/api/feedback/fb_api/triage',
+      headers,
+      payload: { status: 'fixed', user_message: 'The schedule fix is ready.', issue_url: 'https://github.com/HugoXK/fledge/issues/1', pr_url: 'https://github.com/HugoXK/fledge/pull/2', fixed_version: '0.3.6' },
+    })
+    assert.equal(replay.statusCode, 200)
+    assert.equal((replay.json() as { unchanged: boolean }).unchanged, true)
+    assert.equal(store.listFeedbackEvents('fb_api').length, 1, 'a retry does not append a second event')
+    assert.equal(mailer.messages.filter((m) => /反馈更新/.test(m.subject)).length, 1, 'a retry does not mail twice')
+
+    const missingVersion = await built.app.inject({ method: 'POST', url: '/api/feedback/fb_api/triage', headers, payload: { status: 'fixed', user_message: 'x', pr_url: 'https://github.com/HugoXK/fledge/pull/2' } })
+    assert.equal(missingVersion.statusCode, 400)
+    const missingIssue = await built.app.inject({ method: 'POST', url: '/api/feedback/fb_api/triage', headers, payload: { status: 'duplicate', user_message: 'x' } })
+    assert.equal(missingIssue.statusCode, 400)
+    const outsideRepo = await built.app.inject({ method: 'POST', url: '/api/feedback/fb_api/triage', headers, payload: { status: 'confirmed', user_message: 'x', public_summary: 'x', issue_url: 'https://github.com/other/repo/issues/1' } })
+    assert.equal(outsideRepo.statusCode, 400)
+    const systemStatus = await built.app.inject({ method: 'POST', url: '/api/feedback/fb_api/triage', headers, payload: { status: 'released', user_message: 'x' } })
+    assert.equal(systemStatus.statusCode, 400)
+
     const badToken = await built.app.inject({ method: 'GET', url: '/api/feedback/fb_api', headers: { authorization: 'Bearer nope' } })
     assert.equal(badToken.statusCode, 401)
+    const expiredToken = triageToken(config.sessionSecret, 'fb_api', Date.now() - 1_000)
+    const expired = await built.app.inject({ method: 'GET', url: '/api/feedback/fb_api', headers: { authorization: `Bearer ${expiredToken}` } })
+    assert.equal(expired.statusCode, 401)
     const badStatus = await built.app.inject({ method: 'POST', url: '/api/feedback/fb_api/triage', headers, payload: { status: 'made_up' } })
     assert.equal(badStatus.statusCode, 400)
   } finally {
