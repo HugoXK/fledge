@@ -145,17 +145,14 @@ written or audited, and it succeeds again once the window has passed.
 
 ### Rate limiting of mutating routes
 
-#708 gives the browser-facing mutations a class and a budget instead of leaving
-each one unlimited:
+#708 gives the browser-facing mutations a class and, where the class earns one, a
+budget:
 
 - **login**: 30 attempts a minute per route and client address — the window the
   sign-in routes (`/auth/token`, `/auth/github`, the callback) already carried.
 - **destructive**: 60 a minute by default — privilege changes and policy writes.
-  This slice limits `POST /admin/users/:id/role` and `POST /repos/:id/rules`
-  this way.
 - **expensive**: 60 a minute by default — routes that start real work or spend a
-  host slot. This slice limits `POST /repos` (it provisions an instance) and
-  `POST /repos/:id/run`.
+  host slot.
 
 The three budgets live in `src/lib/rateLimit.ts` as one `RouteLimiters`, keyed by
 `rateLimitKey` and prefixed with the route's own bucket, so two routes in the
@@ -166,11 +163,35 @@ change rather than a source edit. A refused browser mutation answers the same
 bilingual `请求过多` / `Too many requests` page the sign-in routes return, never
 a bare status a form post cannot explain.
 
-The rest of the state-changing routes are **not yet classified**: they are
-neither limited nor exempted by a recorded decision, and #708 stays open for the
-classifying sweep, the ADR and the remaining privileged routes. A route added
-tomorrow inherits nothing from this section, and the eight `config.rateLimit`
-handlers above are unchanged by it — same window, same key.
+**Every mutating route names its class**, in `src/lib/routeClasses.ts`: one
+explicit set per class, in which a route appears by being written there and never
+by being left out. The rule is the one in ADR
+[0022](decisions/0022-mutation-route-classes.md): *destructive* is irreversible
+or privilege-changing, *expensive* starts, stops or merges real work, and
+*ordinary* is everything else. Ordinary is unlimited **by decision** — Chief,
+2026-11-14 — and the ADR carries the condition that forces a re-review: the first
+time an ordinary route does more than write a record the account already owns, it
+moves class in the same change.
+
+`test/routeClassSweep.test.ts` enforces it without a list or a count: it reads
+the registrations out of `src/app.ts`, compares them with the table in both
+directions, and fails naming the route — `unclassified: PATCH /repos/:id/schedule`
+or `stale classification: POST /some/route` — when a mutation has no class or the
+table describes a route that no longer exists. A route added tomorrow is red
+until it names a class, so it can no longer be unlimited by accident.
+
+Classified is not yet the same as paced. The eight handlers that name
+`config.rateLimit` above keep their window and gain a class and nothing else;
+`POST /admin/users/:id/role` and `POST /repos/:id/run` were paced by an earlier
+slice, and `POST /repos/:id/role`, `POST /settings/providers/:id/delete`,
+`POST /repos/:id/team/stop` and `POST /repos/:id/jobs/:jobId/merge` are paced
+here. The rest of the destructive and expensive routes are classified but not yet
+limited, which is the remaining work on #708 and is visible as such in the table
+rather than being silently unlimited. Some ordinary routes carry a control that
+is not a class budget — the `login` window on the sign-in and session-revocation
+routes, the 120-a-minute `apiLimiter` on the machine endpoints under `/api/` —
+because those defend credential guessing and caller volume, not a class' blast
+radius.
 
 ### CSRF
 

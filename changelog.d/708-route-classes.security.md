@@ -1,0 +1,1 @@
+Every route that changes state now names a rate-limit class — destructive, expensive or ordinary-by-decision — and a test reads `src/app.ts` and fails, naming the route, when a mutation has no class. `POST /repos/:id/role` and the provider-credential delete take the destructive budget, and `POST /repos/:id/team/stop` and `POST /repos/:id/jobs/:jobId/merge` take the expensive one.
