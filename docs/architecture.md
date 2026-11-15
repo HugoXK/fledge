@@ -1854,9 +1854,12 @@ The `/admin` card renders the snapshot the command writes to
 GitHub, and a missing or unparseable snapshot renders "no release chain is
 recorded" rather than an empty card. The snapshot carries the tag target and the
 Release URL as fields (`targetSha`, `releaseUrl`); the target is never re-read
-out of a link's detail text. The card renders the artifact links, omits links the
-snapshot marked `skipped` (a deleted release branch, no local image) and the
-stored `healthz` probe, and adds one live `Running instance` row. That row
+out of a link's detail text. The card is one "Release & deployment" summary: the
+running version, CHANGELOG section and pending fragments share one line; the
+header carries one status badge and one GitHub Release link. It renders one live
+`Running instance` row and only the artifact links the snapshot marked `missing`
+or `mismatch`; the `skipped` provenance links and the stored `healthz` probe are
+omitted, and the full chain sits behind a details disclosure. That row
 compares the version in `package.json` and the commit stamp this process booted
 with against the recorded tag target, so an operator can see at a glance whether
 the instance they are looking at is the release the chain names. The header says

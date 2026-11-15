@@ -1,0 +1,1 @@
+The admin page now shows one Release & deployment summary — one running version, one status badge, one GitHub Release link, only problem links and one running-instance row, with the full chain behind a details disclosure — and Operations is a compact list instead of a grid of large link tiles.
