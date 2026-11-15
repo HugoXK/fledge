@@ -289,7 +289,9 @@ function managementFailure(t: Translate, outcome: { code: string; message: strin
 function managementRefusal(t: Translate, code: string, fallback: string): string {
   switch (code) {
     case 'management_revision_conflict':
-      return t('这个任务在你打开页面之后已经变化，请重新打开任务后再操作。', 'This job changed after you opened the page; reopen it before acting.')
+      return t('页面上的内容在你打开之后已经变化，请重新打开这一页后再操作。', 'This changed after you opened the page; reopen it before acting.')
+    case 'repo_role_not_allowed':
+      return t('你的 GitHub 权限不允许选择这个角色。', 'Your GitHub permission does not allow this role.')
     case 'idempotency_conflict':
       return t('这个请求已经用不同的内容提交过，已拒绝。请刷新页面后重试。', 'That request was already submitted with different content; reload the page and try again.')
     case 'command_in_progress':
@@ -1962,6 +1964,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       plan: fields(),
       review: fields(),
       triage: fields(),
+      // #540 slice 4: the settings form is fenced on the repository's own
+      // revision, not the project's — a job queued elsewhere must not invalidate
+      // a settings save, and a policy written from another tab must.
+      settings: { revision: management.revisionOf('repo', repo.id), idempotencyKey: randomId('cmd') },
     }
     for (const item of workItems) {
       commands[`work-run:${item.id}`] = fields()
@@ -3611,18 +3617,35 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}#repo-settings`)
       }
     }
+    // #540 slice 4: the policy set is one command. The route keeps the reads it
+    // already made — the role is allowed, the target branch exists upstream, the
+    // session is recent enough for a policy change — and hands the write to the
+    // contract, so the revision fence, the idempotency receipt and the audit row
+    // are not copied into this route a second time.
+    const parts = commandParts(body, management.revisionOf('repo', repo.id))
+    const outcome = await management.run(managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id }), {
+      operation: 'repo.update',
+      target: { projectId: repo.id },
+      arguments: {
+        targetBranch,
+        allowPaths: body.allowPaths ?? '',
+        denyPaths: body.denyPaths ?? '',
+        requireProtection: body.requireProtection === '1',
+        stageMode: parseStageMode(body.stageMode) ?? 'off',
+        repoRole,
+      },
+      expectedRevision: parts.expectedRevision,
+      idempotencyKey: parts.idempotencyKey,
+    })
+    if (!outcome.ok) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(managementFailure(t, outcome, t('设置没有保存。', 'The settings were not saved.')))}&code=${outcome.code}#repo-settings`)
+    }
     store.updateRepo(repo.id, {
       goal,
-      target_branch: targetBranch,
-      repo_role: repoRole,
       ...(roleChanged ? { role_checked_at: nowIso() } : {}),
       auto_merge: canMaintain && body.autoMerge === '1' ? 1 : 0,
       plan_required: body.planRequired === '1' ? 1 : 0,
-      allow_paths: (body.allowPaths ?? '').trim().slice(0, 2000),
-      deny_paths: (body.denyPaths ?? '').trim().slice(0, 2000),
       merge_method: body.mergeMethod === 'merge' || body.mergeMethod === 'rebase' ? body.mergeMethod : 'squash',
-      require_protection: body.requireProtection === '1' ? 1 : 0,
-      stage_mode: parseStageMode(body.stageMode) ?? 'off',
       monthly_budget_cny: Math.max(0, Math.min(10000, Number(body.monthlyBudget) || 0)),
       job_budget_cny: Math.max(0, Math.min(10000, Number(body.jobBudget) || 0)),
       job_budget_action: body.jobBudgetAction === 'pause' || body.jobBudgetAction === 'cancel' ? body.jobBudgetAction : 'alert',
@@ -3632,8 +3655,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       reviewer_enabled: canMaintain && repo.can_review === 1 && body.review === '1' ? 1 : 0,
       review_interval_minutes: reviewInterval,
     })
-    if (policyChanged.length > 0) {
-      store.audit(viewer.user.id, 'repo.policy', `${repo.owner}/${repo.name} ${policyChanged.join(',')} by @${viewer.user.login}`)
+    const policyWritten = Array.isArray(outcome.result.changed)
+      ? outcome.result.changed.filter((field): field is string => typeof field === 'string')
+      : []
+    if (policyWritten.length > 0) {
+      store.audit(viewer.user.id, 'repo.policy', `${repo.owner}/${repo.name} ${policyWritten.join(',')} by @${viewer.user.login}`)
     }
     const allowedModels = new Set(store.listUserProviderModels(viewer.user.id).map((model) => model.id))
     const requestedModels = [...new Set(formList(request, 'modelIds').filter((id) => allowedModels.has(id)))]
