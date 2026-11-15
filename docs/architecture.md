@@ -86,6 +86,14 @@ header, not a section — so at the top of that page nothing has passed and
 `#release`, the first chip, is marked. That fallback is the accepted state, not a
 defect.
 
+The dashboard's Repositories card owns the full content row; its Add repository
+button sits in the card header and opens a native `<dialog>` with the GitHub App
+and fine-grained token options. `#add-repo` remains the deep link used by the
+empty state, the next action, the setup checklist and the `POST /repos` error, so
+the dialog is opened by the hash as well as the button. The dialog lives outside
+the secondary disclosure; a `<noscript>` rule renders it inline when JavaScript is
+unavailable, and the token form keeps its CSRF field and `type="password"`.
+
 The admin backup card has two read-only sources: `readBackupStatus()` lists the
 plaintext copies in `config.backup.dir` and counts the encrypted copies beside
 them, and `readRestoreDrill()` reads `<dataDir>/backup-drill.json`. The card

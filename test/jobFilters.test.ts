@@ -282,7 +282,7 @@ test('every dashboard control keeps the state it is not changing', async () => {
       assert.equal(link.params.get('status'), 'failed', 'paging keeps the status filter')
       assert.equal(link.params.get('kind'), 'iterate', 'paging keeps the kind filter')
     }
-    assert.equal(pagers.filter((link) => link.hash === '#add-repo').length, 1, 'the repository table has its pager')
+    assert.equal(pagers.filter((link) => link.hash === '#repositories').length, 1, 'the repository table has its pager')
     assert.equal(pagers.filter((link) => link.hash === '#jobs').length, 1, 'the job table has its pager')
 
     // The "Clear filters" link on a filtered list must still drop the filter and

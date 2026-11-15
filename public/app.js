@@ -225,6 +225,50 @@
     })
   }
 
+  // Native modal dialogs. The add-repository form moved out of a permanent
+  // half-width card into one; `#add-repo` stays the deep link used by the empty
+  // state, the next action, the setup checklist and the POST /repos error.
+  const openDialog = (dialog) => {
+    if (!(dialog instanceof HTMLDialogElement) || typeof dialog.showModal !== 'function') return false
+    if (!dialog.open) dialog.showModal()
+    return true
+  }
+  const clearDialogHash = (dialog) => {
+    if (location.hash === `#${dialog.id}`) history.replaceState(null, '', `${location.pathname}${location.search}`)
+  }
+  document.querySelectorAll('dialog').forEach((dialog) => {
+    dialog.addEventListener('click', (event) => {
+      if (event.target === dialog) dialog.close()
+    })
+    dialog.addEventListener('close', () => clearDialogHash(dialog))
+  })
+  document.querySelectorAll('[data-open-dialog]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const dialog = document.getElementById(button.getAttribute('data-open-dialog') ?? '')
+      if (dialog === null || !openDialog(dialog)) return
+      if (location.hash !== `#${dialog.id}`) history.replaceState(null, '', `${location.pathname}${location.search}#${dialog.id}`)
+    })
+  })
+  document.querySelectorAll('[data-close-dialog]').forEach((button) => {
+    button.addEventListener('click', () => button.closest('dialog')?.close())
+  })
+  const openHashDialog = () => {
+    if (location.hash.length <= 1) return
+    const dialog = document.getElementById(location.hash.slice(1))
+    if (dialog instanceof HTMLDialogElement) openDialog(dialog)
+  }
+  document.addEventListener('click', (event) => {
+    const link = event.target instanceof Element ? event.target.closest('a[href="#add-repo"]') : null
+    if (link === null) return
+    const dialog = document.getElementById('add-repo')
+    if (dialog === null) return
+    event.preventDefault()
+    openDialog(dialog)
+    if (location.hash !== '#add-repo') history.replaceState(null, '', `${location.pathname}${location.search}#add-repo`)
+  })
+  openHashDialog()
+  window.addEventListener('hashchange', openHashDialog)
+
   document.querySelectorAll('table.table-priority').forEach((table) => {
     if (table.querySelector('[data-priority="low"]') === null) return
     const scroll = table.closest('.table-scroll')

@@ -247,9 +247,11 @@ test('secondary sections collapse into one disclosure and lose nothing', () => {
   assert.notEqual(disclosure, '', 'the secondary sections have one disclosure')
   assert.doesNotMatch(disclosure, /\bopen\b/, 'it starts collapsed so the first screen keeps one action')
   assert.ok(html.indexOf('data-secondary') > html.indexOf('data-next-action'), 'it sits below the next action')
-  for (const marker of ['id="quota"', 'id="delivery"', 'id="jobs"', 'id="add-repo"']) {
+  for (const marker of ['id="quota"', 'id="delivery"', 'id="jobs"']) {
     assert.ok(html.indexOf(marker) > html.indexOf('data-secondary'), `${marker} stays inside the disclosure`)
   }
+  assert.match(html, /<dialog[^>]*id="add-repo"/)
+  assert.ok(html.indexOf('id="add-repo"') > html.indexOf('data-secondary'), 'the add dialog sits below the secondary content')
   // The table now carries `class="table-cards"` (#130), so the marker is the
   // element, not the bare tag that carried no attribute.
   assert.match(html, /<table\b/, 'the repository table is still rendered, only collapsed')
