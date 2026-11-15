@@ -17,6 +17,7 @@ import { classifyFailure, providerRefusalCode, type EnqueueRefusalCode, type Fai
 import { parseModelRun } from '../lib/modelRun.js'
 import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
 import { jobEmailDecision } from '../lib/emailPolicy.js'
+import { nextRunFor, type NextRunFor } from '../lib/nextRunFor.js'
 import { duplicateOutcome, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
@@ -2624,6 +2625,26 @@ export class Jobs {
     }).format(value)
   }
 
+  // The digest's next-run line is the same decision the page and dashboard make,
+  // but the email owns its own Chinese wording because `src/jobs` must not import
+  // `src/views/**` (#713). The instant itself comes from `nextRunFor`, which
+  // delegates to `nextTime`/`dueAfterMs`, so the three surfaces cannot disagree
+  // about the time.
+  private digestNextRunLine(next: NextRunFor): string {
+    switch (next.state) {
+      case 'disabled': return '仓库已停用，自动运行不会开始'
+      case 'not-ready': return 'FlyBot 实例未就绪，自动运行不会开始'
+      case 'auto-off': return '自动工作已关闭'
+      case 'active-job': return '当前任务结束后再排'
+      case 'idle': return '空闲：没有开放工作项；会按发现间隔检查'
+      case 'waiting-first-run': return '等待首次运行'
+      case 'due': return '等待调度'
+      case 'scheduled': return this.digestTime(new Date(next.at ?? Date.now()))
+      case 'unknown-unreadable': return 'unknown（排期无法解析）'
+      case 'unknown-closed': return 'unknown（排期窗口已结束）'
+    }
+  }
+
   private async buildDigest(user: UserRow, repos: RepoRow[], date: string): Promise<DigestInput> {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString()
     const jobs = this.store.listJobsSince(user.id, since)
@@ -2635,9 +2656,16 @@ export class Jobs {
       const label = `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`
       teamLinks.push({ repo: label, url: `${this.config.baseUrl}/repos/${repo.id}#inbox` })
       if (repo.auto_iterate === 1) {
-        const last = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
-        const next = Number.isFinite(last) ? new Date(last + Math.min(repo.interval_minutes, this.config.runner.workCooldownMinutes) * 60_000) : new Date()
-        nextRuns.push({ repo: label, when: next.getTime() <= Date.now() ? '等待调度' : this.digestTime(next) })
+        const instance = this.store.getRepoInstance(repo.id)
+        const next = nextRunFor({
+          repo,
+          row: this.store.scheduleForRepo(repo.id),
+          openWork: this.store.listOpenWorkItems(repo.id).length > 0,
+          activeJob: this.store.activeJobForRepo(repo.id) !== undefined,
+          instanceReady: this.config.flybot.instanceImage === '' ? true : instance?.status === 'ready',
+          workCooldownMinutes: this.config.runner.workCooldownMinutes,
+        })
+        nextRuns.push({ repo: label, when: this.digestNextRunLine(next) })
       }
       if (this.instances === undefined || this.config.flybot.instanceImage === '') continue
       try {
