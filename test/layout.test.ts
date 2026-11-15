@@ -15,10 +15,10 @@ const headerHeights = JSON.parse(readFileSync(new URL('./fixtures/header-heights
   renders: { breakpoint: string; media: string | null; viewport: string; measured: number }[]
 }
 
-function render(path: string, options: { admin?: boolean; active?: string } = {}): string {
+function render(path: string, options: { admin?: boolean; active?: string; locale?: 'zh' | 'en' } = {}): string {
   const store = new Store(':memory:')
   const user = makeUser(store, { admin: options.admin === true })
-  return layout({ title: 'x', viewer: { user, csrfToken: 'csrf-token' }, body: '', config: testConfig(), locale: 'en', path, active: options.active })
+  return layout({ title: 'x', viewer: { user, csrfToken: 'csrf-token' }, body: '', config: testConfig(), locale: options.locale ?? 'en', path, active: options.active })
 }
 
 function navAnchor(html: string, href: string): string {
@@ -355,4 +355,28 @@ test('a tooltip is revealed by its own expanded state once the script runs, and 
   assert.match(state?.body ?? '', /display:\s*block/, 'the state rule must set display, not only opacity')
   assert.match(state?.body ?? '', /opacity:\s*1/, 'the state rule must set opacity')
   assert.match(jsText(), /dataset\.js\s*=\s*['"]1['"]/, 'the script must mark that it runs, or the fallback never hands the tooltip over to the state')
+})
+
+// #414: `aria-pressed` is defined for `role="button"`, so on the language links
+// assistive technology either ignores it or announces a toggle the link cannot
+// honour — `aria-allowed-attr` in axe. The active language is already carried by
+// `aria-current="true"`; the highlight has to be keyed on that state instead.
+test('the language switch announces the active language with aria-current, not aria-pressed', () => {
+  const zh = render('/dashboard', { locale: 'zh' })
+  assert.doesNotMatch(zh, /<a[^>]*aria-pressed/, 'aria-pressed is a button state; a link must not claim it')
+  assert.match(zh, /<a href="\/lang\/zh\?next=%2Fdashboard"[^>]*aria-current="true"/, 'the active language must still be announced')
+
+  const en = render('/dashboard')
+  assert.doesNotMatch(en, /<a[^>]*aria-pressed/, 'the inactive link must not claim the button state either')
+  assert.match(en, /<a href="\/lang\/en\?next=%2Fdashboard"[^>]*aria-current="true"/, 'the active language must still be announced')
+
+  // The highlight is the only mark of the current language in the stylesheet, so
+  // dropping the attribute without moving the selector would silently lose it.
+  const rules = parseRules(cssText(), 'modern')
+  const current = declarationsFor(rules, '.lang a[aria-current="true"]', 1280)
+  const background = current.find((declaration) => declaration.property === 'background')
+  const color = current.find((declaration) => declaration.property === 'color')
+  assert.ok(background !== undefined, '.lang a[aria-current="true"] must carry the highlight background')
+  assert.ok(color !== undefined, '.lang a[aria-current="true"] must carry the accent colour')
+  assert.equal(lastValue(rules, '.lang a[aria-pressed="true"]', 'background', 1280), null, 'no rule may keep keying the highlight on the button state')
 })
