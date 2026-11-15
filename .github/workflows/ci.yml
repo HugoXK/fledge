@@ -138,8 +138,13 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
+      # #642: `coverage` already runs the whole suite on Node 22, and that is the
+      # Node 22 execution for the merge decision. A second Node 22 leg here ran
+      # the same suite again with no instrumented floor and no second signal, so
+      # the matrix keeps only the supported-version check. `ci-ok` still needs
+      # `test`; the job name stays `test (<node>)` and its one leg is `test (24)`.
       matrix:
-        node: [22, 24]
+        node: [24]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
