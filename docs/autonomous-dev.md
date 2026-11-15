@@ -646,12 +646,20 @@ by name was green. The step reads check runs with `filter=all` for that reason:
 `filter=latest` returned only the green one and the plan reported "nothing to do"
 while the merge gate kept refusing.
 
-- a PASS re-runs the failed runs whose own `review-gate` job failed, which clears
-  the pre-PASS red that would otherwise block the merge. No failed suite may be
-  left standing, because that is what the merge gate reads;
+- a PASS re-runs the failed runs whose own job of that context failed, for every
+  required context a verdict can invalidate — `review-gate`, owned by the
+  `Review gate` workflow, and `pr-lint`, owned by `.github/workflows/pr-lint.yml`
+  since `#753` — which clears the pre-PASS red that would otherwise block the
+  merge. No failed suite may be left standing, because that is what the merge gate
+  reads. One workflow never repaints another context: re-running `Review gate`
+  cannot move `pr-lint`, and a stale red `pr-lint` blocked a merge while the step
+  reported the tip was fine until `#770` paired each context with the workflow
+  that owns it. A red in a context with no run left below the cap is reported as
+  blocked, never passed;
 - a rejection re-runs the newest repairable run of the `Review gate` workflow at
   the SHA, so a run that is currently green turns red. A run of any other
-  workflow at the same SHA is never a target: re-running it paints no
+  workflow at the same SHA is never a target, and a red `pr-lint` does not count
+  as the rejection being visible: re-running another workflow paints no
   `review-gate` check;
 - a run is repairable while its `run_attempt` is at most 2
   (`MAX_REPAIR_ATTEMPT`), so a run that a person already re-ran by hand is still

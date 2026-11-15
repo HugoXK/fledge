@@ -802,7 +802,96 @@ test('#179: without the PASS the same red construction asks for no re-run', asyn
   assert.deepEqual(plan.ids, [])
 })
 
+// #770: `pr-lint` has owned its own workflow since #753 (`.github/workflows/pr-lint.yml`),
+// and a verdict cannot repaint it that way. The planner used to target `review-gate`
+// only, so a stale red `pr-lint` blocked a merge while the repair step exited 0
+// saying the tip was fine.
+const lintRun = (id: number, attempt = 1, conclusion: string | null = 'failure') => ({ name: 'pr-lint', path: '.github/workflows/pr-lint.yml', id, status: 'completed', run_attempt: attempt, conclusion, created_at: new Date(Date.UTC(2026, 10, 9, 5, 0, id)).toISOString() })
+const lintJob = [{ name: 'pr-lint', conclusion: 'failure' }]
+
+test('#770: a PASS repaints every required context whose own workflow run is wrong, not just review-gate', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  // review-gate is green at the tip and pr-lint is red: the plan has to re-run
+  // the pr-lint run, and it must not touch the green Review gate run.
+  const lintOnly = repairPlan({
+    expected: 'success',
+    checkRuns: [
+      { name: 'review-gate', status: 'completed', conclusion: 'success' },
+      { name: 'pr-lint', status: 'completed', conclusion: 'failure' },
+    ],
+    runs: [greenRun(10), lintRun(20)],
+    jobsFor: (id: number | string) => (Number(id) === 20 ? lintJob : []),
+    currentRunId: '900',
+  })
+  assert.equal(lintOnly.action, 'rerun')
+  assert.deepEqual([...lintOnly.ids].map(Number), [20], 'the pr-lint run is re-run and the green Review gate run is left alone')
+
+  // Both required contexts are red: each is repainted by the workflow that owns
+  // it, one action, no second write.
+  const both = repairPlan({
+    expected: 'success',
+    checkRuns: [
+      { name: 'review-gate', status: 'completed', conclusion: 'failure' },
+      { name: 'pr-lint', status: 'completed', conclusion: 'failure' },
+    ],
+    runs: [redRun(11), lintRun(21)],
+    jobsFor: (id: number | string) => (Number(id) === 21 ? lintJob : failedGateJob),
+    currentRunId: '900',
+  })
+  assert.equal(both.action, 'rerun')
+  assert.deepEqual([...both.ids].map(Number).sort((a, b) => a - b), [11, 21], 'both required contexts are repainted')
+
+  // A context that already carries the expected conclusion is left alone: a
+  // green pr-lint run is never re-run by a PASS.
+  const green = repairPlan({
+    expected: 'success',
+    checkRuns: [
+      { name: 'review-gate', status: 'completed', conclusion: 'success' },
+      { name: 'pr-lint', status: 'completed', conclusion: 'success' },
+    ],
+    runs: [greenRun(12), lintRun(22, 1, 'success')],
+    jobsFor: () => [],
+    currentRunId: '900',
+  })
+  assert.equal(green.action, 'none')
+  assert.deepEqual(green.ids, [])
+})
+
+test('#770: a rejection is still decided by review-gate, not by a red pr-lint', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  // A rejection asks for a red `review-gate` at the tip. A red `pr-lint` is a
+  // different context and must not be read as "the rejection is already visible".
+  const plan = repairPlan({
+    expected: 'failure',
+    checkRuns: [
+      { name: 'review-gate', status: 'completed', conclusion: 'success' },
+      { name: 'pr-lint', status: 'completed', conclusion: 'failure' },
+    ],
+    runs: [greenRun(13), lintRun(23)],
+    jobsFor: () => [],
+    currentRunId: '900',
+  })
+  assert.equal(plan.action, 'rerun')
+  assert.deepEqual([...plan.ids].map(Number), [13], 'only the Review gate run paints the rejection')
+})
+
 // --- the repair CLI over a fake API -----------------------------------------
+
+test('#770: a stale red pr-lint is repainted by the run of its own workflow', async () => {
+  const state = initialState()
+  state.reviews = [{ body: PASS_BODY, state: 'APPROVED', submitted_at: '2026-11-09T07:00:00Z', user: { login: 'HugoXK-bot' }, author_association: 'COLLABORATOR' }]
+  state.checkRuns = [
+    { name: 'review-gate', status: 'completed', conclusion: 'success' },
+    { name: 'pr-lint', status: 'completed', conclusion: 'failure' },
+  ]
+  state.runs = [greenRun(30), lintRun(40)]
+  state.jobs = { 40: lintJob }
+  await withFakeGitHub(state, async (env) => {
+    const result = await runScript(repairScript, ['--pr', '7'], env)
+    assert.equal(result.code, 0, result.stderr)
+    assert.deepEqual(state.posts, ['40'], 'the pr-lint run is re-run, and the green Review gate run is not')
+  })
+})
 
 test('a PASS repaints the stale failed run exactly once', async () => {
   const state = initialState()
