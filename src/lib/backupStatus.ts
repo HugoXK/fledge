@@ -64,8 +64,10 @@ export interface BackupStatus {
 }
 
 // `fledge-2026-11-09T02-00-00-000Z.db`: the writer's ISO stamp with the colons
-// and the dot replaced, because a file name cannot hold them.
-const STAMP = /^fledge-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.db$/
+// and the dot replaced, because a file name cannot hold them. With a backup key
+// the writer appends `.enc`; it is the same copy with an envelope in front, so
+// its stamp parses the same way.
+const STAMP = /^fledge-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.db(?:\.enc)?$/
 
 function stampOf(name: string): { createdAt: string; time: number } | null {
   const match = STAMP.exec(name)
@@ -188,7 +190,10 @@ export function readBackupStatus(input: {
   const expectedHours = input.expectedHours ?? DEFAULT_EXPECTED_HOURS
   let names: string[]
   try {
-    names = readdirSync(input.dir).filter((name) => name.endsWith('.db') && name.startsWith('fledge-'))
+    // Both names the writer produces: `<stamp>.db` for a plaintext copy and
+    // `<stamp>.db.enc` once a backup key is configured. Leaving the encrypted
+    // ones out made the card deny a copy the instance had just written.
+    names = readdirSync(input.dir).filter((name) => name.startsWith('fledge-') && (name.endsWith('.db') || name.endsWith('.db.enc')))
   } catch {
     return {
       dir: input.dir,
