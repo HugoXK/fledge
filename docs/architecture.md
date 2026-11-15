@@ -26,6 +26,22 @@
 The console is server-rendered from `src/views/` and styled by `public/app.css`;
 its design tokens are documented in [docs/ui.md](ui.md).
 
+The console serves two surfaces with different jobs (#235). `/dashboard` is the
+owner's home: one next action, the first-run checklist, cost and status.
+`/console` is the operator workspace: every repository, the job queue, quota and
+the inbox. Both URLs are kept, neither is re-gated, and the boundary is recorded
+in [0020](decisions/0020-owner-and-operator-surfaces.md). On the repository page
+the settings card keeps the loop controls inline — goal, target branch, role,
+auto-iterate, enabled, discovery interval, reviewer, auto-merge, plan-first — and
+puts the operator policy in one closed
+`<details data-advanced="repo-settings">` inside the same form: allowed and
+forbidden paths, merge method, team stage gate, branch protection, the monthly
+and per-job budgets with spend, the available models and providers, and the
+per-bot model assignment. `<details>` still submits its inputs, so
+`POST /repos/:id/settings` and every authorization check behind it are unchanged;
+the per-bot model restart stays its own form and therefore outside the settings
+form.
+
 Every list, panel and live stream renders its non-data states through
 `renderState`/`stateCell` in `src/views/states.ts` — loading, empty, error,
 success and disabled — so the aria contract (`status`, `alert`, `aria-busy`,
