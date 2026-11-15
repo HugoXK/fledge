@@ -240,8 +240,8 @@ file is the record and not the gate — branch protection is an owner action.
 - `changes` (the diff classifier; it must succeed before any conditional job)
 - `lint`
 - `typecheck`
-- `test` on Node 22 and Node 24
-- `coverage` (the Node coverage floor recorded in `package.json`)
+- `test` on Node 24 (the supported-version compatibility run)
+- `coverage` (the Node 22 full-suite execution and the Node coverage floor recorded in `package.json`; one execution per supported Node line)
 - `build`
 - `visual` (the UI matrix, when the diff reaches a rendered surface)
 - `docker` (image builds, scans and starts)
@@ -283,6 +283,12 @@ is a cross-cutting reader: 60 of the 184 files under `test/` read `docs/`,
 workflow-only diff still turns the suite red. Skipping it for `source: false` let
 `ci-ok` go green over a red suite, and for `docs/` (T0) and `public/` (T1) no
 verdict reads it either.
+
+One full-suite execution per supported Node line is enough (#642): `test (24)` is
+the compatibility run and `coverage` is the Node 22 run, since both commands
+execute `test/*.test.ts` and a second Node 22 leg bought no second signal. The
+matrix job keeps its name and `ci-ok` still requires both jobs; a failing test
+fails both remaining runs.
 
 The classifier is an allowlist. An unknown path, an unreadable diff or an empty
 path list runs every gate. A push, schedule or manual run sets every flag true,

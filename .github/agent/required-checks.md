@@ -28,8 +28,9 @@ contexts:
 | `dependency-review` | `ci-ok` need | no new high-severity advisory in the pull request diff |
 | `codeql-required` / `Analyze JavaScript/TypeScript` | `ci-ok` need + CodeQL analysis | no new high/critical CodeQL result |
 
-`ci-ok` is the aggregate: `changes`, `lint`, `typecheck`, `test` (Node 22 and
-24), `coverage`, `build`, `visual` (UI diffs), `docker` (image builds, scans and
+`ci-ok` is the aggregate: `changes`, `lint`, `typecheck`, `test` (Node 24),
+`coverage` (Node 22, the full-suite execution that also enforces the floor),
+`build`, `visual` (UI diffs), `docker` (image builds, scans and
 starts), `audit` (runtime and full graph), `changelog`, `version`, `risk`,
 `restore-drill`, `dependency-review`, `action-pins`, `workflow-lint`,
 `secret-scan`, `codeql-required`. The list asserted by the gate is
