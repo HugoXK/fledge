@@ -31,8 +31,14 @@ export function selectFailedJob<T extends { conclusion: string | null }>(jobs: r
   return null
 }
 
+// #703: the client default is two pages, so a caller that asks for no depth
+// reads 200 jobs and a page-3 failure is stored as `no_failed_job` — a statement
+// about the run that is not true. Three pages is the depth `docs/api.md`
+// promises, and the release tracker already asks for it.
+export const FAILURE_LOG_JOB_PAGES = 3
+
 export interface FailureLogClient {
-  listWorkflowJobs(owner: string, name: string, runId: number): Promise<Array<{ id: number; conclusion: string | null }>>
+  listWorkflowJobs(owner: string, name: string, runId: number, maxPages?: number): Promise<Array<{ id: number; conclusion: string | null }>>
   getJobLog(owner: string, name: string, jobId: number): Promise<string>
 }
 
@@ -55,7 +61,7 @@ export async function fetchFailureLog(
   runId: number,
 ): Promise<FailureLogResult> {
   try {
-    const failed = selectFailedJob(await client.listWorkflowJobs(owner, name, runId))
+    const failed = selectFailedJob(await client.listWorkflowJobs(owner, name, runId, FAILURE_LOG_JOB_PAGES))
     if (failed === null) return { excerpt: null, error: 'no_failed_job' }
     const excerpt = boundedLogExcerpt(await client.getJobLog(owner, name, failed.id))
     if (excerpt === '') return { excerpt: null, error: 'empty_log' }

@@ -687,7 +687,10 @@ than an exception. No call here updates or deletes a ref.
 Workflow tracking uses bounded reads and one draft-only write:
 `listWorkflowRunsForRef` (up to three pages of `GET /actions/runs?branch=<tag>`,
 so other workflows cannot push the tag's run out of the window),
-`listWorkflowJobs` (up to three pages of `GET /actions/runs/{id}/jobs`),
+`listWorkflowJobs` (up to three pages of `GET /actions/runs/{id}/jobs`; the
+client default stays at two, so the tracker and the failure-log intake both ask
+for three explicitly — a job that failed on page 3 of a 300-job run is still that
+run's reason),
 `getReleaseByTag` (`GET /releases/tags/{tag}`, `null` on 404), `createRelease`
 (`POST /releases`, `draft` fixed `true`, so this client cannot publish) and
 `updateRelease` (`PATCH /releases/{id}`). Only a run whose head is the tag commit
