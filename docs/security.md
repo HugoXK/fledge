@@ -393,13 +393,37 @@ per day. Test mail is rate-limited to one per minute.
   off by default; Fledge verifies the PR, checks and reviews before merging.
 - A preview account that connects no repository within 7 days of registration is
   rejected by the sweep (hourly in the job service, or by hand with
-  `npm run trial:sweep -- [--dry-run] [--login <login>]`). It writes one
-  `trial.expired` audit row and sends one bilingual notice, and it never deletes
-  an account or a repository. Anyone with a `repos` row or a `repo.added` audit,
-  anyone with a job, admins and the super admin are never selected. The status
-  change and its audit row commit together and the notice is sent afterwards, so
-  the audit row is the record and a rerun is a no-op; the operator output carries
-  the login and the registration date, never an address.
+  `npm run trial:sweep -- [--dry-run] [--purge-dry-run] [--login <login>]`). It
+  writes one `trial.expired` audit row and sends one bilingual notice. Anyone
+  with a `repos` row or a `repo.added` audit, anyone with a job, admins and the
+  super admin are never selected. The status change and its audit row commit
+  together and the notice is sent afterwards, so the audit row is the record and
+  a rerun is a no-op; the operator output carries the login and the registration
+  date, never an address.
+- **Account purge (owner option 2, #689).** In the same sweep, once a
+  `trial.expired` row is at least `TRIAL_PURGE_GRACE_HOURS` (default 72) old, the
+  account is erased: one transaction deletes every row that names it or one of
+  its repositories — including `sessions`, `api_tokens`, `repo_instances` and the
+  other repo-scoped tables the cascade reaches, plus the plain-column rows no
+  cascade sees (`artifact_versions.repo_id`, `audit_log.user_id`, `events`) and
+  the six `settings` shapes that carry the account in the key or the value
+  (`quota_notified:`, `digest_sent:`, `email_test:`, `email_reply:`,
+  `github_app_state:`, `installation_sender:`). An account that gained a
+  repository, job, instance or GitHub installation is not erased: the run records
+  `trial.purge_skipped` with the blocking resource and its count. The spend
+  aggregate is computed **before** the rows go and kept as one bucket per
+  currency (priced rows) plus a count of unpriced rows, because `cost_usd` holds
+  the amount in the row's own currency and the per-row detail is cascaded away.
+  What survives is exactly one `trial.purged` audit row with `at`, `reason`,
+  `operator`, the row counts and that aggregate — no login, email, user id,
+  GitHub id, token or hash. Deleting the account's audit rows is deliberate: the
+  owner chose "as if the account never registered" plus a single non-PII
+  retention row, not a tombstone. Backups keep the account until their existing
+  retention window (local encrypted 30 days, GitHub 14) expires; erasing a backup
+  early is not part of this control. Every step is idempotent by user id, so a
+  failed run is retried by the next sweep with no deletion-state column. The
+  superadmin deletion in #691 calls the same `purgeUserRows(id)` transaction with
+  its own reason and operator.
 
 ### Platform emergency stop
 

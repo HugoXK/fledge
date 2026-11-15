@@ -3928,10 +3928,14 @@ export class Jobs {
   // #265: the preview-trial sweep runs on its own clock rather than inside the
   // job tick, which can be skipped while a dispatch is in flight. The first
   // scheduled run is one interval after boot; an operator who needs it now runs
-  // `npm run trial:sweep`.
+  // `npm run trial:sweep`. #690: the purge phase shares this clock — one writer,
+  // so an account cannot be rejected and erased by two different schedulers.
   async runTrialSweep(now: Date = new Date()): Promise<TrialSweepResult> {
     const result = await sweepExpiredTrials(this.store, this.mailer, this.config, { now })
     if (result.rejected.length > 0) log.info('preview trials ended', { rejected: result.rejected.length, emailed: result.emailed })
+    if (result.purge.purged.length > 0 || result.purge.skipped.length > 0) {
+      log.info('trial purges', { purged: result.purge.purged.length, skipped: result.purge.skipped.length, failed: result.purge.failed.length })
+    }
     return result
   }
 

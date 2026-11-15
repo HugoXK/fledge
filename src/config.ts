@@ -30,6 +30,10 @@ export interface Config {
   }
   // How long a GitHub re-authentication stays "recent" for destructive actions.
   recentAuthMinutes: number
+  // #690: how long after its `trial.expired` row a never-used rejected account is
+  // erased. The sweep's purge phase reads this; 72 hours is the host-side cron it
+  // replaces.
+  trialPurgeGraceHours: number
   // #708: the per-class windows mutating routes take. A route names its class;
   // the numbers live here so a deployment tightens a limit without a rebuild.
   rateLimit: RateLimitBudgets
@@ -281,6 +285,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       instancesGlobal: Math.max(0, number('LIMIT_INSTANCES_GLOBAL', 0)),
     },
     recentAuthMinutes: Math.max(1, number('RECENT_AUTH_MINUTES', 15)),
+    trialPurgeGraceHours: Math.max(1, number('TRIAL_PURGE_GRACE_HOURS', 72)),
     rateLimit: {
       login: {
         max: Math.max(1, number('RATE_LIMIT_LOGIN_MAX', DEFAULT_RATE_LIMIT_BUDGETS.login.max)),

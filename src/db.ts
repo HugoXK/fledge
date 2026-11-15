@@ -901,6 +901,94 @@ export interface TrialCandidate {
   expired_at: string | null
 }
 
+// #690: what the purge phase reads. The counts are part of the row on purpose:
+// an expired account that gained a repository, job, instance or installation is
+// skipped and the skip record names the blocking resource, so an operator can
+// see why the account is still there instead of guessing. Reading this deletes
+// nothing.
+export interface TrialPurgeCandidate {
+  id: string
+  login: string
+  expired_at: string
+  repos: number
+  jobs: number
+  instances: number
+  installations: number
+}
+
+// #689 option 2: the retention row keeps the account's spend as one bucket per
+// currency, never one summed number. `cost_usd` holds the amount in the row's own
+// currency, so folding CNY into USD would invent a rate, and the per-row detail
+// is cascaded away by the purge — this is the only figure left to audit.
+export interface SpendBucket {
+  currency: string
+  amount: number
+  requests: number
+}
+
+export interface SpendAggregate {
+  buckets: SpendBucket[]
+  unknownRequests: number
+}
+
+// #690: what one purge removed. The counts are the blast radius recorded in the
+// retention row; the function is the single delete path (#691 calls it with its
+// own reason and operator), so nothing else describes what went.
+export interface PurgeUserRowsResult {
+  removed: boolean
+  rows: Record<string, number>
+  spend: SpendAggregate
+}
+
+export interface PurgeEvent {
+  reason: string
+  operator: string
+  /** Audit action for the retention row. Defaults to `trial.purged`. */
+  action?: string
+}
+
+// #690: the delete set, split by the column that names the account. The first
+// list cascades from `users`, the second from `repos`; both are counted before
+// the delete so the retention row can say what went. Module constants, because
+// the count and the delete must not drift apart.
+const PURGE_USER_TABLES = [
+  'sessions',
+  'approval_tokens',
+  'repos',
+  'jobs',
+  'repo_instances',
+  'api_tokens',
+  'quota_ledger',
+  'notifications',
+  'github_installations',
+  'work_items',
+  'user_models',
+  'model_providers',
+  'principals',
+  'postmortems',
+  'repo_members',
+] as const
+
+// Rows that name one of the account's repositories but no account id: they go
+// with `repos` through the cascade, except `artifact_versions`, whose plain
+// `repo_id` column would otherwise leave a repo's artifacts behind.
+const PURGE_REPO_TABLES = [
+  'repo_models',
+  'repo_model_selection',
+  'repo_bot_models',
+  'task_relations',
+  'job_contexts',
+  'repo_rule_overrides',
+  'repo_releases',
+  'workflow_failures',
+  'project_memories',
+  'gate_sessions',
+  'projects',
+  'schedules',
+  'schedule_occurrences',
+  'artifact_versions',
+] as const
+
 export interface AlertView {
   kind: string
   level: 'info' | 'warning' | 'critical'
@@ -2649,6 +2737,176 @@ export class Store {
           AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.user_id = u.id)${filter}
         ORDER BY u.created_at ASC`,
       ...args,
+    )
+  }
+
+  // #690: accounts the purge phase reads. The `trial.expired` audit row is the
+  // clock (owner option 2 keeps no state column), and the counts are read here so
+  // a used account is skipped with a named reason rather than silently left
+  // behind. This deletes nothing.
+  trialPurgeCandidates(nowAt: string, graceHours: number): TrialPurgeCandidate[] {
+    const now = Date.parse(nowAt)
+    const cutoff = new Date((Number.isFinite(now) ? now : Date.now()) - graceHours * 3_600_000).toISOString()
+    return this.all<TrialPurgeCandidate>(
+      `SELECT u.id, u.login,
+              (SELECT MAX(a.at) FROM audit_log a WHERE a.user_id = u.id AND a.action = 'trial.expired') AS expired_at,
+              (SELECT COUNT(*) FROM repos r WHERE r.user_id = u.id) AS repos,
+              (SELECT COUNT(*) FROM jobs j WHERE j.user_id = u.id) AS jobs,
+              (SELECT COUNT(*) FROM repo_instances i WHERE i.user_id = u.id) AS instances,
+              (SELECT COUNT(*) FROM github_installations g WHERE g.user_id = u.id) AS installations
+         FROM users u
+        WHERE u.status = 'rejected'
+          AND u.role = 'user'
+          AND EXISTS (SELECT 1 FROM audit_log a
+                       WHERE a.user_id = u.id AND a.action = 'trial.expired' AND a.at <= ?)
+        ORDER BY u.created_at ASC`,
+      cutoff,
+    )
+  }
+
+  // #690: the re-check the purge phase makes immediately before it deletes. The
+  // selection above already carries counts, but a repository or a job can arrive
+  // between the two reads, and the phase must not erase an account that became
+  // used in that window.
+  purgeBlockers(id: string): { repos: number; jobs: number; instances: number; installations: number } {
+    const row = this.get<{ repos: number; jobs: number; instances: number; installations: number }>(
+      `SELECT (SELECT COUNT(*) FROM repos r WHERE r.user_id = ?) AS repos,
+              (SELECT COUNT(*) FROM jobs j WHERE j.user_id = ?) AS jobs,
+              (SELECT COUNT(*) FROM repo_instances i WHERE i.user_id = ?) AS instances,
+              (SELECT COUNT(*) FROM github_installations g WHERE g.user_id = ?) AS installations`,
+      id,
+      id,
+      id,
+      id,
+    )
+    return {
+      repos: Number(row?.repos ?? 0),
+      jobs: Number(row?.jobs ?? 0),
+      instances: Number(row?.instances ?? 0),
+      installations: Number(row?.installations ?? 0),
+    }
+  }
+
+  // #690/#689: the spend aggregate is computed before the rows go, because
+  // `quota_ledger.user_id` cascades and the retention row is then the only
+  // accounting record. The buckets follow `costByCurrency`: priced rows only, one
+  // bucket per `COALESCE(currency,'USD')`, and the unpriced count is
+  // `cost_known = 0` — never `currency IS NULL`, which is every pre-#636 row.
+  private spendForPurge(userId: string): SpendAggregate {
+    const rows = this.all<{ currency: string; total: number | null; n: number }>(
+      `SELECT COALESCE(currency, 'USD') AS currency, SUM(cost_usd) AS total, COUNT(*) AS n
+         FROM quota_ledger WHERE user_id = ? AND cost_known = 1
+        GROUP BY COALESCE(currency, 'USD')`,
+      userId,
+    )
+    const buckets = rows
+      .map((row) => ({ currency: row.currency, amount: Number(row.total ?? 0), requests: Number(row.n) }))
+      .sort((a, b) => a.currency.localeCompare(b.currency))
+    const unknown = this.get<{ n: number }>('SELECT COUNT(*) AS n FROM quota_ledger WHERE user_id = ? AND cost_known = 0', userId)
+    return { buckets, unknownRequests: Number(unknown?.n ?? 0) }
+  }
+
+  // #690: the six `settings` shapes that carry the account in the key or the
+  // value. The table has no foreign key and no user column, so neither the
+  // cascade nor the column sweep can see them. Key-carried: `quota_notified:`,
+  // `digest_sent:` and `email_test:`; value-carried: `email_reply:` and
+  // `github_app_state:` hold the account id in the first segment,
+  // `installation_sender:` holds the login.
+  private purgeSettingsFilter(userId: string, login: string): { where: string; args: unknown[] } {
+    const firstSegment = "substr(value, 1, instr(value || ':', ':') - 1)"
+    return {
+      where: `(key = ? OR key LIKE ? OR key = ? OR (key LIKE ? AND ${firstSegment} = ?) OR (key LIKE ? AND ${firstSegment} = ?) OR (key LIKE ? AND ${firstSegment} = ?))`,
+      args: [
+        `quota_notified:${userId}`,
+        `digest_sent:${userId}:%`,
+        `email_test:${userId}`,
+        'email_reply:%',
+        userId,
+        'github_app_state:%',
+        userId,
+        'installation_sender:%',
+        login,
+      ],
+    }
+  }
+
+  private purgeRowCounts(userId: string, repoIds: string[], login: string): Record<string, number> {
+    const counts: Record<string, number> = {}
+    for (const table of PURGE_USER_TABLES) {
+      counts[table] = Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table} WHERE user_id = ?`, userId)?.n ?? 0)
+    }
+    const marks = repoIds.map(() => '?').join(', ')
+    if (repoIds.length > 0) {
+      for (const table of PURGE_REPO_TABLES) {
+        counts[table] = Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table} WHERE repo_id IN (${marks})`, ...repoIds)?.n ?? 0)
+      }
+      counts.job_events = Number(
+        this.get<{ n: number }>('SELECT COUNT(*) AS n FROM job_events WHERE job_id IN (SELECT id FROM jobs WHERE user_id = ?)', userId)?.n ?? 0,
+      )
+      counts.job_context_files = Number(
+        this.get<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM job_context_files WHERE job_id IN (SELECT job_id FROM job_contexts WHERE repo_id IN (${marks}))`,
+          ...repoIds,
+        )?.n ?? 0,
+      )
+    }
+    counts.audit_log = Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM audit_log WHERE user_id = ?', userId)?.n ?? 0)
+    const settings = this.purgeSettingsFilter(userId, login)
+    counts.settings = Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM settings WHERE ${settings.where}`, ...settings.args)?.n ?? 0)
+    return counts
+  }
+
+  // #690 (delete-set choice (a), inherited by #691): the single path that erases
+  // an account. It does not decide eligibility — the caller asserts the account
+  // is dead — so #691 reuses it while the trial sweep keeps its own candidate
+  // query. One transaction: the counts and the spend are read, the rows go, and
+  // the retention row (#689 option 2) is written with `user_id` NULL so it
+  // survives the delete it describes.
+  purgeUserRows(id: string, event: PurgeEvent): PurgeUserRowsResult {
+    return this.transaction(() => {
+      const user = this.userById(id)
+      const spend = this.spendForPurge(id)
+      if (user === undefined) return { removed: false, rows: {}, spend }
+      const repoIds = this.all<{ id: string }>('SELECT id FROM repos WHERE user_id = ?', id).map((row) => row.id)
+      const rows = this.purgeRowCounts(id, repoIds, user.login)
+      const marks = repoIds.map(() => '?').join(', ')
+
+      const settings = this.purgeSettingsFilter(id, user.login)
+      this.run(`DELETE FROM settings WHERE ${settings.where}`, ...settings.args)
+
+      // `events` and `audit_log` carry plain id columns, so no cascade reaches
+      // them. The account's audit rows go with it and the retention row below is
+      // the record that the purge ran.
+      this.run('DELETE FROM events WHERE user_id = ?', id)
+      this.run('DELETE FROM events WHERE job_id IN (SELECT id FROM jobs WHERE user_id = ?)', id)
+      if (repoIds.length > 0) this.run(`DELETE FROM events WHERE repo_id IN (${marks})`, ...repoIds)
+      this.run('DELETE FROM audit_log WHERE user_id = ?', id)
+
+      // The one repo-scoped table the cascade misses: its `repo_id` is plain, and
+      // `artifact_pointers`, `evaluations` and `promotions` cascade only once the
+      // version row is gone.
+      if (repoIds.length > 0) this.run(`DELETE FROM artifact_versions WHERE repo_id IN (${marks})`, ...repoIds)
+
+      // The account row itself: sessions, jobs, instances, tokens, ledger rows,
+      // installations and every repo-scoped table go through the cascade.
+      this.run('DELETE FROM users WHERE id = ?', id)
+
+      this.audit(null, event.action ?? 'trial.purged', JSON.stringify({
+        reason: event.reason,
+        operator: event.operator,
+        rows,
+        spend,
+      }))
+      return { removed: true, rows, spend }
+    })
+  }
+
+  // #690: what the admin page shows under the trial table. Both actions carry no
+  // login, email or token, so the page can render them as they are.
+  recentPurgeAudits(limit = 20): AuditRow[] {
+    return this.all<AuditRow>(
+      "SELECT * FROM audit_log WHERE action IN ('trial.purged', 'trial.purge_skipped') ORDER BY id DESC LIMIT ?",
+      limit,
     )
   }
 
