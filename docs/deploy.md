@@ -547,6 +547,8 @@ npm run db:backup
 # plaintext is the default; with a backup key this writes fledge-<timestamp>.db.enc
 # and the manifest records the ciphertext checksum plus the non-secret key id/version
 # BACKUP_ENCRYPTION_REQUIRED=true refuses the run when no key is configured
+# the plaintext copy an encrypted run is made from lives in a 0700 work directory
+# outside the backup directory; BACKUP_WORK_DIR moves it (default: the temp dir)
 ```
 
 ### Backup encryption
@@ -627,6 +629,21 @@ held with its key hands both halves to anyone who finds the disk. Rotation means
 starting a new key and keeping the old one for as long as its copies are
 retained; the manifest names the key id each copy needs (a per-copy id for a
 passphrase, a stable id for a base64 key).
+
+**Where the plaintext copy is taken.** An encrypted backup is made from a
+plaintext copy of the database, and that copy is never written into the backup
+directory: it goes into an owner-only (`0700`) work directory outside it, as
+`fledge.db.plaintext.tmp` at mode `0600`, and the directory is removed however
+the process ends — including every non-zero exit. The work area defaults to the
+system temporary directory; set `BACKUP_WORK_DIR` to move it, which matters when
+`/tmp` is a tmpfs or a container's small filesystem, because it needs room for one
+copy of the database. A process killed outright (OOM, `SIGKILL`, power loss)
+cannot clean up after itself: the next backup sweeps `fledge-backup-*` and
+`fledge-drill-*` work directories older than an hour, and `prune` collects a
+`*.plaintext.tmp` an older tip left in the backup directory once it is that old.
+Anything younger is left alone, because during a rolling restart it may belong to
+a backup that is still running. A copy of the backup directory therefore never
+contains a readable database, whatever happens to a run.
 
 `/admin` shows what is in that directory, read-only: the newest copy with its
 size and age, whether that copy's manifest still matches (size and `sha256`),

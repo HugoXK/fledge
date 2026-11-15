@@ -7,6 +7,7 @@ import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import { encryptBackupFile, loadBackupKey } from './lib/backup-crypto.mjs'
 import { databaseFacts, manifestPath, writeManifest } from './lib/backup-manifest.mjs'
+import { INTERMEDIATE_GRACE_MS, backupWorkRoot, createPlaintextWorkDir, isPlaintextIntermediate, removeWorkDir } from './lib/backup-plaintext.mjs'
 
 const require = createRequire(import.meta.url)
 const { DatabaseSync, backup } = require('node:sqlite')
@@ -43,10 +44,27 @@ function parseArgs(argv) {
 }
 
 function prune(dir, keep) {
-  const copies = readdirSync(dir)
-    .filter((name) => name.startsWith('fledge-') && (name.endsWith('.db') || name.endsWith('.db.enc')))
-    .map((name) => join(dir, name))
-    .map((path) => ({ path, mtime: statSync(path).mtimeMs }))
+  const entries = readdirSync(dir).map((name) => ({ name, path: join(dir, name) }))
+  // A `.plaintext.tmp` here is a crash leftover from a tip that took the copy
+  // inside the backup directory. It is a readable database, so it is collected
+  // rather than left for an operator to find; the grace window keeps a backup
+  // still running from losing its own intermediate mid-write.
+  let intermediates = 0
+  const now = Date.now()
+  for (const entry of entries) {
+    if (!isPlaintextIntermediate(entry.name)) continue
+    try {
+      const stat = statSync(entry.path)
+      if (!stat.isFile() || now - stat.mtimeMs < INTERMEDIATE_GRACE_MS) continue
+      rmSync(entry.path, { force: true })
+      intermediates += 1
+    } catch {
+      // Vanished between readdir and removal; nothing to collect.
+    }
+  }
+  const copies = entries
+    .filter((entry) => entry.name.startsWith('fledge-') && (entry.name.endsWith('.db') || entry.name.endsWith('.db.enc')))
+    .map((entry) => ({ path: entry.path, mtime: statSync(entry.path).mtimeMs }))
     .sort((left, right) => right.mtime - left.mtime)
   const stale = copies.slice(keep)
   for (const copy of stale) {
@@ -54,7 +72,7 @@ function prune(dir, keep) {
     // A manifest describes exactly one copy, so it goes with it.
     rmSync(manifestPath(copy.path), { force: true })
   }
-  return stale.length
+  return { pruned: stale.length, intermediates }
 }
 
 const args = parseArgs(process.argv.slice(2))
@@ -81,9 +99,28 @@ mkdirSync(outDir, { recursive: true, mode: 0o700 })
 chmodSync(outDir, 0o700)
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')
 const target = join(outDir, `fledge-${stamp}.db${encrypt ? '.enc' : ''}`)
-// While encrypting, the plaintext intermediate deliberately does not end in
-// `.db`, so a crash cannot leave a file the drill or /admin calls a backup.
-const plaintextTarget = encrypt ? `${target}.plaintext.tmp` : target
+// While encrypting, the plaintext copy is a second copy of everything the
+// encryption protects, so it never sits in the backup directory: it is taken in
+// an owner-only work directory outside it, and removed however this process ends
+// (including every `fail()` below, which exits). A crash can still leave it in
+// that work directory, which the next run sweeps once it is stale.
+let plaintextTarget = target
+let workDir = null
+if (encrypt) {
+  try {
+    workDir = createPlaintextWorkDir(backupWorkRoot(process.env))
+  } catch (error) {
+    fail(2, `cannot create the plaintext work directory: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  process.on('exit', () => {
+    try {
+      removeWorkDir(workDir)
+    } catch {
+      // A cleanup failure must never change this run's exit code.
+    }
+  })
+  plaintextTarget = join(workDir, 'fledge.db.plaintext.tmp')
+}
 
 const db = new DatabaseSync(dbPath, { readOnly: true })
 try {
@@ -143,5 +180,5 @@ if (encrypt) {
 } else {
   process.stdout.write('encryption=none\n')
 }
-process.stdout.write(`retention=keep:${keep} pruned=${pruned}\n`)
+process.stdout.write(`retention=keep:${keep} pruned=${pruned.pruned} intermediates=${pruned.intermediates}\n`)
 process.stdout.write('backup: OK\n')
