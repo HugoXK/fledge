@@ -28,7 +28,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/api/application` | session | JSON status/queue for the status page |
 | GET | `/dashboard` | approved + session | Repos, quota, jobs, personal delivery metrics (`?window=7 or 30`) |
 | GET | `/console` | approved + session | Workspace overview (repos, jobs, quota) |
-| POST | `/repos` | approved + CSRF | Add an upstream repository; Fledge checks or creates the user's fork |
+| POST | `/repos` | approved + CSRF, expensive rate limit | Add an upstream repository; Fledge checks or creates the user's fork |
 | GET | `/repos/:id` | owner | Repo detail, including the selected role, delivery board and allowed roles (`?workState=...` filters the work-item list) |
 | GET | `/readyz` | public | Database and per-repository instance readiness summary |
 | GET | `/metrics` | `Authorization: Bearer <METRICS_TOKEN>` only | Prometheus metrics; a production start refuses an empty `METRICS_TOKEN`, so there is no unauthenticated production path, and a `?token=` query value is not accepted |
@@ -38,7 +38,8 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/repos/:id/schedule` | owner | Schedule console: the stored schedule, the planner's next run, the newest decided instant (state, reason, attempts, lease) and the last success; an unknown value prints `unknown` |
 | POST | `/repos/:id/schedule` | owner + CSRF | Save the console form (cron or interval, zone, window); audits `schedule.saved` and writes nothing when the form is refused |
 | POST | `/repos/:id/schedule/remove` | owner + CSRF | Delete the schedule so the repository returns to its legacy interval; audits `schedule.removed` |
-| POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job; plan-first repositories enqueue a plan |
+| POST | `/repos/:id/run` | owner + CSRF, expensive rate limit | Enqueue a manual iterate job; plan-first repositories enqueue a plan |
+| POST | `/repos/:id/rules` | maintainer + CSRF, destructive rate limit | Save one repository rule override against its expected revision |
 | POST | `/repos/:id/work` | owner + CSRF | Create a work item |
 | POST | `/repos/:id/work/:workItemId/state` | owner + CSRF | Move a work item through the triage/assignment/review state machine |
 | POST | `/repos/:id/work/:workItemId/run` | owner + CSRF | Start a plan or iterate job for a work item |
@@ -92,7 +93,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/admin/users/:id/approve` | admin + CSRF | Approve |
 | POST | `/admin/users/:id/reject` | admin + CSRF | Reject |
 | POST | `/admin/users/:id/quota` | admin / super admin + CSRF | Set quota in CNY; unlimited is super-admin-only |
-| POST | `/admin/users/:id/role` | owner + CSRF | Promote a normal user to admin or demote an admin |
+| POST | `/admin/users/:id/role` | owner + CSRF, destructive rate limit | Promote a normal user to admin or demote an admin |
 | POST | `/admin/simulation` | owner + CSRF | Toggle the normal-user UI preview |
 | POST | `/admin/platform/stop` | admin + CSRF | Stop all platform work: every enqueue is refused with `PLATFORM_PAUSED`, active jobs are paused or cancelled, one audit row records who and why. The read-only preview does not block it |
 | POST | `/admin/platform/resume` | admin + CSRF | Clear the platform stop and report the repositories the next tick will consider; it re-enqueues nothing |

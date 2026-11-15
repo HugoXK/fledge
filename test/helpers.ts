@@ -62,6 +62,11 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     autoMerge: { ...base.autoMerge, ...overrides.autoMerge },
     ops: { ...base.ops, ...overrides.ops },
     limits: { ...base.limits, ...overrides.limits },
+    rateLimit: {
+      login: { ...base.rateLimit.login, ...overrides.rateLimit?.login },
+      destructive: { ...base.rateLimit.destructive, ...overrides.rateLimit?.destructive },
+      expensive: { ...base.rateLimit.expensive, ...overrides.rateLimit?.expensive },
+    },
     plan: { ...base.plan, ...overrides.plan },
     backup: { ...base.backup, ...overrides.backup },
   }

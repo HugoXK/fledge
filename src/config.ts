@@ -6,6 +6,7 @@ import { buildIdentity } from './lib/buildIdentity.js'
 import { DEFAULT_EXPECTED_HOURS } from './lib/backupStatus.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 import { registerRedactionSecrets } from './lib/secrets.js'
+import { DEFAULT_RATE_LIMIT_BUDGETS, type RateLimitBudgets } from './lib/rateLimit.js'
 import { parseManagementService, type ManagementServiceMode } from './management/mode.js'
 
 export type RunnerMode = 'mock' | 'flybot'
@@ -29,6 +30,9 @@ export interface Config {
   }
   // How long a GitHub re-authentication stays "recent" for destructive actions.
   recentAuthMinutes: number
+  // #708: the per-class windows mutating routes take. A route names its class;
+  // the numbers live here so a deployment tightens a limit without a rebuild.
+  rateLimit: RateLimitBudgets
   // #540: how far the console adapters go for commands added after slice 1.
   // `off` (the default) is the route that existed before the contract.
   managementService: ManagementServiceMode
@@ -277,6 +281,20 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       instancesGlobal: Math.max(0, number('LIMIT_INSTANCES_GLOBAL', 0)),
     },
     recentAuthMinutes: Math.max(1, number('RECENT_AUTH_MINUTES', 15)),
+    rateLimit: {
+      login: {
+        max: Math.max(1, number('RATE_LIMIT_LOGIN_MAX', DEFAULT_RATE_LIMIT_BUDGETS.login.max)),
+        windowMs: Math.max(1_000, number('RATE_LIMIT_LOGIN_WINDOW_MS', DEFAULT_RATE_LIMIT_BUDGETS.login.windowMs)),
+      },
+      destructive: {
+        max: Math.max(1, number('RATE_LIMIT_DESTRUCTIVE_MAX', DEFAULT_RATE_LIMIT_BUDGETS.destructive.max)),
+        windowMs: Math.max(1_000, number('RATE_LIMIT_DESTRUCTIVE_WINDOW_MS', DEFAULT_RATE_LIMIT_BUDGETS.destructive.windowMs)),
+      },
+      expensive: {
+        max: Math.max(1, number('RATE_LIMIT_EXPENSIVE_MAX', DEFAULT_RATE_LIMIT_BUDGETS.expensive.max)),
+        windowMs: Math.max(1_000, number('RATE_LIMIT_EXPENSIVE_WINDOW_MS', DEFAULT_RATE_LIMIT_BUDGETS.expensive.windowMs)),
+      },
+    },
     managementService: parseManagementService(text('MANAGEMENT_SERVICE', 'off')),
     tokenEncryptionKey: encryptionKey,
     github: {
