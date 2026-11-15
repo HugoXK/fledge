@@ -106,7 +106,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # Dependency lifecycle scripts are code execution from an untrusted
+      # package before any of ours runs. Lint needs none of them, so it is the
+      # first job to install with scripts disabled; the other jobs follow one
+      # at a time with their own measured run (#646).
+      - run: npm ci --ignore-scripts
       - run: npm run lint
 
   typecheck:

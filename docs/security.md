@@ -689,6 +689,27 @@ treat it as a secret.
 - The model gateway should be rate-limited at the reverse proxy per token if the
   platform is exposed to many users.
 
+### CI install scripts
+
+A dependency's lifecycle script runs arbitrary code on the runner before any of
+our code does, so installing dependencies is a supply-chain boundary, not
+housekeeping. The `lint` job installs with `npm ci --ignore-scripts`; lint does
+not need any postinstall output, and `--ignore-scripts` removes the execution
+path without changing the linter's exit code.
+
+`test/ciIgnoreScripts.test.ts` judges the job's own command: it reads the
+install step out of `.github/workflows/ci.yml`, runs it against a fixture whose
+dependency carries a harmless `postinstall` marker, and fails if the marker is
+written. Dropping the flag therefore fails the suite instead of silently
+restoring script execution.
+
+The remaining `npm ci` calls (`typecheck`, `test`, `coverage`, `build`, `audit`,
+`visual`, `release.yml` and both Docker stages) still run scripts and move one
+job at a time, each on its own measured run. A dependency that genuinely needs a
+script gets a narrow, documented exception — never a blanket re-enable.
+Playwright's browser install stays an explicit step
+(`npx playwright install --with-deps chromium`), so it is unaffected.
+
 ## Threat notes
 
 | Threat | Mitigation |
