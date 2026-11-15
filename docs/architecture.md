@@ -1731,6 +1731,13 @@ incomplete`. A published GitHub Release is therefore never labelled "not
 released" just because the host runs a local build. A snapshot that claims `ok`
 with no links, or that contradicts its own problems, is refused as unparseable —
 a green header over an empty table is the one shape the card must never render.
+
+The mechanical release pull request is opted into GitHub auto-merge after it is
+opened or reused; `ci-ok`, `review-gate` and `pr-lint` still decide when it may
+squash, and `--match-head-commit` pins the tip. The release card also renders a
+compact `plan → merge → publish` timeline from the snapshot's `plan.plannedAt`,
+`pull.mergedAt` and `release.publishedAt`, so a late release can be attributed to
+the scheduler, the checks or the merge wait.
 ### Backup surface
 
 The other half of "your data is safe" is a fact the operator can see without
