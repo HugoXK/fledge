@@ -370,3 +370,8 @@ test('release.yml keeps its own concurrency and verifies the tag before publishi
   assert.match(release, /tag:\s*\n\s*description:/)
   assert.match(release, /gh release create "\$RELEASE_TAG"/)
 })
+
+test('the release job reads the release environment token, and the tag job does not', () => {
+  assert.match(job('release'), /^\s{4}environment: release$/m)
+  assert.doesNotMatch(job('tag'), /^\s{4}environment: release$/m)
+})

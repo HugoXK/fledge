@@ -1,0 +1,1 @@
+`RELEASE_OPEN_TOKEN` is now read from the `release` GitHub environment: the release job declares `environment: release`, while the tag job does not. The token is no longer available to every workflow on `main`, and the deployment runbook now names the environment-secret path and the ordering needed to move the scope safely.

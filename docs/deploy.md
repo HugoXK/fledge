@@ -272,12 +272,16 @@ backstop: it dispatches `ci.yml` when an open same-repo pull request has no `CI`
 run at all at its head SHA, and it does not replace opening the PR with a real
 identity.
 
-The opener runs on the repository secret **`RELEASE_OPEN_TOKEN`** (Settings →
-Secrets and variables → Actions). Set it to a token for the team account —
-never the Reviewer's `HugoXK-bot` account — scoped to this repository alone, with
-`Contents: read` and `Pull requests: write` — it does not need push, because the
-workflow pushes `release/v<next>` before the opener runs. The opener reads
-`GET /user` and
+The opener runs on the **`release` environment secret** `RELEASE_OPEN_TOKEN`
+(Settings → Environments → release → Environment secrets), not a repository
+secret. The `release` job declares `environment: release`; the `tag` job does
+not, so only the opener can read it. Create the environment secret before
+deleting a repository-scoped secret of the same name, and leave the environment
+without required reviewers or the unattended nightly will wait. Set it to a token
+for the team account — never the Reviewer's `HugoXK-bot` account — scoped to this
+repository alone, with `Contents: read` and `Pull requests: write` — it does not
+need push, because the workflow pushes `release/v<next>` before the opener runs.
+The opener reads `GET /user` and
 refuses a credential whose login is the review policy's `requiredPass`, so the
 reviewer account cannot open the release pull request even if it were installed
 by mistake. The token reaches the step through the environment only; it is never
