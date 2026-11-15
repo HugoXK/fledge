@@ -16,6 +16,7 @@
     "lint": "node scripts/lint-warnings.mjs src test scripts bridge",
     "test": "tsx --test test/*.test.ts",
     "test:coverage": "tsx --test --experimental-test-coverage --test-coverage-lines=84 --test-coverage-include='src/**' test/*.test.ts",
+    "coverage:diff": "node scripts/coverage-diff.mjs",
     "check": "npm run lint && npm run typecheck && npm test && npm run build",
     "mail:outbox": "node scripts/outbox.mjs",
     "mail:probe": "node scripts/mail-probe.mjs",

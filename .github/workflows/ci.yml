@@ -172,6 +172,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # #641: the changed-lines step below diffs the pull request against its
+          # base, which a depth-1 checkout does not carry. The suite runs from the
+          # same checkout, so the history is fetched once here.
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -181,6 +186,24 @@ jobs:
         # `tee` keeps the report for the summary below; the bash shell CI uses is
         # `-eo pipefail`, so the threshold's exit code is still the step's.
         run: npm run test:coverage 2>&1 | tee coverage.txt
+      - name: Enforce the changed-lines floor
+        # #641: the floor above is one number over `src/**`, so a large covered
+        # tree hides a new untested branch. This step measures only the lines this
+        # diff adds. Pull request only: a push or schedule has no base and a
+        # merge-queue entry re-runs the pull request's own tree.
+        #
+        # The head is the checked-out commit, never `pull_request.head.sha`:
+        # this job's checkout carries no `ref:`, so it is `refs/pull/<N>/merge`
+        # and `coverage.txt` is numbered in the merge tree. `git diff base...HEAD`
+        # stays the pull request's own changes — the base is the merge's first
+        # parent — and its line numbers now come from the same tree as the report.
+        # With the head sha the two disagree whenever the base moved in a file
+        # the pull request edits, and an uncovered line is reported as covered.
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node scripts/coverage-diff.mjs --base "$PR_BASE" --head HEAD --report coverage.txt --floor 80
       - name: Publish the coverage report to the run summary
         if: always()
         run: |
