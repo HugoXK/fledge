@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { json, startFakeServer } from './helpers.js'
@@ -74,6 +74,23 @@ test('rotate-github-token refuses a token from the environment and names the fil
   } finally {
     secrets.cleanup()
     await github.close()
+  }
+})
+
+// The file is opened once and checked and read through that one descriptor, so
+// there is no path lookup between the permission check and the read. A path that
+// is not a regular file is refused before anything is read from it.
+test('rotate-github-token refuses a --token-file that is not a regular file', async () => {
+  const secrets = secretsFile()
+  const directory = join(secrets.dir, 'token-dir')
+  mkdirSync(directory)
+  try {
+    const result = await runRotate(['--token-file', directory], { SECRETS_PATH: secrets.path, GITHUB_API_URL: 'http://127.0.0.1:1' })
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /not a regular file/)
+    assert.equal(secrets.value(), 'old-token')
+  } finally {
+    secrets.cleanup()
   }
 })
 

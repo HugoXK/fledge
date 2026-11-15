@@ -14,7 +14,7 @@
 // validates it, backs up the secrets file, updates the GITHUB_TOKEN entry and
 // never prints the token. The old token must be revoked in GitHub settings.
 
-import { copyFileSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, copyFileSync, fstatSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -47,17 +47,27 @@ function readToken(path) {
     // nor the process table.
     return readFileSync(0, 'utf8')
   }
-  let mode
+  // The descriptor is opened once and everything after it reads that same
+  // descriptor. Checking the path and then reading the path would leave a
+  // window in which the file is swapped for another one between the two.
+  let fd
   try {
-    const stat = statSync(path)
-    if (!stat.isFile()) fail(`${path} is not a regular file`)
-    mode = stat.mode & 0o777
+    fd = openSync(path, 'r')
   } catch (error) {
-    fail(`cannot read ${path}: ${error instanceof Error && 'code' in error ? String(error.code) : 'unknown error'}`)
+    const code = error instanceof Error && 'code' in error ? String(error.code) : 'unknown error'
+    if (code === 'EISDIR') fail(`${path} is not a regular file`)
+    fail(`cannot read ${path}: ${code}`)
   }
+  const stat = fstatSync(fd)
+  if (!stat.isFile()) fail(`${path} is not a regular file`)
+  const mode = stat.mode & 0o777
   if ((mode & OWNER_ONLY) !== 0) fail(`${path} is mode ${mode.toString(8).padStart(3, '0')}; the token file must be 0600 so only its owner can read it`)
   if ((mode & 0o400) === 0) fail(`${path} is not readable by its owner; the token file must be 0600`)
-  return readFileSync(path, 'utf8')
+  try {
+    return readFileSync(fd, 'utf8')
+  } finally {
+    closeSync(fd)
+  }
 }
 
 const token = readToken(tokenFile).trim()
