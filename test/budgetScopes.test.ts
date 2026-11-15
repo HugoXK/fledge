@@ -280,6 +280,41 @@ test('#697 a scope cap is one row per scope, replaces in place, and zero removes
   }
 })
 
+// The purge contract (`docs/security.md`, "Account purge") is one transaction
+// that deletes every row naming the account. `budget_scopes` names it twice —
+// once as `principal:user:<id>`, once through each of its repository ids — and
+// no foreign key cascades into this table, so the purge has to delete both by
+// hand and report them in the retention row.
+test('#697 the account purge deletes the scopes that name the erased account and counts them', () => {
+  const h = harness()
+  const user = makeUser(h.store, { login: 'scope-purge', status: 'approved' })
+  const repo = makeRepo(h, user.id, 'repo_scope_purge')
+  h.store.setBudgetScope({ kind: 'repository', id: repo.id, capCny: 4, action: 'pause' })
+  h.store.setBudgetScope({ kind: 'principal', id: identityPrincipalId(user.id), capCny: 9, action: 'cancel' })
+  assert.equal(h.store.listBudgetScopes().length, 2)
+  try {
+    const result = h.store.purgeUserRows(user.id, { reason: 'trial.expired', operator: 'trial.sweep' })
+    assert.equal(result.removed, true)
+    assert.deepEqual(h.store.listBudgetScopes(), [], 'a scope that names the erased account must not survive the purge')
+    assert.equal(result.rows.budget_scopes, 2, 'the retention row must report the scopes it deleted')
+  } finally {
+    h.store.close()
+  }
+})
+
+test('#697 deleting a repository takes its scope with it', () => {
+  const h = harness()
+  const user = makeUser(h.store, { login: 'scope-delete-repo', status: 'approved' })
+  const repo = makeRepo(h, user.id, 'repo_scope_delete')
+  h.store.setBudgetScope({ kind: 'repository', id: repo.id, capCny: 4, action: 'pause' })
+  try {
+    h.store.deleteRepo(repo.id)
+    assert.deepEqual(h.store.listBudgetScopes(), [], 'the cap outlived the repository it was set on')
+  } finally {
+    h.store.close()
+  }
+})
+
 test('#697 the scope table is additive: a database that already has it opens again and keeps its rows', () => {
   const config = testConfig()
   const dir = mkdtempSync(join(tmpdir(), 'fledge-scope-'))

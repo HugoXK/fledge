@@ -101,7 +101,11 @@ stream ends. A request that is already in flight is allowed to finish; the
   leave the team with AUTH errors. Outside a job the instance token is used and
   the row has no job id.
 - When the balance crosses zero: create one in-app notification and at most one
-  email per user per day (deduped by `settings:quota_notified:<userId>`).
+  email per user per day (deduped by `settings:quota_notified:<userId>`). The
+  in-app notification is written before the mail attempt, so it survives a failed
+  send; a failed send also writes a `quota.mail_failed` audit row with the SMTP
+  error redacted, because the day key is already set and that row is the only
+  trace that the reminder was never delivered.
 - A failed job before it starts (quota already zero) is recorded as
   `quota_exhausted` and does not call the model.
 
@@ -182,6 +186,13 @@ Both take the same `job_budget_action` values as the per-job cap (`alert`,
 `pause`, `cancel`). A **missing row means no cap** — never a zero cap — and the
 console lists the cap, the spend consumed and the scope it belongs to, with a
 lower-bound caveat when a call in the window could not be priced.
+
+A scope lives exactly as long as the thing it names: clearing a cap to zero
+deletes the row, and the account purge deletes both shapes that carry an erased
+account — its `principal:user:<id>` row and one repository row per repository it
+owned — in the same transaction as the rest of the purge, counts them in the
+retention row. A scope must never outlive its subject, because a key such as
+`principal:user:<id>` is a row that names the account the purge exists to erase.
 
 **Precedence** is job > repository > principal. A more specific scope always
 fires before a wider one, whatever room each has left, so an outer cap can

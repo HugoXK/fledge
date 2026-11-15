@@ -2921,6 +2921,18 @@ export class Store {
       )
     }
     counts.audit_log = Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM audit_log WHERE user_id = ?', userId)?.n ?? 0)
+    // #697: `budget_scopes` is keyed by a scope id, not by `user_id`, and no
+    // cascade reaches it. Count both shapes the purge deletes: the principal
+    // row and one row per repository.
+    counts.budget_scopes =
+      Number(
+        this.get<{ n: number }>("SELECT COUNT(*) AS n FROM budget_scopes WHERE kind = 'principal' AND id = ?", identityPrincipalId(userId))?.n ?? 0,
+      ) +
+      (repoIds.length === 0
+        ? 0
+        : Number(
+            this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM budget_scopes WHERE kind = 'repository' AND id IN (${marks})`, ...repoIds)?.n ?? 0,
+          ))
     const settings = this.purgeSettingsFilter(userId, login)
     counts.settings = Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM settings WHERE ${settings.where}`, ...settings.args)?.n ?? 0)
     return counts
@@ -2956,6 +2968,12 @@ export class Store {
       // `artifact_pointers`, `evaluations` and `promotions` cascade only once the
       // version row is gone.
       if (repoIds.length > 0) this.run(`DELETE FROM artifact_versions WHERE repo_id IN (${marks})`, ...repoIds)
+
+      // #697: the budget scopes name the account twice and no cascade reaches
+      // this table either — `principal:user:<id>` survives on its own, and a
+      // repository row is left behind once its repository is gone.
+      this.run("DELETE FROM budget_scopes WHERE kind = 'principal' AND id = ?", identityPrincipalId(id))
+      if (repoIds.length > 0) this.run(`DELETE FROM budget_scopes WHERE kind = 'repository' AND id IN (${marks})`, ...repoIds)
 
       // The account row itself: sessions, jobs, instances, tokens, ledger rows,
       // installations and every repo-scoped table go through the cascade.
@@ -4696,6 +4714,9 @@ export class Store {
 
   deleteRepo(id: string): void {
     this.run('DELETE FROM repos WHERE id = ?', id)
+    // #697: the repository cap is keyed by the repository id and no cascade
+    // reaches it, so deleting the repository has to take its scope row with it.
+    this.run("DELETE FROM budget_scopes WHERE kind = 'repository' AND id = ?", id)
   }
 
   listAutoMergeRepos(): RepoRow[] {
