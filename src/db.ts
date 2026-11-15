@@ -5792,6 +5792,10 @@ export class Store {
     return this.all<FeedbackEventRow>('SELECT * FROM feedback_events WHERE ref = ? ORDER BY created_at DESC, rowid DESC LIMIT ?', ref, Math.max(1, Math.min(100, limit)))
   }
 
+  listFeedbackTriageForUser(userId: string, limit = 10): FeedbackTriageRow[] {
+    return this.all<FeedbackTriageRow>('SELECT * FROM feedback_triage WHERE user_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT ?', userId, Math.max(1, Math.min(50, limit)))
+  }
+
   listFeedbackForRelease(limit = 50): FeedbackTriageRow[] {
     return this.all<FeedbackTriageRow>("SELECT * FROM feedback_triage WHERE fixed_version IS NOT NULL AND released_version IS NULL AND user_id IS NOT NULL AND status IN ('fixed','pr_opened') ORDER BY created_at ASC LIMIT ?", Math.max(1, Math.min(100, limit)))
   }

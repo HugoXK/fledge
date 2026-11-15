@@ -114,8 +114,9 @@ The feedback lifecycle is one triage row per ref (`feedback_triage`) plus
 `feedback_events`. New reports are sent to the server FlyBot's Lead through a
 connected repo (`FLEDGE_LEAD_REPO_ID`) or a direct bridge; the packet carries a
 per-ref signed token, not the raw stack. The Lead reads and writes through
-`GET`/`POST /api/feedback/:ref` and `/triage`; every transition appends an event
-and notifies the signed-in reporter in-app and by mail. A `fixed_version` at or
+`GET`/`POST /api/feedback/:ref` and `/triage`; the read response carries a
+sanitized issue draft, every transition appends an event, and the signed-in
+reporter sees in-app/mail updates plus a Settings history row. A `fixed_version` at or
 below the running `VERSION` sends the fixed notice once; the startup scan then
 marks the record `released` and sends the “now live” notice once. Fledge never
 creates the public issue: the Lead does, sanitized, and records its URL.

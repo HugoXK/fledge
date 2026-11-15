@@ -1,6 +1,6 @@
 import type { Config } from '../config.js'
 import type { CostReport } from '../metrics/cost.js'
-import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow, TaskRelationRow } from '../db.js'
+import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, FeedbackTriageRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow, TaskRelationRow } from '../db.js'
 import { assetUrl } from '../lib/assetVersion.js'
 import { redactCommand, type DriftAssessment, type EnvironmentCurrent, type ReleaseSnapshot } from '../lib/deployments.js'
 import { agreementContent } from '../users/agreements.js'
@@ -1869,6 +1869,23 @@ export function teamPage(input: {
   return layout({ title: t('团队工作台', 'Team console'), viewer, body, config, locale, path: `/repos/${repo.id}/team`, active: 'dashboard', notice, error })
 }
 
+function feedbackStatusLabel(t: Translate, status: string): string {
+  const labels: Record<string, [string, string]> = {
+    new: ['已收到', 'Received'],
+    user_error: ['使用问题', 'User error'],
+    duplicate: ['重复', 'Duplicate'],
+    needs_info: ['需要补充信息', 'Needs info'],
+    confirmed: ['已确认', 'Confirmed'],
+    issue_opened: ['已建 issue', 'Issue opened'],
+    pr_opened: ['修复中', 'Fix in review'],
+    fixed: ['已修复', 'Fixed'],
+    released: ['已上线', 'Released'],
+    wontfix: ['不修复', 'Won\'t fix'],
+  }
+  const label = labels[status]
+  return label === undefined ? status : t(label[0], label[1])
+}
+
 export function settingsPage(input: {
   config: Config
   locale: Locale
@@ -1877,13 +1894,14 @@ export function settingsPage(input: {
   sessions: SessionRow[]
   currentSessionHash: string
   providers: Array<ModelProviderRow & { models: ProviderModelRow[] }>
+  feedback?: FeedbackTriageRow[]
   discoveredProvider?: string
   discovered?: string[]
   newToken?: string
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, tokens, sessions, currentSessionHash, providers, discoveredProvider, discovered = [], newToken, notice, error } = input
+  const { config, locale, viewer, tokens, sessions, currentSessionHash, providers, feedback = [], discoveredProvider, discovered = [], newToken, notice, error } = input
   const t = translator(locale)
   const user = viewer.user
   const quota = quotaView(user, config)
@@ -2085,6 +2103,16 @@ export function settingsPage(input: {
       <p class="fine">${escapeHtml(t('不要粘贴 token、密码或他人的隐私信息。反馈会保存并邮件通知开发者。', 'Do not paste tokens, passwords or another person’s private data. The note is stored and mailed to the maintainer.'))}</p>
       <button class="btn" type="submit">${escapeHtml(t('发送反馈', 'Send feedback'))}</button>
     </form>
+    ${feedback.length === 0 ? '' : `<div class="list" data-feedback-history>
+      ${feedback.map((row) => {
+        const links = [
+          row.issue_url === null ? '' : `<a class="link" href="${escapeHtml(row.issue_url)}" target="_blank" rel="noreferrer">Issue</a>`,
+          row.pr_url === null ? '' : `<a class="link" href="${escapeHtml(row.pr_url)}" target="_blank" rel="noreferrer">PR</a>`,
+        ].filter((value) => value !== '').join(' · ')
+        const version = row.released_version ?? row.fixed_version
+        return `<div class="list-row"><div class="list-main"><strong>#${escapeHtml(row.ref)} · ${escapeHtml(feedbackStatusLabel(t, row.status))}</strong><small>${escapeHtml(row.kind)}${links === '' ? '' : ` · ${links}`}${version === null ? '' : ` · v${escapeHtml(version)}`} · ${escapeHtml(humanTimeShort(row.updated_at))}</small></div></div>`
+      }).join('')}
+    </div>`}
   </section>
 
   <section class="card">

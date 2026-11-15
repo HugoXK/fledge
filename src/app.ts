@@ -19,7 +19,7 @@ import { dedupeRepoNames, instanceLimitRefusal, repoLimitRefusal, type LimitRefu
 import { isTrialFilter } from './lib/trials.js'
 import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, errorReportMail, feedbackMail, rejectedEmail, testEmail } from './email/templates.js'
-import { deliverFeedbackToLead, verifyTriageToken } from './feedback/lead.js'
+import { deliverFeedbackToLead, publicIssueDraft, verifyTriageToken } from './feedback/lead.js'
 import { notifyFeedbackReporter, notifyReleasedFeedback } from './feedback/notify.js'
 import { notifyEmail } from './email/recipient.js'
 import { authenticateApiToken } from './lib/apiToken.js'
@@ -3939,6 +3939,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         sessions: store.listSessions(viewer.user.id),
         currentSessionHash: viewer.sessionHash,
         providers: store.listModelProviders(viewer.user.id).map((provider) => ({ ...provider, models: store.listProviderModels(provider.id) })),
+        feedback: store.listFeedbackTriageForUser(viewer.user.id, 10),
         discoveredProvider: queryText(request, 'discoveredProvider'),
         discovered: (queryText(request, 'discovered') ?? '').split(',').filter((value) => value !== ''),
         notice: request.flash?.notice?.text,
@@ -4249,6 +4250,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       feedback: store.feedbackById(ref) ?? null,
       error: store.errorReportByRef(ref) ?? null,
       events: store.listFeedbackEvents(ref),
+      issueDraft: publicIssueDraft(triage),
     }
   })
 
@@ -4298,7 +4300,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       issueUrl: issueUrl === '' ? null : issueUrl,
       prUrl: prUrl === '' ? null : prUrl,
     })
-    return { ok: true, status }
+    const updated = store.feedbackTriageByRef(ref)
+    return { ok: true, status, issueDraft: updated === undefined ? null : publicIssueDraft(updated) }
   })
 
   app.post('/settings/tokens', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {

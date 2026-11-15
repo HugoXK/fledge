@@ -197,7 +197,8 @@ a bearer capability for that one ref and are rate-limited. The Lead may read the
 redacted message/stack and write a conclusion, but Fledge does not publish raw
 feedback or error data. A public GitHub issue is created by the Lead only after a
 separate sanitized-publication consent, and the issue may @ the reporter only
-when that consent is present. The triage row stores the issue/PR URLs, fixed and
+when that consent is present. The triage read returns a ready-to-use sanitized
+issue draft built from `public_summary`; raw message/stack never enters it. The triage row stores the issue/PR URLs, fixed and
 released versions, user-facing message, public summary and notification state;
 the raw text remains in the feedback/error row.
 

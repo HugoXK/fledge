@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { buildTriagePacket, deliverFeedbackToLead, triageToken } from '../src/feedback/lead.js'
+import { buildTriagePacket, deliverFeedbackToLead, publicIssueDraft, triageToken } from '../src/feedback/lead.js'
 import { notifyReleasedFeedback } from '../src/feedback/notify.js'
 import { json, makeUser, MemoryMailer, readBody, startFakeServer, testConfig } from './helpers.js'
 
@@ -25,6 +25,21 @@ test('the packet names the ref, consent and signed triage endpoints', () => {
     assert.match(packet, /\/api\/feedback\/fb_lead/)
     assert.match(packet, new RegExp(triageToken(config.sessionSecret, 'fb_lead')))
     assert.match(packet, /Never paste the raw message, stack, email or token/)
+  } finally {
+    f.store.close()
+  }
+})
+
+
+test('the public issue draft mentions the reporter only with publication consent', () => {
+  const f = fixture()
+  try {
+    const draft = publicIssueDraft(f.triage)
+    assert.match(draft.body, /@reporter/)
+    assert.match(draft.body, /fb_lead/)
+    const noConsent = publicIssueDraft({ ...f.triage, publish_consent: 0 })
+    assert.doesNotMatch(noConsent.body, /@reporter/)
+    assert.equal(noConsent.mention, '')
   } finally {
     f.store.close()
   }
@@ -84,7 +99,9 @@ test('the triage API reads and writes with the per-ref token and notifies the re
 
     const read = await built.app.inject({ method: 'GET', url: '/api/feedback/fb_api', headers })
     assert.equal(read.statusCode, 200)
-    assert.equal((read.json() as { triage: { ref: string } }).triage.ref, 'fb_api')
+    const readBodyJson = read.json() as { triage: { ref: string }, issueDraft: { body: string } }
+    assert.equal(readBodyJson.triage.ref, 'fb_api')
+    assert.match(readBodyJson.issueDraft.body, /fb_api/)
 
     const written = await built.app.inject({
       method: 'POST',
@@ -147,6 +164,29 @@ test('a feedback post with public-issue consent records it on the triage row', a
     const row = store.listFeedback(1)[0]
     assert.ok(row)
     assert.equal(store.feedbackTriageByRef(row.id)?.publish_consent, 1)
+  } finally {
+    await built.close()
+  }
+})
+
+
+test('settings shows the reporter own feedback status, links and version', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'history-reporter', status: 'approved' })
+    const feedback = store.createFeedback({ id: 'fb_history', userId: user.id, kind: 'bug', message: 'boom', page: '/dashboard' })
+    store.createFeedbackTriage({ ref: feedback.id, userId: user.id, userLogin: user.login, kind: 'bug', publishConsent: true })
+    store.updateFeedbackTriage('fb_history', { status: 'fixed', fixed_version: '0.3.6', issue_url: 'https://github.com/HugoXK/fledge/issues/1', pr_url: 'https://github.com/HugoXK/fledge/pull/2' })
+    const session = await import('./helpers.js').then(({ sessionFor }) => sessionFor(built, user))
+    const page = await built.app.inject({ method: 'GET', url: '/settings', headers: { cookie: `${session.cookie}; fledge_lang=en` } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /data-feedback-history/)
+    assert.match(page.body, /fb_history/)
+    assert.match(page.body, /Fixed/)
+    assert.match(page.body, /issues\/1/)
+    assert.match(page.body, /pull\/2/)
   } finally {
     await built.close()
   }

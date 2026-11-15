@@ -28,6 +28,19 @@ export function verifyTriageToken(sessionSecret: string, ref: string, supplied: 
   return supplied !== '' && safeEqual(supplied, triageToken(sessionSecret, ref))
 }
 
+// #814: the only text a Lead should paste into a public issue. It is derived
+// from the Lead's own public_summary, never from the raw message or stack, and
+// the @mention appears only when the reporter explicitly consented.
+export function publicIssueDraft(triage: FeedbackTriageRow): { title: string; body: string; mention: string } {
+  const summary = (triage.public_summary ?? '').trim() || 'A Fledge user reported a problem.'
+  const mention = triage.publish_consent === 1 && triage.user_login !== null ? `@${triage.user_login}` : ''
+  return {
+    title: `[feedback] ${summary.slice(0, 80)}`.slice(0, 120),
+    body: `${mention === '' ? 'Thanks for the report' : `${mention} thanks for the report`} (ref \`${triage.ref}\`).\n\n${summary}\n\nFledge will update this issue when a fix ships.`,
+    mention,
+  }
+}
+
 export interface TriagePacketInput {
   config: Config
   triage: FeedbackTriageRow
@@ -62,6 +75,7 @@ export function buildTriagePacket(input: TriagePacketInput): string {
     '- Decide whether this is a user/configuration problem or a platform defect.',
     '- A confirmed defect: create one sanitized public issue in publicRepo; include the ref and @reporter only when publishConsent=yes. Never paste the raw message, stack, email or token into the issue.',
     '- Record issue_url, pr_url and fixed_version through the Write endpoint.',
+    '- After setting public_summary, GET the record again for a ready-to-use sanitized issue draft.',
     '- Fledge sends the in-app/email update to the reporter; do not send it yourself.',
   ]
   return lines.join('\n').slice(0, 4000)
