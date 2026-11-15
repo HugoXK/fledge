@@ -55,6 +55,19 @@ import { parseTeam } from '../flybot/instances.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
 import type { InstanceManager } from '../flybot/instances.js'
 
+// #732: the platform pays only when the job has no own model to use. A
+// repository selection is an own model too: the bridge patches the instance from
+// `listRepoModelSelection` and the gateway resolves the same row, so checking
+// only the legacy users.own_llm_* columns refused a job that would never spend
+// platform quota.
+function platformFundedFor(user: UserRow, store: Store, repoId: string): boolean {
+  const legacyOwnModel =
+    user.own_llm_base_url !== null &&
+    user.own_llm_base_url !== '' &&
+    user.own_llm_key_enc !== null
+  return !legacyOwnModel && store.listRepoModelSelection(repoId).length === 0
+}
+
 export const DEFAULT_GOAL =
   'Review this repository for one high-value defect or improvement. Write a failing test first, implement the smallest correct fix, run the relevant tests, and open a pull request. Do not refactor unrelated code.'
 
@@ -995,7 +1008,7 @@ export class Jobs {
     const jobId = `job_${randomToken(10)}`
     const callbackSecret = randomToken(24)
     const callbackHash = sha256Hex(callbackSecret)
-    const platformFunded = user.own_llm_base_url === null || user.own_llm_base_url === '' || user.own_llm_key_enc === null
+    const platformFunded = platformFundedFor(user, this.store, repo.id)
 
     if (platformFunded && quotaView(user, this.config).exhausted) {
       const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind, workType: workType.type, ownerStarted: this.ownerStartedFor(trigger, options) })
@@ -3131,7 +3144,7 @@ export class Jobs {
     } catch (error) {
       return fail(`任务密钥无法解密：${String(error)}`)
     }
-    const platformFunded = user.own_llm_base_url === null || user.own_llm_base_url === '' || user.own_llm_key_enc === null
+    const platformFunded = platformFundedFor(user, this.store, repo.id)
     if (platformFunded && quotaView(user, this.config).exhausted) {
       this.finish(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。' }, revoke)
       await this.quotaNotifier.notify(user)

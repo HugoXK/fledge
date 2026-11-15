@@ -1232,17 +1232,32 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // #734: the checklist describes the account, not the job table. `jobsTotal`
     // carries the current filter for the table; the checklist must not read it.
     const setupJobsTotal = store.countJobsForUser(viewer.user.id)
+    // #732: a provider row is not an own model until a repository selects it (or
+    // the legacy user-level model is set). The gateway and the bridge both read
+    // the repository selection, so the checklist must use the same answer.
+    const providerConfigured = store
+      .listModelProviders(viewer.user.id)
+      .some((provider) => store.listProviderModels(provider.id).length > 0)
+    const legacyOwnModel =
+      viewer.user.own_llm_base_url !== null &&
+      viewer.user.own_llm_base_url !== '' &&
+      viewer.user.own_llm_key_enc !== null
+    const setupQuota = quotaView(viewer.user, config)
     const platformAvailable =
       config.llm.baseUrl !== '' &&
       config.llm.key !== '' &&
-      !quotaView(viewer.user, config).exhausted
+      !setupQuota.exhausted
     const setup = {
       repos: reposTotal,
       roleChosen: allRepos.some((repo) => repo.repo_role !== null),
-      modelConfigured: store
-        .listModelProviders(viewer.user.id)
-        .some((provider) => store.listProviderModels(provider.id).length > 0),
+      providerConfigured,
+      modelConfigured:
+        legacyOwnModel ||
+        allRepos.some((repo) => store.listRepoModelSelection(repo.id).length > 0),
       platformAvailable,
+      platformQuotaRemainingCny: setupQuota.remainingCny,
+      platformQuotaUnlimited: setupQuota.unlimited,
+      platformQuotaComfortCny: config.quota.comfortCny,
       instanceReady: allRepos.some((repo) => store.getRepoInstance(repo.id)?.status === 'ready'),
       jobs: setupJobsTotal,
       firstJobStatus: firstJob?.status ?? null,

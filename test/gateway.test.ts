@@ -23,7 +23,7 @@ test('platform quota is metered, enforced and bypassed by a user model', async (
 
   const config = testConfig({
     llm: { baseUrl: `${platform.url}/v1`, key: 'platform-key', model: 'platform-model', pricePerTokenUsd: 0.0000002 },
-    quota: { initialCny: 0.001, usdCny: 7.2 },
+    quota: { initialCny: 0.001, usdCny: 7.2, comfortCny: 50 },
   })
   const store = new Store(':memory:')
   const mailer = new MemoryMailer()
@@ -72,7 +72,7 @@ test('streaming usage with nested details is metered', async () => {
   })
   const config = testConfig({
     llm: { baseUrl: `${platform.url}/v1`, key: 'platform-key', model: 'platform-model', pricePerTokenUsd: 0.0000002 },
-    quota: { initialCny: 1, usdCny: 7.2 },
+    quota: { initialCny: 1, usdCny: 7.2, comfortCny: 50 },
   })
   const store = new Store(':memory:')
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
@@ -102,7 +102,7 @@ test('unlimited quota is never exhausted but still records usage', async () => {
   })
   const config = testConfig({
     llm: { baseUrl: `${platform.url}/v1`, key: 'platform-key', model: 'platform-model', pricePerTokenUsd: 0.0000002 },
-    quota: { initialCny: 0, usdCny: 7.2 },
+    quota: { initialCny: 0, usdCny: 7.2, comfortCny: 50 },
   })
   const store = new Store(':memory:')
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
@@ -134,7 +134,7 @@ test('a job-scoped token records usage and cost on the job', async () => {
     await readBody(request)
     json(response, 200, { id: 'x', choices: [{ message: { role: 'assistant', content: 'ok' } }], usage: { total_tokens: 1000 } }, { 'x-litellm-response-cost': '0.0002' })
   })
-  const config = testConfig({ llm: { baseUrl: `${platform.url}/v1`, key: 'platform-key', model: 'platform-model', pricePerTokenUsd: 0.0000002 }, quota: { initialCny: 10, usdCny: 7.2 } })
+  const config = testConfig({ llm: { baseUrl: `${platform.url}/v1`, key: 'platform-key', model: 'platform-model', pricePerTokenUsd: 0.0000002 }, quota: { initialCny: 10, usdCny: 7.2, comfortCny: 50 } })
   const store = new Store(':memory:')
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
@@ -158,7 +158,7 @@ test('gateway tokens are scoped to their user', async () => {
     await readBody(request)
     json(response, 200, { id: 'x', choices: [{ message: { role: 'assistant', content: 'ok' } }], usage: { total_tokens: 1000 } }, { 'x-litellm-response-cost': '0.0002' })
   })
-  const config = testConfig({ llm: { baseUrl: `${platform.url}/v1`, key: 'platform-key', model: 'platform-model', pricePerTokenUsd: 0.0000002 }, quota: { initialCny: 10, usdCny: 7.2 } })
+  const config = testConfig({ llm: { baseUrl: `${platform.url}/v1`, key: 'platform-key', model: 'platform-model', pricePerTokenUsd: 0.0000002 }, quota: { initialCny: 10, usdCny: 7.2, comfortCny: 50 } })
   const store = new Store(':memory:')
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {

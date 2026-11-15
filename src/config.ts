@@ -79,6 +79,8 @@ export interface Config {
   quota: {
     initialCny: number
     usdCny: number
+    /** Below this remaining balance the first-run checklist recommends an own model. */
+    comfortCny: number
   }
   runner: {
     mode: RunnerMode
@@ -319,6 +321,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     quota: {
       initialCny: number('INITIAL_QUOTA_CNY', 1),
       usdCny: number('USD_CNY_RATE', 7.2),
+      comfortCny: number('PLATFORM_QUOTA_COMFORT_CNY', 50),
     },
     runner: {
       mode: (text('RUNNER_MODE', 'mock') as RunnerMode) || 'mock',
