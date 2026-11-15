@@ -252,3 +252,45 @@ test('an add-repository failure stays in its form and does not also render in th
     store.close()
   }
 })
+
+test('an add-repository refusal lands on the page with its dialog open', async () => {
+  const { buildApp } = await import('../src/app.js')
+  const { MockRunner } = await import('../src/jobs/mock.js')
+  const { MemoryMailer, flashOf, formBody, sessionFor } = await import('./helpers.js')
+  const store = new Store(':memory:')
+  const built = await buildApp({ config: testConfig(), store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'stack-add-redirect', status: 'approved' })
+    const { csrf, cookie } = sessionFor(built, user)
+    // An empty token fails before any GitHub call, so this exercises the
+    // dashboard error redirect without a fake API.
+    const refused = await built.app.inject({
+      method: 'POST',
+      url: '/repos',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, repo: 'octo/demo', goal: 'demo' }),
+    })
+    assert.equal(refused.statusCode, 302)
+    // The failure is rendered inside `#add-repo` only (the stack test above pins
+    // that), so the landing page has to open that dialog: a closed dialog hides
+    // the one sentence the refusal wrote.
+    assert.equal(refused.headers.location, '/dashboard#add-repo', 'the refusal lands on a page whose dialog stays closed')
+    assert.equal(flashOf(refused)?.error?.text, '请填写 GitHub token')
+    // The two "App is not configured" exits reach the same dialog-only slot, so
+    // they carry the same deep link.
+    const noAppGet = await built.app.inject({ method: 'GET', url: '/repos/new', headers: { cookie } })
+    assert.equal(noAppGet.statusCode, 302)
+    assert.equal(noAppGet.headers.location, '/dashboard#add-repo')
+    const noAppPost = await built.app.inject({
+      method: 'POST',
+      url: '/repos/app',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf }),
+    })
+    assert.equal(noAppPost.statusCode, 302)
+    assert.equal(noAppPost.headers.location, '/dashboard#add-repo')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})

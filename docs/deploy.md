@@ -357,6 +357,62 @@ before the ruleset existed still falls back to the pull request head.
 `--fixtures <file>` replays a recorded chain instead of reading the API, which is
 how the test suite exercises the same code path.
 
+### Release tag provenance
+
+A `v*` tag is a published name: whatever it points at becomes an image, an SBOM,
+a GitHub release and, on a host, the next deployed version. The ruleset
+`release tag protection` (id `27014081`) blocks deletion and non-fast-forward
+updates of `v*`. Those two rules stop a tag being moved or removed; neither
+stops a **new** one being created, so anyone with write access can still push
+`v9.9.9`. Making that half true is a ruleset change — repository state, not a
+commit — so it is recorded here as an owner action, and `release.yml` verifies
+what a commit can.
+
+**The owner action, once.** In Settings → Rules → `release tag protection`,
+target `v*`, add the **Create** rule beside the existing deletion and
+non-fast-forward rules, with a bypass list holding exactly the release identity:
+the GitHub Actions integration (id `15368`) and, if manual tags are still
+wanted, the repository role `Admin`. Nothing else belongs in that list — a bypass
+is what makes a rule stop applying, so every actor there can create a version
+tag. The API form is `PUT /repos/{owner}/{repo}/rulesets/27014081` with the
+current rules, `{ "type": "creation" }` added, and `bypass_actors` naming those
+two. The tag job keeps working because it writes the tag with `GITHUB_TOKEN`,
+which is that integration. Keep the deletion and non-fast-forward rules as they
+are.
+
+**What `release.yml` verifies before it publishes.** The tag object is read from
+the checkout the run already fetched; the one API read is the release pull
+request behind the tag's commit. A tag that fails any check is a red run whose
+message names the field, and the publish stops before anything is built, pushed
+or released:
+
+- the tag is an **annotated object**, not a lightweight ref, so it carries the
+  tagger and message the next two checks read;
+- its tagger is the release routine (`github-actions[bot]`) or a documented owner
+  identity (`HugoXK`, `Day Dreamer` — the names on the tags created by hand
+  before the routine existed, which are still re-published after a bad image);
+- it points at a commit that is an **ancestor of `main`** — this check is
+  unchanged and still refuses a tag off the release line;
+- when the tagger is the routine, that commit is the one a merged pull request
+  titled `release: v<version>` produced: the pull request's `merge_commit_sha`
+  must equal the tag's commit, so a tag made by hand cannot borrow the routine's
+  identity without merging a release pull request.
+
+The tagger field is git text, not an authentication claim — anyone can write
+`Day Dreamer` into a tag object. It is checked because, together with the
+`creation` rule, it records which identity produced a tag that exists. The
+enforcement of *who may create* is the ruleset; this check is what keeps a tag
+that got in another way from publishing.
+
+One reading worth stating: the card asks for a tag that points at "a merge
+commit on `main`". That is verified as "points at the commit its release pull
+request merged", not as "has two parents". Every tag this repository has released
+points at a one-parent squash commit (`v0.3.6` → `aa83dc0`, one parent), so a
+two-parent check would refuse every real release.
+
+Not in this slice: no signed-commit requirement (a non-goal on the card) and no
+change to the release cadence or the tag name.
+
 ### Automatic tag deployment and verification
 
 The release plan → release pull request → tag half lives in

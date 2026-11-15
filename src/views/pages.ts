@@ -1,6 +1,7 @@
 import type { Config } from '../config.js'
 import type { CostReport } from '../metrics/cost.js'
-import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow, TaskRelationRow } from '../db.js'
+import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SecurityFindingRow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow, TaskRelationRow } from '../db.js'
+import { isVerifiedFixed } from '../lib/securityFindings.js'
 import { assetUrl } from '../lib/assetVersion.js'
 import { redactCommand, type DriftAssessment, type EnvironmentCurrent, type ReleaseSnapshot } from '../lib/deployments.js'
 import { agreementContent } from '../users/agreements.js'
@@ -57,6 +58,76 @@ function advancedViewer(viewer: Viewer): boolean {
 function csrf(viewer: Viewer): string {
   return `<input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" />`
 }
+
+// #379: the ledger's state labels. A fixed row is only called verified when it
+// still carries the evidence the fix rested on; the store refuses to write one
+// without it, and this helper is the second guard for an older or hand-built
+// row. A regressed row names the job the finding was dismissed in.
+function findingStateText(t: Translate, row: { state: string; reason: string | null; dismissed_in_job: string | null }): string {
+  if (row.state === 'open') return t('未修复', 'Open')
+  if (row.state === 'dismissed') return t('已忽略', 'Dismissed')
+  if (row.state === 'regressed') {
+    return row.dismissed_in_job === null
+      ? t('回归（此前已修复）', 'Regressed (was fixed)')
+      : t(`回归（在任务 ${row.dismissed_in_job} 被忽略）`, `Regressed (dismissed in job ${row.dismissed_in_job})`)
+  }
+  return isVerifiedFixed(row)
+    ? t(`已修复 — ${row.reason ?? ''}`, `Fixed — ${row.reason ?? ''}`)
+    : t('已修复（没有记录证据，未核实）', 'Fixed (no evidence recorded)')
+}
+
+// #379: the repository card lists the four states and offers the two written
+// decisions. The forms are maintainer-only, matching the routes; the listing
+// itself is readable by whoever can see the repository.
+function securityFindingsCard(t: Translate, viewer: Viewer, repo: RepoRow, rows: SecurityFindingRow[]): string {
+  const count = (state: string): number => rows.filter((row) => row.state === state).length
+  const summary = `Open ${count('open')} · Fixed ${count('fixed')} · Regressed ${count('regressed')} · Dismissed ${count('dismissed')}`
+  const actions = (row: SecurityFindingRow): string => {
+    if (repo.repo_role !== 'maintainer') return ''
+    const base = `/repos/${escapeHtml(repo.id)}/security-findings/${escapeHtml(encodeURIComponent(row.id))}`
+    const hidden = csrf(viewer)
+    return `<div class="row">
+      <form method="post" action="${base}/dismiss" class="row">
+        ${hidden}
+        <input name="reason" maxlength="500" required placeholder="${escapeHtml(t('忽略理由', 'Reason for dismissing'))}" />
+        <button class="btn btn-ghost" type="submit">${escapeHtml(t('忽略', 'Dismiss'))}</button>
+      </form>
+      <form method="post" action="${base}/fix" class="row">
+        ${hidden}
+        <input name="evidence" maxlength="500" required placeholder="${escapeHtml(t('修复证据（提交、链接或测量值）', 'Fix evidence (commit, link or measurement)'))}" />
+        <button class="btn btn-ghost" type="submit">${escapeHtml(t('标记已修复', 'Mark fixed'))}</button>
+      </form>
+    </div>`
+  }
+  const list = rows.length === 0
+    ? `<p class="muted">${escapeHtml(t('还没有任务上报过安全发现。', 'No job has reported a security finding yet.'))}</p>`
+    : `<div class="list">${rows.map((row) => {
+      const reason = row.reason === null || row.reason === '' || row.state === 'open'
+        ? ''
+        : `<small class="muted">${escapeHtml(row.reason)}</small>`
+      return `<div class="list-row"><div class="list-main"><strong><code>${escapeHtml(row.id)}</code></strong>
+        <small>${escapeHtml(findingStateText(t, row))} · ${escapeHtml(t('首次', 'first'))} ${escapeHtml(row.first_seen_job)} · ${escapeHtml(t('最近', 'last'))} ${escapeHtml(row.last_seen_job)}</small>
+        ${reason}${actions(row)}</div></div>`
+    }).join('')}</div>`
+  return `<section class="card" id="security">
+    <h2>${escapeHtml(t('安全发现', 'Security findings'))}</h2>
+    <p class="muted">${escapeHtml(t('这些是任务上报的 id，不是 GitHub 的告警库；某个 id 在后续任务里没出现，不能当作已修复。', "These are ids reported by jobs, not GitHub's alert store; an id that a later job does not report is not evidence of a fix."))}</p>
+    <p class="fine">${escapeHtml(summary)}</p>
+    ${list}
+  </section>`
+}
+
+// #379: the job page names what this job last reported and where a dismissed
+// finding was dismissed, so a regression is readable without leaving the job.
+function jobSecurityFindingsCard(t: Translate, rows: SecurityFindingRow[]): string {
+  if (rows.length === 0) return ''
+  return `<section class="card" data-security-findings>
+    <h2>${escapeHtml(t('安全发现', 'Security findings'))}</h2>
+    <p class="muted">${escapeHtml(t('本任务最近上报的 id，不是 GitHub 的告警库。', "The ids this job last reported — not GitHub's alert store."))}</p>
+    <div class="list">${rows.map((row) => `<div class="list-row"><div class="list-main"><strong><code>${escapeHtml(row.id)}</code></strong><small>${escapeHtml(findingStateText(t, row))}</small></div></div>`).join('')}</div>
+  </section>`
+}
+
 
 // #540: a console write carries the revision it rendered and a key that a double
 // submit replays. One renderer, so run, plan, review, triage, start, scope,
@@ -1057,7 +1128,9 @@ export function dashboardPage(input: {
     : `<div class="add-choice"><h3>${escapeHtml(t('方式一（推荐）：GitHub App', 'Option 1 (recommended): GitHub App'))}</h3><p class="muted">${escapeHtml(t('安装 App 并选择仓库，不需要创建 PAT；Fledge 使用短时 installation token。', 'Install the App and choose repositories; no PAT is needed. Fledge uses short-lived installation tokens.'))}</p><p><a class="btn" href="/auth/github/app/install">${escapeHtml(t('通过 GitHub App 接入', 'Connect with GitHub App'))}</a> <a class="link" href="/repos/new">${escapeHtml(t('选择已安装的仓库', 'Choose installed repositories'))}</a></p></div><details class="add-manual"><summary>${escapeHtml(t('方式二：手动提供 fine-grained token', 'Option 2: provide a fine-grained token manually'))}</summary>${manualForm}</details>`
   // The add flow is a modal rather than a permanent half-width card, so the
   // repository table owns the row. `#add-repo` stays on the dialog: the empty
-  // state, next action, setup checklist and POST /repos error all link to it.
+  // state, next action and setup checklist link to it, and every dashboard
+  // error redirect carries it, because this closed dialog is that slot's only
+  // renderer (`src/app.ts`, every error redirect that lands on the dashboard).
   const addRepoDialog = `<dialog id="add-repo" class="add-repo-dialog" aria-labelledby="add-repo-title">
     <div class="row between dialog-head">
       <h2 id="add-repo-title">${escapeHtml(t('添加仓库', 'Add repository'))}</h2>
@@ -1162,7 +1235,7 @@ export function dashboardPage(input: {
   return layout({ title: t('仓库', 'Repositories'), viewer, body, config, locale, path: '/dashboard', active: 'dashboard', notice, notifications: pageMessages })
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; recentAuthAt?: string | null; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: ScheduledNext }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; recentAuthAt?: string | null; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: ScheduledNext; securityFindings?: SecurityFindingRow[] }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const workItems = input.workItems ?? []
@@ -1178,6 +1251,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const repoSpendCny = input.repoSpendCny ?? 0
   const questions = input.questions ?? []
   const chiefMessages = input.chiefMessages ?? []
+  const securityFindings = input.securityFindings ?? []
   const jobsPage = input.jobsPage ?? 1
   const jobsTotal = input.jobsTotal ?? jobs.length
   const t = translator(locale)
@@ -1743,7 +1817,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}</span> <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form></li>`
     }).join('')}</ul>`}
   </section>`
-  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
+  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}${securityFindingsCard(t, viewer, repo, securityFindings)}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : `<script src="${assetUrl('/assets/chief.js')}" defer></script>`}<script src="${assetUrl('/assets/repoTabs.js')}" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error, notifications: pageMessages })
 }
 
@@ -2799,6 +2873,9 @@ export function jobPage(input: {
   postmortem?: PostmortemRow | null
   // #639: relations are explicit; the page lists them and offers one write.
   relations?: TaskRelationRow[]
+  //: #379: the findings whose last report was this job, plus the job page line
+  //: that names where a dismissed finding was dismissed.
+  findings?: SecurityFindingRow[]
   // #373 slice 1: the "Why this change" block, read from the pull request. Absent
   // on a surface that has no pull request to read.
   changeStory?: ChangeStory
@@ -2828,6 +2905,7 @@ export function jobPage(input: {
   const events = input.events ?? []
   const postmortem = input.postmortem ?? null
   const relations = input.relations ?? []
+  const findings = input.findings ?? []
   const supportMode = input.supportMode === true
   const t = translator(locale)
   const advanced = advancedViewer(viewer)
@@ -3151,6 +3229,7 @@ export function jobPage(input: {
   ${supportMode ? '' : workTypeCard}
   ${supportMode ? '' : triageCard}
   ${changeStoryCard}
+  ${jobSecurityFindingsCard(t, findings)}
   <section class="cols">
     <div class="card">
       <h2>${escapeHtml(t('结果', 'Result'))}</h2>
@@ -3485,17 +3564,23 @@ export function agentWorkspacePage(input: {
 
 // #279: read-only. An operator can see who is approaching expiry, who is exempt
 // and who the sweep revoked, without an email address on screen and without a
-// control that could mail or change a status - #265 owns both.
+// control that could mail or change a status - #265 owns both. #690 adds the
+// purge records: an erased account or one kept because it used the platform,
+// both read from the audit rows the sweep writes.
 export function adminTrialsPage(input: {
   config: Config
   locale: Locale
   viewer: Viewer
   rows: TrialCandidateSource[]
   filter: TrialFilter
+  purges?: AuditRow[]
+  /** #690: the configured grace window, so the page states the real one. */
+  purgesGraceHours?: number
   notice?: string
   error?: string
 }): string {
   const { config, locale, viewer, rows, filter, notice, error } = input
+  const purges = input.purges ?? []
   const t = translator(locale)
   const now = Date.now()
   const views = rows.map((row) => trialStateOf(row, now))
@@ -3544,6 +3629,64 @@ export function adminTrialsPage(input: {
   const filters = filterLabels
     .map(([value, zh, en]) => `<a class="btn ${filter === value ? '' : 'btn-ghost'}" href="/admin/trials?trial=${value}">${escapeHtml(t(zh, en))} <span class="fine">${counts[value]}</span></a>`)
     .join(' ')
+
+  // #690: the purge record detail is a small JSON object written by the sweep. It
+  // carries no login, email or token by construction, so the page can read it —
+  // the money is shown per currency because the aggregate never folds buckets.
+  const purgeText = (row: AuditRow): string => {
+    const raw = row.detail ?? ''
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return raw
+    }
+    if (typeof parsed !== 'object' || parsed === null) return raw
+    const detail = parsed as { reason?: unknown; operator?: unknown; rows?: unknown; spend?: unknown }
+    const parts: string[] = []
+    if (typeof detail.reason === 'string' && detail.reason !== '') parts.push(detail.reason)
+    if (typeof detail.operator === 'string' && detail.operator !== '') parts.push(detail.operator)
+    if (typeof detail.rows === 'object' && detail.rows !== null) {
+      const total = Object.values(detail.rows as Record<string, unknown>)
+        .filter((n): n is number => typeof n === 'number')
+        .reduce((sum, n) => sum + n, 0)
+      parts.push(t(`${total} 行`, `${total} rows`))
+    }
+    const spend = detail.spend as { buckets?: unknown; unknownRequests?: unknown } | undefined
+    if (spend !== undefined && Array.isArray(spend.buckets)) {
+      const buckets = (spend.buckets as Array<{ currency?: unknown; amount?: unknown; requests?: unknown }>)
+        .map((bucket) => `${String(bucket.currency ?? '')} ${Number(bucket.amount ?? 0).toFixed(4)} (${String(bucket.requests ?? 0)})`)
+        .join(', ')
+      if (buckets !== '') parts.push(buckets)
+      if (typeof spend.unknownRequests === 'number' && spend.unknownRequests > 0) {
+        parts.push(t(`${spend.unknownRequests} 条未计价`, `${spend.unknownRequests} unpriced`))
+      }
+    }
+    return parts.join(' · ')
+  }
+  const purgeRows = purges
+    .map((row) => {
+      const label = row.action === 'trial.purged' ? t('已清理', 'Purged') : t('已保留', 'Kept')
+      const badgeClass = row.action === 'trial.purged' ? 'badge bad' : 'badge'
+      return `<tr data-purge-audit="${row.id}">
+        <td><small class="muted">${escapeHtml(humanTimeShort(row.at))}</small></td>
+        <td><span class="${badgeClass}">${escapeHtml(label)}</span></td>
+        <td><small class="muted">${escapeHtml(purgeText(row))}</small></td>
+      </tr>`
+    })
+    .join('')
+  const purgeHtml = purges.length === 0
+    ? stateCell(3, {
+        kind: 'empty',
+        title: t('还没有清理记录。', 'No purge records yet.'),
+        body: t('清扫会在账号到期超过宽限期后写入一条。', 'The sweep writes one once an account is past the grace window.'),
+      })
+    : `<div class="table-scroll"><table><thead><tr>
+        <th>${escapeHtml(t('时间', 'At'))}</th>
+        <th>${escapeHtml(t('结果', 'Result'))}</th>
+        <th>${escapeHtml(t('明细', 'Detail'))}</th>
+      </tr></thead><tbody>${purgeRows}</tbody></table></div>`
+
   const body = `<section class="workspace-hero">
     <div class="workspace-intro">
       <div class="eyebrow">${escapeHtml(t('预览试用', 'PREVIEW TRIALS'))}</div>
@@ -3566,6 +3709,11 @@ export function adminTrialsPage(input: {
       <th>${escapeHtml(t('试用到期审计', 'Trial expired at'))}</th>
     </tr></thead><tbody>${rowsHtml}</tbody></table></div>
     <p class="fine">${escapeHtml(t('用户列只显示登录名；账号操作在支持视图里。', 'The user column shows the login only; account actions live in the support view.'))}</p>
+  </section>
+  <section class="card">
+    <div class="row between"><h2>${escapeHtml(t('清理记录', 'Purge records'))}</h2><span class="fine">${escapeHtml(t(`宽限期 ${input.purgesGraceHours ?? 72} 小时；最近 ${purges.length} 条。`, `Grace window ${input.purgesGraceHours ?? 72}h; latest ${purges.length}.`))}</span></div>
+    ${purgeHtml}
+    <p class="fine">${escapeHtml(t('清理保留一行非个人信息：时间、原因、操作者、行数和按币种的消费汇总；不含登录名、邮箱或令牌。', 'A purge keeps one non-personal row: time, reason, operator, row counts and the spend per currency; no login, email or token.'))}</p>
   </section>`
   return layout({ title: t('预览试用', 'Preview trials'), viewer, body, config, locale, path: '/admin/trials', active: 'admin', notice, error })
 }

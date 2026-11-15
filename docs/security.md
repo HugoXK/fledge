@@ -393,13 +393,37 @@ per day. Test mail is rate-limited to one per minute.
   off by default; Fledge verifies the PR, checks and reviews before merging.
 - A preview account that connects no repository within 7 days of registration is
   rejected by the sweep (hourly in the job service, or by hand with
-  `npm run trial:sweep -- [--dry-run] [--login <login>]`). It writes one
-  `trial.expired` audit row and sends one bilingual notice, and it never deletes
-  an account or a repository. Anyone with a `repos` row or a `repo.added` audit,
-  anyone with a job, admins and the super admin are never selected. The status
-  change and its audit row commit together and the notice is sent afterwards, so
-  the audit row is the record and a rerun is a no-op; the operator output carries
-  the login and the registration date, never an address.
+  `npm run trial:sweep -- [--dry-run] [--purge-dry-run] [--login <login>]`). It
+  writes one `trial.expired` audit row and sends one bilingual notice. Anyone
+  with a `repos` row or a `repo.added` audit, anyone with a job, admins and the
+  super admin are never selected. The status change and its audit row commit
+  together and the notice is sent afterwards, so the audit row is the record and
+  a rerun is a no-op; the operator output carries the login and the registration
+  date, never an address.
+- **Account purge (owner option 2, #689).** In the same sweep, once a
+  `trial.expired` row is at least `TRIAL_PURGE_GRACE_HOURS` (default 72) old, the
+  account is erased: one transaction deletes every row that names it or one of
+  its repositories — including `sessions`, `api_tokens`, `repo_instances` and the
+  other repo-scoped tables the cascade reaches, plus the plain-column rows no
+  cascade sees (`artifact_versions.repo_id`, `audit_log.user_id`, `events`) and
+  the six `settings` shapes that carry the account in the key or the value
+  (`quota_notified:`, `digest_sent:`, `email_test:`, `email_reply:`,
+  `github_app_state:`, `installation_sender:`). An account that gained a
+  repository, job, instance or GitHub installation is not erased: the run records
+  `trial.purge_skipped` with the blocking resource and its count. The spend
+  aggregate is computed **before** the rows go and kept as one bucket per
+  currency (priced rows) plus a count of unpriced rows, because `cost_usd` holds
+  the amount in the row's own currency and the per-row detail is cascaded away.
+  What survives is exactly one `trial.purged` audit row with `at`, `reason`,
+  `operator`, the row counts and that aggregate — no login, email, user id,
+  GitHub id, token or hash. Deleting the account's audit rows is deliberate: the
+  owner chose "as if the account never registered" plus a single non-PII
+  retention row, not a tombstone. Backups keep the account until their existing
+  retention window (local encrypted 30 days, GitHub 14) expires; erasing a backup
+  early is not part of this control. Every step is idempotent by user id, so a
+  failed run is retried by the next sweep with no deletion-state column. The
+  superadmin deletion in #691 calls the same `purgeUserRows(id)` transaction with
+  its own reason and operator.
 
 ### Platform emergency stop
 
@@ -792,3 +816,39 @@ at an entry outside the actor's audience is refused as if the entry were absent,
 before the revision fence, so a hidden key is not a write target or a revision
 oracle. The store refuses a write whose `expected_revision` is stale instead of
 overwriting the current body.
+
+## Security-finding ledger (`#379`)
+
+A job may report the security findings it saw in `evidence.findings`, and the
+repository keeps one row per finding id instead of treating every run as a
+fresh snapshot. The id is `rule + " " + path + ":" + line` (`js/path-injection
+src/app.ts:120`), the list is bounded to 100 entries per report, and an entry
+that breaks the contract (rule over 120 characters, path over 200, a line that
+is not a positive integer, an unknown state, a duplicate id) is dropped and
+counted rather than silently discarded. The block is explicit that these are
+**reported** ids: the ledger does not read GitHub's code-scanning alert store in
+this slice, so it is a memory of what jobs said, not a second alert source.
+
+A finding is `open` the first time a job reports it. Two states are decisions,
+and each one needs a written reason:
+
+- `dismissed` is set by a maintainer on the repository page, with a reason; a
+  dismissal with no reason is refused by the route and by the store, so it can
+  never be stored as a silent accept (or as `open`).
+- `fixed` is set by a maintainer with evidence (a commit, a link or a
+  measurement). A fix with no evidence is refused, and a `fixed` row whose
+  evidence is missing is shown as **unverified** instead of "verified fixed".
+
+The ledger fails closed in both directions. A finding that no later job reports
+is not evidence of a fix: absence never moves a row, so only an explicit,
+evidenced decision can close one. And a finding that comes back after a decision
+is `regressed` — the row keeps the dismissal reason or the fix evidence, the job
+page says `regressed (dismissed in job <id>)` when the decision rests on a
+dismissal, and the repository page lists it under `regressed` until someone
+decides again. The job page lists the findings whose last report was that job,
+which is why the line names the job rather than the full history.
+
+Scope of this slice: recording and displaying reported ids. Reading the ids from
+GitHub's alerts (or the SARIF the CI gate already parses) and reconciling the two
+sources is a later slice, as is blocking an automatic merge on a `regressed`
+finding.
