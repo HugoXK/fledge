@@ -9,6 +9,7 @@ import { flashOf, formBody, json, makeTerminalJob, makeUser, MemoryMailer, sessi
 import { adminSearchPage, appReposPage, dashboardPage, jobPage, landingPage, metricsPage, repoPage, settingsPage, workspacePage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
 import { localizeMessage } from '../src/i18n.js'
+import { WORK_ITEM_STATES } from '../src/lib/workItems.js'
 import { encryptSecret } from '../src/lib/secrets.js'
 
 test('healthz reports the package version', async () => {
@@ -1163,6 +1164,34 @@ test('the repository page shows a delivery board grouped by work-item state', ()
     assert.match(page, /Fix the board/)
     assert.doesNotMatch(page, /Other work/)
     assert.match(page, /Clear filter/)
+    assert.match(page, /data-open-dialog="new-work-item"/, 'the create form is behind a header button')
+    assert.match(page, /id="new-work-item"/, 'the create form is a dialog')
+    assert.match(page, /data-work-queue/, 'the page names why an item is waiting')
+    assert.match(page, /<details class="work-actions">[\s\S]*name="state"/, 'the row actions are folded into one disclosure')
+  } finally {
+    store.close()
+  }
+})
+
+test('an empty delivery board shows a dash, not a confident zero share', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'board-empty', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_board_empty', userId: user.id, owner: 'o', name: 'empty-board', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const page = repoPage({
+      config,
+      locale: 'en',
+      viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
+      repo,
+      jobs: [],
+      workItems: [],
+    })
+    const summary = /<div class="work-summary" id="board"[^>]*>([\s\S]*?)<\/div>/.exec(page)?.[1] ?? ''
+    assert.ok(summary !== '', 'the empty board still renders its state links')
+    assert.equal((summary.match(/—/g) ?? []).length, WORK_ITEM_STATES.length, 'every state has no denominator, so every state shows a dash')
+    assert.doesNotMatch(summary, /0%/, 'a board with no items must not print a confident zero share')
+    assert.doesNotMatch(page, /NaN/)
   } finally {
     store.close()
   }
