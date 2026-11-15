@@ -23,6 +23,7 @@ import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkI
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
+import { changeStoryFacts, type ChangeStory, type ChangeStoryFact } from '../lib/changeStory.js'
 import type { PreviewResult } from '../schedules/preview.js'
 import { intervalFieldText, type ScheduleConsoleState } from '../schedules/console.js'
 import { contractOf, resolveWorkType, workTypeLabel, workTypePurpose } from '../lib/workTypes.js'
@@ -2700,6 +2701,15 @@ function priorityLevelLabel(t: Translate, level: string): string {
   return t('非核心打磨', 'non-core polish')
 }
 
+// #373: the four facts the block names, in the reader's language. The values
+// themselves come from the pull request and are never translated.
+function changeStoryLabel(t: Translate, key: ChangeStoryFact['key']): string {
+  if (key === 'whatChanged') return t('改动了什么', 'What changed')
+  if (key === 'risks') return t('风险', 'Risks')
+  if (key === 'ran') return t('运行了什么', 'Ran')
+  return t('改动规模', 'Diff')
+}
+
 export function jobPage(input: {
   config: Config
   locale: Locale
@@ -2716,6 +2726,9 @@ export function jobPage(input: {
   postmortem?: PostmortemRow | null
   // #639: relations are explicit; the page lists them and offers one write.
   relations?: TaskRelationRow[]
+  // #373 slice 1: the "Why this change" block, read from the pull request. Absent
+  // on a surface that has no pull request to read.
+  changeStory?: ChangeStory
   // #540: the revision this render saw and the key a double submit replays.
   // Absent on surfaces that cannot write (the admin support view).
   cancel?: { revision: number; idempotencyKey: string }
@@ -2851,6 +2864,24 @@ export function jobPage(input: {
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('风险', 'Risk'))}</strong><small>${escapeHtml(riskLabel)}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('回滚', 'Rollback'))}</strong><small>${escapeHtml(evidence.rollback ?? '—')}</small></div></div>
       </div>`
+  // #373 slice 1: what the agent said it changed, what it said could go wrong,
+  // what it ran, and how large the diff is — above the evidence block, because
+  // it is the question a maintainer asks before reading the checks. Every value
+  // is data from the pull request: escaped, never markup.
+  const changeStoryCard = input.changeStory === undefined
+    ? ''
+    : `<section class="card" data-change-story>
+      <h2>${escapeHtml(t('为什么有这个改动', 'Why this change'))}</h2>
+      <div class="list">
+        ${changeStoryFacts(input.changeStory, {
+          notStated: t('未说明', 'not stated'),
+          unavailable: t('读不到', 'not available'),
+          capped: t('读不到：改动文件超过读取上限', 'not available: the file list exceeded the read cap'),
+          duplicate: t('标题重复，显示最后一处', 'a repeated heading; the last one is shown'),
+          files: (count) => t(`${count} 个文件`, `${count} files`),
+        }).map((fact) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(changeStoryLabel(t, fact.key))}</strong><small class="job-report">${escapeHtml(fact.value)}</small>${fact.note === '' ? '' : `<small class="muted">${escapeHtml(fact.note)}</small>`}</div></div>`).join('')}
+      </div>
+    </section>`
   const retry = job.status === 'failed'
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/retry">${csrf(viewer)}${retryHidden}<button class="btn" type="submit">${escapeHtml(job.checkpoint === null || job.checkpoint === '' ? t('重试这个任务', 'Retry this job') : t('从断点继续', 'Resume from checkpoint'))}</button></form>`
     : ''
@@ -3046,6 +3077,7 @@ export function jobPage(input: {
   ${postmortemCard}
   ${supportMode ? '' : workTypeCard}
   ${supportMode ? '' : triageCard}
+  ${changeStoryCard}
   <section class="cols">
     <div class="card">
       <h2>${escapeHtml(t('结果', 'Result'))}</h2>
