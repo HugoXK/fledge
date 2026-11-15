@@ -312,6 +312,16 @@ cannot disagree, and JavaScript only hides the groups that do not match the
 selected mode. With script off every group renders and the server still builds
 from the selected mode.
 
+### Section navigation (区块导航)
+
+The admin page orders its sections by the admin's work: Pending, Users, Jobs,
+Audit, Release, Backups. The release facts and release chain are one `Release`
+section. The sticky section nav is a tab row with a 2px underline on the current
+item, 44px targets and horizontal scrolling on narrow screens; it is not a row of
+pill buttons. An empty release chain is an expected state, and its operator
+command stays under a disclosure with a `<DATA_DIR>` placeholder instead of the
+real host path.
+
 ## Console states (控制台状态)
 
 Every list, panel and stream in the console renders through `renderState` in

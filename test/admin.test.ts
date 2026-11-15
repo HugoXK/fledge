@@ -42,6 +42,25 @@ test('admin jobs and audit paginate at ten rows with friendly audit labels', asy
   }
 })
 
+test('the empty release chain explains itself without dumping a host path', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'release-chain-admin', admin: true, status: 'approved' })
+    const { cookie } = sessionFor(built, admin)
+    const page = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: `${cookie}; fledge_lang=en` } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /No release chain is recorded/)
+    assert.match(page.body, /This is expected, not an error/)
+    assert.match(page.body, /&lt;DATA_DIR&gt;\/release-status\.json/)
+    assert.doesNotMatch(page.body, new RegExp(config.dataDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'the admin page must not print the real data directory')
+    assert.doesNotMatch(page.body, /\/home\/xuke\//, 'the admin page must not print a host path')
+  } finally {
+    await built.close()
+  }
+})
+
 test('rejecting a user cancels active jobs and frees the global slot', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
