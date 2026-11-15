@@ -424,6 +424,28 @@ per day. Test mail is rate-limited to one per minute.
   failed run is retried by the next sweep with no deletion-state column. The
   superadmin deletion in #691 calls the same `purgeUserRows(id)` transaction with
   its own reason and operator.
+- **Superadmin account deletion (#691).** `GET /admin/users/:id/delete` is a
+  read-only preview: it counts the account's repositories, jobs (all, running and
+  queued), FlyBot instances, API tokens and GitHub installations and names the
+  backup window, and it writes no audit row. `POST /admin/users/:id/delete` is
+  superadmin-only, CSRF-guarded, rate-limited by `destructiveLimit` and
+  re-authenticated with `requireRecentAuth(..., 'admin.user.delete')`; it refuses
+  self-deletion, the last superadmin and a login that is not the exact GitHub
+  login (case included). The teardown order is deliberate: cancel the account's
+  jobs, stop and remove its instances, revoke its API tokens, then call
+  `purgeUserRows(id, { reason: 'admin.deleted', operator: 'superadmin', action:
+  'admin.user.deleted' })` — the same transaction the trial purge uses, with the
+  candidate query intentionally not used, so a used account can be erased. Every
+  step is idempotent (by job id, instance repo id, token id and user id), so a
+  failure is retried by submitting the same confirm again; the failure is
+  audited as `admin.user.delete_failed` with the step name only (never the
+  login, email, token or a path), the account stays visible, and the page is not
+  reported healthy. The retained row has the same non-PII shape as the trial
+  purge, including the per-currency spend aggregate. Backups keep the account
+  until their retention window ends; the preview says so and never claims a
+  backup was erased. Fledge deletes its own rows and its FlyBot instances and
+  deletes the GitHub installation row with the account; it does not call GitHub
+  to uninstall the App installation.
 
 ### Platform emergency stop
 

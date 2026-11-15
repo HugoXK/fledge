@@ -3870,6 +3870,11 @@ export function adminSupportPage(input: {
   const { config, locale, viewer, user, repos, jobs, audit, notice, error } = input
   const t = translator(locale)
   const usersById = new Map([[user.id, user.login]])
+  // #691: the account's danger zone is a link, not an inline form — the preview
+  // names the blast radius before the confirm asks for the exact login.
+  const danger = viewer.user.role === 'superadmin'
+    ? `<section class="card" id="danger"><h2>${escapeHtml(t('危险操作', 'Danger zone'))}</h2><p class="muted">${escapeHtml(t('删除账号会取消其任务、停止并移除实例、撤销 token、删除仓库与全部关联数据，并写入一条不含登录名、邮箱、token 或用户 ID 的删除记录；备份仍会在保留窗口内保留该账号。', 'Deleting the account cancels its jobs, stops and removes its instances, revokes its tokens, erases its repositories and related rows, and writes one record with no login, email, token or user id; backups keep the account until their retention window ends.'))}</p>${user.id === viewer.user.id ? `<p class="fine">${escapeHtml(t('不能删除自己的账号。', 'You cannot delete your own account.'))}</p>` : `<a class="btn btn-danger" href="/admin/users/${escapeHtml(user.id)}/delete">${escapeHtml(t('删除账号…', 'Delete account…'))}</a>`}</section>`
+    : ''
   const repoRows = repos.length === 0
     ? stateCell(4, { kind: 'empty', title: t('没有仓库。', 'No repositories.'), body: t('这个用户还没有接入仓库。', 'This user has not connected a repository.'), action: { href: '/admin#users', label: t('查看用户', 'View users') } })
     : repos.map((repo) => `<tr><td data-label="${escapeHtml(t('仓库', 'Repository'))}"><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></td><td data-label="${escapeHtml(t('角色', 'Role'))}"><span class="badge kind">${escapeHtml(repoRoleLabel(t, repo.repo_role))}</span></td><td data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, repo.last_status ?? 'idle')}</td><td data-label="${escapeHtml(t('上次运行', 'Last run'))}">${escapeHtml(humanTimeShort(repo.last_run_at))}</td></tr>`).join('')
@@ -3880,8 +3885,62 @@ export function adminSupportPage(input: {
     <section class="card"><div class="eyebrow">${escapeHtml(t('支持视图', 'SUPPORT VIEW'))}</div><h1>@${escapeHtml(user.login)}</h1><p class="muted">${badge(t, user.status)} · ${escapeHtml(roleLabel(t, user.role))} · ${escapeHtml(t('加入于', 'Joined'))} ${escapeHtml(humanTimeShort(user.created_at))}</p><p class="fine">${escapeHtml(t('只读；不会修改用户数据或触发任务。', 'Read-only; no user data or jobs are changed.'))}</p></section>
     <section class="card"><h2>${escapeHtml(t('仓库', 'Repositories'))}</h2><div class="table-scroll"><table class="table-cards"><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('角色', 'Role'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('上次运行', 'Last run'))}</th></tr></thead><tbody>${repoRows}</tbody></table></div></section>
     <section class="card"><h2>${escapeHtml(t('最近任务', 'Recent jobs'))}</h2><div class="table-scroll"><table class="table-cards"><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>PR</th><th>${escapeHtml(t('创建', 'Created'))}</th></tr></thead><tbody>${jobRows}</tbody></table></div></section>
-    <section class="card"><h2>${escapeHtml(t('审计', 'Audit'))}</h2>${auditRows(locale, audit, usersById, true)}</section>`
+    <section class="card"><h2>${escapeHtml(t('审计', 'Audit'))}</h2>${auditRows(locale, audit, usersById, true)}</section>${danger}`
   return layout({ title: `${t('支持视图', 'Support view')} @${user.login}`, viewer, body, config, locale, path: `/admin/users/${user.id}`, active: 'admin', notice, error })
+}
+
+// #691: the read-only preview of an account deletion. It names exactly what the
+// confirm removes, why the route may refuse, and what a backup keeps; the form
+// carries the exact-login check the route enforces. Nothing here writes.
+export function adminDeleteUserPage(input: {
+  config: Config
+  locale: Locale
+  viewer: Viewer
+  user: UserRow
+  counts: { repos: number; jobs: number; running: number; queued: number; instances: number; tokens: number; installations: number }
+  blocked: 'self' | 'last_superadmin' | null
+  notice?: string
+  error?: string
+}): string {
+  const { config, locale, viewer, user, counts, blocked, notice, error } = input
+  const t = translator(locale)
+  const blockedText = blocked === 'self'
+    ? t('不能删除自己的账号。请让另一个超级管理员操作。', 'You cannot delete your own account. Ask another superadmin to do it.')
+    : blocked === 'last_superadmin'
+      ? t('这是最后一个超级管理员账号；删除后平台将无人可以管理。', 'This is the last superadmin account; deleting it would leave the platform unmanaged.')
+      : ''
+  const countRow = (label: string, value: number): string => `<tr><td data-label="${escapeHtml(t('项目', 'Item'))}">${escapeHtml(label)}</td><td data-label="${escapeHtml(t('数量', 'Count'))}"><strong>${value}</strong></td></tr>`
+  const rows = [
+    countRow(t('仓库', 'Repositories'), counts.repos),
+    countRow(t('任务（全部）', 'Jobs (all)'), counts.jobs),
+    countRow(t('运行中的任务', 'Running jobs'), counts.running),
+    countRow(t('排队中的任务', 'Queued jobs'), counts.queued),
+    countRow(t('FlyBot 实例', 'FlyBot instances'), counts.instances),
+    countRow(t('API token', 'API tokens'), counts.tokens),
+    countRow(t('GitHub 安装', 'GitHub installations'), counts.installations),
+  ].join('')
+  const empty = counts.repos + counts.jobs + counts.instances + counts.tokens + counts.installations === 0
+  const form = blocked === null
+    ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/delete" class="form">
+        ${csrf(viewer)}
+        <label>${escapeHtml(t('输入完整的 GitHub 登录名确认', 'Type the exact GitHub login to confirm'))} <code>@${escapeHtml(user.login)}</code> <input name="confirmLogin" autocomplete="off" required aria-required="true" /></label>
+        <p class="fine">${escapeHtml(t(`这个操作需要 ${config.recentAuthMinutes} 分钟内的 GitHub 确认；如果会话已过期，会先跳转到重新授权，确认后请再次提交。`, `This action needs a GitHub confirmation within ${config.recentAuthMinutes} minutes; a stale session is sent to re-authorize first, then the form must be submitted again.`))}</p>
+        <div class="row"><button class="btn btn-danger" type="submit" data-confirm="${escapeHtml(t('删除这个账号及其全部关联数据？此操作不能撤销。', 'Delete this account and everything linked to it? This cannot be undone.'))}">${escapeHtml(t('永久删除账号', 'Delete account permanently'))}</button><a class="btn btn-ghost" href="/admin/users/${escapeHtml(user.id)}">${escapeHtml(t('取消', 'Cancel'))}</a></div>
+      </form>`
+    : `<div class="banner bad" role="alert">${escapeHtml(blockedText)}</div>`
+  const body = `<a class="back" href="/admin/users/${escapeHtml(user.id)}">← ${escapeHtml(t('返回支持视图', 'Back to support view'))}</a>
+    <section class="card">
+      <div class="eyebrow">${escapeHtml(t('账号删除', 'ACCOUNT DELETION'))}</div>
+      <h1>${escapeHtml(t('删除账号', 'Delete account'))} @${escapeHtml(user.login)}</h1>
+      <p class="muted">${badge(t, user.status)} · ${escapeHtml(roleLabel(t, user.role))} · ${escapeHtml(t('加入于', 'Joined'))} ${escapeHtml(humanTimeShort(user.created_at))}</p>
+      <div class="banner warn">${escapeHtml(t('备份仍会在保留窗口内保留这个账号（本地加密副本 30 天，GitHub 14 天）；本次删除不会擦除备份。', 'Backups keep this account until their retention window ends (local encrypted copies 30 days, GitHub 14); this deletion does not erase backups.'))}</div>
+      <h2>${escapeHtml(t('将要移除的内容', 'What will be removed'))}</h2>
+      <div class="table-scroll"><table class="table-cards"><thead><tr><th>${escapeHtml(t('项目', 'Item'))}</th><th>${escapeHtml(t('数量', 'Count'))}</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${empty ? `<p class="fine">${escapeHtml(t('这个账号没有仓库、任务、实例、token 或安装；确认只会删除账号行和凭据。', 'This account has no repositories, jobs, instances, tokens or installations; confirming removes only the account row and its credentials.'))}</p>` : ''}
+      <p class="muted">${escapeHtml(t('确认会先取消任务、停止并移除实例、撤销 token，然后用与试用清理相同的事务删除账号行和关联数据，最后写入一条不含登录名、邮箱、token 或用户 ID 的记录，其中包含花费汇总。任何步骤失败都会记录失败的步骤名，账号保持可见，再次提交同一确认即可重试。', 'Confirm first cancels jobs, stops and removes instances and revokes tokens, then erases the account row and its related data with the same transaction the trial purge uses, and finally writes one record with no login, email, token or user id that carries the spend aggregate. A failed step is recorded by name, the account stays visible, and submitting the same confirmation again retries it.'))}</p>
+      ${form}
+    </section>`
+  return layout({ title: `${t('删除账号', 'Delete account')} @${user.login}`, viewer, body, config, locale, path: `/admin/users/${user.id}/delete`, active: 'admin', notice, error })
 }
 
 // #362: the owner's own search. The route has already scoped the query to

@@ -79,6 +79,7 @@ import { Approvals } from './users/approval.js'
 import {
   adminPage,
   adminSupportPage,
+  adminDeleteUserPage,
   adminTrialsPage,
   adminSearchPage,
   adminWebhooksPage,
@@ -4929,6 +4930,85 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.setUserRole(id, role)
     store.audit(id, 'admin.role', `role=${user.role}->${role} by @${viewer.user.login}`)
     return reply.redirect(`/admin?notice=${encodeURIComponent(role === 'admin' ? '已设为管理员。' : '已设为用户。')}`)
+  })
+
+  // #691: account deletion. The preview is read-only; the confirm is the
+  // largest destructive action on the platform. It removes repositories, jobs,
+  // instances and credentials, then reuses #690's `purgeUserRows` transaction
+  // with its eligibility check bypassed on purpose — the superadmin asserts the
+  // account is dead. Every step is idempotent, so a failed run is retried by
+  // submitting the same confirm again, and the audit row is the state.
+  const accountDeleteBlocked = (viewer: Viewer, user: UserRow): 'self' | 'last_superadmin' | null => {
+    // A superadmin is always a viewer's peer here, so the last-superadmin guard
+    // is defence in depth: it matters if a future caller deletes by id without
+    // a superadmin session in front of it.
+    if (user.id === viewer.user.id) return 'self'
+    if (user.role !== 'superadmin') return null
+    return store.listUsers().filter((row) => row.role === 'superadmin' && row.id !== user.id).length === 0 ? 'last_superadmin' : null
+  }
+
+  app.get('/admin/users/:id/delete', async (request, reply) => {
+    const viewer = requireSuperAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    const user = store.userById(String((request.params as Record<string, string>).id))
+    if (user === undefined) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
+    return reply.type('text/html').send(adminDeleteUserPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      user,
+      counts: {
+        repos: store.listRepos(user.id).length,
+        jobs: store.countJobsForUser(user.id),
+        running: store.countJobsForUser(user.id, { status: 'running' }),
+        queued: store.countJobsForUser(user.id, { status: 'queued' }),
+        instances: store.listRepoInstances().filter((row) => row.user_id === user.id).length,
+        tokens: store.listApiTokens(user.id).length,
+        installations: store.listInstallations(user.id).length,
+      },
+      blocked: accountDeleteBlocked(viewer, user),
+      notice: request.flash?.notice?.text,
+      error: request.flash?.error?.text,
+    }))
+  })
+
+  app.post('/admin/users/:id/delete', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
+    const viewer = approvedCsrfGuard(request)
+    if (viewer.user.role !== 'superadmin') throw httpError(403, '仅超级管理员可访问。', 'SUPERADMIN_ONLY')
+    if (viewer.preview === true) throw httpError(403, '预览模式不可删除账号。', 'PREVIEW_READ_ONLY')
+    if (requireRecentAuth(request, reply, viewer, 'admin.user.delete')) return reply
+    const t = translator(request.locale ?? 'zh')
+    const id = String((request.params as Record<string, string>).id)
+    const user = store.userById(id)
+    if (user === undefined) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
+    const back = `/admin/users/${user.id}/delete`
+    const blocked = accountDeleteBlocked(viewer, user)
+    if (blocked === 'self') throw httpError(403, '不能删除自己的账号。', 'SELF_DELETE')
+    if (blocked === 'last_superadmin') throw httpError(403, '不能删除最后一个超级管理员。', 'LAST_SUPERADMIN')
+    const confirmLogin = (form(request).confirmLogin ?? '').trim()
+    if (confirmLogin !== user.login) {
+      return reply.redirect(`${back}?error=${encodeURIComponent(t('请输入完整的 GitHub 登录名确认删除。', 'Type the exact GitHub login to confirm the deletion.'))}`)
+    }
+    // Teardown order is deliberate: stop work, stop the external instances,
+    // revoke credentials, then erase the rows. A failed step is named in one
+    // audit row without the login, address, token or path, and the account stays
+    // visible so the same confirm can be retried.
+    let step = 'cancel_jobs'
+    try {
+      await jobs.cancelUserJobs(user.id, '账号已被超级管理员删除')
+      step = 'stop_instances'
+      for (const instance of store.listRepoInstances().filter((row) => row.user_id === user.id)) {
+        await instances.remove(instance.repo_id)
+      }
+      step = 'revoke_tokens'
+      for (const token of store.listApiTokens(user.id)) store.revokeApiToken(token.id, user.id)
+      step = 'purge_rows'
+      store.purgeUserRows(user.id, { reason: 'admin.deleted', operator: 'superadmin', action: 'admin.user.deleted' })
+    } catch {
+      store.audit(user.id, 'admin.user.delete_failed', JSON.stringify({ step }))
+      return reply.redirect(`${back}?error=${encodeURIComponent(t(`删除在「${step}」步骤失败，账号仍在，请重试。`, `Deletion failed at the "${step}" step; the account is still here, submit the same confirmation to retry.`))}`)
+    }
+    return reply.redirect(`/admin?notice=${encodeURIComponent(t('账号已删除，并写入一条不含身份信息的删除记录。', 'The account is deleted, with one non-identity deletion record.'))}`)
   })
 
   app.post('/admin/simulation', async (request, reply) => {
