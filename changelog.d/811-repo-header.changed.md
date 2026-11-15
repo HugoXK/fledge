@@ -1,0 +1,1 @@
+The repository header now separates the title and target branch, a compact status strip (automatic work, discovery interval, next run, schedule console, FlyBot and GitHub credential) and a facts line, instead of one long paragraph carrying every fact.
