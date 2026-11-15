@@ -348,7 +348,7 @@ p { margin: 0 0 12px; }
   color: var(--muted-2); font-size: 12px; font-weight: 700; letter-spacing: 0.02em;
 }
 .lang a:hover { color: var(--text); text-decoration: none; }
-.lang a[aria-pressed="true"] { background: rgba(123, 149, 255, 0.16); color: var(--accent); }
+.lang a[aria-current="true"] { background: rgba(123, 149, 255, 0.16); color: var(--accent); }
 /* Issue 682: the theme choice is one 44px icon button with a small menu, not three
    text labels that read as "AutoLightDark" and consume a whole row segment. The
    summary shows the saved mode through `data-theme`; the menu options are plain

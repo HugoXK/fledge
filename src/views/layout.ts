@@ -56,7 +56,7 @@ export interface LayoutOptions {
 function languageSwitch(locale: Locale, path: string): string {
   const encoded = encodeURIComponent(path)
   const item = (value: Locale, label: string) =>
-    `<a href="/lang/${value}?next=${encoded}" data-lang-btn="${value}" aria-pressed="${value === locale}"${value === locale ? ' aria-current="true"' : ''}>${label}</a>`
+    `<a href="/lang/${value}?next=${encoded}" data-lang-btn="${value}"${value === locale ? ' aria-current="true"' : ''}>${label}</a>`
   return `<div class="lang" role="group" aria-label="Language">${item('zh', '中')}${item('en', 'EN')}</div>`
 }
 
