@@ -2,6 +2,25 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { duplicateOutcome, findDuplicatePullRequest, issueNumberFromText } from '../src/lib/duplicates.js'
 
+// #705: the two stall tests below used to assert a wall clock (`elapsed < 500`),
+// which measured the host rather than the algorithm — a merge gate went red at
+// 576 ms with two `npm run check` runs in flight and 1,024 ms on a loaded host,
+// while the same file alone passed. They now count what the scan copies, which
+// does not move with load. A quadratic path copies its whole prefix once per
+// reference; the bounded scan reads one fixed window (256 characters) per `#N`.
+class CountingText extends String {
+  charactersRead = 0
+  override slice(start?: number, end?: number): string {
+    const value = super.slice(start, end)
+    this.charactersRead += value.length
+    return value
+  }
+}
+
+// One fixed window per reference, with room for the trim and for a wider window
+// than today's 256 — but far below a prefix copy (tens of thousands per ref).
+const WINDOW_BUDGET = 512
+
 function pull(number: number, fields: { title?: string; body?: string; head?: string } = {}) {
   return {
     number,
@@ -72,11 +91,12 @@ test('a long slash-less body cannot stall the event loop', () => {
   // slash-less run, once per `#N`, over bodies stored whole (up to 65,536 chars)
   // and called synchronously over up to 300 pull requests. 65,538 chars measured
   // 5,942 ms, which blocks the single-process app on every iterate dispatch.
-  const body = `${'a'.repeat(65_000)} #1`
-  const started = performance.now()
-  assert.equal(issueNumberFromText(body, 'o/dup'), 1)
-  const elapsed = performance.now() - started
-  assert.ok(elapsed < 500, `took ${elapsed.toFixed(0)} ms; a quadratic path match blocks the whole app`)
+  const body = new CountingText(`${'a'.repeat(65_000)} #1`)
+  assert.equal(issueNumberFromText(body as unknown as string, 'o/dup'), 1)
+  assert.ok(
+    body.charactersRead <= WINDOW_BUDGET,
+    `one reference copied ${String(body.charactersRead)} characters; a quadratic path copies the whole ${String(body.length)}-character prefix`,
+  )
 })
 
 test('a body with many issue references cannot stall the event loop', () => {
@@ -84,13 +104,16 @@ test('a body with many issue references cannot stall the event loop', () => {
   // every `#N` still copied its whole prefix, so the cost was O(references x
   // length): 21,845 references inside a 65,535-char body (the GitHub body cap)
   // measured 4,481 ms in one synchronous call, over up to 300 open pull requests.
-  const body = ' #1'.repeat(21_845)
-  assert.equal(body.length, 65_535)
-  const pulls = [pull(3, { body })]
-  const started = performance.now()
+  const text = ' #1'.repeat(21_845)
+  assert.equal(text.length, 65_535)
+  const body = new CountingText(text)
+  const pulls = [pull(3, { body: body as unknown as string })]
   assert.equal(findDuplicatePullRequest(999, 'o/dup', pulls), null)
-  const elapsed = performance.now() - started
-  assert.ok(elapsed < 500, `took ${elapsed.toFixed(0)} ms; per-reference prefix copies block the whole app`)
+  const budget = 21_845 * WINDOW_BUDGET
+  assert.ok(
+    body.charactersRead <= budget,
+    `${String(21_845)} references copied ${String(body.charactersRead)} characters (budget ${String(budget)}); a quadratic scan copies the whole prefix for each`,
+  )
 })
 
 test('a path ending in a separator is not a repository reference', () => {
