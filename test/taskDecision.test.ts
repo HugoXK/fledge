@@ -21,7 +21,7 @@ function setup() {
   const user = makeUser(store, { login: 'decision-user', status: 'approved' })
   const repo = store.createRepo({ id: 'repo_decision', userId: user.id, owner: 'o', name: 'd', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
   const job = (id: string, status: 'succeeded' | 'running' = 'succeeded') => {
-    const row = store.createJob({ id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: `h-${id}`, platformTokenHash: '' })
+    store.createJob({ id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: `h-${id}`, platformTokenHash: '' })
     store.updateJob(id, { status })
     return store.getJob(id)!
   }
