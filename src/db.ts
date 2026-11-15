@@ -265,6 +265,12 @@ export interface ScheduleRow {
    * bound, which is the behaviour every schedule had before this column existed.
    */
   grace_ms: number | null
+  /**
+   * #544 slice 6: at most this many instants may be dispatched in one logical
+   * UTC day. Null means unbounded, which is the behaviour every schedule had
+   * before this column existed.
+   */
+  daily_runs: number | null
   last_occurrence_at: number | null
   created_at: string
   updated_at: string
@@ -1942,6 +1948,11 @@ CREATE TABLE IF NOT EXISTS schedules (
   timing_revision INTEGER NOT NULL DEFAULT 1,
   misfire TEXT NOT NULL DEFAULT 'skip',
   grace_ms INTEGER,
+  -- #544 slice 6: the schedule layer of the run budget, in dispatches per
+  -- logical UTC day. Null is unbounded, the behaviour of every schedule written
+  -- before the column existed; the count itself is read from the occurrence
+  -- rows, so a database restored without them cannot invent usage.
+  daily_runs INTEGER,
   last_occurrence_at INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -2108,9 +2119,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 40) {
+    if (previousVersion > 41) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (40)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (41)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -2121,6 +2132,7 @@ export class Store {
     this.migrateManagementColumns()
     this.migrateScheduleOccurrenceColumns()
     this.migrateScheduleMisfireColumns()
+    this.migrateScheduleBudgetColumns()
     this.migrateReleaseColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
@@ -2133,7 +2145,7 @@ export class Store {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
     this.migrateIdentity()
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 40)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 41)};`)
   }
 
   // #544 slice 3B-B2: a database written by slice B1 already has the occurrence
@@ -2148,6 +2160,13 @@ export class Store {
   private migrateScheduleMisfireColumns(): void {
     const columns = this.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
     if (!columns.includes('grace_ms')) this.db.exec('ALTER TABLE schedules ADD COLUMN grace_ms INTEGER')
+  }
+
+  // #544 slice 6: the run budget adds one nullable column. A row written before
+  // it keeps no limit, which is the behaviour it had; nothing else is rewritten.
+  private migrateScheduleBudgetColumns(): void {
+    const columns = this.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
+    if (!columns.includes('daily_runs')) this.db.exec('ALTER TABLE schedules ADD COLUMN daily_runs INTEGER')
   }
 
   private migrateScheduleOccurrenceColumns(): void {
@@ -4772,6 +4791,8 @@ export class Store {
     endAt?: number | null
     misfire?: string
     graceMs?: number | null
+    /** #544 slice 6: dispatches allowed per logical UTC day; null is unbounded. */
+    dailyRuns?: number | null
   }): ScheduleRow {
     const existing = this.scheduleForRepo(input.repoId)
     const timingChanged = existing !== undefined && (
@@ -4785,19 +4806,20 @@ export class Store {
     const at = nowIso()
     if (existing === undefined) {
       this.run(
-        `INSERT INTO schedules (id, repo_id, kind, expression, every_ms, timezone, start_at, end_at, timing_revision, misfire, grace_ms, last_occurrence_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, ?, ?)`,
+        `INSERT INTO schedules (id, repo_id, kind, expression, every_ms, timezone, start_at, end_at, timing_revision, misfire, grace_ms, daily_runs, last_occurrence_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, ?, ?)`,
         input.id, input.repoId, input.kind, input.expression ?? null, input.everyMs ?? null, input.timezone ?? null,
-        input.startAt ?? null, input.endAt ?? null, input.misfire ?? 'skip', input.graceMs ?? null, at, at,
+        input.startAt ?? null, input.endAt ?? null, input.misfire ?? 'skip', input.graceMs ?? null, input.dailyRuns ?? null, at, at,
       )
     } else {
       this.run(
         `UPDATE schedules SET kind = ?, expression = ?, every_ms = ?, timezone = ?, start_at = ?, end_at = ?,
-           timing_revision = ?, misfire = ?, grace_ms = ?, updated_at = ? WHERE repo_id = ?`,
+           timing_revision = ?, misfire = ?, grace_ms = ?, daily_runs = ?, updated_at = ? WHERE repo_id = ?`,
         input.kind, input.expression ?? null, input.everyMs ?? null, input.timezone ?? null,
         input.startAt ?? null, input.endAt ?? null,
         timingChanged ? existing.timing_revision + 1 : existing.timing_revision,
-        input.misfire ?? existing.misfire, input.graceMs === undefined ? existing.grace_ms : input.graceMs, at, input.repoId,
+        input.misfire ?? existing.misfire, input.graceMs === undefined ? existing.grace_ms : input.graceMs,
+        input.dailyRuns === undefined ? existing.daily_runs : input.dailyRuns, at, input.repoId,
       )
     }
     const row = this.scheduleForRepo(input.repoId)
@@ -4912,6 +4934,21 @@ export class Store {
       'SELECT * FROM schedule_occurrences WHERE repo_id = ? ORDER BY logical_time DESC, decided_at DESC LIMIT ?',
       repoId, limit,
     )
+  }
+
+  // #544 slice 6: how much of a schedule's daily budget a logical day has
+  // already spent. Only `dispatched` rows count — a skipped instant did not run,
+  // and a claimed one has not dispatched yet — and the window is half-open, so
+  // neighbouring days cannot both charge the boundary instant. The logical time
+  // is the key, not the dispatch time: a late or recovered run stays in the day
+  // it was scheduled for.
+  countScheduleDispatchesBetween(scheduleId: string, from: number, to: number): number {
+    const row = this.get<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM schedule_occurrences
+        WHERE schedule_id = ? AND state = 'dispatched' AND logical_time >= ? AND logical_time < ?`,
+      scheduleId, from, to,
+    )
+    return Number(row?.count ?? 0)
   }
 
   // #544 slice 3B-B2. Claiming is one transaction so two workers cannot both
