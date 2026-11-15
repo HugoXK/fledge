@@ -144,7 +144,11 @@ defect.
   because that row owns its cadence; the dashboard route passes the instant with
   the repository's facts and both surfaces render it through `plannedNextLine`, so
   the card cannot fall back to the interval rule for a scheduled repository and
-  disagree with the page below it. The dashboard route passes open work, the
+  disagree with the page below it. The daily digest is the third surface: `buildDigest`
+  calls `nextRunFor` (`src/lib/nextRunFor.ts`), which makes the same row-vs-interval
+  choice and delegates the instant to `nextTime`/`dueAfterMs`, so the email prints
+  the same state and time as the page. The digest owns only its Chinese wording; it
+  does not import `src/views/**`. The dashboard route passes open work, the
   active job and instance readiness per repository because those live outside
   `RepoRow`; the two surfaces therefore print one string, and
   the wording says "next run", never an estimate. The newest job is read on its own, not

@@ -4,6 +4,7 @@ import { buildApp } from '../src/app.js'
 import { Store, type WorkItemRow } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { nextRun } from '../src/lib/nextRun.js'
+import { nextRunFor } from '../src/lib/nextRunFor.js'
 import { humanTimeShort } from '../src/lib/time.js'
 import { nextTime } from '../src/schedules/next.js'
 import { scheduleFromRow } from '../src/schedules/tick.js'
@@ -111,6 +112,72 @@ function renderBoth(input: {
   })
   return { dashboard, page }
 }
+
+test('the shared next-run helper chooses the planner for a saved row', () => {
+  const { store, repo } = fixture()
+  try {
+    const row = store.saveSchedule({ id: 'sch_for', repoId: repo.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })
+    const schedule = scheduleFromRow(row)
+    assert.ok(schedule !== null)
+    const expected = nextTime(schedule, NOW)
+    assert.ok(expected !== null)
+    const next = nextRunFor({ repo, row, openWork: true, activeJob: false, instanceReady: true, workCooldownMinutes: COOLDOWN_MINUTES, now: NOW })
+    assert.equal(next.state, 'scheduled')
+    assert.equal(next.at, expected)
+    store.updateRepo(repo.id, { enabled: 0 })
+    const disabled = nextRunFor({ repo: store.getRepo(repo.id)!, row, openWork: true, activeJob: false, instanceReady: true, workCooldownMinutes: COOLDOWN_MINUTES, now: NOW })
+    assert.equal(disabled.state, 'scheduled', 'a saved row answers before enabled, exactly as on the page')
+    assert.equal(disabled.at, expected)
+
+    const unreadable = store.saveSchedule({ id: 'sch_for_bad', repoId: repo.id, kind: 'cron', expression: null, timezone: 'Asia/Shanghai' })
+    assert.deepEqual(
+      nextRunFor({ repo: store.getRepo(repo.id)!, row: unreadable, openWork: true, activeJob: false, instanceReady: true, workCooldownMinutes: COOLDOWN_MINUTES, now: NOW }),
+      { at: null, state: 'unknown-unreadable' },
+    )
+    const closed = store.saveSchedule({ id: 'sch_for_closed', repoId: repo.id, kind: 'interval', everyMs: 60_000, endAt: NOW - 1 })
+    assert.deepEqual(
+      nextRunFor({ repo: store.getRepo(repo.id)!, row: closed, openWork: true, activeJob: false, instanceReady: true, workCooldownMinutes: COOLDOWN_MINUTES, now: NOW }),
+      { at: null, state: 'unknown-closed' },
+    )
+  } finally {
+    store.close()
+  }
+})
+
+test('the shared next-run helper keeps every interval state the page prints', () => {
+  const cases: Array<{ label: string; patch: { enabled?: number; autoIterate?: boolean; lastRunAt?: string | null; openWork?: boolean; activeJob?: boolean; instanceReady?: boolean }; state: string }> = [
+    { label: 'disabled', patch: { enabled: 0 }, state: 'disabled' },
+    { label: 'not-ready', patch: { instanceReady: false }, state: 'not-ready' },
+    { label: 'auto-off', patch: { autoIterate: false }, state: 'auto-off' },
+    { label: 'active-job', patch: { activeJob: true }, state: 'active-job' },
+    { label: 'idle', patch: { openWork: false }, state: 'idle' },
+    { label: 'waiting-first-run', patch: { lastRunAt: null }, state: 'waiting-first-run' },
+    { label: 'due', patch: { lastRunAt: new Date(NOW - 60 * 60_000).toISOString() }, state: 'due' },
+    { label: 'scheduled', patch: { lastRunAt: LAST_RUN_RECENT }, state: 'scheduled' },
+  ]
+  for (const testCase of cases) {
+    const { store, repo } = fixture()
+    try {
+      store.updateRepo(repo.id, {
+        enabled: testCase.patch.enabled ?? 1,
+        auto_iterate: testCase.patch.autoIterate === false ? 0 : 1,
+        ...(testCase.patch.lastRunAt === undefined ? {} : { last_run_at: testCase.patch.lastRunAt }),
+      })
+      const next = nextRunFor({
+        repo: store.getRepo(repo.id)!,
+        row: undefined,
+        openWork: testCase.patch.openWork ?? true,
+        activeJob: testCase.patch.activeJob ?? false,
+        instanceReady: testCase.patch.instanceReady ?? true,
+        workCooldownMinutes: COOLDOWN_MINUTES,
+        now: NOW,
+      })
+      assert.equal(next.state, testCase.state, `${testCase.label} keeps the page's state`)
+    } finally {
+      store.close()
+    }
+  }
+})
 
 test('the cooldown the worker uses decides the next run, not the discovery interval', () => {
   const next = nextRun({
