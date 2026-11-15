@@ -10,6 +10,8 @@ import { assertProductionConfig } from './config.js'
 import { openStore, type GateSessionRow, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
 import { createAnnotatedTag, parseVersion, releasePreflight } from './releases/release.js'
 import { reconcileRelease, trackingUpdate } from './releases/tracking.js'
+import { readReleaseReadiness } from './releases/readiness.js'
+import { releaseReadinessPage } from './views/releaseReadiness.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
 import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions, type Viewer } from './auth/session.js'
@@ -1997,6 +1999,41 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       unchanged: queryText(request, 'unchanged') !== undefined,
       ...(conflict === undefined ? {} : { conflictRevision: Number(conflict) }),
       ...(refused === undefined ? {} : { refused }),
+    }))
+  })
+
+  // #546 slice 1: the read-only readiness answer. Every call behind this route
+  // is a GET on the repository the actor already owns; the page creates no tag,
+  // no Release and asks for no token beyond the installation token it holds.
+  app.get('/repos/:id/release-readiness', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    const defaultBranch = repo.upstream_default_branch || repo.default_branch
+    let readiness = null as Awaited<ReturnType<typeof readReleaseReadiness>>
+    let error: string | undefined
+    try {
+      const token = await repoGithubToken(repo, config, githubApp, store)
+      if (token === '') {
+        error = '没有可用的 GitHub 安装令牌。 / No GitHub installation token is available.'
+      } else {
+        readiness = await readReleaseReadiness(new GithubClient(token, config.github.apiBase), { owner, name, defaultBranch })
+        if (readiness === null) error = `默认分支 ${defaultBranch} 读不到。 / The default branch ${defaultBranch} could not be read.`
+      }
+    } catch (cause) {
+      // A GitHub read that fails is reported on the page as "no answer", never
+      // as a ready or a refused repository: the page must not invent a verdict.
+      error = `GitHub 读取失败：${cause instanceof Error ? cause.message : String(cause)} / the GitHub read failed`
+      log.warn('release readiness read failed', { repo: repo.id, error: String(cause) })
+    }
+    return reply.type('text/html').send(releaseReadinessPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      repoId: repo.id,
+      repoLabel: `${owner}/${name}`,
+      readiness,
+      ...(error === undefined ? {} : { error }),
     }))
   })
 
