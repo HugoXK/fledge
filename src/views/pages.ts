@@ -2249,21 +2249,37 @@ export function adminPage(input: {
     const pair = labels[id] ?? [id, id]
     return t(pair[0]!, pair[1]!)
   }
+  // The live row is the one that answers "is this process the tag?"; the stored
+  // `healthz` probe is a snapshot from `verify-release`, so rendering both
+  // repeats the same comparison at two different times. Skipped links are
+  // provenance (a deleted release branch, no local image), not actions.
+  const running = releaseStatus === null
+    ? null
+    : compareRunning(releaseStatus, { version: release.version ?? '', commit: config.build.commit })
+  const visibleLinks = releaseStatus === null
+    ? []
+    : releaseStatus.links.filter((entry) => entry.id !== 'healthz' && entry.state !== 'skipped')
+  const releaseArtifactsOk = releaseStatus !== null
+    && releaseStatus.links.filter((entry) => entry.id !== 'healthz').every((entry) => entry.state !== 'missing' && entry.state !== 'mismatch')
+  const chainLabel = releaseStatus === null
+    ? ''
+    : !releaseArtifactsOk
+      ? t('发布链未完成', 'chain incomplete')
+      : running?.state === 'ok'
+        ? t('已发布并运行', 'released and running')
+        : t('已发布，运行实例不一致', 'published; running differs')
   const chainRows = releaseStatus === null
     ? `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('还没有记录发布链', 'No release chain is recorded'))}</strong><small>${escapeHtml(t('这不是错误：发布链只有在管理员于主机上记录过一次校验后才会出现。', 'This is expected, not an error: the chain appears only after an operator records a verification on the host.'))}</small></div></div>
       <details class="advanced-help"><summary>${escapeHtml(t('在主机上记录发布链', 'Record it on the host'))}</summary><p class="fine">${escapeHtml(t('运行', 'Run'))} <code>node scripts/verify-release.mjs --version X.Y.Z --write &lt;DATA_DIR&gt;/release-status.json</code> ${escapeHtml(t('然后刷新此页。', 'then reload this page.'))}</p></details>`
-    : `${releaseStatus.links
+    : `${visibleLinks
         .map(
           (entry) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(linkLabel(entry.id))}</strong><small>${escapeHtml(entry.detail)}</small></div><div class="row">${stateBadge(entry.state)}</div></div>`,
         )
-        .join('')}${(() => {
-        const running = compareRunning(releaseStatus, { version: release.version ?? '', commit: config.build.commit })
-        return `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('这个进程', 'This process'))}</strong><small>${escapeHtml(running.detail)}</small></div><div class="row">${stateBadge(running.state)}</div></div>`
-      })()}`
+        .join('')}${running === null ? '' : `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('运行实例', 'Running instance'))}</strong><small>${escapeHtml(running.detail)}</small></div><div class="row">${stateBadge(running.state)}</div></div>`}`
   const releaseCard = `<section class="card" id="release">
     <h2>${escapeHtml(t('发布', 'Release'))}</h2>
     ${releaseFacts}
-    <h3 class="mt-16">${escapeHtml(t('发布链', 'Release chain'))}${releaseStatus === null ? '' : ` <small class="count">v${escapeHtml(releaseStatus.version)} · ${escapeHtml(releaseStatus.ok ? t('已发布', 'released') : t('未完成', 'not released'))}${releaseStatus.checkedAt === '' ? '' : ` · ${escapeHtml(t(`检查于 ${releaseStatus.checkedAt}`, `checked ${releaseStatus.checkedAt}`))}`}${releaseStatus.releaseUrl === '' ? '' : ` · <a class="link" href="${escapeHtml(releaseStatus.releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(t('GitHub Release', 'GitHub Release'))}</a>`}</small>`}</h3>
+    <h3 class="mt-16">${escapeHtml(t('发布链', 'Release chain'))}${releaseStatus === null ? '' : ` <small class="count">v${escapeHtml(releaseStatus.version)} · ${escapeHtml(chainLabel)}${releaseStatus.checkedAt === '' ? '' : ` · ${escapeHtml(t(`检查于 ${releaseStatus.checkedAt}`, `checked ${releaseStatus.checkedAt}`))}`}${releaseStatus.releaseUrl === '' ? '' : ` · <a class="link" href="${escapeHtml(releaseStatus.releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(t('GitHub Release', 'GitHub Release'))}</a>`}</small>`}</h3>
     <div class="list">${chainRows}</div>
   </section>`
 

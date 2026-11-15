@@ -1572,13 +1572,18 @@ The `/admin` card renders the snapshot the command writes to
 GitHub, and a missing or unparseable snapshot renders "no release chain is
 recorded" rather than an empty card. The snapshot carries the tag target and the
 Release URL as fields (`targetSha`, `releaseUrl`); the target is never re-read
-out of a link's detail text. The one live row is `This process`, which compares
-the version in `package.json` and the commit stamp this process booted with
-against that recorded tag target, so an operator can see at a glance whether the
-instance they are looking at is the release the chain names. A snapshot that
-claims `ok` with no links, or that contradicts its own problems, is refused as
-unparseable — a green header over an empty table is the one shape the card must
-never render.
+out of a link's detail text. The card renders the artifact links, omits links the
+snapshot marked `skipped` (a deleted release branch, no local image) and the
+stored `healthz` probe, and adds one live `Running instance` row. That row
+compares the version in `package.json` and the commit stamp this process booted
+with against the recorded tag target, so an operator can see at a glance whether
+the instance they are looking at is the release the chain names. The header says
+`released and running` only when every artifact link is ok and the live row is
+the tag target; otherwise it says `published; running differs` or `chain
+incomplete`. A published GitHub Release is therefore never labelled "not
+released" just because the host runs a local build. A snapshot that claims `ok`
+with no links, or that contradicts its own problems, is refused as unparseable —
+a green header over an empty table is the one shape the card must never render.
 ### Backup surface
 
 The other half of "your data is safe" is a fact the operator can see without
