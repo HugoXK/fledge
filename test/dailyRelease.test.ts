@@ -111,6 +111,16 @@ test('the team token is the only stored secret, and it is not the reviewer token
   assert.equal(/token: \$\{\{/.test(daily), false, 'the checkout uses the default token')
 })
 
+test('the opener token is readable only through the release environment (#527)', () => {
+  // The repository scope meant every workflow on `main` could read the opener
+  // token. The workflow half of the fix is this one key; the environment, its
+  // secret and the deletion of the repository secret are owner actions, so this
+  // test pins only what the file can promise — and it fails on the pre-#527 file,
+  // where neither job declares an environment.
+  assert.match(job('release'), /^ {4}environment: release$/m, 'the release job declares the environment that holds the opener token')
+  assert.doesNotMatch(job('tag'), /^ {4}environment:/m, 'the tag job runs on GITHUB_TOKEN only and must not inherit the opener environment')
+})
+
 test('the release job runs on a push too, and the trigger predicate decides whether that push plans', () => {
   // #315: the event name is no longer the planning gate. A push is eligible
   // because the rule's input changes only on a push, and the summary says what
@@ -347,7 +357,9 @@ test('the surface this branch adds is declared, and the workflow runs no other r
 test('release.yml is not folded into this change and knows nothing about the tag write', () => {
   assert.equal(/git\/tags/.test(release), false)
   assert.equal(/git\/refs/.test(release), false)
-  assert.match(release, /Verify the tag is an ancestor of main/)
+  // #648 renamed this step and added the provenance read beside the ancestor
+  // check; the write stays in the tag job, so the two prohibitions above hold.
+  assert.match(release, /- name: Verify the tag's provenance/)
 })
 
 test('an added test or script is held to the release lists only on a release branch', () => {

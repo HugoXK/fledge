@@ -5,11 +5,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
+import { QuotaNotifier } from '../src/gateway/notifier.js'
 import { Approvals } from '../src/users/approval.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { sha256Hex, randomToken } from '../src/lib/secrets.js'
 import type { MailMessage } from '../src/email/mailer.js'
-import { formBody, makeUser, sessionFor, testConfig } from './helpers.js'
+import { MemoryMailer, formBody, makeUser, sessionFor, testConfig } from './helpers.js'
 
 class FailingMailer {
   messages: MailMessage[] = []
@@ -134,4 +135,49 @@ test('the mail probe reports transport and elapsed time, never the address or a 
   )
   assert.equal(refused.ok, false)
   assert.equal(refused.summary.includes('ops@example.com'), false)
+})
+
+// #58: the quota notice is a mail-delivery promise too — at most one per user
+// per day, to the notification address, and the in-app notice still lands when
+// the send fails (the send is best-effort and must never reach the caller).
+test('a quota notice reaches the notification address at most once per user per day', async () => {
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  try {
+    const user = makeUser(store, { login: 'quota-day', status: 'approved' })
+    const notifier = new QuotaNotifier(store, mailer, testConfig())
+
+    await notifier.notify(user)
+    await notifier.notify(user)
+    assert.equal(mailer.messages.length, 1, 'the user was mailed twice in one day')
+    assert.equal(mailer.messages[0]!.to, `${user.login}@example.com`, 'the quota mail did not go to the notification address')
+    assert.equal(store.listNotifications(user.id).filter((row) => row.kind === 'quota').length, 1, 'the in-app notice was not written once')
+
+    store.setSetting(`quota_notified:${user.id}`, '2000-01-01')
+    await notifier.notify(user)
+    assert.equal(mailer.messages.length, 2, 'the next day produced no quota mail')
+  } finally {
+    store.close()
+  }
+})
+
+test('a quota notice whose send fails keeps the in-app notice and writes a redacted audit row', async () => {
+  const store = new Store(':memory:')
+  const fake = ['ghp', 'b'.repeat(30)].join('_')
+  const mailer = new FailingMailer(`smtp auth failed with ${fake}`)
+  try {
+    const user = makeUser(store, { login: 'quota-fail', status: 'approved' })
+    await new QuotaNotifier(store, mailer, testConfig()).notify(user)
+
+    assert.equal(mailer.messages.length, 1, 'the quota mail was not attempted')
+    assert.equal(store.listNotifications(user.id).filter((row) => row.kind === 'quota').length, 1, 'the in-app notice was lost with the failed send')
+    const failure = store.listAudit(20).find((row) => row.action === 'quota.mail_failed')
+    assert.ok(failure, 'a failed quota mail writes no quota.mail_failed audit row')
+    assert.equal(failure.user_id, user.id, 'the audit row does not name the account it kept')
+    const detail = String(failure.detail ?? '')
+    assert.equal(detail.includes(fake), false, 'the audit detail carries the SMTP credential')
+    assert.match(detail, /\[redacted-github-token\]/, 'the audit detail does not record that a secret was redacted')
+  } finally {
+    store.close()
+  }
 })

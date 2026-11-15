@@ -31,8 +31,12 @@ function fail(message) {
 // once by the base branch ref before that conservative answer is allowed — with
 // its history, because a depth-limited fetch places the commit but grafts it as
 // a shallow root, so the three-dot diff fails again, now with `no merge base`.
+// #640: the classifier runs from the base branch tree, so the checkout that
+// holds the pull request's commits is named instead of assumed to be the cwd.
+const repo = argument('--repo')
+
 function git(args) {
-  const result = spawnSync('git', args, { encoding: 'utf8' })
+  const result = spawnSync('git', repo === '' ? args : ['-C', repo, ...args], { encoding: 'utf8' })
   return { ok: result.status === 0, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
 }
 

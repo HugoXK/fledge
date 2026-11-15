@@ -45,11 +45,11 @@ function claim(h: { store: Store; repoId: string; scheduleId: string }, token: s
   })
 }
 
-test('the occurrence row carries attempts and a lease, at user_version 39', () => {
+test('the occurrence row carries attempts and a lease, at user_version 41', () => {
   const store = new Store(':memory:')
   try {
     const version = store.get<{ user_version: number }>('PRAGMA user_version')
-    assert.equal(Number(version?.user_version), 39, 'the grace column of slice 5 moves the refusal boundary from 38 to 39')
+    assert.equal(Number(version?.user_version), 41, 'the daily run budget moves the refusal boundary from 40 to 41')
 
     const columns = store.all<{ name: string }>('PRAGMA table_info(schedule_occurrences)').map((column) => column.name)
     for (const column of ['attempts', 'lease_token', 'lease_expires_at']) {

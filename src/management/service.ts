@@ -4,7 +4,7 @@ import { randomId, redact, sha256Hex } from '../lib/secrets.js'
 import { errorClass, errorMessage } from '../lib/errorText.js'
 import { log } from '../lib/log.js'
 import { capabilitiesForRepo, FORBIDDEN_ARGUMENT_KEYS, type ActorContext } from './actor.js'
-import { operationFor, type CommandTarget } from './catalog.js'
+import { operationFor, type CommandTarget, type Operation } from './catalog.js'
 
 // #540: one contract for every console write. A command is an operation from the
 // closed catalog, a target, validated arguments, the revision the caller saw, and
@@ -29,6 +29,7 @@ export type ManagementCode =
   | 'actor_not_allowed'
   | 'idempotency_conflict'
   | 'management_revision_conflict'
+  | 'management_unknown'
   | 'command_in_progress'
   | 'authorization_revoked'
   | 'not_accepted'
@@ -164,9 +165,15 @@ export class ManagementService {
 
   async run(actor: ActorContext, envelope: CommandEnvelope): Promise<CommandOutcome> {
     const begun = this.begin(actor, envelope)
-    if (!begun.ok) return begun
-    if (begun.replayed) return begun
-    return this.complete(begun.receipt.id)
+    if (begun.ok) {
+      if (begun.replayed) return begun
+      return this.complete(begun.receipt.id)
+    }
+    // #540 slice 5: a retry of an `unknown` command is the next attempt the card
+    // asks for. `begin` answers it honestly as unknown, and `complete` reconciles
+    // before anything is resent; every other refusal stays a refusal.
+    if (begun.code === 'management_unknown' && begun.receipt !== undefined) return this.complete(begun.receipt.id)
+    return begun
   }
 
   // Execute an accepted receipt. Everything that could have changed since the
@@ -201,13 +208,32 @@ export class ManagementService {
     const missing = operation.capabilities.filter((capability) => !capabilities.has(capability))
     if (missing.length > 0) return this.failReceipt(receipt, 'authorization_revoked', `no longer holds: ${missing.join(', ')}`)
 
+    // #540 slice 5: an `unknown` receipt is decided by its probe, not by the
+    // revision fence — the effect may be exactly what moved the revision.
+    if (receipt.status === 'unknown') return this.reconcileReceipt(receipt, operation, target, args)
+
     const resourceId = String(target[operation.revisionTarget] ?? '')
     const current = this.store.revisionOf(operation.revisionType, resourceId)
     if (current !== receipt.expected_revision) {
       return this.failReceipt(receipt, 'management_revision_conflict', `the resource moved from ${receipt.expected_revision} to ${current} after acceptance`)
     }
 
-    const outcome = await operation.execute({ store: this.store, jobs: this.jobs, principalId: receipt.principal_id }, target, args)
+    return this.executeAccepted(receipt, operation, target, args, resourceId)
+  }
+
+  // The accepted path: run the operation once, then commit its effect with the
+  // receipt. Extracted so a reconciled retry that found nothing applied runs
+  // exactly this code, not a second copy of it.
+  private async executeAccepted(receipt: ManagementCommandRow, operation: Operation, target: CommandTarget, args: Record<string, unknown>, resourceId: string): Promise<CommandOutcome> {
+    let outcome
+    try {
+      outcome = await operation.execute({ store: this.store, jobs: this.jobs, principalId: receipt.principal_id }, target, args)
+    } catch (error) {
+      // A transport failure is not a refusal: the external write may have
+      // crossed the commit boundary, so the receipt becomes `unknown` and the
+      // route shows "could not be confirmed" instead of an unhandled 500.
+      return this.markUnknownReceipt(receipt, `${errorClass(error)}: ${errorMessage(error)}`)
+    }
     if (outcome.status === 'failed') {
       return this.failReceipt(receipt, outcome.errorCode ?? 'job_not_cancellable', outcome.errorMessage ?? 'the operation failed', outcome.errorDetail)
     }
@@ -239,6 +265,84 @@ export class ManagementService {
       return this.failReceipt(receipt, 'corrupt_receipt', 'the stored target is unreadable')
     }
     return this.commitSucceeded(receipt, operation.revisionType, String(target[operation.revisionTarget] ?? ''), outcome.result ?? {})
+  }
+
+  // #540 slice 5: an adapter that learns the external write crossed the commit
+  // boundary with no answer reports it here. Only the principal on the receipt
+  // may, and only a receipt that has not answered can move — a late report must
+  // never rewrite a success or a failure that was already shown to someone.
+  markUnknown(receiptId: string, actor: ActorContext): CommandOutcome {
+    const receipt = this.store.commandReceipt(receiptId)
+    if (receipt === undefined) return { ok: false, code: 'not_accepted', message: 'the command does not exist' }
+    if (receipt.principal_id !== actor.principalId) {
+      return { ok: false, code: 'actor_not_allowed', message: 'only the principal that owns the receipt may mark it unknown', receipt }
+    }
+    if (receipt.status !== 'accepted') return this.replay(receipt)
+    return this.markUnknownReceipt(receipt, 'the external write did not answer')
+  }
+
+  private markUnknownReceipt(receipt: ManagementCommandRow, reason: string): CommandOutcome {
+    this.store.transaction(() => {
+      this.store.updateCommandReceipt(receipt.id, { status: 'unknown' })
+      // The operator's copy names the receipt, the operation and the error class;
+      // never the arguments, which can carry a goal or a path.
+      this.store.audit(receipt.principal_id, 'management.command', `${receipt.id} ${receipt.operation} status=unknown ${redact(reason).slice(0, 300)}`)
+    })
+    const updated = this.store.commandReceipt(receipt.id) ?? receipt
+    return { ok: false, code: 'management_unknown', message: `the command is unknown and must be reconciled: ${receipt.operation}`, receipt: updated }
+  }
+
+  // Reconcile first, decide second, resend last. A probe that itself fails proves
+  // nothing, so the receipt keeps its `unknown` rather than being guessed at.
+  private async reconcileReceipt(receipt: ManagementCommandRow, operation: Operation, target: CommandTarget, args: Record<string, unknown>): Promise<CommandOutcome> {
+    if (operation.reconcile === undefined) {
+      return this.unknownOutcome(receipt, `${receipt.operation} cannot be reconciled, so it is never resent blind`)
+    }
+    let verdict
+    try {
+      verdict = await operation.reconcile({ store: this.store, jobs: this.jobs, principalId: receipt.principal_id }, target, args)
+    } catch (error) {
+      return this.unknownOutcome(receipt, `the reconcile probe failed: ${errorClass(error)}`)
+    }
+    if (verdict.state === 'still-unknown') return this.unknownOutcome(receipt, `the effect of ${receipt.operation} is still unknown`)
+    if (verdict.state === 'applied') {
+      return this.settleReconciled(receipt, operation, target, verdict.result ?? {})
+    }
+    // Absent: the effect provably did not happen, so this is the one case where
+    // the same command may run again.
+    const resourceId = String(target[operation.revisionTarget] ?? '')
+    const current = this.store.revisionOf(operation.revisionType, resourceId)
+    if (current !== receipt.expected_revision) {
+      return this.failReceipt(receipt, 'management_revision_conflict', `the resource moved from ${receipt.expected_revision} to ${current} after acceptance`)
+    }
+    return this.executeAccepted(receipt, operation, target, args, resourceId)
+  }
+
+  private unknownOutcome(receipt: ManagementCommandRow, message: string): CommandOutcome {
+    const updated = this.store.commandReceipt(receipt.id) ?? receipt
+    return { ok: false, code: 'management_unknown', message, receipt: updated }
+  }
+
+  // The probe found the effect already there. The receipt records the answer but
+  // does not bump the revision: whoever wrote the effect already moved it, and a
+  // second bump would fence a page that read the real change.
+  private settleReconciled(receipt: ManagementCommandRow, operation: Operation, target: CommandTarget, result: Record<string, unknown>): CommandOutcome {
+    const merged = { ...result, reconciled: true }
+    const resourceId = String(target[operation.revisionTarget] ?? '')
+    this.store.transaction(() => {
+      const revision = this.store.revisionOf(operation.revisionType, resourceId)
+      this.store.updateCommandReceipt(receipt.id, {
+        status: 'succeeded',
+        result_json: canonical(merged),
+        after_revision: revision,
+        error_code: null,
+        error_message: null,
+      })
+      this.store.audit(receipt.principal_id, 'management.command', `${receipt.id} ${receipt.operation} revision ${receipt.before_revision ?? revision}->${revision} status=succeeded reconciled`)
+    })
+    const updated = this.store.commandReceipt(receipt.id)
+    if (updated === undefined) return { ok: false, code: 'corrupt_receipt', message: 'the receipt disappeared after reconciliation' }
+    return { ok: true, receipt: updated, replayed: false, result: merged }
   }
 
   private commitSucceeded(receipt: ManagementCommandRow, revisionType: string, resourceId: string, result: Record<string, unknown>, commit?: () => void, afterCommit?: () => void): CommandOutcome {
@@ -299,6 +403,9 @@ export class ManagementService {
         ...(receipt.error_detail === null ? {} : { detail: receipt.error_detail }),
         receipt,
       }
+    }
+    if (receipt.status === 'unknown') {
+      return { ok: false, code: 'management_unknown', message: `the command is unknown and must be reconciled: ${receipt.operation}`, receipt }
     }
     return { ok: false, code: 'command_in_progress', message: `the command is ${receipt.status} and has not finished`, receipt }
   }

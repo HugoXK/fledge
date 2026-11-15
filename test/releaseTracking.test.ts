@@ -383,7 +383,10 @@ test('the maintainer check route records the run and prepares one draft', async 
   try {
     const posted = await r.post()
     assert.equal(posted.statusCode, 302)
-    assert.match(decodeURIComponent(String(posted.headers.location)), /checked=/)
+    // #472 slice 3: the outcome is one-shot, so it travels in the flash rather
+    // than in the address bar the user keeps and reloads.
+    assert.doesNotMatch(String(posted.headers.location), /checked=/)
+    assert.equal(flashOf(posted)?.outcome?.key, 'checked')
     const row = r.store.releaseById(r.release.id)
     assert.equal(row?.status, 'draft_created')
     assert.equal(row?.run_id, '123')

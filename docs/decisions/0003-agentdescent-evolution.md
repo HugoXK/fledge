@@ -123,10 +123,17 @@ frozen path is refused before evaluation, with `evolution.candidate.refused` in
 the audit log.
 
 `job_events` stores the durable timeline that makes a job replayable. The
-`scripts/evolution-shadow.mjs` export is read-only and excludes tokens,
-callback secrets and API keys. Run `npm run evolution:report` (or pass `--report`) to print the current
-baseline (success/merge rate, evidence completeness, median duration) and a
-time-ordered train/holdout split before any candidate is generated.
+`scripts/evolution-shadow.ts` export is read-only and excludes tokens,
+callback secrets and API keys: every exported string passes through `redact()`,
+and only repositories an admin opted in through the audited consent command are
+read. Run `npm run evolution:report` (or pass `--report`) to print the current
+baseline (success/merge rate, evidence completeness, median duration) and the
+manifest's own train/holdout split before any candidate is generated. The split
+is repository-disjoint first: the newest time tail only chooses which
+repositories are held out, a repository spanning the cut moves all of its rows,
+and `trainRows`/`holdoutRows` record the effective sizes. An export whose
+holdout would take every row is refused with `NO_TRAINING_ROWS`, and
+`--verify` recomputes a written dataset's hash and id.
 
 ## Security and privacy
 

@@ -79,6 +79,14 @@ const WORKFLOW_PATHS = [
 // the "unknown" fallback lets a deploy-doc-only change skip the code gates.
 const NON_CODE_PATHS = [/^deploy\//, /^CODEOWNERS$/]
 
+// `deploy/` is not code, but it ships executable and syntax-sensitive files
+// (the Cloudflare worker, the Prometheus rules, nginx and systemd samples), so a
+// deploy-only diff is not gate-free: `deploy-check` reads these paths. The flag
+// is separate from `source`, and both are computed from the list independently,
+// so a diff that mixes `deploy/` with `src/` sets both and still runs the code
+// gates — a deploy file can never buy a source skip.
+const DEPLOY_PATHS = [/^deploy\//]
+
 function matches(patterns, path) {
   return patterns.some((pattern) => pattern.test(path))
 }
@@ -114,6 +122,10 @@ export function isWorkflowPath(path) {
   return matches(WORKFLOW_PATHS, normalize(path))
 }
 
+export function isDeployPath(path) {
+  return matches(DEPLOY_PATHS, normalize(path))
+}
+
 export function isDockerInputPath(path) {
   return matches(DOCKER_PATHS, normalize(path))
 }
@@ -132,6 +144,7 @@ export function allGateChanges() {
     docker: true,
     workflows: true,
     codeql: true,
+    deploy: true,
   }
 }
 
@@ -149,6 +162,7 @@ export function classifyChanges(paths) {
   const deps = list.some(isDependencyPath)
   const db = list.some(isDbPath)
   const workflows = list.some(isWorkflowPath)
+  const deploy = list.some(isDeployPath)
   const docker = !docsOnly && (unknown || list.some(isDockerInputPath))
   // CodeQL analyses JavaScript/TypeScript. A documentation-only, deploy-only or
   // Dockerfile-only diff cannot add a source result. A workflow diff still runs
@@ -156,7 +170,7 @@ export function classifyChanges(paths) {
   // edits them must not also remove the analysis that judges it.
   const codeql = source || frontend || workflows
 
-  return { docsOnly, source, frontend, deps, db, docker, workflows, codeql }
+  return { docsOnly, source, frontend, deps, db, docker, workflows, codeql, deploy }
 }
 
 // #752: the changed paths of a pull request whose base commit is not in the

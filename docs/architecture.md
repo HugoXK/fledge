@@ -47,7 +47,14 @@ Page messages are not per-page markup. `notificationStack` in
 one `section.banner-stack` with a single `aria-live="polite"` region inside it,
 ordered by severity where the message is built — `banner bad` first, then the
 `warn` variant, then `banner ok`/plain `banner` — and de-duplicated by key, so
-one event that reaches the page on two paths prints once. Each message carries
+one event that reaches the page on two paths prints once. A page that used to
+render its own ad-hoc banner hands its messages to the layout as
+`notifications` instead, so a page cannot classify the same event a second time
+outside the region; an entry may carry already-escaped `html` when it needs a
+list or a button the plain-text builder cannot express. A message that belongs
+to a form or a control — the release card, the settings provider/email/token
+forms, the schedule cron error, the danger card's stale-confirmation step —
+keeps its place next to that form. Each message carries
 its own `data-dismiss` control, and `public/app.js` hides that node (`hidden`)
 without deleting it or touching any other message, so an announcement is not cut
 off mid-read and a reload starts from the server's answer again. The inbox
@@ -63,7 +70,11 @@ The cookie keeps the message's key beside its text, so a refusal carries its cod
 as the event id; the message is read in `onRequest` and never from the query, so
 a hand-typed `notice`/`error` parameter has no renderer left to reach. The
 redirect interceptor is one `onSend` seam rather than a change at every redirect
-site. `test/flash.test.ts` pins the cookie shape, its caps and the local-only
+site. The cookie keeps a second, separate slot for a release outcome
+(`refused`, `tagged`, `retagged`, `checked`), so the repository page renders
+that sentence inside its release card once and a reload no longer repeats it;
+those parameters are read only on `release=1`, because the same names are plain
+form errors on other pages. `test/flash.test.ts` pins the cookie shape, its caps and the local-only
 rewrite; `test/oneShotNotice.test.ts` pins redirect → cookie → first page →
 reload.
 
@@ -299,7 +310,11 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   header separates the title and target branch, a status strip (automatic work,
   discovery interval, next run, schedule console, FlyBot, GitHub credential) and
   a facts line (upstream/fork, permission, role, reviewer); the run/plan/review
-  actions stay in the header and every existing anchor is unchanged.
+  actions stay in the header and every existing anchor is unchanged. The Danger
+  section also carries the recent-auth preflight: a stale `recent_auth_at` renders
+  a **Confirm with GitHub** link whose return target is `/repos/:id#danger`; the
+  stale POST refusal uses the same anchor, so the form is on screen after
+  re-authentication instead of the page top.
 - **Dashboard job filters** (`src/lib/jobFilters.ts`): `/dashboard` accepts
   `repo`, `status` and `kind` as GET parameters and applies them in SQL, so the
   count, the page and the pagination links describe the same list; a value the
@@ -546,6 +561,28 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   rule restates the worker's formula is gone with the citation it rested on.
   Saving is audited as `schedule.saved` and deleting the row as
   `schedule.removed`, each naming the repository and what changed.
+- **The schedule run budget** (#544, slice 6): a `schedules` row may carry
+  `daily_runs`, the most instants it may dispatch in one logical UTC day. The
+  window is the day of the **instant being decided** (`src/schedules/budget.ts`,
+  `utcDayStart`/`utcDayEnd`, half-open), never the day the dispatch happens, so a
+  late or recovered run stays in the day it was scheduled for and crossing
+  midnight grants no fresh allowance. Before a due instant is dispatched the tick
+  counts the schedule's `dispatched` occurrences in that window
+  (`countScheduleDispatchesBetween`); at the limit the instant becomes a
+  `skipped` row with `budget-exceeded` and the high water mark still moves past
+  it, so the instant is decided once instead of being re-decided every tick. A
+  `claimed` row has not dispatched yet and a `skipped` one did not run, so
+  neither is charged. Null is unbounded, which is what every schedule written
+  before the column had; `0` is refused at save time because a schedule that must
+  not run is deleted or its window closed. This is the run-count layer only: the
+  cost layer stays where it is — `repos.monthly_budget_cny` / `job_budget_cny`
+  for a repository and the account quota for a user — so the two are counted
+  separately. The console prints the limit, today's used count and what is left,
+  and a value nobody read prints `unknown` rather than zero. One process ticks, so
+  the count and the claim are sequential in one pass and the claim's own
+  transaction still makes the instant single-dispatch; a distributed worker
+  (`#387`) must move the count inside that claim, or two workers could each spend
+  the last slot.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
@@ -929,9 +966,38 @@ held-out evidence, and a human-approved decision. AgentDescent is an offline
 engine behind this ledger; it never runs a user repository, never receives a
 GitHub token and cannot change the evaluator, CI or merge gate. See
 [decisions/0003](decisions/0003-agentdescent-evolution.md). The read-only
-`scripts/evolution-shadow.mjs` exporter turns recent jobs into a redacted
-dataset, and `--report` prints the baseline plus a time-ordered train/holdout
-split; it does not write to the database.
+`scripts/evolution-shadow.ts` exporter turns recent jobs into one dataset with a
+manifest. The manifest records the `ds_` id, the selection (`days` and the
+applied `limit`), the repositories, `rowCount`, the effective
+`trainRows`/`holdoutRows`, the `split.train`/`split.holdout` job-id arrays, the
+holdout's protected entries, and a `window` that is provenance only: nominal
+`from`/`to` bounds plus `oldestRowAt`/`newestRowAt`, the real coverage of the
+rows that were written. The bounds are anchored on `newestRowAt` unless the
+caller passes an explicit `now`, while the exporter's SQL bound is the
+wall-clock `now - days`; they are the requested extent, not a claim that the
+rows reach it. `--limit` truncates to the newest N inside `--days`, so
+`oldestRowAt`/`newestRowAt`, not the window bound, say how far the export
+actually reaches.
+
+`contentHash` is sha256 over the selection, the split and the canonical, redacted
+rows; the window, the id and the hash itself are outside the hashed object. `id`
+is `ds_` plus the first 16 hex characters of that hash, so the same rows and
+parameters produce the same hash twice. `--verify <file>` recomputes the split
+from the records, the hash and the id, and refuses with `SPLIT_MISMATCH`,
+`MANIFEST_MISMATCH`, `CONTENT_HASH_MISMATCH`, `DATASET_ID_MISMATCH` or
+`MALFORMED_DATASET`; a moved job id fails even if someone recomputes the hash.
+
+The split is repository-disjoint first: the newest 20% of rows by time only
+chooses which repositories are held out, and every row of a repository named in
+that tail moves to the holdout — so the holdout share can exceed 20%, and a
+holdout row can be older than a train row. `#426`–`#432` read the split from the
+manifest rather than assuming its size. The exporter refuses with
+`NO_TRAINING_ROWS` and writes nothing when the split would hold out every row,
+for example with a single consented repository. Every exported string passes
+through `redact()`, and the exporter reads only repositories that opted in
+through the audited `evolution.consent` command; consent is off by default.
+`--report` prints the baseline and the manifest's own split counts; the export
+does not write to the database.
 
 The ledger's shape is the table that already existed, extended rather than
 replaced: `artifact_versions` gains `kind`, `scope`, `repo_id`, `parent_id` (the
@@ -1223,7 +1289,14 @@ concrete it creates nothing. The callback refuses a discovery result that carrie
 a branch or pull request (`DISCOVERY_PR_FORBIDDEN`). The job goal gets a bounded
 `Carry-over` block with the last three run digests and up to four open items; the
 block is data, not an instruction, and is capped well below the 4000-character
-goal limit. Each finished run is classified as `pr`, `issue`, `review`, `zero`,
+goal limit. Every line that names an issue or a pull request is checked once
+before the block is built — at most seven reads, three digests plus four work
+items, one per line because a line that names both is governed by its pull
+request — so a closed issue or a merged pull request is dropped from the block
+and counted instead of being carried into the next run. The block states what it
+did in its header, `carry-over: 1 used, 1 dropped (closed/merged)`, with an
+`, N unverified` segment when a read failed; a failed read keeps its line rather
+than dropping it silently, and the job page shows the same header line. Each finished run is classified as `pr`, `issue`, `review`, `zero`,
 `meta` or `failed`. A meta issue
 (`存量/盘点/清账/reconcile/inventory/backlog audit`) is closed on the tracking
 board and notifies the owner instead of counting as a productive run. Two
@@ -1605,7 +1678,7 @@ counts as used, because the `repo.added` audit row is the evidence. The
 token data.
 
 The sweep behind that page (`src/users/trial.ts`, run hourly by the job service,
-or by hand with `npm run trial:sweep -- [--dry-run] [--login <login>]`) selects
+or by hand with `npm run trial:sweep -- [--dry-run] [--purge-dry-run] [--login <login>]`) selects
 `status = approved`, `role = user`, registered more than 7 days ago, with no
 `repos` row, no `repo.added` audit, no `jobs` row and no `trial.expired` audit.
 The status change and the `trial.expired` audit row commit as one transaction, so
@@ -1618,6 +1691,71 @@ cannot resubmit, so the notice must not promise that. The audit row is also what
 makes the sweep idempotent: a rerun offers nothing and mails nobody, and an
 account restored by hand stays skipped. Operator output carries the login and the
 registration date, never an address.
+
+The same sweep then runs the purge phase (#690) on the same clock, so one writer
+owns the whole lifecycle and no second scheduler can erase an account the first
+one is still rejecting. `Store.trialPurgeCandidates(now, graceHours)` offers
+every `status = rejected`, `role = user` account whose `trial.expired` row is at
+least `TRIAL_PURGE_GRACE_HOURS` (default 72) old, with counts of its
+repositories, jobs, instances and GitHub installations; the phase re-reads those
+counts immediately before deleting, because usage can arrive between the two
+reads. A hand run started with `--login` applies that login to this phase too:
+its candidates are only the named account's, so it writes no `trial.purged` and
+no `trial.purge_skipped` for anyone else, and it prints that scope before either
+phase runs. The hourly service run carries no login and still covers every
+candidate. A used account is skipped and audited as `trial.purge_skipped` with the
+blocking resource and its count; an unused one goes to `Store.purgeUserRows(id)`,
+the single delete path that #691's superadmin deletion also calls (it decides no
+eligibility — the caller asserts the account is dead). That function is one
+transaction: it computes the spend aggregate and the row counts, deletes the rows
+no cascade reaches (`artifact_versions.repo_id`, `audit_log.user_id`, `events`,
+the six `settings` shapes keyed or valued by the account id or login), deletes
+the `users` row so the repo-scoped cascade fires, and writes one `trial.purged`
+retention row with `user_id` NULL so it survives. The page's purge section reads
+those rows (`Store.recentPurgeAudits`) and renders the reason, the operator, the
+row total and the per-currency spend — the aggregate never folds buckets, because
+`cost_usd` is in each row's own currency.
+
+The superadmin deletion (#691) sits on the same delete path. `GET
+/admin/users/:id/delete` is a read-only preview: it counts the account's
+repositories, jobs (all, running and queued), FlyBot instances, API tokens and
+GitHub installations and names the backup window, and it writes no audit row.
+`POST /admin/users/:id/delete` is superadmin-only, CSRF-guarded,
+`destructiveLimit`-rated and re-authenticated with
+`requireRecentAuth(..., 'admin.user.delete')`; it refuses self-deletion, the last
+superadmin and a login that is not the exact GitHub login. Its teardown order is
+cancel jobs, stop and remove instances, revoke tokens, then
+`Store.purgeUserRows(id, { reason: 'admin.deleted', operator: 'superadmin',
+action: 'admin.user.deleted' })`. Every step is idempotent, so a failure
+(recorded as `admin.user.delete_failed` with the step name only) leaves the
+account visible and the same confirm retries. The user page's danger zone links
+to the preview; `adminDeleteUserPage` renders both languages, the counts, the
+backup warning and the blocked state.
+
+### The job page's change story
+
+The job page answers "did it pass", and a maintainer's first question is "what
+is the change". `GET /repos/:id/jobs/:jobId` therefore makes one read of the
+job's pull request and hands the render a `ChangeStory`: the body split into
+what changed, risks and ran, plus the diff totals. It is a read model over what
+the agent already wrote — no model call and no summary of a summary.
+
+The read is cached per job for 60 seconds, the same shape as `inboxCache` above,
+so refreshing the page spends no GitHub request; a job with no pull request
+skips the read entirely and the block is absent. The body comes from
+`PullRequestInfo.body`, and the totals from `pullRequestDiffTotals`, which sums
+the existing changed-file walk. When that walk hits its own cap the totals are
+reported as unavailable rather than summed: a number taken from part of a change
+would understate it.
+
+`src/lib/changeStory.ts` is pure. It recognises `## What changed`, `## Risks`
+and `## Ran` at any heading level, and the bare `Ran:` line this repository's PR
+template uses; a repeated heading keeps the last occurrence and the block says
+so, so an edited body cannot silently show the abandoned draft. A heading the
+body does not carry renders `not stated` and is never filled from another
+section. A read that fails — 404, no token, a capped list — leaves the page at
+200 and names the unavailable fact instead, because a page that 500s on a read
+it did not need is worse than no block.
 
 ### Email notifications
 
@@ -1720,9 +1858,12 @@ The `/admin` card renders the snapshot the command writes to
 GitHub, and a missing or unparseable snapshot renders "no release chain is
 recorded" rather than an empty card. The snapshot carries the tag target and the
 Release URL as fields (`targetSha`, `releaseUrl`); the target is never re-read
-out of a link's detail text. The card renders the artifact links, omits links the
-snapshot marked `skipped` (a deleted release branch, no local image) and the
-stored `healthz` probe, and adds one live `Running instance` row. That row
+out of a link's detail text. The card is one "Release & deployment" summary: the
+running version, CHANGELOG section and pending fragments share one line; the
+header carries one status badge and one GitHub Release link. It renders one live
+`Running instance` row and only the artifact links the snapshot marked `missing`
+or `mismatch`; the `skipped` provenance links and the stored `healthz` probe are
+omitted, and the full chain sits behind a details disclosure. That row
 compares the version in `package.json` and the commit stamp this process booted
 with against the recorded tag target, so an operator can see at a glance whether
 the instance they are looking at is the release the chain names. The header says
@@ -1732,6 +1873,13 @@ incomplete`. A published GitHub Release is therefore never labelled "not
 released" just because the host runs a local build. A snapshot that claims `ok`
 with no links, or that contradicts its own problems, is refused as unparseable —
 a green header over an empty table is the one shape the card must never render.
+
+The admin header also carries a compact summary strip (Pending, Users, Jobs,
+Audit, Release, Backups) whose items link to the existing sections; it lives
+inside the header card, so no new `.card[id]` is added and the section-nav
+contract is unchanged. The user table keeps its fields and POST routes but
+folds quota, role, private-model and approve/reject controls behind a `Manage`
+details control, so the default row is a summary rather than a stack of forms.
 ### Backup surface
 
 The other half of "your data is safe" is a fact the operator can see without
@@ -1841,6 +1989,8 @@ listing, and every row links to the page that already owns it.
 | `repo_members` | per-repository `maintainer`/`developer`/`viewer` rows with a revocation time (#541) |
 | `scoped_grants` | explicit capability grants with source, evidence, expiry, revocation and revision (#541) |
 | `identity_migrations` | one report row per identity backfill version (#541) |
+| `security_findings` | one row per `rule + path + line` a job reported, with `open`/`fixed`/`dismissed`/`regressed`, the job that dismissed it and the written reason or evidence; absence from a later report never moves a row (#379) |
+| `budget_scopes` | one stored CNY cap per scope — `repository` keyed by repository id, `principal` keyed by `principal:user:<id>` — with the action it takes (`alert`/`pause`/`cancel`); a missing row means no cap, never a zero cap, and the job scope keeps reading `repos.job_budget_cny` (#697) |
 | `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
 
 ## Deployment records
@@ -1951,9 +2101,28 @@ reserves the receipt, runs today's path and settles it; the same key submitted
 again replays that receipt and settles nothing, so one command moves the revision
 once and a resubmitted page cannot turn a recorded success into a failure.
 
-That split is why the job commands never need the `unknown` state. The first
-operation that does — a release, or any write that crosses an external commit
-boundary — will bring `management_command_attempts` and a reconcile step with it.
+That split is why `task.create`, `task.resume` and `task.retry` never need the
+`unknown` state: the only durable object `enqueue` creates is the local job row.
+
+`task.cancel` does (#540 slice 5), because its bridge stop can cross the external
+commit boundary with no answer. A command that throws while it awaits that step
+no longer escapes as a 500 and no longer leaves a receipt nobody can finish: the
+receipt becomes `unknown`, and the console says the step was not confirmed
+instead of claiming it failed. The next attempt with the same key reconciles
+first, through the operation's optional `reconcile` hook, against a stable
+marker. For a cancel the marker is the job row: a job that is no longer `queued`
+or `running` means the stop already happened, whoever wrote it. `applied`
+settles the receipt with `reconciled: true` and no second revision bump (the
+effect is what moved the revision), `absent` resends exactly once under the same
+revision fence, and `still-unknown` — or an operation with no hook at all —
+answers `management_unknown` and writes nothing. Nothing is resent blind.
+
+`ManagementService.markUnknown` is for an adapter that learns about a lost
+response itself, such as a future API or chat channel: only the principal on the
+receipt may call it, it applies only while the receipt is still `accepted`, and a
+receipt that has already answered is replayed rather than rewritten. A probe that
+fails leaves the receipt `unknown` instead of guessing.
+
 The form route stays a thin adapter: it renders the revision and a fresh key,
 calls the service, and turns the receipt into the same redirect as before.
 
@@ -2158,9 +2327,9 @@ repository.
 - **A session is the record** (`gate_sessions` in `src/db.ts`). It holds the
   repository, status (`analyzing`, `proposed`, `confirmed`, `created`, `refused`,
   `failed`), the base SHA, the canonical plan JSON, its hash, the confirming
-  actor and time, and the future PR/branch/error fields. `Store` exposes
+  actor and time, and the PR/branch/error fields. `Store` exposes
   `createGateSession`, `getGateSession`, `getGateSessionForRepo`,
-  `updateGateSession` and `listGateSessionsForRepo`.
+  `updateGateSession`, `claimGateSession` and `listGateSessionsForRepo`.
 - **The API proposes, it does not write.** `POST /repos/:id/gate/sessions` is
   maintainer-only and CSRF-checked. It validates the plan, optionally reads the
   default-branch SHA with a GitHub `GET /branches/:branch` call, and refuses a
@@ -2175,9 +2344,50 @@ repository.
   preview, and offers a maintainer a confirm form. Every value is escaped and
   every sentence is bilingual.
 
-Not built yet: the gate pull request, GitHub file/commit writes, merging the
-planned job into an existing workflow YAML, and trial runs; those belong to later
-slices of #543.
+Trial runs are not built: Fledge still does not clone or execute a user
+repository, so a lane duration is evidence reported by the analysis run.
+
+## Applying a confirmed gate plan (`#543` second slice)
+
+A confirmed session can be applied once, through
+`POST /repos/:id/gate/sessions/:sessionId/create` (maintainer-only, CSRF-checked).
+It is the only route that writes to a user's repository, and the write is exactly
+one branch, the composed files and one pull request.
+
+- **The claim is a compare-and-set** (`Store.claimGateSession`). The route moves
+  the row `confirmed` → `analyzing` with a single `UPDATE ... WHERE status =
+  'confirmed'`, so two clicks cannot both open a pull request; the loser gets a
+  409. A session that already carries `pr_url` is refused with
+  `GATE_PR_ALREADY_CREATED`.
+- **The base branch is re-read first** (`src/gates/apply.ts`). If it no longer
+  matches the plan's `baseSha`, nothing is written: the session becomes
+  `refused` with `stale_base_sha`, and the caller has to run the analysis again.
+  Creating the branch uses the plan SHA, never a branch name.
+- **Composition is pure** (`src/gates/compose.ts`). Given the plan and the files
+  read at the base SHA it returns the exact bytes and the PR body. It writes
+  `.github/ci-gates.json` (the lane contract), `scripts/gate/gate.mjs` when
+  missing, `.github/workflows/release.yml` when missing, and
+  `.github/workflows/fledge-gate.yml` for the lanes that need their own triggers.
+- **An existing workflow is merged, never replaced.** The preferred target is
+  `.github/workflows/ci.yml` (else the first workflow file that has an `on:` and
+  a `jobs:` block). Only the pr-ready `fledge-gate` job and a `pull_request`
+  trigger are inserted; the schedule, tag and `merge_group` triggers stay in the
+  dedicated file so an unrelated workflow never starts running on them. If the
+  trigger block has a shape the text merge will not rewrite, the pr-ready lane
+  falls back into the dedicated file and the PR body records why.
+- **Lanes keep their four outcomes** (`src/gates/lanes.ts`). An empty lane is
+  `not_applicable`, never `pass`; a missing exit code is a failure; an observe
+  lane's failure is `observe_fail`, recorded and not fatal. A repository without
+  a merge queue runs pr-merge after merge, and the contract records the
+  merge-preview gap: a check that only sees the merged tree cannot block a pull
+  request. A merge-queue repository gets `merge_group` instead, and no such gap.
+- **The page shows the result.** `/repos/:id/gate` offers the create form on a
+  confirmed session, then links the PR and the branch, and shows the recorded
+  `error_code` on a refusal or failure. Every sentence stays bilingual.
+
+GitHub writes use `GithubClient.createBranch` (`POST /git/refs`) and
+`GithubClient.putFile` (`PUT /contents/:path`, with the blob SHA when updating).
+Nothing force-pushes and nothing merges the gate pull request.
 
 ## Release tags for hosted repositories
 

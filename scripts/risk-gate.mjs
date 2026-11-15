@@ -53,8 +53,12 @@ const json = process.argv.includes('--json')
 const branch = arg('--branch', '')
 const title = arg('--title', '')
 
+// #640: the tier is policy, so the rules come from the base branch tree while
+// the diff is read from the checkout named by --repo.
+const repo = arg('--repo', '')
+
 function git(args) {
-  return execFileSync('git', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  return execFileSync('git', repo === '' ? args : ['-C', repo, ...args], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
 }
 
 let files = []

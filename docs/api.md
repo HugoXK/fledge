@@ -31,6 +31,11 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/repos` | approved + CSRF, expensive rate limit | Add an upstream repository; Fledge checks or creates the user's fork |
 | GET | `/repos/:id` | owner | Repo detail, including the selected role, delivery board and allowed roles (`?workState=...` filters the work-item list) |
 | GET | `/repos/:id/ci-gate` | owner | Read-only CI gate report: the workflows that trigger on `pull_request`, the test command they run, the default branch's required checks, and merged pull requests in the last 14 days that landed without a successful check. Names the file or branch it read; writes nothing to the repository |
+| GET | `/repos/:id/gate` | owner | Gate page: stored sessions, the plan each one hashed, and the create form for a confirmed plan |
+| POST | `/repos/:id/gate/sessions` | maintainer + CSRF | Store a proposed gate plan; refuses a stale `baseSha` and writes nothing to the repository |
+| GET | `/repos/:id/gate/sessions/:sessionId` | owner | The stored plan, hash, status, branch, PR URL and `errorCode` |
+| POST | `/repos/:id/gate/sessions/:sessionId/confirm` | maintainer + CSRF | Record the human decision (`confirmed`) after recomputing the plan hash |
+| POST | `/repos/:id/gate/sessions/:sessionId/create` | maintainer + CSRF | Apply a confirmed plan once: re-read the base branch, refuse a moved SHA, then create one branch, the gate files and one pull request. `GATE_PR_ALREADY_CREATED` on a session that already has a PR |
 | GET | `/readyz` | public | Database and per-repository instance readiness summary |
 | GET | `/metrics` | `Authorization: Bearer <METRICS_TOKEN>` only | Prometheus metrics; a production start refuses an empty `METRICS_TOKEN`, so there is no unauthenticated production path, and a `?token=` query value is not accepted |
 | GET | `/api/read/metrics` | approved | Read-only metrics: a super admin gets the global window, users get their own personal window (`?window=7 or 30`) |
@@ -438,6 +443,13 @@ refused rather than judged, which is deliberate — an unread file is not a
 permitted one. Rows stored before these fields existed keep their old sentence
 and are upgraded on the next check, so there is no migration.
 
+`PullRequestInfo` also carries the pull request `body`, which the reader never
+interprets: the job page shows the three sections the agent wrote into it.
+`pullRequestDiffTotals` reduces the same listing to `{ files, additions,
+deletions }` for that page, and reports no totals when the walk was capped — the
+same rule as the path guard, stated once: a partial listing is unavailable, never
+rounded down and presented as the change.
+
 ## Job endpoints
 
 These are called by the FlyBot bridge/agent, not by a browser.
@@ -552,7 +564,10 @@ Headers: `Authorization: Bearer <callbackSecret>`, `Content-Type: application/js
     "checks": "CI green",
     "files": 3,
     "risk": "low",
-    "rollback": "revert the commit"
+    "rollback": "revert the commit",
+    "findings": [
+      { "rule": "js/path-injection", "path": "src/app.ts", "line": 120 }
+    ]
   },
   "checkpoint": "implemented the parser; next: add the rejection test"
 }
@@ -572,7 +587,13 @@ progress heartbeat: it updates `summary`, `checkpoint` and optionally `branch`,
 into the goal when a failed job is retried. A `plan` job writes the plan to
 `summary` and must not create a branch, issue or PR; the super admin can execute it
 later as an iterate job. `evidence` is stored structurally and shown on the job
-detail page; the Fledge automation comment stays compact. With
+detail page; the Fledge automation comment stays compact. `evidence.findings` is
+the security-finding report: up to 100 `{ rule, path, line, state? }` entries,
+with `rule` at most 120 characters, `path` at most 200, a positive integer
+`line` and `state` one of `open`/`dismissed`. An entry that breaks any of that,
+or repeats an id, is dropped and counted in `evidence.findingsDropped`; the
+ledger keeps one row per id and is described in
+[security.md](security.md#security-finding-ledger-379). With
 `repos.stage_mode = 'enforced'`, an iterate callback must also include `scope`,
 `acceptance`, `testRed`, `testGreen` and Dev/Test attribution, and a review
 callback must include a Reviewer and `reviewScore`; otherwise the job fails with
