@@ -2713,7 +2713,11 @@ export function jobPage(input: {
   // #357: a budget stop is not a failure category — the job stopped on purpose
   // and the only useful next step is the budget. The reason string carries the
   // observed cost, so the page says both without a second lookup.
-  const budgetStop = (job.error ?? '').startsWith('JOB_BUDGET_') ? redact((job.error ?? '').replace(/^JOB_BUDGET_(PAUSED|CANCELLED):\s*/, '')) : ''
+  // #409: the sentence is written by the job service in Chinese; localise it
+  // before the code prefix is stripped, so the banner body follows the reader.
+  const budgetStop = (job.error ?? '').startsWith('JOB_BUDGET_')
+    ? redact((localizeMessage(locale, job.error ?? '') ?? '').replace(/^JOB_BUDGET_(PAUSED|CANCELLED):\s*/, ''))
+    : ''
   const attribution = jobAttribution(t, job)
   // #358: which model actually answered, and what it fell through. A job whose
   // primary was rate-limited finished on another model, so the page must name the
