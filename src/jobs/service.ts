@@ -46,7 +46,7 @@ import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
 import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
-import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES } from './continuity.js'
+import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader } from './continuity.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
 import type { ScheduleRow } from '../db.js'
 import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTypeForKind, workTypeMayAutoMerge } from '../lib/workTypes.js'
@@ -285,6 +285,9 @@ export class Jobs {
   // `adversarialPass`. Null means "use the configured platform model, or skip
   // the pass when there is none".
   adversarialModel: AdversarialModel | null = null
+  // Tests inject a fake; production reads the repository's live state through
+  // `carryOverReader`. Null means "use the GitHub-backed reader".
+  carryOverReaderOverride: ((repo: RepoRow) => CarryOverReader) | null = null
 
   constructor(
     private readonly store: Store,
@@ -965,6 +968,31 @@ export class Jobs {
     return options.ownerStarted ?? trigger === 'manual'
   }
 
+  // #365: the carry-over block may only carry work that is still live, and the
+  // read that proves it uses the same installation token the rest of the job
+  // uses. The client is built on the first read, so a block that names no link
+  // costs no token call, and a failure is per line: the reader throws, the line
+  // stays and is counted unverified rather than dropped on a failed read.
+  private carryOverReader(repo: RepoRow): CarryOverReader {
+    let client: GithubClient | null = null
+    return {
+      read: async (link: string) => {
+        const ref = parseCarryOverLink(link)
+        if (ref === null) throw new Error('carry-over link is not a GitHub issue or pull request')
+        if (client === null) {
+          const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
+          client = new GithubClient(token, this.config.github.apiBase)
+        }
+        const active = client
+        if (ref.kind === 'issue') {
+          return (await active.issueIsClosed(ref.owner, ref.name, ref.number)) ? 'closed' : 'open'
+        }
+        const pull = await active.getPullRequest(ref.owner, ref.name, ref.number)
+        return pull.merged ? 'merged' : 'open'
+      },
+    }
+  }
+
   async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean; workType?: string } = {}): Promise<EnqueueResult> {
     // #283: the platform stop outranks every other refusal. It is checked first,
     // above the work-type resolution and the per-repository and per-role gates, so
@@ -1050,8 +1078,15 @@ export class Jobs {
     }
     const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : kind === 'discover' ? DEFAULT_DISCOVER_GOAL : kind === 'triage' ? DEFAULT_TRIAGE_GOAL : kind === 'scope' ? DEFAULT_SCOPE_GOAL : kind === 'verify' ? DEFAULT_VERIFY_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
     const rawGoal = goalOverride ?? baseGoal
+    // #365: a scheduled or follow-up run may only carry what is still live, so
+    // the block is built with one live read per linked line. Nothing about the
+    // block changes when a line names no issue or PR.
     const carryOver = trigger === 'schedule' || trigger === 'followup'
-      ? buildCarryOver({ recent: this.store.listJobsForRepo(repo.id, 3), openWork: this.store.listOpenWorkItems(repo.id) })
+      ? (await buildCarryOver({
+        recent: this.store.listJobsForRepo(repo.id, 3),
+        openWork: this.store.listOpenWorkItems(repo.id),
+        read: (this.carryOverReaderOverride ?? ((target: RepoRow) => this.carryOverReader(target)))(repo),
+      })).text
       : ''
     const goal = ((preflightWarning === '' ? rawGoal : `${rawGoal}\n\nPreflight: ${preflightWarning}. Sync the fork before creating the working branch.`)
       + (carryOver === '' ? '' : `\n\n${carryOver}`)).slice(0, 4000)

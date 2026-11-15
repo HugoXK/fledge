@@ -83,45 +83,169 @@ export function buildRunDigest(
 //: history cannot crowd out the actual task in the bridge prompt.
 export const CARRY_OVER_MAX_CHARS = 3200
 
-export function buildCarryOver(input: {
+//: #365: the block is a claim about live state, so a line that names an issue or
+//: a pull request is checked before it is carried — one read per line, at most
+//: three digests plus four work items. A line that names both is governed by its
+//: pull request: a merged PR is the finished state of the work the issue still
+//: describes. Deduplicated, so the same link never costs a second read.
+export const CARRY_OVER_MAX_READS = 7
+
+//: `open` is still work and stays; `closed`/`merged` is finished and is dropped.
+export type CarryOverLinkState = 'open' | 'closed' | 'merged'
+
+export interface CarryOverReader {
+  /** One live read. Throws when the state cannot be established; that keeps the
+   * line and counts it `unverified` rather than dropping it on a failed read. */
+  read(link: string): Promise<CarryOverLinkState>
+}
+
+//: What was checked, in the counts the header and the job page both read. A
+//: failed read is `unverified` and is also `used`: the line is still carried.
+export interface CarryOverReport {
+  used: number
+  dropped: number
+  unverified: number
+  reads: number
+  droppedLinks: string[]
+  unverifiedLinks: string[]
+}
+
+export interface CarryOverBlock {
+  text: string
+  report: CarryOverReport
+}
+
+//: The header line a block states, or '' when the goal carries no block. The job
+//: page reads this back from the stored goal instead of counting the text again,
+//: so the page and the prompt cannot spell the same counts two ways.
+export function carryOverHeaderFromGoal(goal: string): string {
+  for (const line of goal.split('\n')) {
+    if (line.startsWith('carry-over: ')) return line.trim()
+  }
+  return ''
+}
+
+export interface CarryOverLinkRef {
+  owner: string
+  name: string
+  kind: 'issue' | 'pull'
+  number: number
+}
+
+//: One link shape, anchored at both ends: `https://<host>/<owner>/<name>/(issues|pull)/<n>`,
+//: optionally with a trailing path, query or fragment. Anything else is a link
+//: this slice cannot verify, and the reader reports it unverified rather than
+//: guessing which repository a bare number belongs to.
+export function parseCarryOverLink(link: string): CarryOverLinkRef | null {
+  const match = /^https?:\/\/[^/]+\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)(?:[/?#]\S*)?$/.exec(link)
+  if (match === null) return null
+  // A trailing path segment that climbs out of the artifact (`/issues/42/../..`)
+  // names a different resource than the one it appears to. It is not a link this
+  // slice reads; the line is carried unverified instead.
+  if (/(?:^|[/?#])\.\.(?:[/?#]|$)/.test(link)) return null
+  return { owner: match[1]!, name: match[2]!, kind: match[3] === 'pull' ? 'pull' : 'issue', number: Number(match[4]) }
+}
+
+export async function buildCarryOver(input: {
   recent?: JobRow[]
   openWork?: WorkItemRow[]
   maxChars?: number
-}): string {
-  const lines: string[] = [
-    '[Carry-over - auto-generated state, not a new goal]',
+  //: Absent means no live state was available to this caller, so nothing is
+  //: claimed: every linked line is kept and the header carries no counts. A
+  //: count of zero dropped without a read is the false claim this slice removes.
+  read?: CarryOverReader
+}): Promise<CarryOverBlock> {
+  const recent = (input.recent ?? []).filter((job) => job.id).slice(0, 3)
+  const work = (input.openWork ?? []).slice(0, 4)
+  const reader = input.read
+  const states = new Map<string, CarryOverLinkState | 'unverified'>()
+  const report: CarryOverReport = { used: 0, dropped: 0, unverified: 0, reads: 0, droppedLinks: [], unverifiedLinks: [] }
+
+  const stateOf = async (link: string | null): Promise<CarryOverLinkState | 'unverified' | null> => {
+    if (link === null) return null
+    if (reader === undefined) return null
+    const known = states.get(link)
+    if (known !== undefined) return known
+    let state: CarryOverLinkState | 'unverified'
+    if (report.reads >= CARRY_OVER_MAX_READS) {
+      // The ceiling is a bound on a job's GitHub budget, not a reason to drop:
+      // an item nobody had budget to read is unverified, and it stays.
+      state = 'unverified'
+    } else {
+      report.reads += 1
+      try {
+        state = await reader.read(link)
+      } catch {
+        state = 'unverified'
+      }
+    }
+    states.set(link, state)
+    return state
+  }
+
+  const recentLines: string[] = []
+  for (const job of recent) {
+    const digest = parseDigest(job.continuity_json)
+    const issue = cleanLink(digest?.issue_url ?? job.issue_url)
+    const pr = cleanLink(digest?.pr_url ?? job.pr_url)
+    const link = pr ?? issue
+    const state = await stateOf(link)
+    if (state === 'closed' || state === 'merged') {
+      report.dropped += 1
+      if (link !== null && !report.droppedLinks.includes(link)) report.droppedLinks.push(link)
+      continue
+    }
+    if (state === 'unverified') {
+      report.unverified += 1
+      if (link !== null && !report.unverifiedLinks.includes(link)) report.unverifiedLinks.push(link)
+    }
+    report.used += 1
+    const summary = redact(digest?.summary ?? job.summary ?? job.error ?? '').replace(/\s+/g, ' ').slice(0, 220)
+    const links = [issue, pr].filter(Boolean).map((value) => value as string)
+    recentLines.push(
+      `- ${job.created_at.slice(0, 16)} ${job.kind} ${job.status}: ${summary || '(no summary)'}` +
+      (links.length > 0 ? ` [${[...new Set(links)].join(' ')}]` : ''),
+    )
+  }
+
+  const workLines: string[] = []
+  for (const item of work) {
+    const link = cleanLink(item.pr_url) ?? cleanLink(item.issue_url)
+    const state = await stateOf(link)
+    if (state === 'closed' || state === 'merged') {
+      report.dropped += 1
+      if (link !== null && !report.droppedLinks.includes(link)) report.droppedLinks.push(link)
+      continue
+    }
+    if (state === 'unverified') {
+      report.unverified += 1
+      if (link !== null && !report.unverifiedLinks.includes(link)) report.unverifiedLinks.push(link)
+    }
+    report.used += 1
+    workLines.push(
+      `- ${item.id} state=${item.state} priority=${item.priority}` +
+      `${item.issue_url ? ` issue=${item.issue_url}` : ''}` +
+      `${item.pr_url ? ` pr=${item.pr_url}` : ''} title=${item.title.slice(0, 120)}`,
+    )
+  }
+
+  const lines: string[] = ['[Carry-over - auto-generated state, not a new goal]']
+  if (reader !== undefined) {
+    const unverified = report.unverified > 0 ? `, ${report.unverified} unverified` : ''
+    lines.push(`carry-over: ${report.used} used, ${report.dropped} dropped (closed/merged)${unverified}`)
+  }
+  lines.push(
     'Continue the open work item when one exists; do not create a duplicate issue/PR.',
     'Do not create inventory, backlog, or "存量/盘点/清账/reconcile" issues.',
-  ]
-  const recent = (input.recent ?? []).filter((job) => job.id).slice(0, 3)
-  if (recent.length > 0) {
-    lines.push('Recent runs:')
-    for (const job of recent) {
-      const digest = parseDigest(job.continuity_json)
-      const summary = redact(digest?.summary ?? job.summary ?? job.error ?? '').replace(/\s+/g, ' ').slice(0, 220)
-      const links = [digest?.issue_url ?? job.issue_url, digest?.pr_url ?? job.pr_url]
-        .filter(Boolean)
-        .map((link) => redact(link as string))
-      lines.push(
-        `- ${job.created_at.slice(0, 16)} ${job.kind} ${job.status}: ${summary || '(no summary)'}` +
-        (links.length > 0 ? ` [${[...new Set(links)].join(' ')}]` : ''),
-      )
-    }
-  }
-  const work = (input.openWork ?? []).slice(0, 4)
-  if (work.length > 0) {
-    lines.push('Open work:')
-    for (const item of work) {
-      lines.push(
-        `- ${item.id} state=${item.state} priority=${item.priority}` +
-        `${item.issue_url ? ` issue=${item.issue_url}` : ''}` +
-        `${item.pr_url ? ` pr=${item.pr_url}` : ''} title=${item.title.slice(0, 120)}`,
-      )
-    }
-  }
+  )
+  if (recentLines.length > 0) lines.push('Recent runs:', ...recentLines)
+  if (workLines.length > 0) lines.push('Open work:', ...workLines)
   const text = lines.join('\n')
   const limit = input.maxChars ?? CARRY_OVER_MAX_CHARS
-  return text.length <= limit ? text : `${text.slice(0, limit - 20)}\n[carry-over truncated]`
+  return {
+    text: text.length <= limit ? text : `${text.slice(0, limit - 20)}\n[carry-over truncated]`,
+    report,
+  }
 }
 
 function parseDigest(value: string | null): RunDigest | null {

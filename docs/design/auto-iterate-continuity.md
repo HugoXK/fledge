@@ -151,6 +151,7 @@ Extend `buildText(job)` with a `CARRY-OVER` section, after `Goal:`:
 
 ```
 [Carry-over - auto-generated state, not a new goal]
+carry-over: 1 used, 1 dropped (closed/merged)
 Continue the open work item when one exists; do not create a duplicate issue/PR.
 Do not create inventory, backlog, or "存量/盘点/清账/reconcile" issues.
 Recent runs:
@@ -162,6 +163,11 @@ Open work:
 Rules:
 
 - Hard cap 3200 characters; drop oldest first; one line per run/item.
+- Slice 1 of #365 makes each linked line evidence-linked: a line that names an
+  issue or a pull request is read once before the block is built (at most seven
+  reads, one per line, deduplicated), a closed issue or merged pull request is
+  dropped and counted, and a failed read keeps the line and counts it
+  `unverified`. The counts line above states the result.
 - The block is data, not a new goal; `Goal:` remains the source of intent.
 - If there is open work, the prompt says "continue this item; do not create a
   duplicate issue/PR".
