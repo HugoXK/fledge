@@ -875,6 +875,25 @@ merged, so a tag on `main` is evidence of a released version, not of a rollout.
   `curl -H "Authorization: Bearer $METRICS_TOKEN" https://<host>/healthz`; without
   it the key is absent by design, not a deploy failure.
 - Watch for `level:"error"` in structured logs.
+- Clock skew: a wrong host clock shifts every stored timestamp, every digest line
+  and every scheduled run, and the container cannot be trusted to keep time on its
+  own. `GET /readyz` carries `clock.skewSeconds` — the last measured offset from
+  GitHub's `Date` header, positive when the process is ahead — and it is `null`
+  when nothing has been measured, never `0`:
+
+  ```sh
+  curl -s https://<host>/readyz | jq .clock
+  curl -s -H "Authorization: Bearer $METRICS_TOKEN" https://<host>/metrics \
+    | grep fledge_clock_skew_seconds
+  ```
+
+  An **absent** `fledge_clock_skew_seconds` line means "not measured" — no App
+  configured, GitHub unreachable, or a `Date` header the client could not parse
+  (a rewriting proxy) — and is not evidence that time is right.
+  `FledgeClockSkewHigh` fires on `abs(fledge_clock_skew_seconds) > 120` for ten
+  minutes. Fix the host clock (`timedatectl set-ntp true`, or start the container
+  with a host that keeps time); Fledge reports the drift and never rewrites a
+  stored timestamp to hide it.
 - The Admin panel shows the audit trail and recent jobs.
 - Quota state: `GET /v1/models` with a user token, or the dashboard.
 - Disk: SQLite WAL files and logs.

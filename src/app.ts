@@ -52,7 +52,7 @@ import { parseStageMode } from './lib/stages.js'
 import { issuePriority, issueState, shouldTriage } from './lib/issueIntake.js'
 import { parseIssueCommand } from './lib/issueCommands.js'
 import { VERSION } from './version.js'
-import { incCounter, observeHistogram, renderMetrics } from './lib/metrics.js'
+import { clearGauge, incCounter, observeHistogram, renderMetrics, setGauge } from './lib/metrics.js'
 import { readReleaseStatus } from './lib/releaseStatus.js'
 import {
   deploymentFromRow,
@@ -141,6 +141,9 @@ export interface BuiltApp {
   jobs: Jobs
   sessions: Sessions
   instances: InstanceManager
+  // #758: the measured clock skew lives on the App client, and /readyz reports it.
+  // Exposed so a test can force one measurement instead of faking the route.
+  githubApp: GithubApp
   close: () => Promise<void>
 }
 
@@ -896,6 +899,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         ? reply.code(403).send({ error: 'metrics are loopback-only without METRICS_TOKEN' })
         : reply.code(401).send({ error: 'metrics token required' })
     }
+    // #758: a scrape publishes the last measured skew, and removes the series
+    // when there is none, so the alert rule cannot fire on a stale number and a
+    // dashboard cannot show a 0 that was never measured.
+    const skewSeconds = githubApp.clockSkewSeconds()
+    if (skewSeconds === null) clearGauge('fledge_clock_skew_seconds')
+    else setGauge('fledge_clock_skew_seconds', skewSeconds, {}, 'Seconds the process clock is ahead of GitHub time')
     return reply.type('text/plain; version=0.0.4; charset=utf-8').send(renderMetrics())
   })
 
@@ -931,7 +940,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const instances = store.listRepoInstances()
     const ready = instances.filter((entry) => entry.status === 'ready').length
     const failed = instances.filter((entry) => entry.status === 'failed').length
-    return { ok: true, db: true, instances: { ready, failed, total: instances.length } }
+    // #758: the skew the App JWT already corrects for, reported rather than
+    // re-measured. `null` means no measurement has succeeded — never 0, which
+    // would read as a clock that is exactly right.
+    return { ok: true, db: true, instances: { ready, failed, total: instances.length }, clock: { skewSeconds: githubApp.clockSkewSeconds(), source: 'github' } }
   })
 
   app.get('/lang/:locale', async (request, reply) => {
@@ -5430,6 +5442,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     jobs,
     sessions,
     instances,
+    githubApp,
     close: async () => {
       await jobs.drain(config.shutdown.graceSeconds * 1000)
       clearInterval(sweeper)

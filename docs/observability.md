@@ -32,6 +32,10 @@ Core series:
 - `fledge_github_requests_total{method,status}`,
   `fledge_github_request_seconds`
 - `fledge_bridge_requests_total{status}`, `fledge_bridge_request_seconds`
+- `fledge_clock_skew_seconds` — the last measured offset against GitHub's `Date`
+  header, positive when the process clock is ahead. The series is **absent** when
+  nothing has been measured, so an empty panel means "unknown", not "aligned"; a
+  scrape with no reading removes it rather than publishing a `0`.
 
 Suggested SLOs:
 
@@ -57,7 +61,10 @@ in the same PR, which is an alerting change and not a documentation edit.
 
 Prometheus alert rules live in [`deploy/prometheus/fledge-alerts.yml`](../deploy/prometheus/fledge-alerts.yml).
 They cover job success, p95 queue wait, p95 job duration, bridge failure rate,
-GitHub 429s and open operational alerts, each with a runbook link.
+GitHub 429s, clock skew and open operational alerts, each with a runbook link.
+`FledgeClockSkewHigh` pages at `abs(fledge_clock_skew_seconds) > 120` sustained
+for ten minutes; its runbook is [`docs/deploy.md`](deploy.md), because the action
+is on the host rather than in the application.
 
 ```sh
 npm run build

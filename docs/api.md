@@ -705,6 +705,39 @@ build and a denied caller indistinguishable. The status stays `200` for every
 caller — a liveness probe is never refused. The values above are illustrative;
 read the real ones from the running service.
 
+### `GET /readyz`
+
+Public, and answerable without a token, because a readiness probe that needs a
+credential fails when the credential does. The body is:
+
+```json
+{ "ok": true, "db": true, "instances": { "ready": 2, "failed": 0, "total": 2 }, "clock": { "skewSeconds": 1680, "source": "github" } }
+```
+
+`instances` counts the per-repository instances the database knows about.
+`clock.skewSeconds` is the last measured difference between this process's clock
+and GitHub's `Date` header, in seconds, positive when the process is ahead.
+`clock.skewSeconds` is `null` — never `0` — when no measurement has succeeded:
+an unconfigured App, an unreachable GitHub, or a `Date` header that cannot be
+parsed leaves no reading, and `0` would claim a clock that was verified to be
+right. `clock.source` is always present and names where the number comes from
+(`github`), the only source there is; when `skewSeconds` is `null` it still
+says where the measurement would have come from, so a client never has to
+handle a missing key. The route reads the stored measurement and makes no
+GitHub call of its own, so a health probe cannot turn into traffic against the
+API, and an outage cannot make readiness flap. An operator watches an absent
+`fledge_clock_skew_seconds` series as "not measured", not as "aligned" (see
+[`docs/deploy.md`](deploy.md)).
+
+The measurement itself lives on the GitHub App client
+(`src/repos/app.ts`): `measureSkew()` reads the `Date` header of one
+unauthenticated `GET /rate_limit`, records it, and leaves `null` behind when the
+request fails, the header is missing, or its value is present but unparseable
+(a rewriting proxy) — the last case keeps the JWT's last real correction rather
+than handing `NaN` to `iat`. `clockSkewSeconds()` returns that stored
+reading. The App JWT still refreshes the same figure at most every five minutes
+and corrects `iat` with it; the JWT path is unchanged by this field.
+
 ## Conventions
 
 - JSON errors always have `error.type` and `error.code`.
