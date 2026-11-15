@@ -57,3 +57,33 @@ test('a long message is capped before it reaches a cookie', () => {
   assert.equal(flashed?.state.error?.text.length, 500)
   assert.equal(flashed?.state.error?.key.length, 500)
 })
+
+// #472 slice 3: the release card's four outcomes are the last messages that
+// still arrived as raw query strings. They travel in the same one-shot cookie,
+// keyed by the outcome, and leave the address bar with it.
+test('a release outcome leaves the address bar and travels keyed in the flash', () => {
+  const tagged = readRedirectMessage('/repos/r1?release=1&tagged=v1.4.0')
+  assert.ok(tagged)
+  assert.equal(tagged.location, '/repos/r1?release=1')
+  assert.deepEqual(tagged.state, { outcome: { text: 'v1.4.0', key: 'tagged' } })
+
+  const retagged = readRedirectMessage('/repos/r1?release=1&tagged=v1.4.0&retagged=1')
+  assert.ok(retagged)
+  assert.equal(retagged.location, '/repos/r1?release=1')
+  assert.deepEqual(retagged.state, { outcome: { text: 'v1.4.0', key: 'retagged' } })
+
+  const refused = readRedirectMessage('/repos/r1?release=1&refused=no%20new%20commits')
+  assert.ok(refused)
+  assert.equal(refused.location, '/repos/r1?release=1')
+  assert.deepEqual(refused.state, { outcome: { text: 'no new commits', key: 'refused' } })
+
+  const checked = readRedirectMessage('/repos/r1?release=1&checked=run%20is%20green')
+  assert.ok(checked)
+  assert.equal(checked.location, '/repos/r1?release=1')
+  assert.deepEqual(checked.state, { outcome: { text: 'run is green', key: 'checked' } })
+})
+
+test('a release outcome round-trips its own slot without touching notice or error', () => {
+  const state = { outcome: { text: 'v1.4.0', key: 'tagged' }, notice: { text: 'Saved.', key: 'Saved.' } }
+  assert.deepEqual(decodeFlash(encodeFlash(state)), state)
+})

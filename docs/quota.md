@@ -101,7 +101,11 @@ stream ends. A request that is already in flight is allowed to finish; the
   leave the team with AUTH errors. Outside a job the instance token is used and
   the row has no job id.
 - When the balance crosses zero: create one in-app notification and at most one
-  email per user per day (deduped by `settings:quota_notified:<userId>`).
+  email per user per day (deduped by `settings:quota_notified:<userId>`). The
+  in-app notification is written before the mail attempt, so it survives a failed
+  send; a failed send also writes a `quota.mail_failed` audit row with the SMTP
+  error redacted, because the day key is already set and that row is the only
+  trace that the reminder was never delivered.
 - A failed job before it starts (quota already zero) is recorded as
   `quota_exhausted` and does not call the model.
 
@@ -164,6 +168,53 @@ column existed fall back to the job's `repo_id` when they can be joined. Both
 caps default to `0` (disabled) and are recorded in the repository audit entry
 when changed; `job_budget_action` defaults to `alert`, so no existing repository
 changes behaviour until its maintainer picks a stop.
+
+## Budget scopes
+
+Two more caps sit beside the per-job one (#697), and all three are one mechanism
+with one enforcement point, not three: the per-job cap still reads
+`repos.job_budget_cny`, and the two new caps live in the additive
+`budget_scopes` table, keyed by scope kind and scope id.
+
+- **Repository budget (CNY)** — `kind = 'repository'`, id = the repository id. It
+  sums every job in that repository over a rolling 30 days.
+- **User budget (CNY)** — `kind = 'principal'`, id = `principal:user:<user_id>`,
+  the person who starts work. It sums that person's spend **across repositories**
+  over the same 30-day window.
+
+Both take the same `job_budget_action` values as the per-job cap (`alert`,
+`pause`, `cancel`). A **missing row means no cap** — never a zero cap — and the
+console lists the cap, the spend consumed and the scope it belongs to, with a
+lower-bound caveat when a call in the window could not be priced.
+
+A scope lives exactly as long as the thing it names: clearing a cap to zero
+deletes the row, and the account purge deletes both shapes that carry an erased
+account — its `principal:user:<id>` row and one repository row per repository it
+owned — in the same transaction as the rest of the purge, counts them in the
+retention row. A scope must never outlive its subject, because a key such as
+`principal:user:<id>` is a row that names the account the purge exists to erase.
+
+**Precedence** is job > repository > principal. A more specific scope always
+fires before a wider one, whatever room each has left, so an outer cap can
+tighten but never loosen an inner one; two caps at the same specificity are
+decided by the **lower remaining budget**, not the lower cap, and the refusal
+names the scope that fired. The reason keeps the same shape
+(`JOB_BUDGET_PAUSED` / `JOB_BUDGET_CANCELLED`) and its scope word, so the job
+page and the localiser read it without a second vocabulary. An `alert` scope
+never stops a job — it is reported in a finish notice and in the audit, because
+an alert-only cap that could shadow a stopping cap would quietly disable it.
+
+The rolling window is a query bound, not a stored period: nothing expires, no
+reset job runs, and no cap is "reset" by deleting ledger rows — the ledger is the
+audit record. Both new caps are USD-only, like the per-job one: a call priced in
+another currency stays in its own bucket and cannot move a CNY cap.
+
+The `#357` unknown rule holds at every scope. A chain whose only priced rows are
+in CNY is **priced**, not unknown, even though the USD sum the cap compares is
+zero: `usageCountForJobChain` counts every priced row while `usageForJobChain`
+sums USD rows only, and reading the first as the second would turn an unknown
+cost into a free one. A per-role scope is out of this mechanism and lives in
+`#710`, because no priced row records the role that spent the money.
 
 ## Model providers and repository selection
 

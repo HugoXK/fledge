@@ -167,7 +167,8 @@ test('the destructive routes ask the route-level limiter for their bucket, on th
     '/admin/users/:id/approve',
     '/admin/users/:id/reject',
     '/admin/users/:id/quota',
-  ], 'the eight destructive registrations must carry the route-level limit')
+    '/admin/users/:id/delete',
+  ], 'the nine destructive registrations must carry the route-level limit')
   const block = /const destructiveLimit = \{([\s\S]*?)\n  \}/.exec(source)?.[1] ?? ''
   assert.match(block, /max: 60,/, 'the ceiling has to stay stated in code')
   assert.match(block, /timeWindow: 60_000,/, 'the window has to stay stated in code')

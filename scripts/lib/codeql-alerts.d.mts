@@ -23,6 +23,20 @@ export declare function alertKey(alert: CodeqlAlert): string
 
 export declare function addedAlerts(baselineKeys: string[], alerts: CodeqlAlert[]): CodeqlAlert[]
 
+export interface CodeqlBaselineEntry extends CodeqlAlert {
+  reason: string
+  owner?: string
+  expires?: string
+  dismissed?: boolean
+}
+
+export interface BaselineValidation {
+  entries: CodeqlBaselineEntry[]
+  errors: string[]
+}
+
+export declare function validateBaseline(baseline: unknown, now?: number): BaselineValidation
+
 export interface ReviewThread {
   isResolved: boolean
   isOutdated: boolean

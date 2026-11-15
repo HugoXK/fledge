@@ -64,6 +64,10 @@ async function harness(options: { instances?: InstanceManager } = {}): Promise<H
   })
   const item = store.createWorkItem({ id: 'work_issue_cmd', repoId: repo.id, userId: user.id, title: 'Fix it', detail: 'details', issueUrl: ISSUE_URL, state: 'assigned' })
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner, startScheduler: false, ...(options.instances === undefined ? {} : { instances: options.instances }) })
+  // #365: a scheduled or follow-up job reads the live state behind each carried
+  // link. This fake server records every request as a reply, so the reader is
+  // stubbed here and the count below stays about the reply alone.
+  built.jobs.carryOverReaderOverride = () => ({ read: async () => 'open' })
 
   let delivery = 0
   const deliver = async (command: string, options: { association?: string; commentId?: number; delivery?: string; issueNumber?: number } = {}): Promise<number> => {

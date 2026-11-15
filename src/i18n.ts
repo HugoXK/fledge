@@ -266,11 +266,17 @@ export function localizeMessage(locale: Locale, message: string | undefined): st
   // #409: the per-job budget stop writes its reason with the submitted cost and
   // the repository budget interpolated, and `budgetStop` strips the code prefix
   // afterwards — so the arm has to keep the prefix to stay a drop-in localiser.
-  const jobBudgetStop = /^JOB_BUDGET_(PAUSED|CANCELLED): 单任务成本 ([\d.]+) 元已超过预算 ([\d.]+) 元。提高单任务预算后(从断点恢复，或)?重新开始任务。$/.exec(message)
+  // #697: the same sentence carries the scope that fired, so the word before
+  // 成本 now names it; a row written before this change says 单任务 and still
+  // matches.
+  const jobBudgetStop = /^JOB_BUDGET_(PAUSED|CANCELLED): (单任务|仓库|用户)成本 ([\d.]+) 元已超过预算 ([\d.]+) 元。提高(?:单任务|仓库|用户)预算后(从断点恢复，或)?重新开始任务。$/.exec(message)
   if (jobBudgetStop !== null) {
     const paused = jobBudgetStop[1] === 'PAUSED'
     const action = paused ? 'Resume from the checkpoint once the budget is raised, or start the job again.' : 'Start the job again once the budget is raised.'
-    return `JOB_BUDGET_${jobBudgetStop[1] ?? ''}: this job cost ${jobBudgetStop[2] ?? ''} CNY, over its ${jobBudgetStop[3] ?? ''} CNY per-job budget. ${action}`
+    // The scope word the service wrote, mapped to the English subject. Kept here
+    // rather than imported so a renamed scope word fails this arm loudly.
+    const scope = jobBudgetStop[2] === '仓库' ? 'this repository' : jobBudgetStop[2] === '用户' ? 'this user' : 'this job'
+    return `JOB_BUDGET_${jobBudgetStop[1] ?? ''}: ${scope} cost ${jobBudgetStop[3] ?? ''} CNY, over its ${jobBudgetStop[4] ?? ''} CNY budget. ${action}`
   }
   const modelsSaved = /^(\d+) 个模型已通过测试并保存(?:；失败：([\s\S]+))?$/.exec(message)
   if (modelsSaved !== null) {

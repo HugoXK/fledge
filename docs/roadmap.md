@@ -112,6 +112,7 @@ execution (LangSmith/Langfuse, OpenTelemetry, Temporal/DBOS):
 - [x] Read-only `/api/read/metrics` contract for an external control room.
 - [x] Artifact/evaluation/promotion ledger tables and the AgentDescent shadow-evolution ADR.
 - [x] Path guard, pull-request evidence verification and merge readiness.
+- [x] Read-only CI gate detection and a human-confirmed gate pull request (`#543`).
 - [x] Durable retry policy for transient failures and configurable platform concurrency.
 - [x] Prometheus metrics, optional OTLP traces, graceful drain, orphan cleanup,
       webhook replay store, GitHub API budget and auto-merge reconciliation.
