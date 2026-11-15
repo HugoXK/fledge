@@ -109,6 +109,31 @@ header, not a section — so at the top of that page nothing has passed and
 `#release`, the first chip, is marked. That fallback is the accepted state, not a
 defect.
 
+`/settings` also carries a Feedback card and an About card. The feedback form
+posts to `/feedback`, stores a `feedback` row and mails the address in
+`FEEDBACK_EMAIL` (falling back to `ADMIN_EMAIL`); the About card and the footer
+link to the public GitHub repository with a Star call-to-action. An unexpected
+HTTP 5xx creates an `error_reports` row with a random `ref` before the error page
+is rendered; the page shows the data scope, requires the consent checkbox, then
+offers one POST to `/errors/:ref/report`, which claims the row atomically and
+mails the same address. The error row keeps only method, pathname, status, error
+name, redacted message, redacted stack, version, commit, the signed-in login and
+the consent version/time — never the query, body, headers, cookies or a token.
+Both routes carry a route-level limiter, and a 4xx never offers the report button.
+
+The feedback lifecycle is one triage row per ref (`feedback_triage`) plus
+`feedback_events`. New reports are sent to the server FlyBot's Lead through a
+connected repo (`FLEDGE_LEAD_REPO_ID`) or a direct bridge; the packet carries a
+per-ref signed token, not the raw stack. The Lead reads and writes through
+`GET`/`POST /api/feedback/:ref` and `/triage`; the read response carries a
+sanitized issue draft, every transition appends an event, and the signed-in
+reporter sees in-app/mail updates plus a Settings history row. Delivery is a
+bounded outbox: a failure is retried with backoff up to five attempts and the
+row records the last error/next attempt; a delivered row is never resent. A `fixed_version` at or
+below the running `VERSION` sends the fixed notice once; the startup scan then
+marks the record `released` and sends the “now live” notice once. Fledge never
+creates the public issue: the Lead does, sanitized, and records its URL.
+
 The dashboard's Repositories card owns the full content row; its Add repository
 button sits in the card header and opens a native `<dialog>` with the GitHub App
 and fine-grained token options. `#add-repo` remains the deep link used by the

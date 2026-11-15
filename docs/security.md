@@ -193,6 +193,44 @@ routes, the 120-a-minute `apiLimiter` on the machine endpoints under `/api/` —
 because those defend credential guessing and caller volume, not a class' blast
 radius.
 
+### Feedback and unexpected-error reports
+
+The settings Feedback card stores one `feedback` row (user, kind, redacted
+message, optional page) and mails `FEEDBACK_EMAIL`, which falls back to
+`ADMIN_EMAIL` when unset. The user sees the same bilingual page and a flash
+notice; the audit row records only the id, kind and character count.
+
+The error handler writes an `error_reports` row only for HTML 5xx responses. The
+row carries a random `ref`, method, pathname, status, error name, redacted and
+truncated message, a redacted and truncated stack, version, commit, and the
+signed-in login when there is one. It never carries the query string, request
+body, headers, cookies, email address or token. The error page shows what the
+report contains and requires a consent checkbox before it exposes the `ref` as a
+capability: one POST to `/errors/:ref/report` marks it reported atomically,
+records the consent version and time, and mails the maintainer address. The route
+is usable without a session because the error may happen before sign-in, is
+rate-limited by client address, and a second click does not send a second mail.
+Without the consent value the row stays `captured` and nothing is mailed. A 4xx
+refusal is user-caused and never offers the button.
+
+### Feedback triage
+
+Each feedback/error record gets a per-ref triage token derived from
+`HMAC(SESSION_SECRET, "feedback-triage:<ref>")`. The token is delivered only in
+the private packet to the Fledge Lead; the read and write endpoints accept it as
+a bearer capability for that one ref, it expires after seven days, and both are
+rate-limited. Each status has required fields (a user message, an issue URL, a
+pull URL, a fixed version), public links must be issues/pulls in
+`FEEDBACK_PUBLIC_REPO`, and a replay of the same decision is a no-op. The Lead may read the
+redacted message/stack and write a conclusion, but Fledge does not publish raw
+feedback or error data. A public GitHub issue is created by the Lead only after a
+separate sanitized-publication consent, and the issue may @ the reporter only
+when that consent is present. The triage read returns a ready-to-use sanitized
+issue draft built from `public_summary`; raw message/stack never enters it. The triage row stores the issue/PR URLs, fixed and
+released versions, user-facing message, public summary, notification state and
+the bounded Lead-delivery attempts;
+the raw text remains in the feedback/error row.
+
 ### CSRF
 
 Every state-changing browser form includes a hidden `csrf` field derived from

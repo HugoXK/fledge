@@ -1997,6 +1997,81 @@ CREATE TABLE IF NOT EXISTS schedule_occurrences (
 CREATE INDEX IF NOT EXISTS schedule_occurrences_lease_idx ON schedule_occurrences(state, lease_expires_at);
 CREATE INDEX IF NOT EXISTS schedule_occurrences_repo_idx ON schedule_occurrences(repo_id, logical_time DESC);
 CREATE INDEX IF NOT EXISTS schedule_occurrences_schedule_idx ON schedule_occurrences(schedule_id, logical_time DESC);
+
+-- #786: feedback and unexpected-error reports. Both are additive; no existing
+-- table or row is rewritten. The error ref is the unguessable capability the
+-- error page carries; the row is written with redacted, bounded fields before
+-- the page is rendered.
+CREATE TABLE IF NOT EXISTS feedback (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  message TEXT NOT NULL,
+  page TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS feedback_created_idx ON feedback(created_at DESC);
+CREATE INDEX IF NOT EXISTS feedback_user_idx ON feedback(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS error_reports (
+  ref TEXT PRIMARY KEY,
+  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  user_login TEXT,
+  status TEXT NOT NULL DEFAULT 'captured',
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  status_code INTEGER NOT NULL,
+  error_name TEXT NOT NULL,
+  error_message TEXT NOT NULL,
+  error_stack TEXT NOT NULL DEFAULT '',
+  build_version TEXT NOT NULL,
+  build_commit TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  reported_at TEXT,
+  consent_version TEXT,
+  consented_at TEXT
+);
+CREATE INDEX IF NOT EXISTS error_reports_created_idx ON error_reports(created_at DESC);
+CREATE INDEX IF NOT EXISTS error_reports_status_idx ON error_reports(status, created_at DESC);
+
+-- #814: the triage lifecycle, keyed by the feedback id / error ref. The user's
+-- raw text stays in feedback/error_reports; this row holds the decision,
+-- links, versions, consent and notification state.
+CREATE TABLE IF NOT EXISTS feedback_triage (
+  ref TEXT PRIMARY KEY,
+  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  user_login TEXT,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'new',
+  publish_consent INTEGER NOT NULL DEFAULT 0,
+  publish_consent_at TEXT,
+  public_summary TEXT,
+  user_message TEXT,
+  issue_url TEXT,
+  pr_url TEXT,
+  fixed_version TEXT,
+  released_version TEXT,
+  released_at TEXT,
+  last_notified_status TEXT,
+  notified_at TEXT,
+  lead_delivered_at TEXT,
+  lead_attempts INTEGER NOT NULL DEFAULT 0,
+  lead_last_error TEXT,
+  lead_next_attempt_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS feedback_triage_status_idx ON feedback_triage(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS feedback_events (
+  id TEXT PRIMARY KEY,
+  ref TEXT NOT NULL REFERENCES feedback_triage(ref) ON DELETE CASCADE,
+  status TEXT NOT NULL,
+  detail TEXT,
+  actor TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS feedback_events_ref_idx ON feedback_events(ref, created_at DESC);
 `
 
 function clean(params: unknown[]): unknown[] {
@@ -2109,6 +2184,78 @@ export interface SecurityFindingWrite {
   dismissedInJob: string | null
 }
 
+// #786: a user-authored note for the maintainer. The row is the durable record;
+// the mail is the notification. Neither carries a token, a cookie or a request
+// body.
+export interface FeedbackRow {
+  id: string
+  user_id: string
+  kind: string
+  message: string
+  page: string
+  created_at: string
+}
+
+// #786: a captured 5xx. The ref is the capability the error page carries; the
+// row is written before the page is rendered, so the user can report it with one
+// click even when signed out. The fields are already redacted and bounded.
+export interface ErrorReportRow {
+  ref: string
+  user_id: string | null
+  user_login: string | null
+  status: 'captured' | 'reported'
+  method: string
+  path: string
+  status_code: number
+  error_name: string
+  error_message: string
+  error_stack: string
+  build_version: string
+  build_commit: string
+  created_at: string
+  reported_at: string | null
+  consent_version: string | null
+  consented_at: string | null
+}
+
+// #814: the lifecycle record for one feedback/error ref. It is separate from
+// `feedback` and `error_reports` so the user text is never rewritten by a
+// triage update, and an anonymous error report can carry a lifecycle without a
+// users row.
+export interface FeedbackTriageRow {
+  ref: string
+  user_id: string | null
+  user_login: string | null
+  kind: string
+  status: string
+  publish_consent: number
+  publish_consent_at: string | null
+  public_summary: string | null
+  user_message: string | null
+  issue_url: string | null
+  pr_url: string | null
+  fixed_version: string | null
+  released_version: string | null
+  released_at: string | null
+  last_notified_status: string | null
+  notified_at: string | null
+  lead_delivered_at: string | null
+  lead_attempts: number
+  lead_last_error: string | null
+  lead_next_attempt_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface FeedbackEventRow {
+  id: string
+  ref: string
+  status: string
+  detail: string | null
+  actor: string | null
+  created_at: string
+}
+
 export class Store {
   readonly db: Database
 
@@ -2119,11 +2266,12 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 41) {
+    if (previousVersion > 43) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (41)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (43)`)
     }
     this.db.exec(SCHEMA)
+    this.migrateFeedbackTriageColumns()
     this.migrateColumns()
     this.migrateRepoColumns()
     this.migrateProviderColumns()
@@ -2145,7 +2293,7 @@ export class Store {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
     this.migrateIdentity()
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 41)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 43)};`)
   }
 
   // #544 slice 3B-B2: a database written by slice B1 already has the occurrence
@@ -2359,6 +2507,16 @@ export class Store {
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE repo_releases ADD COLUMN ${name} ${type}`)
     }
+  }
+
+  // #814 follow-up: the triage row existed before the Lead delivery outbox, so
+  // an older database gains the retry columns in place.
+  private migrateFeedbackTriageColumns(): void {
+    const columns = this.all<{ name: string }>('PRAGMA table_info(feedback_triage)').map((column) => column.name)
+    if (!columns.includes('lead_delivered_at')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_delivered_at TEXT')
+    if (!columns.includes('lead_attempts')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_attempts INTEGER NOT NULL DEFAULT 0')
+    if (!columns.includes('lead_last_error')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_last_error TEXT')
+    if (!columns.includes('lead_next_attempt_at')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_next_attempt_at TEXT')
   }
 
   private migrateColumns(): void {
@@ -6106,6 +6264,103 @@ export class Store {
 
   notify(userId: string, kind: string, message: string, code: string | null = null): void {
     this.run('INSERT INTO notifications (id, user_id, kind, message, code, created_at) VALUES (?, ?, ?, ?, ?, ?)', `ntf_${randomBytes(6).toString('hex')}`, userId, kind, message, code, nowIso())
+  }
+
+  createFeedback(input: { id: string; userId: string; kind: string; message: string; page: string; createdAt?: string }): FeedbackRow {
+    const at = input.createdAt ?? nowIso()
+    this.run('INSERT INTO feedback (id, user_id, kind, message, page, created_at) VALUES (?, ?, ?, ?, ?, ?)', input.id, input.userId, input.kind, input.message, input.page, at)
+    return this.get<FeedbackRow>('SELECT * FROM feedback WHERE id = ?', input.id)!
+  }
+
+  listFeedback(limit = 20): FeedbackRow[] {
+    return this.all<FeedbackRow>('SELECT * FROM feedback ORDER BY created_at DESC, rowid DESC LIMIT ?', Math.max(1, Math.min(100, limit)))
+  }
+
+  createErrorReport(input: Omit<ErrorReportRow, 'status' | 'reported_at' | 'created_at' | 'consent_version' | 'consented_at'> & { createdAt?: string }): ErrorReportRow {
+    const at = input.createdAt ?? nowIso()
+    this.run(
+      'INSERT INTO error_reports (ref, user_id, user_login, status, method, path, status_code, error_name, error_message, error_stack, build_version, build_commit, created_at, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)',
+      input.ref, input.user_id, input.user_login, 'captured', input.method, input.path, input.status_code, input.error_name, input.error_message, input.error_stack, input.build_version, input.build_commit, at,
+    )
+    return this.errorReportByRef(input.ref)!
+  }
+
+  errorReportByRef(ref: string): ErrorReportRow | undefined {
+    return this.get<ErrorReportRow>('SELECT * FROM error_reports WHERE ref = ?', ref)
+  }
+
+  claimErrorReport(ref: string, consentVersion: string): boolean {
+    const at = nowIso()
+    return this.runChanges("UPDATE error_reports SET status = 'reported', reported_at = ?, consent_version = ?, consented_at = ? WHERE ref = ? AND status = 'captured'", at, consentVersion, at, ref) === 1
+  }
+
+  listErrorReports(limit = 20): ErrorReportRow[] {
+    return this.all<ErrorReportRow>('SELECT * FROM error_reports ORDER BY created_at DESC, rowid DESC LIMIT ?', Math.max(1, Math.min(100, limit)))
+  }
+
+  feedbackById(id: string): FeedbackRow | undefined {
+    return this.get<FeedbackRow>('SELECT * FROM feedback WHERE id = ?', id)
+  }
+
+  createFeedbackTriage(input: {
+    ref: string
+    userId: string | null
+    userLogin: string | null
+    kind: string
+    publishConsent: boolean
+    createdAt?: string
+  }): FeedbackTriageRow {
+    const at = input.createdAt ?? nowIso()
+    this.run(
+      'INSERT INTO feedback_triage (ref, user_id, user_login, kind, status, publish_consent, publish_consent_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      input.ref, input.userId, input.userLogin, input.kind, 'new', input.publishConsent ? 1 : 0, input.publishConsent ? at : null, at, at,
+    )
+    return this.feedbackTriageByRef(input.ref)!
+  }
+
+  feedbackTriageByRef(ref: string): FeedbackTriageRow | undefined {
+    return this.get<FeedbackTriageRow>('SELECT * FROM feedback_triage WHERE ref = ?', ref)
+  }
+
+  updateFeedbackTriage(ref: string, patch: Partial<Pick<FeedbackTriageRow, 'status' | 'public_summary' | 'user_message' | 'issue_url' | 'pr_url' | 'fixed_version' | 'released_version' | 'released_at' | 'last_notified_status' | 'notified_at'>>): void {
+    const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
+    if (entries.length === 0) return
+    const sets = entries.map(([key]) => `${key} = ?`).join(', ')
+    this.run(`UPDATE feedback_triage SET ${sets}, updated_at = ? WHERE ref = ?`, ...entries.map(([, value]) => value), nowIso(), ref)
+  }
+
+  addFeedbackEvent(ref: string, status: string, detail: string | null = null, actor: string | null = null): void {
+    this.run('INSERT INTO feedback_events (id, ref, status, detail, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)', `fev_${randomBytes(6).toString('hex')}`, ref, status, detail, actor, nowIso())
+  }
+
+  listFeedbackEvents(ref: string, limit = 50): FeedbackEventRow[] {
+    return this.all<FeedbackEventRow>('SELECT * FROM feedback_events WHERE ref = ? ORDER BY created_at DESC, rowid DESC LIMIT ?', ref, Math.max(1, Math.min(100, limit)))
+  }
+
+  listFeedbackTriageForUser(userId: string, limit = 10): FeedbackTriageRow[] {
+    return this.all<FeedbackTriageRow>('SELECT * FROM feedback_triage WHERE user_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT ?', userId, Math.max(1, Math.min(50, limit)))
+  }
+
+  markLeadDelivered(ref: string): void {
+    const at = nowIso()
+    this.run('UPDATE feedback_triage SET lead_delivered_at = ?, lead_last_error = NULL, lead_next_attempt_at = NULL, updated_at = ? WHERE ref = ?', at, at, ref)
+  }
+
+  recordLeadDeliveryFailure(ref: string, error: string, attempts: number, nextAt: string | null): void {
+    this.run('UPDATE feedback_triage SET lead_attempts = ?, lead_last_error = ?, lead_next_attempt_at = ?, updated_at = ? WHERE ref = ?', attempts, error.slice(0, 500), nextAt, nowIso(), ref)
+  }
+
+  listPendingLeadDeliveries(now: string, limit = 20): FeedbackTriageRow[] {
+    return this.all<FeedbackTriageRow>('SELECT * FROM feedback_triage WHERE lead_delivered_at IS NULL AND lead_attempts < 5 AND (lead_next_attempt_at IS NULL OR lead_next_attempt_at <= ?) ORDER BY created_at ASC LIMIT ?', now, Math.max(1, Math.min(100, limit)))
+  }
+
+  listFeedbackForRelease(limit = 50): FeedbackTriageRow[] {
+    return this.all<FeedbackTriageRow>("SELECT * FROM feedback_triage WHERE fixed_version IS NOT NULL AND released_version IS NULL AND user_id IS NOT NULL AND status IN ('fixed','pr_opened') ORDER BY created_at ASC LIMIT ?", Math.max(1, Math.min(100, limit)))
+  }
+
+  markFeedbackReleased(ref: string, version: string): boolean {
+    const at = nowIso()
+    return this.runChanges("UPDATE feedback_triage SET status = 'released', released_version = ?, released_at = ?, updated_at = ? WHERE ref = ? AND released_version IS NULL", version, at, at, ref) === 1
   }
 
   listNotifications(userId: string, limit = 20): NotificationRow[] {
