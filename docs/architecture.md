@@ -115,9 +115,10 @@ defect.
   run is not a known time and never shadows one), or says that no repository runs
   automatically. Every source is one the route already loads, so the block cannot
   disagree with the sections below it.
-- **One next-run rule** (`src/lib/nextRun.ts`, `nextRun`): the all-clear card and
-  the repository page's next-run line print one answer per repository, and which
-  rule answers is decided by the repository, never by the surface. A repository
+- **One next-run rule** (`src/lib/nextRun.ts`, `nextRun`; `src/lib/nextRunFor.ts`,
+  `nextRunFor`): the all-clear card, the repository page's next-run line and the
+  daily digest print one answer per repository, and which rule answers is decided
+  by the repository, never by the surface. A repository
   that has saved no schedule row is answered by the interval rule, which copies
   the worker's due rule — `max(15, min(intervalMinutes, workCooldownMinutes))`
   after the last run (`src/jobs/service.ts`, `workDue`) — instead of the discovery
@@ -131,7 +132,14 @@ defect.
   disagree with the page below it. The dashboard route passes open work, the
   active job and instance readiness per repository because those live outside
   `RepoRow`; the two surfaces therefore print one string, and
-  the wording says "next run", never an estimate. The newest job is read on its own, not
+  the wording says "next run", never an estimate. The daily digest is the third
+  surface of the same rule (#713): `buildDigest` answers through `nextRunFor`,
+  which delegates the choice to `nextTime` when the repository has a schedule row
+  and to `nextRun` when it does not, and the mail owns only the Chinese sentence,
+  never a second formula. It therefore carries the instant the page carries,
+  says the repository is disabled when there is no row, and keeps the planner's
+  instant for a disabled repository that still has a row — `enabled` is never
+  consulted before a saved row, on either surface. The newest job is read on its own, not
   from the job-table slice: the table is paged and filtered, and `?jobsPage=2` or
   `?status=` must not change the sentence the page opens with. The first-run
   checklist becomes the detail of the same action and does not render a second

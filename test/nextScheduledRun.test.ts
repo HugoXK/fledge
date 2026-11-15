@@ -1,9 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
-import { Store, type WorkItemRow } from '../src/db.js'
+import { Store, type ScheduleRow, type WorkItemRow } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { nextRun } from '../src/lib/nextRun.js'
+import { instanceReadyFor, nextRunFor } from '../src/lib/nextRunFor.js'
 import { humanTimeShort } from '../src/lib/time.js'
 import { nextTime } from '../src/schedules/next.js'
 import { scheduleFromRow } from '../src/schedules/tick.js'
@@ -229,4 +230,186 @@ test('the dashboard answers with the schedule row, not the interval, when one ex
     await built.app.close()
     store.close()
   }
+})
+
+// #713: the daily digest is the third surface of the one-next-run rule, so it
+// answers through a helper that the job module can call. A repository with a
+// saved schedule row is answered by the planner; every other repository keeps
+// the interval rule. The email owns its Chinese wording, never the rule.
+const CRON_ROW: ScheduleRow = {
+  id: 'sch_next_run_cron',
+  repo_id: 'repo_next_run_cron',
+  kind: 'cron',
+  expression: '0 9 * * 1-5',
+  every_ms: null,
+  timezone: 'Asia/Shanghai',
+  start_at: null,
+  end_at: null,
+  timing_revision: 1,
+  misfire: 'run',
+  last_occurrence_at: null,
+  created_at: new Date(NOW).toISOString(),
+  updated_at: new Date(NOW).toISOString(),
+}
+
+interface NextRunForRepoFixture {
+  last_run_at: string | null
+  interval_minutes: number
+  auto_iterate: number
+  enabled: number
+}
+
+const REPO_FOR_RUN: NextRunForRepoFixture = {
+  last_run_at: LAST_RUN_RECENT,
+  interval_minutes: INTERVAL_MINUTES,
+  auto_iterate: 1,
+  enabled: 1,
+}
+
+function intervalAnswer(now = NOW): ReturnType<typeof nextRunFor> {
+  return nextRunFor({
+    repo: REPO_FOR_RUN,
+    schedule: undefined,
+    openWork: true,
+    activeJob: false,
+    instanceReady: true,
+    workCooldownMinutes: COOLDOWN_MINUTES,
+    now,
+  })
+}
+
+test('a saved cron row answers the planner instant, not the interval', () => {
+  // Saturday 12:52Z: the next weekday 09:00 Asia/Shanghai is Monday 01:00Z, days
+  // away from the interval answer the digest used to print.
+  const now = Date.parse('2026-11-14T12:52:00Z')
+  const answer = nextRunFor({
+    repo: { ...REPO_FOR_RUN, last_run_at: new Date(now - 10 * 60_000).toISOString() },
+    schedule: CRON_ROW,
+    openWork: true,
+    activeJob: false,
+    instanceReady: true,
+    workCooldownMinutes: COOLDOWN_MINUTES,
+    now,
+  })
+  const schedule = scheduleFromRow(CRON_ROW)
+  assert.ok(schedule !== null, 'the cron row parses')
+  assert.equal(answer.state, 'scheduled')
+  assert.equal(answer.at, nextTime(schedule, now))
+  assert.equal(new Date(answer.at ?? 0).toISOString(), '2026-11-16T01:00:00.000Z')
+  assert.notEqual(answer.at, now - 10 * 60_000 + COOLDOWN_MINUTES * 60_000, 'the interval answer is not the planner answer')
+})
+
+test('a row the planner cannot read, and a window that has closed, name no instant', () => {
+  const unreadable = nextRunFor({
+    repo: REPO_FOR_RUN,
+    schedule: { ...CRON_ROW, expression: null },
+    openWork: true,
+    activeJob: false,
+    instanceReady: true,
+    workCooldownMinutes: COOLDOWN_MINUTES,
+    now: NOW,
+  })
+  assert.equal(unreadable.state, 'unknown-unreadable')
+  assert.equal(unreadable.at, null)
+
+  const now = Date.parse('2026-11-14T12:52:00Z')
+  const closed = nextRunFor({
+    repo: REPO_FOR_RUN,
+    schedule: { ...CRON_ROW, end_at: Date.parse('2026-11-14T14:00:00Z') },
+    openWork: true,
+    activeJob: false,
+    instanceReady: true,
+    workCooldownMinutes: COOLDOWN_MINUTES,
+    now,
+  })
+  assert.equal(closed.state, 'unknown-closed')
+  assert.equal(closed.at, null)
+})
+
+test('the interval branch keeps every state the page already words', () => {
+  const base = {
+    repo: REPO_FOR_RUN,
+    schedule: undefined,
+    openWork: true,
+    activeJob: false,
+    instanceReady: true,
+    workCooldownMinutes: COOLDOWN_MINUTES,
+    now: NOW,
+  }
+  // Ten minutes of cooldown left: a time, not "due", and never the discovery
+  // interval the digest used to print.
+  const scheduled = nextRunFor(base)
+  assert.equal(scheduled.state, 'scheduled')
+  assert.equal(scheduled.at, Date.parse(LAST_RUN_RECENT) + COOLDOWN_MINUTES * 60_000)
+  assert.notEqual(scheduled.at, Date.parse(LAST_RUN_RECENT) + INTERVAL_MINUTES * 60_000)
+
+  assert.equal(nextRunFor({ ...base, repo: { ...REPO_FOR_RUN, last_run_at: LAST_RUN_AT } }).state, 'due')
+  assert.equal(nextRunFor({ ...base, repo: { ...REPO_FOR_RUN, enabled: 0 } }).state, 'disabled')
+  assert.equal(nextRunFor({ ...base, repo: { ...REPO_FOR_RUN, auto_iterate: 0 } }).state, 'auto-off')
+  assert.equal(nextRunFor({ ...base, instanceReady: false }).state, 'not-ready')
+  assert.equal(nextRunFor({ ...base, activeJob: true }).state, 'active-job')
+  assert.equal(nextRunFor({ ...base, openWork: false }).state, 'idle')
+  const neverRan = nextRunFor({ ...base, repo: { ...REPO_FOR_RUN, last_run_at: null } })
+  assert.equal(neverRan.state, 'waiting-first-run')
+
+  // Every state that means "no run is scheduled" names no instant, so the email
+  // cannot print a formatted time for a repository that will not run.
+  for (const answer of [
+    nextRunFor({ ...base, repo: { ...REPO_FOR_RUN, enabled: 0 } }),
+    nextRunFor({ ...base, instanceReady: false }),
+    nextRunFor({ ...base, activeJob: true }),
+    nextRunFor({ ...base, openWork: false }),
+    neverRan,
+  ]) {
+    assert.equal(answer.at, null)
+  }
+})
+
+test('a deployment with no instance image never reports the instance as not ready', () => {
+  // Both existing surfaces apply this fallback; the digest must not print
+  // "FlyBot 实例未就绪" for every repository on a box with no instance image.
+  assert.equal(instanceReadyFor('', undefined), true)
+  assert.equal(instanceReadyFor('', 'stopped'), true)
+  assert.equal(instanceReadyFor('ghcr.io/flybot:1', 'ready'), true)
+  assert.equal(instanceReadyFor('ghcr.io/flybot:1', 'stopped'), false)
+  const answer = nextRunFor({
+    repo: REPO_FOR_RUN,
+    schedule: undefined,
+    openWork: true,
+    activeJob: false,
+    instanceReady: instanceReadyFor('', undefined),
+    workCooldownMinutes: COOLDOWN_MINUTES,
+    now: NOW,
+  })
+  assert.notEqual(answer.state, 'not-ready')
+  assert.equal(answer.at, Date.parse(LAST_RUN_RECENT) + COOLDOWN_MINUTES * 60_000)
+})
+
+// The interval branch is the same rule as before, so the helper adds no third
+// copy of the formula: it delegates to `nextRun`, which owns the floor.
+test('the helper delegates the interval branch to nextRun, floor included', () => {
+  const answer = intervalAnswer()
+  const direct = nextRun({
+    lastRunAt: LAST_RUN_RECENT,
+    intervalMinutes: 1,
+    workCooldownMinutes: 1,
+    autoIterate: true,
+    hasOpenWork: true,
+    hasActiveJob: false,
+    repoEnabled: true,
+    instanceReady: true,
+    now: NOW,
+  })
+  const floored = nextRunFor({
+    repo: { ...REPO_FOR_RUN, interval_minutes: 1 },
+    schedule: undefined,
+    openWork: true,
+    activeJob: false,
+    instanceReady: true,
+    workCooldownMinutes: 1,
+    now: NOW,
+  })
+  assert.equal(floored.at, Date.parse(LAST_RUN_RECENT) + 15 * 60_000, 'the 15-minute floor still applies')
+  assert.equal(floored.at, direct.at)
+  assert.equal(answer.state, 'scheduled')
 })

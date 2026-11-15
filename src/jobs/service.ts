@@ -16,6 +16,7 @@ import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence
 import { classifyFailure, providerRefusalCode, type EnqueueRefusalCode, type FailureCode } from '../lib/failure.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
+import { instanceReadyFor, nextRunFor, type NextRunForAnswer } from '../lib/nextRunFor.js'
 import { jobEmailDecision } from '../lib/emailPolicy.js'
 import { duplicateOutcome, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
@@ -2600,6 +2601,24 @@ export class Jobs {
     return { date: `${get('year')}-${get('month')}-${get('day')}`, hour: Number(get('hour')) }
   }
 
+  // The digest owns only the Chinese wording: the instant and the state come from
+  // the same rule the repository page and the dashboard answer with (#713), so a
+  // scheduled repository cannot be promised a run the page says will not start.
+  private digestNextRun(answer: NextRunForAnswer): string {
+    switch (answer.state) {
+      case 'disabled': return '仓库已停用，自动运行不会开始'
+      case 'not-ready': return 'FlyBot 实例未就绪，自动运行不会开始'
+      case 'auto-off': return '自动工作已关闭'
+      case 'active-job': return '当前任务结束后再排'
+      case 'idle': return '空闲：没有开放工作项；会按发现间隔检查'
+      case 'waiting-first-run': return '等待首次运行'
+      case 'due': return '等待调度'
+      case 'scheduled': return this.digestTime(new Date(answer.at ?? 0))
+      case 'unknown-unreadable': return 'unknown（排期无法解析）'
+      case 'unknown-closed': return 'unknown（排期窗口已结束）'
+    }
+  }
+
   private digestTime(value: Date): string {
     return new Intl.DateTimeFormat('zh-CN', {
       timeZone: this.config.digest.timeZone,
@@ -2622,9 +2641,19 @@ export class Jobs {
       const label = `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`
       teamLinks.push({ repo: label, url: `${this.config.baseUrl}/repos/${repo.id}#inbox` })
       if (repo.auto_iterate === 1) {
-        const last = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
-        const next = Number.isFinite(last) ? new Date(last + Math.min(repo.interval_minutes, this.config.runner.workCooldownMinutes) * 60_000) : new Date()
-        nextRuns.push({ repo: label, when: next.getTime() <= Date.now() ? '等待调度' : this.digestTime(next) })
+        // #713: a saved schedule row owns this repository's cadence, exactly as
+        // it does on the repository page and the dashboard. The email used to
+        // compute `last_run_at + min(interval, cooldown)` here, so one
+        // repository had two next-run answers and a cron row was ignored.
+        const answer = nextRunFor({
+          repo,
+          schedule: this.store.scheduleForRepo(repo.id),
+          openWork: this.store.listOpenWorkItems(repo.id).length > 0,
+          activeJob: this.store.activeJobForRepo(repo.id) !== undefined,
+          instanceReady: instanceReadyFor(this.config.flybot.instanceImage, this.store.getRepoInstance(repo.id)?.status),
+          workCooldownMinutes: this.config.runner.workCooldownMinutes,
+        })
+        nextRuns.push({ repo: label, when: this.digestNextRun(answer) })
       }
       if (this.instances === undefined || this.config.flybot.instanceImage === '') continue
       try {

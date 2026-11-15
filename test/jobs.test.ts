@@ -8,6 +8,8 @@ import { Jobs } from '../src/jobs/service.js'
 import { buildCarryOver, buildRunDigest, classifyOutput, decideNextJob, failureStreak, isMetaTitle, lastDurationMs } from '../src/jobs/continuity.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
+import { nextTime } from '../src/schedules/next.js'
+import { scheduleFromRow } from '../src/schedules/tick.js'
 import { REVIEW_INSTRUCTION_MAX, REVIEW_INSTRUCTION_LABEL } from '../src/lib/followUpInstruction.js'
 import { json, makeUser, MemoryMailer, readBody, startFakeServer, testConfig } from './helpers.js'
 
@@ -3061,4 +3063,93 @@ test('one blocked tip keeps one audit row and one notification, and a moved head
     store.close()
     await github.close()
   }
+})
+
+// #713: the daily digest is a third next-run surface. It used to compute
+// `last_run_at + min(interval, cooldown)` and never read the schedule row, so
+// one repository had two next-run answers — the page named the planner instant,
+// the email promised a run within minutes. These cases drive the pass rather
+// than the template, because the faulty line was the part of the sentence no
+// template test could see.
+function digestZh(value: Date): string {
+  // The digest's own formatter, `digestTime` in src/jobs/service.ts, is private:
+  // build the expected string with the same Intl options instead of hard-coding
+  // it, so a timezone change cannot make the assertion pass by accident.
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(value)
+}
+
+async function digestTextFor(repoFixture: (store: Store, userId: string) => void): Promise<{ text: string; repoId: string }> {
+  const config = testConfig({ digest: { hour: 0, timeZone: 'Asia/Shanghai' } })
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  const jobs = new Jobs(store, config, { name: 'capture', async run() { return { status: 'running' } } }, mailer)
+  try {
+    const user = makeUser(store, { login: `digest-next-run-${Math.random().toString(36).slice(2, 8)}`, status: 'approved' })
+    store.setEmailDailyDigest(user.id, true)
+    repoFixture(store, user.id)
+    await jobs.tick()
+    const mail = mailer.messages.find((message) => /今日摘要/.test(message.subject))
+    assert.ok(mail !== undefined, 'the digest went out')
+    const repo = store.listRepos(user.id)[0]
+    assert.ok(repo !== undefined)
+    return { text: mail.text, repoId: repo.id }
+  } finally {
+    store.close()
+  }
+}
+
+test('the digest prints the scheduled next run, not the interval answer', async () => {
+  const lastRunAt = new Date(Date.now() - 10 * 60_000).toISOString()
+  const { text } = await digestTextFor((store, userId) => {
+    const repo = store.createRepo({ id: 'repo_digest_cron', userId, owner: 'o', name: 'cron', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    store.updateRepo(repo.id, { last_run_at: lastRunAt })
+    store.saveSchedule({ id: 'sch_digest_cron', repoId: repo.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })
+  })
+  const expected = digestZh(new Date(Date.parse(lastRunAt) + 15 * 60_000))
+  // The fixture separates the two answers, or the assertion below proves nothing.
+  assert.ok(text.includes('下次自动迭代：o/cron'), 'the digest names the repository')
+  assert.ok(!text.includes(`下次自动迭代：o/cron · ${expected}`), 'the interval answer must not be the scheduled one')
+  const digestLine = /下次自动迭代：o\/cron · ([^\n<]+)/.exec(text)?.[1]
+  assert.ok(digestLine !== undefined)
+  assert.notEqual(digestLine, expected, 'the email must not restate the interval rule for a repository with a schedule row')
+  // The planner instant for `0 9 * * 1-5` in Asia/Shanghai, formatted by the
+  // digest's own formatter, is the only other candidate.
+  assert.match(digestLine, /^\d{2}\/\d{2} \d{2}:\d{2}$/)
+})
+
+test('a disabled repository with no schedule row says it is disabled instead of promising a run', async () => {
+  const { text } = await digestTextFor((store, userId) => {
+    const repo = store.createRepo({ id: 'repo_digest_norow', userId, owner: 'o', name: 'norow', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    // `/repos/:id/disable` zeroes both fields, so only the settings route leaves
+    // `auto_iterate = 1` with `enabled = 0`; that is the fixture this case needs.
+    store.updateRepo(repo.id, { enabled: 0, last_run_at: new Date(Date.now() - 10 * 60_000).toISOString() })
+  })
+  assert.ok(text.includes('下次自动迭代：o/norow · 仓库已停用，自动运行不会开始'), 'the digest repeats the page sentence')
+  assert.ok(!/下次自动迭代：o\/norow · \d\d\/\d\d/.test(text), 'no instant for a repository that will not run')
+})
+
+test('a disabled repository with a schedule row keeps the planner instant the page prints', async () => {
+  // A saved row wins over `enabled` on the page, so the digest must not start
+  // disagreeing with it by checking `enabled` first: that is the same defect
+  // pointed the other way.
+  const lastRunAt = new Date(Date.now() - 10 * 60_000).toISOString()
+  let planner: number | null = null
+  const { text } = await digestTextFor((store, userId) => {
+    const repo = store.createRepo({ id: 'repo_digest_disabled_row', userId, owner: 'o', name: 'drow', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    store.updateRepo(repo.id, { enabled: 0, last_run_at: lastRunAt })
+    const row = store.saveSchedule({ id: 'sch_digest_disabled_row', repoId: repo.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })
+    const schedule = scheduleFromRow(row)
+    assert.ok(schedule !== null)
+    planner = nextTime(schedule, Date.now())
+  })
+  assert.ok(planner !== null)
+  const digestLine = /下次自动迭代：o\/drow · ([^\n<]+)/.exec(text)?.[1]
+  assert.equal(digestLine, digestZh(new Date(planner)))
 })
