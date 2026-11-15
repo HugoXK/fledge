@@ -404,3 +404,68 @@ export function testEmail(user: UserRow, baseUrl: string): { subject: string; te
     html: emailShell(`<p>@${escapeHtml(user.login)}，你好：</p><p>这是一封 Fledge 测试邮件。收到它说明你的通知邮箱和 SMTP 发信都正常。</p><p><a href="${escapeHtml(baseUrl)}">${escapeHtml(baseUrl)}</a></p>`),
   }
 }
+
+// #786: the maintainer-facing mail for a user note. The route owns redaction and
+// the length bound; this template only lays out the safe fields it receives.
+export function feedbackMail(input: {
+  id: string
+  login: string
+  kind: string
+  message: string
+  page: string
+  createdAt: string
+}): { subject: string; text: string } {
+  return {
+    subject: `[Fledge] 用户反馈 · ${input.kind} · @${input.login}`.slice(0, 200),
+    text: [
+      `@${input.login} 提交了一条反馈。`,
+      `编号：${input.id}`,
+      `时间：${input.createdAt}`,
+      `类型：${input.kind}`,
+      `页面：${input.page === '' ? '未填写' : input.page}`,
+      '',
+      '内容：',
+      input.message,
+      '',
+      '这封邮件由用户在 Settings → 反馈中提交；不包含请求体、cookie 或 token。',
+      mailFooter(),
+    ].join('\n'),
+  }
+}
+
+// #786: a 5xx report. The ref is the same value the user saw; the fields are the
+// captured row, already redacted and bounded by the error handler.
+export function errorReportMail(input: {
+  ref: string
+  login: string | null
+  method: string
+  path: string
+  statusCode: number
+  errorName: string
+  errorMessage: string
+  stack: string
+  version: string
+  commit: string
+  createdAt: string
+  consentVersion: string
+  consentedAt: string
+}): { subject: string; text: string } {
+  return {
+    subject: `[Fledge] 异常报告 · ${input.ref} · ${input.statusCode} ${input.errorName}`.slice(0, 200),
+    text: [
+      `用户在错误页点击了“报告给开发者”。`,
+      `编号：${input.ref}`,
+      `时间：${input.createdAt}`,
+      `用户：${input.login === null ? '未登录' : `@${input.login}`}`,
+      `请求：${input.method} ${input.path}`,
+      `状态：${input.statusCode}`,
+      `错误：${input.errorName}: ${input.errorMessage}`,
+      ...(input.stack === '' ? [] : ['', '脱敏堆栈：', input.stack]),
+      `版本：${input.version} · commit ${input.commit}`,
+      `授权：用户已同意失败数据读取（${input.consentVersion}，${input.consentedAt}）。`,
+      '',
+      '报告只包含错误类型、消息、脱敏堆栈、路径、版本和时间；不包含请求体、query、cookie、token 或完整邮箱。',
+      mailFooter(),
+    ].join('\n'),
+  }
+}

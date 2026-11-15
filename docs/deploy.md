@@ -35,6 +35,7 @@ Key settings:
 | `MAIL_TRANSPORT` | `smtp` in production, `console` for a local demo |
 | `SMTP_HOST/PORT/SECURE/USER/PASS` | For yeah.net: `smtp.yeah.net`, 465, secure |
 | `MAIL_FROM` / `ADMIN_EMAIL` | `fledge@hugoxk.online` / `admin@example.com` |
+| `FEEDBACK_EMAIL` | Optional feedback/error-report destination; defaults to `ADMIN_EMAIL` |
 | `PLATFORM_LLM_BASE_URL` | OpenAI-compatible `/v1` endpoint |
 | `PLATFORM_LLM_KEY` | Platform key; never commit it |
 | `INITIAL_QUOTA_CNY` | Default 1 |

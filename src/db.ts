@@ -1864,6 +1864,42 @@ CREATE TABLE IF NOT EXISTS schedule_occurrences (
 CREATE INDEX IF NOT EXISTS schedule_occurrences_lease_idx ON schedule_occurrences(state, lease_expires_at);
 CREATE INDEX IF NOT EXISTS schedule_occurrences_repo_idx ON schedule_occurrences(repo_id, logical_time DESC);
 CREATE INDEX IF NOT EXISTS schedule_occurrences_schedule_idx ON schedule_occurrences(schedule_id, logical_time DESC);
+
+-- #786: feedback and unexpected-error reports. Both are additive; no existing
+-- table or row is rewritten. The error ref is the unguessable capability the
+-- error page carries; the row is written with redacted, bounded fields before
+-- the page is rendered.
+CREATE TABLE IF NOT EXISTS feedback (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  message TEXT NOT NULL,
+  page TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS feedback_created_idx ON feedback(created_at DESC);
+CREATE INDEX IF NOT EXISTS feedback_user_idx ON feedback(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS error_reports (
+  ref TEXT PRIMARY KEY,
+  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  user_login TEXT,
+  status TEXT NOT NULL DEFAULT 'captured',
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  status_code INTEGER NOT NULL,
+  error_name TEXT NOT NULL,
+  error_message TEXT NOT NULL,
+  error_stack TEXT NOT NULL DEFAULT '',
+  build_version TEXT NOT NULL,
+  build_commit TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  reported_at TEXT,
+  consent_version TEXT,
+  consented_at TEXT
+);
+CREATE INDEX IF NOT EXISTS error_reports_created_idx ON error_reports(created_at DESC);
+CREATE INDEX IF NOT EXISTS error_reports_status_idx ON error_reports(status, created_at DESC);
 `
 
 function clean(params: unknown[]): unknown[] {
@@ -1940,6 +1976,40 @@ export interface ReleaseTrackingPatch {
   lastCheckedAt: string
 }
 
+// #786: a user-authored note for the maintainer. The row is the durable record;
+// the mail is the notification. Neither carries a token, a cookie or a request
+// body.
+export interface FeedbackRow {
+  id: string
+  user_id: string
+  kind: string
+  message: string
+  page: string
+  created_at: string
+}
+
+// #786: a captured 5xx. The ref is the capability the error page carries; the
+// row is written before the page is rendered, so the user can report it with one
+// click even when signed out. The fields are already redacted and bounded.
+export interface ErrorReportRow {
+  ref: string
+  user_id: string | null
+  user_login: string | null
+  status: 'captured' | 'reported'
+  method: string
+  path: string
+  status_code: number
+  error_name: string
+  error_message: string
+  error_stack: string
+  build_version: string
+  build_commit: string
+  created_at: string
+  reported_at: string | null
+  consent_version: string | null
+  consented_at: string | null
+}
+
 export class Store {
   readonly db: Database
 
@@ -1950,9 +2020,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 40) {
+    if (previousVersion > 41) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (40)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (41)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -1975,7 +2045,7 @@ export class Store {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
     this.migrateIdentity()
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 40)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 41)};`)
   }
 
   // #544 slice 3B-B2: a database written by slice B1 already has the occurrence
@@ -5580,6 +5650,38 @@ export class Store {
 
   notify(userId: string, kind: string, message: string, code: string | null = null): void {
     this.run('INSERT INTO notifications (id, user_id, kind, message, code, created_at) VALUES (?, ?, ?, ?, ?, ?)', `ntf_${randomBytes(6).toString('hex')}`, userId, kind, message, code, nowIso())
+  }
+
+  createFeedback(input: { id: string; userId: string; kind: string; message: string; page: string; createdAt?: string }): FeedbackRow {
+    const at = input.createdAt ?? nowIso()
+    this.run('INSERT INTO feedback (id, user_id, kind, message, page, created_at) VALUES (?, ?, ?, ?, ?, ?)', input.id, input.userId, input.kind, input.message, input.page, at)
+    return this.get<FeedbackRow>('SELECT * FROM feedback WHERE id = ?', input.id)!
+  }
+
+  listFeedback(limit = 20): FeedbackRow[] {
+    return this.all<FeedbackRow>('SELECT * FROM feedback ORDER BY created_at DESC, rowid DESC LIMIT ?', Math.max(1, Math.min(100, limit)))
+  }
+
+  createErrorReport(input: Omit<ErrorReportRow, 'status' | 'reported_at' | 'created_at' | 'consent_version' | 'consented_at'> & { createdAt?: string }): ErrorReportRow {
+    const at = input.createdAt ?? nowIso()
+    this.run(
+      'INSERT INTO error_reports (ref, user_id, user_login, status, method, path, status_code, error_name, error_message, error_stack, build_version, build_commit, created_at, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)',
+      input.ref, input.user_id, input.user_login, 'captured', input.method, input.path, input.status_code, input.error_name, input.error_message, input.error_stack, input.build_version, input.build_commit, at,
+    )
+    return this.errorReportByRef(input.ref)!
+  }
+
+  errorReportByRef(ref: string): ErrorReportRow | undefined {
+    return this.get<ErrorReportRow>('SELECT * FROM error_reports WHERE ref = ?', ref)
+  }
+
+  claimErrorReport(ref: string, consentVersion: string): boolean {
+    const at = nowIso()
+    return this.runChanges("UPDATE error_reports SET status = 'reported', reported_at = ?, consent_version = ?, consented_at = ? WHERE ref = ? AND status = 'captured'", at, consentVersion, at, ref) === 1
+  }
+
+  listErrorReports(limit = 20): ErrorReportRow[] {
+    return this.all<ErrorReportRow>('SELECT * FROM error_reports ORDER BY created_at DESC, rowid DESC LIMIT ?', Math.max(1, Math.min(100, limit)))
   }
 
   listNotifications(userId: string, limit = 20): NotificationRow[] {

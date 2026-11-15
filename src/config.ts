@@ -62,6 +62,8 @@ export interface Config {
     transport: MailTransport
     from: string
     adminEmail: string
+    /** #786: feedback and error reports; empty falls back to ADMIN_EMAIL. */
+    feedbackEmail: string
     /** #353: how long one repository's failure mail stays coalesced, in minutes. */
     jobEmailCooldownMinutes: number
     smtp: {
@@ -319,6 +321,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       transport: (text('MAIL_TRANSPORT', 'console') as MailTransport) || 'console',
       from: text('MAIL_FROM', 'no-reply@example.com'),
       adminEmail: text('ADMIN_EMAIL', 'admin@example.com'),
+      feedbackEmail: text('FEEDBACK_EMAIL', '') || text('ADMIN_EMAIL', 'admin@example.com'),
       // #353: the window that keeps a failing repository from mailing once per run.
       jobEmailCooldownMinutes: Math.max(0, number('JOB_EMAIL_COOLDOWN_MINUTES', 60)),
       smtp: {

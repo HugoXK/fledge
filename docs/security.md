@@ -168,6 +168,26 @@ classifying sweep, the ADR and the remaining privileged routes. A route added
 tomorrow inherits nothing from this section, and the eight `config.rateLimit`
 handlers above are unchanged by it — same window, same key.
 
+### Feedback and unexpected-error reports
+
+The settings Feedback card stores one `feedback` row (user, kind, redacted
+message, optional page) and mails `FEEDBACK_EMAIL`, which falls back to
+`ADMIN_EMAIL` when unset. The user sees the same bilingual page and a flash
+notice; the audit row records only the id, kind and character count.
+
+The error handler writes an `error_reports` row only for HTML 5xx responses. The
+row carries a random `ref`, method, pathname, status, error name, redacted and
+truncated message, a redacted and truncated stack, version, commit, and the
+signed-in login when there is one. It never carries the query string, request
+body, headers, cookies, email address or token. The error page shows what the
+report contains and requires a consent checkbox before it exposes the `ref` as a
+capability: one POST to `/errors/:ref/report` marks it reported atomically,
+records the consent version and time, and mails the maintainer address. The route
+is usable without a session because the error may happen before sign-in, is
+rate-limited by client address, and a second click does not send a second mail.
+Without the consent value the row stays `captured` and nothing is mailed. A 4xx
+refusal is user-caused and never offers the button.
+
 ### CSRF
 
 Every state-changing browser form includes a hidden `csrf` field derived from

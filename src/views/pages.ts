@@ -12,7 +12,7 @@ import { levelFromRank, PRIORITY_LEVELS } from '../lib/priority.js'
 import { RELATION_KINDS, relationKindLabel, type RelationKind } from '../lib/relations.js'
 import { DECISION_KINDS, DEFAULT_DECISION, decisionKindLabel } from '../lib/taskDecision.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
-import { escapeHtml, layout, money, quotaMoney, type Viewer } from './layout.js'
+import { escapeHtml, FLEDGE_GITHUB_URL, layout, money, quotaMoney, type Viewer } from './layout.js'
 import { renderState, stateCell, type StateAction } from './states.js'
 import { redact } from '../lib/secrets.js'
 import { REVIEW_INSTRUCTION_LABEL, reviewInstructionFromGoal } from '../lib/followUpInstruction.js'
@@ -1932,6 +1932,7 @@ export function settingsPage(input: {
     <a href="#notifications" data-allow-overflow>${escapeHtml(t('通知', 'Notifications'))}</a>
     <a href="#tokens" data-allow-overflow>${escapeHtml(t('API token', 'API tokens'))}</a>
     <a href="#sessions" data-allow-overflow>${escapeHtml(t('登录设备', 'Sessions'))}</a>
+    <a href="#feedback" data-allow-overflow>${escapeHtml(t('反馈', 'Feedback'))}</a>
   </nav>
   <section class="card" id="account">
     <div class="eyebrow">${escapeHtml(t('账户', 'ACCOUNT'))}</div>
@@ -2060,6 +2061,38 @@ export function settingsPage(input: {
     <div class="row">
       <form method="post" action="/settings/sessions/revoke-others">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('退出其他会话', 'Sign out other sessions'))}</button></form>
       <form method="post" action="/settings/sessions/rotate">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('轮换当前会话', 'Rotate this session'))}</button></form>
+    </div>
+  </section>
+
+  <section class="card" id="feedback">
+    <div class="eyebrow">${escapeHtml(t('反馈', 'FEEDBACK'))}</div>
+    <h2>${escapeHtml(t('反馈给开发者', 'Send feedback'))}</h2>
+    <p class="muted">${escapeHtml(t('遇到问题、想要一个功能，或者发现异常？这里会保存一条记录并邮件通知开发者。', 'Found a problem, want a feature, or saw something unexpected? This stores a record and mails the maintainer.'))}</p>
+    <form method="post" action="/feedback" class="form">
+      ${csrf(viewer)}
+      <div class="row">
+        <label>${escapeHtml(t('类型', 'Kind'))}
+          <select name="kind">
+            <option value="feedback">${escapeHtml(t('建议 / 一般反馈', 'Suggestion / feedback'))}</option>
+            <option value="bug">${escapeHtml(t('Bug', 'Bug'))}</option>
+            <option value="other">${escapeHtml(t('其他', 'Other'))}</option>
+          </select>
+        </label>
+        <label class="grow">${escapeHtml(t('相关页面（可选）', 'Related page (optional)'))} <input name="page" maxlength="200" placeholder="/settings 或 /dashboard" /></label>
+      </div>
+      <label>${escapeHtml(t('内容', 'Message'))}<textarea name="message" rows="4" maxlength="2000" required placeholder="${escapeHtml(t('发生了什么？你期望什么？', 'What happened, and what did you expect?'))}"></textarea></label>
+      <p class="fine">${escapeHtml(t('不要粘贴 token、密码或他人的隐私信息。反馈会保存并邮件通知开发者。', 'Do not paste tokens, passwords or another person’s private data. The note is stored and mailed to the maintainer.'))}</p>
+      <button class="btn" type="submit">${escapeHtml(t('发送反馈', 'Send feedback'))}</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="eyebrow">${escapeHtml(t('关于', 'ABOUT'))}</div>
+    <h2>${escapeHtml(t('关于 Fledge', 'About Fledge'))}</h2>
+    <p class="muted">${escapeHtml(t('Fledge 是开源的自托管平台；如果它对你的仓库有帮助，可以在 GitHub 上加星支持。', 'Fledge is an open-source, self-hosted platform. If it helps your repositories, a star on GitHub supports it.'))}</p>
+    <div class="actions">
+      <a class="btn" href="${FLEDGE_GITHUB_URL}" target="_blank" rel="noreferrer">★ ${escapeHtml(t('在 GitHub 上加星', 'Star Fledge on GitHub'))}</a>
+      <a class="btn btn-ghost" href="#feedback">${escapeHtml(t('反馈', 'Feedback'))}</a>
     </div>
   </section>`
   return layout({ title: t('设置', 'Settings'), viewer, body, config, locale, path: '/settings', active: 'settings', notice, error })
@@ -2508,18 +2541,26 @@ export function errorPage(
   message: string,
   locale: Locale = 'zh',
   action?: { href: string; label: string },
+  report?: { ref: string },
 ): string {
   const t = translator(locale)
   const localizedTitle = localizeMessage(locale, title) ?? title
   const localizedMessage = localizeMessage(locale, message) ?? message
   const actionHtml = action === undefined ? '' : `<a class="btn" href="${escapeHtml(action.href)}">${escapeHtml(action.label)}</a>`
+  // #786: only an unexpected 5xx carries a ref. One click posts the ref; the
+  // report contains no request body, query, cookie or token.
+  const reportHtml = report === undefined ? '' : `<form method="post" action="/errors/${escapeHtml(report.ref)}/report" class="form">
+      <p class="fine">${escapeHtml(t('报告只包含错误类型、消息、脱敏后的堆栈、页面、版本和时间；不包含请求体、query、cookie、token 或完整邮箱。', 'The report includes only the error type, message, redacted stack, page, version and time; not the request body, query, cookies, tokens or a full email address.'))}</p>
+      <label class="check"><input type="checkbox" name="consent" value="1" required /> ${escapeHtml(t('我已知晓并授权 Fledge 平台读取这些失败数据用于定位问题。', 'I understand and authorize Fledge to read this failure data to diagnose the problem.'))}</label>
+      <button class="btn" type="submit">${escapeHtml(t('报告给开发者', 'Report to the maintainer'))}</button>
+    </form>`
   return layout({
     title: localizedTitle,
     viewer,
     config,
     locale,
     path: '/',
-    body: `<section class="card narrow"><h1>${escapeHtml(localizedTitle)}</h1><p>${escapeHtml(localizedMessage)}</p><div class="actions">${actionHtml}<a class="btn btn-ghost" href="/">${escapeHtml(t('回首页', 'Back home'))}</a></div></section>`,
+    body: `<section class="card narrow"><h1>${escapeHtml(localizedTitle)}</h1><p>${escapeHtml(localizedMessage)}</p><div class="actions">${actionHtml}<a class="btn btn-ghost" href="/">${escapeHtml(t('回首页', 'Back home'))}</a></div>${reportHtml}</section>`,
   })
 }
 

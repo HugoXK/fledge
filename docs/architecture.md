@@ -98,6 +98,18 @@ header, not a section — so at the top of that page nothing has passed and
 `#release`, the first chip, is marked. That fallback is the accepted state, not a
 defect.
 
+`/settings` also carries a Feedback card and an About card. The feedback form
+posts to `/feedback`, stores a `feedback` row and mails the address in
+`FEEDBACK_EMAIL` (falling back to `ADMIN_EMAIL`); the About card and the footer
+link to the public GitHub repository with a Star call-to-action. An unexpected
+HTTP 5xx creates an `error_reports` row with a random `ref` before the error page
+is rendered; the page shows the data scope, requires the consent checkbox, then
+offers one POST to `/errors/:ref/report`, which claims the row atomically and
+mails the same address. The error row keeps only method, pathname, status, error
+name, redacted message, redacted stack, version, commit, the signed-in login and
+the consent version/time — never the query, body, headers, cookies or a token.
+Both routes carry a route-level limiter, and a 4xx never offers the report button.
+
 The dashboard's Repositories card owns the full content row; its Add repository
 button sits in the card header and opens a native `<dialog>` with the GitHub App
 and fine-grained token options. `#add-repo` remains the deep link used by the

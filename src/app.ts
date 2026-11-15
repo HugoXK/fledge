@@ -18,7 +18,7 @@ import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireV
 import { dedupeRepoNames, instanceLimitRefusal, repoLimitRefusal, type LimitRefusal } from './lib/limits.js'
 import { isTrialFilter } from './lib/trials.js'
 import { createMailer, type Mailer } from './email/mailer.js'
-import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
+import { approvedEmail, errorReportMail, feedbackMail, rejectedEmail, testEmail } from './email/templates.js'
 import { notifyEmail } from './email/recipient.js'
 import { authenticateApiToken } from './lib/apiToken.js'
 import { registerGateway } from './gateway/gateway.js'
@@ -38,7 +38,7 @@ import type { PriorityLevel } from './lib/priority.js'
 import { decisionKindLabel, isDecisionKind } from './lib/taskDecision.js'
 import fastifyRateLimit from '@fastify/rate-limit'
 import { rateLimitKey, RateLimiter, RouteLimiters } from './lib/rateLimit.js'
-import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
+import { decryptSecret, encryptSecret, randomId, randomToken, redact, safeEqual, sha256Hex } from './lib/secrets.js'
 import { expiryFromDays, GATEWAY_SCOPE, isTokenScope, JOBS_READ_SCOPE, patExpiryDays } from './lib/tokens.js'
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
@@ -592,6 +592,20 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const destructiveLimit = {
     max: 60,
     timeWindow: 60_000,
+    keyGenerator: (request: FastifyRequest): string => rateLimitKey(request),
+  }
+  // #786: user feedback and a public error-report button are not destructive,
+  // so they get their own tighter buckets; the plugin shape is the one CodeQL's
+  // Fastify model can see, and the key stays the normalized client address.
+  const ERROR_REPORT_CONSENT_VERSION = '2026-11-15'
+  const feedbackLimit = {
+    max: 5,
+    timeWindow: 60 * 60_000,
+    keyGenerator: (request: FastifyRequest): string => rateLimitKey(request),
+  }
+  const errorReportLimit = {
+    max: 10,
+    timeWindow: 60 * 60_000,
     keyGenerator: (request: FastifyRequest): string => rateLimitKey(request),
   }
 
@@ -4131,6 +4145,77 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/settings?notice=${encodeURIComponent('通知设置已保存。')}`)
   })
 
+  app.post('/feedback', { config: { rateLimit: feedbackLimit } }, async (request, reply) => {
+    const viewer = approvedCsrfGuard(request)
+    const body = form(request)
+    const kind = body.kind === 'bug' || body.kind === 'other' ? body.kind : 'feedback'
+    const message = redact((body.message ?? '').trim()).slice(0, 2000)
+    const page = (body.page ?? '').trim().slice(0, 200)
+    if (message === '') return reply.redirect(`/settings?error=${encodeURIComponent('请填写反馈内容。')}#feedback`)
+    const id = randomId('fb')
+    const createdAt = new Date().toISOString()
+    store.createFeedback({ id, userId: viewer.user.id, kind, message, page, createdAt })
+    store.audit(viewer.user.id, 'feedback.created', `${id} kind=${kind} chars=${message.length}`)
+    const replyTo = notifyEmail(viewer.user)
+    try {
+      await mailer.send({
+        to: config.mail.feedbackEmail,
+        ...feedbackMail({ id, login: viewer.user.login, kind, message, page, createdAt }),
+        ...(replyTo === '' ? {} : { replyTo }),
+      })
+      return reply.redirect(`/settings?notice=${encodeURIComponent('反馈已发送，谢谢。')}#feedback`)
+    } catch (error) {
+      log.error('feedback mail failed', { id, error: redact(String(error)) })
+      return reply.redirect(`/settings?error=${encodeURIComponent('反馈已保存，但通知邮件发送失败；请稍后再试。')}#feedback`)
+    }
+  })
+
+  // #786: the ref is the unguessable capability the 5xx page carries. The route
+  // is deliberately usable without a session so an error on the sign-in or
+  // public page can still be reported; the claim is atomic, so two clicks send
+  // one mail.
+  app.post('/errors/:ref/report', { config: { rateLimit: errorReportLimit } }, async (request, reply) => {
+    const ref = String((request.params as Record<string, string>).ref ?? '')
+    const viewer = request.viewer === undefined ? null : viewOf(request.viewer)
+    if (!/^[A-Za-z0-9_-]{10,80}$/.test(ref)) {
+      return htmlPage(reply, 404, errorPage(config, viewer, '页面不存在', '这个报告编号不存在。', request.locale))
+    }
+    const report = store.errorReportByRef(ref)
+    if (report === undefined) {
+      return htmlPage(reply, 404, errorPage(config, viewer, '页面不存在', '这个报告编号不存在。', request.locale))
+    }
+    if (form(request).consent !== '1') {
+      return htmlPage(reply, 400, errorPage(config, viewer, '需要授权', '请先勾选“我已知晓并授权 Fledge 平台读取这些失败数据”，再提交报告。', request.locale))
+    }
+    if (!store.claimErrorReport(ref, ERROR_REPORT_CONSENT_VERSION)) {
+      return htmlPage(reply, 200, errorPage(config, viewer, '报告已发送', `这个报告（${ref}）已经发送过了，谢谢。`, request.locale))
+    }
+    try {
+      await mailer.send({
+        to: config.mail.feedbackEmail,
+        ...errorReportMail({
+          ref,
+          login: report.user_login,
+          method: report.method,
+          path: report.path,
+          statusCode: report.status_code,
+          errorName: report.error_name,
+          errorMessage: report.error_message,
+          stack: report.error_stack,
+          version: report.build_version,
+          commit: report.build_commit,
+          createdAt: report.created_at,
+          consentVersion: ERROR_REPORT_CONSENT_VERSION,
+          consentedAt: store.errorReportByRef(ref)?.consented_at ?? report.created_at,
+        }),
+      })
+    } catch (error) {
+      log.error('error report mail failed', { ref, error: redact(String(error)) })
+    }
+    store.audit(report.user_id, 'error.reported', `${ref} ${report.status_code} ${report.path}`)
+    return htmlPage(reply, 200, errorPage(config, viewer, '报告已发送', `谢谢。编号：${ref}。开发者会查看这个错误的类型、页面和时间；报告不包含你的输入、token 或请求体。`, request.locale))
+  })
+
   app.post('/settings/tokens', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
     if (requireRecentAuth(request, reply, viewer, 'token.create')) return reply
@@ -5453,7 +5538,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const status = failure.statusCode ?? 500
     const code = failure.code ?? 'ERROR'
     const message = failure.message ?? 'Unknown error'
-    if (status >= 500) log.error('request failed', { url: request.url, error: String(error) })
+    if (status >= 500) log.error('request failed', { url: request.url.split('?')[0], error: redact(String(error)) })
     if (request.url.startsWith('/v1') || request.url.startsWith('/api/')) {
       return reply.code(status).send({ error: { type: code, message } })
     }
@@ -5464,7 +5549,30 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (status === 401 && code === 'AUTH_REQUIRED' && (request.method === 'GET' || request.method === 'HEAD')) {
       return reply.redirect(`/auth/github?next=${encodeURIComponent(safeLocalPath(request.url, '/dashboard'))}`)
     }
-    return htmlPage(reply, status, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), status === 404 ? '页面不存在' : '出错了', status >= 500 ? '服务器出了点问题，请稍后再试。' : message, request.locale))
+    let report: { ref: string } | undefined
+    if (status >= 500) {
+      try {
+        const ref = randomToken(18)
+        const viewer = request.viewer
+        store.createErrorReport({
+          ref,
+          user_id: viewer?.user.id ?? null,
+          user_login: viewer?.user.login ?? null,
+          method: request.method,
+          path: (request.url.split('?')[0] ?? '/').slice(0, 500),
+          status_code: status,
+          error_name: (error instanceof Error && error.name !== '' ? error.name : 'Error').slice(0, 120),
+          error_message: redact(message).slice(0, 1000),
+          error_stack: error instanceof Error ? redact(error.stack ?? '').slice(0, 4000) : '',
+          build_version: VERSION,
+          build_commit: config.build.commit,
+        })
+        report = { ref }
+      } catch (reportError) {
+        log.warn('error report capture failed', { error: redact(String(reportError)) })
+      }
+    }
+    return htmlPage(reply, status, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), status === 404 ? '页面不存在' : '出错了', status >= 500 ? '服务器出了点问题，请稍后再试。' : message, request.locale, undefined, report))
   })
 
   const sweeper = setInterval(() => {
