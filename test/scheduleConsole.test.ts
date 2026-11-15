@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { buildApp, type BuiltApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
@@ -162,6 +163,8 @@ test('the console page shows the saved schedule and the planner next run', async
     const response = await f.built.app.inject({ method: 'GET', url: `/repos/${f.repoId}/schedule`, headers: { cookie: session.cookie } })
     assert.equal(response.statusCode, 200)
     const body = response.body
+    assert.match(body, /<dl class="schedule-facts">/, 'the facts use the styled definition list')
+    assert.doesNotMatch(body, /<dl>/, 'no bare definition list is rendered')
     assert.match(body, /0 9 \* \* 1-5/, 'the stored expression is on the page')
     assert.match(body, /Asia\/Shanghai/)
     assert.match(body, /data-schedule-next="[^"]+"/, 'the next run is rendered as a machine-readable value')
@@ -170,7 +173,16 @@ test('the console page shows the saved schedule and the planner next run', async
   } finally { await f.close() }
 })
 
+test('the schedule facts have a stylesheet rule instead of the browser default', () => {
+  const css = readFileSync(new URL('../public/app.css', import.meta.url), 'utf8')
+  assert.match(css, /\.schedule-facts\s*\{[^}]*display:\s*grid/, 'the facts are a grid, not a default <dl>')
+  assert.match(css, /\.schedule-facts\s+dt\s*\{[^}]*color:\s*var\(--muted\)/, 'labels use the muted text colour')
+  assert.match(css, /\.schedule-facts\s+dd\s*\{[^}]*margin:\s*0/, 'values drop the browser default indent')
+  assert.match(css, /@media \(max-width: 640px\)[\s\S]*?\.schedule-facts\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/, 'the phone band stacks the pair')
+})
+
 test('saving a schedule from the console writes the row and audits it', async () => {
+
   const f = await fixture('console-save')
   try {
     const saved = await saveSchedule(f.built, f.user, f.repoId, { cron: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })

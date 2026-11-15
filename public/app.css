@@ -1204,6 +1204,37 @@ html:lang(zh) .stat strong { letter-spacing: 0; line-height: 1.15; }
 /* A schedule panel hidden by the mode selector must stay hidden: `.row` sets
    display:flex, which would otherwise outrank the user-agent [hidden] rule. */
 .schedule-panel[hidden], [data-schedule-timezone-wrap][hidden] { display: none !important; }
+
+/* issue 743: the schedule console's eight facts were a bare <dl>, and the stylesheet
+   had no dt/dd rule at all, so the page's main data painted as browser-default
+   plain text between the styled cards. One two-column grid with muted labels
+   keeps the same card rhythm; the phone band stacks each label over its value. */
+.schedule-facts {
+  display: grid;
+  grid-template-columns: minmax(112px, 180px) minmax(0, 1fr);
+  gap: var(--space-2) var(--space-5);
+  margin: var(--space-4) 0 0;
+  align-items: start;
+}
+.schedule-facts dt {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+.schedule-facts dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-md);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .schedule-facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .schedule-facts dt { margin-top: var(--space-3); }
+  .schedule-facts dt:first-child { margin-top: 0; }
+  .schedule-facts dd { margin-top: var(--space-1); }
+}
 /* Admin module tiles: the operations pages are one entry in the admin hub, not
    a sentence of inline links. A tile is a link and keeps the 44px target. */
 .admin-modules { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-3); margin-top: var(--space-3); }

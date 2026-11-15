@@ -3864,7 +3864,7 @@ export function scheduleConsolePage(input: {
   const body = `<a class="back" href="/repos/${escapeHtml(repo.id)}">← ${escapeHtml(t('返回仓库', 'Back to repository'))}</a>
     <section class="card"><div class="eyebrow">${escapeHtml(t('排期控制台', 'SCHEDULE CONSOLE'))}</div><h1>${escapeHtml(`${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`)}</h1>
       ${kindNote}
-      <dl>
+      <dl class="schedule-facts">
         <dt>${escapeHtml(t('排期', 'Schedule'))}</dt><dd data-schedule-kind="${escapeHtml(state.kind)}">${scheduleLine}</dd>
         <dt>${escapeHtml(t('下次运行', 'Next run'))}</dt><dd data-schedule-next="${escapeHtml(iso(state.nextAt))}">${escapeHtml(shown(state.nextAt))}</dd>
         <dt>${escapeHtml(t('上次成功', 'Last success'))}</dt><dd data-last-success="${escapeHtml(iso(state.lastSuccess?.logicalTime ?? null))}">${escapeHtml(shown(state.lastSuccess?.logicalTime ?? null))}</dd>
