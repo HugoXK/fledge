@@ -188,6 +188,19 @@ rate-limited by client address, and a second click does not send a second mail.
 Without the consent value the row stays `captured` and nothing is mailed. A 4xx
 refusal is user-caused and never offers the button.
 
+### Feedback triage
+
+Each feedback/error record gets a per-ref triage token derived from
+`HMAC(SESSION_SECRET, "feedback-triage:<ref>")`. The token is delivered only in
+the private packet to the Fledge Lead; the read and write endpoints accept it as
+a bearer capability for that one ref and are rate-limited. The Lead may read the
+redacted message/stack and write a conclusion, but Fledge does not publish raw
+feedback or error data. A public GitHub issue is created by the Lead only after a
+separate sanitized-publication consent, and the issue may @ the reporter only
+when that consent is present. The triage row stores the issue/PR URLs, fixed and
+released versions, user-facing message, public summary and notification state;
+the raw text remains in the feedback/error row.
+
 ### CSRF
 
 Every state-changing browser form includes a hidden `csrf` field derived from

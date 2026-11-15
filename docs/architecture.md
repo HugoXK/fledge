@@ -110,6 +110,16 @@ name, redacted message, redacted stack, version, commit, the signed-in login and
 the consent version/time — never the query, body, headers, cookies or a token.
 Both routes carry a route-level limiter, and a 4xx never offers the report button.
 
+The feedback lifecycle is one triage row per ref (`feedback_triage`) plus
+`feedback_events`. New reports are sent to the server FlyBot's Lead through a
+connected repo (`FLEDGE_LEAD_REPO_ID`) or a direct bridge; the packet carries a
+per-ref signed token, not the raw stack. The Lead reads and writes through
+`GET`/`POST /api/feedback/:ref` and `/triage`; every transition appends an event
+and notifies the signed-in reporter in-app and by mail. A `fixed_version` at or
+below the running `VERSION` sends the fixed notice once; the startup scan then
+marks the record `released` and sends the “now live” notice once. Fledge never
+creates the public issue: the Lead does, sanitized, and records its URL.
+
 The dashboard's Repositories card owns the full content row; its Add repository
 button sits in the card header and opens a native `<dialog>` with the GitHub App
 and fine-grained token options. `#add-repo` remains the deep link used by the

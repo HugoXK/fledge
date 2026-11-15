@@ -469,3 +469,29 @@ export function errorReportMail(input: {
     ].join('\n'),
   }
 }
+
+// #814: a reporter-facing update. The Lead supplies the user message; Fledge
+// owns the delivery and the ref. No raw error data is added here.
+export function feedbackUpdateMail(input: {
+  ref: string
+  status: string
+  userMessage: string
+  issueUrl: string | null
+  prUrl: string | null
+  releasedVersion: string | null
+}): { subject: string; text: string } {
+  return {
+    subject: `[Fledge] 反馈更新 · ${input.status}`.slice(0, 200),
+    text: [
+      `你反馈的问题（${input.ref}）有更新：${input.status}`,
+      '',
+      input.userMessage,
+      ...(input.issueUrl === null ? [] : ['', `Issue: ${input.issueUrl}`]),
+      ...(input.prUrl === null ? [] : ['', `PR: ${input.prUrl}`]),
+      ...(input.releasedVersion === null ? [] : ['', `已上线版本：v${input.releasedVersion}`]),
+      '',
+      '这是一封自动通知；回复请联系维护者。',
+      mailFooter(),
+    ].join('\n'),
+  }
+}

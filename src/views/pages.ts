@@ -2081,6 +2081,7 @@ export function settingsPage(input: {
         <label class="grow">${escapeHtml(t('相关页面（可选）', 'Related page (optional)'))} <input name="page" maxlength="200" placeholder="/settings 或 /dashboard" /></label>
       </div>
       <label>${escapeHtml(t('内容', 'Message'))}<textarea name="message" rows="4" maxlength="2000" required placeholder="${escapeHtml(t('发生了什么？你期望什么？', 'What happened, and what did you expect?'))}"></textarea></label>
+      <label class="check"><input type="checkbox" name="publishConsent" value="1" /> ${escapeHtml(t('我同意 Fledge 在公开 GitHub issue 中 @ 我的账号，并引用脱敏后的反馈摘要。', 'I agree Fledge may @ my GitHub account in a public issue, citing a sanitized summary of this feedback.'))}</label>
       <p class="fine">${escapeHtml(t('不要粘贴 token、密码或他人的隐私信息。反馈会保存并邮件通知开发者。', 'Do not paste tokens, passwords or another person’s private data. The note is stored and mailed to the maintainer.'))}</p>
       <button class="btn" type="submit">${escapeHtml(t('发送反馈', 'Send feedback'))}</button>
     </form>
@@ -2552,6 +2553,7 @@ export function errorPage(
   const reportHtml = report === undefined ? '' : `<form method="post" action="/errors/${escapeHtml(report.ref)}/report" class="form">
       <p class="fine">${escapeHtml(t('报告只包含错误类型、消息、脱敏后的堆栈、页面、版本和时间；不包含请求体、query、cookie、token 或完整邮箱。', 'The report includes only the error type, message, redacted stack, page, version and time; not the request body, query, cookies, tokens or a full email address.'))}</p>
       <label class="check"><input type="checkbox" name="consent" value="1" required /> ${escapeHtml(t('我已知晓并授权 Fledge 平台读取这些失败数据用于定位问题。', 'I understand and authorize Fledge to read this failure data to diagnose the problem.'))}</label>
+      ${viewer === null ? '' : `<label class="check"><input type="checkbox" name="publish" value="1" /> ${escapeHtml(t('我同意 Fledge 在公开 GitHub issue 中 @ 我的账号，并引用脱敏后的摘要。', 'I agree Fledge may @ my GitHub account in a public issue with a sanitized summary.'))}</label>`}
       <button class="btn" type="submit">${escapeHtml(t('报告给开发者', 'Report to the maintainer'))}</button>
     </form>`
   return layout({
