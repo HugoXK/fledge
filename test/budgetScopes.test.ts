@@ -1,5 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import type { RepoRow } from '../src/db.js'
@@ -274,6 +277,41 @@ test('#697 a scope cap is one row per scope, replaces in place, and zero removes
     assert.throws(() => h.store.setBudgetScope({ kind: 'repository', id: repo.id, capCny: 1, action: 'stop' }), /action/i)
   } finally {
     h.store.close()
+  }
+})
+
+test('#697 the scope table is additive: a database that already has it opens again and keeps its rows', () => {
+  const config = testConfig()
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-scope-'))
+  const path = join(dir, 'fledge.sqlite')
+  const first = new Store(path)
+  const user = makeUser(first, { login: 'scope-migrate', status: 'approved' })
+  const repo = first.createRepo({
+    id: 'repo_scope_migrate',
+    userId: user.id,
+    owner: 'o',
+    name: 'r',
+    defaultBranch: 'main',
+    tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey),
+    permission: 'admin',
+    repoRole: 'maintainer',
+    goal: '',
+    autoIterate: false,
+    intervalMinutes: 1440,
+  } as Parameters<Store['createRepo']>[0])
+  first.setBudgetScope({ kind: 'repository', id: repo.id, capCny: 4, action: 'cancel' })
+  first.close()
+  // Opening the same file again runs the additive DDL a second time; the row
+  // from the first open has to survive it unchanged.
+  const second = new Store(path)
+  try {
+    assert.equal(second.getBudgetScope('repository', repo.id)?.cap_cny, 4)
+    assert.equal(second.getBudgetScope('repository', repo.id)?.action, 'cancel')
+    second.setBudgetScope({ kind: 'repository', id: repo.id, capCny: 5, action: 'pause' })
+    assert.equal(second.listBudgetScopes('repository').length, 1, 'the second open did not duplicate the table or the row')
+  } finally {
+    second.close()
+    rmSync(dir, { recursive: true, force: true })
   }
 })
 
