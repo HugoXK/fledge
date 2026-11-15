@@ -2267,11 +2267,7 @@ export function adminPage(input: {
   // the card names it as the running version and never claims a commit. A file
   // that is not in this build says so; a zero fragment count is a real fact.
   const absent = t('此构建中不可用', 'not available in this build')
-  const releaseFacts = `<div class="list">
-      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('运行版本', 'Running'))}</strong><small>${release.version === null ? escapeHtml(absent) : `v${escapeHtml(release.version)} · ${escapeHtml(t('来自 package.json', 'from package.json'))}`}</small></div></div>
-      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新 CHANGELOG 段落', 'Newest CHANGELOG section'))}</strong><small>${release.changelogVersion === null || release.releasedAt === null ? escapeHtml(absent) : `${escapeHtml(release.changelogVersion)} · ${escapeHtml(release.releasedAt)}`}</small></div></div>
-      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('待发布片段', 'Pending fragments'))}</strong><small>${release.fragments === null ? escapeHtml(absent) : release.fragments === 0 ? escapeHtml(t('没有待发布片段', 'nothing pending')) : escapeHtml(t(`${release.fragments} 个待发布片段`, `${release.fragments} pending fragment${release.fragments === 1 ? '' : 's'}`))}</small></div></div>
-    </div>`
+  const releaseFactsLine = `<p class="muted">${release.version === null ? escapeHtml(absent) : `v${escapeHtml(release.version)}`}${release.changelogVersion === null || release.releasedAt === null ? ` · ${escapeHtml(absent)}` : ` · CHANGELOG ${escapeHtml(release.changelogVersion)} · ${escapeHtml(release.releasedAt)}`}${release.fragments === null ? ` · ${escapeHtml(absent)}` : ` · ${release.fragments === 0 ? escapeHtml(t('没有待发布片段', 'nothing pending')) : escapeHtml(t(`${release.fragments} 个待发布片段`, `${release.fragments} pending fragment${release.fragments === 1 ? '' : 's'}`))}`}</p>`
   // Issue #280: the chain is assembled by `node scripts/verify-release.mjs` and
   // read from `${DATA_DIR}/release-status.json`; the page renders what that run
   // recorded and never calls GitHub itself. The running row is the only live
@@ -2299,10 +2295,6 @@ export function adminPage(input: {
     const pair = labels[id] ?? [id, id]
     return t(pair[0]!, pair[1]!)
   }
-  // The live row is the one that answers "is this process the tag?"; the stored
-  // `healthz` probe is a snapshot from `verify-release`, so rendering both
-  // repeats the same comparison at two different times. Skipped links are
-  // provenance (a deleted release branch, no local image), not actions.
   const running = releaseStatus === null
     ? null
     : compareRunning(releaseStatus, { version: release.version ?? '', commit: config.build.commit })
@@ -2318,19 +2310,33 @@ export function adminPage(input: {
       : running?.state === 'ok'
         ? t('已发布并运行', 'released and running')
         : t('已发布，运行实例不一致', 'published; running differs')
-  const chainRows = releaseStatus === null
-    ? `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('还没有记录发布链', 'No release chain is recorded'))}</strong><small>${escapeHtml(t('这不是错误：发布链只有在管理员于主机上记录过一次校验后才会出现。', 'This is expected, not an error: the chain appears only after an operator records a verification on the host.'))}</small></div></div>
+  const linkRow = (entry: { id: string; state: string; detail: string }): string =>
+    `<div class="list-row"><div class="list-main"><strong>${escapeHtml(linkLabel(entry.id))}</strong><small>${escapeHtml(entry.detail)}</small></div><div class="row">${stateBadge(entry.state)}</div></div>`
+  const problemLinks = visibleLinks.filter((entry) => entry.state === 'missing' || entry.state === 'mismatch')
+  const releaseProblemRows = problemLinks.map(linkRow).join('')
+  const fullRows = visibleLinks.map(linkRow).join('')
+  const releaseTone = releaseStatus !== null && releaseArtifactsOk && running?.state === 'ok' ? 'good' : 'bad'
+  const releaseDetails = releaseStatus === null
+    ? `<div class="list"><div class="list-row"><div class="list-main"><strong>${escapeHtml(t('还没有记录发布链', 'No release chain is recorded'))}</strong><small>${escapeHtml(t('这不是错误：发布链只有在管理员于主机上记录过一次校验后才会出现。', 'This is expected, not an error: the chain appears only after an operator records a verification on the host.'))}</small></div></div></div>
       <details class="advanced-help"><summary>${escapeHtml(t('在主机上记录发布链', 'Record it on the host'))}</summary><p class="fine">${escapeHtml(t('运行', 'Run'))} <code>node scripts/verify-release.mjs --version X.Y.Z --write &lt;DATA_DIR&gt;/release-status.json</code> ${escapeHtml(t('然后刷新此页。', 'then reload this page.'))}</p></details>`
-    : `${visibleLinks
-        .map(
-          (entry) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(linkLabel(entry.id))}</strong><small>${escapeHtml(entry.detail)}</small></div><div class="row">${stateBadge(entry.state)}</div></div>`,
-        )
-        .join('')}${running === null ? '' : `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('运行实例', 'Running instance'))}</strong><small>${escapeHtml(running.detail)}</small></div><div class="row">${stateBadge(running.state)}</div></div>`}`
+    : `<div class="list">
+        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('运行实例', 'Running instance'))}</strong><small>${escapeHtml(running?.detail ?? '')}</small></div><div class="row">${stateBadge(running?.state ?? 'unknown')}</div></div>
+        ${releaseProblemRows}
+        ${problemLinks.length === 0 ? `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('发布链', 'Release chain'))}</strong><small>${escapeHtml(t('所有发布产物一致；完整证据可展开。', 'All release artifacts agree; open the evidence for the full chain.'))}</small></div><div class="row">${stateBadge('ok')}</div></div>` : ''}
+      </div>
+      <details class="advanced-help"><summary>${escapeHtml(t('发布链证据', 'Release chain evidence'))}${releaseStatus.checkedAt === '' ? '' : ` · ${escapeHtml(t(`检查于 ${releaseStatus.checkedAt}`, `checked ${releaseStatus.checkedAt}`))}`}</summary><div class="list">${fullRows}</div></details>`
   const releaseCard = `<section class="card" id="release">
-    <h2>${escapeHtml(t('发布', 'Release'))}</h2>
-    ${releaseFacts}
-    <h3 class="mt-16">${escapeHtml(t('发布链', 'Release chain'))}${releaseStatus === null ? '' : ` <small class="count">v${escapeHtml(releaseStatus.version)} · ${escapeHtml(chainLabel)}${releaseStatus.checkedAt === '' ? '' : ` · ${escapeHtml(t(`检查于 ${releaseStatus.checkedAt}`, `checked ${releaseStatus.checkedAt}`))}`}${releaseStatus.releaseUrl === '' ? '' : ` · <a class="link" href="${escapeHtml(releaseStatus.releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(t('GitHub Release', 'GitHub Release'))}</a>`}</small>`}</h3>
-    <div class="list">${chainRows}</div>
+    <div class="row between">
+      <div>
+        <h2>${escapeHtml(t('发布与部署', 'Release & deployment'))}</h2>
+        ${releaseFactsLine}
+      </div>
+      <div class="row">
+        ${releaseStatus === null ? '' : `<span class="badge ${releaseTone}">${escapeHtml(chainLabel)}</span>`}
+        ${releaseStatus === null || releaseStatus.releaseUrl === '' ? '' : `<a class="link" href="${escapeHtml(releaseStatus.releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(t('GitHub Release', 'GitHub Release'))}</a>`}
+      </div>
+    </div>
+    ${releaseDetails}
   </section>`
 
   // The console can only show what the writer leaves on disk: a copy and its
@@ -2447,6 +2453,7 @@ export function adminPage(input: {
     ${showAudit ? `<a href="#audit" data-allow-overflow>${escapeHtml(t('审计', 'Audit'))}</a>` : ''}
     <a href="#release" data-allow-overflow>${escapeHtml(t('发布', 'Release'))}</a>
     <a href="#backups" data-allow-overflow>${escapeHtml(t('备份', 'Backups'))}</a>
+    <a href="#operations" data-allow-overflow>${escapeHtml(t('运维', 'Operations'))}</a>
   </nav>
   <section class="card" id="pending">
     <h2>${escapeHtml(t('待审批', 'Pending'))} <small class="count">${pending.length}</small></h2>
@@ -2468,9 +2475,8 @@ export function adminPage(input: {
   </section>` : ''}
   ${releaseCard}
   ${backupCard}
-  <section class="card">
-    <h2>${escapeHtml(t('运维工具', 'Operations'))}</h2>
-    <p class="muted">${escapeHtml(t('这些是独立的运维页面；下面的卡片把它们放在管理页的同一个入口里。', 'These are separate operations pages; the cards below collect them in one place on the admin page.'))}</p>
+  <section class="card" id="operations">
+    <div class="row between"><h2>${escapeHtml(t('运维工具', 'Operations'))}</h2><span class="fine">${escapeHtml(t('独立运维页面', 'separate operator pages'))}</span></div>
     <div class="admin-modules">
       ${superadmin ? `<a class="admin-module" href="/admin/metrics"><strong>${escapeHtml(t('产品指标', 'Product metrics'))}</strong><small>${escapeHtml(t('用户、任务、成本、失败分类和告警。', 'Users, jobs, cost, failure breakdown and alerts.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
       <a class="admin-module" href="/admin/webhooks"><strong>${escapeHtml(t('Webhook deliveries', 'Webhook deliveries'))}</strong><small>${escapeHtml(t('出站通知投递状态、重试和详情。', 'Outbound notification delivery state, retries and detail.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>` : ''}
