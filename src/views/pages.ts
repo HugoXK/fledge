@@ -299,6 +299,18 @@ function statusLabel(t: Translate, status: string): string {
   return labels[status] ?? status
 }
 
+// #805: a raw bridge error is not a status. Map the common transport failures to
+// one short sentence, and keep the original text for the technical disclosure.
+function instanceReason(t: Translate, error: string | null | undefined): string {
+  const text = String(error ?? '').toLowerCase()
+  if (text === '') return t('健康检查正常', 'Health check ok')
+  if (/\b502\b/.test(text)) return t('Bridge 返回 502', 'Bridge returned 502')
+  if (/fetch failed|econnrefused|enotfound|etimedout|network/.test(text)) return t('Bridge 无法连接', 'Bridge unreachable')
+  if (/container|docker|not running/.test(text)) return t('容器未运行', 'Container is not running')
+  if (/model|gateway|provider/.test(text)) return t('模型端点不可达', 'Model endpoint unreachable')
+  return t('健康检查失败', 'Health check failed')
+}
+
 // A webhook delivery stores its state as an internal code. The console names the
 // three states in the reader's language and keeps the code only as the filter
 // value, so `/admin/webhooks?status=` links keep filtering exactly as before.
@@ -1404,6 +1416,22 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     : runnable
       ? { body: t('立即运行会创建这个仓库的第一个任务；每次运行只开一个 PR。', 'Run now creates the first job for this repository; each run opens at most one pull request.'), action: { formAction: `/repos/${repo.id}/run`, label: t('立即运行', 'Run now'), csrf: csrf(viewer) } }
       : { body: t('先修复 FlyBot 实例或 GitHub 凭据，然后再运行。', 'Fix the FlyBot instance or the GitHub credential first, then run.'), action: { label: t('实例与凭据在本页的连接卡片里。', 'The instance and the credential are on the connection card of this page.') } }
+  const instanceHealthTone = config.flybot.instanceImage === ''
+    ? 'busy'
+    : instance === undefined
+      ? 'busy'
+      : instance.status === 'ready'
+        ? 'good'
+        : instance.status === 'failed' ? 'bad' : 'busy'
+  const instanceHealthStatus = config.flybot.instanceImage === ''
+    ? t('未启用', 'not enabled')
+    : instance === undefined ? t('未创建', 'not created') : statusLabel(t, instance.status)
+  const instanceHealthReason = config.flybot.instanceImage === ''
+    ? t('这个部署没有启用每仓库 FlyBot 实例。', 'This deployment has no per-repository FlyBot instance.')
+    : instance === undefined
+      ? t('实例尚未创建。', 'The instance has not been created yet.')
+      : instance.status === 'ready' ? t('健康检查正常', 'Health check ok') : instanceReason(t, instance.last_error)
+  const instanceLastHealth = instance === undefined || instance.last_health_at === null ? t('未知', 'unknown') : humanTimeShort(instance.last_health_at)
   // #472 slice 3: the instance state is a page-level message, not a banner in the
   // team card. `failed` is an error; any other non-ready state is informational.
   if (config.flybot.instanceImage === '') {
@@ -1414,7 +1442,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     pageMessages.push({
       level: instance.status === 'failed' ? 'error' : 'warning',
       key: 'instance-status',
-      text: `${t(`FlyBot 实例状态：${statusLabel(t, instance.status)}`, `FlyBot instance status: ${statusLabel(t, instance.status)}`)}${instance.last_error === null ? '' : ` · ${instance.last_error}`}`,
+      text: `${t('FlyBot 实例：', 'FlyBot instance: ')}${instanceHealthStatus} · ${instanceHealthReason}`,
     })
   }
   const instanceActions = config.flybot.instanceImage === ''
@@ -1486,12 +1514,14 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     <p class="muted">${escapeHtml(t('读出开着的 issue 和 PR，按优先级排序、标出重复项，并点名下一项。只读：不开分支，也不开 PR。', 'Reads the open issues and pull requests, ranks them by priority, links duplicates and names the next item. Read-only: no branch and no pull request.'))}</p>
     ${triageForm}
   </section>`
-  const instanceCard = `<section class="card">
+  const instanceCard = `<section class="card" data-instance-health>
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('每仓库 FlyBot', 'PER-REPOSITORY FLYBOT'))}</div>
         <h2>${escapeHtml(advanced ? t('实例与团队', 'Instance & team') : t('FlyBot 状态', 'FlyBot status'))}</h2>
-        <p class="muted">${instance === undefined ? escapeHtml(t('未创建', 'Not created')) : `${badge(t, instance.status)}${advanced ? ` <span class="muted">${escapeHtml(instance.container)}</span>` : ''}`}${instanceReady && advanced ? ` · ${escapeHtml(t('任务先发给总控，再由负责人执行', 'jobs go to the Chief, then the Lead'))}` : ''}</p>
+        <p class="muted"><span class="badge ${instanceHealthTone}">${escapeHtml(instanceHealthStatus)}</span> · ${escapeHtml(instanceHealthReason)}</p>
+        <p class="fine">${escapeHtml(t('最近检查', 'Last health check'))} ${escapeHtml(instanceLastHealth)}${advanced && instance !== undefined ? ` · ${escapeHtml(instance.container)}` : ''}${instanceReady && advanced ? ` · ${escapeHtml(t('任务先发给总控，再由负责人执行', 'jobs go to the Chief, then the Lead'))}` : ''}</p>
+        ${instance === undefined || instance.last_error === null ? '' : `<details class="advanced-help"><summary>${escapeHtml(t('技术详情', 'Technical detail'))}</summary><pre>${escapeHtml(instance.last_error)}</pre></details>`}
       </div>
       ${advanced ? instanceActions : ''}
     </div>

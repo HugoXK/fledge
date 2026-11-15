@@ -2064,3 +2064,34 @@ test('both repository lists translate the reviewer badge', () => {
     store.close()
   }
 })
+
+test('a failed FlyBot instance shows a human reason and keeps the raw error behind details', async () => {
+  const config = testConfig({ flybot: { ...testConfig().flybot, instanceImage: 'image' } })
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'instance-health-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_instance_health', userId: user.id, owner: 'o', name: 'health', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.saveRepoInstance({
+      repo_id: repo.id, user_id: user.id, container: 'fledge-health', network: 'n', data_dir: '/tmp/health', bridge_script: '/tmp/bridge',
+      dsh_port: 1, bridge_port: 2, model_port: 3, model_bind: '127.0.0.1', image: 'image', status: 'failed', chief_session: 'c',
+      team_json: null, bridge_token_enc: 'x', bridge_pid: null, log_pid: null, last_error: 'TypeError: fetch failed',
+      created_at: '2026-11-15T08:00:00.000Z', updated_at: '2026-11-15T08:00:00.000Z', last_health_at: '2026-11-15T08:00:00.000Z',
+    })
+    const { cookie } = sessionFor(built, user)
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    const cardIndex = page.body.indexOf('data-instance-health')
+    assert.notEqual(cardIndex, -1, 'the Team section has the structured instance card')
+    const beforeCard = page.body.slice(0, cardIndex)
+    assert.match(beforeCard, /Bridge 无法连接/, 'the page message names the human reason')
+    assert.doesNotMatch(beforeCard, /TypeError: fetch failed/, 'the raw error is not the page-level message')
+    const card = page.body.slice(cardIndex)
+    assert.match(card, /失败/)
+    assert.match(card, /Bridge 无法连接/)
+    assert.match(card, /技术详情/)
+    assert.match(card, /TypeError: fetch failed/)
+  } finally {
+    await built.close()
+  }
+})
