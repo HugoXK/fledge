@@ -661,15 +661,19 @@ function setupSection(setup: SetupState | undefined, t: Translate, primaryElsewh
       const current = checklist.next?.key === step.key
       const mark = step.done ? '✓' : String(index + 1)
       const status = step.done
-        ? `<span class="setup-done">${escapeHtml(t('已完成', 'Done'))}</span>`
+        ? `<span class="setup-done">${escapeHtml(step.note ?? t('已完成', 'Done'))}</span>`
         : step.blocked === null
           ? ''
           : `<span class="setup-blocked">${escapeHtml(step.blocked)}</span>`
       // #230: when the next-action block already renders this step's button,
       // the checklist is the detail of that action and must not repeat it.
+      // An optional completed step still offers its upgrade link (add an own
+      // model), because platform quota already satisfies the step.
       const action = current && step.blocked === null && !primaryElsewhere
         ? `<a class="btn btn-small" data-setup-primary href="${escapeHtml(step.action.href)}">${escapeHtml(step.action.label)}</a>`
-        : ''
+        : step.optional === true && step.done
+          ? `<a class="link" href="${escapeHtml(step.action.href)}">${escapeHtml(step.action.label)}</a>`
+          : ''
       return `<li class="setup-step${step.done ? ' is-done' : ''}${current ? ' is-current' : ''}" data-setup-step="${step.key}"${current ? ' aria-current="step"' : ''}>
         <span class="setup-mark" aria-hidden="true">${mark}</span>
         <div class="setup-main"><strong>${escapeHtml(step.title)}</strong>${status}</div>
@@ -1005,7 +1009,7 @@ export function dashboardPage(input: {
     : repos
         .map(
           (repo) => `<tr data-repo-id="${escapeHtml(repo.id)}">
-            <td data-label="${escapeHtml(t('仓库', 'Repository'))}"><a href="/repos/${escapeHtml(repo.id)}"><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></a>${repo.is_fork === 1 ? `<br /><small class="muted">${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}</small>` : ''} <span class="badge kind">${escapeHtml(repoRoleLabel(t, repo.repo_role))}</span>${repo.reviewer_enabled === 1 ? ' <span class="badge">reviewer</span>' : ''}${repo.repo_role === null ? `<br /><small class="muted">${escapeHtml(t('打开仓库选择角色', 'Open the repository to choose a role'))}</small>` : ''}</td>
+            <td data-label="${escapeHtml(t('仓库', 'Repository'))}"><a href="/repos/${escapeHtml(repo.id)}"><strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong></a>${repo.is_fork === 1 ? `<br /><small class="muted">${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}</small>` : ''} <span class="badge kind">${escapeHtml(repoRoleLabel(t, repo.repo_role))}</span>${repo.reviewer_enabled === 1 ? ` <span class="badge">${escapeHtml(t('审核者', 'Reviewer'))}</span>` : ''}${repo.repo_role === null ? `<br /><small class="muted">${escapeHtml(t('打开仓库选择角色', 'Open the repository to choose a role'))}</small>` : ''}</td>
             <td data-label="${escapeHtml(t('模式', 'Mode'))}">${repo.auto_iterate === 1 ? `<span class="badge good">${escapeHtml(t('自动工作', 'Auto work'))}</span>` : `<span class="badge">${escapeHtml(t('手动', 'Manual'))}</span>`}</td>
             <td data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, repo.last_status ?? 'idle')}</td>
             <td data-label="${escapeHtml(t('上次运行', 'Last run'))}">${escapeHtml(humanTimeShort(repo.last_run_at))}</td>
@@ -2556,7 +2560,7 @@ export function workspacePage(input: {
               <strong>${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)}</strong>
               <small>${repo.auto_iterate === 1 ? `${escapeHtml(t('自动工作', 'Auto work'))}` : escapeHtml(t('手动', 'Manual'))} · ${escapeHtml(t('上次运行', 'Last run'))} ${escapeHtml(humanTimeShort(repo.last_run_at))}${repo.is_fork === 1 ? ` · ${escapeHtml(t('fork', 'fork'))} ${escapeHtml(repo.fork_owner)}/${escapeHtml(repo.fork_name)}` : ''}</small>
             </div>
-            <div class="list-meta">${badge(t, repo.last_status ?? 'idle')}${repo.reviewer_enabled === 1 ? ' <span class="badge">reviewer</span>' : ''}</div>
+            <div class="list-meta">${badge(t, repo.last_status ?? 'idle')}${repo.reviewer_enabled === 1 ? ` <span class="badge">${escapeHtml(t('审核者', 'Reviewer'))}</span>` : ''}</div>
           </a>`,
         )
         .join('')}</div>
@@ -2712,7 +2716,11 @@ export function jobPage(input: {
   // #357: a budget stop is not a failure category — the job stopped on purpose
   // and the only useful next step is the budget. The reason string carries the
   // observed cost, so the page says both without a second lookup.
-  const budgetStop = (job.error ?? '').startsWith('JOB_BUDGET_') ? redact((job.error ?? '').replace(/^JOB_BUDGET_(PAUSED|CANCELLED):\s*/, '')) : ''
+  // #409: the sentence is written by the job service in Chinese; localise it
+  // before the code prefix is stripped, so the banner body follows the reader.
+  const budgetStop = (job.error ?? '').startsWith('JOB_BUDGET_')
+    ? redact((localizeMessage(locale, job.error ?? '') ?? '').replace(/^JOB_BUDGET_(PAUSED|CANCELLED):\s*/, ''))
+    : ''
   const attribution = jobAttribution(t, job)
   // #358: which model actually answered, and what it fell through. A job whose
   // primary was rate-limited finished on another model, so the page must name the

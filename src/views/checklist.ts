@@ -12,6 +12,8 @@ export interface SetupState {
   repos: number
   roleChosen: boolean
   modelConfigured: boolean
+  /** The platform model is configured and the user's platform quota is not exhausted. */
+  platformAvailable: boolean
   instanceReady: boolean
   jobs: number
   // Status of the account's *first* job, all-time, not a window-scoped count:
@@ -29,6 +31,9 @@ export interface SetupStep {
   done: boolean
   action: { href: string; label: string }
   blocked: string | null
+  /** Satisfied by the platform quota rather than an own provider. */
+  optional?: boolean
+  note?: string
 }
 
 export interface SetupChecklist {
@@ -67,16 +72,27 @@ export function setupChecklist(state: SetupState, t: Translate): SetupChecklist 
     {
       key: 'model',
       title: t('添加模型提供方', 'Add a model provider'),
-      done: state.modelConfigured,
-      action: { href: '/settings#model-providers', label: t('打开「设置 → 模型」', 'Open Settings → Model') },
-      blocked: state.roleChosen ? null : t('先选择你的角色。', 'Choose your role first.'),
+      // The gateway falls back to the platform model when the user has not
+      // configured one. The step is therefore already satisfied while the
+      // platform model is available and the quota is not exhausted; adding an
+      // own provider is an optional upgrade, not a prerequisite for the first run.
+      done: state.modelConfigured || state.platformAvailable,
+      optional: state.platformAvailable && !state.modelConfigured,
+      note: state.platformAvailable && !state.modelConfigured ? t('使用平台额度（默认）', 'Using platform quota (default)') : undefined,
+      action: {
+        href: '/settings#model-providers',
+        label: state.platformAvailable && !state.modelConfigured
+          ? t('添加自己的模型（可选）', 'Add your own model (optional)')
+          : t('打开「设置 → 模型」', 'Open Settings → Model'),
+      },
+      blocked: state.platformAvailable ? null : state.roleChosen ? null : t('先选择你的角色。', 'Choose your role first.'),
     },
     {
       key: 'instance',
       title: t('启动 FlyBot 实例', 'Start the FlyBot instance'),
       done: state.instanceReady,
       action: { href: repoHref, label: t('打开仓库启动', 'Open the repository') },
-      blocked: !state.modelConfigured ? t('先添加一个模型。', 'Add a model first.') : null,
+      blocked: !state.modelConfigured && !state.platformAvailable ? t('先添加一个模型。', 'Add a model first.') : null,
     },
     {
       key: 'job',

@@ -28,6 +28,7 @@ const completeSetup: SetupState = {
   repos: 1,
   roleChosen: true,
   modelConfigured: true,
+  platformAvailable: true,
   instanceReady: true,
   jobs: 1,
   firstJobStatus: 'succeeded',
@@ -193,7 +194,7 @@ test('the all-clear names the repository that runs next, not one with no known r
 })
 
 test('an unfinished first run keeps exactly one primary action, in the next-action block', () => {
-  const setup: SetupState = { repos: 1, roleChosen: false, modelConfigured: false, instanceReady: false, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: '/repos/repo_1' }
+  const setup: SetupState = { repos: 1, roleChosen: false, modelConfigured: false, platformAvailable: false, instanceReady: false, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: '/repos/repo_1' }
   const html = render('en', { setup })
   const section = nextActionBlock(html)
   assert.match(section, /data-next-action="setup"/)
@@ -204,6 +205,23 @@ test('an unfinished first run keeps exactly one primary action, in the next-acti
   assert.match(html, /id="setup"/, 'the checklist stays, as the detail of that action')
   assert.match(html, /data-setup-next="role"/)
   assert.match(html, /aria-current="step"/)
+})
+
+test('platform quota satisfies the model step, so the next action is the instance', () => {
+  const setup: SetupState = { repos: 1, roleChosen: true, modelConfigured: false, platformAvailable: true, instanceReady: false, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: '/repos/repo_1' }
+  const html = render('en', { setup })
+  const section = nextActionBlock(html)
+  assert.match(section, /data-next-action="setup"/)
+  assert.match(section, /Start the FlyBot instance/, 'the platform-funded first run advances past the model step')
+  assert.doesNotMatch(section, /Add a model provider/, 'an optional model step is not the primary action')
+  assert.match(html, /Using platform quota/, 'the checklist still says where the model comes from')
+})
+
+test('without platform quota the missing model is still the next action', () => {
+  const setup: SetupState = { repos: 1, roleChosen: true, modelConfigured: false, platformAvailable: false, instanceReady: false, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: '/repos/repo_1' }
+  const section = nextActionBlock(render('en', { setup }))
+  assert.match(section, /data-next-action="setup"/)
+  assert.match(section, /Add a model provider/)
 })
 
 test('secondary sections collapse into one disclosure and lose nothing', () => {
@@ -222,7 +240,7 @@ test('secondary sections collapse into one disclosure and lose nothing', () => {
 })
 
 test('the disclosure opens when the next action points inside it', () => {
-  const setup: SetupState = { repos: 0, roleChosen: false, modelConfigured: false, instanceReady: false, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: null }
+  const setup: SetupState = { repos: 0, roleChosen: false, modelConfigured: false, platformAvailable: false, instanceReady: false, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: null }
   const html = render('en', { setup })
   const section = nextActionBlock(html)
   assert.deepEqual(targets(section), ['#add-repo'], 'the first step is adding a repository')

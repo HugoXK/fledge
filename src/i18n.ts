@@ -259,6 +259,15 @@ export function localizeMessage(locale: Locale, message: string | undefined): st
       .join(', ')
     return `Merged ${count} ${count === '1' ? 'pull request' : 'pull requests'}${skipped === '' ? '' : `, ${skipped}`}.`
   }
+  // #409: the per-job budget stop writes its reason with the submitted cost and
+  // the repository budget interpolated, and `budgetStop` strips the code prefix
+  // afterwards — so the arm has to keep the prefix to stay a drop-in localiser.
+  const jobBudgetStop = /^JOB_BUDGET_(PAUSED|CANCELLED): 单任务成本 ([\d.]+) 元已超过预算 ([\d.]+) 元。提高单任务预算后(从断点恢复，或)?重新开始任务。$/.exec(message)
+  if (jobBudgetStop !== null) {
+    const paused = jobBudgetStop[1] === 'PAUSED'
+    const action = paused ? 'Resume from the checkpoint once the budget is raised, or start the job again.' : 'Start the job again once the budget is raised.'
+    return `JOB_BUDGET_${jobBudgetStop[1] ?? ''}: this job cost ${jobBudgetStop[2] ?? ''} CNY, over its ${jobBudgetStop[3] ?? ''} CNY per-job budget. ${action}`
+  }
   const modelsSaved = /^(\d+) 个模型已通过测试并保存(?:；失败：([\s\S]+))?$/.exec(message)
   if (modelsSaved !== null) {
     const count = modelsSaved[1] ?? '0'
@@ -302,6 +311,9 @@ export const ZH_TO_EN: ReadonlyArray<readonly [RegExp, Localizer]> = [
   // `${job.kind}` verbatim, so the kind is read as data rather than enumerated.
   [/^(\S+) 任务 (\S+) 缺少阶段证据：([\s\S]+)$/, (m) => `The ${m[1]} job ${m[2]} is missing stage evidence: ${m[3]}`],
   [/^任务 (\S+) 成本 ([\d.]+) 元，超过单任务预算 ([\d.]+) 元。$/, (m) => `Job ${m[1]} cost ${m[2]} CNY, over its ${m[3]} CNY single-job budget.`],
+  // #409: the stop's notification is a second, different sentence from the reason
+  // in the same function; the dashboard reaches it through `localizeNotification`.
+  [/^任务 (\S+) 因单任务预算(取消|暂停)：已用 ([\d.]+) 元，预算 ([\d.]+) 元。提高预算或重新开始任务。$/, (m) => `Job ${m[1]} was ${m[2] === '取消' ? 'cancelled' : 'paused'} for its per-job budget: ${m[3]} CNY used, ${m[4]} CNY budget. Raise the budget or start the job again.`],
   [/^任务 (\S+) 属于临时失败，将在约 (\d+) 分钟后自动重试。$/, (m) => `Job ${m[1]} hit a temporary failure; it will retry automatically in about ${m[2]} minutes.`],
   [/^任务 (\S+) 的 PR 改动的文件列表不完整，无法确认路径约束，已阻止合并：([\s\S]+)$/, (m) => `The PR for job ${m[1]} has an incomplete changed-file list, so the path constraint could not be confirmed and the merge was blocked: ${m[2]}`],
   [/^任务 (\S+) 改动的文件列表不完整，无法确认路径约束：([\s\S]+)$/, (m) => `Job ${m[1]} has an incomplete changed-file list, so the path constraint could not be confirmed: ${m[2]}`],

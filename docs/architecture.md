@@ -104,9 +104,17 @@ defect.
   step's state is read from the database on the request, so a cookie, a second
   browser or a cleared store cannot change which step is next. The pure state
   machine decides the single primary action; a step whose prerequisite is
-  missing states the reason instead of offering a control. Once a job exists the
-  checklist is replaced by a first-run summary whose outcome is the first job's
-  own status, read all-time (not a window-scoped count), in four shapes: the
+  missing states the reason instead of offering a control. The model-provider
+  step is optional while the platform model is configured
+  (`PLATFORM_LLM_BASE_URL` and `PLATFORM_LLM_KEY`) and the account's platform
+  quota is not exhausted: it reads as satisfied by the platform quota, keeps the
+  own-provider link as an optional upgrade, and does not block the instance or
+  the first job. Once the quota is exhausted or the platform model is not
+  configured, the same step becomes required again; the answer is derived from
+  the rows and config on every request, so no skip cookie or second store is
+  needed. Once a job exists the checklist is replaced by a first-run summary
+  whose outcome is the first job's own status, read all-time (not a
+  window-scoped count), in four shapes: the
   job's PR link when it opened one, "finished" with a link to Recent jobs when it
   succeeded without a PR, "running" while it is queued or running, and the retry
   path on the repository page when it failed.
@@ -2062,9 +2070,11 @@ The page is the only surface a maintainer reads, so every outcome lands there:
 `?release=1&refused=<reason>` renders the refusal (with the suggested version)
 above the form, and `?release=1&tagged=<tag>` confirms the tag that was created.
 A name that already has a `repo_releases` row is a re-tag: the row is updated in
-place to the new `target_sha` and `tag_object_sha` (keeping its `created_at`),
-`status` stays `tagged`, `updated_at` moves forward, the audit appends a new
-`release.tagged` row, and `?release=1&tagged=<tag>&retagged=1` renders the
+place to the new `target_sha`, `tag_object_sha`, `user_id` and preflight (the
+previous tag and the actor of this tag), keeping its `created_at`, so the row
+describes the action that produced the state it shows rather than the first
+tagger. `status` stays `tagged`, `updated_at` moves forward, the audit appends a
+new `release.tagged` row, and `?release=1&tagged=<tag>&retagged=1` renders the
 re-tag wording instead of the created-tag banner or a refusal. A refusal from
 the ref write that is not a 422 reports only `the tag reference was refused by
 GitHub (HTTP <status>); nothing was moved or deleted`; the upstream body text is
