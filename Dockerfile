@@ -1,4 +1,8 @@
-FROM node:22-alpine AS build
+# #647: both stages are pinned by digest, so a moving `node:22-alpine` tag cannot
+# swap the toolchain under a build whose diff says nothing about it. Update both
+# lines together from the digest a fresh pull resolved;
+# test/dockerfilePins.test.ts rejects any FROM without @sha256:<64 lowercase hex>.
+FROM node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
@@ -9,7 +13,7 @@ COPY src ./src
 COPY scripts ./scripts
 RUN npm run build
 
-FROM node:22-alpine AS runtime
+FROM node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS runtime
 # #183: the build identity. The build stage has no `.git`, so the commit can
 # only reach the image through these two build args; `/healthz` serves them so a
 # deploy can be named from outside. An unstamped local build answers `unknown`
