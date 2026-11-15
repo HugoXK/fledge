@@ -24,7 +24,9 @@ import { json, makeUser, MemoryMailer, formBody, sessionFor, startFakeServer, te
 const CJK = /[\u3400-\u9fff]/
 
 function banner(html: string): string {
-  return /<div class="banner bad" role="alert">([\s\S]*?)<\/div>/.exec(html)?.[1] ?? ''
+  // #472: the failure is one message inside the page's stack, so its text is the
+  // span the stack renders, not a div that owned its own `role="alert"`.
+  return /<span class="banner-text">([\s\S]*?)<\/span><button/.exec(html)?.[1] ?? ''
 }
 
 function fixture(): { store: Store; userId: string; repo: ReturnType<Store['createRepo']> } {

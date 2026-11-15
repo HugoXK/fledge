@@ -112,7 +112,9 @@ test('a bounce from a page that already carries a notice returns exactly one not
     assert.equal(page.statusCode, 200)
     assert.match(
       page.body,
-      /<div class="banner ok" role="status">[^<]*(重新用 GitHub 确认|re-authenticat)[^<]*<\/div>/,
+      // #472: the notice is one message in the page's stack, announced by the
+      // stack's single polite region rather than by its own `role="status"`.
+      /<span class="banner-text">[^<]*(重新用 GitHub 确认|re-authenticat)[^<]*<\/span>/,
       'the returned page must show the re-auth notice inside the banner',
     )
     assert.equal(store.getRepo(repo.id) !== undefined, true, 'a refused delete must not remove the repository')

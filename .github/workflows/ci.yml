@@ -71,24 +71,27 @@ jobs:
           EVENT: ${{ github.event_name }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           GROUP_BASE: ${{ github.event.merge_group.base_sha }}
           GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+          GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
         run: |
           set -euo pipefail
-          file="$RUNNER_TEMP/changed-paths.txt"
+          ref=""
           case "$EVENT" in
-            pull_request) base="$PR_BASE"; head="$PR_HEAD" ;;
-            merge_group) base="$GROUP_BASE"; head="$GROUP_HEAD" ;;
+            pull_request) base="$PR_BASE"; head="$PR_HEAD"; ref="$PR_BASE_REF" ;;
+            merge_group) base="$GROUP_BASE"; head="$GROUP_HEAD"; ref="$GROUP_BASE_REF" ;;
             *) node scripts/ci-changes.mjs --all; exit 0 ;;
           esac
-          # A fork head may not be in this checkout; a failed diff runs every
-          # gate rather than guessing that a heavy one is unnecessary.
-          if git diff --name-only --no-renames "$base...$head" > "$file"; then
-            node scripts/ci-changes.mjs --from-file "$file"
-          else
-            echo "cannot diff $base...$head; running every gate" >&2
-            node scripts/ci-changes.mjs --all
-          fi
+          # #752: a branch cut before the latest `main` names a base commit that
+          # this checkout does not carry, so the two-commit diff could not be
+          # computed and the step fell through to `--all`: every gate ran, and
+          # `codeql-required` then spent its full bound waiting for an analysis
+          # CodeQL never starts for an ignored path. The script fetches the base
+          # and retries; the conservative every-gate answer is still its last
+          # resort, and it lives there where the suite can drive it.
+          node scripts/ci-changes.mjs --git-base "$base" --git-head "$head" --base-ref "$ref"
+
   lint:
     name: lint
     needs: changes

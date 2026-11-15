@@ -32,7 +32,7 @@ import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verifi
 import { parseAdversarialRecord, type AdversarialRecord } from '../lib/adversarialReview.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
-import { readBackupStatus, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus } from '../lib/backupStatus.js'
+import { readBackupStatus, readRestoreDrill, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus, type RestoreDrillStatus } from '../lib/backupStatus.js'
 import { classifyFailure, failureLabel, failureSentence, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { filterTrials, trialCounts, trialStateOf, TRIAL_DAYS, type TrialCandidateSource, type TrialFilter } from '../lib/trials.js'
 import { STAGE_MODES } from '../lib/stages.js'
@@ -780,7 +780,10 @@ function nextScheduledRun(input: { repos: RepoRow[]; facts: NextRunFact[]; confi
         repo,
         line: plannedNextLine(scheduled, t),
         at: scheduled.at,
-        runnable: scheduled.kind !== 'unreadable' && scheduled.at !== null,
+        // #723: a paused repository keeps its row but is never a candidate; the
+        // route already withholds the row's answer for it, so this is the same
+        // condition stated where the choice is made.
+        runnable: repo.enabled === 1 && scheduled.kind !== 'unreadable' && scheduled.at !== null,
       }
     }
     const state = nextRun({
@@ -1517,6 +1520,13 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     <p class="muted">${escapeHtml(t('查看已提出的门禁计划和确认状态。确认只记录决定，不会写入仓库。', 'Read the proposed gate plans and their confirmation state. Confirming records the decision only; it writes nothing to the repository.'))}</p>
     <p><a class="link" href="/repos/${escapeHtml(repo.id)}/gate">${escapeHtml(t('打开仓库门禁', 'Open repository gate'))}</a></p>
   </section>`
+  // #538: console overrides sit between the repository file and the built-in
+  // behaviour. The page is maintainer-only, so the entry point is too.
+  const rulesCard = repo.repo_role !== 'maintainer' ? '' : `<section class="card" id="repo-rules">
+    <h2>${escapeHtml(t('仓库规则覆盖', 'Repository rule overrides'))}</h2>
+    <p class="muted">${escapeHtml(t('仓库文件优先；没有仓库文件时，可以用控制台覆盖三个规则文件。', 'A repository file wins; when there is none, a console override can supply the three rule files.'))}</p>
+    <p><a class="link" href="/repos/${escapeHtml(repo.id)}/rules">${escapeHtml(t('打开规则覆盖', 'Open rule overrides'))}</a></p>
+  </section>`
   // #234: the page was one long column of sixteen cards, so the things a user
   // acts on sat under configuration. The six sections below are a regroup of
   // cards that already render here - nothing new is computed - and #overview is
@@ -1655,7 +1665,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}</span> <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form></li>`
     }).join('')}</ul>`}
   </section>`
-  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${planBanner}${lifecycleBanner}${triageCard}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceNotice}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
+  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${planBanner}${lifecycleBanner}${triageCard}${appAttribution ? `<div class="banner">${escapeHtml(t('当前 GitHub App 操作的 issue / PR 会以 Fledge-Platform 身份创建。重新用 GitHub 登录并授予 repo 权限后，将以你的身份创建。', 'GitHub App issue/PR actions are currently attributed to Fledge-Platform. Re-authorize your GitHub account with repo access to create them as yourself.'))} <a class="link" href="/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repo.id}`)}">${escapeHtml(t('重新授权 GitHub', 'Re-authorize GitHub'))}</a></div>` : ''}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workBoard}${workCard}`)}${repoSection('team', `${roleCard}${instanceNotice}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : `<script src="${assetUrl('/assets/chief.js')}" defer></script>`}<script src="${assetUrl('/assets/repoTabs.js')}" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error })
 }
 
@@ -2165,6 +2175,8 @@ export function adminPage(input: {
   releaseStatus?: ReleaseStatusSnapshot | null
   /** Defaults to reading `config.backup.dir`; a test passes a fixture directory. */
   backup?: BackupStatus
+  /** Defaults to reading `<dataDir>/backup-drill.json`; a test passes a fixture record. */
+  drill?: RestoreDrillStatus | null
   /**
    * `jobs.platformStop()` read fresh for this request. Null means the platform is
    * running; `{at:'', by:'', reason:''}` means the row exists but cannot be parsed,
@@ -2175,6 +2187,7 @@ export function adminPage(input: {
   const { config, locale, viewer, users, jobs, jobsPage, jobsTotal, audit, auditPage, auditTotal, perPage, activity, notice, error } = input
   const release = input.release ?? releaseSurface()
   const backup = input.backup ?? readBackupStatus({ dir: config.backup.dir, expectedHours: config.backup.expectedIntervalHours })
+  const drill = input.drill === undefined ? readRestoreDrill(`${config.dataDir}/backup-drill.json`) : input.drill
   const mailFailedUsers = input.mailFailedUsers ?? new Set<string>()
   const superadmin = input.superadmin === true
   const preview = input.preview === true
@@ -2327,37 +2340,49 @@ export function adminPage(input: {
       ? t(`${backupHours(newest.ageHours)}，超过预期的 ${backup.expectedHours} 小时`, `${backupHours(newest.ageHours)}, older than the expected ${backup.expectedHours} hours`)
       : t(`${backupHours(newest.ageHours)}，在预期的 ${backup.expectedHours} 小时以内`, `${backupHours(newest.ageHours)}, within the expected ${backup.expectedHours} hours`)
   const copyCount = backup.copies.length === 1 ? t('1 个副本', '1 copy') : t(`${backup.copies.length} 个副本`, `${backup.copies.length} copies`)
+  const encryptedCount = backup.encrypted === 0
+    ? null
+    : backup.encrypted === 1
+      ? t('1 个加密副本', '1 encrypted copy')
+      : t(`${backup.encrypted} 个加密副本`, `${backup.encrypted} encrypted copies`)
   // One sentence per kind of fact, so a copy that was never compared is never
-  // summed into "does not match": only `differs` counts a contradiction, and
-  // copies without a manifest and copies whose sha256 was not read say so in
-  // their own words.
+  // summed into "does not match": only `differs` counts a contradiction. A
+  // missing manifest is a fact worth a clause, not a row per legacy copy;
+  // sha256 is only read on the newest copy, so it is not a warning for the rest.
   const differingText = backup.differing === 1
     ? t('1 个与清单不符', '1 differs from its manifest')
     : t(`${backup.differing} 个与清单不符`, `${backup.differing} differ from their manifest`)
-  const unmanifested = backup.copies.filter((copy) => copy.manifest === 'missing' || copy.manifest === 'unreadable').length
-  const unhashed = backup.copies.filter((copy) => copy.manifest === 'not-checked' || copy.manifest === 'size-only').length
+  const unmanifested = backup.copies.filter((copy) => copy.manifest === 'missing').length
   const copyAgreement = backup.copies.length === 0
     ? t('没有副本可核对', 'nothing to check')
     : [
         backup.differing === 0 ? t('没有副本与清单不符', 'no copy differs from its manifest') : differingText,
         unmanifested === 0 ? null : t(`${unmanifested} 个没有清单`, `${unmanifested} without a manifest`),
-        unhashed === 0 ? null : t(`${unhashed} 个未核对 sha256`, `${unhashed} with sha256 not checked`),
       ].filter((part): part is string => part !== null).join(' · ')
-  const mismatchRows = backup.copies
-    .filter((copy) => copy.manifest !== 'matches')
+  // Only a copy a manifest contradicts, or one whose manifest cannot be read,
+  // is a row. Size-only and legacy copies are summarised above: listing every
+  // one of them buried the two states an operator can act on.
+  const problemRows = backup.copies
+    .filter((copy) => copy.manifest === 'differs' || copy.manifest === 'unreadable')
     .map((copy) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(copy.name)}</strong><small>${escapeHtml(manifestText(copy))} · ${escapeHtml(backupSize(copy.sizeBytes))} · ${escapeHtml(humanTimeShort(copy.createdAt))}</small></div></div>`)
     .join('')
+  const copiesLine = [copyCount, encryptedCount, copyAgreement]
+    .filter((part): part is string => part !== null)
+    .join(' · ')
+  const drillText = drill === null
+    ? t('没有记录', 'none recorded')
+    : `${humanTimeShort(drill.at)} · ${drill.ok ? t('成功', 'ok') : t('失败', 'failed')}${drill.detail === null ? '' : ` · ${drill.detail}`}`
   const backupCard = `<section class="card" id="backups">
     <h2>${escapeHtml(t('备份', 'Backups'))}</h2>
     <div class="list">
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新副本', 'Newest copy'))}</strong><small>${newest === null ? escapeHtml(t('还没有记录备份副本', 'No backup copy recorded yet')) : `${escapeHtml(newest.name)} · ${escapeHtml(backupSize(newest.sizeBytes))} · ${escapeHtml(humanTimeShort(newest.createdAt))}`}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('新鲜度', 'Freshness'))}</strong><small>${escapeHtml(freshness)}</small></div></div>
-      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('副本数', 'Copies'))}</strong><small>${escapeHtml(copyCount)} · ${escapeHtml(copyAgreement)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('副本数', 'Copies'))}</strong><small>${escapeHtml(copiesLine)}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新副本的清单', 'Newest manifest'))}</strong><small>${newest === null ? escapeHtml('—') : escapeHtml(manifestText(newest))}</small></div></div>
-      ${mismatchRows}
-      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('恢复演练', 'Restore drill'))}</strong><small>${escapeHtml(t('没有记录', 'none recorded'))}</small></div></div>
+      ${problemRows}
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('恢复演练', 'Restore drill'))}</strong><small>${escapeHtml(drillText)}</small></div></div>
     </div>
-    <p class="muted">${escapeHtml(t('只读：本卡片列出备份目录并核对清单，不会打开正在备份的数据库，也没有备份、恢复或删除按钮。', 'Read-only: this card lists the backup directory and checks the manifests. It never opens the database being backed up, and carries no backup, restore or delete control.'))} ${escapeHtml(t('大小与每个副本核对；sha256 只核对最新副本。', 'Size is compared on every copy; sha256 only on the newest.'))}${newest === null ? ` ${escapeHtml(t('在主机上运行', 'Run'))} <code>npm run db:backup</code> ${escapeHtml(t('后，下一份副本会出现在这里。', 'on the host; the next copy appears here.'))}` : ''}</p>
+    <p class="muted">${escapeHtml(t('只读：本卡片列出备份目录并核对清单，不会打开正在备份的数据库，也没有备份、恢复或删除按钮。', 'Read-only: this card lists the backup directory and checks the manifests. It never opens the database being backed up, and carries no backup, restore or delete control.'))} ${escapeHtml(t('只列出真正不符或无法读取的副本；旧副本只按大小核对，sha256 只核对最新副本。', 'Only copies that differ or cannot be read are listed; older copies are compared by size, and sha256 only on the newest.'))}${newest === null ? ` ${escapeHtml(t('在主机上运行', 'Run'))} <code>npm run db:backup</code> ${escapeHtml(t('后，下一份副本会出现在这里。', 'on the host; the next copy appears here.'))}` : ''}</p>
   </section>`
   // #317: the stop route reports its result once in a redirect notice, and a
   // reload drops that line.
@@ -2795,6 +2820,9 @@ export function jobPage(input: {
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/retry">${csrf(viewer)}${retryHidden}<button class="btn" type="submit">${escapeHtml(job.checkpoint === null || job.checkpoint === '' ? t('重试这个任务', 'Retry this job') : t('从断点继续', 'Resume from checkpoint'))}</button></form>`
     : ''
   const recheck = job.pr_url === null || supportMode ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('重新核实 PR', 'Re-check PR'))}</button></form>`
+  const ackRuleChange = verification?.ruleChange === undefined || verification.ruleChange.acknowledged || repo.repo_role !== 'maintainer'
+    ? ''
+    : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/ack-rule-change">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t(`确认规则变更（${verification.ruleChange.paths.length} 个文件）`, `Acknowledge rule change (${verification.ruleChange.paths.length} files)`))}</button></form>`
   const execute = job.kind === 'plan' && job.status === 'succeeded' && job.plan_approved_at !== null
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/execute">${csrf(viewer)}${executeHidden}<button class="btn" type="submit">${escapeHtml(t('执行这个计划', 'Execute this plan'))}</button></form>`
     : ''
@@ -2969,6 +2997,7 @@ export function jobPage(input: {
         ${supportMode ? '' : control}
         ${supportMode ? '' : execute}
         ${supportMode ? '' : recheck}
+        ${supportMode ? '' : ackRuleChange}
         ${supportMode ? '' : retry}
       </div>
     </div>
@@ -3007,6 +3036,7 @@ export function jobPage(input: {
     <div class="row between">
       <div>${readinessBadge(t, readiness.state)}${readiness.reasons.length === 0 ? '' : `<p class="fine">${escapeHtml(readiness.reasons.slice(0, 6).join(' · '))}</p>`}</div>
       ${recheck}
+      ${ackRuleChange}
     </div>
     ${verification === null
       ? `<p class="muted">${escapeHtml(t('还没有核实记录。任务回调后会自动核实；也可以现在重新检查。', 'No verification yet. It runs after a job callback; you can also re-check now.'))}</p>`
