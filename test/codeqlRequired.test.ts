@@ -235,7 +235,9 @@ test('codeql-required is in ci-ok needs, is never skippable, and adds no merge_g
   const jobStart = ci.indexOf('\n  codeql-required:')
   assert.ok(jobStart !== -1, 'ci.yml must declare the codeql-required job')
   const job = ci.slice(jobStart, ci.indexOf('\n  ci-ok:', jobStart))
-  assert.match(job, /run: node scripts\/codeql-required\.mjs/, 'the job must run the decision script')
+  // #640: the decision script runs from the base branch tree, so a pull request
+  // cannot edit the code that reads its own analysis.
+  assert.match(job, /run: node base\/scripts\/codeql-required\.mjs/, 'the job must run the base branch copy of the decision script')
   assert.match(job, /GITHUB_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/, 'a step inherits no token, so the lookup needs one mapped the way review-gate.yml maps it')
   assert.match(job, /actions: read/, 'reading this repository\'s workflow runs needs actions: read, and a job-level block replaces the workflow set')
 
