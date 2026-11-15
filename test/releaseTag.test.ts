@@ -537,3 +537,36 @@ test('a 422 from the ref write stays the tag_exists sentence, not the fixed ref 
     await h.close()
   }
 })
+
+// #665: the retag path used to carry only the new SHAs, so the row kept the
+// first tagger and the first preflight while it pointed at someone else's
+// commit. A row has to describe the action that produced the state it shows.
+test('a re-tag records the new tagger and the new preflight, not the first ones', () => {
+  const store = new Store(':memory:')
+  try {
+    const alice = makeUser(store, { login: 'retag-alice', status: 'approved' })
+    const bob = makeUser(store, { login: 'retag-bob', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_retag_attribution', userId: alice.id, owner: 'o', name: 'retag', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const FIRST_TARGET = '1'.repeat(40)
+    const SECOND_TARGET = '2'.repeat(40)
+
+    const first = store.recordRelease({ repoId: repo.id, userId: alice.id, version: 'v1.4.0', tagName: 'v1.4.0', targetSha: FIRST_TARGET, tagObjectSha: '3'.repeat(40), previousTag: 'v1.3.0', actor: alice.login })
+    assert.ok(first)
+    const createdAt = first.created_at
+
+    const second = store.recordRelease({ repoId: repo.id, userId: bob.id, version: 'v1.4.0', tagName: 'v1.4.0', targetSha: SECOND_TARGET, tagObjectSha: '4'.repeat(40), previousTag: 'v1.3.0', actor: bob.login })
+    assert.ok(second)
+    assert.equal(second.id, first.id, 'the re-tag updates the one row for the tag name')
+    assert.equal(second.user_id, bob.id, 'the row names the user who performed the re-tag')
+    assert.equal(second.target_sha, SECOND_TARGET)
+    assert.deepEqual(JSON.parse(String(second.preflight_json)), { previousTag: 'v1.3.0', actor: bob.login }, 'the preflight names the re-tagging actor')
+    assert.equal(second.created_at, createdAt, 'the first release time is kept')
+    assert.ok(second.updated_at > createdAt, 'the update time moves forward')
+
+    const row = store.releaseByTag(repo.id, 'v1.4.0')
+    assert.equal(row?.user_id, bob.id, 'the stored row, not only the returned copy, names the re-tagger')
+    assert.deepEqual(JSON.parse(String(row?.preflight_json)), { previousTag: 'v1.3.0', actor: bob.login })
+  } finally {
+    store.close()
+  }
+})
