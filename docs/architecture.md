@@ -440,7 +440,10 @@ defect.
   state, reason, `missed` and `attempts`, whether a live lease holds it, and the
   last instant whose job succeeded. A value nobody recorded prints `unknown`: a
   schedule with no occurrence row has not run, and this slice has no delivery
-  outbox, so neither is a zero. `src/schedules/console.ts` is that view model. The
+  outbox, so neither is a zero. The eight facts render through `.schedule-facts`,
+  a two-column grid with muted labels that stacks to one column below 640px, so
+  the console does not fall back to the browser's default definition-list text.
+  `src/schedules/console.ts` is that view model. The
   repository page passes the planner's answer for a scheduled repository and keeps
   the legacy interval line only for one without a row, so the page prints one
   number instead of a second, weaker one; the comment that claimed the interval
