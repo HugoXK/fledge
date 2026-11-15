@@ -241,7 +241,9 @@ file is the record and not the gate — branch protection is an owner action.
 - `lint`
 - `typecheck`
 - `test` on Node 24 (the supported-version compatibility run)
-- `coverage` (the Node 22 full-suite execution and the Node coverage floor recorded in `package.json`; one execution per supported Node line)
+- `coverage` (the Node 22 full-suite execution and the Node coverage floor
+  recorded in `package.json`; one execution per supported Node line, plus the
+  changed-lines floor on the pull request diff)
 - `build`
 - `visual` (the UI matrix, when the diff reaches a rendered surface)
 - `docker` (image builds, scans and starts)
@@ -410,11 +412,55 @@ the synthetic fixture in the initial commit that #185 removed from the tree; a
 token committed afterwards is still a finding, which is why the exception names
 a commit rather than a path.
 
-`coverage` enforces a line floor with a number: `test:coverage` in
-`package.json` (`--test-coverage-lines=84`, measured 84.59% at the commit that
-introduced it). Lowering it is a reviewed diff, not an edit. The job also writes
-the report into the run summary — not a pull request comment, since a fork pull
-request runs without `pull_request_target`.
+`coverage` enforces two floors, and they answer different questions.
+
+The whole-tree floor is a number in `test:coverage` in `package.json`
+(`--test-coverage-lines=84`, measured 84.59% at the commit that introduced it).
+It answers "is the tree still covered"; lowering it is a reviewed diff, not an
+edit. It cannot answer "is the code *this pull request adds* covered", because a
+200-line untested branch is invisible in a percentage over a large, well-covered
+`src/**`.
+
+The changed-lines floor is `scripts/coverage-diff.mjs`, run by the `coverage` job
+on a pull request after the report is written. It takes the added `src/**` lines
+of `git diff <base>...<head>`, joins them to the report Node printed (the
+uncovered line ranges, per file), and fails when the added code lines are below
+80% covered. `<head>` is the checked-out commit, not the pull request's head sha:
+the job's checkout is `refs/pull/<N>/merge` (it sets no `ref:`), so the report is
+numbered in the merge tree. The base is that merge's first parent, so the diff is
+still the pull request's own change; the two line numbers only agree when both
+sides describe the same tree, and with the head sha a base that moved inside a
+file the pull request edits made an uncovered line read as covered. Only added
+lines under `src/**` are measured, and only ones that can execute: comments,
+imports, type declarations, generated files and `*.d.ts` are not counted, because
+the report can never list them as uncovered. An uncovered added line is printed
+as `path:line` in the step log, so the fix is a test for that line rather than a
+request for a higher total. A changed file the report has no row for is the same
+failure: Node prints a file only when the suite loaded it, so a new module no test
+imports is printed as missing and counts as entirely uncovered.
+
+Two diff shapes used to make the gate skip a file it should have measured, and
+both now have a test. A path with a non-ASCII byte is C-quoted by `git diff`
+(`+++ "b/src/lib/\346\227\245.ts"`) unless it is told otherwise, so the diff is
+read with `-c core.quotePath=false` and the parser unquotes a quoted header too —
+quoted, the name starts with `"`, fails the `src/` test and the file is dropped.
+An added line whose text begins with `++ ` prints as `+++ …`, which is a file
+header only outside a hunk: the parser tracks hunk state, so such a line is
+content and the rest of its file is still measured.
+
+A pull request that genuinely cannot test the added lines says so in its body,
+on one line of its own:
+
+```
+No-test: the branch is unreachable until #700 lands
+```
+
+The step prints what waived it. A documentation, config or workflow-only diff
+adds no `src/**` line and the gate skips it — that is the classifier's own rule,
+not a second switch. The total floor stays in place: this gate is additional, and
+`npm run coverage:diff -- --diff <path> --report <path>` runs the same check
+locally. The job also writes the report into the run summary — not a pull
+request comment, since a fork pull request runs without `pull_request_target`.
 
 The release workflow signs the published image: `id-token: write` and
 `attestations: write` on the release job only, `actions/attest-build-provenance`

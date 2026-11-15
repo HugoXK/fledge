@@ -107,7 +107,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # Dependency lifecycle scripts are code execution from an untrusted
+      # package before any of ours runs. Lint needs none of them, so it is the
+      # first job to install with scripts disabled; the other jobs follow one
+      # at a time with their own measured run (#646).
+      - run: npm ci --ignore-scripts
       - run: npm run lint
 
   typecheck:
@@ -168,6 +172,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # #641: the changed-lines step below diffs the pull request against its
+          # base, which a depth-1 checkout does not carry. The suite runs from the
+          # same checkout, so the history is fetched once here.
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -177,6 +186,24 @@ jobs:
         # `tee` keeps the report for the summary below; the bash shell CI uses is
         # `-eo pipefail`, so the threshold's exit code is still the step's.
         run: npm run test:coverage 2>&1 | tee coverage.txt
+      - name: Enforce the changed-lines floor
+        # #641: the floor above is one number over `src/**`, so a large covered
+        # tree hides a new untested branch. This step measures only the lines this
+        # diff adds. Pull request only: a push or schedule has no base and a
+        # merge-queue entry re-runs the pull request's own tree.
+        #
+        # The head is the checked-out commit, never `pull_request.head.sha`:
+        # this job's checkout carries no `ref:`, so it is `refs/pull/<N>/merge`
+        # and `coverage.txt` is numbered in the merge tree. `git diff base...HEAD`
+        # stays the pull request's own changes — the base is the merge's first
+        # parent — and its line numbers now come from the same tree as the report.
+        # With the head sha the two disagree whenever the base moved in a file
+        # the pull request edits, and an uncovered line is reported as covered.
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node scripts/coverage-diff.mjs --base "$PR_BASE" --head HEAD --report coverage.txt --floor 80
       - name: Publish the coverage report to the run summary
         if: always()
         run: |
@@ -654,31 +681,23 @@ jobs:
         # the nginx example is parsed against generated certificates and a
         # failure is a failure, while systemd-analyze stays advisory because its
         # output includes the runner's own unrelated units.
+        #
+        # The wrapper, the generated certificates and the parse itself live in
+        # scripts/check-nginx-config.sh: it renders deploy/nginx.check.conf,
+        # which declares a pid path inside its own temporary directory, because
+        # the compiled-in /run/nginx.pid is not writable by the runner and that
+        # failed this job on main (#795). test/nginxCheck.test.ts drives that
+        # script with a stub nginx and inspects the rendered file.
+        #
+        # The script's output is teed rather than redirected: a red step has to
+        # say why in the log, and `$GITHUB_STEP_SUMMARY` is not the log (#799).
         shell: bash
         run: |
           set -uo pipefail
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
           status=0
-          if command -v nginx >/dev/null 2>&1; then
-            tmp="$(mktemp -d)"
-            openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=localhost' \
-              -keyout "$tmp/key.pem" -out "$tmp/cert.pem" >/dev/null 2>&1
-            sed -e "s#/etc/letsencrypt/live/fledge.example.com/fullchain.pem#$tmp/cert.pem#" \
-                -e "s#/etc/letsencrypt/live/fledge.example.com/privkey.pem#$tmp/key.pem#" \
-                -e 's#/var/log/nginx/fledge-access.log#/dev/null#' \
-                -e 's#/var/log/nginx/fledge-error.log#/dev/null#' \
-                -e 's#listen 443 ssl http2;#listen 127.0.0.1:18443 ssl;#' \
-                -e 's#listen 80;#listen 127.0.0.1:18080;#' \
-                deploy/nginx.conf.example > "$tmp/site.conf"
-            { echo 'events {}'; echo 'http {'; cat "$tmp/site.conf"; echo '}'; } > "$tmp/nginx.conf"
-            if nginx -t -q -c "$tmp/nginx.conf" -p "$tmp"; then
-              echo 'nginx: deploy/nginx.conf.example parsed' >> "$summary"
-            else
-              echo 'nginx: deploy/nginx.conf.example failed `nginx -t`' >> "$summary"
-              status=1
-            fi
-          else
-            echo 'nginx: not installed on this runner — deploy/nginx.conf.example was not syntax-checked (gap).' >> "$summary"
+          if ! bash scripts/check-nginx-config.sh 2>&1 | tee -a "$summary"; then
+            status=1
           fi
           if command -v systemd-analyze >/dev/null 2>&1; then
             if systemd-analyze verify deploy/fledge.service > /tmp/systemd-verify.txt 2>&1; then

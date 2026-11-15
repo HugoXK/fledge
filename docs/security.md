@@ -120,6 +120,10 @@ tracked as `sessions.recent_auth_at`:
   came back and the action is submitted again.
 - Role checks still run first: a non-admin is refused with 403 before the
   recency check, and a fresh re-authentication does not grant a role.
+- The repository danger zone shows the requirement before the delete form: a
+  stale session gets a **Confirm with GitHub** link whose `next` returns to
+  `/repos/<id>#danger` with the refreshed notice. The stale POST refusal also
+  targets `#danger`, so the returning form is on screen instead of the page top.
 - The handlers that name `config.rateLimit` are rate-limited (60 attempts a
   minute per route and client address) through `@fastify/rate-limit`, registered
   with `global: false` so the ceiling is a property of those eight routes and
@@ -667,6 +671,11 @@ Upstream `api_key:` hashes from log messages. Request bodies are never logged.
 The development mail outbox is written with mode 0600 and contains approval links;
 treat it as a secret.
 
+The evolution export uses a read-only database handle and passes every exported
+string through the same `redact()` before serialisation. It reads only
+repositories an admin opted in through the audited consent command, so a
+repository that never consented is absent from the dataset and its holdout.
+
 ### Headers
 
 - `Content-Security-Policy` for HTML pages: self only, no inline scripts, images
@@ -688,6 +697,27 @@ treat it as a secret.
   path is not free to hammer.
 - The model gateway should be rate-limited at the reverse proxy per token if the
   platform is exposed to many users.
+
+### CI install scripts
+
+A dependency's lifecycle script runs arbitrary code on the runner before any of
+our code does, so installing dependencies is a supply-chain boundary, not
+housekeeping. The `lint` job installs with `npm ci --ignore-scripts`; lint does
+not need any postinstall output, and `--ignore-scripts` removes the execution
+path without changing the linter's exit code.
+
+`test/ciIgnoreScripts.test.ts` judges the job's own command: it reads the
+install step out of `.github/workflows/ci.yml`, runs it against a fixture whose
+dependency carries a harmless `postinstall` marker, and fails if the marker is
+written. Dropping the flag therefore fails the suite instead of silently
+restoring script execution.
+
+The remaining `npm ci` calls (`typecheck`, `test`, `coverage`, `build`, `audit`,
+`visual`, `release.yml` and both Docker stages) still run scripts and move one
+job at a time, each on its own measured run. A dependency that genuinely needs a
+script gets a narrow, documented exception — never a blanket re-enable.
+Playwright's browser install stays an explicit step
+(`npx playwright install --with-deps chromium`), so it is unaffected.
 
 ## Threat notes
 
