@@ -79,6 +79,12 @@ jobs:
     # comment each depend on its answer.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     runs-on: ubuntu-latest
+    # #527: the opener token is an environment secret of `release`, so this job is
+    # the only reader. The `tag` job deliberately has no environment — it uses
+    # only GITHUB_TOKEN. This key may merge only after the environment exists with
+    # its own RELEASE_OPEN_TOKEN and no required reviewers; before that the nightly
+    # fails loudly at the opener step instead of opening its pull request.
+    environment: release
     timeout-minutes: 20
     permissions:
       contents: write

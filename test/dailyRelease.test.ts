@@ -111,6 +111,16 @@ test('the team token is the only stored secret, and it is not the reviewer token
   assert.equal(/token: \$\{\{/.test(daily), false, 'the checkout uses the default token')
 })
 
+test('the opener token is readable only through the release environment (#527)', () => {
+  // The repository scope meant every workflow on `main` could read the opener
+  // token. The workflow half of the fix is this one key; the environment, its
+  // secret and the deletion of the repository secret are owner actions, so this
+  // test pins only what the file can promise — and it fails on the pre-#527 file,
+  // where neither job declares an environment.
+  assert.match(job('release'), /^ {4}environment: release$/m, 'the release job declares the environment that holds the opener token')
+  assert.doesNotMatch(job('tag'), /^ {4}environment:/m, 'the tag job runs on GITHUB_TOKEN only and must not inherit the opener environment')
+})
+
 test('the release job runs on a push too, and the trigger predicate decides whether that push plans', () => {
   // #315: the event name is no longer the planning gate. A push is eligible
   // because the rule's input changes only on a push, and the summary says what
