@@ -1575,6 +1575,13 @@ Run/Plan/Review until the state is fixed. A danger zone offers stop scheduling,
 stop FlyBot and delete; deletion requires typing the repository name and removes
 the Fledge connection, instance, jobs and tokens without touching GitHub.
 
+The FlyBot instance card maps transport failures to a short reason (`Bridge
+unreachable`, `Bridge returned 502`, `Container is not running`, `Model endpoint
+unreachable`) and keeps the raw error in a technical disclosure. The page-level
+message uses the same reason, never a bare `TypeError: fetch failed`, and the
+card shows the last health-check time and the Start/Stop/Reinitialize action for
+the current state.
+
 ### Pull-request delivery
 
 Each repository page has a delivery list of iterate jobs with open pull requests,

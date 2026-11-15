@@ -2093,3 +2093,83 @@ test('both repository lists translate the reviewer badge', () => {
     store.close()
   }
 })
+
+// #805: the status decides the sentence; `last_error` only explains a failure.
+// `Instances.stop()` keeps the previous error and a starting instance has none, so
+// every non-ready state must say what it is doing, in both languages, with its own
+// action — and only `failed` may report a health failure.
+test('every FlyBot instance state names itself, its own action and never calls a non-ready instance healthy', () => {
+  const config = testConfig({ flybot: { ...testConfig().flybot, instanceImage: 'image' } })
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'instance-health-user', status: 'approved', superadmin: true })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const repo = store.createRepo({ id: 'repo_instance_health', userId: user.id, owner: 'o', name: 'health', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const saveInstance = (status: string, lastError: string | null): void => {
+      store.saveRepoInstance({
+        repo_id: repo.id, user_id: user.id, container: 'fledge-health', network: 'n', data_dir: '/tmp/health', bridge_script: '/tmp/bridge',
+        dsh_port: 1, bridge_port: 2, model_port: 3, model_bind: '127.0.0.1', image: 'image', status, chief_session: 'c',
+        team_json: null, bridge_token_enc: 'x', bridge_pid: null, log_pid: null, last_error: lastError,
+        created_at: '2026-11-15T08:00:00.000Z', updated_at: '2026-11-15T08:00:00.000Z', last_health_at: '2026-11-15T08:00:00.000Z',
+      })
+    }
+    const instanceCard = (html: string): string => {
+      const start = html.indexOf('data-instance-health')
+      assert.notEqual(start, -1, 'the Team section has the structured instance card')
+      const end = html.indexOf('</section>', start)
+      assert.notEqual(end, -1, 'the instance card closes')
+      return html.slice(start, end)
+    }
+    const summaryLine = (html: string): string => {
+      const card = instanceCard(html)
+      const end = card.indexOf('</p>')
+      assert.notEqual(end, -1, 'the instance card has a summary line')
+      return card.slice(0, end)
+    }
+    const cases = [
+      { status: 'ready', lastError: null, zhBadge: '就绪', enBadge: 'Ready', zhReason: '健康检查正常', enReason: 'Health check ok', zhAction: '停止 FlyBot', enAction: 'Stop FlyBot', action: 'instance/stop' },
+      { status: 'failed', lastError: 'TypeError: fetch failed', zhBadge: '失败', enBadge: 'Failed', zhReason: 'Bridge 无法连接', enReason: 'Bridge unreachable', zhAction: '启动 FlyBot', enAction: 'Start FlyBot', action: 'instance' },
+      { status: 'failed', lastError: null, zhBadge: '失败', enBadge: 'Failed', zhReason: '健康检查失败', enReason: 'Health check failed', zhAction: '启动 FlyBot', enAction: 'Start FlyBot', action: 'instance' },
+      { status: 'stopped', lastError: 'health check failed: stopped from the console', zhBadge: '已停止', enBadge: 'Stopped', zhReason: '实例已停止，不会接受新任务', enReason: 'The instance is stopped and takes no new jobs', zhAction: '启动 FlyBot', enAction: 'Start FlyBot', action: 'instance' },
+      { status: 'starting', lastError: null, zhBadge: '启动中', enBadge: 'Starting', zhReason: '实例正在创建，还未就绪', enReason: 'The instance is being created and is not ready yet', zhAction: '重新初始化 FlyBot', enAction: 'Reinitialize FlyBot', action: 'instance' },
+      { status: 'provisioning', lastError: 'TypeError: fetch failed', zhBadge: '初始化中', enBadge: 'Provisioning', zhReason: '实例正在初始化，还未就绪', enReason: 'The instance is being provisioned and is not ready yet', zhAction: '重新初始化 FlyBot', enAction: 'Reinitialize FlyBot', action: 'instance' },
+    ]
+    for (const state of cases) {
+      saveInstance(state.status, state.lastError)
+      const instance = store.getRepoInstance(repo.id)!
+      const zh = repoPage({ config, locale: 'zh', viewer, repo, instance, jobs: [] })
+      const en = repoPage({ config, locale: 'en', viewer, repo, instance, jobs: [] })
+      const name = `${state.status} (${state.lastError === null ? 'no error' : 'an old error on the row'})`
+      assert.ok(instanceCard(zh).includes(state.zhBadge), `${name}: the zh card carries the status badge`)
+      assert.ok(instanceCard(en).includes(state.enBadge), `${name}: the en card carries the status badge`)
+      assert.ok(instanceCard(zh).includes(state.zhReason), `${name}: the zh card names the state`)
+      assert.ok(instanceCard(en).includes(state.enReason), `${name}: the en card names the state`)
+      assert.ok(instanceCard(zh).includes(state.zhAction), `${name}: the zh card offers its own action`)
+      assert.ok(instanceCard(en).includes(state.enAction), `${name}: the en card offers its own action`)
+      assert.ok(instanceCard(zh).includes(`action="/repos/${repo.id}/${state.action}"`), `${name}: the zh action posts its own form`)
+      assert.ok(instanceCard(en).includes(`action="/repos/${repo.id}/${state.action}"`), `${name}: the en action posts its own form`)
+      if (state.status === 'ready') {
+        assert.ok(!en.includes('FlyBot instance:'), 'a ready instance raises no page-level message')
+        assert.ok(!en.includes('Health check failed'), 'a ready instance never reports a failure')
+        continue
+      }
+      assert.ok(summaryLine(zh).includes(state.zhReason), `${name}: the zh summary line carries the reason, not the raw error`)
+      assert.ok(!instanceCard(zh).includes('健康检查正常'), `${name}: a non-ready instance is never called healthy in zh`)
+      assert.ok(!instanceCard(en).includes('Health check ok'), `${name}: a non-ready instance is never called healthy in en`)
+      assert.ok(!zh.includes('健康检查正常'), `${name}: the zh page never calls a non-ready instance healthy`)
+      assert.ok(!en.includes('Health check ok'), `${name}: the en page never calls a non-ready instance healthy`)
+      assert.ok(zh.includes(`FlyBot 实例：${state.zhBadge} · ${state.zhReason}`), `${name}: the zh page message repeats the status and the reason`)
+      assert.ok(en.includes(`FlyBot instance: ${state.enBadge} · ${state.enReason}`), `${name}: the en page message repeats the status and the reason`)
+      if (state.lastError !== null && state.status !== 'failed') {
+        assert.ok(!summaryLine(en).includes(state.lastError), `${name}: an old error is not the reason of a non-failed state`)
+      }
+      if (state.lastError !== null) {
+        assert.ok(instanceCard(en).includes('Technical detail'), `${name}: the raw error stays behind the disclosure`)
+        assert.ok(instanceCard(en).includes(state.lastError), `${name}: the disclosure keeps the original text`)
+        assert.ok(!en.slice(0, en.indexOf('data-instance-health')).includes(state.lastError), `${name}: the raw error is not the page-level message`)
+      }
+    }
+  } finally {
+    store.close()
+  }
+})

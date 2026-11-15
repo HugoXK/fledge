@@ -1111,6 +1111,9 @@ a.list-row:hover strong { color: var(--accent); }
   border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper);
 }
 .workspace-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+[data-instance-health] .badge { vertical-align: baseline; }
+[data-instance-health] details { margin-top: 8px; }
+[data-instance-health] pre { margin: 6px 0 0; font-size: var(--text-sm); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .add-choice { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 14px; margin-bottom: 12px; }
 .add-choice h3 { margin: 0 0 6px; font-size: 15px; }
