@@ -7,7 +7,7 @@ import { buildApp, type BuiltApp } from '../src/app.js'
 import { ManagementService } from '../src/management/service.js'
 import { managementActor } from '../src/management/actor.js'
 import { encryptSecret } from '../src/lib/secrets.js'
-import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { MemoryMailer, flashOf, formBody, makeUser, sessionFor, testConfig } from './helpers.js'
 
 // #540 slice 2 (rest): `task.create`, `task.resume` and `task.retry` are commands
 // like `task.cancel` and `task.pause`. The red half is measured at `0ca49ff0`:
@@ -114,7 +114,7 @@ async function page(f: Fixture, url: string): Promise<string> {
   return response.body
 }
 
-async function post(f: Fixture, url: string, payload: Record<string, string>): Promise<{ statusCode: number; location: string }> {
+async function post(f: Fixture, url: string, payload: Record<string, string>): Promise<{ statusCode: number; location: string; flash: ReturnType<typeof flashOf> }> {
   const session = sessionFor(f.built, f.user)
   const response = await f.built.app.inject({
     method: 'POST',
@@ -122,7 +122,7 @@ async function post(f: Fixture, url: string, payload: Record<string, string>): P
     headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: session.cookie },
     payload: formBody({ csrf: session.csrf, ...payload }),
   })
-  return { statusCode: response.statusCode, location: String(response.headers.location) }
+  return { statusCode: response.statusCode, location: String(response.headers.location), flash: flashOf(response) }
 }
 
 function jobCount(f: Fixture): number {
@@ -170,10 +170,10 @@ test('submitting the same retry twice queues one job and answers the same job', 
     const job = jobIn(f, 'failed', 'job_task_retry')
     const payload = { expected_revision: '1', idempotency_key: 'cmd_retry_once' }
     const first = await post(f, `/repos/${f.repoId}/jobs/${job.id}/retry`, payload)
-    assert.ok(first.location.includes('notice='), `the first retry answers with a notice: ${first.location}`)
+    assert.ok(first.flash?.notice, `the first retry answers with a notice: ${first.location}`)
     assert.equal(jobCount(f), 2, 'the retry queued exactly one job')
     const second = await post(f, `/repos/${f.repoId}/jobs/${job.id}/retry`, payload)
-    assert.ok(second.location.includes('notice='), `the second retry replays the receipt, not a refusal: ${second.location}`)
+    assert.ok(second.flash?.notice, `the second retry replays the receipt, not a refusal: ${second.location}`)
     assert.equal(second.location, first.location, 'the same job is named')
     assert.equal(jobCount(f), 2, 'the second submit queued nothing')
   } finally {
@@ -186,7 +186,7 @@ test('a stale revision on retry is refused and queues nothing', async () => {
   try {
     const job = jobIn(f, 'failed', 'job_task_retry_stale')
     const outcome = await post(f, `/repos/${f.repoId}/jobs/${job.id}/retry`, { expected_revision: '9', idempotency_key: 'cmd_retry_stale' })
-    assert.ok(outcome.location.includes('code=management_revision_conflict'), `the stale retry is a conflict: ${outcome.location}`)
+    assert.match(outcome.flash?.error?.key ?? '', /^management_revision_conflict:/, `the stale retry is a conflict: ${outcome.location}`)
     assert.equal(jobCount(f), 1, 'nothing was queued')
   } finally {
     await f.close()
@@ -199,10 +199,10 @@ test('submitting the same resume twice names one new job', async () => {
     const job = jobIn(f, 'paused', 'job_task_resume')
     const payload = { expected_revision: '1', idempotency_key: 'cmd_resume_once' }
     const first = await post(f, `/repos/${f.repoId}/jobs/${job.id}/resume`, payload)
-    assert.ok(first.location.includes('notice='), `the first resume answers with a notice: ${first.location}`)
+    assert.ok(first.flash?.notice, `the first resume answers with a notice: ${first.location}`)
     assert.equal(jobCount(f), 2, 'the resume queued exactly one job')
     const second = await post(f, `/repos/${f.repoId}/jobs/${job.id}/resume`, payload)
-    assert.ok(second.location.includes('notice='), `the second resume replays the receipt: ${second.location}`)
+    assert.ok(second.flash?.notice, `the second resume replays the receipt: ${second.location}`)
     assert.equal(second.location, first.location, 'the same new job is named')
     assert.equal(jobCount(f), 2, 'the second submit queued nothing')
   } finally {
@@ -215,7 +215,7 @@ test('a stale revision on resume is refused and queues nothing', async () => {
   try {
     const job = jobIn(f, 'paused', 'job_task_resume_stale')
     const outcome = await post(f, `/repos/${f.repoId}/jobs/${job.id}/resume`, { expected_revision: '9', idempotency_key: 'cmd_resume_stale' })
-    assert.ok(outcome.location.includes('code=management_revision_conflict'), `the stale resume is a conflict: ${outcome.location}`)
+    assert.match(outcome.flash?.error?.key ?? '', /^management_revision_conflict:/, `the stale resume is a conflict: ${outcome.location}`)
     assert.equal(jobCount(f), 1, 'nothing was queued')
   } finally {
     await f.close()
@@ -227,10 +227,10 @@ test('submitting the same create twice queues one job and records one receipt', 
   try {
     const payload = { expected_revision: '1', idempotency_key: 'cmd_create_once' }
     const first = await post(f, `/repos/${f.repoId}/run`, payload)
-    assert.ok(first.location.includes('notice='), `the first create answers with a notice: ${first.location}`)
+    assert.ok(first.flash?.notice, `the first create answers with a notice: ${first.location}`)
     assert.equal(jobCount(f), 1, 'the create queued one job')
     const second = await post(f, `/repos/${f.repoId}/run`, payload)
-    assert.ok(second.location.includes('notice='), `the second create replays the receipt: ${second.location}`)
+    assert.ok(second.flash?.notice, `the second create replays the receipt: ${second.location}`)
     assert.equal(jobCount(f), 1, 'the second submit queued nothing')
     const receipts = f.built.store.listCommandReceipts(50).filter((row) => row.operation === 'task.create')
     assert.equal(receipts.length, 1, 'one receipt for one create')
@@ -244,7 +244,7 @@ test('a stale revision on create is refused and queues nothing', async () => {
   const f = await fixture()
   try {
     const outcome = await post(f, `/repos/${f.repoId}/run`, { expected_revision: '9', idempotency_key: 'cmd_create_stale' })
-    assert.ok(outcome.location.includes('code=management_revision_conflict'), `the stale create is a conflict: ${outcome.location}`)
+    assert.match(outcome.flash?.error?.key ?? '', /^management_revision_conflict:/, `the stale create is a conflict: ${outcome.location}`)
     assert.equal(jobCount(f), 0, 'nothing was queued')
   } finally {
     await f.close()
@@ -256,7 +256,7 @@ test('a create refusal is recorded with its code so the banner can translate it'
   try {
     f.built.store.updateRepo(f.repoId, { enabled: 0 })
     const outcome = await post(f, `/repos/${f.repoId}/run`, { expected_revision: '1', idempotency_key: 'cmd_create_refused' })
-    assert.ok(outcome.location.includes('REPO_DISABLED'), `the banner value names the refusal code: ${outcome.location}`)
+    assert.match(outcome.flash?.error?.key ?? '', /^REPO_DISABLED:/, `the banner value names the refusal code: ${outcome.location}`)
     const receipts = f.built.store.listCommandReceipts(50).filter((row) => row.operation === 'task.create')
     assert.equal(receipts.length, 1)
     assert.equal(receipts[0]?.status, 'failed')
@@ -305,7 +305,7 @@ test('the execute form fences the project revision the create command compares',
     // 2 while the plan job's own revision stays at 1. The execute form must carry
     // the revision `task.create` fences, or every click conflicts (#540 review).
     const setup = await post(f, `/repos/${f.repoId}/run`, { expected_revision: '1', idempotency_key: 'cmd_execute_setup' })
-    assert.ok(setup.location.includes('notice='), `the setup create is accepted: ${setup.location}`)
+    assert.ok(setup.flash?.notice, `the setup create is accepted: ${setup.location}`)
     const running = f.built.store.listJobsForRepo(f.repoId, 10)[0] as JobRow
     f.built.store.updateJob(running.id, { status: 'succeeded', finished_at: new Date().toISOString() })
     const plan = planIn(f, 'job_task_execute')
@@ -317,7 +317,7 @@ test('the execute form fences the project revision the create command compares',
       expected_revision: hiddenValue(form, 'expected_revision') ?? '',
       idempotency_key: hiddenValue(form, 'idempotency_key') ?? '',
     })
-    assert.ok(outcome.location.includes('notice='), `execute answers with a notice: ${outcome.location}`)
+    assert.ok(outcome.flash?.notice, `execute answers with a notice: ${outcome.location}`)
     assert.equal(jobCount(f), before + 1, 'exactly one job started')
     const executed = f.built.store.all<{ action: string; detail: string }>("SELECT action, detail FROM audit_log WHERE action = 'job.executed'")
     assert.equal(executed.length, 1, 'the execute leaves the job.executed trail the old route wrote')
@@ -331,14 +331,14 @@ test('a stale execute is refused and starts nothing', async () => {
   const f = await fixture()
   try {
     const setup = await post(f, `/repos/${f.repoId}/run`, { expected_revision: '1', idempotency_key: 'cmd_execute_stale_setup' })
-    assert.ok(setup.location.includes('notice='), `the setup create is accepted: ${setup.location}`)
+    assert.ok(setup.flash?.notice, `the setup create is accepted: ${setup.location}`)
     const running = f.built.store.listJobsForRepo(f.repoId, 10)[0] as JobRow
     f.built.store.updateJob(running.id, { status: 'succeeded', finished_at: new Date().toISOString() })
     const plan = planIn(f, 'job_task_execute_stale')
     const before = jobCount(f)
     // 1 is what the plan job's own revision answers; the fence is the project's 2.
     const outcome = await post(f, `/repos/${f.repoId}/jobs/${plan.id}/execute`, { expected_revision: '1', idempotency_key: 'cmd_execute_stale' })
-    assert.ok(outcome.location.includes('code=management_revision_conflict'), `the stale execute is a conflict: ${outcome.location}`)
+    assert.match(outcome.flash?.error?.key ?? '', /^management_revision_conflict:/, `the stale execute is a conflict: ${outcome.location}`)
     assert.equal(jobCount(f), before, 'nothing started')
   } finally {
     await f.close()

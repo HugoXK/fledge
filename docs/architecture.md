@@ -55,6 +55,18 @@ off mid-read and a reload starts from the server's answer again. The inbox
 into the stack. `test/notificationStack.test.ts` pins the order, the single
 region, the dismiss behaviour and the inbox's separation.
 
+Delivery is one-shot as well. A redirect does not carry the sentence in the
+address bar: `readRedirectMessage` in `src/lib/flash.ts` moves a local
+`notice`/`error` into a `fledge_flash` cookie, strips it (with a refusal `code`)
+from the `Location`, and the first HTML response consumes and clears the cookie.
+The cookie keeps the message's key beside its text, so a refusal carries its code
+as the event id; the message is read in `onRequest` and never from the query, so
+a hand-typed `notice`/`error` parameter has no renderer left to reach. The
+redirect interceptor is one `onSend` seam rather than a change at every redirect
+site. `test/flash.test.ts` pins the cookie shape, its caps and the local-only
+rewrite; `test/oneShotNotice.test.ts` pins redirect → cookie → first page →
+reload.
+
 Every list, panel and live stream renders its non-data states through
 `renderState`/`stateCell` in `src/views/states.ts` — loading, empty, error,
 success and disabled — so the aria contract (`status`, `alert`, `aria-busy`,

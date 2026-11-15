@@ -80,12 +80,12 @@ test('a fresh session may still delete its repository', async () => {
   }
 })
 
-// #555: a settings save leaves `notice=` in the address bar and a fragment
-// never travels in a Referer, so the bounce can start from a page that already
-// carries a message. Appending a second `notice=` makes the query parser hand
-// back an array, `queryText()` refuses a non-string, and the console then shows
-// nothing at all.
-test('a bounce from a page that already carries a notice returns exactly one notice', async () => {
+// #555: a fragment never travels in a Referer, so the bounce can start from a
+// page whose URL still carries a message. Appending a second notice used to make
+// the query parser hand back an array and the console showed nothing at all.
+// #472 slice 2 moved delivery into a one-shot cookie, so the target still names
+// exactly one message, but the address bar is no longer a renderer for it.
+test('a bounce from a page that already carries a notice names one notice and renders nothing from the address bar', async () => {
   const { built, store } = await build()
   try {
     const user = makeUser(store, { login: 'stale-with-notice', status: 'approved' })
@@ -110,10 +110,19 @@ test('a bounce from a page that already carries a notice returns exactly one not
     assert.match(notices[0] ?? '', /重新用 GitHub 确认|re-authenticat/, 'the notice must be the re-auth reason, not the stale one')
     const page = await built.app.inject({ method: 'GET', url: `${target.pathname}${target.search}`, headers: { cookie } })
     assert.equal(page.statusCode, 200)
-    assert.match(
+    assert.doesNotMatch(
       page.body,
-      // #472: the notice is one message in the page's stack, announced by the
-      // stack's single polite region rather than by its own `role="status"`.
+      // #472 slice 2: only the one-shot cookie reaches the banner builder now.
+      /<span class="banner-text">[^<]*(重新用 GitHub 确认|re-authenticat)[^<]*<\/span>/,
+      'a message in the address bar must not render',
+    )
+    // The same sentence delivered the way the OAuth callback delivers it, in
+    // the one-shot cookie, is the one that renders.
+    const flash = Buffer.from(JSON.stringify({ n: { t: notices[0], k: notices[0] } }), 'utf8').toString('base64url')
+    const delivered = await built.app.inject({ method: 'GET', url: target.pathname, headers: { cookie: `${cookie}; fledge_flash=${flash}` } })
+    assert.equal(delivered.statusCode, 200)
+    assert.match(
+      delivered.body,
       /<span class="banner-text">[^<]*(重新用 GitHub 确认|re-authenticat)[^<]*<\/span>/,
       'the returned page must show the re-auth notice inside the banner',
     )

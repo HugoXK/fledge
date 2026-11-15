@@ -6,6 +6,7 @@ import { loadConfig, type Config } from '../src/config.js'
 import type { JobRow, Store, UserRow } from '../src/db.js'
 import type { Mailer, MailMessage } from '../src/email/mailer.js'
 import { randomId, sha256Hex } from '../src/lib/secrets.js'
+import { decodeFlash, FLASH_COOKIE, type FlashState } from '../src/lib/flash.js'
 import type { BuiltApp } from '../src/app.js'
 
 export class MemoryMailer implements Mailer {
@@ -103,6 +104,23 @@ export function formBody(values: Record<string, string | number | undefined>): s
   const params = new URLSearchParams()
   for (const [key, value] of Object.entries(values)) if (value !== undefined) params.set(key, String(value))
   return params.toString()
+}
+
+// #472 slice 2: a redirect reports its message in a one-shot cookie, so a test
+// that used to read the Location now reads the cookie, sends it on the page GET
+// and can assert the first page clears it.
+export function flashCookie(response: { headers: Record<string, unknown> }): string | undefined {
+  const value = response.headers['set-cookie']
+  const lines = value === undefined ? [] : (Array.isArray(value) ? value : [value]).map(String)
+  const line = lines.find((entry) => entry.startsWith(`${FLASH_COOKIE}=`))
+  if (line === undefined) return undefined
+  const raw = line.slice(FLASH_COOKIE.length + 1).split(';')[0] ?? ''
+  return raw === '' ? undefined : `${FLASH_COOKIE}=${raw}`
+}
+
+export function flashOf(response: { headers: Record<string, unknown> }): FlashState | undefined {
+  const cookie = flashCookie(response)
+  return cookie === undefined ? undefined : decodeFlash(cookie.slice(FLASH_COOKIE.length + 1))
 }
 
 export function startFakeServer(

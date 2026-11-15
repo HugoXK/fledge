@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { DEFAULT_TRIAGE_GOAL } from '../src/jobs/service.js'
-import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { MemoryMailer, flashOf, formBody, makeUser, sessionFor, testConfig } from './helpers.js'
 
 // #523: #390 shipped the `triage` work type and its job page, but nothing in the
 // product could start one — no route, form or scheduler branch passed
@@ -124,8 +124,8 @@ test('a start while one triage job is active is refused with JOB_ACTIVE and writ
     await start(h)
     const second = await start(h)
     assert.equal(second.statusCode, 302)
-    const message = decodeURIComponent(location(second))
-    assert.match(message, /error=/)
+    const message = flashOf(second)?.error?.text ?? ''
+    assert.notEqual(message, '')
     assert.match(message, /already (has a job|running)|已有任务在运行/i, `the refusal names the active job: ${message}`)
     assert.equal(jobs(h).length, 1, 'no second row appears')
   } finally {
@@ -138,15 +138,15 @@ test('a pasted issue URL from another host or another repository is refused on t
   try {
     const foreignRepo = await start(h, { issueUrl: 'https://github.com/someone/else/issues/1' })
     assert.equal(foreignRepo.statusCode, 302)
-    let message = decodeURIComponent(location(foreignRepo))
-    assert.match(message, /error=/)
+    let message = flashOf(foreignRepo)?.error?.text ?? ''
+    assert.notEqual(message, '')
     assert.match(message, /does not belong to this repository/, `a foreign repository is refused: ${message}`)
     assert.equal(jobs(h).length, 0, 'a refused start writes no row')
 
     const foreignHost = await start(h, { issueUrl: 'https://ghe.example.com/owner/repo/issues/1' })
-    message = decodeURIComponent(location(foreignHost))
-    assert.match(message, /error=/, 'a foreign host is refused too')
-    assert.doesNotMatch(message.slice(message.indexOf('error=')), CJK, 'the English refusal is one sentence in the reader language')
+    message = flashOf(foreignHost)?.error?.text ?? ''
+    assert.notEqual(message, '', 'a foreign host is refused too')
+    assert.doesNotMatch(message, CJK, 'the English refusal is one sentence in the reader language')
     assert.equal(jobs(h).length, 0)
   } finally {
     await h.close()

@@ -39,6 +39,7 @@ import { expiryFromDays, GATEWAY_SCOPE, isTokenScope, patExpiryDays } from './li
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
 import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale, type Translate } from './i18n.js'
+import { decodeFlash, encodeFlash, FLASH_COOKIE, readRedirectMessage } from './lib/flash.js'
 import { normalizeInterval } from './lib/intervals.js'
 import { JOB_FILTER_STATUSES, parseJobFilters } from './lib/jobFilters.js'
 import { isValidBranchName } from './lib/branches.js'
@@ -558,9 +559,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // `global: false`: only the routes that name `config.rateLimit` are limited.
   await app.register(fastifyRateLimit, { global: false })
 
+  // #472 slice 2: the message a redirect used to put in the address bar is
+  // read before any handler runs, so a handler reads it from the request and
+  // never from the query. The cookie is cleared by the first HTML response that
+  // renders it; a JSON, asset or redirect response leaves it for the next page.
+  const flashCookie = { path: '/', httpOnly: true, sameSite: 'lax' as const, secure: config.baseUrl.startsWith('https://') }
   app.addHook('onRequest', async (request) => {
     request.viewer = sessions.read(request) ?? undefined
     request.locale = resolveLocale(request)
+    request.flash = decodeFlash(request.cookies[FLASH_COOKIE])
     otelSpans.set(request, startSpan('http.request', { method: request.method, path: request.url.split('?')[0] ?? request.url }))
   })
 
@@ -575,6 +582,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.addHook('onSend', async (request, reply, payload) => {
+    // #472 slice 2: one seam turns every redirect banner into a one-shot
+    // cookie, so the 150-odd redirect sites keep their call shape and no route
+    // can invent a second delivery channel. A message that arrives here is
+    // removed from Location before the browser sees it.
+    if (reply.statusCode >= 300 && reply.statusCode < 400) {
+      const flashed = readRedirectMessage(String(reply.getHeader('location') ?? ''))
+      if (flashed !== undefined) {
+        reply.header('location', flashed.location)
+        reply.setCookie(FLASH_COOKIE, encodeFlash(flashed.state), { ...flashCookie, maxAge: 120 })
+      }
+    }
     reply.header('x-content-type-options', 'nosniff')
     reply.header('referrer-policy', 'strict-origin-when-cross-origin')
     reply.header('x-frame-options', 'DENY')
@@ -592,6 +610,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // #657: the theme is request state for the same reason, and it runs after
     // the density rewrite so both attributes survive on the one `<html>` tag.
     if (typeof payload === 'string' && String(reply.getHeader('content-type') ?? '').startsWith('text/html')) {
+      if (request.flash !== undefined && reply.statusCode < 300) reply.clearCookie(FLASH_COOKIE, flashCookie)
       return withTheme(withDensity(payload, resolveDensity(request)), resolveTheme(request))
     }
     return payload
@@ -1070,7 +1089,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (viewer.user.status === 'approved') return reply.redirect('/dashboard')
     if (viewer.user.status !== 'onboarding') return reply.redirect('/apply/status')
     return reply.type('text/html').send(
-      applyPage({ config, locale: request.locale ?? 'zh', viewer: viewOf(viewer), notice: queryText(request, 'notice'), error: queryText(request, 'error') }),
+      applyPage({ config, locale: request.locale ?? 'zh', viewer: viewOf(viewer), notice: request.flash?.notice?.text, error: request.flash?.error?.text }),
     )
   })
 
@@ -1130,8 +1149,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         viewer: viewOf(viewer),
         position: store.queuePosition(viewer.user.id),
         total: store.pendingTotal(),
-        notice: queryText(request, 'notice'),
-        error: queryText(request, 'error'),
+        notice: request.flash?.notice?.text,
+        error: request.flash?.error?.text,
         mailFailed: approvalMailFailed(viewer.user, store.approvalMailFailures()),
       }),
     )
@@ -1310,8 +1329,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         windowDays,
         alerts,
         notifications: store.listNotifications(viewer.user.id),
-        notice: queryText(request, 'notice'),
-        error: queryText(request, 'error'),
+        notice: request.flash?.notice?.text,
+        error: request.flash?.error?.text,
       }),
     )
   })
@@ -1350,8 +1369,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobsTotal: store.countJobsForUser(viewer.user.id),
         activeJobs: store.listActiveJobsForUser(viewer.user.id).length,
         questions,
-        notice: queryText(request, 'notice'),
-        error: queryText(request, 'error'),
+        notice: request.flash?.notice?.text,
+        error: request.flash?.error?.text,
       }),
     )
   })
@@ -1385,8 +1404,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       // An empty query is not a listing: it is the same empty state with a next step.
       results: filters.q === '' ? null : store.searchOwned(viewer.user.id, filters, 20),
       cap: 20,
-      notice: queryText(request, 'notice'),
-      error: queryText(request, 'error'),
+      notice: request.flash?.notice?.text,
+      error: request.flash?.error?.text,
     }))
   })
 
@@ -1635,7 +1654,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const raw = Number(queryText(request, 'installation'))
     const installationId = Number.isFinite(raw) && raw > 0 ? raw : undefined
     let repos
-    let error = queryText(request, 'error')
+    let error = request.flash?.error?.text
     if (installationId !== undefined) {
       const owned = store.getInstallation(installationId)
       if (owned === undefined || owned.user_id !== viewer.user.id) throw httpError(404, '安装不存在。', 'INSTALLATION_NOT_FOUND')
@@ -1652,7 +1671,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       installations,
       installationId,
       repos,
-      notice: queryText(request, 'notice'),
+      notice: request.flash?.notice?.text,
       error,
     }))
   })
@@ -1929,8 +1948,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         activeJob: store.activeJobForRepo(repo.id) !== undefined,
         jobsPage,
         jobsTotal,
-        notice: queryText(request, 'notice'),
-        error: queryText(request, 'error'),
+        notice: request.flash?.notice?.text,
+        error: request.flash?.error?.text,
         // #546: the release form is on this page, so its outcome has to land here
         // too — a refusal the maintainer cannot see reads as a click that did
         // nothing, and a success that is not confirmed is indistinguishable from
@@ -2142,8 +2161,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repo,
       canMaintain: repo.repo_role === 'maintainer',
       sessions: store.listGateSessionsForRepo(repo.id),
-      notice: queryText(request, 'notice'),
-      error: queryText(request, 'error'),
+      notice: request.flash?.notice?.text,
+      error: request.flash?.error?.text,
     }))
   })
 
@@ -2340,8 +2359,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       queued: store.listQueuedJobs(),
       jobsPage,
       jobsTotal,
-      notice: queryText(request, 'notice'),
-      error: queryText(request, 'error'),
+      notice: request.flash?.notice?.text,
+      error: request.flash?.error?.text,
     }))
   })
 
@@ -2727,8 +2746,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       execute: { revision: management.revisionOf('project', repo.id), idempotencyKey: randomId('cmd') },
       resume: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
       retry: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
-      notice: queryText(request, 'notice'),
-      error: queryText(request, 'error'),
+      notice: request.flash?.notice?.text,
+      error: request.flash?.error?.text,
     }))
   })
 
@@ -3205,8 +3224,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewer: viewOf(viewer),
       repo,
       instance,
-      notice: queryText(request, 'notice'),
-      error: queryText(request, 'error'),
+      notice: request.flash?.notice?.text,
+      error: request.flash?.error?.text,
     }))
   })
 
@@ -3596,8 +3615,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         providers: store.listModelProviders(viewer.user.id).map((provider) => ({ ...provider, models: store.listProviderModels(provider.id) })),
         discoveredProvider: queryText(request, 'discoveredProvider'),
         discovered: (queryText(request, 'discovered') ?? '').split(',').filter((value) => value !== ''),
-        notice: queryText(request, 'notice'),
-        error: queryText(request, 'error'),
+        notice: request.flash?.notice?.text,
+        error: request.flash?.error?.text,
       }),
     )
   })
@@ -3924,8 +3943,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       windowDays,
       failures: failureBreakdown(store.failedJobsSince(since)),
       since,
-      notice: queryText(request, 'notice'),
-      error: queryText(request, 'error'),
+      notice: request.flash?.notice?.text,
+      error: request.flash?.error?.text,
     }))
   })
 
@@ -3963,8 +3982,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repos: store.listRepos(user.id),
       jobs: store.listJobsPageForUser(user.id, 20, 0),
       audit: store.listAuditPageForUsers([user.id], 20, 0),
-      notice: queryText(request, 'notice'),
-      error: queryText(request, 'error'),
+      notice: request.flash?.notice?.text,
+      error: request.flash?.error?.text,
     }))
   })
 
@@ -3978,8 +3997,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewer: viewOf(viewer),
       rows: store.trialCandidates(),
       filter: isTrialFilter(requested) ? requested : 'all',
-      notice: queryText(request, 'notice'),
-      error: queryText(request, 'error'),
+      notice: request.flash?.notice?.text,
+      error: request.flash?.error?.text,
     }))
   })
 
@@ -4001,8 +4020,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       events: store.listJobEvents(job.id, 200),
       postmortem: store.getPostmortemForJob(job.id) ?? null,
       supportMode: true,
-      notice: queryText(request, 'notice'),
-      error: queryText(request, 'error'),
+      notice: request.flash?.notice?.text,
+      error: request.flash?.error?.text,
     }))
   })
 
@@ -4043,8 +4062,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       perPage,
       lastJobsExport: lastExportOf(userIds, 'admin.jobs_export'),
       lastAuditExport: lastExportOf(userIds, 'admin.audit_export'),
-      notice: queryText(request, 'notice'),
-      error: queryText(request, 'error'),
+      notice: request.flash?.notice?.text,
+      error: request.flash?.error?.text,
     }))
   })
 
@@ -4193,8 +4212,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       page,
       pages,
       total,
-      notice: queryText(request, 'notice'),
-      error: queryText(request, 'error'),
+      notice: request.flash?.notice?.text,
+      error: request.flash?.error?.text,
     }))
   })
 
@@ -4263,8 +4282,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         preview: false,
         showAudit: true,
         hideActor: !superadmin,
-        notice: queryText(request, 'notice'),
-        error: queryText(request, 'error'),
+        notice: request.flash?.notice?.text,
+        error: request.flash?.error?.text,
         // Read from the data directory; a missing or unreadable snapshot renders
         // as "not recorded" rather than failing the page.
         releaseStatus: readReleaseStatus(config.dataDir),
@@ -4308,8 +4327,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       environments: model.environments,
       deployments: model.deployments,
       rollbacks: model.rollbacks,
-      notice: queryText(request, 'notice'),
-      error: queryText(request, 'error'),
+      notice: request.flash?.notice?.text,
+      error: request.flash?.error?.text,
     }))
   })
 

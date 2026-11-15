@@ -4,7 +4,7 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { sha256Hex } from '../src/lib/secrets.js'
-import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { MemoryMailer, flashOf, formBody, makeUser, sessionFor, testConfig } from './helpers.js'
 
 // #390 review: the retry button is the other way into a run, and it used to
 // rewrite every kind outside review/plan to `iterate` — so a failed, read-only
@@ -86,7 +86,7 @@ test('a retry does not turn a declared work type with no handler into iterate wo
       payload: formBody({ csrf }),
     })
     assert.equal(response.statusCode, 302)
-    assert.match(String(response.headers.location), /error=/)
+    assert.ok(flashOf(response)?.error)
     assert.equal(store.listJobsForRepo(repo.id).length, 1, 'the refusal writes no iterate row')
   } finally {
     await built.close()

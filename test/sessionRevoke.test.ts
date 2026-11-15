@@ -4,7 +4,7 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { sha256Hex } from '../src/lib/secrets.js'
-import { MemoryMailer, formBody, makeUser, sessionFor, testConfig } from './helpers.js'
+import { flashOf, MemoryMailer, formBody, makeUser, sessionFor, testConfig } from './helpers.js'
 
 // #356: a signed-in user can only sign out of the current cookie, so a stolen or
 // forgotten session stays valid until it expires and nobody can see where they are
@@ -127,7 +127,7 @@ test('a non-owner can neither see nor revoke another user rows', async () => {
 
     const attempt = await post(built, aliceSession.cookie, `/settings/sessions/${sha256Hex(bobSession.raw)}/revoke`, aliceSession.csrf)
     assert.equal(attempt.statusCode, 302, 'the attempt is refused without revealing whether the row exists')
-    assert.match(String(attempt.headers['location'] ?? ''), /error=/, 'the refusal is reported to the actor')
+    assert.ok(flashOf(attempt)?.error, 'the refusal is reported to the actor')
     assert.equal((await settingsPage(built, bobSession.cookie)).statusCode, 200, "bob's session must still work")
   })
 })
@@ -140,9 +140,8 @@ test('the current session row is not revocable through the row action', async ()
 
     const response = await post(built, current.cookie, `/settings/sessions/${ownHash}/revoke`, current.csrf)
     assert.equal(response.statusCode, 302)
-    assert.match(
-      String(response.headers['location'] ?? ''),
-      /error=/,
+    assert.ok(
+      flashOf(response)?.error,
       'revoking the current session needs its own path (sign out or rotate), not the row action',
     )
     assert.equal((await settingsPage(built, current.cookie)).statusCode, 200)
