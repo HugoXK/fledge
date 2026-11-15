@@ -3059,6 +3059,7 @@ export class Store {
   // in place, so `created_at` stays the first release's time.
   recordRelease(input: { repoId: string; userId: string; version: string; tagName: string; targetSha: string; tagObjectSha: string; previousTag: string | null; actor: string }): ReleaseRow | undefined {
     const at = nowIso()
+    const preflight = JSON.stringify({ previousTag: input.previousTag, actor: input.actor })
     try {
       this.run(
         `INSERT INTO repo_releases (id, repo_id, user_id, version, tag_name, target_sha, tag_object_sha, status, preflight_json, created_at, updated_at)
@@ -3070,7 +3071,7 @@ export class Store {
         input.tagName,
         input.targetSha,
         input.tagObjectSha,
-        JSON.stringify({ previousTag: input.previousTag, actor: input.actor }),
+        preflight,
         at,
         at,
       )
@@ -3082,10 +3083,15 @@ export class Store {
       const later = at > previous.updated_at
         ? at
         : Number.isFinite(parsed) ? new Date(parsed + 1).toISOString() : at
+      // #665: the row has to describe the action that produced the state it
+      // shows, so the re-tag carries the new tagger and the new preflight as
+      // well as the new SHAs. The first release keeps `created_at`.
       this.run(
-        `UPDATE repo_releases SET target_sha = ?, tag_object_sha = ?, status = 'tagged', updated_at = ? WHERE repo_id = ? AND tag_name = ?`,
+        `UPDATE repo_releases SET user_id = ?, target_sha = ?, tag_object_sha = ?, status = 'tagged', preflight_json = ?, updated_at = ? WHERE repo_id = ? AND tag_name = ?`,
+        input.userId,
         input.targetSha,
         input.tagObjectSha,
+        preflight,
         later,
         input.repoId,
         input.tagName,
