@@ -264,7 +264,10 @@ test('the delivery board keeps every state filter reachable at every band width'
       for (const state of WORK_ITEM_STATES) {
         assert.ok(markup.includes(workItemStateLabel(t, state)), `${locale} summary must name ${state}`)
       }
-      assert.equal((markup.match(/%/g) ?? []).length, WORK_ITEM_STATES.length, `${locale} summary must show a share per state`)
+      // An empty board has no denominator, so a share would be a confident zero:
+      // every state shows a dash instead, and no percentage appears at all.
+      assert.equal((markup.match(/%/g) ?? []).length, 0, `${locale} summary must not print a share with no work items`)
+      assert.equal((markup.match(/—/g) ?? []).length, WORK_ITEM_STATES.length, `${locale} summary must show a dash per state`)
     }
   } finally {
     store.close()

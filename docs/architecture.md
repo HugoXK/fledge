@@ -557,6 +557,28 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   rule restates the worker's formula is gone with the citation it rested on.
   Saving is audited as `schedule.saved` and deleting the row as
   `schedule.removed`, each naming the repository and what changed.
+- **The schedule run budget** (#544, slice 6): a `schedules` row may carry
+  `daily_runs`, the most instants it may dispatch in one logical UTC day. The
+  window is the day of the **instant being decided** (`src/schedules/budget.ts`,
+  `utcDayStart`/`utcDayEnd`, half-open), never the day the dispatch happens, so a
+  late or recovered run stays in the day it was scheduled for and crossing
+  midnight grants no fresh allowance. Before a due instant is dispatched the tick
+  counts the schedule's `dispatched` occurrences in that window
+  (`countScheduleDispatchesBetween`); at the limit the instant becomes a
+  `skipped` row with `budget-exceeded` and the high water mark still moves past
+  it, so the instant is decided once instead of being re-decided every tick. A
+  `claimed` row has not dispatched yet and a `skipped` one did not run, so
+  neither is charged. Null is unbounded, which is what every schedule written
+  before the column had; `0` is refused at save time because a schedule that must
+  not run is deleted or its window closed. This is the run-count layer only: the
+  cost layer stays where it is — `repos.monthly_budget_cny` / `job_budget_cny`
+  for a repository and the account quota for a user — so the two are counted
+  separately. The console prints the limit, today's used count and what is left,
+  and a value nobody read prints `unknown` rather than zero. One process ticks, so
+  the count and the claim are sequential in one pass and the claim's own
+  transaction still makes the instant single-dispatch; a distributed worker
+  (`#387`) must move the count inside that claim, or two workers could each spend
+  the last slot.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
@@ -826,7 +848,8 @@ and the support view's repository and job tables. Adding the class and a
 `data-label` per cell is the whole change; a table must not grow a second card
 mechanism. The delivery board is a compact summary of state links with counts
 and shares, not a carded table; it wraps above the work-item list and each state
-link filters the list. Above 640px the scroller is also bounded vertically
+link filters the list. A share needs a denominator: with no work items at all
+each state shows `—` rather than a confident `0%`. Above 640px the scroller is also bounded vertically
 (`100dvh` minus `--header-h` and `--space-7`, and minus the repository
 subnav's `--subnav-h` on a repository page) and its `thead th` is sticky on an
 opaque `--panel`, so column names stay above the rows they label; the two rules
@@ -906,7 +929,7 @@ timeline as the token to search, and it is the `job_events.job_id` of that job,
 so one search returns the whole job. Pass-level lines (a scheduler pass, the
 shutdown check) have no job in scope and deliberately carry no `trace`.
 
-The repository page adds a compact delivery board grouped by work-item state; each state tile links to a filtered work-item list (`?workState=`) and shows its share of the total. The work-item rows keep their actions behind one disclosure, and the create form is a header button and dialog. The dashboard has two scopes. `/dashboard?window=7|30` shows the signed-in
+The repository page adds a compact delivery board grouped by work-item state; each state tile links to a filtered work-item list (`?workState=`) and shows its share of the total, or `—` while the board has no items and there is nothing to divide by. The work-item rows keep their actions behind one disclosure, and the create form is a header button and dialog. The dashboard has two scopes. `/dashboard?window=7|30` shows the signed-in
 user's own delivery metrics: jobs, success rate, PRs, merged PRs, cost, open
 work items and the last job. `/admin/metrics` shows the global window with the
 product funnel, delivery efficiency (success and merge rate, median job and
@@ -1831,9 +1854,12 @@ The `/admin` card renders the snapshot the command writes to
 GitHub, and a missing or unparseable snapshot renders "no release chain is
 recorded" rather than an empty card. The snapshot carries the tag target and the
 Release URL as fields (`targetSha`, `releaseUrl`); the target is never re-read
-out of a link's detail text. The card renders the artifact links, omits links the
-snapshot marked `skipped` (a deleted release branch, no local image) and the
-stored `healthz` probe, and adds one live `Running instance` row. That row
+out of a link's detail text. The card is one "Release & deployment" summary: the
+running version, CHANGELOG section and pending fragments share one line; the
+header carries one status badge and one GitHub Release link. It renders one live
+`Running instance` row and only the artifact links the snapshot marked `missing`
+or `mismatch`; the `skipped` provenance links and the stored `healthz` probe are
+omitted, and the full chain sits behind a details disclosure. That row
 compares the version in `package.json` and the commit stamp this process booted
 with against the recorded tag target, so an operator can see at a glance whether
 the instance they are looking at is the release the chain names. The header says
@@ -1843,6 +1869,13 @@ incomplete`. A published GitHub Release is therefore never labelled "not
 released" just because the host runs a local build. A snapshot that claims `ok`
 with no links, or that contradicts its own problems, is refused as unparseable —
 a green header over an empty table is the one shape the card must never render.
+
+The admin header also carries a compact summary strip (Pending, Users, Jobs,
+Audit, Release, Backups) whose items link to the existing sections; it lives
+inside the header card, so no new `.card[id]` is added and the section-nav
+contract is unchanged. The user table keeps its fields and POST routes but
+folds quota, role, private-model and approve/reject controls behind a `Manage`
+details control, so the default row is a summary rather than a stack of forms.
 ### Backup surface
 
 The other half of "your data is safe" is a fact the operator can see without
@@ -1953,6 +1986,7 @@ listing, and every row links to the page that already owns it.
 | `scoped_grants` | explicit capability grants with source, evidence, expiry, revocation and revision (#541) |
 | `identity_migrations` | one report row per identity backfill version (#541) |
 | `security_findings` | one row per `rule + path + line` a job reported, with `open`/`fixed`/`dismissed`/`regressed`, the job that dismissed it and the written reason or evidence; absence from a later report never moves a row (#379) |
+| `budget_scopes` | one stored CNY cap per scope — `repository` keyed by repository id, `principal` keyed by `principal:user:<id>` — with the action it takes (`alert`/`pause`/`cancel`); a missing row means no cap, never a zero cap, and the job scope keeps reading `repos.job_budget_cny` (#697) |
 | `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
 
 ## Deployment records
@@ -2289,9 +2323,9 @@ repository.
 - **A session is the record** (`gate_sessions` in `src/db.ts`). It holds the
   repository, status (`analyzing`, `proposed`, `confirmed`, `created`, `refused`,
   `failed`), the base SHA, the canonical plan JSON, its hash, the confirming
-  actor and time, and the future PR/branch/error fields. `Store` exposes
+  actor and time, and the PR/branch/error fields. `Store` exposes
   `createGateSession`, `getGateSession`, `getGateSessionForRepo`,
-  `updateGateSession` and `listGateSessionsForRepo`.
+  `updateGateSession`, `claimGateSession` and `listGateSessionsForRepo`.
 - **The API proposes, it does not write.** `POST /repos/:id/gate/sessions` is
   maintainer-only and CSRF-checked. It validates the plan, optionally reads the
   default-branch SHA with a GitHub `GET /branches/:branch` call, and refuses a
@@ -2306,9 +2340,50 @@ repository.
   preview, and offers a maintainer a confirm form. Every value is escaped and
   every sentence is bilingual.
 
-Not built yet: the gate pull request, GitHub file/commit writes, merging the
-planned job into an existing workflow YAML, and trial runs; those belong to later
-slices of #543.
+Trial runs are not built: Fledge still does not clone or execute a user
+repository, so a lane duration is evidence reported by the analysis run.
+
+## Applying a confirmed gate plan (`#543` second slice)
+
+A confirmed session can be applied once, through
+`POST /repos/:id/gate/sessions/:sessionId/create` (maintainer-only, CSRF-checked).
+It is the only route that writes to a user's repository, and the write is exactly
+one branch, the composed files and one pull request.
+
+- **The claim is a compare-and-set** (`Store.claimGateSession`). The route moves
+  the row `confirmed` → `analyzing` with a single `UPDATE ... WHERE status =
+  'confirmed'`, so two clicks cannot both open a pull request; the loser gets a
+  409. A session that already carries `pr_url` is refused with
+  `GATE_PR_ALREADY_CREATED`.
+- **The base branch is re-read first** (`src/gates/apply.ts`). If it no longer
+  matches the plan's `baseSha`, nothing is written: the session becomes
+  `refused` with `stale_base_sha`, and the caller has to run the analysis again.
+  Creating the branch uses the plan SHA, never a branch name.
+- **Composition is pure** (`src/gates/compose.ts`). Given the plan and the files
+  read at the base SHA it returns the exact bytes and the PR body. It writes
+  `.github/ci-gates.json` (the lane contract), `scripts/gate/gate.mjs` when
+  missing, `.github/workflows/release.yml` when missing, and
+  `.github/workflows/fledge-gate.yml` for the lanes that need their own triggers.
+- **An existing workflow is merged, never replaced.** The preferred target is
+  `.github/workflows/ci.yml` (else the first workflow file that has an `on:` and
+  a `jobs:` block). Only the pr-ready `fledge-gate` job and a `pull_request`
+  trigger are inserted; the schedule, tag and `merge_group` triggers stay in the
+  dedicated file so an unrelated workflow never starts running on them. If the
+  trigger block has a shape the text merge will not rewrite, the pr-ready lane
+  falls back into the dedicated file and the PR body records why.
+- **Lanes keep their four outcomes** (`src/gates/lanes.ts`). An empty lane is
+  `not_applicable`, never `pass`; a missing exit code is a failure; an observe
+  lane's failure is `observe_fail`, recorded and not fatal. A repository without
+  a merge queue runs pr-merge after merge, and the contract records the
+  merge-preview gap: a check that only sees the merged tree cannot block a pull
+  request. A merge-queue repository gets `merge_group` instead, and no such gap.
+- **The page shows the result.** `/repos/:id/gate` offers the create form on a
+  confirmed session, then links the PR and the branch, and shows the recorded
+  `error_code` on a refusal or failure. Every sentence stays bilingual.
+
+GitHub writes use `GithubClient.createBranch` (`POST /git/refs`) and
+`GithubClient.putFile` (`PUT /contents/:path`, with the blob SHA when updating).
+Nothing force-pushes and nothing merges the gate pull request.
 
 ## Release tags for hosted repositories
 

@@ -36,6 +36,24 @@ export const RULES = [
     valueGroup: 1,
   },
   { name: 'authorization-bearer', pattern: /\bauthorization:\s*bearer\s+(\S{16,})/gi, valueGroup: 1 },
+  // The three rules below are the shapes GitHub calls non-provider patterns:
+  // nothing in them names a provider, so no prefix rule can see them. `PASSWORD`
+  // alone is caught by `assignment`, but `SMTP_PASSWORD` and
+  // `AWS_SECRET_ACCESS_KEY` are not — the old rule's leading `\b` cannot match
+  // inside a qualified name, and that is the common shape in a real env file. A
+  // credential inside a connection URL and a Basic header are the other two ways
+  // a value escapes a config file without naming a provider.
+  {
+    name: 'qualified-secret-assignment',
+    pattern:
+      /\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*_(?:PASSWORD|PASSWD|PASS|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY|CLIENT_SECRET|CREDENTIALS?)\s*[:=]\s*["']?([A-Za-z0-9+/_=-]{16,})/gi,
+    valueGroup: 1,
+  },
+  {
+    name: 'credential-url',
+    pattern: /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb\+srv|mongodb|redis|rediss|amqp|amqps|mssql):\/\/[^\s/@"']+:[^\s/@"']{6,}@/gi,
+  },
+  { name: 'http-basic', pattern: /\bauthorization\s*:\s*basic\s+([A-Za-z0-9+/=]{16,})/gi, valueGroup: 1 },
 ]
 
 export const ALLOWLIST_FILE = 'scripts/secret-scan-allowlist.json'
@@ -74,6 +92,14 @@ export function scanText(text, file, allowlist) {
         const number = index + 1
         const value = rule.valueGroup === undefined ? match[0] : (match[rule.valueGroup] ?? '')
         if (rule.valueGroup !== undefined && isPlaceholder(value)) {
+          match = rule.pattern.exec(line)
+          continue
+        }
+        // A connection string carries its placeholder in the middle
+        // (`postgres://user:${DB_PASSWORD}@host`), not at the start of a group, so
+        // the whole match has to be tested too. A real value never contains any of
+        // these markers.
+        if (match[0].includes('${') || match[0].includes('{{') || match[0].includes('<')) {
           match = rule.pattern.exec(line)
           continue
         }

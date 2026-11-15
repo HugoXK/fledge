@@ -24,6 +24,7 @@ export interface UsageDetail {
   known?: boolean
 }
 import { artifactKey, candidateRefusal, type CandidateRefusal } from './lib/evolution/artifacts.js'
+import { BUDGET_SCOPE_ACTIONS, BUDGET_SCOPE_KINDS, isBudgetScopeAction, isBudgetScopeKind } from './lib/budgetScope.js'
 import { capabilitiesForRole, deriveRepoRole, identityPrincipalId, legacyTenantId } from './identity/authorization.js'
 
 // #355: one settings row marks the PAT expiry backfill as done, so a later
@@ -264,6 +265,12 @@ export interface ScheduleRow {
    * bound, which is the behaviour every schedule had before this column existed.
    */
   grace_ms: number | null
+  /**
+   * #544 slice 6: at most this many instants may be dispatched in one logical
+   * UTC day. Null means unbounded, which is the behaviour every schedule had
+   * before this column existed.
+   */
+  daily_runs: number | null
   last_occurrence_at: number | null
   created_at: string
   updated_at: string
@@ -1318,6 +1325,19 @@ CREATE TABLE IF NOT EXISTS quota_ledger (
 );
 CREATE INDEX IF NOT EXISTS quota_ledger_user_idx ON quota_ledger(user_id, at DESC);
 
+-- #697: one stored cap per scope, keyed by scope kind and scope id. The
+-- repository and principal scopes read this table; repos.job_budget_cny keeps
+-- its meaning and is not overloaded. A missing row means "no cap at this scope",
+-- never a zero cap, so an absent row can never stop a job.
+CREATE TABLE IF NOT EXISTS budget_scopes (
+  kind TEXT NOT NULL CHECK (kind IN ('job', 'repository', 'principal')),
+  id TEXT NOT NULL,
+  cap_cny REAL NOT NULL DEFAULT 0,
+  action TEXT NOT NULL DEFAULT 'alert' CHECK (action IN ('alert', 'pause', 'cancel')),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (kind, id)
+);
+
 CREATE TABLE IF NOT EXISTS notifications (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1928,6 +1948,11 @@ CREATE TABLE IF NOT EXISTS schedules (
   timing_revision INTEGER NOT NULL DEFAULT 1,
   misfire TEXT NOT NULL DEFAULT 'skip',
   grace_ms INTEGER,
+  -- #544 slice 6: the schedule layer of the run budget, in dispatches per
+  -- logical UTC day. Null is unbounded, the behaviour of every schedule written
+  -- before the column existed; the count itself is read from the occurrence
+  -- rows, so a database restored without them cannot invent usage.
+  daily_runs INTEGER,
   last_occurrence_at INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -2064,6 +2089,17 @@ export interface SecurityFindingRow {
   updated_at: string
 }
 
+// #697: one stored cap for one scope. `kind` and `id` are the key; `id` is a
+// repository id or an `identityPrincipalId()`. A row exists only while a cap is
+// set, so an absent row means "no cap" and never "a cap of zero".
+export interface BudgetScopeRow {
+  kind: string
+  id: string
+  cap_cny: number
+  action: string
+  updated_at: string
+}
+
 export interface SecurityFindingWrite {
   id: string
   state: string
@@ -2083,9 +2119,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 40) {
+    if (previousVersion > 41) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (40)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (41)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -2096,6 +2132,7 @@ export class Store {
     this.migrateManagementColumns()
     this.migrateScheduleOccurrenceColumns()
     this.migrateScheduleMisfireColumns()
+    this.migrateScheduleBudgetColumns()
     this.migrateReleaseColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
@@ -2108,7 +2145,7 @@ export class Store {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
     this.migrateIdentity()
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 40)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 41)};`)
   }
 
   // #544 slice 3B-B2: a database written by slice B1 already has the occurrence
@@ -2123,6 +2160,13 @@ export class Store {
   private migrateScheduleMisfireColumns(): void {
     const columns = this.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
     if (!columns.includes('grace_ms')) this.db.exec('ALTER TABLE schedules ADD COLUMN grace_ms INTEGER')
+  }
+
+  // #544 slice 6: the run budget adds one nullable column. A row written before
+  // it keeps no limit, which is the behaviour it had; nothing else is rewritten.
+  private migrateScheduleBudgetColumns(): void {
+    const columns = this.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
+    if (!columns.includes('daily_runs')) this.db.exec('ALTER TABLE schedules ADD COLUMN daily_runs INTEGER')
   }
 
   private migrateScheduleOccurrenceColumns(): void {
@@ -2896,6 +2940,18 @@ export class Store {
       )
     }
     counts.audit_log = Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM audit_log WHERE user_id = ?', userId)?.n ?? 0)
+    // #697: `budget_scopes` is keyed by a scope id, not by `user_id`, and no
+    // cascade reaches it. Count both shapes the purge deletes: the principal
+    // row and one row per repository.
+    counts.budget_scopes =
+      Number(
+        this.get<{ n: number }>("SELECT COUNT(*) AS n FROM budget_scopes WHERE kind = 'principal' AND id = ?", identityPrincipalId(userId))?.n ?? 0,
+      ) +
+      (repoIds.length === 0
+        ? 0
+        : Number(
+            this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM budget_scopes WHERE kind = 'repository' AND id IN (${marks})`, ...repoIds)?.n ?? 0,
+          ))
     const settings = this.purgeSettingsFilter(userId, login)
     counts.settings = Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM settings WHERE ${settings.where}`, ...settings.args)?.n ?? 0)
     return counts
@@ -2931,6 +2987,12 @@ export class Store {
       // `artifact_pointers`, `evaluations` and `promotions` cascade only once the
       // version row is gone.
       if (repoIds.length > 0) this.run(`DELETE FROM artifact_versions WHERE repo_id IN (${marks})`, ...repoIds)
+
+      // #697: the budget scopes name the account twice and no cascade reaches
+      // this table either — `principal:user:<id>` survives on its own, and a
+      // repository row is left behind once its repository is gone.
+      this.run("DELETE FROM budget_scopes WHERE kind = 'principal' AND id = ?", identityPrincipalId(id))
+      if (repoIds.length > 0) this.run(`DELETE FROM budget_scopes WHERE kind = 'repository' AND id IN (${marks})`, ...repoIds)
 
       // The account row itself: sessions, jobs, instances, tokens, ledger rows,
       // installations and every repo-scoped table go through the cascade.
@@ -3241,6 +3303,22 @@ export class Store {
       nowIso(),
       id,
     )
+    return this.getGateSession(id)
+  }
+
+  // #543: creating the gate pull request must happen once per confirmed plan,
+  // even when two requests arrive together. The compare-and-set is one SQL
+  // statement, so exactly one caller wins the transition and the loser reads no
+  // row; a read-then-update here would let both callers open a PR.
+  claimGateSession(id: string, from: GateSessionStatus, to: GateSessionStatus): GateSessionRow | undefined {
+    const changed = this.runChanges(
+      'UPDATE gate_sessions SET status = ?, updated_at = ? WHERE id = ? AND status = ?',
+      to,
+      nowIso(),
+      id,
+      from,
+    )
+    if (changed === 0) return undefined
     return this.getGateSession(id)
   }
 
@@ -4671,6 +4749,9 @@ export class Store {
 
   deleteRepo(id: string): void {
     this.run('DELETE FROM repos WHERE id = ?', id)
+    // #697: the repository cap is keyed by the repository id and no cascade
+    // reaches it, so deleting the repository has to take its scope row with it.
+    this.run("DELETE FROM budget_scopes WHERE kind = 'repository' AND id = ?", id)
   }
 
   listAutoMergeRepos(): RepoRow[] {
@@ -4710,6 +4791,8 @@ export class Store {
     endAt?: number | null
     misfire?: string
     graceMs?: number | null
+    /** #544 slice 6: dispatches allowed per logical UTC day; null is unbounded. */
+    dailyRuns?: number | null
   }): ScheduleRow {
     const existing = this.scheduleForRepo(input.repoId)
     const timingChanged = existing !== undefined && (
@@ -4723,19 +4806,20 @@ export class Store {
     const at = nowIso()
     if (existing === undefined) {
       this.run(
-        `INSERT INTO schedules (id, repo_id, kind, expression, every_ms, timezone, start_at, end_at, timing_revision, misfire, grace_ms, last_occurrence_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, ?, ?)`,
+        `INSERT INTO schedules (id, repo_id, kind, expression, every_ms, timezone, start_at, end_at, timing_revision, misfire, grace_ms, daily_runs, last_occurrence_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, ?, ?)`,
         input.id, input.repoId, input.kind, input.expression ?? null, input.everyMs ?? null, input.timezone ?? null,
-        input.startAt ?? null, input.endAt ?? null, input.misfire ?? 'skip', input.graceMs ?? null, at, at,
+        input.startAt ?? null, input.endAt ?? null, input.misfire ?? 'skip', input.graceMs ?? null, input.dailyRuns ?? null, at, at,
       )
     } else {
       this.run(
         `UPDATE schedules SET kind = ?, expression = ?, every_ms = ?, timezone = ?, start_at = ?, end_at = ?,
-           timing_revision = ?, misfire = ?, grace_ms = ?, updated_at = ? WHERE repo_id = ?`,
+           timing_revision = ?, misfire = ?, grace_ms = ?, daily_runs = ?, updated_at = ? WHERE repo_id = ?`,
         input.kind, input.expression ?? null, input.everyMs ?? null, input.timezone ?? null,
         input.startAt ?? null, input.endAt ?? null,
         timingChanged ? existing.timing_revision + 1 : existing.timing_revision,
-        input.misfire ?? existing.misfire, input.graceMs === undefined ? existing.grace_ms : input.graceMs, at, input.repoId,
+        input.misfire ?? existing.misfire, input.graceMs === undefined ? existing.grace_ms : input.graceMs,
+        input.dailyRuns === undefined ? existing.daily_runs : input.dailyRuns, at, input.repoId,
       )
     }
     const row = this.scheduleForRepo(input.repoId)
@@ -4850,6 +4934,21 @@ export class Store {
       'SELECT * FROM schedule_occurrences WHERE repo_id = ? ORDER BY logical_time DESC, decided_at DESC LIMIT ?',
       repoId, limit,
     )
+  }
+
+  // #544 slice 6: how much of a schedule's daily budget a logical day has
+  // already spent. Only `dispatched` rows count — a skipped instant did not run,
+  // and a claimed one has not dispatched yet — and the window is half-open, so
+  // neighbouring days cannot both charge the boundary instant. The logical time
+  // is the key, not the dispatch time: a late or recovered run stays in the day
+  // it was scheduled for.
+  countScheduleDispatchesBetween(scheduleId: string, from: number, to: number): number {
+    const row = this.get<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM schedule_occurrences
+        WHERE schedule_id = ? AND state = 'dispatched' AND logical_time >= ? AND logical_time < ?`,
+      scheduleId, from, to,
+    )
+    return Number(row?.count ?? 0)
   }
 
   // #544 slice 3B-B2. Claiming is one transaction so two workers cannot both
@@ -5870,6 +5969,59 @@ export class Store {
       repoId, sinceIso,
     )
     return Number(row?.total ?? 0)
+  }
+
+  // #697: one cap per scope. A zero cap deletes the row rather than storing a
+  // zero, because "no cap" and "a cap of zero" must not be the same thing: a
+  // stored zero would stop every job that spent anything at all.
+  setBudgetScope(input: { kind: string; id: string; capCny: number; action: string }): void {
+    if (!isBudgetScopeKind(input.kind)) throw new Error(`budget scope kind must be one of ${BUDGET_SCOPE_KINDS.join(', ')}: ${input.kind}`)
+    if (!isBudgetScopeAction(input.action)) throw new Error(`budget scope action must be one of ${BUDGET_SCOPE_ACTIONS.join(', ')}: ${input.action}`)
+    if (!Number.isFinite(input.capCny) || input.capCny < 0) throw new Error(`budget scope cap must be a non-negative number: ${String(input.capCny)}`)
+    const id = input.id.slice(0, 200)
+    if (id === '') throw new Error('budget scope id is required')
+    if (input.capCny <= 0) {
+      this.run('DELETE FROM budget_scopes WHERE kind = ? AND id = ?', input.kind, id)
+      return
+    }
+    this.run(
+      `INSERT INTO budget_scopes (kind, id, cap_cny, action, updated_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(kind, id) DO UPDATE SET cap_cny = excluded.cap_cny, action = excluded.action, updated_at = excluded.updated_at`,
+      input.kind, id, input.capCny, input.action, nowIso(),
+    )
+  }
+
+  getBudgetScope(kind: string, id: string): BudgetScopeRow | undefined {
+    return this.get<BudgetScopeRow>('SELECT kind, id, cap_cny, action, updated_at FROM budget_scopes WHERE kind = ? AND id = ?', kind, id)
+  }
+
+  listBudgetScopes(kind?: string): BudgetScopeRow[] {
+    if (kind === undefined) return this.all<BudgetScopeRow>('SELECT kind, id, cap_cny, action, updated_at FROM budget_scopes ORDER BY kind, id')
+    return this.all<BudgetScopeRow>('SELECT kind, id, cap_cny, action, updated_at FROM budget_scopes WHERE kind = ? ORDER BY id', kind)
+  }
+
+  // #697: the principal scope sums the same rolling window the repository scope
+  // uses, and the same USD-only rule: a row priced in another currency cannot
+  // move a CNY cap.
+  principalUsageSince(userId: string, sinceIso: string): number {
+    const row = this.get<{ total: number | null }>(`SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ? AND at >= ? AND ${usdBilled()}`, userId, sinceIso)
+    return Number(row?.total ?? 0)
+  }
+
+  // A cap compared against spend that could not be priced would be a lie, so each
+  // scope reports how many calls in its window went unpriced; the console turns
+  // that into a lower-bound caveat.
+  repoUnknownCountSince(repoId: string, sinceIso: string): number {
+    const row = this.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM quota_ledger q LEFT JOIN jobs j ON j.id = q.job_id WHERE COALESCE(q.repo_id, j.repo_id) = ? AND q.at >= ? AND q.cost_known = 0`,
+      repoId, sinceIso,
+    )
+    return Number(row?.n ?? 0)
+  }
+
+  principalUnknownCountSince(userId: string, sinceIso: string): number {
+    const row = this.get<{ n: number }>('SELECT COUNT(*) AS n FROM quota_ledger WHERE user_id = ? AND at >= ? AND cost_known = 0', userId, sinceIso)
+    return Number(row?.n ?? 0)
   }
 
   usageAttribution(sinceIso: string): { unattributedCount: number; unattributedUsd: number; attributedUsd: number } {

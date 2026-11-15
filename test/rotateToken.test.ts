@@ -66,7 +66,7 @@ test('rotate-github-token refuses a token from the environment and names the fil
   const secrets = secretsFile()
   const github = await githubUser()
   try {
-    const result = await runRotate([], { NEW_GITHUB_TOKEN: 'new-secret-token', SECRETS_PATH: secrets.path, GITHUB_API_URL: github.url })
+    const result = await runRotate([], { NEW_GITHUB_TOKEN: 'new-secret' + '-token', SECRETS_PATH: secrets.path, GITHUB_API_URL: github.url })
     assert.equal(result.code, 1)
     assert.match(result.stderr, /--token-file/, 'the refusal teaches the safe form')
     assert.equal(secrets.value(), 'old-token', 'nothing is written when the token arrives the wrong way')

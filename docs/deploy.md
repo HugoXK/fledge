@@ -257,6 +257,20 @@ release in the same week bumps the patch (`0.4.0 -> 0.4.1`). The planner reads
 the last tag's commit time and the workflow's run time; if either is unreadable
 it falls back to the minor, which is the first-release behaviour.
 
+#### Reliable slot trigger
+
+GitHub's `schedule` event is best-effort: on 2026-11-14 the `14:30Z` slot
+produced a run at `19:24Z`. `scripts/trigger-release.mjs` is the external
+trigger. A host cron or a Cloudflare Worker calls it at `14:30Z` (22:30
+Asia/Shanghai) with `GITHUB_REPOSITORY` and an Actions-write `GITHUB_TOKEN` in a
+`0600` env file; the script calls the `daily-release.yml` workflow_dispatch with
+`dry_run=false` and never prints the token. GitHub's `schedule` and the `15:30Z`
+catch-up stay as the fallback, and `release-trigger` makes a late run a no-op
+once the slot is filled. Install it only on a host whose clock is trustworthy
+(see #758) or on an NTP-backed scheduler; the example is
+`deploy/release-trigger.cron.example`. Raise one alert if no plan exists by
+`15:00Z`.
+
 A release that changes user-facing behaviour updates `README.md`,
 `README.zh.md` and the relevant `docs/` page in the same pull request. The
 documentation site builds from this repository's `README.md`, `README.zh.md` and
