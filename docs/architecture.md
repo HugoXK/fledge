@@ -1448,9 +1448,15 @@ maintainer can see what the agent was told. The bridge prompt tells the agent to
 push to the same branch and update the existing PR, never open a second PR. The
 follow-up is deduped by delivery id and by repo + PR + head SHA + a fingerprint
 of the reason with that instruction, and is skipped while the repository has an
-active job; requests are parked per fingerprint, so two different reviews on one
-commit are two follow-ups rather than one overwritten entry. A follow-up does not
-receive a second automation comment; the job list labels it "Follow-up".
+active job. When the running job is a review of the same pull request and head,
+updates merge into ONE parked request — one per pull request and head — and each
+contributes its own trigger (kind, comment id, actor); the release pass then
+queues one job whose `Reviewer asked:` line names every request, so two updates
+that arrive before the agent's first model call become one job, not two. A
+running review is never cancelled: an update that arrives after that point is not
+injected into its current turn, it waits in the same merged request and continues
+the session in the next task. A follow-up does not receive a second automation
+comment; the job list labels it "Follow-up".
 
 ### Default-branch failure intake
 
@@ -1538,6 +1544,36 @@ apply to is refused in the thread and creates nothing, so a command can never
 manufacture work. Each action reuses the existing audit strings (`job.retried`,
 `job.paused`, `job.resumed`, `job.cancelled`) and their timeline kinds rather
 than adding a second naming scheme.
+
+### Mention triggers
+
+`@fledge` in a comment is a second trigger on the same surface, not a second
+router. `parseMentionTrigger` sits beside `parseIssueCommand`; it takes the names
+from `FLEDGE_MENTION_NAMES` (default `fledge`), matches case-insensitively at a
+word boundary, and reuses the command path's trusted set
+(`OWNER`/`MEMBER`/`COLLABORATOR`), its created-only rule and its claim keyed by
+the comment id, so a replayed delivery starts nothing. The bot's own comment is
+never a trigger, and neither is an edited, deleted or closed one.
+
+The kind of job follows the target's kind. A mention on a pull request starts a
+`review` of that pull request at its head: the job reads the diff and comments
+and never writes to the branch. A mention on an issue starts a follow-up for
+that issue, which may cut one branch and open one pull request under the
+one-issue-one-branch-one-PR rule. `Jobs.mention` decides, and the rule itself is
+`src/lib/mentionGovernance.ts` so every case is a pure function.
+
+A mention is identified by `(target kind, target number, head sha)`. The same
+target at the same head never opens a second job: while one is queued or running
+the mention is recorded as a `job.mention_recorded` event on that job. A newer
+mention supersedes a **queued** job — the queued row ends `superseded`, and one
+`trigger.mention_superseded` row names both — because that job has not run. A
+**running** job is never interrupted: the mention is recorded on it and parks in
+`pending_mention:<repo>`, and the newest parked mention starts when the slot
+frees. A draft pull request or a closed target writes `trigger.mention_ignored`;
+a target the installation cannot read writes one `trigger.mention_refused` row
+and starts nothing. Every accepted trigger writes `trigger.mention` with the
+comment id, the head SHA, the actor and the outcome (`started`, `recorded`,
+`parked`), and answers in the thread.
 
 The inbox is also available as `GET /api/inbox/events`, a per-user SSE stream.
 The server reuses the cached inbox snapshot, sends the server-rendered inbox HTML

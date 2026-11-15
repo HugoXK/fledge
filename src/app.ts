@@ -51,7 +51,7 @@ import { allowedRepoRoles, parseRepoRole, roleAllowed } from './lib/repoRole.js'
 import { isWorkItemState, MAINTAINER_ONLY_STATES, WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 import { parseStageMode } from './lib/stages.js'
 import { issuePriority, issueState, shouldTriage } from './lib/issueIntake.js'
-import { parseIssueCommand } from './lib/issueCommands.js'
+import { parseIssueCommand, parseMentionTrigger, type IssueCommandInput, type MentionTriggerInput } from './lib/issueCommands.js'
 import { VERSION } from './version.js'
 import { clearGauge, incCounter, observeHistogram, renderMetrics, setGauge } from './lib/metrics.js'
 import { readReleaseStatus } from './lib/releaseStatus.js'
@@ -118,7 +118,7 @@ import { isRulePath, MAX_RULE_FILE_BYTES } from './rules.js'
 import { audienceVisible, memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from './lib/memory.js'
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
 import { THEME_COOKIE, isTheme, resolveTheme, withTheme } from './views/theme.js'
-import { GithubClient, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
+import { GithubClient, GithubError, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
 import { checkWebhookSignature, GithubApp, webhookSecretSlot } from './repos/app.js'
 import { repoGithubToken } from './repos/token.js'
 import { InstanceManager } from './flybot/instances.js'
@@ -5440,9 +5440,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const repo = store.findRepoByInstallationAndFullName(installationId, fullName)
     if (repo === undefined) return
     const parsed = parseIssueCommand(body)
-    if (parsed === null) return
-    const { command, issueUrl, number, title, detail } = parsed
-    const key = `issue_command:${parsed.commentId}`
+    // #637: a mention is the second matcher on the same comment surface. It is
+    // read only when the comment is not a `/fledge` command, so one comment can
+    // never be both, and it reuses the claim below: the comment id is the key.
+    const mention = parsed === null
+      ? parseMentionTrigger(body, { names: config.triggers.mentions, botLogin: `${config.githubApp.slug}[bot]` })
+      : null
+    if (parsed === null && mention === null) return
+    const source = (parsed ?? mention) as IssueCommandInput | MentionTriggerInput
+    const command = parsed?.command
+    const { issueUrl, number, title, detail } = source
+    const key = `issue_command:${source.commentId}`
     const marker = readIssueCommandMarker(store.getSetting(key))
     // Answered already: a redelivery says nothing twice.
     if (marker?.state === 'done') return
@@ -5462,6 +5470,60 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       store.setSetting(key, `done:${nowIso()}`)
     }
 
+    if (mention !== null) {
+      // #637: the kind of job follows the target's kind. A pull request is read,
+      // not written: the review job reads the diff at its head and comments. An
+      // issue is where a follow-up may open one branch and one pull request.
+      if (!mention.onPullRequest) {
+        const result = await jobs.mention(repo, {
+          target: { kind: 'issue', number: mention.number, url: mention.issueUrl, headSha: '', state: 'open', draft: false },
+          commentId: mention.commentId,
+          actor: mention.actor,
+        })
+        if (result.ok && (result.action === 'start' || result.action === 'supersede')) await reply(`Mention accepted: starting a follow-up for this issue (${result.jobId}).`)
+        else if (result.ok && result.action === 'record') await reply('Mention recorded on the job that already holds this issue; nothing new was started.')
+        else if (result.ok) await reply('Mention recorded; the follow-up starts when the job that is running now finishes.')
+        else await reply(`Mention received, but nothing started: ${result.error}`)
+        return
+      }
+      try {
+        const pr = await client.getPullRequest(owner, name, mention.number)
+        const result = await jobs.mention(repo, {
+          target: {
+            kind: 'pull_request',
+            number: mention.number,
+            url: pr.url,
+            headSha: pr.headSha,
+            state: pr.state === 'open' && !pr.merged ? 'open' : 'closed',
+            draft: pr.draft,
+            branch: pr.head,
+            baseBranch: pr.base,
+          },
+          commentId: mention.commentId,
+          actor: mention.actor,
+        })
+        if (result.ok && (result.action === 'start' || result.action === 'supersede')) await reply(`Mention accepted: review started for ${pr.headSha.slice(0, 7)} on ${pr.url}.`)
+        else if (result.ok && result.action === 'record') await reply('This head is already being reviewed; the mention is recorded on that job.')
+        else if (result.ok) await reply('Mention recorded; the review starts when the job that is running now finishes.')
+        else if (result.code === 'MENTION_DRAFT') await reply('This pull request is a draft; nothing was started.')
+        else if (result.code === 'MENTION_CLOSED') await reply('This pull request is not open; nothing was started.')
+        else await reply(`Mention received, but nothing started: ${result.error}`)
+        return
+      } catch (error) {
+        // A target we cannot read starts nothing and says so in one audit line;
+        // the claim settles, because a redelivery would fail the same read.
+        if (error instanceof GithubError && (error.status === 404 || error.status === 403)) {
+          store.audit(repo.user_id, 'trigger.mention_refused', `${mention.commentId} unreadable ${mention.number}`)
+          store.setSetting(key, `done:${nowIso()}`)
+          return
+        }
+        // Anything else is not the trigger's fault: the claim is released so the
+        // redelivery can retry it.
+        store.deleteSetting(key)
+        throw error
+      }
+    }
+
   // #540 slice 6: the chat half. An issue comment is a third surface on the same
   // command contract as the console forms, so the reply is built from the receipt
   // and the audit row, the revision fence and the refusal codes are the same ones.
@@ -5470,13 +5532,13 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // the claim absorbs a duplicate delivery, and if a delivery is retaken the
   // receipt answers the replay instead of queueing a second job.
   const runChatCreate = async (kind: JobKind, goal: string, itemId: string): Promise<CommandOutcome> => {
-    const actor = managementActor({ userId: repo.user_id, repo, channel: 'chat', requestId: `issue_command:${parsed.commentId}` })
+    const actor = managementActor({ userId: repo.user_id, repo, channel: 'chat', requestId: `issue_command:${source.commentId}` })
     return management.run(actor, {
       operation: 'task.create',
       target: { projectId: repo.id },
       arguments: { kind, goal, workItemId: itemId },
       expectedRevision: management.revisionOf('project', repo.id),
-      idempotencyKey: `issue_command:${parsed.commentId}`,
+      idempotencyKey: `issue_command:${source.commentId}`,
     })
   }
 

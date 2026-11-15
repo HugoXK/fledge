@@ -288,6 +288,7 @@ function statusLabel(t: Translate, status: string): string {
     onboarding: t('待申请', 'Onboarding'),
     idle: t('空闲', 'Idle'),
     quota_exhausted: t('额度用完', 'Quota exhausted'),
+    superseded: t('已被取代', 'Superseded'),
     paused: t('已暂停', 'Paused'),
     cancelled: t('已取消', 'Cancelled'),
     ready: t('就绪', 'Ready'),

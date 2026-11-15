@@ -8,7 +8,7 @@ import type { Translate } from '../i18n.js'
 // same list. Nothing here keeps client state: the route parses the query, the
 // store filters in SQL, and the page renders the query back into its links.
 
-export const JOB_FILTER_STATUSES: JobStatus[] = ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted']
+export const JOB_FILTER_STATUSES: JobStatus[] = ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'paused', 'quota_exhausted', 'superseded']
 // The one list of kinds a job can have is `JobKind` in `src/jobs/runner.ts`; a
 // second copy here is how `scope` and `verify` went missing from the form while
 // `research` — a kind no job can have — was offered. `KIND_LABELS` is typed by
@@ -64,6 +64,7 @@ const STATUS_LABELS: Record<string, [string, string]> = {
   cancelled: ['已取消', 'Cancelled'],
   paused: ['已暂停', 'Paused'],
   quota_exhausted: ['额度用尽', 'Quota exhausted'],
+  superseded: ['已被取代', 'Superseded'],
 }
 
 const KIND_LABELS: Record<JobKind, [string, string]> = {

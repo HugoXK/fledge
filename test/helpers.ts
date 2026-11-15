@@ -72,6 +72,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
       destructive: { ...base.rateLimit.destructive, ...overrides.rateLimit?.destructive },
       expensive: { ...base.rateLimit.expensive, ...overrides.rateLimit?.expensive },
     },
+    triggers: { ...base.triggers, ...overrides.triggers },
     plan: { ...base.plan, ...overrides.plan },
     backup: { ...base.backup, ...overrides.backup },
   }
