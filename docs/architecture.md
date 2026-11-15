@@ -625,17 +625,30 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   merged is never a candidate, so the bulk merge does not re-check it on every
   pass.
 
+### Public API v1
+
+`/api/v1/*` is the token-authenticated read surface for a control room or an
+editor. `GET /api/v1/jobs` answers the caller's own jobs through the `jobs:read`
+scope, newest first, keyed by `(created_at, rowid)` rather than an offset, so a
+job created between two requests cannot shift a row across pages. The item
+mapper is the boundary: the row also holds a callback hash, a platform token
+hash and a callback secret, and none of them is in the response. See
+`docs/api.md` for the contract.
+
 ### Model gateway
 
 `/v1/*` is OpenAI-compatible and authenticated with `flg_` tokens. A token
-carries a `scope` and an `expires_at`: `gateway` is the only enforced scope, a
-personal token always gets a finite lifetime (30/90/365 days, default
-`PAT_EXPIRY_DAYS` 90) and only an admin may create an operator token without one.
-The gateway answers `401 invalid_api_key` for an unknown, revoked, expired or
-non-approved token and `403 insufficient_scope` for a live token outside the
-gateway scope, decided before `last_used_at` is written; neither refusal echoes
-the token. The settings page lists each token's scope, expiry and last use, and
-revoke stays one click.
+carries a `scope` and an `expires_at`, and the scope is its whole capability:
+`gateway` reaches the model routes and `jobs:read` reaches `GET /api/v1/jobs`,
+with no substitution between them. A personal token always gets a finite
+lifetime (30/90/365 days, default `PAT_EXPIRY_DAYS` 90) and only an admin may
+create an operator token without one. Exactly one function decides what a token
+is — `authenticateApiToken` in `src/lib/apiToken.ts`, which the gateway and the
+public read API both call — and it answers `401 invalid_api_key` for an unknown,
+revoked, expired or non-approved token and `403 insufficient_scope` for a live
+token outside the required scope, decided before `last_used_at` is written;
+neither refusal echoes the token. The settings page offers both scopes, lists
+each token's scope, expiry and last use, and revoke stays one click.
 
 - If the user has an own model configured, Fledge proxies to it and does **not**
   meter platform quota.
@@ -1807,7 +1820,7 @@ listing, and every row links to the page that already owns it.
 | `approval_tokens` | single-use approve/reject links |
 | `repos` | upstream/fork identity, encrypted token, permission, reviewer config, goal, cadence, state |
 | `jobs` | lifecycle, kind (iterate/review), branch, issue/PR URL, review score, summary, cost, job-scoped token hash |
-| `api_tokens` | `flg_` tokens (PAT, job or instance), hashed, with `scope` (only `gateway` today) and `expires_at`; a PAT always carries an expiry |
+| `api_tokens` | `flg_` tokens (PAT, job or instance), hashed, with `scope` (`gateway` or `jobs:read`) and `expires_at`; a PAT always carries an expiry |
 | `quota_ledger` | per-request cost records: model, currency, price snapshot, `cost_known` (0 = could not be priced) |
 | `notifications` | in-app messages (quota, job failure), stored as written and localized at render |
 | `postmortems` | one evidence-backed write-up per failed/stalled/cancelled job, with category, recurrence key, owner and preventive action |

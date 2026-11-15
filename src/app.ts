@@ -20,6 +20,7 @@ import { isTrialFilter } from './lib/trials.js'
 import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, rejectedEmail, testEmail } from './email/templates.js'
 import { notifyEmail } from './email/recipient.js'
+import { authenticateApiToken } from './lib/apiToken.js'
 import { registerGateway } from './gateway/gateway.js'
 import { assertSafeModelUrl, normalizeDataPolicyUrl, normalizeProviderRegion } from './gateway/modelUrl.js'
 import { assertSafeNotificationWebhook } from './lib/webhook.js'
@@ -37,7 +38,7 @@ import { decisionKindLabel, isDecisionKind } from './lib/taskDecision.js'
 import fastifyRateLimit from '@fastify/rate-limit'
 import { rateLimitKey, RateLimiter, RouteLimiters } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
-import { expiryFromDays, GATEWAY_SCOPE, isTokenScope, patExpiryDays } from './lib/tokens.js'
+import { expiryFromDays, GATEWAY_SCOPE, isTokenScope, JOBS_READ_SCOPE, patExpiryDays } from './lib/tokens.js'
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
 import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale, type Translate } from './i18n.js'
@@ -216,6 +217,48 @@ function describeJobStop(result: { sent?: boolean; stopped?: number; requested?:
   if (stopped > 0) return `stopped ${stopped} session(s)`
   if (requested > 0) return `requested a stop for ${requested} session(s) at the next safe point`
   return 'no live session was reachable to stop'
+}
+
+// #392: the public read API's page size. A query string cannot refuse a caller
+// here — the contract names exactly three auth answers — so a value outside
+// 1..100 is clamped instead of rejected, and a missing or unparsable value takes
+// the documented default.
+function jobPageLimit(value: string | undefined): number {
+  if (value === undefined) return 50
+  // `Number('')` is 0, so an empty value would otherwise mean the smallest page
+  // rather than the default; only a non-empty, finite number is honoured.
+  const parsed = value.trim() === '' ? Number.NaN : Number(value)
+  if (!Number.isInteger(parsed)) return 50
+  return Math.min(100, Math.max(1, parsed))
+}
+
+// The item contract, in one place: these ten fields and nothing else. The row
+// carries a callback hash, a platform token hash and a callback secret, so this
+// mapper is the boundary that keeps them out of the response.
+function jobSummary(job: JobRow): {
+  id: string
+  kind: string
+  status: string
+  repo: string
+  createdAt: string
+  finishedAt: string | null
+  prUrl: string | null
+  issueUrl: string | null
+  reviewScore: number | null
+  costUsd: number
+} {
+  return {
+    id: job.id,
+    kind: job.kind,
+    status: job.status,
+    repo: job.repo_id,
+    createdAt: job.created_at,
+    finishedAt: job.finished_at,
+    prUrl: job.pr_url,
+    issueUrl: job.issue_url,
+    reviewScore: job.review_score,
+    costUsd: job.cost_usd,
+  }
 }
 
 function queryText(request: FastifyRequest, name: string): string | undefined {
@@ -1372,6 +1415,35 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       }
     }
     return { windowDays, since, personal: store.personalMetrics(viewer.user.id, since), alerts: store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny }) }
+  })
+
+  // #392: the first token-authenticated read route. It sits outside the session
+  // surface on purpose — an `flg_` token with `jobs:read` is the only way in —
+  // and it answers with the gateway's three shapes through the shared
+  // authenticator, so the two surfaces cannot disagree about what a token is.
+  app.get('/api/v1/jobs', async (request, reply) => {
+    if (!apiLimiter.take(`api-v1-jobs:${rateLimitKey(request)}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many API requests' } })
+    const auth = authenticateApiToken(request, store, JOBS_READ_SCOPE)
+    if (auth.kind === 'unauthorized') return reply.code(401).send({ error: { type: 'invalid_api_key', message: 'Missing or invalid Fledge API token' } })
+    if (auth.kind === 'forbidden') return reply.code(403).send({ error: { type: 'insufficient_scope', message: 'This Fledge API token is not allowed to read jobs' } })
+    const cursorId = queryText(request, 'cursor')
+    let after: { createdAt: string; rowid: number } | null = null
+    if (cursorId !== undefined) {
+      // An id that is not one of the caller's jobs is not a cursor. Answering the
+      // first page again would silently repeat rows the caller already has.
+      const resolved = store.jobCursorForUser(auth.user.id, cursorId)
+      if (resolved === undefined) {
+        return reply.code(400).send({ error: { type: 'invalid_cursor', message: 'cursor must be the id of one of your own jobs' } })
+      }
+      after = resolved
+    }
+    const limit = jobPageLimit(queryText(request, 'limit'))
+    // One extra row decides `next_cursor` without a second query, and the extra
+    // row is not returned.
+    const rows = store.listJobsForUserAfter(auth.user.id, limit + 1, after)
+    const page = rows.slice(0, limit)
+    const last = page[page.length - 1]
+    return { data: page.map(jobSummary), next_cursor: rows.length > limit && last !== undefined ? last.id : null }
   })
 
   app.get('/console', async (request, reply) => {

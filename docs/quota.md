@@ -176,7 +176,10 @@ provider models the repository may use and which is default
 A request that is refused before a model is called is not metered: an unknown,
 revoked or expired token gets `401 invalid_api_key`, and a live token whose
 `scope` is not `gateway` gets `403 insufficient_scope` before `last_used_at` is
-written. Only an authenticated call reaches the quota check and the ledger, so a
+written. That decision is one shared function, `authenticateApiToken` in
+`src/lib/apiToken.ts`, which the public read API (#392) calls with `jobs:read`;
+the gateway passes `gateway`, so a read token can never reach a model and a
+gateway token can never reach the job list — neither path spends quota. Only an authenticated call reaches the quota check and the ledger, so a
 refused token cannot spend and cannot leave a usage row. A personal token's
 finite expiry (default `PAT_EXPIRY_DAYS` 90) is what ends a leaked token's reach
 without a manual revoke; job and instance tokens keep the lifetime their own

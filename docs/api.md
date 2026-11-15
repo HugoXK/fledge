@@ -173,6 +173,57 @@ revision fence runs before the receipt insert, as it does everywhere else — an
 replayed key settles nothing, so a receipt that already answered is never
 rewritten and the revision moves once per command.
 
+## Public API v1
+
+Token-authenticated, versioned, and read-only today. A personal `flg_` token is
+the only credential; a browser session is not accepted here, and a token from
+this surface is not accepted as a session anywhere.
+
+Every route answers three stable failure shapes before it does any work, in the
+same words as the model gateway because both read the same authenticator
+(`src/lib/apiToken.ts`):
+
+| Status | `error.type` | When |
+|---|---|---|
+| `401` | `invalid_api_key` | no `flg_` token, an unknown hash, a revoked token, an expired `expires_at`, or a token whose user is not approved |
+| `403` | `insufficient_scope` | a live token whose `scope` is not the one the route requires; `last_used_at` is not written, so a refused token leaves no trace |
+| `429` | `rate_limited` | the shared API limiter refused the request |
+
+A token's scope is its whole capability. `gateway` reaches `/v1/models` and
+`/v1/chat/completions`; `jobs:read` reaches `/api/v1/jobs`. Neither substitutes
+for the other, and `/settings` mints both.
+
+### `GET /api/v1/jobs`
+
+```bash
+curl -H "Authorization: Bearer flg_…" 'http://localhost:8080/api/v1/jobs?limit=50'
+```
+
+Answers the caller's own jobs, newest first, as:
+
+```json
+{ "data": [ { "id": "job_…", "kind": "implement", "status": "succeeded", "repo": "repo_…",
+              "createdAt": "2026-11-15T03:00:00.000Z", "finishedAt": "2026-11-15T03:04:11.000Z",
+              "prUrl": "https://github.com/acme/demo/pull/7", "issueUrl": null,
+              "reviewScore": 91, "costUsd": 0.25 } ],
+  "next_cursor": null }
+```
+
+- `limit` is `1`–`100`, default `50`. A value outside the range is clamped, and a
+  value that is not a number takes the default; the page size is not an error.
+- `cursor` is the `id` of the last job in the previous page. The page boundary is
+  the sort order itself (`created_at DESC, id DESC`'s stable pair), so a job
+  created between two requests cannot shift a row across pages or repeat one.
+  `next_cursor` is `null` on the last page.
+- A `cursor` that is not one of the caller's own job ids answers `400` with
+  `error.type: invalid_cursor`; it is never resolved against another account.
+- The item carries those ten fields and nothing else. The row behind it also
+  holds a callback hash, a platform token hash and a callback secret, so the
+  mapper in `src/app.ts` is the boundary that keeps them out; no body in this
+  section contains a token or a secret.
+- Write endpoints (`POST /api/v1/jobs`, `pause`, `resume`, `cancel`) are a later
+  slice and a separate scope, `jobs:write`. v1 is read-only today.
+
 ## Read-only metrics
 
 ### `GET /api/read/metrics`

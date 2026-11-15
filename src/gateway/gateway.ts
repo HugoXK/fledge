@@ -3,9 +3,9 @@ import https from 'node:https'
 import { StringDecoder } from 'node:string_decoder'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { Config } from '../config.js'
-import type { ApiTokenRow, RepoProviderModelRow, Store, UsageDetail, UserRow } from '../db.js'
+import type { RepoProviderModelRow, Store, UsageDetail, UserRow } from '../db.js'
 import { log } from '../lib/log.js'
-import { decryptSecret, sha256Hex } from '../lib/secrets.js'
+import { decryptSecret } from '../lib/secrets.js'
 import { headerCost, quotaView } from './quota.js'
 import { fallbackPriceTable, parsePriceTable, requestCost, type PriceTable } from '../metrics/cost.js'
 import { modelOrder, retryableModelFailure } from './modelFallback.js'
@@ -14,6 +14,7 @@ import { parseModelRun } from '../lib/modelRun.js'
 import type { ModelAttempt, ModelFallback } from '../lib/modelRun.js'
 import { rateLimitKey, RateLimiter } from '../lib/rateLimit.js'
 import { GATEWAY_SCOPE } from '../lib/tokens.js'
+import { authenticateApiToken, type ApiTokenAuth } from '../lib/apiToken.js'
 
 interface GatewayDeps {
   config: Config
@@ -31,12 +32,6 @@ interface ChatBody {
 }
 
 const MAX_BODY = 20 * 1024 * 1024
-
-function bearer(request: FastifyRequest): string {
-  const header = String(request.headers.authorization ?? '')
-  if (header.slice(0, 7).toLowerCase() !== 'bearer ') return ''
-  return header.slice(7).trim().slice(0, 512)
-}
 
 function quotaError(reply: FastifyReply, user: UserRow, config: Config): void {
   const quota = quotaView(user, config)
@@ -138,21 +133,10 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
   // table names no entry for it.
   const priceTable = priceTableFor(config)
 
-  // #355: three answers, not two. A wrong scope is a 403 with a stable type and
-  // is decided before `last_used_at` is written, so a refused token leaves no
-  // trace that it was tried; an expired or revoked token is simply unknown here
-  // (findApiToken filters both), which keeps that answer a plain 401.
-  const authenticate = (request: FastifyRequest): { kind: 'ok'; token: ApiTokenRow; user: UserRow } | { kind: 'unauthorized' } | { kind: 'forbidden' } => {
-    const raw = bearer(request)
-    if (!raw.startsWith('flg_')) return { kind: 'unauthorized' }
-    const token = store.findApiToken(sha256Hex(raw))
-    if (token === undefined) return { kind: 'unauthorized' }
-    const user = store.userById(token.user_id)
-    if (user === undefined || user.status !== 'approved') return { kind: 'unauthorized' }
-    if (token.scope !== GATEWAY_SCOPE) return { kind: 'forbidden' }
-    store.touchApiToken(token.id)
-    return { kind: 'ok', token, user }
-  }
+  // #392: the three answers live in `src/lib/apiToken.ts` now, shared with the
+  // public read API so the two surfaces cannot decide what a token is
+  // differently. The gateway's own refusal bodies below are unchanged.
+  const authenticate = (request: FastifyRequest): ApiTokenAuth => authenticateApiToken(request, store, GATEWAY_SCOPE)
 
   const refuse = (reply: FastifyReply, auth: { kind: 'unauthorized' } | { kind: 'forbidden' }): FastifyReply => auth.kind === 'forbidden'
     ? reply.code(403).send({ error: { type: 'insufficient_scope', message: 'This Fledge API token is not allowed to use the model gateway' } })

@@ -146,7 +146,7 @@ test('every throttle in src/app.ts takes its key from the normalized client addr
   for (const line of takes) {
     assert.ok(line.includes('rateLimitKey(request)') || line.includes('reauth:${viewer.user.id}'), `a limiter key is not client-choosable-proof: ${line}`)
   }
-  for (const prefix of ['metrics:', 'token:', 'login:', 'callback:', 'approve:', 'credential:', 'webhook:', 'inbound:', 'platform-stop:', 'platform-resume:', 'deployment-promote:', 'deployment-rollback:', 'session-revoke:', 'session-revoke-others:', 'session-rotate:', 'admin-role:', 'repo-add:', 'rules-save:', 'job-start:']) {
+  for (const prefix of ['metrics:', 'token:', 'login:', 'callback:', 'approve:', 'credential:', 'webhook:', 'inbound:', 'platform-stop:', 'platform-resume:', 'deployment-promote:', 'deployment-rollback:', 'session-revoke:', 'session-revoke-others:', 'session-rotate:', 'admin-role:', 'repo-add:', 'rules-save:', 'job-start:', 'api-v1-jobs:']) {
     assert.ok(takes.some((line) => line.includes(`\`${prefix}`)), `no throttle joins the ${prefix} bucket`)
   }
 })

@@ -4913,6 +4913,33 @@ export class Store {
     return this.all<JobRow>(`SELECT * FROM jobs WHERE ${where.sql} ORDER BY ${newestJobOrder('jobs')} LIMIT ? OFFSET ?`, ...where.params, limit, offset)
   }
 
+  // #392: the public read API pages by keyset, not by OFFSET, because a job
+  // created between two requests shifts every later row and an offset page then
+  // repeats or skips one. The cursor is the last job id the caller saw; it is
+  // resolved to its `(created_at, rowid)` pair, the same two columns
+  // `newestJobOrder` sorts by, so the page boundary is the sort order itself.
+  jobCursorForUser(userId: string, jobId: string): { createdAt: string; rowid: number } | undefined {
+    return this.get<{ createdAt: string; rowid: number }>(
+      'SELECT created_at AS createdAt, rowid FROM jobs WHERE id = ? AND user_id = ?',
+      jobId,
+      userId,
+    )
+  }
+
+  listJobsForUserAfter(userId: string, limit: number, after: { createdAt: string; rowid: number } | null): JobRow[] {
+    if (after === null) {
+      return this.all<JobRow>(`SELECT * FROM jobs WHERE user_id = ? ORDER BY ${newestJobOrder('jobs')} LIMIT ?`, userId, limit)
+    }
+    return this.all<JobRow>(
+      `SELECT * FROM jobs WHERE user_id = ? AND (created_at < ? OR (created_at = ? AND rowid < ?)) ORDER BY ${newestJobOrder('jobs')} LIMIT ?`,
+      userId,
+      after.createdAt,
+      after.createdAt,
+      after.rowid,
+      limit,
+    )
+  }
+
   countJobsForUser(userId: string, filter?: { repo?: string; status?: string; kind?: string; priority?: string }): number {
     const where = this.jobsForUserWhere(userId, filter)
     return Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM jobs WHERE ${where.sql}`, ...where.params)?.n ?? 0)
