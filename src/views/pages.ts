@@ -780,7 +780,10 @@ function nextScheduledRun(input: { repos: RepoRow[]; facts: NextRunFact[]; confi
         repo,
         line: plannedNextLine(scheduled, t),
         at: scheduled.at,
-        runnable: scheduled.kind !== 'unreadable' && scheduled.at !== null,
+        // #723: a paused repository keeps its row but is never a candidate; the
+        // route already withholds the row's answer for it, so this is the same
+        // condition stated where the choice is made.
+        runnable: repo.enabled === 1 && scheduled.kind !== 'unreadable' && scheduled.at !== null,
       }
     }
     const state = nextRun({

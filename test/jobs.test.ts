@@ -488,7 +488,7 @@ test('the digest says a disabled repository will not run when it has no schedule
   }
 })
 
-test('the digest keeps the planner instant for a disabled repository with a schedule row', async () => {
+test('the digest says a disabled repository will not run even with a schedule row', async () => {
   const config = testConfig({ digest: { hour: 0, timeZone: 'Asia/Shanghai' } })
   const store = new Store(':memory:')
   const mailer = new MemoryMailer()
@@ -505,8 +505,8 @@ test('the digest keeps the planner instant for a disabled repository with a sche
     await jobs.tick()
     const digest = mailer.messages.find((message) => /今日摘要/.test(message.subject))
     assert.ok(digest, 'the digest was sent')
-    assert.match(digest.text, new RegExp(`下次自动迭代：o/disabled-scheduled · ${escapeRegExp(expected)}`))
-    assert.doesNotMatch(digest.text, /仓库已停用，自动运行不会开始/, 'a saved row answers before enabled, exactly as on the page')
+    assert.match(digest.text, /下次自动迭代：o\/disabled-scheduled · 仓库已停用，自动运行不会开始/, 'enabled answers before the saved row')
+    assert.doesNotMatch(digest.text, new RegExp(escapeRegExp(expected)), 'a paused repository is not promised a run')
   } finally {
     store.close()
   }
