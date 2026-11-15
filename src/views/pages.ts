@@ -4229,7 +4229,7 @@ export function scheduleConsolePage(input: {
   viewer: Viewer
   repo: RepoRow
   state: ScheduleConsoleState
-  form: { cron: string; every: string; timezone: string; startAt: string; endAt: string; misfire: string; grace: string }
+  form: { cron: string; every: string; timezone: string; startAt: string; endAt: string; misfire: string; grace: string; dailyRuns: string }
   notice?: string
   error?: string
 }): string {
@@ -4284,6 +4284,7 @@ export function scheduleConsolePage(input: {
         <dt>${escapeHtml(t('有效期', 'Window'))}</dt><dd>${window}</dd>
         <dt>${escapeHtml(t('时序版本', 'Timing revision'))}</dt><dd>${escapeHtml(state.timingRevision === null ? t('unknown', 'unknown') : String(state.timingRevision))} · ${escapeHtml(state.misfire === null ? t('unknown', 'unknown') : state.misfire)}</dd>
         <dt>${escapeHtml(t('宽限', 'Grace'))}</dt><dd data-schedule-grace="${escapeHtml(state.graceMs === null ? 'none' : String(state.graceMs))}">${escapeHtml(state.graceMs === null ? t('不限（默认）', 'unbounded (default)') : t(`${Math.round(state.graceMs / 60_000)} 分钟`, `${Math.round(state.graceMs / 60_000)} minutes`))}</dd>
+        <dt>${escapeHtml(t('每日运行上限', 'Daily run limit'))}</dt><dd data-schedule-daily-runs="${escapeHtml(state.budget.dailyRuns === null ? 'none' : String(state.budget.dailyRuns))}">${escapeHtml(state.budget.dailyRuns === null ? t('不限（默认）', 'unbounded (default)') : t(`${state.budget.dailyRuns} 次`, `${state.budget.dailyRuns} runs`))} · ${escapeHtml(state.budget.runsToday === null ? t('今天已运行 unknown', 'today unknown') : t(`今天已运行 ${state.budget.runsToday} 次`, `${state.budget.runsToday} today`))}${state.budget.remaining === null ? '' : ` · ${escapeHtml(t(`今天还剩 ${state.budget.remaining} 次`, `${state.budget.remaining} left today`))}`}</dd>
       </dl>
     </section>
     <section class="card"><h2>${escapeHtml(t('编辑排期', 'Edit the schedule'))}</h2>
@@ -4296,6 +4297,7 @@ export function scheduleConsolePage(input: {
         ${field('end_at', t('结束 end_at', 'end_at'), form.endAt, '')}
         <label>${escapeHtml(t('错过时', 'When an instant is missed'))} <select name="misfire"><option value="skip"${form.misfire === 'once' ? '' : ' selected'}>${escapeHtml(t('跳过（默认）', 'skip (default)'))}</option><option value="once"${form.misfire === 'once' ? ' selected' : ''}>${escapeHtml(t('补一次', 'catch up once'))}</option></select></label>
         ${field('grace', t('宽限（分钟，留空=不限）', 'grace (minutes, empty = unbounded)'), form.grace, '30')}
+        ${field('daily_runs', t('每日运行上限（留空=不限）', 'daily run limit (empty = unbounded)'), form.dailyRuns, '3')}
         <button class="btn" type="submit">${escapeHtml(t('保存排期', 'Save schedule'))}</button>
       </div></form>
       ${state.kind === 'none' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/remove" data-confirm="${escapeHtml(t('删除这个排期？仓库将回到旧的自动间隔。', 'Delete this schedule? The repository returns to the legacy interval.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('删除排期', 'Delete schedule'))}</button></form>`}

@@ -49,6 +49,7 @@ import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
 import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader } from './continuity.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
+import { utcDayEnd, utcDayStart } from '../schedules/budget.js'
 import type { ScheduleRow } from '../db.js'
 import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTypeForKind, workTypeMayAutoMerge } from '../lib/workTypes.js'
 import { parseTriage } from '../lib/triage.js'
@@ -3699,6 +3700,18 @@ export class Jobs {
         // instant — is a no-op.
         if (plan.skipped.length > 0) this.skipScheduledOccurrence(repo, plan, 'grace-exceeded')
         continue
+      }
+      // #544 slice 6: the schedule layer of the run budget. The instant is
+      // charged to its own logical UTC day, so a late or recovered run spends the
+      // day it was scheduled for and crossing midnight grants no fresh allowance.
+      // At the limit the instant is decided — a skipped row naming the reason —
+      // rather than left due, or every tick would re-decide it.
+      if (plan !== null && plan.dueAt !== null && scheduleRow !== undefined && scheduleRow.daily_runs !== null) {
+        const used = this.store.countScheduleDispatchesBetween(scheduleRow.id, utcDayStart(plan.dueAt), utcDayEnd(plan.dueAt))
+        if (used >= scheduleRow.daily_runs) {
+          this.skipScheduledOccurrence(repo, plan, 'budget-exceeded')
+          continue
+        }
       }
       if (this.store.activeJobForRepo(repo.id) !== undefined) {
         // A due instant that cannot run now is the misfire case: skip it with a

@@ -75,6 +75,7 @@ import { parsePreviewQuery, previewSchedule, type PreviewResult } from './schedu
 import { intervalFieldText, scheduleConsole } from './schedules/console.js'
 import { nextTime } from './schedules/next.js'
 import { scheduleFromRow } from './schedules/tick.js'
+import { DAILY_RUNS_MAX, parseDailyRuns, utcDayEnd, utcDayStart } from './schedules/budget.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
@@ -1621,12 +1622,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const locale = request.locale ?? 'zh'
     const t = translator(locale)
     const row = store.scheduleForRepo(repo.id)
+    const now = Date.now()
     const state = scheduleConsole({
       repoId: repo.id,
       row,
       occurrences: store.listScheduleOccurrences(repo.id, 20),
-      now: Date.now(),
+      now,
       jobStatus: (jobId) => store.getJob(jobId)?.status ?? null,
+      // #544 slice 6: the same count function the worker charges with, read over
+      // today's UTC day — the worker charges the *instant's* day, so a catch-up
+      // run can spend a past day while this fact answers "how much of today is
+      // used". A repository with no schedule row read no count, which is unknown.
+      ...(row === undefined ? {} : { runsToday: store.countScheduleDispatchesBetween(row.id, utcDayStart(now), utcDayEnd(now)) }),
     })
     const refused = queryText(request, 'refused')
     const instant = (value: number | null | undefined): string => (value === null || value === undefined ? '' : new Date(value).toISOString())
@@ -1646,6 +1653,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         // Minutes, because a person thinks in minutes and the stored column is
         // milliseconds. Empty means no bound, which is the old behaviour.
         grace: row?.grace_ms === null || row?.grace_ms === undefined ? '' : String(Math.round(row.grace_ms / 60_000)),
+        dailyRuns: row?.daily_runs === null || row?.daily_runs === undefined ? '' : String(row.daily_runs),
       },
       ...(queryText(request, 'saved') === undefined ? {} : { notice: t('排期已保存。', 'The schedule is saved.') }),
       ...(queryText(request, 'removed') === undefined ? {} : { notice: t('排期已删除，仓库回到旧的自动间隔。', 'The schedule was deleted; the repository is back on the legacy interval.') }),
@@ -1681,6 +1689,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (graceMinutes !== null && (!Number.isFinite(graceMinutes) || graceMinutes < 0 || graceMinutes > 10_080)) {
       return reply.redirect(`${back}?refused=${encodeURIComponent(t('宽限时间必须是 0 到 10080 分钟之间的整数。', 'The grace bound must be an integer between 0 and 10080 minutes.'))}`)
     }
+    // #544 slice 6: an absent field keeps the stored limit, so a form that
+    // predates the budget cannot silently clear it. An explicit empty field is
+    // unbounded, which is the behaviour every schedule had.
+    const dailyRunsField = body.daily_runs
+    const parsedDailyRuns = dailyRunsField === undefined
+      ? ({ ok: true, dailyRuns: undefined } as const)
+      : parseDailyRuns(String(dailyRunsField))
+    if (!parsedDailyRuns.ok) {
+      const message = parsedDailyRuns.reason === 'not-an-integer'
+        ? t('每日运行上限必须是大于 0 的整数。', 'The daily run limit must be a whole number greater than 0.')
+        : t(`每日运行上限必须在 1 到 ${DAILY_RUNS_MAX} 之间。`, `The daily run limit must be between 1 and ${DAILY_RUNS_MAX}.`)
+      return reply.redirect(`${back}?refused=${encodeURIComponent(message)}`)
+    }
     store.saveSchedule({
       id: existing?.id ?? randomId('sch'),
       repoId: repo.id,
@@ -1692,6 +1713,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       endAt: schedule.endAt,
       misfire,
       graceMs: graceMinutes === null ? null : Math.round(graceMinutes) * 60_000,
+      dailyRuns: parsedDailyRuns.dailyRuns,
     })
     const label = schedule.kind === 'cron'
       ? `${schedule.expression} ${schedule.timezone}`

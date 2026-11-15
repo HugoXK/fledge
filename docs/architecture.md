@@ -557,6 +557,28 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   rule restates the worker's formula is gone with the citation it rested on.
   Saving is audited as `schedule.saved` and deleting the row as
   `schedule.removed`, each naming the repository and what changed.
+- **The schedule run budget** (#544, slice 6): a `schedules` row may carry
+  `daily_runs`, the most instants it may dispatch in one logical UTC day. The
+  window is the day of the **instant being decided** (`src/schedules/budget.ts`,
+  `utcDayStart`/`utcDayEnd`, half-open), never the day the dispatch happens, so a
+  late or recovered run stays in the day it was scheduled for and crossing
+  midnight grants no fresh allowance. Before a due instant is dispatched the tick
+  counts the schedule's `dispatched` occurrences in that window
+  (`countScheduleDispatchesBetween`); at the limit the instant becomes a
+  `skipped` row with `budget-exceeded` and the high water mark still moves past
+  it, so the instant is decided once instead of being re-decided every tick. A
+  `claimed` row has not dispatched yet and a `skipped` one did not run, so
+  neither is charged. Null is unbounded, which is what every schedule written
+  before the column had; `0` is refused at save time because a schedule that must
+  not run is deleted or its window closed. This is the run-count layer only: the
+  cost layer stays where it is — `repos.monthly_budget_cny` / `job_budget_cny`
+  for a repository and the account quota for a user — so the two are counted
+  separately. The console prints the limit, today's used count and what is left,
+  and a value nobody read prints `unknown` rather than zero. One process ticks, so
+  the count and the claim are sequential in one pass and the claim's own
+  transaction still makes the instant single-dispatch; a distributed worker
+  (`#387`) must move the count inside that claim, or two workers could each spend
+  the last slot.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR
