@@ -281,6 +281,25 @@ only when the matching flag is false on a `pull_request` or `merge_group`
 event; a missing flag fails closed. `SKIP_WHEN` in `scripts/ci-ok.mjs` is the
 machine copy of this table.
 
+The diff is read by `scripts/ci-changes.mjs`, not by the step. A pull request
+whose branch was cut before the latest `main` names a base commit that the
+checkout does not carry, so the first diff fails. The script then fetches that
+commit **with its history**: a depth-limited fetch places the commit but grafts
+it as a shallow root, so the three-dot diff fails again — with `no merge base`
+instead of `Invalid symmetric difference expression` — and nothing is gained. It
+also deepens the checkout when the checkout itself is shallow, because a base
+with history shares no ancestor with a grafted head, and only then retries. The
+base branch ref is the fallback for a server that will not serve an arbitrary
+sha, fetched the same way and never as a depth-limited tip, since a branch tip
+without its ancestors cannot supply a merge base either. Only after those
+attempts does it fall back to running every gate (#752). That fallback is still
+the last resort — an unreadable diff must never shrink the gate — but without a
+fetch that keeps history it fired on every older branch, and the
+`codeql-required` job it woke then spent its full bound waiting for an analysis
+CodeQL never starts for an ignored path. The short circuit for a diff that
+touches only paths `codeql.yml` ignores is separate and is described under
+[Supply-chain gates](#supply-chain-gates).
+
 ### A red `main` reports itself
 
 `ci-ok` still only computes the commit's health; the job that says so out loud is
@@ -446,6 +465,20 @@ is bounded at ten minutes with twenty-second polls, because failing on the first
 poll would turn a queued runner into a red required check. A scheduled run exits
 0 with its reason and is not in `SKIPPABLE_ON`: the gate must never be skippable
 on the event that merges.
+
+The gate also reads the change set, because `codeql.yml` filters its own trigger
+with `paths-ignore`: a pull request that changes only `docs/`, a Markdown file, a
+deploy file or the `Dockerfile` is analysed by nothing, so waiting ten minutes and
+then reporting "no analysis" reds a mergeable pull request (#752). When every
+changed path matches that list the job answers immediately and says why. The list
+is parsed out of `.github/workflows/codeql.yml` as it stands at the **base**
+commit rather than copied into the module or read from the checkout, so the policy
+cannot drift from the workflow and a pull request that edits the workflow is still
+judged by the filter in force before it. Every uncertainty — no inventory, an
+unreadable one, an empty change set, a failed read, a compare answer that could be
+truncated at the 300-file cap — falls through to the wait, which remains the
+answer for any change CodeQL does analyse. A `push` is never excused this way:
+that trigger is unfiltered.
 
 Every action a workflow runs is pinned to a 40-hex commit with the tag it came
 from in a trailing comment, and the `action-pins` job fails the build on a
