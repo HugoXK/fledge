@@ -62,8 +62,10 @@ An unknown call is also outside **enforcement**: with no figure to compare, the
 user quota and the ambiguous per-job budget cannot refuse it. A job whose calls
 are all unknown has no ceiling at either level until one call is priced; that is
 the same rule stated the other way (an unknown cost is not read as zero), not a
-free allowance. On a stream that fails mid-flight Fledge records no row at all
-yet, so such a call is missing from the ledger rather than counted as unknown.
+free allowance. A stream that fails mid-flight is still one attempt the user consumed, so it
+writes one of those rows rather than none: the provider's `x-litellm-response-cost`
+figure as a known USD row when the response carried one, and a `cost_known = 0`
+row with reason `no_usage`, its audit entry and its job event when it did not.
 
 For streaming requests Fledge adds `stream_options.include_usage = true` and
 parses each SSE `data:` line. It keeps the last `usage` object, including nested

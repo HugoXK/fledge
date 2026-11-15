@@ -236,6 +236,88 @@ test('the gateway records an unpriced model as unknown and says so in the audit 
   }
 })
 
+// #701: an aborted stream is one attempt the user consumed, so it writes exactly
+// one ledger row. With a provider cost header the figure is known and spend moves;
+// without one the row is `unknown` with `no_usage`, the audit and job event are
+// written, and spend does not move. Before the fix the error path called no
+// `finishCost`, so the call was missing from the ledger entirely.
+async function abortedStreamGateway(headers: Record<string, string> = {}): Promise<{
+  store: Store
+  user: ReturnType<typeof makeUser>
+  call: () => Promise<{ statusCode: number; body: string }>
+  close: () => Promise<void>
+}> {
+  const platform = await startFakeServer(async (request, response) => {
+    await readBody(request)
+    response.writeHead(200, { 'content-type': 'text/event-stream', ...headers })
+    response.write('data: {"id":"x","choices":[{"delta":{"content":"part"}}]}\n\n')
+    // The provider dies mid-stream: the client's response ends in ECONNRESET, not
+    // in `end`, which is the path the gateway's error handler owns.
+    setTimeout(() => { request.socket.destroy() }, 25)
+  })
+  const config = testConfig({
+    llm: { baseUrl: `${platform.url}/v1`, key: 'platform-key', model: 'gw-abort', pricePerTokenUsd: 0.0000002 },
+  })
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  const user = makeUser(store, { login: 'abort-user', status: 'approved', quota: 100 })
+  const repo = store.createRepo({ id: 'repo_abort', userId: user.id, owner: 'o', name: 'abort', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+  store.createJob({ id: 'job_abort', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+  const raw = `flg_${randomToken(32)}`
+  store.createApiToken({ id: 'tok_abort', userId: user.id, kind: 'job', name: 'job:job_abort', tokenHash: sha256Hex(raw), prefix: raw.slice(0, 8), expiresAt: null })
+  return {
+    store,
+    user,
+    call: () => built.app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: { authorization: `Bearer ${raw}`, 'content-type': 'application/json', accept: 'text/event-stream' },
+      payload: { model: 'ignored', messages: [{ role: 'user', content: 'hi' }], stream: true },
+    }),
+    close: async () => { await built.close(); await platform.close() },
+  }
+}
+
+test('an aborted stream with no cost header writes one unknown row, one audit entry and one job event', async () => {
+  const gateway = await abortedStreamGateway()
+  try {
+    await gateway.call()
+    const rows = gateway.store.all<{ cost_usd: number; cost_known: number; currency: string | null }>(
+      'SELECT cost_usd, cost_known, currency FROM quota_ledger WHERE job_id = ?',
+      'job_abort',
+    )
+    assert.equal(rows.length, 1, 'the aborted attempt is one ledger row, never zero')
+    assert.equal(rows[0]?.cost_known, 0)
+    assert.equal(rows[0]?.cost_usd, 0)
+    assert.equal(rows[0]?.currency, null)
+    const audit = gateway.store.get<{ n: number }>("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'request.cost_unknown'")
+    assert.equal(Number(audit?.n), 1)
+    const events = gateway.store.listJobEvents('job_abort').filter((event) => event.kind === 'request.cost_unknown')
+    assert.equal(events.length, 1)
+    assert.equal(gateway.store.userById(gateway.user.id)?.quota_used_usd, 0, 'unknown, never zero spend')
+  } finally {
+    await gateway.close()
+  }
+})
+
+test('an aborted stream that carried a provider cost header records that figure as known', async () => {
+  const gateway = await abortedStreamGateway({ 'x-litellm-response-cost': '0.0002' })
+  try {
+    await gateway.call()
+    const rows = gateway.store.all<{ cost_usd: number; cost_known: number; currency: string | null }>(
+      'SELECT cost_usd, cost_known, currency FROM quota_ledger WHERE job_id = ?',
+      'job_abort',
+    )
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0]?.cost_known, 1)
+    assert.equal(rows[0]?.currency, 'USD')
+    assert.equal(Number(rows[0]?.cost_usd.toFixed(10)), 0.0002)
+    assert.equal(Number((gateway.store.userById(gateway.user.id)?.quota_used_usd ?? 0).toFixed(10)), 0.0002, 'the figure the provider billed moves spend')
+  } finally {
+    await gateway.close()
+  }
+})
+
 test('a retry continues the budget of the job it continues', () => {
   const store = new Store(':memory:')
   try {
