@@ -2176,6 +2176,25 @@ second table): `run_id`, `run_attempt`, `status`, `conclusion`, `workflow_name`,
 `release_sources` from the issue is deliberately not created yet: it belongs to
 the notes slice.
 
+The read-only readiness view (`GET /repos/:id/release-readiness`, #546 slice 1)
+answers the same question before a version is typed: the latest SemVer tag
+reachable from the default branch and its commit time, the commits since it, the
+pull requests merged since it with how many are features, and whether a
+`changelog.d` fragment is pending for that range. Every call is a GET on the
+installation token Fledge already holds; it creates no tag, no Release and asks
+for no token with release scope. The three version-independent refusals
+(`missing_gate`, `missing_release_workflow`, `no_new_commits`) come from
+`releaseRefusals` in `src/releases/release.ts`, the same table `planRelease` reads,
+so the page and `POST /repos/:id/release` cannot state different reasons for the
+same facts; `tag_exists` and `not_higher` stay on the write path because they need
+a requested version. A feature is a merged pull request carrying an `enhancement`
+or `feature` label, or, with neither, a title with a `feat` conventional prefix,
+and the page names which rule counted each one. The merged count is bounded by
+the closed-pull-request page cap; when the cap is reached while rows are still
+inside the window the page says the count may be higher instead of printing a
+smaller number. A fragment counts when it is present at the head with a blob the
+previous tag does not have, so an edited fragment is still pending work.
+
 ## Following the release workflow and preparing a draft
 
 `src/releases/tracking.ts` observes the workflow a tag fires and stops at a draft

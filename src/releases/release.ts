@@ -78,6 +78,15 @@ export interface ReleaseTag {
   targetCommitsAhead: number | null
 }
 
+// The refusal sentences a maintainer reads. They live here, not at each call
+// site, because the read-only release-readiness page (#546) has to print exactly
+// what `POST /repos/:id/release` would refuse with; a second copy would drift.
+export const releaseRefusals = {
+  missingGate: 'the default branch is not protected by required checks, so this repository is not onboarded to a gate',
+  missingReleaseWorkflow: 'the repository has no tag-triggered .github/workflows/release.yml',
+  noNewCommits: (tag: string): string => `nothing to release: ${tag} already points at the target commit`,
+}
+
 export interface ReleasePlanInput {
   requestedVersion: string
   targetSha: string
@@ -114,10 +123,10 @@ export function planRelease(input: ReleasePlanInput): ReleasePlan {
     return { ok: false, code: 'invalid_version', message: `${input.requestedVersion} is not a SemVer version (expected v1.2.3 or v1.2.3-beta.1)` }
   }
   if (!input.gateOnboarded) {
-    return { ok: false, code: 'missing_gate', message: 'the default branch is not protected by required checks, so this repository is not onboarded to a gate' }
+    return { ok: false, code: 'missing_gate', message: releaseRefusals.missingGate }
   }
   if (!input.releaseWorkflow) {
-    return { ok: false, code: 'missing_release_workflow', message: 'the repository has no tag-triggered .github/workflows/release.yml' }
+    return { ok: false, code: 'missing_release_workflow', message: releaseRefusals.missingReleaseWorkflow }
   }
   if (input.tagExists) {
     return { ok: false, code: 'tag_exists', message: `tag ${version} already exists; a tag is never moved or deleted` }
@@ -128,7 +137,7 @@ export function planRelease(input: ReleasePlanInput): ReleasePlan {
   const previous = reachable[0]
   if (previous !== undefined) {
     if (previous.targetCommitsAhead === 0) {
-      return { ok: false, code: 'no_new_commits', message: `nothing to release: ${previous.name} already points at the target commit` }
+      return { ok: false, code: 'no_new_commits', message: releaseRefusals.noNewCommits(previous.name) }
     }
     if (compareVersions(version, previous.name) <= 0) {
       return { ok: false, code: 'not_higher', message: `${version} is not higher than ${previous.name}`, suggestion: suggestHigher(previous.name) }

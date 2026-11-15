@@ -476,17 +476,24 @@ export class GithubClient {
     name: string,
     path: string,
     ref: string,
-  ): Promise<Array<{ name: string; type: string; path: string }> | null> {
+  ): Promise<Array<{ name: string; type: string; path: string; sha: string }> | null> {
     const encodedPath = path.split('/').map(encodeURIComponent).join('/')
     try {
-      const data = await this.request<Array<{ name?: string; type?: string; path?: string }>>(
+      const data = await this.request<Array<{ name?: string; type?: string; path?: string; sha?: string }>>(
         'GET',
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`,
       )
       if (!Array.isArray(data)) return []
       return data.flatMap((entry) => {
         if (typeof entry.name !== 'string' || typeof entry.type !== 'string') return []
-        return [{ name: entry.name, type: entry.type, path: typeof entry.path === 'string' ? entry.path : `${path}/${entry.name}` }]
+        return [{
+          name: entry.name,
+          type: entry.type,
+          path: typeof entry.path === 'string' ? entry.path : `${path}/${entry.name}`,
+          // The release-readiness view needs the blob sha: an edited fragment is
+          // still pending work even when its filename is already released.
+          sha: typeof entry.sha === 'string' ? entry.sha : '',
+        }]
       })
     } catch (error) {
       if (error instanceof GithubError && error.status === 404) return null
@@ -896,6 +903,86 @@ export class GithubClient {
       if (error instanceof GithubError && error.status === 404) return false
       throw error
     }
+  }
+
+  // #546: the readiness view needs one commit's date to bound the merged
+  // pull-request window. A tag that no longer resolves returns null rather than
+  // throwing, because the page reports what it could not read.
+  async getCommitMeta(owner: string, name: string, ref: string): Promise<{ sha: string; committedAt: string } | null> {
+    try {
+      const data = await this.request<{ sha?: string; commit?: { committer?: { date?: string } } }>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/commits/${encodeURIComponent(ref)}`,
+      )
+      const committedAt = data.commit?.committer?.date
+      if (typeof data.sha !== 'string' || typeof committedAt !== 'string') return null
+      return { sha: data.sha, committedAt }
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return null
+      throw error
+    }
+  }
+
+  // Merged pull requests after one instant, with the labels the feature rule
+  // reads. The list is ordered by `updated_at`, so a pull request merged before
+  // the window can still appear on an early page with a comment; the filter runs
+  // per entry instead of stopping at the first old row. `complete` is false only
+  // when the page cap was reached while every row seen was still inside the
+  // window, and the caller reports that rather than a smaller count.
+  async listMergedPullRequestsSince(
+    owner: string,
+    name: string,
+    since: string,
+    maxPages = 3,
+  ): Promise<{ pulls: Array<{ number: number; title: string; url: string; labels: string[]; mergedAt: string }>; complete: boolean }> {
+    const sinceMs = Date.parse(since)
+    const pulls: Array<{ number: number; title: string; url: string; labels: string[]; mergedAt: string }> = []
+    let complete = false
+    for (let page = 1; page <= maxPages; page += 1) {
+      const batch = await this.request<Array<{
+        number?: number
+        html_url?: string
+        title?: string
+        merged_at?: string | null
+        updated_at?: string | null
+        labels?: Array<{ name?: string }>
+      }>>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`,
+      )
+      if (!Array.isArray(batch) || batch.length === 0) {
+        complete = true
+        break
+      }
+      let oldestUpdated = Number.POSITIVE_INFINITY
+      for (const pull of batch) {
+        const updated = typeof pull.updated_at === 'string' ? Date.parse(pull.updated_at) : Number.NaN
+        if (!Number.isNaN(updated) && updated < oldestUpdated) oldestUpdated = updated
+        if (typeof pull.number !== 'number') continue
+        if (typeof pull.merged_at !== 'string' || pull.merged_at === '') continue
+        if (!(Date.parse(pull.merged_at) >= sinceMs)) continue
+        pulls.push({
+          number: pull.number,
+          title: typeof pull.title === 'string' ? pull.title : '',
+          url: typeof pull.html_url === 'string' ? pull.html_url : `https://github.com/${owner}/${name}/pull/${pull.number}`,
+          labels: Array.isArray(pull.labels)
+            ? pull.labels.flatMap((label) => (typeof label.name === 'string' ? [label.name] : []))
+            : [],
+          mergedAt: pull.merged_at,
+        })
+      }
+      if (batch.length < 100) {
+        complete = true
+        break
+      }
+      // Every later page is older by `updated_at`, and a merged pull request is
+      // updated no earlier than it merged, so this bounds the window exactly.
+      if (oldestUpdated < sinceMs) {
+        complete = true
+        break
+      }
+    }
+    return { pulls, complete }
   }
 
   async getRepoFile(owner: string, name: string, path: string, ref: string): Promise<string | null> {
