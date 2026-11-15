@@ -667,6 +667,11 @@ Upstream `api_key:` hashes from log messages. Request bodies are never logged.
 The development mail outbox is written with mode 0600 and contains approval links;
 treat it as a secret.
 
+The evolution export uses a read-only database handle and passes every exported
+string through the same `redact()` before serialisation. It reads only
+repositories an admin opted in through the audited consent command, so a
+repository that never consented is absent from the dataset and its holdout.
+
 ### Headers
 
 - `Content-Security-Policy` for HTML pages: self only, no inline scripts, images

@@ -133,6 +133,8 @@ export interface RepoRow {
   job_mode: string
   repo_role: string | null
   auto_merge: number
+  /** #425: 1 when the repository consented to its jobs entering an evolution dataset. */
+  evolution_consent: number
   role_checked_at: string | null
   plan_required: number
   allow_paths: string
@@ -1948,9 +1950,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 39) {
+    if (previousVersion > 40) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (39)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (40)`)
     }
     this.db.exec(SCHEMA)
     this.migrateColumns()
@@ -1973,7 +1975,7 @@ export class Store {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
     this.migrateIdentity()
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 39)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 40)};`)
   }
 
   // #544 slice 3B-B2: a database written by slice B1 already has the occurrence
@@ -2215,6 +2217,7 @@ export class Store {
       ['job_mode', "TEXT NOT NULL DEFAULT 'iterate'"],
       ['repo_role', 'TEXT'],
       ['auto_merge', 'INTEGER NOT NULL DEFAULT 0'],
+      ['evolution_consent', 'INTEGER NOT NULL DEFAULT 0'],
       ['role_checked_at', 'TEXT'],
       ['plan_required', 'INTEGER NOT NULL DEFAULT 0'],
       ['allow_paths', "TEXT NOT NULL DEFAULT ''"],
@@ -4343,6 +4346,24 @@ export class Store {
     if (entries.length === 0) return
     const sets = entries.map(([key]) => `${key} = ?`).join(', ')
     this.run(`UPDATE repos SET ${sets} WHERE id = ?`, ...entries.map(([, value]) => value), id)
+  }
+
+  // #425: consent is per repository, off by default, and the only way on is an
+  // audited operator action. The exporter reads `evolution_consent` and nothing
+  // else, so a repository that never opted in cannot appear in a dataset.
+  setRepoEvolutionConsent(repoId: string, on: boolean, actorUserId: string | null): void {
+    this.run('UPDATE repos SET evolution_consent = ? WHERE id = ?', on ? 1 : 0, repoId)
+    this.audit(actorUserId, 'evolution.consent', `${repoId}: ${on ? 'on' : 'off'}`)
+  }
+
+  listEvolutionConsent(): Array<{ repoId: string; repo: string; consent: boolean }> {
+    return this.all<{ id: string; owner: string; name: string; upstream_owner: string; upstream_name: string; evolution_consent: number }>(
+      'SELECT id, owner, name, upstream_owner, upstream_name, evolution_consent FROM repos ORDER BY created_at DESC',
+    ).map((row) => ({
+      repoId: row.id,
+      repo: `${row.upstream_owner || row.owner}/${row.upstream_name || row.name}`,
+      consent: row.evolution_consent === 1,
+    }))
   }
 
   deleteRepo(id: string): void {

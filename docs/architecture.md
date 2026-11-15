@@ -925,9 +925,38 @@ held-out evidence, and a human-approved decision. AgentDescent is an offline
 engine behind this ledger; it never runs a user repository, never receives a
 GitHub token and cannot change the evaluator, CI or merge gate. See
 [decisions/0003](decisions/0003-agentdescent-evolution.md). The read-only
-`scripts/evolution-shadow.mjs` exporter turns recent jobs into a redacted
-dataset, and `--report` prints the baseline plus a time-ordered train/holdout
-split; it does not write to the database.
+`scripts/evolution-shadow.ts` exporter turns recent jobs into one dataset with a
+manifest. The manifest records the `ds_` id, the selection (`days` and the
+applied `limit`), the repositories, `rowCount`, the effective
+`trainRows`/`holdoutRows`, the `split.train`/`split.holdout` job-id arrays, the
+holdout's protected entries, and a `window` that is provenance only: nominal
+`from`/`to` bounds plus `oldestRowAt`/`newestRowAt`, the real coverage of the
+rows that were written. The bounds are anchored on `newestRowAt` unless the
+caller passes an explicit `now`, while the exporter's SQL bound is the
+wall-clock `now - days`; they are the requested extent, not a claim that the
+rows reach it. `--limit` truncates to the newest N inside `--days`, so
+`oldestRowAt`/`newestRowAt`, not the window bound, say how far the export
+actually reaches.
+
+`contentHash` is sha256 over the selection, the split and the canonical, redacted
+rows; the window, the id and the hash itself are outside the hashed object. `id`
+is `ds_` plus the first 16 hex characters of that hash, so the same rows and
+parameters produce the same hash twice. `--verify <file>` recomputes the split
+from the records, the hash and the id, and refuses with `SPLIT_MISMATCH`,
+`MANIFEST_MISMATCH`, `CONTENT_HASH_MISMATCH`, `DATASET_ID_MISMATCH` or
+`MALFORMED_DATASET`; a moved job id fails even if someone recomputes the hash.
+
+The split is repository-disjoint first: the newest 20% of rows by time only
+chooses which repositories are held out, and every row of a repository named in
+that tail moves to the holdout — so the holdout share can exceed 20%, and a
+holdout row can be older than a train row. `#426`–`#432` read the split from the
+manifest rather than assuming its size. The exporter refuses with
+`NO_TRAINING_ROWS` and writes nothing when the split would hold out every row,
+for example with a single consented repository. Every exported string passes
+through `redact()`, and the exporter reads only repositories that opted in
+through the audited `evolution.consent` command; consent is off by default.
+`--report` prints the baseline and the manifest's own split counts; the export
+does not write to the database.
 
 The ledger's shape is the table that already existed, extended rather than
 replaced: `artifact_versions` gains `kind`, `scope`, `repo_id`, `parent_id` (the
