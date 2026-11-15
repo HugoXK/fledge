@@ -295,7 +295,11 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   opens the section that holds it — so a reader without the script still gets
   the whole page. The bar sticks at `var(--header-h)` and scrolls horizontally
   in the phone band; the tab is a 44px `--touch` target and the current tab
-  paints with `--accent-strong`, the one interactive accent.
+  paints with `--accent-strong`, the one interactive accent. Above the tabs, the
+  header separates the title and target branch, a status strip (automatic work,
+  discovery interval, next run, schedule console, FlyBot, GitHub credential) and
+  a facts line (upstream/fork, permission, role, reviewer); the run/plan/review
+  actions stay in the header and every existing anchor is unchanged.
 - **Dashboard job filters** (`src/lib/jobFilters.ts`): `/dashboard` accepts
   `repo`, `status` and `kind` as GET parameters and applies them in SQL, so the
   count, the page and the pagination links describe the same list; a value the

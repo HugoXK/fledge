@@ -1341,11 +1341,20 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   const teamGrid = teamRoles.length === 0 ? '' : `<div class="team-grid">${teamRoles.map((role) => `<div class="team-role"><b>${escapeHtml(role.label)}</b><span>${escapeHtml(role.note)}</span></div>`).join('')}</div>
     <details class="fine session-details"><summary>${escapeHtml(t('查看 session ID', 'View session IDs'))}</summary><div class="session-list">${teamRoles.map((role) => `<code>${escapeHtml(role.label)}: ${escapeHtml(role.id)}</code>`).join('')}</div></details>`
   const repoHeader = `<section class="card">
-    <div class="row between">
-      <div>
+    <div class="row between repo-head">
+      <div class="repo-head-main">
         <div class="eyebrow">${escapeHtml(t('仓库', 'REPOSITORY'))}</div>
         <h1>${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</h1>
-        <p class="muted">${escapeHtml(t('目标分支', 'Target branch'))} <code>${escapeHtml(targetBranch)}</code>${targetBranch === defaultBranch ? '' : ` · ${escapeHtml(t('默认分支', 'Default branch'))} <code>${escapeHtml(defaultBranch)}</code>`} · ${escapeHtml(repo.auto_iterate === 1 ? t('自动迭代已开启', 'Auto-iteration on') : t('仅手动运行', 'Manual runs only'))} · ${escapeHtml(t('自动间隔', 'Auto every'))} <b>${escapeHtml(intervalLabel(repo.interval_minutes, t))}</b> · ${escapeHtml(t('下次约', 'Next'))} <span data-next-run data-next-source="${escapeHtml(scheduledNext === undefined ? 'interval' : 'schedule')}">${escapeHtml(nextRunText)}</span> · <a href="/repos/${escapeHtml(repo.id)}/schedule">${escapeHtml(t('排期控制台', 'Schedule console'))}</a> · ${badge(t, repo.last_status ?? 'idle')}</p>
+        <p class="fine">${escapeHtml(t('目标分支', 'Target branch'))} <code>${escapeHtml(targetBranch)}</code>${targetBranch === defaultBranch ? '' : ` · ${escapeHtml(t('默认分支', 'Default branch'))} <code>${escapeHtml(defaultBranch)}</code>`}</p>
+        <div class="repo-status-strip">
+          <span class="repo-status"><span class="fine">${escapeHtml(t('自动迭代', 'Automatic work'))}</span><b>${escapeHtml(repo.auto_iterate === 1 ? t('自动迭代已开启', 'Auto-iteration on') : t('仅手动运行', 'Manual runs only'))}</b></span>
+          <span class="repo-status"><span class="fine">${escapeHtml(t('自动间隔', 'Auto every'))}</span><b>${escapeHtml(intervalLabel(repo.interval_minutes, t))}</b></span>
+          <span class="repo-status"><span class="fine">${escapeHtml(t('下次约', 'Next'))}</span><span data-next-run data-next-source="${escapeHtml(scheduledNext === undefined ? 'interval' : 'schedule')}">${escapeHtml(nextRunText)}</span></span>
+          <a class="repo-status" href="/repos/${escapeHtml(repo.id)}/schedule">${escapeHtml(t('排期控制台', 'Schedule console'))}</a>
+          <span class="repo-status"><span class="fine">FlyBot</span>${flybotAvailable ? (instance === undefined ? escapeHtml(t('未创建', 'not created')) : badge(t, instance.status)) : escapeHtml(t('未启用', 'not enabled'))}</span>
+          <span class="repo-status"><span class="fine">${escapeHtml(t('GitHub 凭据', 'GitHub credential'))}</span><span class="badge ${credentialOk ? 'good' : 'bad'}">${escapeHtml(credentialOk ? t('正常', 'ok') : t('失效', 'invalid'))}</span></span>
+          ${badge(t, repo.last_status ?? 'idle')}
+        </div>
         <p class="fine">${escapeHtml(t('上游', 'Upstream'))} <a href="${escapeHtml(upstreamUrl)}" target="_blank" rel="noreferrer">${escapeHtml(upstreamOwner)}/${escapeHtml(upstreamName)}</a> · ${repo.is_fork === 1 ? `${escapeHtml(t('Fork', 'Fork'))} <a href="${escapeHtml(forkUrl)}" target="_blank" rel="noreferrer">${escapeHtml(forkOwner)}/${escapeHtml(forkName)}</a>` : escapeHtml(t('自有仓库，无需 fork', 'Own repository, no fork'))} · ${escapeHtml(t('GitHub 权限', 'GitHub permission'))} <code>${escapeHtml(permission)}</code> · ${escapeHtml(t('你的角色', 'Your role'))} <code>${escapeHtml(repoRoleLabel(t, repoRole))}</code> · ${escapeHtml(reviewerLabel)}</p>
       </div>
       <div class="row">
