@@ -288,6 +288,76 @@ test('a fresh session may change the policy and one submit writes one repo.polic
   }
 })
 
+// #718: `POST /repos/:id/role` writes the same `repo_role` column the settings
+// form writes, and on the way to `developer` it clears `auto_merge` and
+// `reviewer_enabled`. It had neither the recency gate nor the limiter its
+// sibling has, so a stale cookie could roll a governed repository back to
+// developer - a governance rollback - with no GitHub confirmation.
+
+function roleRepo(store: Store, userId: string, id: string): RepoRow {
+  return store.createRepo({
+    id, userId, owner: 'o', name: id.replace(/^repo_role_/, ''), defaultBranch: 'main', tokenEnc: 'x',
+    permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440,
+    autoMerge: true, reviewerEnabled: true,
+  })
+}
+
+test('a stale session cannot roll the repository back to developer', async () => {
+  const { built, store } = await build()
+  try {
+    const user = makeUser(store, { login: 'role-stale', status: 'approved' })
+    const repo = roleRepo(store, user.id, 'repo_role_stale')
+    const { raw, cookie, csrf } = sessionFor(built, user)
+    clearRecentAuth(store, raw)
+    const refused = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/role`,
+      headers: { cookie, referer: `http://127.0.0.1:9999/repos/${repo.id}#role`, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, role: 'developer' }),
+    })
+    assert.equal(refused.statusCode, 302)
+    const location = String(refused.headers.location)
+    assert.match(location, /^\/auth\/github\/reauthorize\?next=/, 'a role change must ask GitHub to confirm')
+    assert.match(decodeURIComponent(location), new RegExp(`/repos/${repo.id}`), 'the redirect must return to the repository page')
+    const after = store.getRepo(repo.id)!
+    assert.equal(after.repo_role, 'maintainer', 'a refused change must not demote the repository')
+    assert.equal(after.auto_merge, 1, 'a refused change must not clear auto-merge')
+    assert.equal(after.reviewer_enabled, 1, 'a refused change must not disable the reviewer')
+    const audit = store.listAudit(50).find((row) => row.action === 'recent_auth_required' && String(row.detail).includes(`/repos/${repo.id}/role`))
+    assert.ok(audit !== undefined, 'the refusal must be audited')
+    assert.match(String(audit.detail), /repo\.role/, 'the audit row must name the action, not the request body')
+  } finally {
+    await built.close()
+  }
+})
+
+// The gate must stay off the normal path: a fresh session still picks a role,
+// which is also what keeps a fix from passing by refusing every submit.
+test('a fresh session may still change the repository role', async () => {
+  const { built, store } = await build()
+  try {
+    const user = makeUser(store, { login: 'role-fresh', status: 'approved' })
+    const repo = roleRepo(store, user.id, 'repo_role_fresh')
+    const { cookie, csrf } = sessionFor(built, user)
+    const changed = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/role`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, role: 'developer' }),
+    })
+    assert.equal(changed.statusCode, 302)
+    assert.doesNotMatch(String(changed.headers.location), /reauthorize/, 'a fresh session must not be sent to re-authenticate')
+    const after = store.getRepo(repo.id)!
+    assert.equal(after.repo_role, 'developer', 'a fresh session may demote the repository')
+    assert.equal(after.auto_merge, 0, 'demoting to developer still clears auto-merge')
+    const audit = store.listAudit(50).find((row) => row.action === 'repo.role')
+    assert.ok(audit !== undefined, 'the accepted change must be audited')
+    assert.match(String(audit.detail), /role=developer/)
+  } finally {
+    await built.close()
+  }
+})
+
 // #460 review: the eight destructive handlers this change touches also have to
 // be rate-limited. A stolen cookie (or a page that resubmits itself) must not be
 // able to hammer one of them, and the bucket has to be keyed on the client

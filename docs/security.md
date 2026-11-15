@@ -94,19 +94,21 @@ person at the keyboard is still the GitHub account behind it. Destructive writes
 therefore require a GitHub confirmation inside `RECENT_AUTH_MINUTES` (default 15),
 tracked as `sessions.recent_auth_at`:
 
-- Gated actions: repository delete, the repository settings POST, quota changes,
-  API-token creation and revocation, admin approve/reject, stopping a FlyBot
-  instance, promoting a user's platform role, stopping the platform, and deleting
-  a model provider. The settings POST is gated on either of two paths: turning a
-  repository's auto-merge on or off, audited as `repo.auto_merge`, and changing
-  the pre-merge policy — branch protection, the stage gate, the allowed and
-  denied paths, the target branch and the repository role, audited as
-  `repo.policy`. The rest of that form (enablement, budgets, reviewer
-  preference, model assignment) stays a preference save and is not gated. Reads
-  and normal job actions are unaffected. The last three were the remaining
-  routes where the effect is privilege-changing, fleet-wide or
-  configuration-destroying, and each now asks for the same confirmation before
-  it acts.
+- Gated actions: repository delete, the repository settings POST, the repository
+  role POST, quota changes, API-token creation and revocation, admin
+  approve/reject, stopping a FlyBot instance, promoting a user's platform role,
+  stopping the platform, and deleting a model provider. The settings POST is
+  gated on either of two paths: turning a repository's auto-merge on or off,
+  audited as `repo.auto_merge`, and changing the pre-merge policy — branch
+  protection, the stage gate, the allowed and denied paths, the target branch and
+  the repository role, audited as `repo.policy`. The role POST writes that same
+  `repo_role` column and, on the way to developer, clears `auto_merge` and
+  `reviewer_enabled`, so it carries its own confirmation, audited as
+  `repo.role`. The rest of that form (enablement, budgets, reviewer preference,
+  model assignment) stays a preference save and is not gated. Reads and normal
+  job actions are unaffected. The last three were the remaining routes where the
+  effect is privilege-changing, fleet-wide or configuration-destroying, and each
+  now asks for the same confirmation before it acts.
 - A policy change that passes the gate is audited once as `repo.policy`, naming
   the fields that moved, so one row says which weakening was attempted.
 - A session that has not re-authenticated (`recent_auth_at` is `NULL`, which is
