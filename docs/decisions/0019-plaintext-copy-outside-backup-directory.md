@@ -1,4 +1,4 @@
-# 0018 — the plaintext copy a backup is made from never enters the backup directory
+# 0019 — the plaintext copy a backup is made from never enters the backup directory
 
 Status: **accepted** (2026-11-15)
 Date: 2026-11-15
