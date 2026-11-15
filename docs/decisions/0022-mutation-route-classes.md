@@ -87,8 +87,9 @@ different thing; being ordinary says they take no **class** budget.
 **Classification is not enforcement.** A green sweep says every mutating route
 has a class; it does not say every class has a budget. Read the table as policy
 and `limits.take(...)` as what is paced today — they are compared in a later
-slice, and until then 18 of the 31 destructive routes and most of the
-`expensive` list are classified and unpaced. The workspace proxy is the clearest
+slice. Counted from this tree: 13 of the 31 destructive routes and 4 of the 48
+expensive routes carry a budget, so 18 destructive and 44 expensive routes are
+classified and unpaced. The workspace proxy is the clearest
 case: `app.all` on `/repos/:id/workspace/app` and `/repos/:id/workspace/app/*`
 answers every method, so its mutating forms are in the table as `expensive`
 because a body forwarded to the per-repo workspace app can start work inside the
