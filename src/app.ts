@@ -2856,7 +2856,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
           ? t('下一步决定需要理由（至少 8 字）和可核对的证据：链接、提交/工单 sha，或带单位的测量值。', 'A next-step decision needs a reason (at least 8 characters) and checkable evidence: a link, a commit/issue sha, or a measurement with a unit.')
           : result.code === 'DECISION_TARGET_REQUIRED'
             ? t('补充、相关或复发都要指出一个已有的任务。', 'To supplement, relate or recur, you must name an existing task.')
-            : t('那个已有任务不存在，或新任务还没有标题。', 'That existing task does not exist, or the new task has no title.')
+            : result.code === 'relation_same_job'
+              ? t('任务不能和它自己建立关联。', 'A task cannot be related to itself.')
+              : result.code === 'relation_cross_project'
+                ? t('只能关联同一仓库里的任务。', 'A relation can only join two tasks of the same repository.')
+                : t('那个已有任务不存在，或新任务还没有标题。', 'That existing task does not exist, or the new task has no title.')
       return reply.redirect(`${back}?error=${encodeURIComponent(refusal)}&code=${encodeURIComponent(result.code ?? '')}`)
     }
     const kind = isDecisionKind(result.kind) ? result.kind : 'new'

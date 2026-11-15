@@ -87,7 +87,12 @@ unavailable the framework default is `new` at `P2`: a follow-up becomes one
 ordinary task rather than an open-ended chain. A `related`/`recurrence`/`new`
 decision whose target is still running leaves exactly one coordination notice,
 which that job takes at its next heartbeat that carries a checkpoint and only
-once; a heartbeat without a checkpoint is progress and takes nothing.
+once; a heartbeat without a checkpoint is progress and takes nothing. Taking the
+notice records a `job.coordination_notice` event — that event is the whole effect
+today: neither `checkpoint`'s reply nor the runner's next turn carries the notice
+into the running agent, so the agent reads it in the console, not in its prompt.
+A `related` or `recurrence` decision writes its relation before the task it
+creates, so a refused relation writes no task at all.
 
 ## Alternatives considered
 

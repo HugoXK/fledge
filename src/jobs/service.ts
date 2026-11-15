@@ -558,6 +558,8 @@ export class Jobs {
   // appends to an existing one without a second execution, and `related` /
   // `recurrence` create the task and the explicit relation that says why. The
   // contradiction `new` plus an existing task id is repaired once into `related`.
+  // A `related`/`recurrence` decision writes its relation first, so every refusal
+  // it can return happens before the new task exists.
   async decideNextTask(input: {
     repoId: string
     sourceJobId: string
@@ -593,16 +595,12 @@ export class Jobs {
     const title = (input.title ?? '').trim()
     if (title === '') return { ok: false, code: 'DECISION_TARGET_MISSING', error: '新任务需要一个标题。' }
     const level = input.level === 'P0' || input.level === 'P1' || input.level === 'P2' || input.level === 'P3' ? input.level : DEFAULT_DECISION.level
-    const id = randomId('work')
-    this.store.createWorkItem({
-      id,
-      repoId: input.repoId,
-      userId: source.user_id,
-      title: title.slice(0, 200),
-      detail: `${claim.reason} (${claim.evidence})`,
-      state: 'proposed',
-      priority: level === 'P0' ? 30 : level === 'P1' ? 20 : level === 'P2' ? 10 : 0,
-    })
+    // #639 (review round): the relation is written before the task it belongs to.
+    // Every refusal the relation can return depends on ids already in hand — no
+    // job yet, the job itself, a job of another project — so a refused `related`
+    // or `recurrence` decision now writes nothing at all, and the retry that
+    // follows cannot leave a second orphan task behind.
+    let relatedJobId: string | null = null
     if (claim.kind === 'related' || claim.kind === 'recurrence') {
       if (item === undefined || item.job_id === null) {
         return { ok: false, code: 'DECISION_TARGET_MISSING', error: '那个任务还没有执行记录，无法建立关联。' }
@@ -617,7 +615,20 @@ export class Jobs {
         createdBy: input.actorUserId,
       })
       if ('error' in written) return { ok: false, code: written.error, error: '关联没有写成。' }
-      const targetJob = this.store.getJob(item.job_id)
+      relatedJobId = item.job_id
+    }
+    const id = randomId('work')
+    this.store.createWorkItem({
+      id,
+      repoId: input.repoId,
+      userId: source.user_id,
+      title: title.slice(0, 200),
+      detail: `${claim.reason} (${claim.evidence})`,
+      state: 'proposed',
+      priority: priorityRank(level),
+    })
+    if (relatedJobId !== null) {
+      const targetJob = this.store.getJob(relatedJobId)
       if (targetJob !== undefined && targetJob.status === 'running') {
         this.store.requestCoordination(targetJob.id, `${input.sourceJobId} ${claim.kind}`)
       }

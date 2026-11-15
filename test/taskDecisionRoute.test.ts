@@ -226,3 +226,82 @@ test('an iterate job does not offer the post-QA decision', async () => {
     await f.close()
   }
 })
+
+// #639 review round: the task used to be inserted before the two refusals, so a
+// `related` decision the page reported as failed still left a `proposed` task and
+// no audit row. A decision that cannot write its relation now writes nothing.
+test('a related decision on a task that never ran writes no task and no decision audit row', async () => {
+  const f = await fixture('neverran')
+  try {
+    // A triage-created task has no job yet, so there is no target to relate to.
+    const pending = f.store.createWorkItem({
+      id: 'work_decision_neverran_pending',
+      repoId: f.repoId,
+      userId: f.user.id,
+      title: 'triaged, not run yet',
+      detail: 'Waiting for a run.',
+      state: 'proposed',
+      priority: 10,
+    })
+    assert.equal(pending.job_id, null)
+    const before = f.store.listWorkItems(f.repoId).length
+    const audits = () => f.store.listAudit(200).filter((entry) => entry.action.startsWith('task.decision_')).length
+    const auditsBefore = audits()
+
+    const payload = { ...good, kind: 'related', existing_task_id: pending.id, title: 'relate the triaged task' }
+    for (const attempt of [1, 2]) {
+      const response = await post(f, 'en', payload)
+      assert.equal(response.statusCode, 302, `attempt ${attempt} redirects`)
+      assert.match(response.location, /error=/, `attempt ${attempt} is a refusal`)
+      assert.equal(f.store.listWorkItems(f.repoId).length, before, `attempt ${attempt} writes no task`)
+      assert.equal(audits(), auditsBefore, `attempt ${attempt} writes no decision audit row`)
+    }
+    assert.equal(f.store.listWorkItems(f.repoId).filter((item) => item.title === 'relate the triaged task').length, 0)
+  } finally {
+    await f.close()
+  }
+})
+
+test('a related decision pointing at the decision job itself writes no task', async () => {
+  const f = await fixture('self')
+  try {
+    const own = f.store.createWorkItem({
+      id: 'work_decision_self_own',
+      repoId: f.repoId,
+      userId: f.user.id,
+      title: 'the task this verify run belongs to',
+      detail: '',
+      state: 'proposed',
+      priority: 10,
+      jobId: f.verifyId,
+    })
+    assert.equal(own.job_id, f.verifyId)
+    const before = f.store.listWorkItems(f.repoId).length
+    const audits = () => f.store.listAudit(200).filter((entry) => entry.action.startsWith('task.decision_')).length
+    const auditsBefore = audits()
+
+    const response = await post(f, 'en', { ...good, kind: 'related', existing_task_id: own.id, title: 'relate this very run' })
+    assert.equal(response.statusCode, 302)
+    assert.match(response.location, /error=/)
+    assert.match(response.location, /itself/)
+    assert.equal(f.store.listWorkItems(f.repoId).length, before, 'a self relation writes no task')
+    assert.equal(audits(), auditsBefore, 'a self relation writes no decision audit row')
+  } finally {
+    await f.close()
+  }
+})
+
+test('a related decision on a task that did run still writes the task and one relation', async () => {
+  const f = await fixture('ok')
+  try {
+    const before = f.store.listWorkItems(f.repoId).length
+    const response = await post(f, 'en', { ...good, kind: 'related', existing_task_id: f.existedTaskId, title: 'fix the retry in the second call site' })
+    assert.match(response.location, /notice=/)
+    assert.equal(f.store.listWorkItems(f.repoId).length, before + 1)
+    const relations = f.store.listTaskRelations(f.existedJobId)
+    assert.equal(relations.length, 1)
+    assert.equal(relations[0]?.kind, 'related')
+  } finally {
+    await f.close()
+  }
+})

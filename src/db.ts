@@ -2736,8 +2736,12 @@ export class Store {
       created_by: input.createdBy,
       created_at: nowIso(),
     }
+    // #639: the read above and this insert are not one step, so two submits of the
+    // same relation can both miss the read. `OR IGNORE` gives the loser the row the
+    // winner wrote instead of a raw constraint error at a route with no handler for
+    // one; `created` then reports which of the two this call was.
     this.run(
-      'INSERT INTO task_relations (id, repo_id, source_job_id, target_job_id, kind, reason, evidence, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO task_relations (id, repo_id, source_job_id, target_job_id, kind, reason, evidence, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       relation.id,
       relation.repo_id,
       relation.source_job_id,
@@ -2748,7 +2752,13 @@ export class Store {
       relation.created_by,
       relation.created_at,
     )
-    return { created: true, relation }
+    const stored = this.get<TaskRelationRow>(
+      'SELECT * FROM task_relations WHERE source_job_id = ? AND target_job_id = ? AND kind = ?',
+      input.sourceJobId,
+      input.targetJobId,
+      input.kind,
+    )
+    return stored === undefined ? { created: false, relation } : { created: stored.id === relation.id, relation: stored }
   }
 
   // #639: a related task does not steal a running job's claim. It leaves one
