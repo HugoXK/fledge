@@ -41,6 +41,9 @@ const DESTRUCTIVE_ROUTE_LIST = [
   'POST /repos/:id/delete',
   'POST /repos/:id/settings',
   'POST /repos/:id/instance/stop',
+  // A rule override steers every later job on the repository, and the handler
+  // already takes the destructive window; the class follows the window.
+  'POST /repos/:id/rules',
   'POST /repos/:id/role',
   'POST /repos/:id/release-readiness/tag',
   'POST /repos/:id/security-findings/:findingId/dismiss',
@@ -53,6 +56,12 @@ const DESTRUCTIVE_ROUTE_LIST = [
 // Starts, stops or merges real work: a job, a plan, a release, a schedule, an
 // instance or a team turn.
 const EXPENSIVE_ROUTE_LIST = [
+  // Adding a repository provisions an instance (the handler says so and takes the
+  // expensive window itself), and importing an app provisions every imported
+  // repository: both start work, so ADR 0022 files them expensive, not ordinary.
+  'POST /repos',
+  'POST /repos/app',
+  'POST /repos/:id/instance',
   'POST /repos/:id/run',
   'POST /repos/:id/plan',
   'POST /repos/:id/triage',
@@ -113,11 +122,7 @@ const ORDINARY_ROUTE_LIST = [
   'POST /auth/token',
   'POST /auth/logout',
   'POST /apply',
-  'POST /repos',
-  'POST /repos/app',
-  'POST /repos/:id/instance',
   'POST /repos/:id/memory',
-  'POST /repos/:id/rules',
   'POST /repos/:id/rules/delete',
   'POST /repos/:id/team/guidance',
   'POST /repos/:id/jobs/:jobId/priority',

@@ -44,6 +44,10 @@ const ALL_MUTATING_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'] as const
 /** Every mutating route `src/app.ts` registers, as `METHOD /path`. */
 export function registeredMutations(source = APP_SOURCE): string[] {
   const text = withoutComments(source)
+  // `app.route({ method, url })` keeps the method in an object, which this
+  // reader cannot read. Refuse it: a skipped registration is an unclassified
+  // mutating route passing a green sweep.
+  if (/app\.route\s*\(/.test(text)) throw new Error('the sweep cannot read app.route(...); teach registeredMutations or register with a verb')
   const found: string[] = []
   for (const match of text.matchAll(/app\.([A-Za-z]+)\(\s*'([^']*)'/g)) {
     const form = (match[1] ?? '').toLowerCase()
@@ -93,6 +97,44 @@ test('#708 the sweep refuses a registration form it cannot read', () => {
     () => registeredMutations("app.options('/repos/:id/settings', async () => {})"),
     /cannot read app\.options/,
   )
+})
+
+// The table is policy and the handler is what happens today. Where the two
+// disagree the table must not be the lighter one: a route that takes the
+// destructive window handles something irreversible, and a route that takes the
+// expensive window starts work — neither can be filed under `ordinary`, which
+// ADR 0022 defines as unlimited by decision.
+test('#708 a route that takes a class window is not filed under a lighter class', () => {
+  const text = withoutComments(APP_SOURCE)
+  const matches = [...text.matchAll(/app\.([A-Za-z]+)\(\s*'([^']*)'/g)]
+  const wrong: string[] = []
+  matches.forEach((match, index) => {
+    const form = (match[1] ?? '').toLowerCase()
+    if (!ROUTE_FORMS.has(form)) return
+    const path = match[2] ?? ''
+    const end = index + 1 < matches.length ? (matches[index + 1]?.index ?? text.length) : text.length
+    const handler = text.slice(match.index ?? 0, end)
+    const methods = form === 'all' ? [...ALL_MUTATING_METHODS] : form === 'get' ? [] : [form.toUpperCase()]
+    const takesDestructive = /rateLimit:\s*\w*destructive/i.test(handler) || /limits\.take\('destructive'/.test(handler)
+    const takesExpensive = /rateLimit:\s*\w*expensive/i.test(handler) || /limits\.take\('expensive'/.test(handler)
+    for (const method of methods) {
+      const key = routeKey(method, path)
+      const says = routeClassOf(method, path)
+      if (takesDestructive && says !== 'destructive') wrong.push(`${key}: takes the destructive window but is ${says ?? 'unclassified'}`)
+      else if (takesExpensive && says === 'ordinary') wrong.push(`${key}: takes the expensive window but is ordinary`)
+    }
+  })
+  assert.deepEqual(wrong, [], `class lighter than the window: ${wrong.join('; ')}`)
+})
+
+// `app.route({ method, url })` carries the method in an object, so the sweep's
+// shape cannot read it. Refusing it keeps the next one from being skipped.
+test('#708 the sweep refuses app.route, whose method is in an object', () => {
+  assert.throws(
+    () => registeredMutations("app.route({ method: 'POST', url: '/repos/:id/settings' }, async () => {})"),
+    /cannot read app\.route/,
+  )
+  assert.equal(/app\.route\s*\(/.test(withoutComments(APP_SOURCE)), false, 'src/app.ts must register with a verb, not app.route: the sweep reads verb registrations')
 })
 
 test('#708 every mutating route in src/app.ts names a class', () => {
