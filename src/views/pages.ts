@@ -2358,8 +2358,8 @@ export function adminPage(input: {
       })()
   const body = `${stopBanner}<section class="card">
     <div class="eyebrow">${escapeHtml(t('管理', 'ADMIN'))}</div>
-    <h1>${escapeHtml(t('审批与额度', 'Approvals & quota'))}</h1>
-    <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}${superadmin ? ` · <a class="link" href="/admin/metrics">${escapeHtml(t('产品指标', 'Product metrics'))}</a> · <a class="link" href="/admin/webhooks">${escapeHtml(t('Webhook deliveries', 'Webhook deliveries'))}</a>` : ''} · <a class="link" href="/admin/deployments">${escapeHtml(t('部署', 'Deployments'))}</a> · <a class="link" href="/admin/search">${escapeHtml(t('审计与任务', 'Audit and jobs'))}</a> · <a class="link" href="/admin/trials">${escapeHtml(t('试用预览', 'Preview trials'))}</a></p>
+    <h1>${escapeHtml(t('管理控制台', 'Admin console'))}</h1>
+    <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}</p>
     ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出用户视图预览', 'Exit user preview') : t('预览用户视图', 'Preview the user view'))}</button></form>` : ''}
   </section>
   <nav class="section-nav" aria-label="${escapeHtml(t('页面导航', 'Section navigation'))}">
@@ -2389,7 +2389,18 @@ export function adminPage(input: {
     ${pager('/admin', 'auditPage', auditPage, auditTotal, perPage, t, { jobsPage })}
   </section>` : ''}
   ${releaseCard}
-  ${backupCard}`
+  ${backupCard}
+  <section class="card">
+    <h2>${escapeHtml(t('运维工具', 'Operations'))}</h2>
+    <p class="muted">${escapeHtml(t('这些是独立的运维页面；下面的卡片把它们放在管理页的同一个入口里。', 'These are separate operations pages; the cards below collect them in one place on the admin page.'))}</p>
+    <div class="admin-modules">
+      ${superadmin ? `<a class="admin-module" href="/admin/metrics"><strong>${escapeHtml(t('产品指标', 'Product metrics'))}</strong><small>${escapeHtml(t('用户、任务、成本、失败分类和告警。', 'Users, jobs, cost, failure breakdown and alerts.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
+      <a class="admin-module" href="/admin/webhooks"><strong>${escapeHtml(t('Webhook deliveries', 'Webhook deliveries'))}</strong><small>${escapeHtml(t('出站通知投递状态、重试和详情。', 'Outbound notification delivery state, retries and detail.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>` : ''}
+      <a class="admin-module" href="/admin/deployments"><strong>${escapeHtml(t('部署与漂移', 'Deployments and drift'))}</strong><small>${escapeHtml(t('已记录的部署、漂移、canary 和回滚计划。', 'Recorded deployments, drift, canary and rollback plans.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
+      <a class="admin-module" href="/admin/search"><strong>${escapeHtml(t('审计与任务', 'Audit and jobs'))}</strong><small>${escapeHtml(t('按用户、状态、类型和时间筛选并导出任务/审计。', 'Filter and export jobs/audit by user, status, kind and time.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
+      <a class="admin-module" href="/admin/trials"><strong>${escapeHtml(t('试用预览', 'Preview trials'))}</strong><small>${escapeHtml(t('试用到期状态、可转化账号和清理记录。', 'Trial expiry state, eligible accounts and purge records.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
+    </div>
+  </section>`
   return layout({ title: t('管理', 'Admin'), viewer, body, config, locale, path: '/admin', active: 'admin', notice, error, release })
 }
 

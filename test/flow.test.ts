@@ -272,7 +272,7 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
     const adminSession = sessionFor(built, admin)
     const adminPage = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: adminSession.cookie } })
     assert.equal(adminPage.statusCode, 200)
-    assert.match(adminPage.body, /审批与额度/)
+    assert.match(adminPage.body, /管理控制台/)
     assert.match(adminPage.body, /#1/)
 
     const quotaUpdated = await built.app.inject({

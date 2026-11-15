@@ -1,0 +1,1 @@
+The admin page is now an Admin console rather than an Approvals & quota page. Product metrics, Webhook deliveries, Deployments, Audit and jobs and Preview trials are module tiles below the main sections instead of inline links, with superadmin-only tiles hidden from ordinary admins.
