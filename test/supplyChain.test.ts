@@ -201,7 +201,9 @@ test('the allowlist parser refuses an entry with no reason and a malformed file'
 test('the real workflow tree has no un-allowlisted shell interpolation', () => {
   const allowlist = parseAllowlist(read('.github/agent/workflow-injection-allowlist.json'))
   const directory = join(repoRoot, '.github/workflows')
-  for (const name of ['ci.yml', 'release.yml', 'codeql.yml', 'review-gate.yml', 'daily-release.yml']) {
+  // `pr-lint.yml` joined this list with #753: a workflow that is not named here
+  // is scanned by nothing, and the scan is the only thing that reads the tree.
+  for (const name of ['ci.yml', 'release.yml', 'codeql.yml', 'review-gate.yml', 'pr-lint.yml', 'daily-release.yml']) {
     const findings = scanWorkflowText(readFileSync(join(directory, name), 'utf8'), name, allowlist)
     assert.deepEqual(findings, [], `${name} interpolates an expression into a shell script`)
   }
