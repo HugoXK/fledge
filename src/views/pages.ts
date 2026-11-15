@@ -2549,6 +2549,13 @@ export function adminPage(input: {
   const releaseProblemRows = problemLinks.map(linkRow).join('')
   const fullRows = visibleLinks.map(linkRow).join('')
   const releaseTone = releaseStatus !== null && releaseArtifactsOk && running?.state === 'ok' ? 'good' : 'bad'
+  const releaseTimeline = releaseStatus === null
+    ? ''
+    : [
+        (releaseStatus.planPlannedAt ?? '') === '' ? '' : `${t('计划', 'plan')} ${humanTimeShort(releaseStatus.planPlannedAt ?? '')}`,
+        (releaseStatus.mergedAt ?? '') === '' ? '' : `${t('合并', 'merge')} ${humanTimeShort(releaseStatus.mergedAt ?? '')}`,
+        (releaseStatus.publishedAt ?? '') === '' ? '' : `${t('发布', 'publish')} ${humanTimeShort(releaseStatus.publishedAt ?? '')}`,
+      ].filter((part): part is string => part !== '').join(' → ')
   const releaseDetails = releaseStatus === null
     ? `<div class="list"><div class="list-row"><div class="list-main"><strong>${escapeHtml(t('还没有记录发布链', 'No release chain is recorded'))}</strong><small>${escapeHtml(t('这不是错误：发布链只有在管理员于主机上记录过一次校验后才会出现。', 'This is expected, not an error: the chain appears only after an operator records a verification on the host.'))}</small></div></div></div>
       <details class="advanced-help"><summary>${escapeHtml(t('在主机上记录发布链', 'Record it on the host'))}</summary><p class="fine">${escapeHtml(t('运行', 'Run'))} <code>node scripts/verify-release.mjs --version X.Y.Z --write &lt;DATA_DIR&gt;/release-status.json</code> ${escapeHtml(t('然后刷新此页。', 'then reload this page.'))}</p></details>`
@@ -2563,6 +2570,7 @@ export function adminPage(input: {
       <div>
         <h2>${escapeHtml(t('发布与部署', 'Release & deployment'))}</h2>
         ${releaseFactsLine}
+        ${releaseTimeline === '' ? '' : `<p class="fine" data-release-timeline>${escapeHtml(releaseTimeline)}</p>`}
       </div>
       <div class="row">
         ${releaseStatus === null ? '' : `<span class="badge ${releaseTone}">${escapeHtml(chainLabel)}</span>`}

@@ -283,6 +283,23 @@ test('the admin page renders the recorded chain, its digest and its Release URL,
   assert.doesNotMatch(page, /gh[pousr]_[A-Za-z0-9]{20,}/)
 })
 
+test('the admin page shows the plan, merge and publish timeline when the snapshot carries it', async () => {
+  const { evaluateReleaseStatus } = await import('../scripts/lib/release-status.mjs')
+  const version = String(JSON.parse(readFileSync('package.json', 'utf8')).version)
+  const status = evaluateReleaseStatus(chain({ version, packageVersion: version, healthz: null, baseUrl: '' }))
+  const page = await adminPage({
+    ...status,
+    plan: { plannedAt: '2026-11-14T19:24:31.000Z' },
+    pull: { mergedAt: '2026-11-14T20:17:17.000Z' },
+    release: { publishedAt: '2026-11-14T20:19:38.000Z' },
+  })
+  const release = /<section[^>]*id="release"[\s\S]*?<\/section>/.exec(page)?.[0] ?? ''
+  assert.match(release, /data-release-timeline/)
+  assert.match(release, /19:24/)
+  assert.match(release, /20:17/)
+  assert.match(release, /20:19/)
+})
+
 test('the admin page does not turn an unreadable Release URL into a link', async () => {
   const body = {
     schema: 1,
