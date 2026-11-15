@@ -1,0 +1,14 @@
+{
+  "allowed_actions": [
+    "actions/attest-build-provenance",
+    "actions/checkout",
+    "actions/dependency-review-action",
+    "actions/download-artifact",
+    "actions/setup-node",
+    "actions/upload-artifact",
+    "anchore/sbom-action",
+    "aquasecurity/trivy-action",
+    "github/codeql-action",
+    "raven-actions/actionlint"
+  ]
+}

@@ -847,12 +847,13 @@ becomes a card whose cells carry their column name in a `data-label` attribute
 behind a horizontal scroll on a phone, and a new column must emit `data-label`
 in `jobRows` to stay readable there. The rest of the data tables reuse the same
 block through one class, `table-cards`: the `/admin` users and audit tables, the
-dashboard repository table, the repository page's delivery, board and work-item
-tables, and the support view's repository and job tables. Adding the class and a
+dashboard repository table, the repository page's delivery and work-item tables,
+and the support view's repository and job tables. Adding the class and a
 `data-label` per cell is the whole change; a table must not grow a second card
-mechanism. The delivery board is the one exception, `table-cards table-cards-head`:
-its header row is the stage filter, so it stays in the flow and reflows as a
-wrapping row of links above the cards instead of disappearing. Above 640px the scroller is also bounded vertically
+mechanism. The delivery board is a compact summary of state links with counts
+and shares, not a carded table; it wraps above the work-item list and each state
+link filters the list. A share needs a denominator: with no work items at all
+each state shows `—` rather than a confident `0%`. Above 640px the scroller is also bounded vertically
 (`100dvh` minus `--header-h` and `--space-7`, and minus the repository
 subnav's `--subnav-h` on a repository page) and its `thead th` is sticky on an
 opaque `--panel`, so column names stay above the rows they label; the two rules
@@ -878,9 +879,8 @@ attribute states, the meta shapes, the 44px control and the two palette tokens
 the sticky header and the account pill used to hardcode. Signed-out pages honour
 the saved palette but render no control: the chooser rides inside `#main-nav`, so
 below 961px the compact header's panel carries it and the phone row gains no
-child. Between 641px and 960px a wide table (the
-delivery board is 952px wide at 768) can still be wider than its `.table-scroll`
-box, so that band draws an always-present classic scrollbar — an explicit track
+child. Between 641px and 960px a wide data table can still be wider than its
+`.table-scroll` box, so that band draws an always-present classic scrollbar — an explicit track
 plus `scrollbar-width`/`scrollbar-color` for Firefox — instead of relying on a
 thumb that is 1.5:1 on the panel. The band has its own
 `(min-width: 641px) and (max-width: 960px)` block in `public/app.css`; the cards
@@ -933,7 +933,7 @@ timeline as the token to search, and it is the `job_events.job_id` of that job,
 so one search returns the whole job. Pass-level lines (a scheduler pass, the
 shutdown check) have no job in scope and deliberately carry no `trace`.
 
-The repository page adds a compact delivery board grouped by work-item state; each state header links to a filtered work-item list (`?workState=`). The dashboard has two scopes. `/dashboard?window=7|30` shows the signed-in
+The repository page adds a compact delivery board grouped by work-item state; each state tile links to a filtered work-item list (`?workState=`) and shows its share of the total, or `—` while the board has no items and there is nothing to divide by. The work-item rows keep their actions behind one disclosure, and the create form is a header button and dialog. The dashboard has two scopes. `/dashboard?window=7|30` shows the signed-in
 user's own delivery metrics: jobs, success rate, PRs, merged PRs, cost, open
 work items and the last job. `/admin/metrics` shows the global window with the
 product funnel, delivery efficiency (success and merge rate, median job and
@@ -1579,6 +1579,13 @@ Run/Plan/Review until the state is fixed. A danger zone offers stop scheduling,
 stop FlyBot and delete; deletion requires typing the repository name and removes
 the Fledge connection, instance, jobs and tokens without touching GitHub.
 
+The FlyBot instance card maps transport failures to a short reason (`Bridge
+unreachable`, `Bridge returned 502`, `Container is not running`, `Model endpoint
+unreachable`) and keeps the raw error in a technical disclosure. The page-level
+message uses the same reason, never a bare `TypeError: fetch failed`, and the
+card shows the last health-check time and the Start/Stop/Reinitialize action for
+the current state.
+
 ### Pull-request delivery
 
 Each repository page has a delivery list of iterate jobs with open pull requests,
@@ -1880,6 +1887,12 @@ inside the header card, so no new `.card[id]` is added and the section-nav
 contract is unchanged. The user table keeps its fields and POST routes but
 folds quota, role, private-model and approve/reject controls behind a `Manage`
 details control, so the default row is a summary rather than a stack of forms.
+The mechanical release pull request is opted into GitHub auto-merge after it is
+opened or reused; `ci-ok`, `review-gate` and `pr-lint` still decide when it may
+squash, and `--match-head-commit` pins the tip. The release card also renders a
+compact `plan → merge → publish` timeline from the snapshot's `plan.plannedAt`,
+`pull.mergedAt` and `release.publishedAt`, so a late release can be attributed to
+the scheduler, the checks or the merge wait.
 ### Backup surface
 
 The other half of "your data is safe" is a fact the operator can see without

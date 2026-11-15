@@ -787,6 +787,62 @@ script gets a narrow, documented exception — never a blanket re-enable.
 Playwright's browser install stays an explicit step
 (`npx playwright install --with-deps chromium`), so it is unaffected.
 
+### Allowed GitHub Actions
+
+A pin and an allowlist answer two different questions, so both are required. The
+pin (`action-pins` gate 1) says "this action cannot change under us"; it says
+nothing about *who wrote it*. A pull request can add a brand-new third-party
+action pinned to a malicious commit, and that commit runs on our runner with our
+token — reviewed, pinned, and still an exfiltration. The allowlist says "only the
+actions this project has read are allowed".
+
+The list is data in the tree, `.github/agent/action-allowlist.json`, as exact
+`owner/repo` names — no wildcards, because `actions/*` re-opens the hole the list
+exists to close. A sub-path belongs to its repository: `github/codeql-action/init`
+is covered by `github/codeql-action`, since a fork of one sub-action is not a
+different action. `readAllowlist` refuses to load a malformed file rather than
+returning an empty list, and a name in the list that no workflow uses is a test
+failure too — drift in either direction is how a list stops describing the tree.
+
+CI enforces the list in the `action-pins` required job. The checker is read from
+the base branch, so the list it reads is the one already reviewed there; a pull
+request therefore cannot grant itself an action in the same commit that uses it.
+That is deliberate ordering, not an inconvenience: **the list entry lands first,
+in its own reviewed change, and the workflow that uses the action comes after.**
+
+The GitHub setting behind it is the other half, and it is a **repository setting,
+so it is the owner's action, never an agent's**:
+
+| Setting | Where | At the time of writing |
+|---|---|---|
+| `allowed_actions` | Settings → Actions → General → Actions permissions | `all` |
+| `sha_pinning_required` | same page, "Require actions to be pinned to a full-length commit SHA" | `true` |
+
+`GET /repos/{owner}/{repo}/actions/permissions` reports both, and `PATCH` on the
+same path sets them — `{"allowed_actions":"selected","sha_pinning_required":true}`,
+then `PUT /repos/{owner}/{repo}/actions/permissions/selected-actions` with
+`{"github_owned_allowed":false,"verified_allowed":false,"patterns_allowed":[...]}`
+carrying the same `owner/repo` names as the JSON file. The settings page is the
+same switch. Until they are flipped, the list is enforced by CI alone: it stops a
+pull request from merging with an unreviewed action, but it does not stop the
+workflow from starting if one is already on the branch.
+
+Procedure for adding an action:
+
+1. Open a T3 issue naming the action, its 40-hex pin, the tag it came from and
+   why no existing action does the job. An action without that reason is the
+   thing this control exists to refuse.
+2. Add one line to `.github/agent/action-allowlist.json` in its own reviewed
+   change, with the justification in the pull request body. The suite's
+   both-directions test must still pass, so a list entry that no workflow uses
+   cannot ride along.
+3. Land it, then open the workflow change that uses the action. The gate reads the
+   list from the base branch, so reversing the order reds the newer pull request
+   until the list is on `main`.
+4. Only the owner flips `allowed_actions` to `selected` and publishes the same
+   patterns through `patterns_allowed`; an agent may read the settings, never write
+   them.
+
 ### Secret scanning and push protection
 
 Two boundaries, deliberately redundant: GitHub's push protection refuses a
