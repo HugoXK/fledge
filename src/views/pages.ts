@@ -2014,7 +2014,12 @@ export function settingsPage(input: {
     ${newToken === undefined ? '' : `<div class="banner ok">${escapeHtml(t('新 token（只显示一次）：', 'New token (shown once):'))}<code class="token" id="new-token">${escapeHtml(newToken)}</code> <button class="link" type="button" data-copy="#new-token">${escapeHtml(t('复制', 'Copy'))}</button></div>`}
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('前缀', 'Prefix'))}</th><th>${escapeHtml(t('名称', 'Name'))}</th><th>${escapeHtml(t('范围', 'Scope'))}</th><th>${escapeHtml(t('有效期', 'Expires'))}</th><th>${escapeHtml(t('最近使用', 'Last used'))}</th><th></th></tr></thead><tbody>${tokenRows}</tbody></table></div>
     <form method="post" action="/settings/tokens" class="row">${csrf(viewer)}<input name="name" placeholder="${escapeHtml(t('用途，例如 laptop-cli', 'Purpose, e.g. laptop-cli'))}" required />
-      <input type="hidden" name="scope" value="gateway" />
+      <label>${escapeHtml(t('范围', 'Scope'))}
+        <select name="scope">
+          <option value="gateway">${escapeHtml(t('网关：调用模型接口', 'Gateway: call the model endpoints'))}</option>
+          <option value="jobs:read">${escapeHtml(t('任务读取：只读 /api/v1/jobs', 'Jobs: read /api/v1/jobs only'))}</option>
+        </select>
+      </label>
       <label>${escapeHtml(t('有效期', 'Expires'))}{infoTip(t('个人 token 必须有期限；到期后网关直接拒绝。永不过期只对管理员创建的运维 token 开放。', 'A personal token must expire; the gateway refuses it afterwards. A token without an expiry is only for an operator token created by an admin.'))}
         <select name="expiryDays">
           ${PAT_EXPIRY_CHOICES.map((days) => `<option value="${days}"${days === config.tokens.patExpiryDays ? ' selected' : ''}>${escapeHtml(t(`${days} 天`, `${days} days`))}</option>`).join('')}
@@ -2022,7 +2027,7 @@ export function settingsPage(input: {
         </select>
       </label>
       <button class="btn" type="submit">${escapeHtml(t('创建 token', 'Create token'))}</button></form>
-    <p class="fine">${escapeHtml(t('范围固定为 gateway：这是目前唯一会校验 token 的能力边界，暂时不提供单选项以外的选择。', 'The scope is fixed to gateway: it is the only capability boundary that checks a token today, so there is no choice to make yet.'))}</p>
+    <p class="fine">${escapeHtml(t('范围就是能力边界：gateway 只能调用 /v1 模型接口，jobs:read 只能读 /api/v1/jobs，两者不通用。', 'The scope is the capability boundary: gateway may call /v1 only, jobs:read may read /api/v1/jobs only, and neither substitutes for the other.'))}</p>
   </section>
 
   <section class="card" id="sessions">
