@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { Config } from '../config.js'
-import type { JobRow, RepoRow, Store, UserRow } from '../db.js'
+import type { JobRow, RepoRow, SecurityFindingWrite, Store, UserRow } from '../db.js'
 import type { Mailer } from '../email/mailer.js'
 import { QuotaNotifier } from '../gateway/notifier.js'
 import { quotaView } from '../gateway/quota.js'
@@ -13,6 +13,7 @@ import { redact } from '../lib/secrets.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
+import { applyReport, findingId, type FindingState } from '../lib/securityFindings.js'
 import { classifyFailure, providerRefusalCode, type EnqueueRefusalCode, type FailureCode } from '../lib/failure.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
@@ -1393,6 +1394,25 @@ export class Jobs {
       finished_at: nowIso(),
     })
     if (!claimed) return false
+    // #379: the finding ledger is written inside the guarded transition, so a
+    // replayed callback never reaches this line and the counts it produces are
+    // the ones the ledger stored. The transition has already committed, so a
+    // failed ledger write (a locked file, a constraint the report trips) must
+    // not fail the callback, hold the lease or lose the job result: the rows
+    // roll back to what they were, which can never make a finding read as
+    // fixed, and the failure gets a durable row so it cannot vanish.
+    if (evidence !== null) {
+      try {
+        this.recordSecurityFindings(job, evidence)
+      } catch (error) {
+        log.warn('security finding ledger write failed', { trace: jobId, error: String(error) })
+        try {
+          this.store.audit(job.user_id, 'security_finding.write_failed', `${job.id}: ${String(error)}`.slice(0, 600))
+        } catch (auditError) {
+          log.warn('security finding ledger failure could not be audited', { trace: jobId, error: String(auditError) })
+        }
+      }
+    }
     this.store.releaseJobLease(jobId)
     this.clearLeaseHeartbeat(jobId)
     incCounter('fledge_jobs_total', { status: result.status, kind: job.kind }, 1, 'Jobs by terminal status')
@@ -1480,6 +1500,49 @@ export class Jobs {
       void this.captureTeamStats(jobId, attribution).catch((error) => log.warn('team stats capture failed', { trace: jobId, error: String(error) }))
     }
     return true
+  }
+
+  // #379: the finding ledger's only writer, called from the claimed terminal
+  // transition. It touches only the ids this report names: a finding missing
+  // from a later report is not evidence of a fix, so absence cannot move a row.
+  // A dismissal without a reason and a malformed entry are refused here and
+  // counted, never turned into a clean report.
+  private recordSecurityFindings(job: JobRow, evidence: Evidence): void {
+    const findings = evidence.findings ?? []
+    const refused = evidence.findingsDismissedRefused ?? 0
+    const dropped = evidence.findingsDropped ?? 0
+    if (findings.length === 0 && refused === 0 && dropped === 0) return
+    const writes: SecurityFindingWrite[] = []
+    let regressed = 0
+    for (const finding of findings) {
+      const id = findingId(finding)
+      const previous = this.store.getSecurityFinding(job.repo_id, id)
+      const decision = applyReport(
+        previous === undefined
+          ? undefined
+          : { state: previous.state as FindingState, firstSeenJob: previous.first_seen_job, dismissedInJob: previous.dismissed_in_job },
+        finding,
+        job.id,
+      )
+      if (decision === null) continue
+      writes.push({
+        id,
+        state: decision.state,
+        firstSeenJob: previous?.first_seen_job ?? job.id,
+        lastSeenJob: decision.lastSeenJob,
+        reason: previous?.reason ?? null,
+        dismissedInJob: decision.dismissedInJob,
+      })
+      if (decision.state === 'regressed' && previous?.state !== 'regressed') {
+        regressed += 1
+        this.store.audit(job.user_id, 'security_finding.regressed', `${job.id}: ${id} first=${previous?.first_seen_job ?? job.id}`.slice(0, 600))
+      }
+    }
+    this.store.writeSecurityFindings(job.repo_id, writes)
+    if (refused > 0) this.store.audit(job.user_id, 'security_finding.dismissal_refused', `${job.id}: ${refused} dismissed report(s) without a reason`)
+    const summary = `findings=${findings.length} regressed=${regressed} dismissed_refused=${refused} dropped=${dropped}`
+    this.store.event('security_findings', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: summary })
+    this.store.audit(job.user_id, 'job.security_findings', `${job.id}: ${summary}`)
   }
 
   private notePostmortem(jobId: string): void {

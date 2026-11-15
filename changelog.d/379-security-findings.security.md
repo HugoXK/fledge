@@ -1,0 +1,1 @@
+Jobs can report the security findings they saw, and each repository now keeps a ledger of them: a finding that was dismissed or fixed and comes back is shown as regressed on the job and repository pages, a dismissal or fix without a written reason is refused, and a finding missing from a later report is never treated as fixed.
